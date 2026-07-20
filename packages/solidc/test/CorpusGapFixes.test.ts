@@ -378,6 +378,10 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
       + ' assembly { sstore(a.slot, 4) } require(true); } }', { solidityImportCompat: true }))
       .toThrow(/inline assembly/i);
   });
+  it('calldata .offset of a first dynamic param resolves to the compile-time ABI data position', () => {
+    expect(ok('contract C { function f(bytes calldata x) public returns (uint r) {'
+      + ' assembly { r := x.offset } require(true); } }')).toBe('C');
+  });
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {

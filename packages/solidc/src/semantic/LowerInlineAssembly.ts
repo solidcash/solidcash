@@ -895,6 +895,40 @@ function synthesizedCalldata(src: YulNode): ExpressionNode {
   return parts.length === 1 ? parts[0] : loc(new BytesConcatNode(parts), src);
 }
 
+// A calldata param ABI-encoded in the TAIL (a pointer word in the head): unbounded bytes/string/array.
+function isDynamicCalldataType(t: Type): boolean {
+  return (t instanceof BytesType && t.bound === undefined)
+    || t === PrimitiveType.STRING
+    || (t instanceof ArrayType && t.bound === undefined);
+}
+
+// The 32-byte HEAD words a calldata param occupies: a dynamic param takes ONE offset word; a value one; a fixed
+// array/struct is inlined as its whole word footprint. undefined = a shape we do not model (fail closed).
+function calldataHeadWords(t: Type): number | undefined {
+  if (isDynamicCalldataType(t)) return 1;
+  if (t instanceof IntType || t instanceof AddressType || t === PrimitiveType.BOOL
+    || t instanceof EnumType || t instanceof ValueType || (t instanceof BytesType && t.bound !== undefined)) return 1;
+  const words = compositeSlotWords(t);
+  return words > 0 ? words : undefined;
+}
+
+// The compile-time ABI calldata byte offset of a dynamic param's DATA (`x.offset`): 4 (selector) + head size + 32
+// (skip x's own length word), valid when x is the FIRST dynamic param (a preceding dynamic param makes the tail
+// cumulative + runtime-length-dependent -> fail closed). EVM-ABI of the Solidity signature; on BCH there is no ABI
+// calldata, so this is the EVM-parity value the assembly expects.
+function calldataDataOffset(name: string): bigint | undefined {
+  const idx = currentParams.findIndex((p) => p.name === name);
+  if (idx < 0 || !isDynamicCalldataType(currentParams[idx].type)) return undefined;
+  if (currentParams.slice(0, idx).some((p) => isDynamicCalldataType(p.type))) return undefined;
+  let headWords = 0;
+  for (const p of currentParams) {
+    const w = calldataHeadWords(p.type);
+    if (w === undefined) return undefined;
+    headWords += w;
+  }
+  return 4n + BigInt(headWords) * 32n + 32n;
+}
+
 // `calldatacopy(_, P.offset, P.length)` where P is a bytes calldata param -> P (the copied calldata region IS the
 // param's bytes). offset/length are the Yul calldata-slice accessors on the same param. Returns the param name.
 function resolveCalldataParamCopy(off: YulExpressionNode, len: YulExpressionNode): string | undefined {
@@ -1258,7 +1292,7 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
       throw new YulNotLowerable();
     }
     // `x.offset` of a state var: the byte offset within its 32-byte slot (0 for a full-slot var; the packed
-    // sub-word offset otherwise). A calldata param's `.offset` stays deferred (needs the calldata-pointer model).
+    // sub-word offset otherwise). For a dynamic CALLDATA param it is the ABI byte position of the param's DATA.
     if (expr.members.length === 1 && expr.members[0] === 'offset') {
       const varName = resolveStorageVarName(expr.base);
       const slot = varName !== undefined ? currentVarSlot.get(varName) : undefined;
@@ -1266,6 +1300,8 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
         const field = currentSlots.get(slot)?.find((f) => f.sv.name === varName);
         return intLit(field ? field.bitOffset / 8n : 0n, expr);
       }
+      const off = calldataDataOffset(expr.base);
+      if (off !== undefined) return intLit(off, expr);
       throw new YulNotLowerable();
     }
     // `x.length` of a bytes/array calldata param: the byte/element length of the param value.

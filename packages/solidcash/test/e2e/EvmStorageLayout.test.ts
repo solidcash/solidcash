@@ -558,3 +558,23 @@ describe('dynamic array resize sstore(a.slot, n) (blob truncate / zero-fill grow
     await (sc as any).chkLen(0n).send();
   });
 });
+
+// Calldata `.offset` of a (first) dynamic param = the compile-time ABI byte position of its data
+// (4 + headWords*32 + 32). EVM-parity value (corpus calldata_offset_read: single bytes -> 0x44, u,b,u -> 0x84).
+const CALLDATA_OFFSET = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256 dummy;
+  function chkSingle(bytes calldata x) { uint256 r = 0; assembly { r := x.offset } require(r == 68); }
+  function chkMixed(uint256 a, bytes calldata x, uint256 b) { uint256 r = 0; assembly { r := x.offset } require(r == 132); }
+}`;
+
+describe('calldata .offset = compile-time ABI data position', () => {
+  it('single bytes param -> 0x44', async () => {
+    const sc = await deploy(CALLDATA_OFFSET);
+    await (sc as any).chkSingle(new Uint8Array([1, 2, 3])).send();
+  });
+  it('uint, bytes, uint -> 0x84', async () => {
+    const sc = await deploy(CALLDATA_OFFSET);
+    await (sc as any).chkMixed(7n, new Uint8Array([1, 2]), 8n).send();
+  });
+});

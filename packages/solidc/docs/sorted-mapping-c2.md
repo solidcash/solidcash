@@ -223,14 +223,14 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    result is order-independent, so this is transparent; it fires only when a case-b pair exists.
 
 7. **SAME-GAP CHAINS off ANY predecessor** - 2+ new recipients in ONE gap (P -> R1 -> R2 -> P.oldNext), whether P is a
-   credited update, an untouched entry, or the HEAD sentinel (a fresh-map airdrop cluster). Each new node is DEFERRED
-   (set as the new pending) instead of minted, so the next new key folds into it via the same in-gap flush - one
-   predecessor co-spend serves the whole chain. Omission-proof: P's REAL nextKey proves the gap is empty of existing
-   entries. The SDK fold check is geometric (in the deferred entry's gap) so it applies to a chained new node; the
-   reorder is gap-based (groups + ascending-sorts each gap's inserts) so all chains are order-independent. VM-proven
-   (`SameGapChain`: credited chain, fresh-map HEAD chain, descending-input reorder).
+   credited update, an untouched entry, the HEAD sentinel (a fresh-map airdrop cluster), OR the debited msg.sender's own
+   gap. Each new node is DEFERRED (set as the new pending) instead of minted, so the next new key folds into it via the
+   same in-gap flush - one predecessor co-spend serves the whole chain. For the msg.sender gap the debit merge defers R1
+   (recording register = R1 for the debit re-point) and the SDK runs the geometric fold before the debit-merge check.
+   Omission-proof: P's REAL nextKey proves the gap is empty of existing entries. The reorder is gap-based (groups +
+   ascending-sorts each gap's inserts) so all chains are order-independent. VM-proven (`SameGapChain`: credited chain,
+   fresh-map HEAD chain, descending-input reorder; `MsgSenderMerge`: bob -> carol -> alice in the debit's gap).
 
-**Still fail-closed (sound).** 2+ new recipients in the DEBITED msg.sender's gap - that path uses the merge re-point
-register (one merge per tx), not the pending-defer chain. Deep residual: very large N per tx is capped by transaction
-size; larger N needs paginated writes. Cross-cutting: the exclusion proof must survive the batch (rejecting forged /
-omitted / misordered / duplicated entries), since a bug reopens the C2 exclusion-proof hole.
+**Fully complete for every same-gap shape.** The only residual is transaction size: very large N per tx exceeds the
+block/tx limit and needs paginated writes across txs. Cross-cutting invariant: the exclusion proof survives every batch
+shape above (rejecting forged / omitted / misordered / duplicated entries), so no batch reopens the C2 exclusion hole.

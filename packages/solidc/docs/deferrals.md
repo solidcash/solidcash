@@ -193,8 +193,12 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   order-INDEPENDENT. VM-proven (SameGapChain: credited K0->K1->K2, fresh-map HEAD->K0->K1, descending [K1,K0] reorder).
   (Note: an earlier untouched-chain attempt hit a covenant OP_VERIFY - the root cause was an inconsistent intermediate
   state, NOT the mechanism; re-applied on top of the committed geometric-fold + ascending-sort it is VM-clean.)
-  **STILL fail-closed (sound):** 2+ new recipients in the DEBITED msg.sender's gap (that path uses the merge re-point
-  register, not the pending-defer; one merge per tx). Deep residual: paginated writes for very large N (tx-size bound).
+  **The DEBITED msg.sender's OWN gap now chains too (`d075dfbe`):** the debit merge DEFERS its first new node R1
+  (records register = R1 for the debit re-point, sets the pending to R1) instead of minting it, so a further new key in
+  the debit's gap chains off R1: msg.sender -> R1 -> R2 -> dNext off the single debit co-spend. SDK runs the geometric
+  fold BEFORE the debit-merge check (R2's original-list predecessor is the debit, but it chains off the deferred R1).
+  VM-proven (MsgSenderMerge: bob -> carol -> alice, bob debited 50, chain-valid). **The C2 multiTransfer surface is now
+  fully complete for every same-gap shape.** Only residual: paginated writes for very large N (transaction-size bound).
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

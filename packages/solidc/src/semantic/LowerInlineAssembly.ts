@@ -13,6 +13,7 @@ import {
   InstantiationNode, TypeIntrospectionNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
+import { cloneNode } from '../ast/clone.js';
 import {
   YulNode, YulBlockNode, YulStatementNode, YulExpressionNode, YulVariableDeclarationNode, YulAssignmentNode,
   YulIfNode, YulSwitchNode, YulForLoopNode, YulExpressionStatementNode, YulBreakNode, YulContinueNode,
@@ -320,16 +321,15 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   return undefined;
 }
 
-// A slot field the int-word combine/decompose can handle: an int, a sub-word bytesN (bytes1..bytes31), or a UDVT
-// over either. int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the
-// NUM2BIN(N+1)-drop-sign-byte (write) / prepend-0x00-BIN2NUM (read) two's-complement trick in castWordToField/
-// fieldAsWord - the same trick emitEvmWordFromUint uses - so a bare `bytesN(uint)` OP_NUM2BIN sign-magnitude failure
-// on a high-bit value is avoided. bytes32 is EXCLUDED (the write needs a 33-byte NUM2BIN, not expressible as a
-// bytesN cast); address is EXCLUDED (25-byte lbc != 20-byte EVM word).
+// A slot field the int-word combine/decompose can handle: an int, a bytesN (bytes1..bytes32), or a UDVT over either.
+// int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the two's-complement trick
+// (the same emitEvmWordFromUint uses): write = wordToBytesN (NUM2BIN(N+1) drop sign byte, or split for bytes32),
+// read = prepend-0x00 then BIN2NUM (fieldAsWord) - so a bare bytesN(uint) OP_NUM2BIN sign-magnitude failure on a
+// high-bit value is avoided. address is EXCLUDED (25-byte lbc != 20-byte EVM word).
 function isSupportedSlotField(t: Type): boolean {
   const core = t instanceof ValueType ? t.underlyingType : t;
   return core instanceof IntType
-    || (core instanceof BytesType && core.bound !== undefined && core.bound < 32);
+    || (core instanceof BytesType && core.bound !== undefined);
 }
 
 // If a Yul slot argument denotes a declared DYNAMIC ARRAY var's base slot, return the var name. EVM stores a
@@ -369,20 +369,31 @@ function fieldAsWord(f: SlotField, src: YulExpressionNode): ExpressionNode {
   return loc(new CastNode(UINT256, access, false), src);
 }
 
-// Cast a uint256 word to a slot field's stored type. int: a direct cast. bytesN: `bytes(N+1)(word)[0:N]` - NUM2BIN
-// the word to N+1 bytes (any value in [0, 2^(8N)) fits as a positive sign-magnitude number), then drop the sign-pad
-// byte; this avoids the OP_NUM2BIN failure of a bare bytesN(word) on a high-bit value. A UDVT then wraps the core
-// value (mirroring T.wrap).
+// A uint256 word -> N little-endian bytes (bytesN). N<=31: `bytes(N+1)(word)[0:N]` - NUM2BIN to N+1 bytes fits any
+// value in [0, 2^(8N)) as a positive sign-magnitude number, then drop the sign-pad byte (avoids the OP_NUM2BIN
+// failure of a bare bytesN(word) on a high-bit value). N==32: NUM2BIN(33) is not a valid bytesN cast, so split the
+// word into two 128-bit halves (word = high*2^128 + low), encode each as 16 LE bytes via the N=16 path, and concat
+// low-first (= the 32-byte little-endian word).
+function wordToBytesN(word: ExpressionNode, n: number, src: YulExpressionNode): ExpressionNode {
+  if (n <= 31) {
+    const wide = loc(new CastNode(new BytesType(n + 1), word, false), src);
+    const low = loc(new SliceNode(wide, intLit(0n, src), intLit(BigInt(n), src)), src);
+    return loc(new CastNode(new BytesType(n), low, false), src);
+  }
+  const half = 1n << 128n;
+  const lowHalf = loc(new BinaryOpNode(word, BinaryOperator.MOD, intLit(half, src)), src);
+  const highHalf = loc(new BinaryOpNode(cloneNode(word) as ExpressionNode, BinaryOperator.DIV, intLit(half, src)), src);
+  const concat = loc(new BytesConcatNode([wordToBytesN(lowHalf, 16, src), wordToBytesN(highHalf, 16, src)]), src);
+  return loc(new CastNode(new BytesType(32), concat, false), src);
+}
+
+// Cast a uint256 word to a slot field's stored type: int = a direct cast, bytesN = wordToBytesN. A UDVT then wraps
+// the core value (mirroring T.wrap).
 function castWordToField(f: SlotField, wordExpr: ExpressionNode, src: YulExpressionNode): ExpressionNode {
   const core = f.sv.type instanceof ValueType ? f.sv.type.underlyingType : f.sv.type;
-  let coreVal: ExpressionNode;
-  if (core instanceof BytesType && core.bound !== undefined) {
-    const wide = loc(new CastNode(new BytesType(core.bound + 1), wordExpr, false), src);
-    const low = loc(new SliceNode(wide, intLit(0n, src), intLit(BigInt(core.bound), src)), src);
-    coreVal = loc(new CastNode(new BytesType(core.bound), low, false), src);
-  } else {
-    coreVal = loc(new CastNode(core, wordExpr, false), src);
-  }
+  const coreVal = core instanceof BytesType && core.bound !== undefined
+    ? wordToBytesN(wordExpr, core.bound, src)
+    : loc(new CastNode(core, wordExpr, false), src);
   return f.sv.type instanceof ValueType ? loc(new CastNode(f.sv.type, coreVal, false), src) : coreVal;
 }
 

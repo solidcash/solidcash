@@ -171,3 +171,35 @@ describe('bytesN packed slot round-trips HIGH-BIT values (two-complement trick)'
     await (sc as any).readSlot(0xccccbbbbaaaan).send();
   });
 });
+
+// bytes32 full-word slot: the write can't NUM2BIN to 33 as a bytesN cast, so wordToBytesN splits the word into two
+// bytes16 halves (each via the N=16 trick) and concats; the read prepends 0x00 before uint256. Round-trips a
+// top-bit-set word (0xff..) that a bare bytes32(uint) NUM2BIN cast could not.
+const BYTES32_SLOT_HI = `pragma solidcash >=0.8.0;
+contract C() {
+  bytes32 x;
+  function setViaSlot(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(x.slot, v) }
+  }
+  function readSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(x.slot) }
+    require(r == e);
+  }
+}`;
+
+describe('bytes32 full-word slot round-trips a high-bit word (split write / prepend-0x00 read)', () => {
+  it('round-trips 0xff..00 (top byte 0xff)', async () => {
+    const sc = await deploy(BYTES32_SLOT_HI);
+    const hi = BigInt('0x' + 'ff' + '00'.repeat(31));
+    await (sc as any).setViaSlot(hi, alicePub, sig()).send();
+    await (sc as any).readSlot(hi).send();
+  });
+  it('round-trips a mixed-byte word with high bits throughout', async () => {
+    const sc = await deploy(BYTES32_SLOT_HI);
+    const w = BigInt('0x' + 'ff'.repeat(16) + '80'.repeat(16));
+    await (sc as any).setViaSlot(w, alicePub, sig()).send();
+    await (sc as any).readSlot(w).send();
+  });
+});

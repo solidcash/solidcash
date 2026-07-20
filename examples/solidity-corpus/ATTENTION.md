@@ -143,10 +143,13 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   UDVT-over-bytes round-trip HIGH-BIT values (VM-proven: mixed slot 0xccccbbbbaaaa `2f40c4f1`, bytes32 0xff..00
   `cbe2f745`); `dirty_slot` compiles, corpus +2 (4027). bytes32 write splits the word into two bytes16 halves (each
   via the N=16 trick) + concat since NUM2BIN(33) isn't a valid bytesN cast; read prepends 0x00 then uint256.
-  REMAINING gaps: (a) ADDRESS slot fields - CANNOT be added (not a NUM2BIN issue): a BCH address is variable-length
-  locking bytecode (25B p2pkh / 35B p2sh32), and a 35-byte p2sh32 address OVERFLOWS the 32-byte slot, so it does not
-  fit a fixed-width slot field. Fail-closed + verified. (The 20-byte stateVarByteWidth is EVM slot-LAYOUT parity for
-  neighbour packing, not the stored value's width; the address value is stored separately, never in the slot word.);
+  REMAINING gaps: (a) VARIABLE-WIDTH slot fields - address AND dynamic bytes/string (user-corrected: NOT "address
+  overflows the slot = fundamental"). A BCH address is variable-length locking bytecode (25B p2pkh / 35B p2sh32,
+  framed like `bytes` per isChunkPackableElementType); dynamic bytes/string are variable too. A >32-byte value is not
+  fundamental - it SPILLS (fixed composites take consecutive slots) or CHUNKS (dynamic values). A slot field for these
+  needs the dynamic-value slot model (EVM length-slot + keccak data, or a BCH chunk), NOT the fixed int-word cast - so
+  address/bytes/string slot fields are ONE not-yet-implemented bucket (fail-closed, verified, no silent miscompile).
+  (The 20-byte stateVarByteWidth for address is EVM slot-LAYOUT parity for neighbour packing, not the value's width.);
   (a2) COMPOSITE (struct/fixed-array) SUB-SLOT field reads - the layout is EVM-exact (64B value = slots [p, p+1], next
   var at p+2, VM-verified) but `sload(p+i)`/`sstore(p+i)` on a composite's own sub-slots FAIL CLOSED (`33765964` -
   was a silent __evm_storage read, now caught by a compositeRanges check; mapping p+i -> the actual struct field is a

@@ -342,14 +342,17 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   return undefined;
 }
 
-// A slot field the int-word combine/decompose can handle: an int, a bytesN (bytes1..bytes32), or a UDVT over either.
-// int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the two's-complement trick
-// (the same emitEvmWordFromUint uses): write = wordToBytesN (NUM2BIN(N+1) drop sign byte, or split for bytes32),
-// read = prepend-0x00 then BIN2NUM (fieldAsWord) - so a bare bytesN(uint) OP_NUM2BIN sign-magnitude failure on a
-// high-bit value is avoided. ADDRESS is EXCLUDED and cannot be added: a BCH address is variable-length locking
-// bytecode (25 bytes p2pkh, 35 bytes p2sh32), not a fixed EVM word - a p2sh32 address (35B) OVERFLOWS the 32-byte
-// slot, so an address does not fit a fixed-width slot field at all. (Fail-closed, verified; the 20 stateVarByteWidth
-// is EVM slot-LAYOUT parity for where the next var packs, not the stored value's width.)
+// A slot field this FIXED-width int-word combine/decompose can handle: an int, a fixed bytesN (bytes1..bytes32), or
+// a UDVT over either. int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the
+// two's-complement trick (the same emitEvmWordFromUint uses): write = wordToBytesN (NUM2BIN(N+1) drop sign byte, or
+// split for bytes32), read = prepend-0x00 then BIN2NUM (fieldAsWord).
+// VARIABLE-WIDTH fields fail closed here - NOT fundamentally impossible, just not this path: `address` is variable-
+// length locking bytecode (25B p2pkh / 35B p2sh32, framed like `bytes` per isChunkPackableElementType), and dynamic
+// `bytes`/`string` are variable too. A >32-byte value is handled elsewhere by SPILLING (fixed composites take
+// consecutive slots) or CHUNKING (dynamic values); a slot field for them needs the dynamic-value slot model (an EVM
+// length-slot + keccak data, or a BCH chunk), not this fixed int-word cast. So address/bytes/string slot fields are
+// the same not-yet-implemented bucket (fail-closed, no silent miscompile). (The 20 stateVarByteWidth for address is
+// EVM slot-LAYOUT parity for neighbour packing, not the stored value's width.)
 function isSupportedSlotField(t: Type): boolean {
   const core = t instanceof ValueType ? t.underlyingType : t;
   return core instanceof IntType

@@ -799,6 +799,9 @@ input 0 for a branded brand-check. e2e-verified: a stateful contract authenticat
   side-car interleaved with each recovery pair (stride 3, forward-indexed); the forward keccak indexing is not yet
   sound. Recover with `ecrecoverPubKey` in the loop and project to the EVM address outside it.
 
-**Robustness note**: the VM-probe scans `chunkA` in `[center-8, center+8]` around the balanced-split heuristic. For a
-rare signature whose viable window falls outside that band the probe throws (fail-closed, never a wrong `Q`); widening
-the band or improving the heuristic center would remove that rare miss.
+**Split probe**: `costA` rises with `chunkA` (side-car A runs more ladder steps) and `costB` falls, so the
+minimum-peak split is their crossover. The probe **binary-searches the crossover from the real VM op-cost** (not a
+heuristic), then fine-scans the bracket for the viable min-peak, with a full-range fallback for the rare local-jitter
+edge. This finds the viable window wherever it sits, so the probe is reliable for every signature (the earlier fixed
+`[center-8, center+8]` band around a mis-calibrated heuristic could miss the window and throw - now fixed). The
+stateless and stateful paths share the one `probeEcrecoverSplit`.

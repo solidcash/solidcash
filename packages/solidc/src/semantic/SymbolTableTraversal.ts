@@ -1387,6 +1387,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       return node;
     }
 
+    // Solidity `ecrecover(h,v,r,s)` alias: rewrite to the configured recovery projection BEFORE the body is
+    // visited (else visitIdentifier throws on the undefined `ecrecover` symbol) AND before the ecrecover
+    // side-car counting below, so the existing ecrecoverP2pkh/Evm machinery handles it unchanged.
+    this.remapEcrecoverAlias(node.body);
+
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     node.body = this.visit(node.body);
 
@@ -2803,6 +2808,29 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // True if any keccak256 call sits inside a loop (all `for`/`while` desugar to While/DoWhile). Used to flag
   // runtime-variable keccak strain so the SDK over-provisions side-cars beyond the syntactic call count.
+  // Solidity's `ecrecover(hash, v, r, s)` has no bare-name SolidCash analogue. Under the `ecrecover` compat
+  // option, alias it to a real recovery projection: 'p2pkh' -> ecrecoverP2pkh (native BCH signer address),
+  // 'evm' -> ecrecoverEvm (20-byte keccak address). The 4-arg shape is identical, so a name rewrite is all that
+  // is needed; every downstream pass (symbol resolution, side-car counting, codegen, SDK derivation) then treats
+  // it as the projection. Omitted option -> no rewrite (plain `ecrecover` stays an undefined symbol).
+  private remapEcrecoverAlias(node: Node | undefined): void {
+    const mode = this.compilerOptions.ecrecover;
+    if (!mode || !node) return;
+    const target = mode === 'evm' ? GlobalFunction.ECRECOVER_EVM : GlobalFunction.ECRECOVER_P2PKH;
+    const walk = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof FunctionCallNode && n.identifier.name === 'ecrecover') {
+        n.identifier.name = target;
+      }
+      for (const [key, value] of Object.entries(n)) {
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(node);
+  }
+
   // Count ecrecoverPubKey / ecrecoverP2pkh / ecrecoverEvm call sites (each = one recovery side-car pair).
   private countEcrecoverCalls(node: Node, evmOnly = false): number {
     let count = 0;

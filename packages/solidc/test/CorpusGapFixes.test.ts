@@ -3225,3 +3225,24 @@ describe('typed per-iteration external dispatch over a param array (IFoo(targets
       + ' interface IFoo { function m(int x) external; }')).not.toThrow();
   });
 });
+
+describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the ecrecover option', () => {
+  // Solidity's 4-arg `ecrecover` has no bare-name SolidCash builtin; the `ecrecover` compat option aliases it to a
+  // real recovery projection so ports (OZ ECDSA.tryRecover) cross-compile. Byte-identical to writing the projection
+  // directly, so it inherits the VM-proven ecrecoverP2pkh/Evm correctness (solidcash EcrecoverRecovery.test.ts).
+  const bc = (src: string, opt: object): string =>
+    compileString(src, { solidityImportCompat: true, ...opt }).bytecode;
+  const mkAddr = (fn: string): string => 'contract C { function f(bytes32 h, uint8 v, bytes32 r, bytes32 s) public {'
+    + ` address a = ${fn}(h, v, r, s); require(a == a); } }`;
+  const mkB20 = (fn: string): string => 'contract C { function f(bytes32 h, uint8 v, bytes32 r, bytes32 s) public {'
+    + ` bytes20 a = ${fn}(h, v, r, s); require(a == a); } }`;
+  it("ecrecover:'p2pkh' is byte-identical to ecrecoverP2pkh (native BCH signer address)", () => {
+    expect(bc(mkAddr('ecrecover'), { ecrecover: 'p2pkh' })).toBe(bc(mkAddr('ecrecoverP2pkh'), {}));
+  });
+  it("ecrecover:'evm' is byte-identical to ecrecoverEvm (20-byte keccak address)", () => {
+    expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toBe(bc(mkB20('ecrecoverEvm'), {}));
+  });
+  it('ecrecover stays an undefined symbol without the option (no silent inert recovery)', () => {
+    expect(() => bc(mkAddr('ecrecover'), {})).toThrow(/Undefined reference to symbol ecrecover/);
+  });
+});

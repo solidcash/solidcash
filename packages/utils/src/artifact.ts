@@ -53,6 +53,11 @@ export interface CompilerOptions {
   // covenant check (e.g. `require(block.chainid == e)`) can be spent with the short `sc.check(e).send()` call
   // instead of a hand-rolled TransactionBuilder. No dummy state field needed. See docs/stateful-contract-sdk.md.
   forceStateful?: boolean;
+  // Solidity `ecrecover(hash, v, r, s)` alias mode (porting). Solidity's builtin has no bare-name analogue in
+  // SolidCash; this maps it to a real recovery projection: 'p2pkh' = the signer's native BCH P2PKH address
+  // (native cross-compilation), 'evm' = the 20-byte keccak EVM address. Omitted = `ecrecover` stays undefined.
+  // See docs/ecrecover.md.
+  ecrecover?: 'p2pkh' | 'evm';
 }
 
 export interface AbiInput {

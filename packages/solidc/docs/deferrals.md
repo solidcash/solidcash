@@ -1415,3 +1415,21 @@ must be beaten first, else it is net-zero.
 mechanism lands - then covenant dedup turns the ~20KB/recovery footprint into ~10KB + small, multiplying the
 per-tx recovery count. Related: the tx-size wall noted in docs/ecrecover.md (Loops) and the width-0 3-covenant
 deferral above (a cheaper ladder would help both).
+
+## Storage-STRUCT-pointer library fn called with a MAPPING-ACCESS arg (`L.f(m[k])` / `m[k].f()`)
+- **What:** A `void` storage-pointer lib fn on a struct (`function addElastic(Total storage t, uint x){ t.elastic += x; }`)
+  works with a bare state-var arg (`L.f(st)` / `st.f()`) but FAILS with a mapping-element arg (`L.f(m[k])` -> "s undefined";
+  `m[k].f()` -> "Method calls only supported"). BoringRebase/BentoBox/Kashi (`totals[token].addElastic(fee)`).
+- **Why:** `InlineStoragePointerCalls.inlineCall` aliases a bare-var storage arg by NAME (`applyRename` rewrites the
+  flattened/dotted forms `s.x`,`s__x` -> `st.x`,`st__x`), but a mapping-access arg goes through `subs`/
+  `substituteInFunction`, and `substituteInExpression` returns `StateAccessNode` UNCHANGED
+  (InheritanceExpansionTransformation.ts:1005). A storage-struct param flattens to StateAccess/StateAssign nodes with a
+  STRING name (`s.x`); turning `s.x = v` (StateAssignNode) into `m[k].x = v` (MappingFieldAssignNode) is a NODE-TYPE
+  change that name/expression substitution cannot do.
+- **What it'd take:** inline the storage-struct param as a storage-ALIAS (`Total storage __sp = m[k]; rename s->__sp`) +
+  a POST-INLINE struct-storage-alias pass rewriting `__sp.f = v` -> `m[k].f = v` (the AstBuilder's same-file
+  storageAliases runs PRE-inline and misses inline-introduced aliases; RedesugarImportedStructFieldWrites is
+  imported-only). Must reuse the EXISTING nested-lvalue mapping-element-field writer to stay byte-sound - a hand-rolled
+  key/offset encode risks a silent miscompile.
+- **Revisit if:** BentoBox/Kashi/BoringRebase port is prioritized, OR the corpus shows `L.f(m[k])` storage-ptr frequency.
+  NOTE overlaps the C2/storage machinery under active churn - coordinate before landing.

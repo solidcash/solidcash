@@ -345,21 +345,26 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   return undefined;
 }
 
-// A slot field this FIXED-width int-word combine/decompose can handle: an int, a fixed bytesN (bytes1..bytes32), or
-// a UDVT over either. int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the
-// two's-complement trick (the same emitEvmWordFromUint uses): write = wordToBytesN (NUM2BIN(N+1) drop sign byte, or
-// split for bytes32), read = prepend-0x00 then BIN2NUM (fieldAsWord).
+// A slot field this FIXED-width int-word combine/decompose can handle: an int, a fixed bytesN (bytes1..bytes32), a
+// bool / enum (1 byte), or a UDVT over an int/bytesN. int round-trips via truncation (`uintN(word)` = word mod
+// 2^N). bytesN round-trips via the two's-complement trick (the same emitEvmWordFromUint uses): write = wordToBytesN
+// (NUM2BIN(N+1) drop sign byte, or split for bytes32), read = prepend-0x00 then BIN2NUM (fieldAsWord). bool/enum
+// round-trip through the plain uint256<->type cast (uint256(b) in {0,1}; bool(byte)=byte!=0; enum(byte) bounded).
+// NB the bool/enum path applies Solidity's TYPED cleaning: a raw sstore of a dirty byte (e.g. 5 in a bool's byte)
+// reads back as 1, not 5 - which matches typed field access, and real code stores 0/1 / a valid ordinal, so the
+// round-trip is exact for well-defined values.
 // VARIABLE-WIDTH fields fail closed here - NOT fundamentally impossible, just not this path: `address` is variable-
 // length locking bytecode (25B p2pkh / 35B p2sh32, framed like `bytes` per isChunkPackableElementType), and dynamic
 // `bytes`/`string` are variable too. A >32-byte value is handled elsewhere by SPILLING (fixed composites take
 // consecutive slots) or CHUNKING (dynamic values); a slot field for them needs the dynamic-value slot model (an EVM
-// length-slot + keccak data, or a BCH chunk), not this fixed int-word cast. So address/bytes/string slot fields are
-// the same not-yet-implemented bucket (fail-closed, no silent miscompile). (The 20 stateVarByteWidth for address is
+// length-slot + keccak data, or a BCH chunk), not this fixed int-word cast. (The 20 stateVarByteWidth for address is
 // EVM slot-LAYOUT parity for neighbour packing, not the stored value's width.)
 function isSupportedSlotField(t: Type): boolean {
   const core = t instanceof ValueType ? t.underlyingType : t;
   return core instanceof IntType
-    || (core instanceof BytesType && core.bound !== undefined);
+    || (core instanceof BytesType && core.bound !== undefined)
+    || core === PrimitiveType.BOOL
+    || core instanceof EnumType;
 }
 
 // If a Yul slot argument denotes a declared DYNAMIC ARRAY var's base slot, return the var name. EVM stores a

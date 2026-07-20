@@ -408,6 +408,11 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
       + ' function f() public returns (uint r) { assembly { r := sload(s.slot) } require(true); } }',
     { solidityImportCompat: true })).toThrow(/inline assembly/i);
   });
+  it('reads and writes a packed slot with bool + enum fields', () => {
+    expect(ok('contract C { enum E { A, B, C } bool b; E ev; uint240 x;'
+      + ' function f() public returns (uint r) { assembly { sstore(b.slot, 7) r := sload(b.slot) } require(true); } }'))
+      .toBe('C');
+  });
 });
 
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {

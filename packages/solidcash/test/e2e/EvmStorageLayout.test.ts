@@ -457,3 +457,41 @@ describe('composite sub-slot field access: NESTED struct (recursive rebuild)', (
     await (sc as any).readInner(U64MAX, U64MAX).send();                      // inner unchanged by the slot-1 write
   });
 });
+
+// bool + enum packed slot fields (1 byte each): slot 0 = b(byte0) ++ ev(byte1) ++ x(bytes2..31). The word<->field
+// cast is Solidity's typed cleaning (uint256(bool) in {0,1}, enum bounded), exact for well-defined values.
+const BOOL_ENUM_SLOT = `pragma solidcash >=0.8.0;
+contract C() {
+  enum E { A, B, C }
+  bool b;
+  E ev;
+  uint240 x;
+  function setViaSlot(uint256 w, pubkey pk, sig s) { require(checkSig(s, pk)); assembly { sstore(b.slot, w) } }
+  function setFields(bool vb, uint8 ve, uint240 vx, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    this.b = vb;
+    this.ev = E(ve);
+    this.x = vx;
+  }
+  function readSlot(uint256 e) { uint256 r = 0; assembly { r := sload(b.slot) } require(r == e); }
+  function readFields(uint256 eb, uint256 ee, uint256 ex) {
+    require(uint256(b) == eb);
+    require(uint256(ev) == ee);
+    require(uint256(x) == ex);
+  }
+}`;
+
+describe('bool + enum packed slot fields (typed-cleaning round-trip)', () => {
+  const X = (1n << 239n) | 0x1234n; // top bit of uint240 set
+  const WORD = 1n + (2n << 8n) + (X << 16n); // b=1, ev=2 (E.C), x=X
+  it('write-via-slot lands in the real bool/enum/int fields', async () => {
+    const sc = await deploy(BOOL_ENUM_SLOT);
+    await (sc as any).setViaSlot(WORD, alicePub, sig()).send();
+    await (sc as any).readFields(1n, 2n, X).send();
+  });
+  it('write-the-fields reads back through the combined slot word', async () => {
+    const sc = await deploy(BOOL_ENUM_SLOT);
+    await (sc as any).setFields(true, 2n, X, alicePub, sig()).send();
+    await (sc as any).readSlot(WORD).send();
+  });
+});

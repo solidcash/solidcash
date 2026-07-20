@@ -153,7 +153,9 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   becomes a fixed 2-word field + packs inline in the 128B commitment - spec + address-keyed-mapping soundness in
   docs/bounded-address.md (key preimage = canonical sha256(lbc), must round-trip exact; ceiling fail-closed).
   (The 20-byte stateVarByteWidth for address is EVM slot-LAYOUT parity for neighbour packing, not the value's width.);
-  (a2) COMPOSITE (struct/fixed value array) SUB-SLOT field access - DONE (`57649637` struct, `33f5f5c3` array).
+  (a2) COMPOSITE (struct/fixed value array/nested struct) SUB-SLOT field access - DONE (`57649637` struct,
+  `33f5f5c3` array, `34f1f316` nested struct-in-struct). Remaining fail-closed (docs/deferrals.md): nested ARRAYS
+  (array<->struct nesting) + bool/enum (0 corpus + typed-cleaning divergence).
   `sload(v.slot+i)` combines the packed value fields/elements at relative slot i into the EVM-layout word;
   `sstore(v.slot+i,w)` writes the decomposed pieces back (a STRUCT via the AstBuilder's `s.f=v` ctor rebuild = a
   value blob, never a raw slot; a fixed ARRAY via per-element ArrayAssign). Reuses the int/bytesN/UDVT field

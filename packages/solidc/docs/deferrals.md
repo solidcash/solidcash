@@ -976,3 +976,29 @@ cases byte-identical (the whole C2 e2e set) before + after. INLINE only; chunked
 
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
+
+## Composite sub-slot field access: NESTED composites + bool/enum fields - DEFERRED 2026-07-20
+
+**What.** `sload/sstore(v.slot + i)` on a fixed struct's / fixed value array's own slots is DONE (57649637 struct,
+33f5f5c3 array; VM-proven incl. ragged uint40 packing, field<->slot cross-checks, +2 corpus). Two field/element
+types still fail the WHOLE composite closed (loud, never a silent __evm_storage read): (1) a NESTED composite field
+(struct-in-struct, fixed-array-in-struct, struct-in-array); (2) a bool/enum field (width 1) - isSupportedSlotField
+gates them out, same as the SCALAR slot path (this is a shared gap, not composite-specific).
+
+**Why deferred (value, not tractability).** NESTED: the corpus files that would use it (struct_delete_storage_nested_small,
+recursive_struct_2, struct_delete_storage_with_arrays_small) ALSO need OTHER unbuilt features - nested-struct `delete`
+lowering, and mapping/array-bearing-struct field flattening (`s__b`) - so nesting alone wins 0 files. The recursion
+also needs a field-PATH layout (reuse packWords, record the FieldAccess/ArrayAccess chain + bitOffsets) and, for a
+nested write, a recursive ctor/element rebuild (rebuildStructWithChain-style) - real machinery for 0 immediate corpus
+gain. BOOL/ENUM: castWordToFieldType/fieldAsWordFrom only handle int/bytesN/UDVT; a bool/enum slot field needs a
+1-byte encode/decode branch on BOTH the scalar and composite paths, and is niche (packed bool/enum slot access is rare).
+
+**What it'd take.** NESTED: a recursive compositeLeaves that walks struct/array members into a leaf list with an
+access-path factory per leaf (not just a field name), then combine reads each path and decompose rebuilds outward
+(struct ctor / array element write) at each level - VM-prove with the same field<->slot cross-check + top-bit values.
+BOOL/ENUM: extend castWordToFieldType (word -> bool = `word % 2 != 0`; word -> enum = bounded int cast) +
+fieldAsWordFrom (bool/enum -> uint256), and VM-test a packed bool+int slot both directions.
+
+**Revisit if.** A concrete port needs nested-composite slot access AND its sibling features (nested `delete`, struct
+flattening) land - do nesting alongside them, not before. Bool/enum: fold in whenever the scalar slot path grows a
+bool/enum branch (share it).

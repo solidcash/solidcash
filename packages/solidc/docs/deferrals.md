@@ -927,3 +927,52 @@ Both encodings now live in `memByteStore(off, val, { fullWord }, src)`: `fullWor
 They stay DISTINCT expressions on purpose - the domains differ (`bytes1(v)` is cheaper but OP_NUM2BIN-overflows for
 `v >= 256`; the Yul low-byte extraction is valid for any word) - but the byte-write formula is now single-source and
 callers select by domain instead of hand-building the cast. Byte-identical (same corpus/VM proof as B).
+
+## Cross-contract callee sorted-mapping entry writes (incl. msg.sender-keyed) - DEFERRED 2026-07-20
+
+**What.** When contract A calls B via `withExternalCall` and B's called function WRITES a C2 (sorted) mapping -
+`B.deposit()` doing `this.bal[k] = v` or `this.bal[msg.sender] = v` - the transaction fails on the VM (verified:
+input 2 OP_OUTPUTTOKENCOMMITMENT verify for a normal key `bal[k]=v`; empty-stack for the msg.sender variant).
+Single-contract sorted-mapping writes work; a CROSS-CONTRACT callee's sorted write does not.
+
+**Why.** The cross-contract dispatch (`StatefulContract.ts` externalCallUtxoGroups, ~6114-6470) derives only the
+callee's SCALAR data NFTs (`bDataNfts`, `requiredDataNftIndices`) + its function args. It has NO callee sorted-mapping
+ENTRY derivation: it never co-spends the entry/predecessor, never mints P'/NEW in the callee's block layout, never
+pins the value. The single-contract path does all this in the `entryAccesses` loop (~5090-5250), but that loop runs
+only for the tx-building (caller) contract, not for a co-spent callee. So the msg.sender-keyed case (boundary #1) is
+blocked on this LARGER missing feature - it is NOT a msg.sender-resolution tweak.
+
+**What it'd take.** Replicate the caller's `entryAccesses` sorted-write derivation for the CALLEE inside each external
+call group: resolve B's SortedList (from B's entry NFTs), plan the insert/update, co-spend the entry/predecessor
+read-only or as an input, mint P'/NEW at B's block-layout entry-output offsets, pin value chunks - all indexed off B's
+trailing region, not A's. THEN the msg.sender variant adds: set B's `_msgSenderCategory` = A's category, and key the
+entry by `keyToSlot(A's locking bytecode)` (the covenant already resolves a contract msg.sender via
+emitMsgSenderMintingVerification -> caller LBC; A's minting master is already co-spent). Repro (skipped):
+`solidcash/test/e2e/MsgSenderCrossContractC2.test.ts`.
+
+**Revisit if.** A real port needs a contract-to-contract call that credits the callee's balances/allowances mapping
+(the common DEX-holds-tokens shape). Un-skip the repro once the callee-entry derivation lands.
+
+## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` - DEFERRED 2026-07-20
+
+**What.** A pure-write loop assigning a loop-invariant ARRAY value to N sorted-mapping keys - `mapping(int => int[]) m;
+for(i) m[ks[i]] = a` - fails closed cleanly at compile (`SortedMappingCodegenPendingError`, "not yet compiled"). The
+INT-value form `for(i) m[ks[i]] = v` works (routes to the upsert loop). The blocker is `sortedValueKind(int[]) ==
+'rawbytes'` vs the `=== 'int'` guard in findSortedUpsertLoopWrite (GTT ~12479).
+
+**Why deferred (not tractability - soundness).** The covenant side IS a contained extension (agent-scoped): relax the
+guard to accept 'rawbytes' for the `isParamSet` form only, and in emitSortedUpsertLoopBody skip OP_BIN2NUM + wrap the
+value via the PROVEN `emitChunkableValueTail` (len4 ++ [inline|hash]) + add a runtime `size(v) > 60 -> OP_VERIFY false`
+fail-closed (chunked-in-loop needs a per-iteration variable-length trailing region redesign, out of scope). BUT the SDK
+mirror is the blocker: the upsert-loop planner (`StatefulContract.ts` ~5670-5950) is deeply int-shaped - `scalarAmt:
+bigint`, `DeferredEntry.newVal: bigint`, arithmetic accumulate + the hard-won pending-defer register + order-independent
+duplicate MERGE that guards real ERC-20 balances. Threading a `Uint8Array` value variant through that delicate
+fund-guarding path risks regressing the working int cases. The pattern (store the SAME array under N keys) is contrived;
+destabilizing the ERC-20 planner for it fails the soundness-paramount bar.
+
+**What it'd take.** Give the loop planner a bytes value branch (encode the tail as len4 ++ [inline | sha256], mirroring
+the single-write path at ~5177-5185) with `DeferredEntry.newVal` a `bigint | Uint8Array` union, and prove the int
+cases byte-identical (the whole C2 e2e set) before + after. INLINE only; chunked stays the covenant fail-closed.
+
+**Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
+is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).

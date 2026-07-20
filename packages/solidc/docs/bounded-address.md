@@ -43,8 +43,13 @@ This is the load-bearing decision: **rescope the storage boundary, not the type 
 
 **The ABI wire form is a THIRD, separate representation - and today it is NOT the `address` type at all.** Solidity
 ABI-encodes `address` as `uint160`: a 20-byte value RIGHT-aligned (low bytes) in a 32-byte word, high 12 bytes
-zero-padded - number-like, the *opposite* of `bytesN` (which is left-aligned / right-padded). Verified against
-`abi-spec.rst:58,215` ("address: as in the uint160 case"). In solidcash this EVM-address ABI form is modeled and
+zero-padded - number-like, the *opposite* of `bytesN` (which is left-aligned / right-padded). Verified against three
+references: (1) `../solidity` `abi-spec.rst:58,215` ("address: as in the uint160 case"); (2) `../solidity`
+`YulUtilFunctions.cpp:3974` cleans an address as `cleanupFunction(IntegerType(160))` - masked to the low 160 bits
+(20B), dropping dirty high bits; (3) `../ethers.js` `AddressCoder` encodes via `getAddress(value)` (EIP-55
+checksum-validate, THROWS on invalid) then `writeValue` = a numeric LEFT-pad to 32 (`abstract-coder.ts:436`; bytes
+right-pad at `:426`), and decodes `getAddress(toBeHex(readValue(), 20))` = the low 20 bytes. So encode CLEANS (solc)
+or VALIDATES (ethers) to a canonical 20-byte value, right-aligned. In solidcash this EVM-address ABI form is modeled and
 tested via `uint160` (a plain number), NOT via `AddressType`: `emitEvmAbiWord` has ZERO `AddressType` branch and
 THROWS on it (Phase-1 value types only); the abi-conformance suite uses `uint160 ADDR = 0x00112233..` for every
 transfer/permit/balanceOf case (`abi.conformance.test.ts`), proving byte-exact EVM parity through `uint160`.

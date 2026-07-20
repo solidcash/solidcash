@@ -139,11 +139,11 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   OP_NUM2BIN = sign-magnitude, so `uint256(bytesN(x))!=x` for a high-bit value (VM-caught: bytes2 on 0xaaaa, bytes32
   on 0xff00..00; my first test used only low values 0x1234 and missed it). FIX (reuse the ABI-parity trick
   emitEvmWordFromUint): write = `bytes(N+1)(word)[0:N]` (NUM2BIN to N+1 bytes fits a positive value, drop the sign
-  byte); read = prepend a 0x00 byte before uint256/BIN2NUM (read unsigned). Now sub-word bytes1..bytes31 + UDVT-over-
-  bytes round-trip HIGH-BIT values (VM-proven 0xccccbbbbaaaa mixed slot); `dirty_slot` compiles. bytes32 STILL
-  excluded: its write needs a 33-byte NUM2BIN (not a valid bytesN cast) - do it by splitting the word into two
-  bytes16 halves (each via the N=16 trick) + concat; read via prepend-0x00 (uint256 of 33 bytes) - FOLLOW-UP.
-  REMAINING gaps: (a) address packed-slot fields (25-byte lbc != 20-byte EVM word) + bytes32 full-word (split, above); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
+  byte); read = prepend a 0x00 byte before uint256/BIN2NUM (read unsigned). Now ALL bytesN (bytes1..bytes32) +
+  UDVT-over-bytes round-trip HIGH-BIT values (VM-proven: mixed slot 0xccccbbbbaaaa `2f40c4f1`, bytes32 0xff..00
+  `cbe2f745`); `dirty_slot` compiles, corpus +2 (4027). bytes32 write splits the word into two bytes16 halves (each
+  via the N=16 trick) + concat since NUM2BIN(33) isn't a valid bytesN cast; read prepends 0x00 then uint256.
+  REMAINING gaps: (a) address packed-slot fields (25-byte lbc != 20-byte EVM word); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
   + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
   sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only

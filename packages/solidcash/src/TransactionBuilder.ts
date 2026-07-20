@@ -279,7 +279,14 @@ export class TransactionBuilder {
       if (!abiFn.ecrecoverCompute) continue;
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
       const unlocker = input.unlocker as unknown as { abiFunction: { inputs: readonly { name: string }[] }; params: unknown[] };
-      const paramAt = (p: string | null): unknown => (p ? unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === p)] : undefined);
+      const raw = (name: string): unknown => unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === name)];
+      // "h" -> the h param; "h[3]" (unrolled loop) -> element 3 of the h array param.
+      const paramAt = (p: string | null): unknown => {
+        if (!p) return undefined;
+        const m = p.match(/^(\w+)\[(\d+)\]$/);
+        if (m) { const arr = raw(m[1]); return Array.isArray(arr) ? arr[Number(m[2])] : undefined; }
+        return raw(p);
+      };
       const bytesAt = (p: string | null): Uint8Array | undefined => { const v = paramAt(p); return v instanceof Uint8Array ? v : undefined; };
       const calls = abiFn.ecrecoverArgParams ?? [];
       const evmFlags = abiFn.ecrecoverEvmFlags ?? [];

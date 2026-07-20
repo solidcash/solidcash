@@ -4306,8 +4306,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isEvm = node.identifier.name === GlobalFunction.ECRECOVER_EVM;
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
-    fn.ecrecoverArgParams.push(node.parameters.map((p) => (p instanceof IdentifierNode
-      && fn.parameters.some((fp) => fp.name === p.name)) ? p.name : null));
+    // Record each (hash,v,r,s) arg for the SDK co-spend: a direct param -> its name; an unrolled-loop array element
+    // h[<literal>] -> "h[<literal>]" (the SDK reads that array param at that index); anything else -> null (computed).
+    const isParam = (name: string): boolean => fn.parameters.some((fp) => fp.name === name);
+    fn.ecrecoverArgParams.push(node.parameters.map((p) => {
+      if (p instanceof IdentifierNode && isParam(p.name)) return p.name;
+      if (p instanceof ArrayAccessNode && p.array instanceof IdentifierNode && isParam(p.array.name)
+        && p.index instanceof IntLiteralNode) return `${p.array.name}[${p.index.value}]`;
+      return null;
+    }));
     (fn.ecrecoverEvmFlags ??= []).push(isEvm);
     // A/B side-car index. Stateful contracts use absolute block-layout slots (2i, 2i+1). Stateless contracts have no
     // block layout: the 2N recovery side-cars are the LAST 2N inputs, read count-relative (countOp - offsetFromEnd).

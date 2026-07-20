@@ -241,4 +241,46 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .addOutput({ to: contract.address, amount: 800_000n })
       .send()).rejects.toThrow();
   });
+
+  // LOOP: a fixed-bound loop over array-indexed sigs unrolls to N syntactic recovery calls (each its own pair), and
+  // the loop variable substitution turns h[i] into h[0], h[1], ... which the SDK resolves per array element.
+  const LOOP = `
+  contract AuthLoop(pubkey owner) {
+      function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s) {
+          for (int i = 0; i < 2; i++) {
+              require(ecrecoverPubKey(h[i], v[i], r[i], s[i]) == owner);
+          }
+      }
+  }`;
+  it('LOOP (fixed-bound): unrolls to per-iteration recovery pairs, authenticates each', async () => {
+    const artifact = compileString(LOOP);
+    expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverArgParams).toHaveLength(2);
+    const provider = new MockNetworkProvider();
+    const w = ethers.Wallet.createRandom();
+    const g0 = await recovery('loop-0', w), g1 = await recovery('loop-1', w);  // same signer, two messages
+    const contract = new Contract(artifact, [g0.owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 2);   // one A+B pair per iteration
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify([g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s]))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('LOOP (fixed-bound): rejects when one iteration signature is wrong', async () => {
+    const artifact = compileString(LOOP);
+    const provider = new MockNetworkProvider();
+    const w = ethers.Wallet.createRandom(), other = ethers.Wallet.createRandom();
+    const g0 = await recovery('loop-a', w), g1 = await recovery('loop-b', other);  // g1 is a DIFFERENT signer
+    const contract = new Contract(artifact, [g0.owner], { provider });  // owner = w, so g1 must fail
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 2);
+    await expect(new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify([g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s]))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send()).rejects.toThrow();
+  });
 });

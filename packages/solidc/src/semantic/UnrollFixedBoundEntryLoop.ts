@@ -127,7 +127,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
-    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)) return undefined;
+    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts) && !this.hasEcrecoverCall(bodyStmts)) return undefined;
     if (this.hasControlFlowEscape(bodyStmts)) return undefined;
 
     // Enumerate the iteration values; bail if unbounded or larger than MAX_UNROLL.
@@ -188,6 +188,15 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   private hasKeccakCall(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.KECCAK256);
+  }
+
+  // A fixed-bound ecrecoverPubKey/P2pkh/Evm loop unrolls to N syntactic calls (N recovery pairs, each its own slot);
+  // the loop variable substitution turns h[i] into h[0], h[1], ... which the SDK co-spend resolves per array element.
+  private hasEcrecoverCall(stmts: Node[]): boolean {
+    return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && (
+      n.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || n.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+      || n.identifier.name === GlobalFunction.ECRECOVER_EVM));
   }
 
   private hasControlFlowEscape(stmts: Node[]): boolean {

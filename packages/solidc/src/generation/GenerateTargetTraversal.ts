@@ -12650,6 +12650,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return found;
   }
 
+  // The initializer of a SINGLE-ASSIGN local `name` within `node` (a `<name> = <expr>` VariableDefinition, never
+  // reassigned by an AssignNode) - used to see through OZ _update's inline value binding (`__inlN_value = amounts[i]`).
+  // Returns undefined if the name is defined 0 or >1 times, reassigned, or has no initializer (so it can't be trusted).
+  private findSingleAssignLocalInit(node: Node, name: string): ExpressionNode | undefined {
+    let init: ExpressionNode | undefined;
+    let defs = 0;
+    let reassigned = false;
+    const seen = new WeakSet<object>();
+    const walk = (n: Node): void => {
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof VariableDefinitionNode && n.name === name) { defs += 1; init = n.expression; }
+      if (n instanceof AssignNode && n.identifier?.name === name) reassigned = true;
+      for (const key of Object.keys(n)) {
+        if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(node);
+    return defs === 1 && !reassigned ? init : undefined;
+  }
+
   /**
    * Set up a per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients):
    * push the loop-invariant entry NFT P2SH32 address + a runtime counter (updates-done = 0) BEFORE OP_BEGIN. Each
@@ -12686,7 +12710,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const expr = (writeNode as MappingAssignNode).expression;
       const isRmw = expr instanceof BinaryOpNode;
       op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
-      const valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
+      let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
+      // Inlining OZ ERC20 `_update` binds its `value` param to a single-assign LOCAL (`__inlN_value = amounts[i]`),
+      // so the write's per-key value is that local, not the array element directly. Resolve it to the underlying
+      // source (mirrors how the KEY is canonicalized through localKeyDefs) so the metadata below records the real
+      // per-key amounts[i] / invariant param.
+      if (valueRight instanceof IdentifierNode
+        && !this.currentFunction.parameters.some((p) => p.name === (valueRight as IdentifierNode).name)) {
+        const src = this.findSingleAssignLocalInit(block, (valueRight as IdentifierNode).name);
+        if (src instanceof ArrayAccessNode || src instanceof IdentifierNode || src instanceof IntLiteralNode
+          || src instanceof BoolLiteralNode) valueRight = src;
+      }
       if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
         valueArrayParam = valueRight.array.name;                        // per-key vs[i]
       } else if (valueRight instanceof IdentifierNode

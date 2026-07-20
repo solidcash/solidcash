@@ -54,7 +54,6 @@ import {
   bigIntToVmNumber,
   vmNumberToBigInt,
   utf8ToBin,
-  lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
 import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment } from './SortedList.js';
@@ -87,7 +86,6 @@ import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
   addressToLockScript, findLastIndex, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode,
-  getNetworkPrefix,
 } from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -1046,19 +1044,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private _buildNamespaces(contract: Contract<TArtifact>): void {
     this.state = {} as StateGetterMap<TArtifact>;
     for (const variable of contract.stateLayout!.variables) {
-      const isAddress = variable.type === 'address';
       // @ts-ignore - dynamic property assignment for type-safe getters
-      this.state[variable.name] = async (): Promise<any> => {
-        const value = (await this.getState())[variable.name];
-        // Solidity/ethers-parity: an `address` getter resolves the stored P2PKH lockscript to its CashAddress, so
-        // `owner() == signer.getAddress()` compares like-for-like (both p2pkh addresses). A non-lockscript byte
-        // value (e.g. a raw 20-byte hex address stored verbatim) is left unchanged.
-        if (isAddress && value instanceof Uint8Array) {
-          const res = lockingBytecodeToCashAddress({ bytecode: value, prefix: getNetworkPrefix(this.inner.provider.network) });
-          if (typeof res !== 'string') return res.address;
-        }
-        return value;
-      };
+      // An `address` state value is a full locking bytecode (e.g. a P2PKH `76a914..88ac`), returned VERBATIM -
+      // never decoded/wrapped into a CashAddress or pubkey-hash. It equals `signer.getLockingBytecode()` and the
+      // msg.sender / addressToLockScript(arg) forms byte-for-byte, so comparisons work on the raw locking bytecode.
+      this.state[variable.name] = async (): Promise<any> => (await this.getState())[variable.name];
     }
     // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
     // (sugar over getEntries), or undefined when no entry exists. Nested/composite keys pass multiple args.

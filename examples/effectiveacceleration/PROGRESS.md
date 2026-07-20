@@ -221,3 +221,34 @@ decode the stored P2PKH lockscript to a CashAddr (currently returns raw bytes). 
   placed at the impl-block-layout position its covenant checks. FIX DIRECTION: when forwarding a delegatecall to
   an impl that emits, the SDK must add the impl's event NFT output(s) at the impl's block-layout position (like a
   direct call does). Parallels the msg.sender fix (SDK tx-building, not codegen). Non-trivial; not done.
+
+## 2026-07-20 - REAL Solidity cross-compilation (moving off stubs) + ecrecover + empty-array-loop fix
+User: "next attempt to compile ../effectiveacceleration.ai/contract VERBATIM; keep the resolved shims but reinstate
+core files; identify portbacks; native BCH cross-compile so ecrecover = ecrecoverP2pkh (gated by an `ecrecover`
+compiler option)." `contracts/` + `test/` here are ALREADY byte-verbatim vs the real source (diff -rq empty), so
+nothing to reinstate. The shift this attempt: cross-compile the REAL `.sol` instead of hand-written `contracts-scash`
+stubs. Three compiler/harness portbacks landed (commits on solidcash_v0.13.1):
+- **`ecrecover: 'p2pkh'` compiler option (7f3bd68c):** Solidity's 4-arg `ecrecover(h,v,r,s)` had no bare-name
+  SolidCash builtin -> all 5 ecrecover-using files failed "Undefined reference to symbol ecrecover" (OZ ECDSA). The
+  option aliases it to `ecrecoverP2pkh` (native BCH signer address) or `ecrecoverEvm` (keccak address); byte-identical
+  to the projection, inherits its VM-proven recovery.
+- **`solidcash compile` cross-compiles `.sol` (05886711):** the @solidcash/testing compile task now also compiles
+  `.sol` via compileFileMulti (Hardhat parity), skipping vendored @scope/node_modules import trees. `tasks/compile-real.mjs`
+  drives it against the real source into `artifacts-real/`. RESULT: **17/22 files -> 22 real name-resolvable artifacts**
+  (full Unicrow escrow suite + FakeToken/ERC20 + TreasurySplit + MockSablier + all interfaces). Real Unicrow ctor
+  arity matches the fixture's `Unicrow.deploy(claim, arbitrator, dispute, gov, fee)`; real FakeToken ctor = (name, symbol).
+- **empty-array-loop elimination (2c060e0c):** fixed a compiler regression where `_updateJobWhitelist(id, allowed,
+  new address[](0))` failed "sorted mapping whitelistWorkers not yet compiled" - the empty inlined loop's C2 write
+  corrupted a shared entry slot. Now the dead 0-iteration loop is dropped post-inline (sound). All 4 Marketplace
+  advance past it.
+
+**Cross-compile bench = 10/15** (real `.sol`, opts `{solidityImportCompat:true, ecrecover:'p2pkh'}`). The 5 fails are
+DEEP compiler regressions in the C2/block-layout codegen (NOT harness gaps), both in the compiler owner's active lane:
+1. **Marketplace V1/V2/V3 + DataV1 = `Block slot not found: entry[0]`** in `publishJobPost` (`jobs.push()` struct-array
+   + storage-ptr field writes + many external calls + an event; the epilogue expects an entry slot the block layout
+   didn't allocate). A separate regression, revealed once whitelistWorkers was fixed; not minimally reproducible.
+2. **EACCToken = `_balances`** C2 sorted mapping (multitransfer RMW-in-loop).
+
+So the drop-in harness + real cross-compilation pipeline are proven for the 17 compiling files; the marketplace.test.ts
+fixture stays blocked on the real MarketplaceV1 compiling (still needs the entry[0] + _balances C2 fixes). The
+`contracts-scash/` stubs remain as the fallback for the test until then (kept, per "do not delete the shims").

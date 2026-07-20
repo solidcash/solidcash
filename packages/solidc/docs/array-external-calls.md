@@ -199,9 +199,14 @@ handled for the SINGLE-use case: the collect phase rewrites the call to the witn
 LIST of witness identifiers (call + init), both back-linked. Gated on a per-function external-call RECEIVER-count
 map snapshotted before any rewrite, so only a single-use local qualifies.
 
+Stateful autoderivation IS implemented: a `StatefulContract` caller with a computed-target loop needs no explicit
+builder call - register the route's target instances (`registerExternalArray(interfaceName, [..])`) and the
+autoderivation co-spends them (the array-slot expansion) AND fills each `__internal__loopTargets<n>` witness with
+their addresses in co-spend order (`StatefulContract._createBuilder`, ordered after `externalCallInputBase`). Router02
+is stateful, so its entry functions use this path. e2e: `StatefulComputedLoopDispatch.test.ts`.
+
 Known gap - a MULTI-use local receiver (`pair.getReserves(); pair.swap(..)`, Router02's
 `_swapSupportingFeeOnTransferTokens`): the read + the write must share ONE co-spend (getReserves reads the input
 commitment, swap constrains the output), which needs a new one-co-spend-serves-read+write dispatch mode in
-`GenerateTargetTraversal` - deferred (fails closed). Stateful autoderivation (auto-filling the witness on a
-`StatefulContract` call, so Router02 - which is stateful - needs no explicit builder call) is also pending; the
-stateless builder + deriveTypedLoopCoSpends are the proven core.
+`GenerateTargetTraversal` - deferred (fails closed). The stateless builder + deriveTypedLoopCoSpends + the stateful
+autoderivation are the proven core.

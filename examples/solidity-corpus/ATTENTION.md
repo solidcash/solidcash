@@ -154,9 +154,15 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   docs/bounded-address.md (key preimage = canonical sha256(lbc), must round-trip exact; ceiling fail-closed).
   (The 20-byte stateVarByteWidth for address is EVM slot-LAYOUT parity for neighbour packing, not the value's width.);
   (a2) COMPOSITE (struct/fixed-array) SUB-SLOT field reads - the layout is EVM-exact (64B value = slots [p, p+1], next
-  var at p+2, VM-verified) but `sload(p+i)`/`sstore(p+i)` on a composite's own sub-slots FAIL CLOSED (`33765964` -
-  was a silent __evm_storage read, now caught by a compositeRanges check; mapping p+i -> the actual struct field is a
-  future feature); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
+  var at p+2, VM-verified) but `sload(p+i)`/`sstore(p+i)` on a composite's own sub-slots FAIL CLOSED (`33765964`).
+  Mapping p+i -> the struct field = SUBSTANTIAL Tier-2 (not a quick win): struct state vars are stored as a PUSHDATA
+  BLOB (emitPushdataSkip/Decode, GTT:7537), NOT EVM 32-byte slots, and SlotField is hardwired to `sv:
+  StateVariableNode` (whole-var StateAccess) - so this bridges two storage models (EVM slot <-> blob). ACTIONABLE
+  approach when picked up: (1) recursive EVM sub-slot -> field-path layout (reuse packWords, record FieldAccess paths
+  + bitOffsets); (2) READ-FIRST - add a separate `resolveCompositeFieldRead(slot)` in the SLOAD handler only (keep
+  resolveSlotFields returning undefined so sstore stays fail-closed - struct-field WRITES are blob rebuilds, harder,
+  defer); (3) combine via the existing int/bytesN field machinery over `FieldAccess(StateAccess(struct), field_i)`
+  instead of StateAccess(var). Value modest (struct-field slot reads: OZ StorageSlot-on-struct, some corpus); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
   + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
   sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only

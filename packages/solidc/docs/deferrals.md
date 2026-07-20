@@ -202,8 +202,14 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   (`bal[msg.sender] -= a; bal[msg.sender] += a`) nets out, so the SDK drops the msg.sender entry from recipients+amounts
   (the debit then sums total - own, and msg.sender is co-spent ONCE as the debit) - the identical net, matching Solidity.
   VM-proven (FullMultiTransfer: multiTransfer([bob, alice],[10,20]) from alice -> alice 990, bob 110).
+  **DUPLICATE RECIPIENT accumulates (`feae8a54`):** the same key listed 2+ times - Solidity accumulates for += / -=
+  ([a,a],[10,20] -> a += 30), takes the last for =, delete is idempotent. The SDK merges duplicates into one entry
+  (co-spent once) with the combined amount before the self-transfer filter / reorder; for += the merged sum equals the
+  original so a coexisting debit is unchanged. Works for an existing key (accumulate) + a new one (single insert);
+  scalar/const-value loops stay fail-closed. VM-proven (FullMultiTransfer [bob,carol,bob] -> bob += 40; SortedUpsertLoop
+  existing 3 += 30, new 5 = 30).
   **The C2 ERC-20 multiTransfer surface is now COMPLETE end-to-end** (every same-gap shape, order-independent, +
-  self-transfer). Only residual: paginated writes for very large N (transaction-size bound - a fundamental limit).
+  self-transfer, + duplicate). Only residual: paginated writes for very large N (transaction-size bound - fundamental).
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

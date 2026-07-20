@@ -198,7 +198,8 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
 1. **Batch update of N existing keys - SHIPPED** (`941dd7de`). `for(i) m[k[i]] += v[i]` (and `-=`, `= vs[i]`) reads each
    key's current value and mints the updated node with `next` preserved. Source order == counter order = no permutation.
 2. **Batch insert into DISTINCT gaps - SHIPPED** (`125cb014`). Each new recipient co-spends its own bracketing
-   predecessor and mints P' + NEW; 1:1 co-spend/mint per recipient. Duplicate / same-predecessor conflicts fail closed.
+   predecessor and mints P' + NEW; 1:1 co-spend/mint per recipient. Same-gap chains are handled (item 7); a duplicate
+   recipient is merged in the SDK (item 9).
 3. **Loop-invariant value + delete + set - SHIPPED.** Fixed-amount airdrop `+= amount` (param) / `+= 100` (literal)
    (`7673bc51`), absolute `= vs[i]` (op=set, `644532b1`), batch nullify `delete m[k[i]]` (op=delete, `bbc280a1`). All ops.
 4. **The FULL ERC-20 multiTransfer - SHIPPED** (`090f4e35` + `5856dfc5` + `69d1ed93`). The cached `bal[msg.sender] -=`
@@ -235,7 +236,14 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    so the SDK drops the msg.sender entry from recipients+amounts: the debit sums (total - own) and msg.sender is
    co-spent once (the debit), for the identical net. VM-proven (`FullMultiTransfer`).
 
-**COMPLETE end-to-end.** Every multiTransfer shape - existing / new / any-gap chain (order-independent) / self-transfer -
-now works. The only residual is transaction size: very large N per tx exceeds the block/tx limit and needs paginated
-writes across txs. Cross-cutting invariant: the exclusion proof survives every batch shape above (rejecting forged /
-omitted / misordered / duplicated entries), so no batch reopens the C2 exclusion hole.
+9. **DUPLICATE RECIPIENT** - the same key listed 2+ times. Solidity accumulates for += / -= ([a,a],[10,20] -> a += 30),
+   takes the last for =, and delete is idempotent. The SDK merges duplicates into ONE entry (co-spent once) with the
+   combined amount before the self-transfer filter / reorder; for += the merged sum equals the original, so a coexisting
+   debit is unchanged. Works for an existing key (accumulate) and a new one (single insert). Scalar/const-value loops
+   can't carry a per-entry merged amount, so a duplicate there stays fail-closed. VM-proven (`FullMultiTransfer`,
+   `SortedUpsertLoop`).
+
+**COMPLETE end-to-end.** Every multiTransfer shape - existing / new / any-gap chain (order-independent) / self-transfer /
+duplicate - now works. The only residual is transaction size: very large N per tx exceeds the block/tx limit and needs
+paginated writes across txs. Cross-cutting invariant: the exclusion proof survives every batch shape above (rejecting
+forged / omitted / misordered / duplicated entries), so no batch reopens the C2 exclusion hole.

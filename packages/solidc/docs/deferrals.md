@@ -980,28 +980,71 @@ cases byte-identical (the whole C2 e2e set) before + after. INLINE only; chunked
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
 
-## Composite sub-slot field access: NESTED composites + bool/enum fields - DEFERRED 2026-07-20
+## Composite sub-slot field access: nested ARRAYS + bool/enum fields - DEFERRED 2026-07-20
 
-**What.** `sload/sstore(v.slot + i)` on a fixed struct's / fixed value array's own slots is DONE (57649637 struct,
-33f5f5c3 array; VM-proven incl. ragged uint40 packing, field<->slot cross-checks, +2 corpus). Two field/element
-types still fail the WHOLE composite closed (loud, never a silent __evm_storage read): (1) a NESTED composite field
-(struct-in-struct, fixed-array-in-struct, struct-in-array); (2) a bool/enum field (width 1) - isSupportedSlotField
-gates them out, same as the SCALAR slot path (this is a shared gap, not composite-specific).
+**What.** `sload/sstore(v.slot + i)` on a fixed struct's / fixed value array's own slots is DONE: flat struct
+(57649637), fixed value array incl. ragged uint40 packing (33f5f5c3), and NESTED struct-in-struct (34f1f316,
+recursive rebuildStructAtSlot). All VM-proven with field<->slot cross-checks + top-bit values; +2 corpus. Three
+leaf/field kinds still fail the WHOLE composite closed (loud, never a silent __evm_storage read): (1) a fixed
+ARRAY field INSIDE a struct, or a top-level array OF structs (nested-array composition - struct-in-struct is done,
+array<->struct nesting is not); (2) a bool/enum field (width 1) - isSupportedSlotField gates it out, same as the
+SCALAR slot path (a shared gap, not composite-specific); (3) address/dynamic-bytes/string (variable-width, its own
+deferral - the dynamic-value slot model).
 
-**Why deferred (value, not tractability).** NESTED: the corpus files that would use it (struct_delete_storage_nested_small,
-recursive_struct_2, struct_delete_storage_with_arrays_small) ALSO need OTHER unbuilt features - nested-struct `delete`
-lowering, and mapping/array-bearing-struct field flattening (`s__b`) - so nesting alone wins 0 files. The recursion
-also needs a field-PATH layout (reuse packWords, record the FieldAccess/ArrayAccess chain + bitOffsets) and, for a
-nested write, a recursive ctor/element rebuild (rebuildStructWithChain-style) - real machinery for 0 immediate corpus
-gain. BOOL/ENUM: castWordToFieldType/fieldAsWordFrom only handle int/bytesN/UDVT; a bool/enum slot field needs a
-1-byte encode/decode branch on BOTH the scalar and composite paths, and is niche (packed bool/enum slot access is rare).
+**Why deferred (value, not tractability).** NESTED-ARRAY: the corpus files that would use it
+(struct_delete_storage_nested_small, recursive_struct_2, struct_delete_storage_with_arrays_small) ALSO need OTHER
+unbuilt features - nested-struct `delete` lowering, and mapping/array-bearing-struct field flattening (`s__b`) - so
+this wins 0 files alone. The struct-in-struct recursion already landed; extending it to arrays needs the leaf
+access-path to carry array-INDEX steps and the decompose to rebuild through ArrayAssign at intermediate levels
+(struct-in-array element rebuild = read-modify-write), more machinery for 0 immediate corpus gain. BOOL/ENUM:
+castWordToFieldType/fieldAsWordFrom only handle int/bytesN/UDVT; a bool/enum slot field needs a 1-byte
+encode/decode branch, and CROSSES a soundness subtlety - the typed read cleans (uint256(bool) in {0,1}, an
+out-of-range enum cast reverts), so a raw sstore of a dirty byte then sload would DIVERGE from EVM's raw slot bits
+(EVM preserves them; the typed field access cleans). 0 corpus demand (verified: no .sol semanticTest packs a
+bool/enum in a slot + assembly-accesses it), so fail-closed is the SOUNDER default than a subtly-diverging path.
 
-**What it'd take.** NESTED: a recursive compositeLeaves that walks struct/array members into a leaf list with an
-access-path factory per leaf (not just a field name), then combine reads each path and decompose rebuilds outward
-(struct ctor / array element write) at each level - VM-prove with the same field<->slot cross-check + top-bit values.
-BOOL/ENUM: extend castWordToFieldType (word -> bool = `word % 2 != 0`; word -> enum = bounded int cast) +
-fieldAsWordFrom (bool/enum -> uint256), and VM-test a packed bool+int slot both directions.
+**What it'd take.** NESTED-ARRAY: generalize CompLeaf.path from `string[]` to a step list
+(`{kind:'field',name} | {kind:'index',i}`), fold both into the read access (FieldAccess/ArrayAccess) and the
+decompose rebuild (nested ctor for struct steps, ArrayAssign/read-modify-write for index steps) - VM-prove with the
+field<->slot cross-check + top-bit values. BOOL/ENUM: only if a real need appears - extend castWordToFieldType
+(word -> bool = `word % 2 != 0`; word -> enum = bounded int cast) + fieldAsWordFrom (bool/enum -> uint256), and
+DOCUMENT the raw-vs-typed cleaning divergence; VM-test a packed bool+int slot both directions.
 
-**Revisit if.** A concrete port needs nested-composite slot access AND its sibling features (nested `delete`, struct
-flattening) land - do nesting alongside them, not before. Bool/enum: fold in whenever the scalar slot path grows a
-bool/enum branch (share it).
+**Revisit if.** A concrete port needs nested-array slot access AND its sibling features (nested `delete`, struct
+flattening) land - do it alongside them, not before. Bool/enum: only with demonstrated demand, and accept the
+typed-cleaning divergence explicitly.
+
+## Dynamic-array resize `sstore(dynArray.slot, n)` - DEFERRED 2026-07-20
+
+**What.** `sstore(x.slot, n)` on a DYNAMIC array `T[] x` sets its LENGTH to n (EVM stores a dyn array's length at
+its base slot). Corpus: ~6 files (array/copying/array_copy_cleanup_*, array_copy_clear_storage*,
+inlineAssembly/inline_assembly_storage_access_local_var, array/delete/delete_storage_array_packed). Currently fails
+closed (resolveDynArrayName handles the READ `sload(x.slot)` -> length; the WRITE is unmodeled). The sound BCH
+semantic is a RESIZE: grow zero-fills, shrink truncates - which matches the corpus tests (they set length after a
+`x=y` copy whose cleanup already zeroed the freed element slots, so zero-fill == EVM's dirty-length-bump there).
+
+**Why deferred (soundness-paramount, evidence-backed).** BCH stores a fixed-width dyn array as a chunk-packed blob
+`[A$len header][packed elements]` with length = A$len/width - NOT EVM's separate length slot + keccak element
+slots. So resize = adjust the blob to n*width bytes + update A$len. Two approaches, both problematic to land
+autonomously:
+ - PUSH/POP LOOP (`while(len<n) push(0); while(len>n) pop();`) - reuses proven primitives, BUT **VM-DISPROVEN**
+   2026-07-20: each push/pop reassembles the whole array blob, so the loop is O(n^2) blob ops and BLEW the
+   operation-cost density limit even for n=4-from-2 ("operation cost following operation: 2322056 > 2321600").
+   Dead end.
+ - DIRECT BLOB SURGERY - the sound + cheap path: reuse emitReadStateArrayBlob (reassembles `pushdata(count)++elems`)
+   -> on-stack decode count, compute target=n*width, runtime-branch (OP_SIZE vs target) truncate (OP_SPLIT) or
+   zero-pad (OP_CAT num2bin(0, target-size)), re-encode `pushdata(n)++elems'` -> reuse emitWriteStateArrayBlob. This
+   reuses the PROVEN read+write blob paths, but the middle surgery is NEW GTT codegen with a runtime branch on
+   fund-relevant state (A$len + chunk blob). New fund-relevant codegen without review is exactly what
+   soundness-paramount says not to rush in an autonomous burn-down.
+
+**What it'd take.** A `StateArrayResizeNode` (or an LIA-emitted marker) + a GTT visitor implementing the direct
+blob surgery above, gated to `sstore(fixedWidthDynArray.slot, n)`. Scope: fixed-width element arrays only
+(variable-width bytes[]/string[] elements have per-element length prefixes - harder). VM-prove grow (zero-fill,
+existing elements preserved), shrink (truncate), and the exact corpus shape (`x=y` then resize -> tail reads 0),
+each cross-checked against `x.length` and `x[i]`. Accept + document the EVM divergence: EVM's length-bump exposes
+STALE element-slot bits, BCH zero-fills (a footgun EVM has, BCH's clean model does not replicate).
+
+**Revisit if.** Dynamic-array copy/clear/delete becomes a priority (this is that whole cluster's entry point), and
+the fund-relevant blob surgery can get review. Do it with the other array/* deep work (element-slot writes
+`sstore(keccak256(0,32)+i, v)`), not as a standalone increment.

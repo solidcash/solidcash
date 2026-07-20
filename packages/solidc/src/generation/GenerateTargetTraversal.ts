@@ -12747,12 +12747,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
       pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // P' outIdx (U=4)
       this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1); // P' = coSlot|Hk|coValue
-      // NOTE: an INSERT with an UNTOUCHED predecessor mints its NEW node immediately (no chain-defer). 2+ new keys in
-      // ONE untouched (or HEAD-sentinel) gap therefore fail closed. Same-gap CHAINS are supported only off a CREDITED
-      // predecessor (the re-point flush defers the new node) - the common airdrop-with-existing shape.
-      pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                     // NEW outIdx2 (U=4)
-      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // NEW = Hk|coNext|v[i]
-      this.emit(Op.OP_2, loc);                                               // delta = 2 (U=4)
+      if (this.sortedUpsertPendActive) {
+        // CHAIN-DEFER: defer the NEW node (pu_slot=Hk, pu_val=amt, pu_next=coNext) instead of minting it, so a further
+        // new key in this SAME gap chains off it - even when the predecessor is UNTOUCHED or the HEAD sentinel (a
+        // fresh-map airdrop cluster). delta = 1 (only P' minted here); the teardown / next flush mints the last node.
+        this.emit(encodeInt(BigInt(amtIdx() + 3)), loc); this.emit(Op.OP_PICK, loc);   // amt copy (U=4)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendValName) + 4, node);  // pu_val = amt -> U=3
+        this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);                     // coNext copy (U=4)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendNextName) + 4, node); // pu_next = coNext -> U=3
+        this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc);    // Hk copy (U=4)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendSlotName) + 4, node); // pu_slot = Hk -> U=3
+        this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
+      } else {
+        pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                   // NEW outIdx2 (U=4)
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // NEW = Hk|coNext|v[i]
+        this.emit(Op.OP_2, loc);                                             // delta = 2 (U=4)
+      }
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);                                          // [.., coSlot, coNext, X, delta] U=4
       // 5. outCounter += delta.

@@ -5708,29 +5708,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
         const kArr = keysArr as unknown[];
         const slotsB = kArr.map((k) => keyToSlotMulti([...fixedBins, encKey(k, varyType)]));
+        const isUpd = slotsB.map((s) => !!list.find(s));
         const updBySlot = new Map<string, number>();
-        slotsB.forEach((s, i) => { if (list.find(s)) updBySlot.set(binToHex(s), i); });
-        const attach = new Map<number, number[]>();
-        const attached = new Set<number>();
+        slotsB.forEach((s, i) => { if (isUpd[i]) updBySlot.set(binToHex(s), i); });
+        // Group inserts by their predecessor slot (a recipient-update, an untouched entry, or the HEAD sentinel). Each
+        // such gap forms a chain that the covenant walks in ASCENDING order, so its inserts must be consecutive +
+        // ascending in the tx. A case-b gap (predecessor is a credited update) additionally sits right after that update.
+        const insertsByPred = new Map<string, number[]>();
         slotsB.forEach((s, i) => {
-          if (list.find(s)) return; // an update, not an insert
-          const pred = list.predecessorOf(s);
-          const pIdx = pred ? updBySlot.get(binToHex(pred.slot)) : undefined;
-          if (pIdx !== undefined) { if (!attach.has(pIdx)) attach.set(pIdx, []); attach.get(pIdx)!.push(i); attached.add(i); }
+          if (isUpd[i]) return;
+          const ph = binToHex(list.predecessorOf(s).slot);
+          if (!insertsByPred.has(ph)) insertsByPred.set(ph, []);
+          insertsByPred.get(ph)!.push(i);
         });
-        if (attached.size > 0) {
+        // Reorder only when it changes something: a gap with >1 insert (chain) or an insert bracketed by a credited
+        // update (case-b adjacency). Result is order-independent, so this is transparent.
+        let needsReorder = false;
+        for (const [ph, arr] of insertsByPred) if (arr.length > 1 || updBySlot.has(ph)) needsReorder = true;
+        if (needsReorder) {
+          for (const [, arr] of insertsByPred) arr.sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
           const order: number[] = [];
           const placed = new Set<number>();
+          const emitGap = (ph: string): void => {
+            for (const r of insertsByPred.get(ph) ?? []) if (!placed.has(r)) { order.push(r); placed.add(r); }
+          };
           for (let i = 0; i < kArr.length; i++) {
-            if (placed.has(i) || attached.has(i)) continue;
-            order.push(i); placed.add(i);
-            // Chain multiple new keys in ONE gap in ASCENDING slot order (R1 < R2 < ...) so each defers and the next
-            // folds into it; wrong order would break the chain and fail closed.
-            const chain = (attach.get(i) ?? []).slice()
-              .sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
-            for (const r of chain) if (!placed.has(r)) { order.push(r); placed.add(r); }
+            if (placed.has(i)) continue;
+            if (isUpd[i]) { order.push(i); placed.add(i); emitGap(binToHex(slotsB[i])); continue; } // its gap's inserts follow
+            const ph = binToHex(list.predecessorOf(slotsB[i]).slot);
+            if (updBySlot.has(ph)) continue; // an insert placed via its credited-update predecessor
+            emitGap(ph); // untouched / HEAD gap: place the whole ascending group here
           }
-          for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) order.push(i); // safety net (normally unreachable)
+          for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
           keysArr = order.map((i) => kArr[i]);
           // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
           // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
@@ -5844,10 +5853,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           cospent.add(uidOf(pred.utxo));
           insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });
           commitments.push(binToHex(encodeEntryCommitment(pred.slot, slot, pred.value)));           // P' (re-pointed)
+          const uCommitIndex = commitments.length;
           commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
-          // An untouched-predecessor insert mints its NEW node immediately (no chain-defer) - lastDeferred stays null,
-          // so a 2nd new key in the SAME untouched gap hits the co-spent-twice guard below and fails closed (sound).
-          // Same-gap CHAINS are supported only off a CREDITED predecessor (handled in the fold branch above).
+          // DEFER this new node (mirrors the covenant's chain-defer) so a further new key in this same UNTOUCHED / HEAD
+          // gap chains off it - a fresh-map airdrop cluster. The reorder groups + ascending-sorts same-gap inserts.
+          if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };
         }
       }
       if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);

@@ -137,11 +137,14 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await expect(call('airdrop', [3n, 3n], [10n, 20n])).rejects.toThrow(/duplicate/i);
   });
 
-  it('fails closed when two new recipients share a gap (one predecessor cannot be co-spent twice)', async () => {
-    const { contract, call } = await setup();
-    // Fresh map (only HEAD): every new key brackets HEAD, so two new keys share the same predecessor -> conflict.
+  it('CHAINS two new recipients that share the HEAD gap in a fresh map (HEAD -> 3 -> 7)', async () => {
+    const { contract, valOf, call } = await setup();
+    // Fresh map (only HEAD): both new keys bracket HEAD. slot(3) < slot(7), so they CHAIN off HEAD via chain-defer
+    // (the first co-spends HEAD + defers, the second folds into it). One HEAD co-spend serves the whole chain.
     await fund(contract.address);
-    await expect(call('airdrop', [3n, 7n], [10n, 20n])).rejects.toThrow(/predecessor|gap|separate/i);
+    await call('airdrop', [3n, 7n], [10n, 20n]);
+    expect(await valOf(3n)).toBe(10n);
+    expect(await valOf(7n)).toBe(20n);
   });
 
   it('fails closed on `-=` to a nonexistent account (cannot debit nothing)', async () => {

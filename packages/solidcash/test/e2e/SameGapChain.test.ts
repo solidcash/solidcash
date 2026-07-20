@@ -64,4 +64,54 @@ describe('SAME-GAP CHAIN: 2+ new recipients in one gap (chain-defer)', () => {
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     await expect(call('chk', K1, 20n, alicePub, sig).send()).resolves.toBeDefined();
   });
+
+  it('chains two NEW keys off the HEAD sentinel in a FRESH map (HEAD -> K0 -> K1)', async () => {
+    // No seeding: both keys are new and bracket HEAD (+inf gap). The first co-spends HEAD (re-pointed) and DEFERS,
+    // the second chains. Exercises the untouched/HEAD-predecessor chain (emitNormalStep INSERT defers the new node).
+    const art = compileString(SRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (k: bigint): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(bigIntToVmNumber(k)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
+    const call = (fn: string, ...a: unknown[]): { send: () => Promise<unknown> } =>
+      (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)[fn](...a);
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await call('multiTransfer', [K0, K1], [10n, 20n], alicePub, sig).send(); // K0 < K1 by slot -> HEAD -> K0 -> K1
+    expect(await valOf(K0)).toBe(10n);
+    expect(await valOf(K1)).toBe(20n);
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(call('chk', K1, 20n, alicePub, sig).send()).resolves.toBeDefined(); // K1 reachable through HEAD -> K0
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(call('chk', K1, 99n, alicePub, sig).send()).rejects.toThrow(); // wrong value reverts
+  });
+
+  it('is ORDER-INDEPENDENT for a fresh-map chain: [K1, K0] (descending) reorders to [K0, K1]', async () => {
+    // Caller passes the two new keys in DESCENDING slot order. The generalized reorder groups the HEAD gap's inserts
+    // and sorts them ascending (preserving each key's amount), so the chain still forms HEAD -> K0 -> K1.
+    const art = compileString(SRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (k: bigint): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(bigIntToVmNumber(k)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
+    const call = (fn: string, ...a: unknown[]): { send: () => Promise<unknown> } =>
+      (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)[fn](...a);
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await call('multiTransfer', [K1, K0], [20n, 10n], alicePub, sig).send(); // descending; amounts stay paired
+    expect(await valOf(K0)).toBe(10n); // K0 gets 10 (its paired amount), chained first
+    expect(await valOf(K1)).toBe(20n); // K1 gets 20, chained second
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(call('chk', K1, 20n, alicePub, sig).send()).resolves.toBeDefined();
+  });
 });

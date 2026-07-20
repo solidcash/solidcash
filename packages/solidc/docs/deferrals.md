@@ -960,15 +960,18 @@ for(i) m[ks[i]] = a` - fails closed cleanly at compile (`SortedMappingCodegenPen
 INT-value form `for(i) m[ks[i]] = v` works (routes to the upsert loop). The blocker is `sortedValueKind(int[]) ==
 'rawbytes'` vs the `=== 'int'` guard in findSortedUpsertLoopWrite (GTT ~12479).
 
-**Why deferred (not tractability - soundness).** The covenant side IS a contained extension (agent-scoped): relax the
-guard to accept 'rawbytes' for the `isParamSet` form only, and in emitSortedUpsertLoopBody skip OP_BIN2NUM + wrap the
-value via the PROVEN `emitChunkableValueTail` (len4 ++ [inline|hash]) + add a runtime `size(v) > 60 -> OP_VERIFY false`
-fail-closed (chunked-in-loop needs a per-iteration variable-length trailing region redesign, out of scope). BUT the SDK
-mirror is the blocker: the upsert-loop planner (`StatefulContract.ts` ~5670-5950) is deeply int-shaped - `scalarAmt:
-bigint`, `DeferredEntry.newVal: bigint`, arithmetic accumulate + the hard-won pending-defer register + order-independent
-duplicate MERGE that guards real ERC-20 balances. Threading a `Uint8Array` value variant through that delicate
-fund-guarding path risks regressing the working int cases. The pattern (store the SAME array under N keys) is contrived;
-destabilizing the ERC-20 planner for it fails the soundness-paramount bar.
+**Why deferred (not tractability - soundness).** BOTH sides thread a rawbytes tail through fund-guarding code (re-read
+`emitSortedUpsertLoopBody` 2026-07-20 with clean files - the covenant side is NOT the "3-4 lines" the agent scoped).
+COVENANT: the loop body is a stack-tracked machine (explicit U=depth annotations) where the value `(credit_amt)` flows
+through the UPDATE, INSERT, pending-defer, and duplicate-merge branches, each with its own `OP_BIN2NUM` normalization
+(12829, 12831-32, ...) and `amtIdx()` reads. A rawbytes value needs the PROVEN `emitChunkableValueTail` wrap AFTER the
+RHS visit (integrated into the U tracking), EVERY BIN2NUM site conditionally skipped, and a `size(v) > 60 -> OP_VERIFY
+false` fail-closed (chunked-in-loop needs a per-iteration variable-length trailing-region redesign, out of scope). SDK:
+the upsert-loop planner (`StatefulContract.ts` ~5670-5950) is deeply int-shaped - `scalarAmt: bigint`,
+`DeferredEntry.newVal: bigint`, arithmetic accumulate + the hard-won pending-defer register + order-independent duplicate
+MERGE that guards real ERC-20 balances. Threading a `Uint8Array` value variant through EITHER risks regressing the
+working int cases. The pattern (store the SAME array under N keys) is contrived; destabilizing the fund-guarding upsert
+loop for it fails the soundness-paramount bar.
 
 **What it'd take.** Give the loop planner a bytes value branch (encode the tail as len4 ++ [inline | sha256], mirroring
 the single-write path at ~5177-5185) with `DeferredEntry.newVal` a `bigint | Uint8Array` union, and prove the int

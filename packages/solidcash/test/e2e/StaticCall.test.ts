@@ -82,3 +82,34 @@ describe('StatefulFunctionCall.staticCall() - with arguments', () => {
     expect(await sc.plus(0n).staticCall()).toBe(10n);
   });
 });
+
+// The realistic EA getJob(id) shape: a view returning a struct read from a (C2-default) mapping. Requires a real
+// deploy so the sorted-mapping HEAD sentinel is auto-minted (setupStatefulUtxos does not create it).
+const MAP_SRC = `pragma solidcash >=0.8.0;
+contract M() {
+  struct Job { bigint id; bigint pay; }
+  mapping(bigint => Job) jobs;
+  function put(bigint k, bigint id, bigint pay) { this.jobs[k] = Job(id, pay); }
+  function getJob(bigint k) view returns (Job) { return this.jobs[k]; }
+}`;
+
+describe('StatefulFunctionCall.staticCall() - mapping-entry view (EA getJob shape)', () => {
+  it('reads a struct entry from a real-deployed C2 mapping', async () => {
+    const { MockNetworkProvider } = await import('../../src/index.js');
+    const art = compileString(MAP_SRC, { forceStateful: true });
+    const provider = new MockNetworkProvider();
+    const [alice] = await provider.getSigners(1);
+    const f = (await alice.getUtxos()).find((u) => u.vout === 0 && !u.token);
+    const res = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
+    });
+    const sc = res.contract.connect(alice) as unknown as {
+      put: (k: bigint, id: bigint, pay: bigint) => { send: () => Promise<unknown> };
+      getJob: (k: bigint) => { staticCall: () => Promise<{ pay: bigint; toObject: () => unknown }> };
+    };
+    await sc.put(7n, 100n, 250n).send();
+    const job = await sc.getJob(7n).staticCall();
+    expect(job.pay).toBe(250n);
+    expect(job.toObject()).toEqual({ id: 100n, pay: 250n });
+  });
+});

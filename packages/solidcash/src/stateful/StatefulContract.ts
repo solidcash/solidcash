@@ -6588,6 +6588,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
       finalArgs = [...finalArgs, BigInt(externalCallInputBase)];
 
+      // Fill each synthesized `__internal__loopTargets<n>` witness (a per-iteration COMPUTED target
+      // `IFoo(pairFor(.., path[i], ..)).m()` the compiler rewrote to read a witness address[] param) with the
+      // co-spent target addresses: the registered instances for that slot's interface, in co-spend order. The
+      // co-spend itself is the array-slot expansion above (registered via registerExternalArray); a state/param
+      // target array is read on-chain, but this synthesized witness is a param the SDK derives and fills here.
+      // Ordered by the ABI (externalCallInputBase then loopTargets<n> then selectors), matching the covenant.
+      for (const inp of abiFunction?.inputs ?? []) {
+        if (!inp.name.startsWith('__internal__loopTargets')) continue;
+        const wSlot = abiFunction?.externalCalls?.find((ec) => ec.loopArrayVar === inp.name);
+        const wEntries = wSlot ? this.inner.getExternalTargetEntriesByInterface(wSlot.interfaceName) : [];
+        // entry.address is the callee's locking bytecode hex (inst.inner.lockingBytecode) - the same value the
+        // covenant compares each co-spent input against, so the witness fill matches the co-spend order exactly.
+        const wAddrs = wEntries.map((e) => hexToBin(e.address));
+        finalArgs = [...finalArgs, encodePushdataValue(wAddrs, 'address[]')];
+      }
+
       // Count all returning call groups (direct + transitive) for return event output computation
       const allReturningGroupIndices: number[] = [];
       for (let i = 0; i < externalCallUtxoGroups.length; i++) {

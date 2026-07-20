@@ -222,14 +222,15 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    after P, writing the reordered arrays to both the commitment builder and the encoded tx argument. The multiTransfer
    result is order-independent, so this is transparent; it fires only when a case-b pair exists.
 
-7. **SAME-GAP CHAINS off a credited predecessor** - 2+ new recipients in ONE gap (P -> R1 -> R2 -> P.oldNext). The
-   re-point flush DEFERS each new node instead of minting it, so the next new key folds into it via the same in-gap
-   flush - one predecessor co-spend serves the whole chain. Omission-proof: P's REAL nextKey proves the gap is empty of
-   existing entries. The SDK's fold check is geometric (in the deferred entry's gap) so it applies to a chained new node
-   too; the reorder sorts same-gap inserts ascending. VM-proven (`SameGapChain`).
+7. **SAME-GAP CHAINS off ANY predecessor** - 2+ new recipients in ONE gap (P -> R1 -> R2 -> P.oldNext), whether P is a
+   credited update, an untouched entry, or the HEAD sentinel (a fresh-map airdrop cluster). Each new node is DEFERRED
+   (set as the new pending) instead of minted, so the next new key folds into it via the same in-gap flush - one
+   predecessor co-spend serves the whole chain. Omission-proof: P's REAL nextKey proves the gap is empty of existing
+   entries. The SDK fold check is geometric (in the deferred entry's gap) so it applies to a chained new node; the
+   reorder is gap-based (groups + ascending-sorts each gap's inserts) so all chains are order-independent. VM-proven
+   (`SameGapChain`: credited chain, fresh-map HEAD chain, descending-input reorder).
 
-**Still fail-closed (sound).** 2+ new recipients in an UNTOUCHED (bystander) or HEAD-sentinel gap: the first new node is
-minted immediately there (no defer), so a second co-spends the same predecessor twice -> fail closed (a pure `= v`
-N-in-one-gap insert is handled separately by the SortedInsertLoop range-splice). Deep residual: very large N per tx is
-capped by transaction size; larger N needs paginated writes. Cross-cutting: the exclusion proof must survive the batch
-(rejecting forged / omitted / misordered / duplicated entries), since a bug reopens the C2 exclusion-proof hole.
+**Still fail-closed (sound).** 2+ new recipients in the DEBITED msg.sender's gap - that path uses the merge re-point
+register (one merge per tx), not the pending-defer chain. Deep residual: very large N per tx is capped by transaction
+size; larger N needs paginated writes. Cross-cutting: the exclusion proof must survive the batch (rejecting forged /
+omitted / misordered / duplicated entries), since a bug reopens the C2 exclusion-proof hole.

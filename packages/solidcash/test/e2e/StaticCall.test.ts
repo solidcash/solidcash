@@ -56,3 +56,29 @@ describe('StatefulFunctionCall.staticCall() - value-returning reads', () => {
     expect(await (sc.sum() as { staticCall: () => Promise<bigint> }).staticCall()).toBe(7n);
   });
 });
+
+// A view that takes arguments (the getJob(id) / balanceOf(addr) shape).
+const ARG_SRC = `pragma solidcash >=0.8.0;
+contract A() {
+  bigint base;
+  function set(bigint b) { this.base = b; }
+  function plus(bigint k) view returns (bigint) { return this.base + k; }
+}`;
+
+describe('StatefulFunctionCall.staticCall() - with arguments', () => {
+  it('passes call args into the read (getJob(id) shape)', async () => {
+    const art = compileString(ARG_SRC);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, art.stateLayout!, { base: 0n }, { saltContract: true },
+    );
+    const sc = new StatefulContract(categoryId, art, provider) as unknown as {
+      set: (b: bigint) => { send: () => Promise<unknown> };
+      plus: (k: bigint) => { staticCall: () => Promise<bigint> };
+    };
+    await sc.set(10n).send();
+    expect(await sc.plus(5n).staticCall()).toBe(15n);
+    expect(await sc.plus(0n).staticCall()).toBe(10n);
+  });
+});

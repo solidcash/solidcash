@@ -207,3 +207,17 @@ Verified e2e incl. onlyOwner reverting a non-owner and the old owner after trans
 `onlyOwner` authorization is now unblocked; what remains for the FULL admin tests is: (a) events-in-delegatecall
 (`OwnershipTransferred`/`Paused`/... emit), and (b) `owner() == deployer.address` needs the address getter to
 decode the stored P2PKH lockscript to a CashAddr (currently returns raw bytes). Both are separate from msg.sender.
+
+## 2026-07-20 UPDATE 2 - owner()==address FIXED; events narrowed to a forward output-positioning gap
+- **owner() == deployer.address: FIXED** (commit fd8153b0). The `address` state getter now decodes the stored
+  P2PKH lockscript to its CashAddress, so both sides are p2pkh addresses (per user guidance). Verified direct +
+  proxy; onlyOwner + owner-equality both work now.
+- **events in a delegate function (via proxy): NARROWED, not yet fixed.** Not a covenant category bug
+  (emitEventCovenantVerification uses the RUNTIME master category, correct for delegates). The gap is SDK
+  tx-building: the SDK builds the forward tx from the PROXY `__forward`'s block-layout, which has only a
+  lowLevelCall slot and NO event slot (the impl emits, not __forward). The external-call event-output path
+  (StatefulTransactionBuilder ~1282, `group.blockLayout` + `group.eventOutputs`) is for A-calls-B (B has its own
+  state) and doesn't apply to a delegatecall (impl runs on the PROXY's state). So the impl's event NFT is not
+  placed at the impl-block-layout position its covenant checks. FIX DIRECTION: when forwarding a delegatecall to
+  an impl that emits, the SDK must add the impl's event NFT output(s) at the impl's block-layout position (like a
+  direct call does). Parallels the msg.sender fix (SDK tx-building, not codegen). Non-trivial; not done.

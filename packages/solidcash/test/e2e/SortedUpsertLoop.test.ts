@@ -247,6 +247,35 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(9n)).toBe(42n);
     await fund(contract.address); await expect(call('chk', 3n, 42n)).resolves.toBeDefined();
   });
+
+  // SCALAR `+=` DUPLICATE: a fixed-amount airdrop with a duplicate key accumulates the scalar per occurrence (the
+  // covenant co-spends the entry once and applies the scalar via its isDup accumulate).
+  it('accumulates a SCALAR += duplicate (existing 3 += 50 + 50 = 200; new 9 = 50 + 50 = 100)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);
+    await fund(contract.address);
+    await call('airdropFixed', [3n, 3n, 9n, 9n], 50n); // 3 += 100 (existing), 9 += 100 (new insert)
+    expect(await valOf(3n)).toBe(200n);
+    expect(await valOf(9n)).toBe(100n);
+  });
+
+  it('groups a NON-ADJACENT scalar += duplicate ([3, 7, 3] += 50 -> 3 += 100, 7 += 50)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);
+    await fund(contract.address); await call('setBal', 7n, 200n);
+    await fund(contract.address);
+    await call('airdropFixed', [3n, 7n, 3n], 50n); // SDK groups to [3, 3, 7]
+    expect(await valOf(3n)).toBe(200n); // 100 + 50 + 50
+    expect(await valOf(7n)).toBe(250n); // 200 + 50
+  });
+
+  it('is idempotent for a scalar SET (const) duplicate (setConst([3, 3]) -> 3 = 42)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);
+    await fund(contract.address);
+    await call('setConst', [3n, 3n]); // deduped -> 3 = 42
+    expect(await valOf(3n)).toBe(42n);
+  });
 });
 
 // The real multitransfer shape: address-keyed balances (mapping(address => int)). Address ARRAY elements are now

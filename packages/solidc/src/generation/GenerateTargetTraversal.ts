@@ -12592,6 +12592,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc); // U=1
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
+    // DUPLICATE of the pending entry (Hk == pu_slot): the SAME key listed again. Accumulate into the pending instead of
+    // co-spending its entry a second time - pu_val OP amt (+= for '+', = for 'set'), keep the pending, consumed = 1.
+    // This is what lets a SCALAR/const-value loop (`+= amount` / `+= 100`, no per-key array to merge in the SDK) support
+    // a duplicate recipient: the covenant applies the scalar once per occurrence to the single co-spent entry.
+    this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc);          // pu_slot U=1
+    this.emit(encodeInt(BigInt(this.getStackIndex(hk) + 1)), loc); this.emit(Op.OP_PICK, loc);         // Hk U=2
+    this.emit(Op.OP_EQUAL, loc);                                                                       // isDup U=1
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    if (this.sortedUpsertLoopOp === 'set') {
+      this.emit(encodeInt(BigInt(this.getStackIndex(amt))), loc); this.emit(Op.OP_PICK, loc);          // amt copy U=1
+      this.emitReplace(this.getStackIndex(pVal) + 1, node);                                            // pu_val = amt -> U=0
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(pVal))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // pu_val# U=1
+      this.emit(encodeInt(BigInt(this.getStackIndex(amt) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // amt# U=2
+      this.emit(this.sortedUpsertLoopOp === '-' ? Op.OP_SUB : Op.OP_ADD, loc);                         // pu_val + amt U=1
+      this.emitReplace(this.getStackIndex(pVal) + 1, node);                                            // pu_val = sum -> U=0
+    }
+    this.emit(Op.OP_1, loc); // consumed = 1 (keep pending; no co-spend) (U=1)
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ELSE, loc);
+    this.scopeDepth += 1;
     // inGap = (pu_slot < Hk) AND (pu_next == 0 OR Hk < pu_next)
     this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // pSlot# U=1
     this.emit(encodeInt(BigInt(this.getStackIndex(hk) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# U=2
@@ -12633,7 +12655,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_0, loc); this.emitReplace(this.getStackIndex(pSlot) + 1, node); // clear pending -> U=0
     this.emit(Op.OP_0, loc); // consumed = 0 (U=1)
     this.scopeDepth -= 1;
-    this.emit(Op.OP_ENDIF, loc); // [consumed] U=1
+    this.emit(Op.OP_ENDIF, loc); // end inGap [consumed] U=1
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc); // end isDup-else [consumed] U=1
     this.scopeDepth -= 1;
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_0, loc); // no pending -> consumed = 0 (U=1)

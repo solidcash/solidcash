@@ -404,6 +404,10 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
     expect(ok('contract C { bytes b; function f() public {'
       + ' assembly { sstore(b.slot, or("deadbeef", 0x08)) } require(b.length == 4); } }')).toBe('C');
   });
+  it('bytes slot sload lowers to the EVM byte-array length/data encoding', () => {
+    expect(ok('contract C { bytes b; function f() public returns (uint r) {'
+      + ' assembly { r := sload(b.slot) } require(true); } }')).toBe('C');
+  });
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {

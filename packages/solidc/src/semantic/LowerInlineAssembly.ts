@@ -1499,6 +1499,24 @@ function bytesSlotConstWrite(varName: string, valArg: YulExpressionNode, src: Yu
   return loc(new StateAssignNode(varName, loc(new HexLiteralNode(full.slice(0, len)), src)), src);
 }
 
+// `sload(bytesVar.slot)` = the EVM byte-array slot ENCODING of the current value: a SHORT value (len < 32) is the
+// data left-aligned in the high bytes (big-endian) with `2*len` in the low byte; a LONG value stores `2*len+1`.
+// Built with the VM-proven formula `len < 32 ? uint256(bytes32((b ++ zeros(31-len) ++ bytes1(2*len)).reverse()))
+// : 2*len+1` (uint256(bytesN) is little-endian, so the big-endian data blob is reversed before the cast).
+function bytesSlotLoad(varName: string, src: YulExpressionNode): ExpressionNode {
+  const size = (): ExpressionNode => loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(varName), src)), src);
+  const twoLen = (): ExpressionNode => loc(new BinaryOpNode(size(), BinaryOperator.MUL, intLit(2n, src)), src);
+  const lenByte = loc(new CastNode(new BytesType(1),
+    loc(new CastNode(new IntType(false, 8), twoLen(), false), src), false), src);
+  const pad = newBytes(loc(new BinaryOpNode(intLit(31n, src), BinaryOperator.MINUS, size()), src), src);
+  const blob = loc(new BytesConcatNode([loc(new IdentifierNode(varName), src), pad, lenByte]), src);
+  const short = loc(new CastNode(UINT256,
+    loc(new CastNode(BYTES32, loc(new UnaryOpNode(UnaryOperator.REVERSE, blob), src), false), src), false), src);
+  const long = loc(new BinaryOpNode(twoLen(), BinaryOperator.PLUS, intLit(1n, src)), src);
+  const cond = loc(new BinaryOpNode(size(), BinaryOperator.LT, intLit(32n, src)), src);
+  return loc(new TernaryOpNode(cond, short, long), src);
+}
+
 function lowerLiteral(lit: YulLiteralNode): ExpressionNode {
   switch (lit.kind) {
     case YulLiteralKind.NUMBER:
@@ -1798,6 +1816,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     if (fields) return combineSlot(fields, call);
     const arrName = resolveDynArrayName(args[0]);
     if (arrName) return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(arrName), call)), call);
+    const bytesR = bytesSlotVarName(args[0]);
+    if (bytesR) return bytesSlotLoad(bytesR, call);
     const comp = resolveCompositeSlotAccess(args[0]);
     if (comp) { const w = combineCompositeSlot(comp.sv, comp.rel, call); if (w) return w; }
     const key = evmStorageSlotKey(args[0]);

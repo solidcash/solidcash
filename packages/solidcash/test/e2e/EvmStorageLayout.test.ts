@@ -668,3 +668,31 @@ describe('bytes slot short-encoding const write (data in high bytes, big-endian)
     await (sc as any).isEmpty().send();
   });
 });
+
+// bytes slot sload = the EVM byte-array slot ENCODING: short (len<32) = data-in-high-bytes (big-endian) | 2*len;
+// long = 2*len+1. VM-proven formula `len<32 ? uint256(bytes32((b ++ zeros ++ bytes1(2*len)).reverse())) : 2*len+1`.
+// (byte_array_storage_layout compiles but its bytes-push-LOOP hits a pre-existing SDK state-derivation gap, so the
+// encoding is proven here via the const-write path + a long push.)
+const BYTES_SLOT_LOAD = `pragma solidcash >=0.8.0;
+contract C() {
+  bytes b;
+  function setDead(pubkey pk, sig s) { require(checkSig(s, pk)); assembly { sstore(b.slot, or("deadbeef", 0x08)) } }
+  function pushLong(pubkey pk, sig s) { require(checkSig(s, pk)); this.b = ""; while (this.b.length < 33) { this.b.push(0x61); } }
+  function encShort(uint256 e) { uint256 r = 0; assembly { r := sload(b.slot) } require(r == e); }
+  function encEmpty(uint256 e) { uint256 r = 0; assembly { r := sload(b.slot) } require(r == e); }
+}`;
+const DEAD_SLOT = (0x64656164n << 224n) + 8n; // big-endian "dead" + low byte 0x08
+
+describe('bytes slot sload = EVM byte-array encoding (short data-in-high | 2len; long 2len+1)', () => {
+  it('short "dead" -> data-in-high | 8; empty -> 0', async () => {
+    const sc = await deploy(BYTES_SLOT_LOAD);
+    await (sc as any).encEmpty(0n).send();                         // empty -> 0
+    await (sc as any).setDead(alicePub, sig()).send();
+    await (sc as any).encShort(DEAD_SLOT).send();                  // short encoding, big-endian data
+  });
+  it('long (33 bytes) -> 2*33+1 = 67', async () => {
+    const sc = await deploy(BYTES_SLOT_LOAD);
+    await (sc as any).pushLong(alicePub, sig()).send();
+    await (sc as any).encShort(67n).send();
+  });
+});

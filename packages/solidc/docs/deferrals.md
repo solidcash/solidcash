@@ -942,18 +942,42 @@ pins the value. The single-contract path does all this in the `entryAccesses` lo
 only for the tx-building (caller) contract, not for a co-spent callee. So the msg.sender-keyed case (boundary #1) is
 blocked on this LARGER missing feature - it is NOT a msg.sender-resolution tweak.
 
-**What it'd take.** Replicate the caller's `entryAccesses` sorted-write derivation for the CALLEE inside each external
-call group: resolve B's SortedList (from B's entry NFTs), plan the insert/update, co-spend the entry/predecessor
-read-only or as an input, mint P'/NEW at B's block-layout entry-output offsets, pin value chunks - all indexed off B's
-trailing region, not A's. THEN the msg.sender variant adds: set B's `_msgSenderCategory` = A's category, and key the
-entry by `keyToSlot(A's locking bytecode)` (the covenant already resolves a contract msg.sender via
-emitMsgSenderMintingVerification -> caller LBC; A's minting master is already co-spent). Repro (skipped):
-`solidcash/test/e2e/MsgSenderCrossContractC2.test.ts`.
+**What it'd take (mechanism fully mapped 2026-07-20).** Three SDK sites, no compiler change for the UPDATE case (B's
+block layout, compiled normally, already reserves the entry slot):
+1. ENTRY INPUT co-spend (`StatefulContract.ts` ~6363, the `case 'entry'` in the external block builder): today it
+   key-matches via `parseEntryCommitment` (the DEFAULT key||value shape) - WRONG for a C2 entry (slot||next||value).
+   For `bCollection.sorted`, build `SortedList.fromUtxos(bEntryUtxos)` and co-spend `list.find(keyToSlot(key))` (UPDATE)
+   or `list.predecessorOf(...)` (INSERT).
+2. ENTRY OUTPUT derivation: the group derivation (~4254-4294) runs B's VM + `extractCommitmentsFromTrace` over B's
+   DATA-NFT output range only. Widen it to B's entry-slot output offset(s) to extract the entry commitment(s), store
+   on the group, and create the output in the STB external-call output loop (`StatefulTransactionBuilder.ts` ~1293,
+   which handles keccak/event slots but has NO `entry` case).
+3. INSERT (absent key) mints P'+NEW (2 outputs); the entry slot gives ONE. The NEW rides B's trailing entry-output
+   region like the single-contract insert - needs the extraction + STB output to place a 2nd output per insert.
+THEN the msg.sender variant: set B's `_msgSenderCategory` = A's category + key by `keyToSlot(A's locking bytecode)`
+(the covenant already resolves a contract msg.sender via emitMsgSenderMintingVerification -> caller LBC; A's minting
+master is already co-spent). Repro (skipped): `solidcash/test/e2e/MsgSenderCrossContractC2.test.ts`. NOTE: these files
+(StatefulContract/StatefulTransactionBuilder/GTT) were under heavy concurrent edit on 2026-07-20; land this when they
+are quiescent to avoid two-writer tangling in the delicate cross-contract dispatch.
 
 **Revisit if.** A real port needs a contract-to-contract call that credits the callee's balances/allowances mapping
 (the common DEX-holds-tokens shape). Un-skip the repro once the callee-entry derivation lands.
 
-## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` - DEFERRED 2026-07-20
+## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` - RESOLVED 2026-07-20 (`7d1b104b`)
+
+INLINE case SHIPPED + VM-verified (solidcash `SortedArrayValueLoop.test.ts`): a loop assigning a loop-invariant
+rawbytes value (bytes/string/int[]/bytesN) to N sorted-mapping keys now routes through the upsert loop. Covenant:
+the guard accepts a rawbytes value for the invariant-param set only; the body wraps a CHUNKABLE value as the inline
+tail `len4 ++ value` with a runtime `size<=60` assert (chunked-in-loop still fails closed), stores fixed rawbytes
+(bytesN) verbatim, and skips the value BIN2NUM (every mint CATs the tail; the 'set' repoint copies `pu_val=amt`).
+SDK: a `scalarTail` threads through a `commitValue()` helper at every commitment site; the int path is byte-identical
+(35 int upsert-loop tests unchanged). CHUNKED (>60 B) stays fail-closed on BOTH sides. The original deferral analysis
+below is retained for the chunked-in-loop boundary (still unsupported - a per-iteration chunk region is not statically
+indexable).
+
+### Original analysis (chunked-in-loop still applies)
+
+## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` (chunked) - DEFERRED 2026-07-20
 
 **What.** A pure-write loop assigning a loop-invariant ARRAY value to N sorted-mapping keys - `mapping(int => int[]) m;
 for(i) m[ks[i]] = a` - fails closed cleanly at compile (`SortedMappingCodegenPendingError`, "not yet compiled"). The

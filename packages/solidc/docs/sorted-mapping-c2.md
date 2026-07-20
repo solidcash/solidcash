@@ -157,9 +157,9 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   `DesugarNestedArrayWrite` whole-value read-modify-write-back, incl. nested mapping keys - `MappingArray2dWrite.test.ts`),
   `push`/`pop` across the inline<->chunked boundary, and whole-array
   assign all route through the chunk-aware upsert (`emitMappingArrayElementAssign` in `sortedRmw` mode), and multiple
-  writes to the SAME entry in one call coalesce to one upsert (`CacheMappingEntryInLoop`). What is NOT yet supported is
-  multi-KEY writes in a runtime loop with an ARRAY value (`for(i) m[ks[i]] = a`; int values work) - see "Multiple
-  writes in one transaction" below and docs/deferrals.md.
+  writes to the SAME entry in one call coalesce to one upsert (`CacheMappingEntryInLoop`). A multi-KEY runtime loop
+  `for(i) m[ks[i]] = a` also works for a loop-invariant value - int, and an INLINE (<=60 B) rawbytes value
+  (bytes/string/int[]/bytesN); a chunked (>60 B) value in a loop stays fail-closed (`SortedArrayValueLoop.test.ts`).
 - **Nested / composite-key mappings (DONE + VM-verified):** `mapping(A => mapping(B => V))` (e.g. ERC20 allowances,
   ERC1155 balances) works - the slot for `m[a][b]...` is `sha256(sha256(a) ++ sha256(b) ++ ...)` high-bit-masked
   (`emitSortedKeyHash` / SDK `keyToSlotMulti`). Each key is hashed independently to 32 bytes, so the concatenation

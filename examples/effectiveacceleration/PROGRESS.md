@@ -303,3 +303,17 @@ default. Not a bounded patch.
 So: **cross-compilation is DONE (15/15, real Solidity -> BCH bytecode); running the suite is a dedicated RUNTIME/SDK
 phase, gated first on genesis state derivation for real constructors.** The harness + real artifacts are proven; the
 tests execute against real contracts and stop at the SDK deploy layer, not at the harness.
+
+## 2026-07-20 (cont4) - reverted config to stubs; REAL Unicrow (32KB) exceeds BCH's 10KB script/stack limit
+Pointed the harness at real artifacts (cont3) and drove the marketplace fixture's first deploy. Finding (distinct
+from the stub deploy-wall the user is debugging in memory ea_deploy_wall): the REAL cross-compiled Unicrow is ~32 KB
+of bytecode. The deploy probe (StatefulContract, VM-probes the ctor to derive genesis) fails TWO BCH VM limits in
+sequence: (1) "unlocking bytecode exceeds maximum: 10000 bytes" (`consensus.maximumBytecodeLength`, the P2SH redeem
+= the 32KB contract), then after raising that locally, (2) "stack item exceeds maximum: 10000 bytes" (the 32KB redeem
+is PUSHED as a stack item, `maximumStackItemLength`). Both are BCH consensus/relay limits (10 KB) that the real OZ
+Unicrow (and the bigger Marketplace) exceed - a FUNDAMENTAL constraint for deploying large ported contracts on BCH,
+NOT a harness/SDK bug. A drop-in TEST env can raise the LOCAL probe VM's limits to validate the covenant logic, but
+the derive path is the user's active C2 WIP (memory ea_deploy_wall "do NOT touch"), so that belongs to them. Reverted
+paths.artifacts to the stub `artifacts/` (the debugging setup); artifacts-real/ is kept for when large-contract
+deploy lands. **So: cross-compilation is 15/15 (real Solidity -> BCH); the runtime deploy of the LARGE real contracts
+is gated on BCH's 10 KB script/stack limit + the user's C2 derive WIP.**

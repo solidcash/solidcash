@@ -1,11 +1,13 @@
 import { defineConfig } from '@solidcash/testing';
 
 export default defineConfig({
-  // Cross-compile the REAL Solidity source (../effectiveacceleration.ai/contract) verbatim and resolve those
-  // artifacts. `solidcash compile` (or tasks/compile-real.mjs) emits all 15 contracts into artifacts-real/ - every
-  // EACC contract now cross-compiles for real. The contracts-scash stubs + artifacts/ are KEPT (per "do not delete
-  // the shims") as the fallback the marketplace fixture used before real deploy lands (see PROGRESS.md "runtime").
-  paths: { contracts: '../../../effectiveacceleration.ai/contract/contracts', artifacts: 'artifacts-real', tests: 'test' },
+  // The marketplace fixture runs against the contracts-scash STUBS (artifacts/) - the setup the deploy-wall
+  // debugging expects (see PROGRESS.md "runtime" + memory ea_deploy_wall). All 15 REAL contracts DO cross-compile
+  // (`tasks/compile-real.mjs` -> artifacts-real/, 28 artifacts), but the real Unicrow is ~32 KB and real Marketplace
+  // is bigger - both exceed BCH's 10 KB per-script / stack-item limit, so a real-artifact deploy is a separate
+  // (fundamental) constraint from the stub deploy path. Switch paths.artifacts to artifacts-real/ once large-contract
+  // deploy (script splitting / raised local VM limit) lands.
+  paths: { contracts: 'contracts-scash', artifacts: 'artifacts', tests: 'test' },
   solc: { solidityImportCompat: true, ecrecover: 'p2pkh' },
   networks: { mock: { type: 'mock' } },
   defaultNetwork: 'mock',

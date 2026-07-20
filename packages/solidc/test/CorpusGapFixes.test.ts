@@ -2280,9 +2280,12 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
       { sortedMappingsAll: true, forceStateful: true })).not.toThrow();
   });
-  it('compiles a dynamic bool-value C2 insert loop (per-iteration sorted insert, not fail-closed)', () => {
+  it('compiles a dynamic bool-value C2 set loop via the upsert loop (op=set, multi-gap + update)', () => {
+    // bool `= true`/`= false` now routes to the upsert loop (bool = int 1/0) - gains multi-gap + update, not just the
+    // one-gap range-splice.
     const art = compileString(boolLoop, { sortedMappingsAll: true, forceStateful: true });
-    expect(art.abi.find((f) => f.name === 'f')?.sortedInsertLoops).toContain('m');
+    const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.op).toBe('set');
   });
   it('compiles an INVARIANT-PARAM value loop (m[ks[i]] = v) via the upsert loop (op=set, gains UPDATE support)', () => {
     // `= <param>` now routes to the upsert loop (was the insert-only range-splice) - update+insert, same-gap chaining.

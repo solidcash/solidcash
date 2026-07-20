@@ -400,6 +400,10 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
     expect(ok('contract C { function f(uint v) public {'
       + ' assembly { mstore(0, 0) sstore(add(keccak256(0, 23), 1), v) } require(true); } }')).toBe('C');
   });
+  it('bytes slot short-encoding const write: sstore(b.slot, const) sets the value / 0 clears', () => {
+    expect(ok('contract C { bytes b; function f() public {'
+      + ' assembly { sstore(b.slot, or("deadbeef", 0x08)) } require(b.length == 4); } }')).toBe('C');
+  });
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {

@@ -647,3 +647,24 @@ describe('let-bound array-element slot (let pos := add(keccak(0,32), i))', () =>
     await (sc as any).readLet(9n, 0n).send();
   });
 });
+
+// bytes/string slot short-encoding const write: `sstore(b.slot, X)` for a compile-time X sets the value from EVM's
+// short-slot layout (data in the HIGH bytes, big-endian, low byte = 2*len); X==0 clears. Corpus dirty_storage_bytes.
+const BYTES_SLOT_WRITE = `pragma solidcash >=0.8.0;
+contract C() {
+  bytes b;
+  function set(pubkey pk, sig s) { require(checkSig(s, pk)); assembly { sstore(b.slot, or("deadbeef", 0x08)) } }
+  function chk() { require(b.length == 4); require(b[0] == 0x64); require(b[3] == 0x64); require(b[1] == 0x65); }
+  function clr(pubkey pk, sig s) { require(checkSig(s, pk)); assembly { sstore(b.slot, 0) } }
+  function isEmpty() { require(b.length == 0); }
+}`;
+
+describe('bytes slot short-encoding const write (data in high bytes, big-endian)', () => {
+  it('sstore(b.slot, or("deadbeef",0x08)) -> b="dead"; sstore(b.slot,0) clears', async () => {
+    const sc = await deploy(BYTES_SLOT_WRITE);
+    await (sc as any).set(alicePub, sig()).send();
+    await (sc as any).chk().send();
+    await (sc as any).clr(alicePub, sig()).send();
+    await (sc as any).isEmpty().send();
+  });
+});

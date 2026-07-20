@@ -1423,6 +1423,82 @@ function leftAlignedWord(bytes: number[]): bigint {
   return v << BigInt((32 - bytes.length) * 8);
 }
 
+const WORD_MASK = (1n << 256n) - 1n;
+
+// Fold a fully-constant Yul word expression to its bigint value (literals + or/and/xor/add/sub/mul/shl/shr over
+// constants). undefined if any operand is non-constant. Used to decode a compile-time EVM byte-array slot word.
+function yulConstFold(expr: YulExpressionNode): bigint | undefined {
+  if (expr instanceof YulLiteralNode) {
+    if (expr.kind === YulLiteralKind.NUMBER || expr.kind === YulLiteralKind.HEX) return BigInt(expr.raw) & WORD_MASK;
+    if (expr.kind === YulLiteralKind.BOOL) return expr.raw === 'true' ? 1n : 0n;
+    if (expr.kind === YulLiteralKind.STRING) {
+      const inner = expr.raw.slice(1, -1);
+      if (inner.includes('\\')) return undefined;
+      const bytes = [...inner].map((c) => c.charCodeAt(0));
+      if (bytes.some((b) => b > 0xff) || bytes.length > 32) return undefined;
+      return leftAlignedWord(bytes);
+    }
+    if (expr.kind === YulLiteralKind.HEXSTRING) {
+      const hex = expr.raw.replace(/^hex/, '').slice(1, -1).replace(/_/g, '');
+      const bytes: number[] = [];
+      for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+      return bytes.length > 32 ? undefined : leftAlignedWord(bytes);
+    }
+    return undefined;
+  }
+  if (expr instanceof YulFunctionCallNode && expr.args.length === 2) {
+    const a = yulConstFold(expr.args[0]);
+    const b = yulConstFold(expr.args[1]);
+    if (a === undefined || b === undefined) return undefined;
+    switch (expr.name) {
+      case 'or': return a | b;
+      case 'and': return a & b;
+      case 'xor': return a ^ b;
+      case 'add': return (a + b) & WORD_MASK;
+      case 'sub': return (a - b) & WORD_MASK;
+      case 'mul': return (a * b) & WORD_MASK;
+      case 'shl': return (b << a) & WORD_MASK; // shl(shift, value)
+      case 'shr': return b >> a;
+      default: return undefined;
+    }
+  }
+  return undefined;
+}
+
+// The declared dynamic bytes/string state var whose slot a Yul slot arg denotes (`b.slot` or a literal slot).
+function bytesSlotVarName(slotArg: YulExpressionNode): string | undefined {
+  let slotNum: bigint | undefined;
+  if (isIntLiteral(slotArg)) slotNum = BigInt(slotArg.raw);
+  else if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
+    slotNum = currentVarSlot.get(slotArg.base);
+  }
+  if (slotNum === undefined) return undefined;
+  const fields = currentSlots.get(slotNum);
+  if (fields && fields.length === 1
+    && ((fields[0].sv.type instanceof BytesType && fields[0].sv.type.bound === undefined)
+      || fields[0].sv.type === PrimitiveType.STRING)) {
+    return fields[0].sv.name;
+  }
+  return undefined;
+}
+
+// `sstore(bytesVar.slot, X)` with a COMPILE-TIME-CONSTANT X sets the bytes/string value from EVM's slot encoding:
+// SHORT (X's low byte even, = 2*len, len<32) stores the data in the HIGH bytes (big-endian) -> `bytesVar = <the
+// top len bytes>`; X==0 clears it. A LONG (odd low byte, data at keccak(slot)) or a RUNTIME X is NOT handled here
+// (needs the keccak-data-region model) - fail closed. Returns the high-level statement, or undefined to fall through.
+function bytesSlotConstWrite(varName: string, valArg: YulExpressionNode, src: YulNode): StatementNode | undefined {
+  const val = yulConstFold(valArg);
+  if (val === undefined) return undefined;
+  if (val === 0n) return loc(new StateAssignNode(varName, loc(new HexLiteralNode(new Uint8Array(0)), src)), src);
+  const lowByte = val & 0xffn;
+  if (lowByte % 2n !== 0n || lowByte / 2n >= 32n) return undefined; // long / invalid: fail closed
+  const len = Number(lowByte / 2n);
+  const full = new Uint8Array(32);
+  let w = val;
+  for (let i = 31; i >= 0; i -= 1) { full[i] = Number(w & 0xffn); w >>= 8n; } // big-endian render (EVM slot order)
+  return loc(new StateAssignNode(varName, loc(new HexLiteralNode(full.slice(0, len)), src)), src);
+}
+
 function lowerLiteral(lit: YulLiteralNode): ExpressionNode {
   switch (lit.kind) {
     case YulLiteralKind.NUMBER:
@@ -1985,6 +2061,10 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         if (fields) return decomposeSlot(fields, e.args[1], e);
         const comp = resolveCompositeSlotAccess(e.args[0]);
         if (comp) { const st = decomposeCompositeSlot(comp.sv, comp.rel, e.args[1], e); if (st) return st; }
+        // sstore(bytesVar.slot, constX) = set a bytes/string var from EVM's short-slot encoding (data in the high
+        // bytes) / clear on 0. Compile-time-constant X only; long (keccak-data) / runtime X fail closed.
+        const bytesW = bytesSlotVarName(e.args[0]);
+        if (bytesW) { const st = bytesSlotConstWrite(bytesW, e.args[1], e); if (st) return st; }
         // sstore(dynArray.slot, n) = resize the fixed-width dynamic array to n elements (truncate / zero-fill grow).
         const resizeName = resolveResizableDynArray(e.args[0]);
         if (resizeName) {

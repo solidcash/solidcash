@@ -264,3 +264,14 @@ now cross-compile; bench 14/15, only EACCToken `_balances` (multitransfer C2 RMW
 `node tasks/compile-real.mjs` now emits real Marketplace artifacts too, so the marketplace.test.ts fixture can begin
 moving off the MarketplaceV1/DataV1 stubs (runtime deploy of the real Marketplace is the next validation step; the
 deep msg.sender/events-in-delegatecall runtime walls from earlier this session still apply to a real deploy).
+
+## 2026-07-20 (cont2) - EACCToken DONE: bench 15/15, THE ENTIRE EACC SUITE cross-compiles
+User: "do the EACCToken." Its `multitransfer` (`for(i) _transfer(msg.sender, recipients[i], amounts[i])` -> OZ v5
+`_update`) failed `_balances` "sorted mapping not yet compiled". Root cause (BDBG-traced): the credit's per-key value
+is a single-assign LOCAL after inlining (`int v = amounts[i]; _balances[to] += v`), so the C2 upsert setup saw
+hasValue=false and bailed. Fix (commit eab5811d): the setup now sees through a single-assign value local
+(findSingleAssignLocalInit) to `amounts[i]`, so the multiTransfer credit + msg.sender debit + branches all compile.
+VM-PROVEN sound (MultiTransferOzShape.test.ts: the exact OZ shape - value-local credit + read-into-local debit -
+gives byte-identical results to the direct form). **All 15 EACC contracts (EACCToken + 4 Marketplace + full Unicrow
+suite + FakeToken + TreasurySplit + MockSablier + libraries) now cross-compile from real OZ-v5 Solidity verbatim.**
+`node tasks/compile-real.mjs` emits every contract's artifact.

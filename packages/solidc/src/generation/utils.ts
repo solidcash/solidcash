@@ -205,6 +205,10 @@ export function compileGlobalFunction(fn: GlobalFunction): Script {
     [GlobalFunction.BLOCKHASH]: [],
     [GlobalFunction.BLOBHASH]: [],
     [GlobalFunction.ECRECOVER]: [],
+    // ecrecoverPubKey/P2pkh/Evm are handled directly in visitFunctionCall (recovery side-car read).
+    [GlobalFunction.ECRECOVER_PUBKEY]: [],
+    [GlobalFunction.ECRECOVER_P2PKH]: [],
+    [GlobalFunction.ECRECOVER_EVM]: [],
   };
 
   return mapping[fn];

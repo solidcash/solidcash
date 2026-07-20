@@ -1437,6 +1437,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.body && this.keccakCallInLoop(node.body)) node.keccakInLoop = true;
     }
 
+    // ecrecoverPubKey (+ its p2pkh/evm projections) recovers a secp256k1 pubkey via a co-spent recovery side-car
+    // PAIR (A checkpoints, B finishes -> pubkey) per call. Slot-per-call: N calls -> 2N side-cars. See docs/ecrecover.md.
+    if (node.body) {
+      const eCalls = this.countEcrecoverCalls(node.body);
+      if (eCalls >= 1) { node.ecrecoverCompute = true; node.ecrecoverCallCount = eCalls; }
+    }
+
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
     if (this.collectionMap.size > 0) {
       this.collectLocalKeyDefs(node.body);
@@ -2784,6 +2791,23 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // True if any keccak256 call sits inside a loop (all `for`/`while` desugar to While/DoWhile). Used to flag
   // runtime-variable keccak strain so the SDK over-provisions side-cars beyond the syntactic call count.
+  // Count ecrecoverPubKey / ecrecoverP2pkh / ecrecoverEvm call sites (each = one recovery side-car pair).
+  private countEcrecoverCalls(node: Node): number {
+    let count = 0;
+    if (node instanceof FunctionCallNode && (
+      node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) count += 1;
+    for (const [key, value] of Object.entries(node)) {
+      if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+      if (value instanceof Node) count += this.countEcrecoverCalls(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item);
+      }
+    }
+    return count;
+  }
+
   private keccakCallInLoop(node: Node, inLoop = false): boolean {
     const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
@@ -8007,6 +8031,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.keccakCompute && !node.keccakInLoop) {
       const kSlots = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
       for (let i = 0; i < kSlots; i++) slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex: i });
+    }
+
+    // ecrecover recovery side-cars: each ecrecoverPubKey call rides a consecutive PAIR of self-preserving 1:1
+    // slots - A (checkpoints the GLV ladder) then B (finishes -> commits the recovered pubkey). Codegen reads
+    // input[master+offsetA] (bind the sig args) and output[master+offsetB] (the pubkey). slotIndex = call index.
+    if (node.ecrecoverCompute) {
+      const eCalls = this.countEcrecoverCalls(node.body!);
+      for (let i = 0; i < eCalls; i++) {
+        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i });     // A (checkpoint)
+        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i + 1 }); // B (pubkey)
+      }
     }
 
     // Reserve offset space for outState groups (between reads and entries)

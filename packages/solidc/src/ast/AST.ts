@@ -336,6 +336,11 @@ export class FunctionDefinitionNode extends Node implements Named {
                                 // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
                                 // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
+  ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
+                                // auto-co-spends them and the contract reads the recovered pubkey from B's output
+  ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
+                                // param names feeding it (SDK transparent co-spend); null entry = not a direct param
+  ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count

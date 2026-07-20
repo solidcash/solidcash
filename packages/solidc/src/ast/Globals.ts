@@ -37,6 +37,9 @@ export enum GlobalFunction {
   CHECKMULTISIG = 'checkMultiSig',
   CHECKDATASIG = 'checkDataSig',
   ECRECOVER = 'ecrecover',
+  ECRECOVER_PUBKEY = 'ecrecoverPubKey',
+  ECRECOVER_P2PKH = 'ecrecoverP2pkh',
+  ECRECOVER_EVM = 'ecrecoverEvm',
   TO_PADDED_BYTES = 'toPaddedBytes',
   INT_TO_STRING = 'intToString',
   STRING_TO_INT = 'stringToInt',
@@ -137,6 +140,22 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.ECRECOVER, new AddressType(),
   [new BytesType(32), PrimitiveType.DATASIG, PrimitiveType.PUBKEY],
+));
+// Pure-script secp256k1 public-key recovery (EVM/Solidity ecrecover(bytes32, uint8, bytes32, bytes32) shape).
+// ecrecoverPubKey returns the recovered compressed pubkey (building block); the projections wrap it. Each call is
+// computed by a co-spent recovery side-car pair (block-layout ecrecoverSideCar slots); the SDK auto-co-spends them.
+// See docs/ecrecover.md.
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.ECRECOVER_PUBKEY, PrimitiveType.PUBKEY,
+  [new BytesType(32), PrimitiveType.INT, new BytesType(32), new BytesType(32)],
+));
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.ECRECOVER_P2PKH, new AddressType(),
+  [new BytesType(32), PrimitiveType.INT, new BytesType(32), new BytesType(32)],
+));
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.ECRECOVER_EVM, new BytesType(20),
+  [new BytesType(32), PrimitiveType.INT, new BytesType(32), new BytesType(32)],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.TO_PADDED_BYTES, new BytesType(),

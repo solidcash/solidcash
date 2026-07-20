@@ -92,6 +92,7 @@ export type BlockSlotKind =
   | 'readOnlyDataNft'
   | 'blockhashOracle'
   | 'keccakSideCar'
+  | 'ecrecoverSideCar'
   | 'entry'
   | 'satoshiContainer'
   | 'tokenContainer'
@@ -188,6 +189,8 @@ export interface AbiFunction {
                                 // deploy MORE side-cars than the static count (the loop bound is the real minimum)
   keccakLoopReads?: boolean;    // STATEFUL dynamic keccak loop: the SDK progressively co-spends N (runtime
                                 // iteration count) compute side-cars into the trailing region [blockSize, ..)
+  ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR per call; send() co-spends 2N inputs
+  ecrecoverArgParams?: readonly (readonly (string | null)[])[]; // per ecrecoverPubKey call (order): its [hash,v,r,s] param names
 }
 
 export interface CollectionIterationAbi {

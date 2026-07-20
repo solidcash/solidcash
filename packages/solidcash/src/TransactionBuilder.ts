@@ -29,11 +29,14 @@ import {
   hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
   SHARED_LIBRARY_SALT, ExternalLibraryAbi,
   buildKeccakComputeRedeem, keccakComputeLockingBytecode,
+  ecrecoverComputeLockingBytecode,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
 } from './keccak/keccakComputeSidecar.js';
+import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, ecrecoverBalancedSplit } from './ecrecover/ecrecoverComputeSidecar.js';
+import type { EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
 import {
   solidCashOutputToLibauthOutput,
   createOpReturnOutput,
@@ -65,6 +68,7 @@ const DEFAULT_SEQUENCE = 0xfffffffe;
 const DEFAULT_MAX_FEE_SATS_PER_BYTE = 1000;
 
 let keccakProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
+let ecrecoverProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
 
 export class TransactionBuilder {
   public provider: NetworkProvider;
@@ -259,6 +263,91 @@ export class TransactionBuilder {
       for (const preimage of preimages) await this.addKeccakComputeCoSpend(preimage, { salt });
     }
     return this;
+  }
+
+  /**
+   * Transparent recovery co-spend, auto-invoked by send(): for every contract input whose spent function uses
+   * ecrecoverPubKey (`abiFunction.ecrecoverCompute`), resolve each call's (hash, v, r, s) direct params, compute the
+   * GLV recovery witnesses, and co-spend the recovery side-car PAIR (A checkpoints, B commits the pubkey). The split
+   * point is a witnessed liveness parameter the SDK sizes deterministically; see docs/ecrecover.md.
+   */
+  async addRequiredEcrecoverComputeCoSpends(): Promise<this> {
+    for (const input of [...this.inputs]) {
+      if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
+      const abiFn = input.unlocker.abiFunction as typeof input.unlocker.abiFunction
+        & { ecrecoverCompute?: boolean; ecrecoverArgParams?: readonly (readonly (string | null)[])[] };
+      if (!abiFn.ecrecoverCompute) continue;
+      const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
+      const unlocker = input.unlocker as unknown as { abiFunction: { inputs: readonly { name: string }[] }; params: unknown[] };
+      const paramAt = (p: string | null): unknown => (p ? unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === p)] : undefined);
+      const bytesAt = (p: string | null): Uint8Array | undefined => { const v = paramAt(p); return v instanceof Uint8Array ? v : undefined; };
+      for (const [hp, vp, rp, sp] of abiFn.ecrecoverArgParams ?? []) {
+        const hash = bytesAt(hp), r = bytesAt(rp), s = bytesAt(sp), vRaw = paramAt(vp);
+        const v = typeof vRaw === 'bigint' ? Number(vRaw) : (vRaw instanceof Uint8Array ? vRaw[0] : NaN);
+        if (!hash || !r || !s || Number.isNaN(v)) {
+          throw new Error('ecrecoverPubKey requires direct (hash, v, r, s) parameters for the auto co-spend; '
+            + 'a computed argument needs an explicit recovery co-spend.');
+        }
+        await this.addEcrecoverComputeCoSpend(computeEcrecoverWitness(hash, v, r, s), salt);
+      }
+    }
+    return this;
+  }
+
+  private async addEcrecoverComputeCoSpend(wit: EcrecoverWitness, salt: Uint8Array): Promise<void> {
+    const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
+    const [utxosA, utxosB] = await Promise.all([
+      this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
+    ]);
+    const free = (utxos: Utxo[]): Utxo | undefined => utxos.find((u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
+    const scA = free(utxosA), scB = free(utxosB);
+    if (!scA || !scB) {
+      throw new Error('ecrecover recovery side-car A/B UTXOs not available; deploy a recovery pair per '
+        + 'ecrecoverPubKey call in the spent function.');
+    }
+    // Deterministic split point: the number of ladder steps A runs. op-cost is a pure function of (covenant, witness),
+    // so the SDK VM-probes both covenants across candidate splits and picks the one where both inputs fit their ~8M
+    // budget with the smallest peak. chunkA is a liveness parameter (A<->B are bound by the A->B hash), never soundness:
+    // a wrong split simply fails to spend, it can never yield a wrong Q. See docs/ecrecover.md.
+    const chunkA = this.probeEcrecoverSplit(wit, salt, scA, scB);
+    const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, scA, scB);
+    this.addInput(scA, unlockerA); this.addOutput(recreateA);   // A: checkpoint
+    this.addInput(scB, unlockerB); this.addOutput(recreateB);   // B: recovered pubkey
+  }
+
+  /**
+   * Pick the ladder split by measuring both covenants' real op-cost. Builds the A+B pair in isolation (A input 0 /
+   * output 0 commits the checkpoint; B input 1 verifies output 0's H_A and commits Q at output 1 - the same index
+   * alignment the live tx uses) and evaluates each input at every candidate split, choosing the viable split with the
+   * lowest peak cost. Deterministic (op-cost depends only on the covenant + witness), so this is reproducible.
+   */
+  private probeEcrecoverSplit(wit: EcrecoverWitness, salt: Uint8Array, scA: Utxo, scB: Utxo): number {
+    ecrecoverProbeVm ??= createVirtualMachineBch2026();
+    const center = ecrecoverBalancedSplit(wit);
+    const lo = Math.max(1, center - 8), hi = Math.min(wit.masks.length - wit.start - 2, center + 8);
+    const savedInputs = [...this.inputs], savedOutputs = [...this.outputs];
+    let best = -1, bestMax = Infinity;
+    try {
+      for (let cA = lo; cA <= hi; cA++) {
+        const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, cA, salt, scA, scB);
+        this.inputs = [{ ...scA, unlocker: unlockerA }, { ...scB, unlocker: unlockerB }] as UnlockableUtxo[];
+        this.outputs = [recreateA, recreateB];
+        const transaction = this.buildLibauthTransaction(true);
+        const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
+        const rA = ecrecoverProbeVm.evaluate({ inputIndex: 0, sourceOutputs, transaction }) as { error?: string; metrics: { operationCost: number } };
+        const rB = ecrecoverProbeVm.evaluate({ inputIndex: 1, sourceOutputs, transaction }) as { error?: string; metrics: { operationCost: number } };
+        if (rA.error || rB.error) continue;
+        const peak = Math.max(rA.metrics.operationCost, rB.metrics.operationCost);
+        if (peak < bestMax) { bestMax = peak; best = cA; }
+      }
+    } finally {
+      this.inputs = savedInputs; this.outputs = savedOutputs;
+    }
+    if (best < 0) {
+      throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget; a valid signature should always '
+        + 'have one - check the recovery witness inputs (hash, v, r, s).');
+    }
+    return best;
   }
 
   /**
@@ -725,6 +814,8 @@ export class TransactionBuilder {
     await this.addRequiredBlockhashCoSpends();
     // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.
     await this.addRequiredKeccakComputeCoSpends();
+    // Auto co-spend ecrecoverPubKey recovery side-car pairs (A checkpoints, B commits the recovered pubkey).
+    await this.addRequiredEcrecoverComputeCoSpends();
     // Co-spend any required INLINE external-library side-cars (multi-call keccak, user libraries) before building.
     await this.addRequiredSidecars();
 

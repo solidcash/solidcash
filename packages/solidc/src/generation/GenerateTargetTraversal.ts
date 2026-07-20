@@ -50,6 +50,9 @@ import {
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
+  ECRECOVER_COMPUTE_A_COVENANT_HASH,
+  ECRECOVER_COMPUTE_B_COVENANT_HASH,
+  ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
   isChunkableValueType,
 } from '@solidcash/utils';
 import {
@@ -4286,6 +4289,76 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /**
+   * ecrecoverPubKey(hash, v, r, s): the co-spent recovery side-car PAIR (A checkpoints the GLV ladder, B finishes)
+   * recovered the compressed pubkey in its own budget and put it in B's recreated NFT commitment. This builds
+   * argBlob = hash||v||r||s, reads side-car A's unlocking to bind ITS argBlob == ours (the "recovery is for OUR sig"
+   * safety check), verifies both A and B are the genuine recovery covenants (hash256(covenant) == baked), and reads
+   * the pubkey from B's output commitment. A-unlock = <pad><argBlob><witnessBlob><PUSHDATA2(redeem)>; B-unlock =
+   * <pad><argBlob><Cblob><Zinv><PUSHDATA2(redeem)>. Projections: p2pkh wraps hash160(Q); evm is a follow-up (needs a
+   * keccak side-car over the uncompressed key). Stack: [hash,v,r,s] -> [pubkey|address]. Matches the utils builders.
+   */
+  private emitEcrecoverComputeCall(node: FunctionCallNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const fn = this.currentFunction;
+    const i = (fn.ecrecoverArgParams ??= []).length;
+    fn.ecrecoverArgParams.push(node.parameters.map((p) => (p instanceof IdentifierNode
+      && fn.parameters.some((fp) => fp.name === p.name)) ? p.name : null));
+    // A/B side-car index. Stateful contracts use absolute block-layout slots (2i, 2i+1). Stateless contracts have no
+    // block layout: the 2N recovery side-cars are the LAST 2N inputs, read count-relative (countOp - offsetFromEnd).
+    const n = fn.ecrecoverCallCount ?? 1;
+    const slotIdx = (role: 'A' | 'B', isOutput = false): void => {
+      if (fn.blockLayout) { this.emitBlockSlotIndex('ecrecoverSideCar', role === 'A' ? 2 * i : 2 * i + 1, loc); return; }
+      const offset = role === 'A' ? 2 * n - 2 * i : 2 * n - 2 * i - 1;
+      this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_SUB, loc);
+    };
+    const raw = new BytesType();
+    const dropFirst = (b: number): void => {
+      this.emit(encodeInt(BigInt(b)), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    };
+
+    // 1. evaluate args -> [hash, v, r, s]; argBlob = hash || v(1) || r || s
+    for (let p = 0; p < 4; p++) node.parameters[p] = this.visit(node.parameters[p]);
+    this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); // [.., argBlob]
+
+    // 2. side-car A: bind ITS argBlob == ours, then integrity-check its covenant
+    slotIdx('A'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
+    this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // [argBlob, restA] (drop pad)
+    this.emitGenericPushdataDecode(raw, loc);                          // [argBlob, argBlob_A, rest2]
+    this.emit(Op.OP_TOALTSTACK, loc);                                  // [argBlob, argBlob_A]
+    this.emit(Op.OP_EQUALVERIFY, loc);                                 // bind argBlob_A == argBlob
+    this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2 = sharedBlob||aBlob||redeem]
+    this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob
+    this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop aBlob -> [redeempush]
+    dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantA
+    this.emit(Op.OP_HASH256, loc);
+    this.emit(hexToBin(ECRECOVER_COMPUTE_A_COVENANT_HASH), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);                                // A integrity
+
+    // 3. side-car B integrity (its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>)
+    slotIdx('B'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
+    for (let k = 0; k < 5; k++) { this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc); } // drop pad,argBlob,shared,C,Zinv
+    dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
+    this.emit(Op.OP_HASH256, loc);
+    this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);                                // B integrity
+
+    // 4. read the recovered compressed pubkey from B's output commitment
+    slotIdx('B', true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);   // [Q]
+
+    // 5. project: pubkey = Q ; p2pkh = 0x76a914 || hash160(Q) || 0x88ac
+    if (node.identifier.name === GlobalFunction.ECRECOVER_P2PKH) {
+      this.emit(Op.OP_HASH160, loc);
+      this.emit(hexToBin('76a914'), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+      this.emit(hexToBin('88ac'), loc); this.emit(Op.OP_CAT, loc);
+    }
+    this.popFromStack(4);            // consume the 4 arg entries (the introspection above is net stack-neutral)
+    this.pushToStack('(value)');
+    return node;
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     if (node.identifier.name === GlobalFunction.CHECKMULTISIG) {
       return this.visitMultiSig(node);
@@ -4372,6 +4445,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // in SymbolTableTraversal (node.keccakCompute): stateless single-call direct-param keccak by default.
     if (this.currentFunction?.keccakCompute && node.identifier.name === GlobalFunction.KECCAK256) {
       return this.emitKeccakComputeCall(node);
+    }
+
+    // Recovery side-car: ecrecoverPubKey (+ p2pkh/evm projections) reads the recovered pubkey from a co-spent
+    // recovery side-car PAIR that ran the GLV ladder in its own budget. See emitEcrecoverComputeCall.
+    if (this.currentFunction?.ecrecoverCompute && (
+      node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) {
+      return this.emitEcrecoverComputeCall(node);
     }
 
     const externalLib = this.resolvedLibraries[node.identifier.name];

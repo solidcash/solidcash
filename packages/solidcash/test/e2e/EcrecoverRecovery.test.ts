@@ -1,0 +1,169 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from 'solidc';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { ethers } from 'ethers';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode } from '@solidcash/utils';
+import { Contract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
+import { randomUtxo } from '../../src/utils.js';
+import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.js';
+
+// A recovery side-car's OWN NFT category (distinct from the consuming contract's; each of the A/B pair carries one).
+const SIDECAR_CAT = 'ee'.repeat(32);
+
+// Authenticate a signer via on-chain secp256k1 recovery: the recovered pubkey must equal the baked owner.
+const SOURCE = `
+contract Auth(pubkey owner) {
+    function verify(bytes32 h, int v, bytes32 r, bytes32 s) {
+        require(ecrecoverPubKey(h, v, r, s) == owner);
+    }
+}`;
+
+// reverse ethers big-endian hex -> the BCH-native little-endian bytes32 the contract + covenant use
+const leBytes = (h: string): Uint8Array => hexToBin(h.replace(/^0x/, '')).slice().reverse();
+
+async function deployPair(provider: MockNetworkProvider, salt: Uint8Array, n: number): Promise<void> {
+  for (const role of ['A', 'B'] as const) {
+    const lock = binToHex(ecrecoverComputeLockingBytecode(salt, role));
+    for (let i = 0; i < n; i++) {
+      await provider.addUtxo(lock, {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+  }
+}
+
+interface Recovery { h: Uint8Array; v: bigint; r: Uint8Array; s: Uint8Array; owner: Uint8Array; wallet: ethers.HDNodeWallet; }
+
+// build a signature + the (LE) args + the recovered pubkey the contract should authenticate against
+async function recovery(message: string, wallet?: ethers.HDNodeWallet): Promise<Recovery> {
+  const w = wallet ?? ethers.Wallet.createRandom();
+  const sig = await w.signMessage(message);
+  const digest = ethers.hashMessage(message);
+  const { r, s, v } = ethers.Signature.from(sig);
+  const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
+  const owner = computeEcrecoverWitness(h, v, rLe, sLe).compressedQ;
+  return { h, v: BigInt(v), r: rLe, s: sLe, owner, wallet: w };
+}
+
+// the 34-byte LE commitment (parity || Qx-LE) back to a standard big-endian compressed pubkey ethers understands
+const toStdCompressed = (q: Uint8Array): string =>
+  '0x' + q[0].toString(16).padStart(2, '0') + [...q.slice(1, 33)].reverse().map((b) => b.toString(16).padStart(2, '0')).join('');
+
+describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
+  it('records the recovery-side-car dependency in the artifact', () => {
+    const artifact = compileString(SOURCE);
+    const fn = artifact.abi.find((f) => f.name === 'verify');
+    expect(fn?.ecrecoverCompute).toBe(true);
+    expect(fn?.ecrecoverArgParams).toEqual([['h', 'v', 'r', 's']]);
+  });
+
+  it('spends a contract that authenticates a signer via ecrecoverPubKey (auto-co-spends the A+B recovery pair)', async () => {
+    const artifact = compileString(SOURCE);
+    const provider = new MockNetworkProvider();
+    const { h, v, r, s, owner } = await recovery('auth-e2e');
+    const contract = new Contract(artifact, [owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects when the baked owner is a different signer', async () => {
+    const artifact = compileString(SOURCE);
+    const provider = new MockNetworkProvider();
+    const { h, v, r, s } = await recovery('auth-neg');
+    const wrongOwner = new Uint8Array(34); wrongOwner[0] = 0x02; // not the recovered key
+    const contract = new Contract(artifact, [wrongOwner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    await expect(new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send()).rejects.toThrow();
+  });
+
+  // CONFORMANCE: the same message signed by ethers recovers to the SAME public key / address in ethers AND in the
+  // SolidCash recovery witness (which the covenant recomputes on-chain). This is the ethers == solc == solidc identity.
+  it('CONFORMANCE: SDK recovery matches ethers.recoverPublicKey / computeAddress (== Solidity ecrecover address)', async () => {
+    for (let t = 0; t < 4; t++) {
+      const { h, v, r, s, owner, wallet } = await recovery('conformance-' + t);
+      const sig = await wallet.signMessage('conformance-' + t);
+      const digest = ethers.hashMessage('conformance-' + t);
+      // ethers' own recovery, in standard compressed form
+      const ethersPub = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
+      expect(toStdCompressed(owner), `pubkey t=${t}`).toBe(ethersPub);
+      // and the EVM address both derive (Solidity's ecrecover returns exactly this)
+      expect(ethers.computeAddress(toStdCompressed(owner)), `address t=${t}`).toBe(wallet.address);
+    }
+  });
+
+  // 0 ecrecovers: a function that never calls ecrecoverPubKey needs no side-car and spends alone.
+  it('0 ecrecovers: no recovery side-car dependency, spends with no co-spend', async () => {
+    const artifact = compileString('contract NoRec() { function f(int x) { require(x > 0); } }');
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.ecrecoverCompute).toBeUndefined();
+    const provider = new MockNetworkProvider();
+    const contract = new Contract(artifact, [], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.f(5n))
+      .addOutput({ to: contract.address, amount: 999_000n })   // small fee: this is a tiny 1-in/1-out tx
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // N ecrecovers: two independent recoveries in one function co-spend TWO A+B pairs (one per call, read by slot).
+  const TWO = `
+  contract Two(pubkey a, pubkey b) {
+      function f(bytes32 h1, int v1, bytes32 r1, bytes32 s1, bytes32 h2, int v2, bytes32 r2, bytes32 s2) {
+          require(ecrecoverPubKey(h1, v1, r1, s1) == a);
+          require(ecrecoverPubKey(h2, v2, r2, s2) == b);
+      }
+  }`;
+  it('N ecrecovers: two recoveries in one function auto-co-spend two A+B pairs', async () => {
+    const artifact = compileString(TWO);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.ecrecoverArgParams).toHaveLength(2);
+    const provider = new MockNetworkProvider();
+    const g1 = await recovery('two-a'), g2 = await recovery('two-b');
+    const contract = new Contract(artifact, [g1.owner, g2.owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 2);
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.f(g1.h, g1.v, g1.r, g1.s, g2.h, g2.v, g2.r, g2.s))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // BRANCH: ecrecover inside a conditional. The call is counted statically (one pair deployed + co-spent), and the
+  // self-verifying side-car validates independently, so the tx is sound whether or not the branch binds it.
+  const BRANCH = `
+  contract Branch(pubkey owner) {
+      function f(bytes32 h, int v, bytes32 r, bytes32 s, int sel) {
+          if (sel > 0) {
+              require(ecrecoverPubKey(h, v, r, s) == owner);
+          } else {
+              require(sel == 0);
+          }
+      }
+  }`;
+  it('BRANCH: ecrecover in a taken branch authenticates the signer', async () => {
+    const artifact = compileString(BRANCH);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.ecrecoverCompute).toBe(true);
+    const provider = new MockNetworkProvider();
+    const { h, v, r, s, owner } = await recovery('branch');
+    const contract = new Contract(artifact, [owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.f(h, v, r, s, 1n))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

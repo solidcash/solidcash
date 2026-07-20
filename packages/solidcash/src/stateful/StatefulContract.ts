@@ -7360,13 +7360,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       neededFunders += abiFunction.blockLayout.slots.filter(
         (s) => s.kind === 'tokenContainer' && !tcInfos.some((c) => c.tokenContainerSlotIndex === s.slotIndex && c.exists),
       ).length;
-      // A msg.sender / tx.origin key needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
+      // ANY msg.sender / tx.origin use needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
       // resolves to it (the sender IS tx.origin), even when the write's fees would otherwise come from the contract.
-      // Force one funder from the signer; its leftover satoshis go to change.
-      const needsSenderInput = (abiFunction.entryAccesses ?? []).some(
+      // This covers a stored/compared value (`this.owner = msg.sender`, `require(msg.sender == x)`) as well as a
+      // mapping key - but NOT an `IFoo(msg.sender).m()` call, where msg.sender resolves via the co-spent callee's
+      // category (a minting input), not tx.origin. Force one funder from the signer; leftover satoshis go to change.
+      const usesMsgSenderKey = (abiFunction.entryAccesses ?? []).some(
         (ea) => (ea.keySources ?? []).some((ks) => ks.kind === 'msgSender'),
       );
-      if (needsSenderInput) neededFunders = Math.max(neededFunders, 1);
+      const usesTxOriginSender = !!abiFunction.usesMsgSender
+        && !(abiFunction.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
+      if (usesMsgSenderKey || usesTxOriginSender) neededFunders = Math.max(neededFunders, 1);
 
       if (neededFunders > 0) {
         if (this._signer) {

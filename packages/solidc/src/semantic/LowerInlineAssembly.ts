@@ -1571,7 +1571,12 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     return intLit(x === 0n ? 256n : 256n - BigInt(x.toString(2).length), call);
   }
   if (name in ARITH_OPS && args.length === 2) {
-    return loc(new BinaryOpNode(lowerValue(args[0]), ARITH_OPS[name], lowerValue(args[1])), call);
+    // A bytes32-producing operand (keccak256/sha256) must be cast to uint256 for arithmetic (Yul words are 256-bit),
+    // e.g. `add(keccak256(0,23), 1)` as a computed __evm_storage slot key.
+    const operand = (a: YulExpressionNode): ExpressionNode => (isBytes32Call(a)
+      ? loc(new CastNode(UINT256, lowerValue(a), false), call)
+      : lowerValue(a));
+    return loc(new BinaryOpNode(operand(args[0]), ARITH_OPS[name], operand(args[1])), call);
   }
   if (name in BITWISE_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerBitwiseOperand(args[0]), BITWISE_OPS[name], lowerBitwiseOperand(args[1])), call);

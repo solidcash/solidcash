@@ -396,6 +396,10 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
       + ' assembly { mstore(0, data.slot) let pos := add(keccak256(0, 32), i) sstore(pos, v) } require(true); } }'))
       .toBe('C');
   });
+  it('a bytes32 keccak operand in Yul arithmetic is cast to uint256 (computed __evm_storage slot key)', () => {
+    expect(ok('contract C { function f(uint v) public {'
+      + ' assembly { mstore(0, 0) sstore(add(keccak256(0, 23), 1), v) } require(true); } }')).toBe('C');
+  });
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {

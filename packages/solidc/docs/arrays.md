@@ -241,6 +241,20 @@ in future work (they stay on the collection backend today).
 | Sparse / random keyed-by-int, OR nested-array elements, OR bounded `T[N]` | non-packed `T[]` (collection) |
 | Transient scratch in a function | local `int[]` |
 
+## Mapping whose value is an array (`mapping(K => T[])`, `mapping(K => T[][])`)
+
+Element access into a mapping's array value works at any depth. A single array index `m[k][i]` is resolved
+directly (the symbol table pops the lone `arrayIndex`). Two or more array indices `m[k][i][j]` are lowered by
+`DesugarNestedArrayWrite` (pre-semantic) to the proven whole-value read/write + local nested-array paths:
+
+- write: `m[k][i][j] = v`  ->  `T[][] t = m[k]; t[i][j] = v; m[k] = t;`
+- read:  `m[k][i][j]`      ->  hoist `T[][] t = m[k]` before the statement, use `t[i][j]` in place
+
+Handles nested mapping keys (the first `keyCount` indices are keys, the rest are array dimensions) and reads in
+any expression position (per-statement hoist, save/restored across nested blocks). No new covenant code - it
+reduces to the whole-value C2 RW + the existing local nested-array desugar. VM roundtrip: solidcash
+`MappingArray2dWrite.test.ts`.
+
 ## Maintenance notes
 
 - This doc must stay consistent with: `AstBuilder.ts` (packed/chunk-packed vs collection routing + `for..of`

@@ -148,14 +148,18 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   RMW, delete - is a **read and/or upsert over one linked-list value entry**; there is no physical-removal splice
   (Solidity `delete` nullifies, so the node stays). Value types: `bool` (1-bit value), `int`/`uint` (raw minimal
   number tail), fixed-width `bytesN` (raw N-byte tail, e.g. `bytes32` - `SortedMappingBytesValue.test.ts`), `address`
-  (locking bytecode) and `struct` (encoded blob) stored verbatim in the tail, and unbounded `bytes`/`string` of ANY
+  (locking bytecode), `struct` (encoded blob), and an INTERNAL function pointer (its immutable int functionId - a
+  dispatch table with exclusion-proof reads, `FunctionTypeState.test.ts`) stored verbatim in the tail, and unbounded `bytes`/`string` of ANY
   practical length (P5b): `len(4 B) ++ value` inline for <= 60 B, `len(4 B) ++ sha256(value)` with the full value in
   per-(collection, slot, digest) chunk NFTs for > 60 B (a read reassembles + verifies the witness against the hash -
   `SortedMappingLongValue.test.ts` + migrated `SortedMappingDynBytesValue.test.ts`). Array-valued `mapping(K => T[])` is
-  also C2-backed: element read/write (`m[k][i]`), `push`/`pop` across the inline<->chunked boundary, and whole-array
+  also C2-backed: element read/write at any depth (`m[k][i]` direct; `m[k][i][j]` and deeper via the
+  `DesugarNestedArrayWrite` whole-value read-modify-write-back, incl. nested mapping keys - `MappingArray2dWrite.test.ts`),
+  `push`/`pop` across the inline<->chunked boundary, and whole-array
   assign all route through the chunk-aware upsert (`emitMappingArrayElementAssign` in `sortedRmw` mode), and multiple
   writes to the SAME entry in one call coalesce to one upsert (`CacheMappingEntryInLoop`). What is NOT yet supported is
-  multi-KEY writes in a runtime loop - see "Multiple writes in one transaction" below.
+  multi-KEY writes in a runtime loop with an ARRAY value (`for(i) m[ks[i]] = a`; int values work) - see "Multiple
+  writes in one transaction" below and docs/deferrals.md.
 - **Nested / composite-key mappings (DONE + VM-verified):** `mapping(A => mapping(B => V))` (e.g. ERC20 allowances,
   ERC1155 balances) works - the slot for `m[a][b]...` is `sha256(sha256(a) ++ sha256(b) ++ ...)` high-bit-masked
   (`emitSortedKeyHash` / SDK `keyToSlotMulti`). Each key is hashed independently to 32 bytes, so the concatenation

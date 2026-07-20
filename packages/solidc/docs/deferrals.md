@@ -1004,7 +1004,16 @@ cases byte-identical (the whole C2 e2e set) before + after. INLINE only; chunked
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
 
-## Composite sub-slot field access: nested ARRAYS + bool/enum fields - DEFERRED 2026-07-20
+## Composite sub-slot field access: top-level array-of-struct only - MOSTLY DONE 2026-07-20
+
+RESOLVED for almost everything: bool/enum leaf fields (6448f446) and NESTED ARRAYS-in-struct
+(1cc36ad2, `struct S { uint64[2] arr; ... }` via a field/index step path + full-value ctor/array-
+literal rebuild) now work, VM-proven. The ONLY remaining fail-closed composite case is a TOP-LEVEL
+fixed array OF structs (`P[2] ps`) - excluded because the SDK cannot auto-derive that state-var
+layout even without assembly (verified: a plain `P[2] ps` contract fails state derivation the same
+way). So its slot codegen is sound-by-reduction but would compile to an SDK-underivable covenant;
+revisit when the SDK gains array-of-struct state derivation, then drop the StructType-only gate in
+compositeLeaves. Original analysis (now largely resolved) below.
 
 **What.** `sload/sstore(v.slot + i)` on a fixed struct's / fixed value array's own slots is DONE: flat struct
 (57649637), fixed value array incl. ragged uint40 packing (33f5f5c3), and NESTED struct-in-struct (34f1f316,
@@ -1038,7 +1047,14 @@ DOCUMENT the raw-vs-typed cleaning divergence; VM-test a packed bool+int slot bo
 flattening) land - do it alongside them, not before. Bool/enum: only with demonstrated demand, and accept the
 typed-cleaning divergence explicitly.
 
-## Dynamic-array resize `sstore(dynArray.slot, n)` - DEFERRED 2026-07-20
+## Dynamic-array resize `sstore(dynArray.slot, n)` - DONE 2026-07-20 (0b2f89c0)
+
+RESOLVED. Built via direct blob surgery (NOT the VM-disproven O(n^2) push/pop loop): GTT
+visitStateArrayPop, gated by StateArrayPopNode.resizeTo (LIA emits it for a fixed-width dyn array),
+branchless `elems' = (elems ++ zeros(n*width))[0 : n*width]` re-prefixed with pushdata(n), reusing
+the proven emitReadStateArrayBlob/emitWriteStateArrayBlob paths. VM-proven grow/shrink/zero/empty
+(uint256 + uint128) cross-checked vs .length and a[i]; +5 corpus (the array_copy/clear/delete
+cluster). EVM stale-bit divergence documented (BCH zero-fills). Original analysis kept below.
 
 **What.** `sstore(x.slot, n)` on a DYNAMIC array `T[] x` sets its LENGTH to n (EVM stores a dyn array's length at
 its base slot). Corpus: ~6 files (array/copying/array_copy_cleanup_*, array_copy_clear_storage*,
@@ -1075,10 +1091,20 @@ the fund-relevant blob surgery can get review. Do it with the other array/* deep
 
 ## Calldata `.offset` on dynamic params - DEFERRED 2026-07-20
 
-**What.** In assembly, `<dynParam>.offset` (and the raw `calldataload`/`calldatacopy` at a dynamic head/tail) on a
-`bytes`/`string`/`T[]` calldata parameter fails closed. `<dynParam>.length` WORKS (verified). ~53 corpus files touch
-`.offset` (not all would flip - many need other features too). NOT fundamental (the user's point: ABI parity is
-built) - it needs the calldata MODEL rebuilt.
+**What.** In assembly, bare `<dynParam>.offset` (a numeric ABI-tail position) on a `bytes`/`string`/`T[]` calldata
+parameter fails closed. Already WORKING: `<dynParam>.length`, and the COPY form `calldatacopy(_, P.offset, P.length)`
+(resolveCalldataParamCopy: the copied region IS the param's bytes), and storage-pointer `.offset` (a different
+`.offset` = the in-slot byte offset). NOT fundamental (ABI parity is built) - bare calldata `.offset` needs the
+calldata MODEL rebuilt.
+
+**FLIP INVESTIGATION 2026-07-20: ~0 corpus flip + no cheap sound version.** The canonical `.offset` files need MUCH
+more than `.offset`: `calldata_array_read` uses NESTED calldata arrays (`uint[2][] calldata`, `uint[2] calldata t =
+x[1]`, `s := t`), `calldata_array_assign_dynamic` ASSIGNS `x.offset := 0x44` (constructs a calldata slice, then
+`r = x`). So `.offset` alone flips essentially nothing. And there is NO cheap sound version: a fake offset into the
+synthetic `msg.sig ++ bytes32(params)` buffer would make a following `calldataload(offset)` read the wrong bytes =
+SILENT MISCOMPILE. A correct `.offset` REQUIRES the real ABI head/tail model, whose delicate rewrite risks the
+currently-WORKING calldataload/copy/size/.length paths for ~0 gain. So: tractable in principle, but not worth an
+autonomous build (low value + regression risk + shortcut = miscompile).
 
 **Why deferred (scope, not tractability).** solidcash synthesizes calldata as `msg.sig ++ bytes32(p_0) ++
 bytes32(p_1) ++ ...` - ONE 32-byte word per parameter (synthesizedCalldata in LowerInlineAssembly). That models a
@@ -1094,3 +1120,31 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
+
+## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20
+
+**What.** A `bytes`/`string` or `address` state var packed into / accessed via a raw slot fails closed (the
+composite/scalar slot machinery accepts only fixed value types: int/bytesN/bool/enum/UDVT). ~7 corpus files touch
+`sstore/sload(bytesVar.slot)` (dirty_storage_bytes[_long], byte_array_storage_layout, delete_bytes_array,
+dirty_memory_bytes_to_storage_copy[_ir], invalid_encoding_for_storage_byte_array).
+
+**Why deferred (BCH-model conflict + EVM-internals, not tractability).** These are NOT a portable pattern - they test
+EVM's specific byte-ARRAY STORAGE ENCODING: a SHORT (<32B) bytes/string stores its data left-aligned in the slot with
+`length*2` in the low byte; a LONG one stores `length*2+1` in the slot and the data at `keccak(slot)`. E.g.
+dirty_storage_bytes writes `sstore(b.slot, or("deadbeef", 0x08))` = inline data ++ length byte 8 (=4*2), then reads
+`b[3]`. To make `sstore(b.slot, rawEncoding)` + `b[i]` agree, the bytes value would have to be STORED in EVM's inline
+encoding - which conflicts with BCH's chunk-UTXO storage model (the working model). So this is not an increment; it is
+"emulate EVM byte-array slot encoding," replacing a working storage model to pass EVM-implementation-detail tests.
+ADDRESS slot fields are the variable-width case tied to the bounded-address rescope, which Section 10 of
+docs/bounded-address.md RECOMMENDS AGAINST; keep fail-closed.
+
+**What it'd take.** For bytes/string: a full EVM-storage-encoding shim (short-inline data+length*2 / long-keccak
+length*2+1) for the slot access AND every high-level bytes op (`b[i]`, push/pop, length) reading through it -
+effectively a second, EVM-shaped storage backend for bytes/string alongside the chunk model. High effort, conflicts
+with the sound BCH default, low real-world value (EVM-internals tests). A PARTIAL sound slice is possible - a READ-only
+`sload(bytesVar.slot)` returning the EVM length encoding (`len*2` short / `len*2+1` long, derivable from `.length`) +
+`sstore(bytesVar.slot, 0)` == clear - but the inline-DATA writes (dirty_storage_bytes) still need the full encoding,
+so even the partial slice flips ~1 file.
+
+**Revisit if.** Faithful EVM byte-array storage-encoding becomes a real need (unlikely - BCH's chunk model is the
+right one). For address: only if bounded-address is reconsidered (Section 10 says no on current evidence).

@@ -239,6 +239,14 @@ export interface BuildTypedLoopCallOptions {
   cospends: TypedLoopCoSpend[];
   /** Funds the fee (the preserved caller/target values cannot be drawn down). */
   funder: { utxo: Utxo; unlocker: Unlocker };
+  /** Per view-return witness, in `__internal__viewReturn<n>` ABI order: the per-iteration values a multi-use
+   *  view+mutate loop reads (`(r0,r1,)=pair.getReserves()` -> one entry per return value). Caller-permissive - a
+   *  wrong value feeds wrong args into the mutate, whose co-spent covenant rejects (Router02 K-invariant). Encoded
+   *  by the param's ABI array type. Required iff the ABI has `__internal__viewReturn` params. */
+  viewReturns?: unknown[][];
+  /** The callee method's 4-byte selector, for a multi-method callee (`__internal__externalCallSelector`). Required
+   *  iff the ABI has that param (a single-method interface omits it). */
+  selector?: Uint8Array;
   /** Locking bytecode for the change output. Defaults to the funder's own locking bytecode. */
   changeLockingBytecode?: Uint8Array;
   /** Flat fee in satoshis (default 1000). */
@@ -279,10 +287,19 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
   // Assemble the full unlock args in ABI order: user args in sequence, synthetic params filled by name.
   const fullArgs: unknown[] = [];
   let userCursor = 0;
+  let viewCursor = 0;
   for (const inp of abiFn.inputs) {
     if (inp.name === '__internal__externalCallInputBase') fullArgs.push(1n);
     else if (inp.name.startsWith('__internal__loopTargets')) fullArgs.push(targetsArg);
-    else if (inp.name.startsWith('__internal__')) {
+    else if (inp.name.startsWith('__internal__viewReturn')) {
+      const vals = opts.viewReturns?.[viewCursor];
+      viewCursor += 1;
+      if (!vals) throw new Error(`buildTypedLoopCallTransaction: missing viewReturns[${viewCursor - 1}] for '${inp.name}'`);
+      fullArgs.push(encodePushdataValue(vals as never, inp.type));
+    } else if (inp.name.startsWith('__internal__externalCallSelector')) {
+      if (!opts.selector) throw new Error(`buildTypedLoopCallTransaction: '${inp.name}' needs a selector option`);
+      fullArgs.push(opts.selector);
+    } else if (inp.name.startsWith('__internal__')) {
       throw new Error(`buildTypedLoopCallTransaction: unsupported synthetic param '${inp.name}'`);
     } else {
       if (userCursor >= userArgs.length) {

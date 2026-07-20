@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import { Contract, TransactionBuilder, buildTypedLoopCallTransaction } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 
 // R11 multi-use view+mutate: `IPair pair = IPair(pairFor(p[i], p[i+1])); int r = pair.getReserve(); pair.swap(r)`.
@@ -116,5 +116,31 @@ describe('R11 multi-use view+mutate: view-witness read + swap co-spend (mechanis
   it('rejects when a co-spent target selector != the bound swap selector', async () => {
     const tb = await buildTx([SEL, hexToBin('00000000')]); // second target has the wrong selector
     expect(() => verifyTransaction(tb)).toThrow();
+  });
+
+  it('is buildable via buildTypedLoopCallTransaction (viewReturns + selector filled ergonomically)', async () => {
+    const art = compileString(SRC_TUPLE);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const callerUtxo = { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n };
+    const t0 = { txid: '01'.repeat(32), vout: 0, satoshis: 1500n };
+    const t1 = { txid: '02'.repeat(32), vout: 0, satoshis: 1500n };
+    const funder = await createFeeFunder(provider, 10000n);
+    const tb = buildTypedLoopCallTransaction({
+      provider,
+      contract,
+      functionName: 'run',
+      userArgs: [encodePushdataValue(
+        [hexToBin('aa'.repeat(20)), hexToBin('bb'.repeat(20)), hexToBin('cc'.repeat(20))], 'address[]',
+      )],
+      targets: [TARGET, TARGET],
+      callerUtxo,
+      cospends: [{ utxo: t0, unlocker: mkUnlocker(SEL) }, { utxo: t1, unlocker: mkUnlocker(SEL) }],
+      funder,
+      viewReturns: [[10n, 20n], [10n, 20n], [10n, 20n]], // reserve0/1/2 per iteration
+      selector: SEL,
+    });
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
   });
 });

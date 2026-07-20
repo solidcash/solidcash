@@ -103,15 +103,18 @@ describe('FULL ERC-20 multiTransfer (cached msg.sender debit + credit upsert loo
     expect(await valOf(carolAddress)).toBe(20n);
   });
 
-  // Still fail-closed: the msg.sender is ALSO listed as a recipient (self-transfer within the batch). Its entry would
-  // be co-spent as BOTH the cached debit and a credit update - one UTXO cannot be co-spent twice. Sound fail-closed.
-  it('fails closed when the msg.sender is also a credited recipient (entry co-spent twice)', async () => {
-    const { setBal, fundContract, fundSigner, sc } = await deploy();
+  // SELF-TRANSFER: the msg.sender is ALSO listed as a recipient. A self-transfer nets out, so the SDK drops it from
+  // recipients+amounts (the debit sum drops by its own amount) - identical net, msg.sender co-spent ONCE (the debit).
+  // Solidity allows a self-transfer in a batch; this matches it.
+  it('nets out a self-transfer when the msg.sender is also a credited recipient', async () => {
+    const { valOf, setBal, fundContract, fundSigner, sc } = await deploy();
     await fundContract(); await setBal(aliceAddress, 1000n); // alice = msg.sender/debit
     await fundContract(); await setBal(bobAddress, 100n);
     await fundSigner();
-    // alice is both the debited sender and recipient[1] -> alice's entry co-spent as debit + credit -> fail closed.
-    await expect(mt(sc, [bobAddress, aliceAddress], [10n, 20n]))
-      .rejects.toThrow(/co-spent|split into separate/i);
+    // multiTransfer([bob, alice], [10, 20]) from alice: debit alice 30, credit bob 10 + alice 20 -> net alice -10.
+    // Dropping alice's self-credit: debit alice 10, credit bob 10. Same net: alice 990, bob 110.
+    await mt(sc, [bobAddress, aliceAddress], [10n, 20n]);
+    expect(await valOf(aliceAddress)).toBe(990n); // 1000 - 30 + 20  ==  1000 - 10
+    expect(await valOf(bobAddress)).toBe(110n);   // 100 + 10
   });
 });

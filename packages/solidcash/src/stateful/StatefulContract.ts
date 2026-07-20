@@ -5700,6 +5700,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+      // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
+      // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
+      // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent
+      // ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches it.
+      if (foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
+        const debitE = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
+        let senderKey: Uint8Array | null = null;
+        try { senderKey = addressToLockScript(this._signer.getAddress()); } catch { senderKey = null; }
+        if (debitE && senderKey) {
+          const senderSlotHex = binToHex(keyToSlotMulti([...fixedBins, senderKey]));
+          const kArr = keysArr as unknown[];
+          const keepIdx: number[] = [];
+          kArr.forEach((k, i) => { if (binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])) !== senderSlotHex) keepIdx.push(i); });
+          if (keepIdx.length < kArr.length) {
+            keysArr = keepIdx.map((i) => kArr[i]);
+            const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+            if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+            if (perKey && Array.isArray(valsArr)) {
+              const vArr = valsArr as unknown[];
+              valsArr = keepIdx.map((i) => vArr[i]);
+              const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
+              if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
+            }
+          }
+        }
+      }
       // CASE (b) ADJACENCY REORDER: the covenant folds a new recipient into a credited predecessor P only when P is
       // processed IMMEDIATELY before it. The multiTransfer result is order-independent, so reorder recipients+amounts
       // (as a PAIR, preserving each recipient's amount) to place each such new recipient right after P. Chains /

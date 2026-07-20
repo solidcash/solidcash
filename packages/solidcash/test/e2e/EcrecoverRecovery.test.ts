@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, hash160 } from '@bitauth/libauth';
 import { ethers } from 'ethers';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode } from '@solidcash/utils';
@@ -36,18 +36,19 @@ async function deployPair(provider: MockNetworkProvider, salt: Uint8Array, n: nu
 
 interface Recovery { h: Uint8Array; v: bigint; r: Uint8Array; s: Uint8Array; owner: Uint8Array; wallet: ethers.HDNodeWallet; }
 
-// build a signature + the (LE) args + the recovered pubkey the contract should authenticate against
+// build a signature + the (LE) args + the recovered pubkey the contract authenticates against. `owner` is the
+// STANDARD compressed pubkey (0x02/03 || Qx big-endian) - exactly what ethers returns and what ecrecoverPubKey emits.
 async function recovery(message: string, wallet?: ethers.HDNodeWallet): Promise<Recovery> {
   const w = wallet ?? ethers.Wallet.createRandom();
   const sig = await w.signMessage(message);
   const digest = ethers.hashMessage(message);
   const { r, s, v } = ethers.Signature.from(sig);
   const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
-  const owner = computeEcrecoverWitness(h, v, rLe, sLe).compressedQ;
-  return { h, v: BigInt(v), r: rLe, s: sLe, owner, wallet: w };
+  const ownerHex = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
+  return { h, v: BigInt(v), r: rLe, s: sLe, owner: hexToBin(ownerHex.slice(2)), wallet: w };
 }
 
-// the 34-byte LE commitment (parity || Qx-LE) back to a standard big-endian compressed pubkey ethers understands
+// the SDK's 34-byte on-chain commitment (parity || Qx-LE) back to a standard big-endian compressed pubkey
 const toStdCompressed = (q: Uint8Array): string =>
   '0x' + q[0].toString(16).padStart(2, '0') + [...q.slice(1, 33)].reverse().map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -77,7 +78,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(SOURCE);
     const provider = new MockNetworkProvider();
     const { h, v, r, s } = await recovery('auth-neg');
-    const wrongOwner = new Uint8Array(34); wrongOwner[0] = 0x02; // not the recovered key
+    const wrongOwner = new Uint8Array(33); wrongOwner[0] = 0x02; // valid-shape compressed pubkey, wrong key
     const contract = new Contract(artifact, [wrongOwner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 1);
@@ -94,11 +95,13 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       const { h, v, r, s, owner, wallet } = await recovery('conformance-' + t);
       const sig = await wallet.signMessage('conformance-' + t);
       const digest = ethers.hashMessage('conformance-' + t);
-      // ethers' own recovery, in standard compressed form
+      // ethers' own recovery, in standard compressed form == the pubkey the SDK/contract authenticate against
       const ethersPub = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
-      expect(toStdCompressed(owner), `pubkey t=${t}`).toBe(ethersPub);
+      expect(binToHex(owner), `pubkey t=${t}`).toBe(ethersPub.slice(2));
+      // the SDK's 34-byte on-chain commitment normalizes to the same standard pubkey (what the covenant commits)
+      expect(toStdCompressed(computeEcrecoverWitness(h, Number(v), r, s).compressedQ), `commitment t=${t}`).toBe(ethersPub);
       // and the EVM address both derive (Solidity's ecrecover returns exactly this)
-      expect(ethers.computeAddress(toStdCompressed(owner)), `address t=${t}`).toBe(wallet.address);
+      expect(ethers.computeAddress(ethersPub), `address t=${t}`).toBe(wallet.address);
     }
   });
 
@@ -166,4 +169,27 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  // ecrecoverP2pkh: the recovered pubkey projected to the signer's 25-byte P2PKH locking bytecode.
+  const P2PKH = `
+  contract AuthP2pkh() {
+      function verify(bytes32 h, int v, bytes32 r, bytes32 s, bytes expected) {
+          require(ecrecoverP2pkh(h, v, r, s) == expected);
+      }
+  }`;
+  it('ecrecoverP2pkh: recovers the signer 0x76a914||hash160(pubkey)||0x88ac locking bytecode', async () => {
+    const artifact = compileString(P2PKH);
+    const provider = new MockNetworkProvider();
+    const { h, v, r, s, owner } = await recovery('p2pkh');
+    const expected = hexToBin('76a914' + binToHex(hash160(owner)) + '88ac');  // hash160 of the standard pubkey
+    const contract = new Contract(artifact, [], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s, expected))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
 });

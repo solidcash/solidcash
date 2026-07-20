@@ -2792,17 +2792,27 @@ export default class SymbolTableTraversal extends AstTraversal {
   // True if any keccak256 call sits inside a loop (all `for`/`while` desugar to While/DoWhile). Used to flag
   // runtime-variable keccak strain so the SDK over-provisions side-cars beyond the syntactic call count.
   // Count ecrecoverPubKey / ecrecoverP2pkh / ecrecoverEvm call sites (each = one recovery side-car pair).
-  private countEcrecoverCalls(node: Node): number {
+  private countEcrecoverCalls(node: Node, inLoop = false): number {
     let count = 0;
     if (node instanceof FunctionCallNode && (
       node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
       || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
-      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) count += 1;
+      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) {
+      // A loop emits the recovery read ONCE but runs it N times, all reading the same side-car - each iteration needs
+      // its own pair (the dynamic-loop model is not wired). Fail closed at compile time rather than miscompile.
+      if (inLoop) {
+        throw new Error('ecrecoverPubKey is not yet supported inside a loop: each iteration needs its own recovery '
+          + 'side-car pair (the dynamic-loop model is not wired). Unroll the calls or hoist them out of the loop.');
+      }
+      count += 1;
+    }
+    const childInLoop = inLoop
+      || node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) count += this.countEcrecoverCalls(value);
+      if (value instanceof Node) count += this.countEcrecoverCalls(value, childInLoop);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item);
+        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item, childInLoop);
       }
     }
     return count;

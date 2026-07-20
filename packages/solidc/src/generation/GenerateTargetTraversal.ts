@@ -1492,6 +1492,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Rebuilt fresh each codegen pass (this node is revisited across derivation/subroutine sub-traversals);
     // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its per-call slot index).
     if (node.keccakCompute) node.keccakPreimageParams = [];
+    // Same for ecrecoverPubKey: emitEcrecoverComputeCall pushes one arg-param entry per call; without this reset the
+    // index (its length) accumulates across passes and the second pass reads a nonexistent block slot (2*i overflow).
+    if (node.ecrecoverCompute) node.ecrecoverArgParams = [];
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
@@ -4300,6 +4303,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEcrecoverComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
+    // ecrecoverEvm needs keccak256(uncompressed pubkey)[12:] - a keccak compute co-spend on the recovered key,
+    // not yet wired. Fail loud rather than return a wrong-width value. Use ecrecoverPubKey or ecrecoverP2pkh.
+    if (node.identifier.name === GlobalFunction.ECRECOVER_EVM) {
+      throw new Error('ecrecoverEvm (recover to a 20-byte EVM address) is not yet implemented; it needs a keccak256 '
+        + 'projection of the recovered key. Use ecrecoverPubKey (compressed pubkey) or ecrecoverP2pkh (BCH address).');
+    }
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
     fn.ecrecoverArgParams.push(node.parameters.map((p) => (p instanceof IdentifierNode
@@ -4345,10 +4354,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                                // B integrity
 
-    // 4. read the recovered compressed pubkey from B's output commitment
-    slotIdx('B', true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);   // [Q]
+    // 4. read the recovered pubkey from B's output commitment (34 B: parity || Qx as a 33-byte LITTLE-endian VM
+    //    number) and normalize to a STANDARD compressed pubkey (parity || Qx big-endian, 33 B) so it is checkSig-able
+    //    and compares to a pubkey literal: split off parity, drop the LE number's sign/pad byte, reverse Qx to BE.
+    slotIdx('B', true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);        // [Q34]
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_SPLIT, loc);            // [parity, Qx33LE]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [parity, Qx32LE]
+    this.emit(Op.OP_REVERSEBYTES, loc); this.emit(Op.OP_CAT, loc);          // [pubkey33]
 
-    // 5. project: pubkey = Q ; p2pkh = 0x76a914 || hash160(Q) || 0x88ac
+    // 5. project: pubkey = the compressed key; p2pkh = 0x76a914 || hash160(key) || 0x88ac
     if (node.identifier.name === GlobalFunction.ECRECOVER_P2PKH) {
       this.emit(Op.OP_HASH160, loc);
       this.emit(hexToBin('76a914'), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);

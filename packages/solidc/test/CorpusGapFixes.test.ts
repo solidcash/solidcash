@@ -3019,3 +3019,22 @@ describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', ()
       + ' assembly { y := add(x, 0x04) } } }', opts)).not.toThrow();
   });
 });
+
+describe('interface/contract-typed constant (BentoBoxV1 USE_ETHEREUM = IERC20(0))', () => {
+  // `IERC20 constant U = IERC20(0)`: the parser emits a FunctionCall for the user-type cast (not a CastNode), and
+  // an interface-named constant type must default to a tagged address handle. Both the const-init compile-time
+  // check and the FunctionCall->address-cast fold recognize the interface, so the constant type-checks against an
+  // address value (VM-proven usable in solidcash InterfaceConst.test.ts).
+  const opts = { solidityImportCompat: true };
+  const iface = 'interface IERC20 { function transfer(address to, uint256 v) external returns (bool); }';
+  it('compiles a private interface-typed constant initialized with IERC20(0)', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${iface} contract C {`
+      + ' IERC20 private constant USE_ETHEREUM = IERC20(0);'
+      + ' function f(IERC20 t) public view returns (bool) { return t == USE_ETHEREUM; } }', opts)).not.toThrow();
+  });
+  it('compiles a bare (no-visibility) interface-typed constant', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${iface} contract C {`
+      + ' IERC20 constant U = IERC20(0);'
+      + ' function f(IERC20 t) public view returns (bool) { return t != U; } }', opts)).not.toThrow();
+  });
+});

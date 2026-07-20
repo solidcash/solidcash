@@ -1023,7 +1023,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Validate that the expression is a compile-time constant
-    if (!isCompileTimeExpression(node.expression, this.constantMap, this.enumMap)) {
+    const contractTypeNames = new Set([...this.interfaceMap.keys(), ...this.contractMap.keys()]);
+    if (!isCompileTimeExpression(node.expression, this.constantMap, this.enumMap, contractTypeNames)) {
       throw new NonCompileTimeExpressionError(node);
     }
 
@@ -1083,6 +1084,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode)) as ExpressionNode[];
       expr.type = expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod'
         ? PrimitiveType.BIGINT : new BytesType(32);
+    } else if (expr instanceof FunctionCallNode && expr.parameters.length === 1
+      && (this.contractMap.has(expr.identifier.name) || this.interfaceMap.has(expr.identifier.name))) {
+      // Interface/contract cast in a const (e.g. `IERC20(0)`): the parser emits a FunctionCall; convert to the same
+      // address CastNode the normal path produces (visitFunctionCall), tagged with the interface so type-checking
+      // sees an address value, not an unresolved call of undefined type.
+      const arg = this.resolveConstantExpressionIdentifiers(expr.parameters[0] as ExpressionNode);
+      const ifaceTag = this.interfaceMap.has(expr.identifier.name) ? expr.identifier.name : undefined;
+      const castNode = new CastNode(new AddressType(false, ifaceTag), arg, false);
+      castNode.location = expr.location;
+      return castNode;
     }
     return expr;
   }
@@ -8039,24 +8050,25 @@ function isCompileTimeExpression(
   expr: ExpressionNode,
   constantMap: Map<string, ConstantDefinitionNode>,
   enumMap: Map<string, EnumType>,
+  contractTypes?: Set<string>,
 ): boolean {
+  const rec = (e: ExpressionNode): boolean => isCompileTimeExpression(e, constantMap, enumMap, contractTypes);
   if (expr instanceof LiteralNode) return true;
   if (expr instanceof BinaryOpNode) {
-    return isCompileTimeExpression(expr.left, constantMap, enumMap)
-      && isCompileTimeExpression(expr.right, constantMap, enumMap);
+    return rec(expr.left) && rec(expr.right);
   }
   if (expr instanceof UnaryOpNode) {
-    return isCompileTimeExpression(expr.expression, constantMap, enumMap);
+    return rec(expr.expression);
   }
   if (expr instanceof CastNode) {
-    return isCompileTimeExpression(expr.expression, constantMap, enumMap);
+    return rec(expr.expression);
   }
   if (expr instanceof ArrayNode) {
-    return expr.elements.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+    return expr.elements.every(rec);
   }
   if (expr instanceof BytesConcatNode || expr instanceof StringConcatNode) {
     // `bytes.concat`/`string.concat` is a pure concatenation of its args, so it is compile-time when they all are.
-    return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+    return expr.parameters.every(rec);
   }
   if (expr instanceof IdentifierNode) {
     // Allow references to other already-registered constants
@@ -8075,18 +8087,16 @@ function isCompileTimeExpression(
   // abi.encode* / abi.decode* are pure functions of their args - compile-time when every value arg is. Codegen
   // inlines the constant's initializer at each use site (visitIdentifier), so the existing abi codegen runs there.
   if (expr instanceof AbiEncodeNode || expr instanceof AbiEncodePackedNode || expr instanceof AbiEncodeCallNode) {
-    return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+    return expr.parameters.every(rec);
   }
   if (expr instanceof AbiEncodeWithSelectorNode) {
-    return isCompileTimeExpression(expr.selector, constantMap, enumMap)
-      && expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+    return rec(expr.selector) && expr.parameters.every(rec);
   }
   if (expr instanceof AbiEncodeWithSignatureNode) {
-    return isCompileTimeExpression(expr.signature, constantMap, enumMap)
-      && expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+    return rec(expr.signature) && expr.parameters.every(rec);
   }
   if (expr instanceof AbiDecodeNode || expr instanceof AbiDecodeAtNode) {
-    return isCompileTimeExpression(expr.data, constantMap, enumMap);
+    return rec(expr.data);
   }
   // Pure builtins - compile-time when their args are (like abi.encode*): `addmod`/`mulmod` (3 integer args) and
   // `keccak256`/`sha256` (1 bytes arg). The constant's initializer is inlined at each use site (visitIdentifier),
@@ -8094,11 +8104,17 @@ function isCompileTimeExpression(
   // this covers the non-literal-arg forms `keccak256(<const>)` / `keccak256(abi.encode(..))`).
   if (expr instanceof FunctionCallNode && expr.parameters.length === 3
     && (expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod')) {
-    return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+    return expr.parameters.every(rec);
   }
   if (expr instanceof FunctionCallNode && expr.parameters.length === 1
     && (expr.identifier.name === 'keccak256' || expr.identifier.name === 'sha256')) {
-    return isCompileTimeExpression(expr.parameters[0], constantMap, enumMap);
+    return rec(expr.parameters[0]);
+  }
+  // An interface/contract cast `IFoo(x)` (the grammar emits a FunctionCall for a user-type cast, not a CastNode):
+  // the value is an address, compile-time when its single arg is - e.g. `IERC20(0)` is the zero address.
+  if (expr instanceof FunctionCallNode && expr.parameters.length === 1
+    && contractTypes?.has(expr.identifier.name)) {
+    return rec(expr.parameters[0]);
   }
   return false;
 }

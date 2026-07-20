@@ -3029,8 +3029,11 @@ export default class AstBuilder
     const scalarTypeCtx = ctx.typeName();
     const constExpr = ctx.expression?.();
     if (allModTexts.includes('constant') && scalarTypeCtx && constExpr && !this.inLibraryDecl) {
+      // An unresolved type name is an interface/contract type -> a tagged address handle (as every other
+      // declaration site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
+      const cType = this.resolveType(scalarTypeCtx.getText()) ?? new AddressType(false, scalarTypeCtx.getText());
       const cnode = new ConstantDefinitionNode(
-        this.resolveType(scalarTypeCtx.getText()), name, this.visit(constExpr) as ExpressionNode,
+        cType, name, this.visit(constExpr) as ExpressionNode,
       );
       cnode.location = Location.fromCtx(ctx);
       return cnode;
@@ -4843,7 +4846,9 @@ export default class AstBuilder
   }
 
   visitConstantDefinition(ctx: ConstantDefinitionContext): ConstantDefinitionNode {
-    const type = this.resolveType(ctx.typeName().getText());
+    // An unresolved type name is an interface/contract type -> a tagged address handle (as every other declaration
+    // site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
+    const type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false, ctx.typeName().getText());
     const name = ctx.anyIdentifier().getText();
     const expression = this.visit(ctx.expression());
     const node = new ConstantDefinitionNode(type, name, expression);

@@ -60,6 +60,8 @@ import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFuncti
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
 import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
+import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayWrites.js';
+import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
@@ -287,6 +289,15 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+
+  // Coalesce consecutive whole-field writes to the same C2 mapping entry (`m[k].a=x; m[k].b=y`) into one entry
+  // read + one whole-struct write, replacing N sorted-mapping upserts with one.
+  ast = ast.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
+
+  // Coalesce a run of consecutive element writes to the same fixed-array field of a memory struct local (each
+  // desugared to a whole-struct rebuild) into one read + one rebuild. After RedesugarImportedStructFieldWrites (so
+  // imported-struct triples exist), before LowerMemoryModel (which lowers the rebuild).
+  ast = ast.accept(new CoalesceStructFieldArrayWrites()) as Ast;
 
   // Memory model: lower local `memory` reference types to linear-buffer pointer ops before the value-copy
   // desugars, so nested writes compose in place. The safety gate falls unsupported locals back to value-copy.
@@ -605,6 +616,9 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
+    // Keep the referenced-contract bytecode byte-identical to its standalone compilation (see comment above).
+    singleAst = singleAst.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
+    singleAst = singleAst.accept(new CoalesceStructFieldArrayWrites()) as Ast;
     singleAst = singleAst.accept(new LowerMemoryModel()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;

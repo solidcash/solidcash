@@ -475,6 +475,7 @@ export interface Artifact {
   externalLibraries?: readonly ExternalLibraryAbi[];  // external script libraries this contract depends on
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
+  delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   compiler: {
     name: string;
@@ -490,6 +491,55 @@ export interface Artifact {
  * shape. Returned by `compileStringMulti` / `compileFileMulti`. See docs/multi-contract-artifacts.md.
  */
 export type ArtifactMap = Record<string, Artifact>;
+
+export interface SplitStateFootprint {
+  reads: readonly string[];
+  writes: readonly string[];
+  effects: readonly string[];
+  unknown: boolean;
+}
+
+export interface SplitRoute {
+  selector: string;
+  function: string;
+  target: 'root' | string;
+  footprint: SplitStateFootprint;
+}
+
+export interface SplitFacetInfo {
+  name: string;
+  functions: readonly string[];
+  brandArgument: '__brand';
+  linkArgument: string;
+  delegateOnly: true;
+  estimatedRedeemBytes: number;
+}
+
+export interface SplitManifest {
+  logicalContractName: string;
+  abi: readonly AbiFunction[];
+  stateLayoutFingerprint: string;
+  deploymentMode: 'immutable-one-hop';
+  algorithm: 'state-interference-v1';
+  routes: readonly SplitRoute[];
+  facets: readonly SplitFacetInfo[];
+}
+
+/** Additive compiler result for a statically linked one-hop split contract. */
+export interface SplitArtifactBundle {
+  format: 'solidcash-split-v1';
+  root: Artifact;
+  facets: ArtifactMap;
+  manifest: SplitManifest;
+}
+
+export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {
+  if (format === 'ts') {
+    const normalised = JSON.parse(JSON.stringify(bundle));
+    return `export default ${stringifyAsTs(normalised)} as const;\n`;
+  }
+  return JSON.stringify(bundle, null, 2);
+}
 
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
   if (format === 'ts') {

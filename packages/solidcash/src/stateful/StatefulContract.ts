@@ -1306,6 +1306,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
 
     const stateLayout = artifact.stateLayout;
+    const delegateOnly = artifact.delegateOnly === true;
     const dataNftAddress = getDataNftAddress(contract, categoryId);
 
     const masterAmount = options.masterAmount ?? 1200n;
@@ -1315,7 +1316,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
 
     // Determine counts for constructor features
-    const entryAccesses = constructorAbi?.entryAccesses ?? [];
+    const entryAccesses = delegateOnly ? [] : (constructorAbi?.entryAccesses ?? []);
     const entryCount = entryAccesses.length;
     const emitCount = constructorAbi?.emits?.length ?? 0;
 
@@ -1326,7 +1327,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const initialBalance = options.initialBalance ?? 0n;
     const totalMaster = masterAmount * BigInt(threadCount);
-    const totalDataNft = dataNftAmount * BigInt(stateLayout.dataNftCount);
+    const totalDataNft = delegateOnly ? 0n : dataNftAmount * BigInt(stateLayout.dataNftCount);
     const totalEntryNft = dataNftAmount * BigInt(entryCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
     const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + initialBalance + fee;
@@ -1350,7 +1351,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Check if constructor has sig params - probe won't work for those
     const hasSigParams = constructorAbi?.inputs.some((inp) => inp.type === 'sig') ?? false;
 
-    if (constructorAbi && !hasSigParams) {
+    if (delegateOnly) {
+      if (options.initialState || options.initArgs || initialBalance > 0n) {
+        throw new Error(`Delegate-only facet '${artifact.contractName}' cannot deploy application state or balance.`);
+      }
+      commitments = [];
+    } else if (constructorAbi && !hasSigParams) {
       // Use inference: build probe transaction with synthetic UTXOs
       const derived = await StatefulContract._deriveDeployCommitments(
         contract, artifact, stateLayout, categoryId, dataNftAddress,
@@ -1392,7 +1398,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Outputs threadCount..threadCount+dataNftCount-1: data NFTs with initial state
-    for (let i = 0; i < stateLayout.dataNftCount; i++) {
+    for (let i = 0; i < (delegateOnly ? 0 : stateLayout.dataNftCount); i++) {
       builder.addOutput({
         to: dataNftAddress,
         amount: dataNftAmount,
@@ -1418,7 +1424,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // list, otherwise its first read/write fails "missing HEAD sentinel". A constructor that writes the mapping
     // already mints entries for it; for the rest, mint the empty-map HEAD at genesis. Sound: the genesis is
     // funder-authorized (no covenant yet) and every later read/write pins the HEAD (slot 0) via the covenant.
-    for (const col of (stateLayout.collections ?? [])) {
+    for (const col of (delegateOnly ? [] : (stateLayout.collections ?? []))) {
       if (!col.sorted) continue;
       if (entryAccesses.some((a) => a.collection === col.name)) continue; // constructor already created its entries
       builder.addOutput({
@@ -7222,7 +7228,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         if (callInfo.type === 'stateful') {
-          const bState = await callInfo.contract.getFullState();
+          const bState = callInfo.contract.inner.artifact.delegateOnly
+            ? await (callInfo.contract as StatefulContract)._getMasterOnlyState()
+            : await callInfo.contract.getFullState();
           const bStateLayout = callInfo.contract.inner.stateLayout!;
           const bCategoryId = callInfo.contract.categoryId;
 
@@ -7233,9 +7241,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           // Include all data NFTs
-          const bRequiredNftIndices = Array.from(
-            { length: bStateLayout.dataNftCount }, (_, idx) => idx,
-          );
+          const bRequiredNftIndices = callInfo.contract.inner.artifact.delegateOnly
+            ? []
+            : Array.from({ length: bStateLayout.dataNftCount }, (_, idx) => idx);
           const bDataNfts: UnlockableUtxo[] = [];
           for (const nftIndex of bRequiredNftIndices) {
             const dataNftUtxo = bState.dataNftUtxos[nftIndex];
@@ -7285,8 +7293,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           delegateEventSlots.push({ kind: s.kind, offset: s.offset, ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }) });
         }
       }
-      lowLevelCallInputBase = 1 + requiredNftIndices.length
+      const denseCallInputBase = 1 + requiredNftIndices.length
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount + delegateEventSlots.length;
+      // A plain send intentionally materializes no returnEvent input/output; .emitReturn() materializes both.
+      // Keep the facet master aligned at the same input/output index in either mode. All other fixed block slots
+      // are materialized, so blockSize minus an inactive return slot remains authoritative for positional gaps.
+      const inactiveReturnSlots = returnEmitOutputIndex < 0
+        ? (abiFunction?.blockLayout?.slots.filter((s) => s.kind === 'returnEvent').length ?? 0) : 0;
+      const materializedBlockSize = (abiFunction?.blockLayout?.blockSize ?? 0) - inactiveReturnSlots;
+      const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
+      lowLevelCallInputBase = hasDelegatecallGroup
+        ? Math.max(materializedBlockSize, denseCallInputBase) : denseCallInputBase;
 
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
@@ -7312,17 +7329,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return arg;
           });
 
-          // Inject the SDK-filled synthetic params in ABI order (msgSenderCategory before proxyMasterIndex) so the
-          // impl's unlocker receives the FULL input list (it accepts visible-only OR fully-filled, not a partial).
-          // A delegatecall'd impl that uses msg.sender resolves it against the tx like a direct call: 32 zeros =>
-          // tx.origin = the signer's native P2PKH input. (IFoo(msg.sender).m() inside a delegate impl - the callee
-          // category - is not yet wired for the delegatecall path.)
+          // Inject SDK-filled params in ABI order: return slot, sender, then proxy master. The root and facet share
+          // one returnEvent offset, so the facet authors the root-owned authenticated return output directly.
+          if (bFunc.inputs.some((inp) => inp.name === '__internal__returnOutputIdx')) {
+            encodedArgs.push(BigInt(returnEmitOutputIndex));
+          }
           if (bFunc.inputs.some((inp) => inp.name === '__internal__msgSenderCategory')) {
             encodedArgs.push(new Uint8Array(32));
           }
-          // Inject _proxyMasterIndex for delegate functions.
-          // Defaults to 0 (proxy master is the first input in the STB), but can be
-          // overridden via withDelegatecall(..., proxyMasterIndex) for composability.
           if (bFunc.inputs.some((inp) => inp.name === '__internal__proxyMasterIndex')) {
             encodedArgs.push(BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0));
           }
@@ -7729,7 +7743,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const entryInfos = builder.getEntryNftInfos();
       const tcInfos = builder.getTokenContainerInfos();
       let neededFunders = effectiveBlockLayout.slots.filter(
-        (s) => outputOnlyKinds.has(s.kind),
+        (s) => outputOnlyKinds.has(s.kind) && (s.kind !== 'returnEvent' || returnEmitOutputIndex >= 0),
       ).length;
       neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'entry' && !entryInfos.some((e) => e.slotIndex === s.slotIndex && e.exists),
@@ -7828,6 +7842,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const derivTransferCount = abiFunction?.transferCount ?? 0;
     const derivTokenOps = tokenContainerTransferOps.length > 0 ? tokenContainerTransferOps : undefined;
 
+    // Reserve the return placeholder before computing any input indices: an active returnEvent contributes a
+    // funder inside the root block and therefore shifts the delegated facet by one input.
+    if (returnEmitOutputIndex >= 0) {
+      builder.setReturnEventOutput(this.categoryId, new Uint8Array([0]));
+    }
+
     // Detect delegatecall group for auto-derivation: Phase 2 runs on the delegate's input
     // instead of input 0 (proxy's master), because the delegate function is what verifies
     // the proxy's state commitments.
@@ -7835,7 +7855,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (lowLevelCallUtxoGroups.length > 0) {
       for (let i = 0; i < lowLevelCallUtxoGroups.length; i++) {
         if (lowLevelCallUtxoGroups[i].callMode === 'delegatecall') {
-          delegatecallInputIndex = builder.getLowLevelCallMasterInputIndex(i);
+          const activeReturnSlots = returnEmitOutputIndex >= 0
+            ? (abiFunction?.blockLayout?.slots.filter((s) => s.kind === 'returnEvent').length ?? 0) : 0;
+          delegatecallInputIndex = builder.getLowLevelCallMasterInputIndex(i) + activeReturnSlots;
           break;
         }
       }
@@ -7883,12 +7905,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
       builder.setSidecar(sidecarUtxos[0], blob, sidecarSalt);
-    }
-
-    // B8 emit: reserve a placeholder return-event output so the covenant's OP_OUTPUTTOKENCOMMITMENT at
-    // the return slot has an output to read during derivation; the real commitment is derived below.
-    if (returnEmitOutputIndex >= 0) {
-      builder.setReturnEventOutput(this.categoryId, new Uint8Array([0]));
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)
@@ -7967,14 +7983,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 emit: derive the encoded return value (the covenant compares it to the return-event output
     // commitment) and set it, replacing the placeholder.
     if (returnEmitOutputIndex >= 0) {
-      const blob = this._deriveReturnBlob(builder, returnEmitOutputIndex);
+      const blob = this._deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
       if (!blob) {
         throw new Error(
           `Could not derive the return value of '${functionName}' for .emitReturn(). `
-          + 'Functions that write state and return a value are not yet supported with emit.',
+          + 'The covenant trace did not expose an authenticated return commitment.',
         );
       }
       builder.setReturnEventOutput(this.categoryId, blob);
+      (builder as any).__derivedReturnBlob = blob;
     }
 
     // Auto-derived entry deletions: an UNCONDITIONAL `delete m[k]` produces no output for that entry, so the
@@ -7995,13 +8012,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // B8 emit: run one VM probe and extract the encoded return blob from the return-event verification
   // (OP_OUTPUTTOKENCOMMITMENT == __returnBlob), the same trace-extraction used for external-call returns.
   private _deriveReturnBlob(
-    builder: StatefulTransactionBuilder, returnOutputIndex: number,
+    builder: StatefulTransactionBuilder, returnOutputIndex: number, inputIndex = 0,
   ): Uint8Array | undefined {
     const probe = builder.build();
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
     const vm = createVirtualMachineBch2026();
-    const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+    const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });
@@ -8014,7 +8031,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * WITHOUT sending a transaction. A single output returns the decoded value; multiple outputs return an
    * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
    */
-  async _deriveReturnValue(functionName: string, args: FunctionArgument[]): Promise<StateValue> {
+  async _deriveReturnValue(
+    functionName: string, args: FunctionArgument[], calls?: CallInfo[],
+  ): Promise<StateValue> {
     const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
     const outputs = abiFunction?.outputs ?? [];
     if (outputs.length === 0) {
@@ -8025,8 +8044,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
     }
     // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
-    const builder = await this._createBuilder(functionName, args, { emitReturn: true });
-    const blob = this._deriveReturnBlob(builder, slot.offset);
+    const builder = await this._createBuilder(functionName, args, { emitReturn: true, calls });
+    const blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined
+      ?? this._deriveReturnBlob(builder, slot.offset);
     if (!blob) {
       throw new Error(
         `staticCall: could not derive the return value of '${functionName}'. `
@@ -8866,6 +8886,7 @@ export class StatefulFunctionCall {
     }
     return this.parentContract._deriveReturnValue(
       this.functionName, (this.functionArgs ?? []) as FunctionArgument[],
+      this.callInfos.length > 0 ? this.callInfos : undefined,
     ) as Promise<StateValueType>;
   }
 

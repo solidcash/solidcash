@@ -9,6 +9,7 @@ import SignatureTemplate from '../SignatureTemplate.js';
 import { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
+import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -217,11 +218,47 @@ function graftDefaultProxy(impl: Artifact): Artifact {
  * state-holding proxy, seed the state, and return a handle whose method calls forward to the implementation
  * through the pinned delegatecall. Uses the built-in SolidCashProxy unless `options.proxy` is given.
  */
+export function deployProxy<TImpl extends Artifact>(
+  implementationFactory: ContractFactory<TImpl>, initialState?: ProxyInitialState,
+  options?: DeployProxyOptions,
+): Promise<ProxyContract<TImpl>>;
+export function deployProxy(
+  implementationFactory: SplitContractBundle, initialState?: ProxyInitialState,
+  options?: DeployProxyOptions,
+): Promise<SplitContract>;
 export async function deployProxy<TImpl extends Artifact>(
-  implementationFactory: ContractFactory<TImpl>,
+  implementationFactory: ContractFactory<TImpl> | SplitContractBundle,
   initialState?: ProxyInitialState,
   options: DeployProxyOptions = {},
-): Promise<ProxyContract<TImpl>> {
+): Promise<ProxyContract<TImpl> | SplitContract> {
+  // A compiler-generated split bundle already contains the state-holding root. Deploy it directly: its
+  // forwarders target facets in one hop, so no P -> implementation-router -> facet stack is introduced.
+  if (implementationFactory instanceof SplitContractBundle) {
+    if (options.proxy) throw new Error('A split implementation cannot be wrapped in a custom proxy (nested delegatecall is unsupported).');
+    if (typeof options.initializer === 'string') {
+      throw new Error('A split implementation does not support delegate initializer routing; seed state at genesis.');
+    }
+    const nonLinkCtorInputs = implementationFactory.bundle.root.constructorInputs.filter(
+      (input) => !input.name.startsWith('__facetAddr_'),
+    );
+    if (nonLinkCtorInputs.length > 0) {
+      throw new Error(
+        'Split deployProxy requires a constructor-free logical implementation; found: '
+        + nonLinkCtorInputs.map((input) => input.name).join(', '),
+      );
+    }
+    const seeded = toInitialState(initialState, implementationFactory.bundle.root);
+    const facetOverrides = options.implementationOverrides
+      ? Object.fromEntries(implementationFactory.bundle.manifest.facets.map(
+        (facet) => [facet.name, options.implementationOverrides!],
+      ))
+      : undefined;
+    return implementationFactory.deploy([], {
+      ...options.proxyOverrides,
+      initialState: seeded,
+      ...(facetOverrides && { facetOverrides }),
+    });
+  }
   const runner = options.runner ?? implementationFactory.runner;
   const auth = options.auth ?? defaultAuth;
   const implArtifact = implementationFactory.artifact;

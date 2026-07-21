@@ -38,10 +38,15 @@ function looksLikeOverrides(x: unknown): boolean {
 // that deploys several contracts runs out of vout-0 coins. Since we control the signer, the deploy step fans one
 // out on demand: it self-sends the signer's spendable balance into a fresh vout-0 output (a plain P2PKH tx, valid
 // on any provider) and uses that. This makes sequential deploys from one account unbounded.
-async function selectGenesisFundingUtxo(signer: Signer, artifact: Artifact): Promise<Utxo> {
-  const dataNfts = BigInt(artifact.stateLayout?.dataNftCount ?? 1);
+export async function selectGenesisFundingUtxo(
+  signer: Signer, artifact: Artifact, excludedOutpoints: ReadonlySet<string> = new Set(),
+): Promise<Utxo> {
+  const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
   const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
-  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
+  const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
+  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find(
+    (u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u),
+  );
 
   const existing = findGenesisUtxo(await signer.getUtxos());
   if (existing) return existing;
@@ -49,7 +54,7 @@ async function selectGenesisFundingUtxo(signer: Signer, artifact: Artifact): Pro
   // Fan out a fresh vout-0 funding coin from the signer's spendable (token-free) UTXOs.
   const fee = 1000n;
   const spendable = (await signer.getUtxos())
-    .filter((u) => !u.token)
+    .filter((u) => !u.token && !excluded(u))
     .sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
   const chosen: Utxo[] = [];
   let total = 0n;

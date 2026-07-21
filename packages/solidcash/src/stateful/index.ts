@@ -37,7 +37,11 @@ export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
 export {
-  ContractFactory, getContractFactory, deployContract,
+  SplitContractBundle, SplitContract,
+  type SplitDeployOptions, type SplitDeploymentRecord,
+} from './SplitContractBundle.js';
+export {
+  ContractFactory, getContractFactory, deployContract, selectGenesisFundingUtxo,
   type DeployContractOptions, type DeployedContract,
 } from './ContractFactory.js';
 export {

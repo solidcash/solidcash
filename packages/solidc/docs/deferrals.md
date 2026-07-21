@@ -941,12 +941,17 @@ NEW at `bMasterIdx+blockSize` so a 2nd VM pass reaches the NEW's `OP_OUTPUTTOKEN
 `OP_OUTPUTBYTECODE` for the not-yet-existing NEW), then replace with the real commitment (per-group
 `externalCallEntryInserts` + trailing placement); (5) msg.sender - append OUR category REVERSED (internal order) as B's
 `_msgSenderCategory`, and key the entry by `keyToSlot(addressToLockScript(this.address))` (the caller's on-chain LBC,
-NOT `withCategory().lockingBytecode`). Remaining callee shapes are fail-closed (VM-verified, never silent-wrong -
-`solidcash/test/e2e/CrossContractSubcaseSoundness.test.ts`): (a) a >60 B CHUNKED value would need B's value-chunk pins
-co-spent (same as the single-contract chunked-in-loop); (b) a LOOP write in B (`for(i) this.bal[ks[i]] += vs[i]`) would
-need the loop co-spend machinery run for the co-spent callee (N entries co-spent + N commitments derived from B's
-trace), not the single-write derivation. Both revert the tx today (`mandatory-script-verify-flag-failed`); implementable
-(callee loop/chunk derivation), deferred as rare + substantial. Original analysis retained below.
+NOT `withCategory().lockingBytecode`). A callee LOOP write `for(i) this.bal[ks[i]] (+)= vs[i]` is now DONE
+(`e910d18a`, `solidcash/test/e2e/CrossContractLoopWrite.test.ts`): B's loop function has NO fixed entry slot
+(blockSize=1) so its N entries are trailing (B reads master+blockSize+counter); the SDK detects B's
+sortedUpsertLoopInfo, co-spends each existing entry, SDK-computes each updated commitment (B's covenant verifies -
+a wrong commitment reverts, a misplaced input trips B's coSlot==Hk check), appends the inputs to B's block, and mints
+the trailing outputs (STB `entryLoopCommitments`/`entryLoopStart` + the derive-time master-index patch on the loop
+unlockers). Supports per-key/scalar, op +/set, int, one collection. Fail-closed (clean throw): absent key (insert), a
+callee that ALSO writes other state (blockSize>1 - the data-NFT derivation is not yet interleaved with the loop
+co-spend), multi-collection, non-int, dup keys. A >60 B CHUNKED callee value stays fail-closed (VM-verified,
+`CrossContractSubcaseSoundness.test.ts`) - it would need B's value-chunk pins co-spent (same as the single-contract
+chunked-in-loop). Original analysis retained below.
 
 ### Original analysis
 

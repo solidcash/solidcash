@@ -15525,7 +15525,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // commitment by the return types onto the stack (typed values, not opaque bytes) and clean the loop temps
       // BELOW the values. The getReserves half of the Router02 fee-on-transfer swap; the void path below drops it.
       if (slot.hasReturnValues && slot.returnTypes && slot.returnTypes.length > 0) {
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalReturnOutputIdx'))), loc);
+        // Multiple returning slots (e.g. getReserves + balanceOf in one loop) get INDEXED return-output-idx params;
+        // a single one keeps the bare name (matches the non-loop returning read).
+        const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
+        const loopRetParam = loopReturningCount === 1
+          ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
+        this.emit(encodeInt(BigInt(this.getStackIndex(loopRetParam))), loc);
         this.emit(Op.OP_PICK, loc);           // [..., retbase]
         this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc);
         this.emit(Op.OP_PICK, loc);           // [..., retbase, i]

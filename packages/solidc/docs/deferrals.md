@@ -1582,3 +1582,25 @@ just PRODUCES that shape (it value-copies params into locals, `__rh0_a = user`).
   the stack until the read (or copy-propagate the key to the param AND keep it live). A C2-codegen/liveness change.
 - **Revisit if:** the multi-return-inline (single-exit) feature is prioritized (it depends on this), or a corpus audit
   finds `local = param; sortedMapping[local]` in real code (the silent-miscompile trigger).
+
+### DEEPER root cause + 3 failed fix attempts (2026-07-21 cont.) - entry-read tracker/stack inconsistency
+Narrowed further: the copy-local-key read ONLY miscompiles when the key local is DEAD-after-read (consumed as its
+last use). When the key local is LIVE (used elsewhere), the read is CORRECT on baseline. So the trigger is the
+entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
+1. **Reclassify a single-assign param-copy key AS the param** (SymbolTableTraversal.classifyKeySource): fixes the
+   live-param case (VM-verified) but REGRESSES CorpusGapFixes SafeERC20.forceApprove + compiler modifier_double_
+   invocation (their expression/canonical keys SDK-derive correctly; a broad reclassify breaks them), and still
+   fail-closes when the param is dead. Not shippable.
+2. **Rewrite the key node `m[aa]` -> `m[u]`** in place: no effect - the entry-read uses the keySource METADATA
+   (keyParams), not the AST key node, so rewriting the node doesn't register a use of `u` and it's still consumed.
+3. **Force COPY not CONSUME for the entry-read key** (suppressOpRoll flag around visitIdentifier's ROLL at
+   GenerateTargetTraversal:~7283): COMPILES but breaks VM (the read hashes the wrong value). Root reason revealed:
+   `getStackIndex(keyLocal)` in the entry-read returns a STALE index - the probe showed the ROLL moved `min` (the
+   wrong var) to the top, not `aa`. The entry-read's tracker view of the function-local stack positions is
+   inconsistent, and forcing PICK also leaves an extra untracked item that corrupts the fixed working-stack layout.
+- **TRUE root cause:** the sorted entry-read (emitSortedSetRead/emitSortedKeyHash) evaluates the key against a
+  tracker whose local-variable positions are STALE relative to the real stack. A PARAM key works because params sit
+  at a stable base offset; a local key's tracked offset is wrong there. The DUP the param path emits (`OP_DUP
+  OP_SHA256`) reflects a correct offset; the local path emits nothing/rolls the wrong item.
+- **The real fix** needs the entry-read to use a CORRECT stack offset for a local key (reconcile the tracker), or to
+  capture the key value into the entry-read working area BEFORE the layout is set up. A focused C2-codegen change.

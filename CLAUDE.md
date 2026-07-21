@@ -70,18 +70,28 @@ docker compose -f docker-compose.regtest.yml down
 
 ### Compiler Pipeline (`packages/solidc/src/compiler.ts`)
 
-`.scash` source → Lexer/Parser (ANTLR4) → AST → Semantic Analysis → Code Generation → Bytecode Optimization → Artifact
+`.scash` source -> Lexer/Parser (ANTLR4) -> AST -> ordered lowering passes -> semantic analysis -> code generation
+-> bytecode optimization -> artifact
 
-1. **Lexing/Parsing**: ANTLR4-generated from `packages/solidc/src/grammar/SolidCash.g4`. Produces parse tree, then `AstBuilder` converts to SolidCash AST.
-2. **Semantic Analysis** (three visitor passes):
-   - `SymbolTableTraversal` — builds symbol tables, validates definitions
-   - `TypeCheckTraversal` — type compatibility checks
-   - `EnsureFinalRequireTraversal` — ensures functions end with require()
-3. **Code Generation**: `GenerateTargetTraversal` — visitor that emits Bitcoin Script bytecode with source maps
-4. **Optimization**: Dual optimizer (`optimiseBytecode` + `optimiseBytecodeOld`) with compatibility assertion between old and new results
-5. **Artifact generation**: Produces JSON/TS artifact with bytecode, ABI, source, debug info
+1. **Lexing/parsing**: ANTLR4-generated from `packages/solidc/src/grammar/SolidCash.g4`; `AstBuilder` converts the
+   parse tree to the SolidCash AST.
+2. **Import/type repair**: imports are resolved and imported placeholder types are re-resolved.
+3. **Ordered lowering**: `compiler.ts` runs many order-sensitive transformations for inheritance, modifiers,
+   control flow, memory/Yul, storage pointers, arrays/mappings, function pointers, external calls, libraries,
+   block oracles, and Solidity-compatibility forms. Read the adjacent ordering comments before moving a pass.
+4. **Semantic analysis**: `SymbolTableTraversal`, `TypeCheckTraversal`, and `EnsureFinalRequireTraversal` assign
+   symbols/layout and validate the lowered program. The final-require check warns by default and errors when
+   `enforceFinalRequire` is enabled.
+5. **Safety lowering**: `InjectLocktimeGuardTraversal` adds the anti-malleability guard when enabled, followed by
+   `EarlyReturnTransformation` for balanced stack-oriented returns.
+6. **Code generation**: `GenerateTargetTraversal` emits Bitcoin Script plus source/debug metadata.
+7. **Optimization**: `optimiseBytecode` produces emitted bytecode; `optimiseBytecodeOld` remains a compatibility
+   oracle for scripts below the configured operation threshold.
+8. **Artifact generation**: emits bytecode, ABI execution metadata, state/block layouts, function bodies, source,
+   debug information, fingerprint, and referenced-contract data.
 
-All compiler passes use the **visitor pattern** defined in `AstVisitor.ts`. AST nodes are in `packages/solidc/src/ast/AST.ts`.
+Most transformations use the visitor framework in `AstVisitor.ts`; several expansion helpers operate outside that
+simple three-pass model. AST nodes are defined in `packages/solidc/src/ast/AST.ts`.
 
 ### SDK (`packages/solidcash/src/`)
 

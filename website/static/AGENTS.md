@@ -53,7 +53,8 @@ SolidCash is a high-level language for Bitcoin Cash smart contracts with Solidit
 ### Types
 
     bool                              -- true / false
-    int                               -- arbitrary-precision signed integer (BigInt)
+    int / uint                        -- 256-bit signed / unsigned (checked; unchecked wraps)
+    bigint                            -- arbitrary-precision BCH-native integer
     int8 .. int256                    -- bounded signed (8-bit steps)
     uint8 .. uint256                  -- bounded unsigned (8-bit steps)
     fixed / fixed128x18               -- signed fixed-point (MxN: M=bits, N=decimals)
@@ -407,9 +408,9 @@ State variables persist across transactions via CashToken NFT commitments.
 - No gas concept; operation cost limit based on script length
 - No reentrancy (UTXO model; inputs consumed atomically)
 - Exponentiation (**) IS supported (unlike early CashScript)
-- Arbitrary-precision integers (BigInt since May 2025 BCH upgrade)
+- `int`/`uint` have Solidity-compatible 256-bit checked/wrapping semantics; `bigint` exposes BCH BigInt
 - Fixed-point decimals (fixedMxN) fully implemented (Solidity declared but never built)
-- || and && do NOT short-circuit
+- `||` and `&&` short-circuit
 - Max contract size: 10,000 bytes (P2SH consensus limit)
 - NFT commitment limit: 128 bytes
 - addressType: p2sh20, p2sh32 (recommended), p2s

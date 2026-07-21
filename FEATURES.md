@@ -5,7 +5,8 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 ## Language (compiler)
 
 **Types**
-- Primitives: `bool`, `int` (unbounded BigInt), `string`, `bytes`, `pubkey`, `sig`, `datasig`
+- Primitives: `bool`, `int`/`uint` (256-bit, checked; `unchecked` wraps), `bigint` (BCH-native arbitrary precision),
+  `string`, `bytes`, `pubkey`, `sig`, `datasig`
 - Bounded ints: `int8..int256`, `uint8..uint256` (8-bit steps, overflow/underflow checked)
 - Bounded bytes: `bytes1..bytes32` (`byte` = `bytes1`)
 - Fixed-point decimals: `fixed`/`ufixed`, `fixedMxN`/`ufixedMxN` (scaled-integer arithmetic)
@@ -16,7 +17,7 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 
 **Operators**
 - Arithmetic `+ - * / % **`; increment/compound `++ -- += -=`
-- Bitwise `& | ^ ~ << >>`; logical `&& || !`; comparison `== != < <= > >=`; ternary `?:`
+- Bitwise `& | ^ ~ << >>`; short-circuit logical `&& || !`; comparison `== != < <= > >=`; ternary `?:`
 - Casts `type(expr)` + unsafe casts `unsafe_int/unsafe_bool/unsafe_bytesN/unsafe_byte`
 
 **Control flow**
@@ -31,13 +32,16 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 - `import` (wildcard / namespace / selective); inline `assembly { OP_... }`; `console.log` (debug-only)
 
 **Stateful contracts (covenants)**
-- State variables, mappings, and dynamic arrays as on-chain state (entry NFTs, token containers, satoshi containers)
+- State variables, mappings, and dynamic arrays as on-chain state. Supported mapping value shapes use the C2
+  sorted/exclusion-proof backend by default; state also uses data, entry, value-chunk, token-container, and
+  satoshi-container UTXOs.
 - `event`/`error` with `emit`/`revert`
 - Lifecycle modifiers: `deploy`, `upgrade`, `selfdestruct`, `split`, `merge`, `unsafe`, `delegate` (delegatecall proxy/implementation)
 
 **Cross-contract & introspection**
 - External reads `IFoo(category).stateVar`; external calls + low-level `.call/.staticcall/.delegatecall`; `address.transfer/.send`
-- `tx.version/locktime/time/age/origin/inputs/outputs`, `this.activeBytecode/activeInputIndex/age`, `msg.sender/value/data/sig`
+- `tx.version/locktime/time/age/origin/inputs/outputs`, `this.activeBytecode/activeInputIndex/age`,
+  `msg.sender/value/data/sig`, and oracle-backed `block.*` properties/`blockhash`
 - Globals: `abi.encode/encodePacked/encodeWithSelector/encodeWithSignature/encodeCall`, `abi.decode`, bytes/string concat, type introspection, `toPaddedBytes`, hashing, `date()`, number/time units
 
 ## SDK (`solidcash`)
@@ -52,8 +56,10 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 
 ## Tooling / other
 
-- **`solidc` compiler** - ANTLR4 (`SolidCash.g4`) -> AST -> semantic passes (symbols, types, final-require, locktime-guard) -> codegen -> dual optimizer -> artifact
-- **Compiler options** - `enforceFunctionParameterTypes`, `enforceLocktimeGuard`, `commitmentLimit`, `importResolver`
+- **`solidc` compiler** - ANTLR4 (`SolidCash.g4`) -> AST -> ordered compatibility/core lowering -> symbols/types/
+  layouts -> safety passes -> codegen -> optimizer compatibility check -> artifact
+- **Compiler options** - canonical list in `packages/utils/src/artifact.ts`; includes enforcement, import/EVM
+  compatibility, commitment/layout, C2 mappings, external libraries, chain/oracle, library-branding, and recovery modes
 - **Artifact** - bytecode, ABI, `debug` (source map, requires, logs, per-function debug), `functionBodies` (OP_INVOKE dispatch), `fingerprint`, `stateLayout`
 - **Security** - auto-injected `tx.locktime` malleability guard; stateful contracts restricted to `p2sh32`
 - **`@solidcash/testing`** - Hardhat-style framework: accounts, config, environment, contract factory, compile helpers, CLI

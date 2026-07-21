@@ -1,11 +1,13 @@
 # ecrecover in SolidCash
 
-**Status: SLATED FOR REMOVAL.** The 3-argument `ecrecover(hash, sig, pubKey)` described below is a
+**Current status: recovery implementation shipped; legacy alias removed.** The 3-argument
+`ecrecover(hash, sig, pubKey)` described below was a
 verify-with-pubkey operation - it is `checkDataSig(sig, hash, pubKey)` wrapped to return a P2PKH locking
 bytecode - **not** public-key recovery. Now that a real, EVM-conformant recovery path exists, this alias is
 misleading (it does not recover, Solidity has no 3-argument `ecrecover`, and it duplicates `checkDataSig`). It is
-being removed; `ecrecover` becomes solely signature *recovery* (`ecrecover` / `ecrecoverPubKey` / `ecrecoverP2pkh`
-/ `ecrecoverEvm`). Migrate verify-with-a-supplied-pubkey to `checkDataSig` directly. See the **"Recovery design
+removed. Signature recovery is exposed by `ecrecoverPubKey`, `ecrecoverP2pkh`, and `ecrecoverEvm`; bare Solidity
+`ecrecover(hash,v,r,s)` is rewritten to the configured P2PKH or EVM projection only when the compiler's `ecrecover`
+option is set, and is otherwise undefined. Migrate verify-with-a-supplied-pubkey to `checkDataSig` directly. See the **"Recovery design
 and research (restored)"** appendix at the end of this document ("Removal of the 3-argument verify-with-pubkey
 `ecrecover`") for the rationale and the recovery design. The rest of this section describes the deprecated
 behavior for reference.

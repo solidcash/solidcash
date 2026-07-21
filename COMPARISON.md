@@ -1,5 +1,11 @@
 # SolidCash vs EVM/Solidity: Definitive Application Portability Assessment
 
+> Historical snapshot: this assessment records the project near the original `future`-branch expansion and its
+> percentage is not a continuously tested release metric. Counts, gaps, and individual semantics have continued to
+> change. For current behavior, prefer compiler/SDK tests, `FEATURES.md`, `packages/solidc/docs/platform-differences.md`,
+> and `packages/solidc/docs/deferrals.md`. In particular, `int`/`uint`, short-circuiting, C2 mapping defaults,
+> block-property oracles, ABI compatibility modes, Keccak, and ecrecover have advanced since this snapshot.
+
 ## Baseline: What Existed at the `next` Branch Split Point
 
 The `future` branch diverged from `next` at commit `b9778e1` ("Support P2S in the SolidCash SDK"). At that point SolidCash was a **minimal covenant language**:
@@ -21,7 +27,7 @@ The original grammar supported: contracts with functions, `do-while` loops only,
 
 ---
 
-## Overall Score: 95.3% Solidity Feature Parity
+## Snapshot Score: 95.3% Solidity Feature Parity
 
 This measures the percentage of Solidity/EVM language features and DApp patterns that have direct SolidCash equivalents or architectural superiors.
 
@@ -56,7 +62,8 @@ This measures the percentage of Solidity/EVM language features and DApp patterns
 |-----------------|------------|--------|
 | `int8`–`int256` | `int8`–`int256` (commit `eeb4fb9`) | **Identical** |
 | `uint8`–`uint256` | `uint8`–`uint256` (commit `eeb4fb9`) | **Identical** |
-| `int` (unbounded) | `int` (arbitrary precision BigInt) | **Exceeds** (Solidity caps at 256 bits) |
+| `int` / `uint` | 256-bit checked integers; `unchecked` wraps | **Identical high-level semantics** |
+| `bigint` | BCH-native arbitrary-precision integer | **Exceeds** (separate native extension) |
 | `bool` | `bool` | **Identical** |
 | `string` | `string` | **Identical** |
 | `bytes` / `bytes1`–`bytes32` | `bytes` / `bytes1`–`bytes32` | **Identical** |
@@ -170,7 +177,7 @@ This measures the percentage of Solidity/EVM language features and DApp patterns
 | `tx.outputs[i].tokenCategory` | Native token introspection | **Exceeds** |
 | `tx.outputs[i].nftCommitment` | NFT commitment introspection | **Exceeds** |
 | `tx.version`, `tx.locktime` | `tx.version`, `tx.locktime` | **No Solidity equiv** |
-| `block.number` | — | **Missing** (BCH architecture, `this.age` for relative blocks) |
+| `block.number` | Oracle-backed register with native lower-bound optimization | **Available with BCH trust/update model** |
 | `block.timestamp` | `tx.locktime` (BIP113 median-time-past) | **Functional equivalent** |
 | `block.difficulty`/`block.coinbase` | — | **Missing** (not applicable to UTXO model) |
 | `gasleft()` | — | **N/A** (BCH has no gas concept — advantage) |
@@ -363,7 +370,7 @@ SolidCash contract state lives in **public, inspectable NFT commitments**. Any o
 
 | Gap | Impact | Mitigation |
 |-----|--------|------------|
-| `block.number` / `block.difficulty` | Cannot reference absolute block height in script | `this.age` provides relative block counting; `tx.locktime` provides absolute time |
+| `block.*` values | No direct BCH opcode for most block fields | Contract block oracle; native `tx.time`/`this.age` lower bounds where possible |
 | OpenZeppelin-equivalent library | No battle-tested standard library published | `library` keyword exists; patterns demonstrated in 246 test fixtures |
 | Formal verification (SMTChecker) | No automated proof of correctness | Covenant enforcement provides VM-level invariant checking; 2,455 tests provide coverage |
 | ABI wire-format compatibility | Cannot directly call EVM contracts | Bridge contracts + oracle patterns bridge the gap |
@@ -372,7 +379,9 @@ SolidCash contract state lives in **public, inspectable NFT commitments**. Any o
 
 ## Conclusion
 
-**95.3% application portability** from EVM to BCH UTXO chain.
+At the time of this snapshot, the assessment estimated **95.3% application portability** from EVM to BCH UTXO.
+Do not use this percentage as an RC conformance claim; use differential Solidity tests and the current corpus
+scorecard instead.
 
 Across 142 commits and 83,583 lines of new code, the `future` branch transformed SolidCash from a minimal 266-line covenant language into a **full-spectrum smart contract platform** with 661 grammar rules, 140 language features, 14 function modifiers, 66 e2e test suites, 246 contract fixtures, and 56 error type categories.
 

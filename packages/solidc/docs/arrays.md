@@ -53,7 +53,7 @@ Solidity-`memory` analog (transient, not persisted).
 - **Representation:** a single length-prefixed blob on the VM stack -
   `pushdata(count) ++ elem_0 ++ elem_1 ++ ...`. **Fixed-width** element types (bounded ints `uint8`..`int256`,
   `fixed`, `bool`, `pubkey`, `bytesN`) are packed tightly to their byte width (`emitEncodeElementPacked`,
-  `isFixedWidthType` in `generation/utils.ts:242`); **variable-width** types (plain `int`, unbounded `bytes`,
+  `isFixedWidthType` in `generation/utils.ts:242`); **variable-width** types (`bigint`, unbounded `bytes`,
   `string`, `address`, structs) use per-element pushdata framing. The same encoding is reused for the packed state blob.
 - **Full API:** `new T[](n)`, literals, index read/write, `push`, `pop`, `.length`, fixed `T[N]`.
 - **Size:** bounded only by the ~10 KB stack-element limit; effectively unbounded for realistic sizes.
@@ -141,7 +141,7 @@ is also 3-6x denser than one-entry-NFT-per-element.
 ### Layout by element type
 - **Fixed-width** elements (`uintN`/`intN`, `bytesN`, `bool`, `address`, `fixedNxM`) - including > 120 B like
   `bytes200` - use **flat-stream** (count = A$len/width, no count field). SHIPPED.
-- **Simple variable-width** leaf elements (`int`, `string`, unbounded `bytes`) use **single-blob framed** (the
+- **Simple variable-width** leaf elements (`bigint`, `string`, unbounded `bytes`) use **single-blob framed** (the
   whole array is one dynamic value `pushdata(count) ++ pushdata(elem_0) ++ ...`; the count is kept in the blob;
   element access scans). SHIPPED.
 - **Struct** elements chunk-pack too: fixed-width structs via flat-stream, variable-width structs (a `string`/

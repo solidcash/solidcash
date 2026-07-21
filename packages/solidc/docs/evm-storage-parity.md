@@ -5,6 +5,13 @@ Status: **Tier-1 (assembly-storage) + OZ StorageSlot param-factory SHIPPED and r
 reflect shipped reality (the earlier "nothing implemented" text was stale) and to fold in two things: the
 128-byte-commitment PACKING cost model, and the prerequisites the EVM-ABI-parity work retired.
 
+**Current mapping-default note (2026-07-21):** later sections retain some design-era references to C2 as an
+"opt-in". The compiler now selects the C2 sorted/exclusion-proof backend by default for supported mapping value
+shapes; `sortedMappingsAll: false` is the contract-wide legacy opt-out, while `sortedMappings` can selectively keep
+C2 mappings in that mode. Read `compiler.ts` and `deferrals.md` section "C2 sorted backend as the DEFAULT" for the
+current policy. Tier-2 below refers to re-homing all high-level state onto an EVM-like raw slot model, not to making
+ordinary mappings omission-proof; current C2 mappings already provide that property.
+
 The question was: can Solidity's storage model be mapped soundly onto solidcash, including the assembly that
 manipulates storage slots directly (`sstore`/`sload` with derived slots)? Earlier this was called
 "fundamentally out". It is not - it maps soundly, and the foundation is built.
@@ -34,7 +41,7 @@ existing 128-byte-aware substrates fits, so a contiguous or packable region cost
 | EVM shape | Substrate (all already built) | 128B usage | UTXOs |
 |---|---|---|---|
 | declared vars; ERC-7201 namespaced struct fields; any **contiguous static slot run**; array elements `H(p)+i` | **packed register** (data NFT, bin-packed by ordinal, whole-commitment rebuild on write; `SymbolTableTraversal` ~591-704) | ~3-4 words per commitment | 1 per page, not 1 per slot |
-| mapping entries `H(k.p)` (sparse keyspace) | **entry NFT** at the collection's deterministic address, slot id (key) in the commitment; C2-SORTABLE opt-in for absence proofs (`SortedList.ts`, `emitSorted*`) | 1 per live key | 1 per live key |
+| mapping entries `H(k.p)` (sparse keyspace) | **entry NFT** at the collection's deterministic address, slot id (key) in the commitment; C2-sorted by default for supported values (`SortedList.ts`, `emitSorted*`) | 1 per live key | 1 per live key |
 | `bytes` / `string` / dynamic arrays (values > 32 bytes) | **chunk** (dynamic-storage.md) | 120B payload per chunk UTXO + a `uint32 len` header packed in a register | `ceil(len / 120)` |
 
 Rules that fall out of this:
@@ -45,7 +52,7 @@ Rules that fall out of this:
   bin-packer, NOT to N `__evm_storage[base+i]` entries.
 - **Sparse mapping slots are entry NFTs, directly located by slot id.** One entry per live key at the
   collection's deterministic address (slot id in its commitment); the EVM slot number `H(h(k).p)` is the
-  logical label over that entry. C2 sorting is an opt-in absence-proof overlay, not a location mechanism.
+  logical label over that entry. C2 sorting is an absence-proof overlay, not a location mechanism.
 - **Values over 32 bytes ride the chunk model.** `bytes`/`string`/dynamic arrays already split into 120B
   chunks with the length authority in a register field.
 - **One-UTXO-per-slot stays only for genuinely-sparse assembly slot math** (hand-written `sstore` at a
@@ -368,7 +375,7 @@ actually needs absence proofs is covered elsewhere:
 
 - **Declared vars** live in the data NFT (register), a MANDATORY co-spend+recreate (`requiredNftIndices`).
   Their value cannot be withheld, so `require(admin == 0)`-style guards are sound with zero absence machinery.
-- **Mappings** are the withholdable case, and the EXISTING C2 opt-in sorted list (`docs/sorted-mapping-c2.md`)
+- **Mappings** are the withholdable case, and the existing default C2 sorted list (`docs/sorted-mapping-c2.md`)
   is precisely for them (balances/allowances/owners). After P4 an assembly mapping-slot access routes to the
   SAME high-level mapping collection, so opting that mapping into C2 makes the assembly path sound too.
 - **`__evm_storage`** - after P1 (ERC-7201 -> promoted register/collection) and P4 (mapping idiom -> the
@@ -430,7 +437,7 @@ Priorities carry the PACKING lens above: each phase lowers to a 128B-aware subst
 - **P2 - sorted-list soundness re-homing [DROPPED BY DESIGN].** The premise was wrong: the slot space does
   not need absence proofs (see Soundness above). Elements are directly located by slot id at a deterministic
   address; declared-var guards are sound via the always-present register; mapping guards use the existing C2
-  opt-in (and after P4 the assembly path shares that collection). Sorting the whole slot space would be pure
+  C2 backend (and after P4 the assembly path shares that collection). Sorting the whole slot space would be pure
   overhead. Not implemented.
 - **P5 - sorted value-type tail [DEFERRED, niche].** This is an enhancement to the OPT-IN C2 sorted-MAPPING
   feature (a sorted mapping whose VALUE is an unbounded `string`/`bytes`), orthogonal to storage parity -
@@ -469,7 +476,7 @@ encoder + real-keccak fold; fold it in only where a corpus contract exposes a ra
       common hand-written-storage case. Lower-value extensions remain: dynamic-array element idiom, struct-field
       slot math.
 - [x] P2: DROPPED BY DESIGN - the slot space needs no absence proof (declared vars = always-present register;
-      mappings = existing C2 opt-in; raw slots directly located by slot id). Sorting it would be pure overhead.
+      mappings = existing C2 backend; raw slots directly located by slot id). Sorting it would be pure overhead.
 - [~] P5: sorted string / unbounded-bytes value tail - DEFERRED as a niche C2-sorted-MAPPING enhancement (not
       the slot space, and orthogonal to storage parity once P2 is dropped). Needs the chunk model spliced into
       the sorted entry value; low value-per-complexity, documented rather than built.

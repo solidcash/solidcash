@@ -4,6 +4,10 @@ Status: analysis, 2026-06. Compares SolidCash against the Solidity language refe
 (`/Code/solidity/docs`, commit 816d9b2) to position SolidCash as the closing-the-gap BCH
 language. Categories below:
 
+> Historical roadmap: Categories A-C were completed during this effort. This file preserves the decisions and
+> implementation trail, but it is not the current open-work list. Use `deferrals.md`, current corpus scorecards, and
+> tests for remaining gaps.
+
 - **IMPLEMENT** - feasible and valuable on BCH/UTXO; should be built.
 - **ALIGN** - exists but diverges from Solidity in syntax/semantics; bring into line (or fix docs).
 - **N/A** - EVM-execution-model specific (accounts, gas, storage slots, message calls); document as
@@ -89,7 +93,9 @@ The remaining gaps are bounded. They are listed below.
 - **Block/randomness introspection** (IMPLEMENTED via the per-contract block oracle, see docs/block-and-transaction-properties.md): `blockhash(n)`, `block.coinbase`, `block.difficulty`, `block.number`, `block.timestamp`, etc. are oracle-backed reads. `block.prevrandao` is implemented as a **transaction-local shim** - `abs(int(sha256(input[0] prevout txid)))`, NO oracle/co-spend/state - but it is grindable by the tx-builder, so it is compiler-warned and NOT secure randomness (use commit-reveal or `checkDataSig`). Non-oracle substitute for time/height: `require(tx.time >= ...)` (CLTV) / `require(this.age >= ...)` (CSV).
 - **EIP-4844 blobs**: `blobhash(i)` -> `bytes32(0)` and `block.blobbasefee` -> aliases `block.basefee` (compiler-warned porting shims; no real BCH blobs). See docs/block-and-transaction-properties.md s11.
 - **`keccak256`** - no Keccak opcode. Substitute: `sha256` / `hash256` / `hash160` / `ripemd160`.
-- **`ecrecover`** - no pubkey recovery. Substitute: `checkSig` / `checkDataSig` / `checkMultiSig` with an explicit `pubkey`.
+- **`ecrecover`** - SHIPPED via branded recovery side-car pairs. `ecrecoverPubKey`, `ecrecoverP2pkh`, and
+  `ecrecoverEvm` expose explicit projections; bare Solidity `ecrecover(hash,v,r,s)` is enabled through the compiler
+  projection option. Use `checkSig` / `checkDataSig` when the public key is already known.
 - **`erc7201`, transient storage, storage/memory/calldata data locations, storage-slot layout** - UTXO has no storage slots; state lives in data-NFT commitments.
 - **External/message-call function types, linked (DELEGATECALL) libraries, `new` CREATE/ordered base-constructor execution, create2 deterministic addresses** - no persistent on-chain contract objects. Substitutes: covenant introspection (`IFoo(category).x`), the `delegate` modifier proxy pattern, inline libraries, the inferred deploy covenant (`new Child()`) + SDK `deployFrom`.
 - **`event.selector` / `error.selector`, EIP-55 address literals, EIP-165 semantics** - events are NFT outputs addressed by SHA-256; reverts fail the script unconditionally.

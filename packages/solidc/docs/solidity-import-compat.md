@@ -79,7 +79,7 @@ is unbounded); multi-overload resolution and constructor-argument positions are 
 
 Each was surfaced by a real Solidity line and has a clean BCH mapping.
 
-- **`uint`** as the unbounded unsigned int (alias of the unbounded `int`).
+- **`uint`** as Solidity's `uint256` alias. Use `bigint` for BCH-native arbitrary precision.
 - **Constructor visibility** (`public`/`internal`) accepted and ignored (optional since Solidity 0.7.0).
 - **`Library.Type`** member-type syntax in type position (resolves to the bare registered type).
 - **`address(this)`** -> `OP_INPUTINDEX OP_UTXOBYTECODE` (the spent contract UTXO's locking script).

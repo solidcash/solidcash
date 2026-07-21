@@ -85,4 +85,43 @@ describe('returning struct storage-pointer fn on a mapping element (RMW + return
     await fund();
     expect((await c.checkT(7n, 1n, 500n, alicePub, sig).send()).txid).toBeDefined(); // elastic persisted = 500
   });
+
+  // BARE mapping access (`totals[k]`, no `this.` prefix - how real Solidity / BentoBox is written): the storage
+  // pointer arg parses as an array-access on the mapping-name identifier; the inline normalizes it to a mapping
+  // access so it resolves. Proves the bare spelling is byte-identical to the `this.`-prefixed form.
+  it('BARE spelling totals[k].addElastic(e) (no this.) mutates + returns correctly, statement + expression', async () => {
+    const BARE = `struct T { int base; int elastic; }
+      library L { function addElastic(T storage t, int e) returns (int newElastic) { newElastic = t.elastic = t.elastic + e; } }
+      contract C() {
+        using L for T;
+        mapping(int => T) totals;
+        int last;
+        function setT(int k, int b, int el, pubkey pk, sig s) { require(checkSig(s, pk)); totals[k] = T(b, el); }
+        function bumpStmt(int k, int e, pubkey pk, sig s) { require(checkSig(s, pk)); totals[k].addElastic(e); }
+        function bumpToLast(int k, int e, pubkey pk, sig s) { require(checkSig(s, pk)); last = L.addElastic(totals[k], e); }
+        function checkT(int k, int eb, int eel, pubkey pk, sig s) { require(checkSig(s, pk)); require(totals[k].base == eb); require(totals[k].elastic == eel); }
+        function checkLast(int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(last == e); }
+      }`;
+    const art = compileString(BARE, { solidityImportCompat: true });
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    let nonce = 0x6b00;
+    const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const c = contract as unknown as Record<string, (...a: unknown[]) => { send: () => Promise<{ txid: string }> }>;
+    const fund = async (): Promise<void> => { await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 100000n }); };
+    await fund();
+    expect((await c.setT(2n, 5n, 100n, alicePub, sig).send()).txid).toBeDefined(); // totals[2] = T(5, 100)
+    await fund();
+    expect((await c.bumpStmt(2n, 40n, alicePub, sig).send()).txid).toBeDefined(); // statement: elastic 100 -> 140
+    await fund();
+    expect((await c.bumpToLast(2n, 10n, alicePub, sig).send()).txid).toBeDefined(); // expression: elastic 140 -> 150; last = 150
+    await fund();
+    expect((await c.checkT(2n, 5n, 150n, alicePub, sig).send()).txid).toBeDefined(); // base=5, elastic=150
+    await fund();
+    expect((await c.checkLast(150n, alicePub, sig).send()).txid).toBeDefined(); // returned value captured = 150
+  });
 });

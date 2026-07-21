@@ -461,14 +461,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // lvalue slot expression substitution cannot turn into a mapping/array-element assign. Mirror the
         // AstBuilder's read-modify-write template instead - bind a struct local to the element, rename the
         // param to it, and write the local back after the body (`S t = m[k]; <body>; m[k] = t;`).
-        const wb = this.elementWriteBack(arg, `${PREFIX}${n}_${p.name}`);
-        if (p.type instanceof StructType && wb && this.isWritten(callee.body, p.name)) {
+        const acc = this.elementAccess(arg);
+        if (p.type instanceof StructType && acc && this.isWritten(callee.body, p.name)) {
           const local = `${PREFIX}${n}_${p.name}`;
           rename.set(p.name, local);
-          const decl = new VariableDefinitionNode(p.type, [], local, cloneNode(arg) as never);
+          const decl = new VariableDefinitionNode(p.type, [], local, acc.read as never);
           decl.location = arg.location ?? callee.location;
           rmwPrologue.push(decl as StatementNode);
-          rmwEpilogue.push(wb);
+          rmwEpilogue.push(acc.writeBack(local));
         } else if (arg instanceof IdentifierNode) {
           // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
           // targets whose container is a string field).
@@ -514,28 +514,44 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return [...bindings, ...rmwPrologue, ...inlined, ...rmwEpilogue];
   }
 
-  // Write-back statement for a struct storage-pointer bound to a mapping/array element or a bare state struct var:
-  // `m[k] = local`, `arr[i] = local`, or `sv = local` (the RMW epilogue). Returns undefined for any other access
-  // shape (handled by substitution). An array accessed as `arr[i]` parses to a MappingAccessNode, so the name is
-  // routed by kind: a real mapping -> MappingAssign, a state array -> StateArrayAssign.
-  private elementWriteBack(arg: Node, local: string): StatementNode | undefined {
-    const at = (n: StatementNode): StatementNode => { n.location = arg.location; return n; };
-    const id = (): IdentifierNode => { const x = new IdentifierNode(local); x.location = arg.location; return x; };
+  // Normalized element READ node + write-back builder for a struct storage-pointer bound to a mapping/array
+  // element or bare state struct var (the RMW read + epilogue). Handles BOTH `this.m[k]` (MappingAccessNode) and
+  // bare `m[k]` (ArrayAccessNode on the mapping-name identifier, how Solidity WITHOUT `this.` parses) - the bare
+  // mapping form must resolve via the collection, so its read is rebuilt as a MappingAccessNode. Routed by kind
+  // (a real mapping -> MappingAssign, a state array -> StateArrayAssign). Undefined for any other access shape.
+  private elementAccess(arg: Node): { read: ExpressionNode; writeBack: (local: string) => StatementNode } | undefined {
+    const loc = arg.location;
+    const at = (n: StatementNode): StatementNode => { n.location = loc; return n; };
+    const id = (l: string): IdentifierNode => { const x = new IdentifierNode(l); x.location = loc; return x; };
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     if (arg instanceof MappingAccessNode) {
-      const keys = arg.keys.map((k) => cloneNode(k) as ExpressionNode);
-      if (this.mappingNames.has(arg.name)) return at(new MappingAssignNode(arg.name, keys, id()));
+      const keys = (): ExpressionNode[] => arg.keys.map(clone);
+      if (this.mappingNames.has(arg.name)) {
+        return { read: clone(arg), writeBack: (l) => at(new MappingAssignNode(arg.name, keys(), id(l))) };
+      }
       // An indexed state-var/collection access whose name is not a mapping is a state-array element.
-      if ((this.stateVarNames.has(arg.name) || this.collectionNames.has(arg.name)) && keys.length === 1) {
-        return at(new StateArrayAssignNode(arg.name, keys[0], id()));
+      if ((this.stateVarNames.has(arg.name) || this.collectionNames.has(arg.name)) && arg.keys.length === 1) {
+        return { read: clone(arg), writeBack: (l) => at(new StateArrayAssignNode(arg.name, keys()[0], id(l))) };
       }
       return undefined;
     }
     if (arg instanceof ArrayAccessNode && arg.array instanceof IdentifierNode) {
-      return at(new StateArrayAssignNode(arg.array.name, cloneNode(arg.index) as ExpressionNode, id()));
+      const name = arg.array.name;
+      // Bare `m[k]` (no `this.`) on a MAPPING parses as an array access on the mapping-name identifier; rebuild
+      // read + write-back as mapping ops so they resolve via the collection (else "Undefined state variable").
+      if (this.mappingNames.has(name)) {
+        const read = new MappingAccessNode(name, [clone(arg.index)]);
+        read.location = loc;
+        return { read, writeBack: (l) => at(new MappingAssignNode(name, [clone(arg.index)], id(l))) };
+      }
+      if (this.stateVarNames.has(name) || this.collectionNames.has(name)) {
+        return { read: clone(arg), writeBack: (l) => at(new StateArrayAssignNode(name, clone(arg.index), id(l))) };
+      }
+      return undefined;
     }
     // A bare state struct var receiver (`L.f(this.tot)`): whole-struct read-modify-write of the scalar state var.
     if (arg instanceof StateAccessNode && this.stateVarNames.has(arg.name)) {
-      return at(new StateAssignNode(arg.name, id()));
+      return { read: clone(arg), writeBack: (l) => at(new StateAssignNode(arg.name, id(l))) };
     }
     return undefined;
   }

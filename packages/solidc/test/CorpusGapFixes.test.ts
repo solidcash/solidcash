@@ -3331,3 +3331,27 @@ describe('RETURNING storage-pointer library fn on a mapping element (BentoBox ad
       + ' function f(int k, int e) { this.m[k].addElastic(e); this.last = this.m[k].addElastic(e); require(true); } }')).toBe('C');
   });
 });
+
+describe('BARE mapping access (no this.) as a storage-pointer arg - real-Solidity spelling', () => {
+  // Solidity code without `this.` writes `totals[k].addElastic(x)` / `L.f(totals[k], x)`; the bare `totals[k]`
+  // parses as an array-access on the mapping-name identifier, not a MappingAccessNode, so the inline RMW must
+  // normalize it to a mapping access (else "Undefined state variable 'totals'"). Both the void and returning passes.
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).contractName;
+  const VOID = 'struct T { int base; int elastic; }'
+    + ' library L { function addBase(T storage t, int x) { t.base += x; } }';
+  const RET = 'struct T { int base; int elastic; }'
+    + ' library L { function addElastic(T storage t, int e) returns (int c) { c = t.elastic = t.elastic + e; } }';
+  it('void bare L.addBase(totals[k], x)', () => {
+    expect(ok(`${VOID} contract C() { mapping(int => T) totals;`
+      + ' function f(int k, int x) { L.addBase(totals[k], x); require(true); } }')).toBe('C');
+  });
+  it('void bare using-for totals[k].addBase(x)', () => {
+    expect(ok(`${VOID} contract C() { using L for T; mapping(int => T) totals;`
+      + ' function f(int k, int x) { totals[k].addBase(x); require(true); } }')).toBe('C');
+  });
+  it('returning bare totals[k].addElastic(e), statement + expression (public mapping)', () => {
+    expect(ok(`${RET} contract C() { using L for T; mapping(int => T) public totals; int last;`
+      + ' function f(int k, int e, int max) { totals[k].addElastic(e); last = L.addElastic(totals[k], e); require(max >= totals[k].addElastic(e)); } }'))
+      .toBe('C');
+  });
+});

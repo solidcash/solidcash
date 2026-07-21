@@ -627,14 +627,14 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // a mapping/array-element assign). Read-modify-write instead: `S t = m[k]; <body>; m[k] = t;` (this covers
         // BentoBox `totals[k].addElastic(x)` - a returning storage-pointer write-helper). Matches the same fix in
         // InlineStoragePointerCalls; gated on the body actually WRITING so read-only get/size helpers are unchanged.
-        const wb = this.elementWriteBack(arg, `${PREFIX}${n}_${p.name}`);
-        if (p.type instanceof StructType && wb && this.isWritten(callee.body, p.name)) {
+        const acc = this.elementAccess(arg);
+        if (p.type instanceof StructType && acc && this.isWritten(callee.body, p.name)) {
           const local = `${PREFIX}${n}_${p.name}`;
           rename.set(p.name, local);
-          const decl = new VariableDefinitionNode(p.type, [], local, cloneNode(arg) as ExpressionNode);
+          const decl = new VariableDefinitionNode(p.type, [], local, acc.read);
           decl.location = arg.location ?? callee.location;
           rmwPrologue.push(decl as StatementNode);
-          rmwEpilogue.push(wb);
+          rmwEpilogue.push(acc.writeBack(local));
         } else if (arg instanceof IdentifierNode) {
           rename.set(p.name, arg.name);
         } else {
@@ -696,24 +696,39 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return ids;
   }
 
-  // Write-back statement for a struct storage-pointer bound to a mapping/array element or bare state struct var:
-  // `m[k] = local`, `arr[i] = local`, or `sv = local` (the RMW epilogue). Undefined for any other access shape.
-  private elementWriteBack(arg: Node, local: string): StatementNode | undefined {
-    const at = (s: StatementNode): StatementNode => { s.location = arg.location; return s; };
-    const id = (): IdentifierNode => { const x = new IdentifierNode(local); x.location = arg.location; return x; };
+  // Normalized element READ node + write-back builder for a struct storage-pointer bound to a mapping/array
+  // element or bare state struct var. Handles BOTH `this.m[k]` (MappingAccessNode) and bare `m[k]`
+  // (ArrayAccessNode on the mapping-name identifier, how Solidity without `this.` parses) - the bare mapping form
+  // must resolve via the collection, so its read is rebuilt as a MappingAccessNode. Undefined for other shapes.
+  private elementAccess(arg: Node): { read: ExpressionNode; writeBack: (local: string) => StatementNode } | undefined {
+    const loc = arg.location;
+    const at = (s: StatementNode): StatementNode => { s.location = loc; return s; };
+    const id = (l: string): IdentifierNode => { const x = new IdentifierNode(l); x.location = loc; return x; };
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     if (arg instanceof MappingAccessNode) {
-      const keys = arg.keys.map((k) => cloneNode(k) as ExpressionNode);
-      if (this.mappingNames.has(arg.name)) return at(new MappingAssignNode(arg.name, keys, id()));
-      if ((this.stateVarNames.has(arg.name) || this.collectionNames.has(arg.name)) && keys.length === 1) {
-        return at(new StateArrayAssignNode(arg.name, keys[0], id()));
+      const keys = (): ExpressionNode[] => arg.keys.map(clone);
+      if (this.mappingNames.has(arg.name)) {
+        return { read: clone(arg), writeBack: (l) => at(new MappingAssignNode(arg.name, keys(), id(l))) };
+      }
+      if ((this.stateVarNames.has(arg.name) || this.collectionNames.has(arg.name)) && arg.keys.length === 1) {
+        return { read: clone(arg), writeBack: (l) => at(new StateArrayAssignNode(arg.name, keys()[0], id(l))) };
       }
       return undefined;
     }
     if (arg instanceof ArrayAccessNode && arg.array instanceof IdentifierNode) {
-      return at(new StateArrayAssignNode(arg.array.name, cloneNode(arg.index) as ExpressionNode, id()));
+      const name = arg.array.name;
+      if (this.mappingNames.has(name)) {
+        const read = new MappingAccessNode(name, [clone(arg.index)]);
+        read.location = loc;
+        return { read, writeBack: (l) => at(new MappingAssignNode(name, [clone(arg.index)], id(l))) };
+      }
+      if (this.stateVarNames.has(name) || this.collectionNames.has(name)) {
+        return { read: clone(arg), writeBack: (l) => at(new StateArrayAssignNode(name, clone(arg.index), id(l))) };
+      }
+      return undefined;
     }
     if (arg instanceof StateAccessNode && this.stateVarNames.has(arg.name)) {
-      return at(new StateAssignNode(arg.name, id()));
+      return { read: clone(arg), writeBack: (l) => at(new StateAssignNode(arg.name, id(l))) };
     }
     return undefined;
   }

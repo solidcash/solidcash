@@ -1,0 +1,20 @@
+{
+  "name": "solidhat",
+  "version": "0.13.0",
+  "description": "CLI launcher for @solidcash/solidhat",
+  "homepage": "https://solidcash.org",
+  "license": "MIT",
+  "author": "mainnet-pat",
+  "type": "module",
+  "sideEffects": true,
+  "bin": { "solidhat": "dist/cli.js" },
+  "scripts": {
+    "build": "yarn clean && yarn compile",
+    "clean": "rm -rf ./dist",
+    "compile": "tsc -p tsconfig.build.json",
+    "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
+    "prepare": "yarn build"
+  },
+  "dependencies": { "@solidcash/solidhat": "^0.13.0" },
+  "devDependencies": { "typescript": "^5.9.2" }
+}

@@ -135,7 +135,10 @@ task('test', 'Run the test suite (Vitest)')
   .addVariadicPositionalParam('paths', 'Optional test file paths/globs')
   .setAction(async (args) => {
     const extra = (args.paths as string[]) ?? [];
-    const res = spawnSync('npx', ['vitest', 'run', ...extra], { stdio: 'inherit' });
+    const solidhatConfig = ['vitest.solidhat.config.ts', 'vitest.solidhat.config.js']
+      .find((candidate) => fs.existsSync(path.resolve(candidate)));
+    const configArgs = solidhatConfig ? ['--config', solidhatConfig] : [];
+    const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], { stdio: 'inherit' });
     if (res.status !== 0) process.exitCode = res.status ?? 1;
     return { status: res.status };
   });

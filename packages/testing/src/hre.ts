@@ -73,6 +73,8 @@ export interface NetworkConnection {
 export interface HardhatNetwork extends NetworkConnection {
   /** v3 seam: create a fresh isolated connection (new provider + bound helpers). */
   create(networkName?: string): Promise<NetworkConnection>;
+  /** Hardhat 3 spelling for creating and selecting a connection. */
+  connect(networkName?: string): Promise<NetworkConnection>;
 }
 
 export interface HardhatRuntimeEnvironment {
@@ -226,14 +228,16 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
   // The active provider backs the module-global network helpers (loadFixture/time/...).
   setActiveProvider(base.provider as unknown as nh.TestNetworkProvider);
 
+  const connect = async (n?: string): Promise<NetworkConnection> => {
+    const cn = n ?? name;
+    const conn = buildConnection(cn, config.networks[cn], mnemonic, ethersOpts);
+    setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
+    return conn;
+  };
   const network: HardhatNetwork = {
     ...base,
-    create: async (n?: string): Promise<NetworkConnection> => {
-      const cn = n ?? name;
-      const conn = buildConnection(cn, config.networks[cn], mnemonic, ethersOpts);
-      setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
-      return conn;
-    },
+    create: connect,
+    connect,
   };
 
   const hre: HardhatRuntimeEnvironment = {

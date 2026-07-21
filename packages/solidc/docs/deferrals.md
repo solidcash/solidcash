@@ -1433,3 +1433,29 @@ deferral above (a cheaper ladder would help both).
   key/offset encode risks a silent miscompile.
 - **Revisit if:** BentoBox/Kashi/BoringRebase port is prioritized, OR the corpus shows `L.f(m[k])` storage-ptr frequency.
   NOTE overlaps the C2/storage machinery under active churn - coordinate before landing.
+
+## RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - statement + expression position
+- **What:** A struct-storage-pointer fn that RETURNS a value (`function addElastic(Rebase storage t, uint e)
+  returns(uint newElastic){ t.elastic += e; newElastic = t.elastic; }`) fails "Undefined reference to symbol <param>"
+  whether called in STATEMENT position (`totals[k].addElastic(x);` - return discarded, BentoBoxV1:1064,1068) or
+  EXPRESSION position (`require(bal >= totals[k].addElastic(fee))` - return used, BentoBoxV1:985,1020). General - same
+  failure for a CONTRACT-internal returning storage-pointer fn, not library-specific.
+- **Why:** The VOID storage-pointer inline (InlineStoragePointerCalls, DONE - commit 5f2b28f3) only fires for
+  `returnTypes.length === 0`. A returning one is neither the void inline nor a single-`return`-expr `exprInlinableFns`
+  (it mutates), so it is not inlined and its `t.elastic` dangles. NamedReturnTransformation (runs BEFORE
+  InlineStoragePointerCalls) reshapes named returns into explicit-return form, so an `isNamedReturnOnly` eligibility
+  check sees nothing; by InlineStoragePointerCalls the fn has already been consumed/moved (it is absent from BOTH
+  freeFunctions and contract.functions), leaving the dangling `t` to reach codegen. WHICH earlier pass consumes it is
+  unconfirmed (InlineReturningStateHelpers guards OUT storage params at :214, so not that) - a future fix must first
+  locate it.
+- **What it'd take:** (1) STATEMENT position: extend the void RMW inline to a returning fn called in statement
+  position - drop the (discarded) return, reuse the same element read-modify-write. SOUND restriction: the return
+  expr must be side-effect-free (a field/local read), else dropping loses a mutation. Must run AFTER whatever pass
+  currently eats the fn, or stop that pass from eating storage-pointer returning fns. (2) EXPRESSION position: harder -
+  needs statement hoisting from an expression context (capture the return into a temp, run the RMW as prelude
+  statements, replace the call with the temp). BentoBoxV1 needs BOTH.
+- **Also blocks BentoBoxV1 even if fixed:** BoringMath uint128 `.add/.sub` (using-for on uint128), chained assign
+  `newElastic = total.elastic = total.elastic.add(x)`, reassignable storage-pointer local `Rebase storage total =
+  totals[token]`. BentoBoxV1 is a MULTI-wall grind, not one fix.
+- **Revisit if:** BentoBox/Kashi is prioritized; the void case (commit 5f2b28f3) already unblocked BentoBoxV1 PAST all
+  void storage-pointer walls to exactly this returning-fn wall (line 330).

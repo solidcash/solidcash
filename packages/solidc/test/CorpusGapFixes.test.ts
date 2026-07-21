@@ -3277,3 +3277,30 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
     { solidityImportCompat: true })).toThrow(/not yet compiled/);
   });
 });
+
+describe('void storage-pointer library fn on a mapping/array element (BentoBox BoringRebase shape)', () => {
+  // `L.f(m[k])` / `m[k].f()` where L.f takes a `Struct storage` pointer and mutates it: InlineStoragePointerCalls
+  // lowers the element arg to a read-modify-write (`S t = m[k]; <body>; m[k] = t;`) instead of substituting the
+  // element into the mis-built AssignNode lvalue (was: "Undefined reference to symbol <param>"). The using-for
+  // spelling resolves via RedesugarImportedUsingForCalls (struct-valued mapping element receiver -> L.f(m[k], ..)).
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const LIB = 'struct Total { int base; int elastic; }'
+    + ' library L { function addBase(Total storage t, int x) { t.base += x; }'
+    + ' function setBoth(Total storage t, int a, int b) { t.base = a; t.elastic = b; } }';
+  it('direct call L.addBase(this.m[k], x) compiles', () => {
+    expect(ok(`${LIB} contract C() { mapping(int => Total) m;`
+      + ' function f(int k, int x) { L.addBase(this.m[k], x); require(true); } }')).toBe('C');
+  });
+  it('using-for m[k].addBase(x) method spelling compiles', () => {
+    expect(ok(`${LIB} contract C() { using L for Total; mapping(int => Total) m;`
+      + ' function f(int k, int x) { this.m[k].addBase(x); require(true); } }')).toBe('C');
+  });
+  it('storage-pointer fn on a state-ARRAY element arr[i] compiles', () => {
+    expect(ok(`${LIB} contract C() { Total[] arr;`
+      + ' function f(int i, int x) { L.addBase(this.arr[i], x); require(true); } }')).toBe('C');
+  });
+  it('a bare state-var struct arg still aliases by name (no RMW regression)', () => {
+    expect(ok(`${LIB} contract C() { Total tot;`
+      + ' function f(int x) { L.addBase(this.tot, x); require(true); } }')).toBe('C');
+  });
+});

@@ -72,6 +72,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private mappingNames: Set<string> = new Set();
   private sortedCollectionNames: Set<string> = new Set();
   private transitiveSortedWriters: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
@@ -116,6 +117,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    // Mapping (not array) collections: an element write-back for a struct storage-pointer bound to `m[k]` is a
+    // MappingAssign, but an array element `arr[i]` is a StateArrayAssign - keep them apart so neither gets the
+    // other's node (an array accessed as `arr[i]` parses to a MappingAccessNode too).
+    this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     // C2 (sorted) collections: a WRITE to one co-spends the sorted-list entry slots (block layout), like a read,
     // so a void helper writing a sorted mapping must also inline (a plain-entry-model write works as a subroutine).
     this.sortedCollectionNames = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
@@ -446,13 +451,32 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
     const inlinedArg = new Set<string>();
+    const rmwPrologue: StatementNode[] = [];
+    const rmwEpilogue: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {
       const arg = args[i];
       if (p.modifier.includes(Modifier.STORAGE)) {
-        // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
-        // targets whose container is a string field); a complex access path is substituted by expression.
-        if (arg instanceof IdentifierNode) rename.set(p.name, arg.name);
-        else subs.set(p.name, cloneNode(arg) as ExpressionNode);
+        // A struct storage-pointer bound to a MAPPING/ARRAY element that the body WRITES (`L.f(m[k])`,
+        // `arr[i].m()`) cannot be substituted: the write lowers to `AssignNode(identifier=param, S(..))`, an
+        // lvalue slot expression substitution cannot turn into a mapping/array-element assign. Mirror the
+        // AstBuilder's read-modify-write template instead - bind a struct local to the element, rename the
+        // param to it, and write the local back after the body (`S t = m[k]; <body>; m[k] = t;`).
+        const wb = this.elementWriteBack(arg, `${PREFIX}${n}_${p.name}`);
+        if (p.type instanceof StructType && wb && this.isWritten(callee.body, p.name)) {
+          const local = `${PREFIX}${n}_${p.name}`;
+          rename.set(p.name, local);
+          const decl = new VariableDefinitionNode(p.type, [], local, cloneNode(arg) as never);
+          decl.location = arg.location ?? callee.location;
+          rmwPrologue.push(decl as StatementNode);
+          rmwEpilogue.push(wb);
+        } else if (arg instanceof IdentifierNode) {
+          // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
+          // targets whose container is a string field).
+          rename.set(p.name, arg.name);
+        } else {
+          // A complex read-only access path is substituted by expression.
+          subs.set(p.name, cloneNode(arg) as ExpressionNode);
+        }
       } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)
         && !this.isWritten(callee.body, arg.name)) {
         // Substitute a simple identifier value arg by NAME (no local binding): a mapping key that is a caller
@@ -487,7 +511,33 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     });
     const inlined = this.inlineStatements(cloned.body.statements ?? [],
       [...stack, inlineKey(callee.name, callee.parameters.length)]);
-    return [...bindings, ...inlined];
+    return [...bindings, ...rmwPrologue, ...inlined, ...rmwEpilogue];
+  }
+
+  // Write-back statement for a struct storage-pointer bound to a mapping/array element or a bare state struct var:
+  // `m[k] = local`, `arr[i] = local`, or `sv = local` (the RMW epilogue). Returns undefined for any other access
+  // shape (handled by substitution). An array accessed as `arr[i]` parses to a MappingAccessNode, so the name is
+  // routed by kind: a real mapping -> MappingAssign, a state array -> StateArrayAssign.
+  private elementWriteBack(arg: Node, local: string): StatementNode | undefined {
+    const at = (n: StatementNode): StatementNode => { n.location = arg.location; return n; };
+    const id = (): IdentifierNode => { const x = new IdentifierNode(local); x.location = arg.location; return x; };
+    if (arg instanceof MappingAccessNode) {
+      const keys = arg.keys.map((k) => cloneNode(k) as ExpressionNode);
+      if (this.mappingNames.has(arg.name)) return at(new MappingAssignNode(arg.name, keys, id()));
+      // An indexed state-var/collection access whose name is not a mapping is a state-array element.
+      if ((this.stateVarNames.has(arg.name) || this.collectionNames.has(arg.name)) && keys.length === 1) {
+        return at(new StateArrayAssignNode(arg.name, keys[0], id()));
+      }
+      return undefined;
+    }
+    if (arg instanceof ArrayAccessNode && arg.array instanceof IdentifierNode) {
+      return at(new StateArrayAssignNode(arg.array.name, cloneNode(arg.index) as ExpressionNode, id()));
+    }
+    // A bare state struct var receiver (`L.f(this.tot)`): whole-struct read-modify-write of the scalar state var.
+    if (arg instanceof StateAccessNode && this.stateVarNames.has(arg.name)) {
+      return at(new StateAssignNode(arg.name, id()));
+    }
+    return undefined;
   }
 
   private applyRename(root: Node, map: Map<string, string>): void {

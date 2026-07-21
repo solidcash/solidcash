@@ -79,6 +79,9 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
 
     const stateVarTypes = new Map<string, Type>();
     for (const sv of contract.stateVariables) stateVarTypes.set(sv.name, sv.type);
+    // Mappings/arrays live in `collections`, not `stateVariables`: a struct-valued mapping element receiver
+    // (`totals[k].addElastic(x)`) needs the collection type to resolve to the value struct.
+    for (const col of contract.collections) stateVarTypes.set(col.name, col.type);
 
     const fns: (FunctionDefinitionNode | undefined)[] = [
       ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
@@ -123,7 +126,9 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     // Flat per-scope var types (matches the AstBuilder's localStructTypes tracking): state vars, params, then locals.
     const varTypes = new Map(base);
     for (const p of params ?? []) varTypes.set(p.name, p.type);
-    for (const s of statements) this.walk(s, (n) => { if (n instanceof VariableDefinitionNode) varTypes.set(n.name, n.type); });
+    for (const s of statements) {
+      this.walk(s, (n) => { if (n instanceof VariableDefinitionNode) varTypes.set(n.name, n.type); });
+    }
     // Replace a top-level statement in place (a bare `IERC20(x).safeTransfer(..);` MethodCallStatement becomes a
     // FunctionCallStatement) - `rewrite` itself only touches CHILDREN, so the outermost statement is handled here.
     for (let i = 0; i < statements.length; i += 1) {
@@ -208,6 +213,25 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
   private rewriteMethodCastCall(node: MethodCallNode, varTypes: Map<string, Type>): FunctionCallNode | undefined {
     if (node.callOptions) return undefined;
     const recv = node.object;
+    // A STRUCT-typed receiver bound by `using L for Struct` on a mapping/array element or struct field
+    // (`totals[k].addElastic(x)`, `arr[i].m()`, `s.inner.m()`). The AstBuilder desugars a bare struct LOCAL
+    // (`st.m()`) to a namespaced FunctionCall at parse, but leaves these element/field method calls raw because
+    // the element type is not a simple local. Rewrite to `L.m(<receiver>, args)` before InlineStoragePointerCalls,
+    // which then inlines the (dropped) storage-pointer library fn with the element read-modify-write.
+    if (recv instanceof MappingAccessNode || recv instanceof ArrayAccessNode || recv instanceof FieldAccessNode) {
+      const rt = this.resolveExprType(recv, varTypes);
+      if (rt instanceof StructType) {
+        const lib = this.structToLib.get(rt.toString())
+          ?? this.wildcardLibs.find((wl) => this.freeFnNames.has(`${wl}.${node.methodName}`));
+        if (lib && this.freeFnNames.has(`${lib}.${node.methodName}`)) {
+          const id = new IdentifierNode(`${lib}.${node.methodName}`);
+          id.location = node.location;
+          const call = new FunctionCallNode(id, [recv, ...node.parameters]);
+          call.location = node.location;
+          return call;
+        }
+      }
+    }
     let ifaceName: string | undefined;
     if (recv instanceof FunctionCallNode && recv.parameters.length === 1 && this.interfaceNames.has(recv.identifier.name)) {
       ifaceName = recv.identifier.name; // `IERC20(x)` cast receiver

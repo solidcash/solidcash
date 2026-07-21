@@ -3355,3 +3355,21 @@ describe('BARE mapping access (no this.) as a storage-pointer arg - real-Solidit
       .toBe('C');
   });
 });
+
+describe('abi.decode to an interface/contract type (BentoBox/Kashi)', () => {
+  // `abi.decode(data, (IERC20))` - an interface/contract handle is an address on BCH, so it decodes as address
+  // (byte-identical to `abi.decode(data, (address))`). Was: "Unsupported type 'IERC20' in abi.decode".
+  const bc = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).bytecode;
+  it('decodes an interface type identically to address (sound by reduction)', () => {
+    const iface = 'interface IERC20 { function x() external; } contract C() { address o;'
+      + ' function f(bytes d, pubkey pk, sig s) { require(checkSig(s, pk)); (IERC20 t, uint256 n) = abi.decode(d, (IERC20, uint256)); o = address(t); require(n == n); } }';
+    const addr = 'contract C() { address o;'
+      + ' function f(bytes d, pubkey pk, sig s) { require(checkSig(s, pk)); (address t, uint256 n) = abi.decode(d, (address, uint256)); o = t; require(n == n); } }';
+    expect(bc(iface)).toBe(bc(addr));
+  });
+  it('still resolves a registered struct type as a struct (not defaulted to address)', () => {
+    expect(compileString('struct P { int a; int b; } contract C() {'
+      + ' function f(bytes d, pubkey pk, sig s) { require(checkSig(s, pk)); P p = abi.decode(d, (P)); require(p.a == p.a); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

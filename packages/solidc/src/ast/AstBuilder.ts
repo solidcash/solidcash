@@ -4726,6 +4726,14 @@ export default class AstBuilder
   // `C[]` decodes as address[], matching a `C[]` return/variable type.
   private resolveAbiDecodeType(text: string): Type {
     const ty = parseType(text) ?? this.resolveType(text);
+    // An interface/contract-typed decode item (`abi.decode(data, (IERC20))`, BentoBox/Kashi) has no primitive or
+    // struct type - a contract/interface handle is an address on BCH, so decode it as an address (matching the `C[]`
+    // array-element default below and the function/event-param convention `resolveType(t) ?? AddressType`). Covers
+    // a KNOWN interface/contract name, or an uppercase-initial simple identifier (an imported interface not in this
+    // file's registry - a malformed int/fixed type has already thrown in resolveType via validateBounded*).
+    if (!ty && (this.contractInterfaceNames.has(text) || /^[A-Z][A-Za-z0-9_$]*$/.test(text))) {
+      return new AddressType(false, text);
+    }
     if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
     const elemName = text.replace(/(\[\])+$/, '');
     const fixup = (t: Type): Type => {

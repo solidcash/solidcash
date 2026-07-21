@@ -1522,3 +1522,26 @@ elides the re-read.
   complexity/risk was judged not worth 339 B. Pass 1/2 (commit a0849d3e) are the clean stopping point.
 - **Revisit if:** per-contract byte size becomes a hard deploy constraint, or the read-modify-writeback idiom shows up
   broadly (a struct with many untouched fields reused elsewhere saves more - est. ~800 B for a 13-field struct).
+
+## Multi-return STATE helper inline (Kashi `_isSolvent`) - BLOCKED by a pre-existing inline miscompile
+- **What:** A returning STATE/entry-reading helper with EARLY RETURNS (`function _ok(a,m) view returns (bool) { int b
+  = bal[a]; if (b==0) return false; if (b<m) return false; return b>=m*2; }`, Kashi `_isSolvent` shape) fails "Block
+  layout not available" - it can neither be an OP_INVOKE subroutine (entry access needs the caller's block layout) nor
+  inline (InlineReturningStateHelpers.eligibleShape requires a SINGLE tail return; a mid-body return can't linearize).
+  Very common Solidity pattern.
+- **Attempted fix (2026-07-21, REVERTED):** single-exit conversion - nest the early returns (reuse
+  EarlyReturnTransformation.transformStatements), assign each `return x` to a result temp, end with one `return __se`.
+  It COMPILES but produces WRONG runtime results, because of ->
+- **ROOT BLOCKER (pre-existing, NOT the conversion): inlining a returning state helper whose result comes from
+  CONDITIONAL logic miscompiles.** VM-isolated both encodings fail when INLINED but pass as a SUBROUTINE (pure) and
+  pass as a DIRECT expression:
+    - `bool r; if (c) { r=x; } else { r=y; } return r;`  (branch-local write)  -> inlined: wrong
+    - `return c ? x : y;`  (even a SINGLE ternary over state)                   -> inlined: wrong
+    - `require((bal[u] < m) ? false : true)`  DIRECT (no helper)                -> CORRECT
+  So InlineReturningStateHelpers' expression-hoist inline mishandles a helper body ending in `return <ternary>` (or a
+  branch that writes the returned local): the hoisted `__ret = <conditional>` evaluates incorrectly. POTENTIAL SILENT
+  MISCOMPILE for any existing contract with such an inlined helper - worth a focused audit. Fixing it (inline codegen
+  for control-flow-returning state helpers) is the prerequisite for the single-exit multi-return feature AND removes
+  the miscompile. Repro scripts in scratchpad (multiret / _scope / _tern / _confirm shapes).
+- **Revisit if:** the inline miscompile is fixed (then re-land single-exit); or a corpus audit surfaces the silent
+  miscompile in real code.

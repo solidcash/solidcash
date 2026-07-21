@@ -1481,3 +1481,18 @@ deferral above (a cheaper ladder would help both).
   totals[token]`. BentoBoxV1 is a MULTI-wall grind, not one fix.
 - **Revisit if:** BentoBox/Kashi is prioritized; the void case (commit 5f2b28f3) already unblocked BentoBoxV1 PAST all
   void storage-pointer walls to exactly this returning-fn wall (line 330).
+
+## Kashi (KashiPairMediumRiskV1 / KashiPair) - walls after the abi.decode fix (bbb10174)
+The abi.decode-interface fix advanced both Kashi contracts past their first wall. Remaining:
+- **KashiPairMediumRiskV1: overloaded RebaseLibrary.add** - "Cannot inline call to 'RebaseLibrary.add': it has
+  multiple 3-argument overloads". RebaseLibrary (defined inline at line 311) has TWO 3-arg `add`:
+  `add(Rebase memory, uint256 elastic, bool roundUp) returns (Rebase memory, uint256 base)` and
+  `add(Rebase memory, uint256 elastic, uint256 base) returns (Rebase memory)`. They differ by 3rd-param type
+  (bool vs uint256) AND return arity (2 vs 1). NOTE these are pure MEMORY-struct fns (Rebase memory, not storage) -
+  they should compile as OP_INVOKE subroutines, NOT be inlined; investigate WHY the inline overload guard
+  (AmbiguousInlineOverloadError, collectAmbiguousInlineKeys) is reached for a call to a non-storage-pointer memory
+  fn. If they genuinely must inline, disambiguate by RETURN ARITY at the call site (tuple `(t,b)=` -> the 2-return
+  overload; single `t=` -> the 1-return) - determinable pre-semantic from the LHS. Kashi-specific.
+- **KashiPair (kashi-lending repo): import resolution** - "Cannot resolve import
+  '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
+  HARNESS/dependency issue, not a compiler wall.

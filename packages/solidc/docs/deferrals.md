@@ -1555,3 +1555,25 @@ ret.expressions[0])` for a ternary return expr, hoisted) emits DIFFERENT bytecod
 (~6-byte divergence near the OP_LESSTHAN/OP_IF of the ternary) and it evaluates wrong. A future fix should diff the
 inline vs direct ASM at that point - the direct form is the correct reference. This is the sole blocker for the
 single-exit multi-return feature.
+
+### CORRECTED root cause (2026-07-21, exhaustive debugging pass) - it's a COPY-LOCAL-KEY sorted-mapping read, NOT the inline
+The "return-ternary inline miscompile" above was MISDIAGNOSED. The real bug: reading a SORTED (C2) mapping with a key
+that is a single-assign LOCAL COPY of a param (`address aa = u; b = m[aa]`) miscompiles - and the multi-return inline
+just PRODUCES that shape (it value-copies params into locals, `__rh0_a = user`). Isolated with direct source (no inline):
+`aa = u; m[aa]` fails, `m[u]` (param key) works; not ternary/this./name-collision specific (all ruled out via VM tests).
+- **Where:** GenerateTargetTraversal.emitSortedKeyHash (~:10367). A key classified as a PARAM emits `OP_PICK
+  getStackIndex(param)` (copies it, keeps it). A local/expression key takes the ELSE branch `this.visit(node.keys[i])`
+  - VM-instrumented: for the copy-local `aa`, that visit emits NOTHING (stackBefore==stackAfter, top is the WRONG var),
+  so the following `OP_SHA256` hashes the wrong stack value -> wrong slot32 -> wrong entry/value. The DUP the param path
+  emits (`OP_CHECKSIGVERIFY OP_DUP OP_SHA256`) is simply absent (`... OP_SHA256`).
+- **Why the local isn't visitable there:** the entry-read runs in a stack context set up by the block layout; the
+  function's locals/params are reached via the keySource METADATA (keyParams), and the copy `aa = u` CONSUMES `u`
+  (last-use ROLL) when `u`'s only use is the copy, so neither `aa` nor `u` is on the stack at the read.
+- **Attempted fix (REVERTED):** classify a single-assign param-copy local key AS the param (so codegen takes the PICK
+  path). It FIXES the case where the param is otherwise live (VM-verified) but (a) REGRESSES SafeERC20.forceApprove +
+  modifier_double_invocation - the expression/canonical path correctly SDK-derives those keys, and a broad reclassify
+  breaks them - and (b) fail-closes ("variable does not exist") when the param is dead after the copy. Not shippable.
+- **The real fix** is deeper: the entry-read's key liveness must count the metadata-based key use so the param stays on
+  the stack until the read (or copy-propagate the key to the param AND keep it live). A C2-codegen/liveness change.
+- **Revisit if:** the multi-return-inline (single-exit) feature is prioritized (it depends on this), or a corpus audit
+  finds `local = param; sortedMapping[local]` in real code (the silent-miscompile trigger).

@@ -1484,15 +1484,20 @@ deferral above (a cheaper ladder would help both).
 
 ## Kashi (KashiPairMediumRiskV1 / KashiPair) - walls after the abi.decode fix (bbb10174)
 The abi.decode-interface fix advanced both Kashi contracts past their first wall. Remaining:
-- **KashiPairMediumRiskV1: overloaded RebaseLibrary.add** - "Cannot inline call to 'RebaseLibrary.add': it has
-  multiple 3-argument overloads". RebaseLibrary (defined inline at line 311) has TWO 3-arg `add`:
-  `add(Rebase memory, uint256 elastic, bool roundUp) returns (Rebase memory, uint256 base)` and
-  `add(Rebase memory, uint256 elastic, uint256 base) returns (Rebase memory)`. They differ by 3rd-param type
-  (bool vs uint256) AND return arity (2 vs 1). NOTE these are pure MEMORY-struct fns (Rebase memory, not storage) -
-  they should compile as OP_INVOKE subroutines, NOT be inlined; investigate WHY the inline overload guard
-  (AmbiguousInlineOverloadError, collectAmbiguousInlineKeys) is reached for a call to a non-storage-pointer memory
-  fn. If they genuinely must inline, disambiguate by RETURN ARITY at the call site (tuple `(t,b)=` -> the 2-return
-  overload; single `t=` -> the 1-return) - determinable pre-semantic from the LHS. Kashi-specific.
+- **KashiPairMediumRiskV1: overloaded RebaseLibrary.add - DONE 2026-07-21 (commit efc4cd86).** Two 3-arg `add`
+  overloads (bool-3rd -> 2-return, uint-3rd -> 1-return). Root cause of the inline: they're marked by
+  InlineReturningStateHelpers.containsExternalCall OVER-APPROXIMATING - `total.elastic.add(..)` is a BoringMath
+  using-for MethodCall (undesugared at that pass) that line 257 treats as an external call, so the pure memory-struct
+  `add` gets force-inlined. Fixed by DISAMBIGUATING the ambiguous inline by RETURN ARITY (expression -> 1-return,
+  tuple -> K-return; resolved up front via overloadsByKey + pickOverloadByReturnArity). VM-proven
+  (OverloadedInlineDisambig.test.ts). Advanced KashiPairMediumRiskV1 to the NEXT wall:
+- **KashiPairMediumRiskV1: `_isSolvent` external-call param bloat** - "Found (address,bool,uint256) in call to
+  '_isSolvent' where (address,bool,uint256,bigint,bytes4,bigint) were expected" - the SAME deep recursive/external-call
+  covenant-param-threading wall as SushiMaker `_convertStep` (an internal external-call fn's signature bloats with
+  synthetic params the call site can't supply). DEEP - see the SushiMaker entry in mistswap_bench memory.
+  NOTE a cleaner future fix for the ROOT would desugar value-type using-for method calls (`x.add(y)` on int) to
+  `BoringMath.add(x, y)` BEFORE InlineReturningStateHelpers, so containsExternalCall stops mis-classifying them
+  (RedesugarImportedUsingForCalls handles struct/interface/bare-ident receivers but not value-typed field receivers).
 - **KashiPair (kashi-lending repo): import resolution** - "Cannot resolve import
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.

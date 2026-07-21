@@ -3,6 +3,9 @@
 Hardhat-style project tooling for SolidCash. SolidHat adds whole-project compilation, incremental caching,
 namespaced artifacts, a task runner, and compatibility entry points for Hardhat and Ethers test suites.
 
+See [Compatibility architecture and roadmap](./docs/compatibility-roadmap.md) for the planned ABI, TypeChain,
+Viem, Wagmi, and BCH WalletConnect integrations and their implementation order.
+
 ## Requirements
 
 - Node.js 22 or newer

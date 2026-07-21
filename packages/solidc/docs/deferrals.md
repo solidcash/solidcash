@@ -1440,20 +1440,24 @@ deferral above (a cheaper ladder would help both).
   whether called in STATEMENT position (`totals[k].addElastic(x);` - return discarded, BentoBoxV1:1064,1068) or
   EXPRESSION position (`require(bal >= totals[k].addElastic(fee))` - return used, BentoBoxV1:985,1020). General - same
   failure for a CONTRACT-internal returning storage-pointer fn, not library-specific.
-- **Why:** The VOID storage-pointer inline (InlineStoragePointerCalls, DONE - commit 5f2b28f3) only fires for
-  `returnTypes.length === 0`. A returning one is neither the void inline nor a single-`return`-expr `exprInlinableFns`
-  (it mutates), so it is not inlined and its `t.elastic` dangles. NamedReturnTransformation (runs BEFORE
-  InlineStoragePointerCalls) reshapes named returns into explicit-return form, so an `isNamedReturnOnly` eligibility
-  check sees nothing; by InlineStoragePointerCalls the fn has already been consumed/moved (it is absent from BOTH
-  freeFunctions and contract.functions), leaving the dangling `t` to reach codegen. WHICH earlier pass consumes it is
-  unconfirmed (InlineReturningStateHelpers guards OUT storage params at :214, so not that) - a future fix must first
-  locate it.
-- **What it'd take:** (1) STATEMENT position: extend the void RMW inline to a returning fn called in statement
-  position - drop the (discarded) return, reuse the same element read-modify-write. SOUND restriction: the return
-  expr must be side-effect-free (a field/local read), else dropping loses a mutation. Must run AFTER whatever pass
-  currently eats the fn, or stop that pass from eating storage-pointer returning fns. (2) EXPRESSION position: harder -
-  needs statement hoisting from an expression context (capture the return into a temp, run the RMW as prelude
-  statements, replace the call with the temp). BentoBoxV1 needs BOTH.
+- **Why (CONFIRMED via pass bisect 2026-07-21):** The culprit is `InlineReturningStateHelpers.eligibleStructPtr`
+  (InlineReturningStateHelpers.ts:445, runs at compiler.ts BEFORE InlineStoragePointerCalls). NamedReturnTransformation
+  first rewrites the named return into an explicit tail `return newElastic;`, which makes the fn match eligibleStructPtr
+  (single-tail-return + struct-storage-pointer param). That predicate was written for READ helpers (`get`/`size` on a
+  `Map storage`) - it expression-inlines the fn by substituting the storage param READ-style, but this fn WRITES
+  `t.elastic`, and the read-oriented substitution leaves the write's `t` dangling -> "Undefined reference to symbol t"
+  at codegen. So a returning struct-storage-pointer WRITE-helper is grabbed by the wrong inliner. (The void
+  InlineStoragePointerCalls path at :137 requires `returnTypes.length === 0`, so it never sees it.)
+- **What it'd take (now that the culprit is known):** The cleanest fix is IN `InlineReturningStateHelpers`, reusing
+  its existing expression-inline HOISTING machinery (it already replaces a call with a temp + prelude statements -
+  exactly what expression-position BentoBox `require(.. >= totals[k].addElastic(fee))` needs). Make `eligibleStructPtr`
+  (or its inline substitution) do the element READ-MODIFY-WRITE for a WRITE-helper: `S __t = m[k]; <body with param->__t>;
+  m[k] = __t; <temp> = <returned expr>;` and hoist `<temp>` in place of the call. This covers BOTH statement and
+  expression position uniformly. RISK: eligibleStructPtr currently serves read-only get/size helpers - must not
+  regress them (gate the RMW write-back on the body actually WRITING the pointer, mirroring
+  InlineStoragePointerCalls.isWritten). Alternative (statement-only, narrower): EXCLUDE write-helpers from
+  eligibleStructPtr so they fall through to InlineStoragePointerCalls, and extend THAT pass to returning fns in
+  statement position - but that leaves expression position (985/1020) still broken, so the in-place fix is preferred.
 - **Also blocks BentoBoxV1 even if fixed:** BoringMath uint128 `.add/.sub` (using-for on uint128), chained assign
   `newElastic = total.elastic = total.elastic.add(x)`, reassignable storage-pointer local `Rebase storage total =
   totals[token]`. BentoBoxV1 is a MULTI-wall grind, not one fix.

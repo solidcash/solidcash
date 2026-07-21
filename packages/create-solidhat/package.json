@@ -1,5 +1,5 @@
 {
-  "name": "create-solidhat",
+  "name": "@solidcash/create-solidhat",
   "version": "0.13.0",
   "description": "Create a new SolidHat project",
   "keywords": ["solidcash", "bitcoin cash", "project initializer"],

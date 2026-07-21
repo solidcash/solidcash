@@ -1,9 +1,9 @@
-# create-solidhat
+# @solidcash/create-solidhat
 
-The project initializer behind `npm create solidhat@latest`.
+The project initializer behind `npm create @solidcash/solidhat@latest`.
 
 ```sh
-npm create solidhat@latest my-project -- --template typescript
+npm create @solidcash/solidhat@latest my-project -- --template typescript
 ```
 
-Use `npx solidhat --init` to add SolidHat to the current project instead.
+Use `npx @solidcash/solidhat --init` to add SolidHat to the current project instead.

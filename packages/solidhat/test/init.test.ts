@@ -155,21 +155,11 @@ describe('initializeProject', () => {
 describe('CLI entry points', () => {
   const solidhatCli = resolve('dist/cli.js');
   const createCli = resolve('../create-solidhat/dist/cli.js');
-  const launcherCli = resolve('../solidhat-cli/dist/cli.js');
 
   it('injects the current directory with solidhat --init', () => {
     const directory = temporaryDirectory('cli-init');
     writeFileSync(join(directory, 'package.json'), '{"name":"existing"}\n');
     const output = execFileSync(process.execPath, [solidhatCli, '--init', '--no-install'], {
-      cwd: directory, encoding: 'utf8',
-    });
-    expect(output).toContain('Initialized SolidHat');
-    expect(existsSync(join(directory, 'solidcash.config.ts'))).toBe(true);
-  });
-
-  it('supports npx-style initialization through the unscoped launcher', () => {
-    const directory = temporaryDirectory('launcher');
-    const output = execFileSync(process.execPath, [launcherCli, '--init', '--no-install'], {
       cwd: directory, encoding: 'utf8',
     });
     expect(output).toContain('Initialized SolidHat');

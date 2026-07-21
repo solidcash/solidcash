@@ -5,13 +5,13 @@ Hardhat-style project tooling for SolidCash.
 Initialize SolidHat alongside an existing Hardhat project without changing its EVM configuration or artifacts:
 
 ```sh
-npx solidhat --init
+npx @solidcash/solidhat --init
 ```
 
 Create a new project:
 
 ```sh
-npm create solidhat@latest my-project
+npm create @solidcash/solidhat@latest my-project
 ```
 
 SolidCash output is namespaced beneath `artifacts/solidcash` and `cache/solidcash`. Use `--dry-run` to preview
@@ -31,4 +31,4 @@ import { toBigInt } from '@solidcash/solidhat/ethers6';
 `vitest.solidhat.config.ts`. Override detection with `--hardhat 2|3` and `--ethers 5|6`.
 
 The package declares `sideEffects: false`; configuration, initialization, Vitest integration, and each generation
-shim are independent export-map entry points. The unscoped `solidhat` package is only a CLI launcher.
+shim are independent export-map entry points. The package itself exposes the `solidhat` executable.

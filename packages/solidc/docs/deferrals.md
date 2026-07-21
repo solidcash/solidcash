@@ -1501,3 +1501,24 @@ The abi.decode-interface fix advanced both Kashi contracts past their first wall
 - **KashiPair (kashi-lending repo): import resolution** - "Cannot resolve import
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.
+
+## Reuse an entry-read local for a struct-mapping field write-back (IMPLEMENTED then REVERTED 2026-07-21)
+The read-modify-writeback idiom `S e = m[k]; ..modify e..; m[k].f1 = e.f1; m[k].f2 = e.f2;` (Unicrow `refund`) is
+folded by CoalesceMappingEntryFieldWrites into one whole-struct write, but that RE-READS the entry to source the
+untouched fields - redundant, because `e` already holds them. Reusing `e` (`m[k] = S(e.f0, .., e.f1, .., 1, ..)`)
+elides the re-read.
+- **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
+  suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
+  imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving
+  rebuild) and before CoalesceMappingEntryFieldWrites (pre-empting it for the folded run). Sound iff, by a
+  conservative straight-line analysis between the read and the run: `modified(e) is subset of written(run)` (so
+  untouched fields still equal storage), no write to `m[k]`, `e` does not escape into a call (pass-by-ref), no
+  wholesale reassign/redeclare of `e`, no intervening control flow. Only folds runs of >= 2 (a single field
+  write-back is a cheaper splice than a whole-struct write); keeps the CoalesceMappingEntryFieldWrites value gates.
+- **Why deferred:** the win is small and narrow - Unicrow `refund` 5683 -> 5344 (-339 B; only `refund` has the idiom,
+  challenge/settle write params directly, release's single write is left alone). That is the LARGEST soundness
+  surface of the three coalescing passes for the SMALLEST win vs Pass 1 (-4030 B) / Pass 2 (-4397 B). The pass fails
+  closed (bails to unoptimized), so the realistic failure mode is missed-optimization, not miscompile - but the
+  complexity/risk was judged not worth 339 B. Pass 1/2 (commit a0849d3e) are the clean stopping point.
+- **Revisit if:** per-contract byte size becomes a hard deploy constraint, or the read-modify-writeback idiom shows up
+  broadly (a struct with many untouched fields reused elsewhere saves more - est. ~800 B for a 13-field struct).

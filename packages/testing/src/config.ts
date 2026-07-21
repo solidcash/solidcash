@@ -5,8 +5,8 @@
  * loads directly).
  */
 import { pathToFileURL } from 'url';
-import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 
 export interface NetworkConfig {
   /** Which provider backs this network. */
@@ -29,6 +29,7 @@ export interface SolidcashConfig {
     contracts?: string;
     artifacts?: string;
     tests?: string;
+    cache?: string;
   };
   networks?: Record<string, NetworkConfig>;
   defaultNetwork?: string;
@@ -37,6 +38,8 @@ export interface SolidcashConfig {
   accounts?: AccountsConfig;
   /** Compiler options passed through to solidc `compileString`. */
   solc?: Record<string, unknown>;
+  /** Compiler options passed through to solidc. Preferred over the legacy `solc` name. */
+  compiler?: Record<string, unknown>;
 }
 
 /** Fully-resolved config (defaults applied). */
@@ -47,6 +50,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   mnemonic?: string;
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
+  compiler?: Record<string, unknown>;
 }
 
 /** Typed identity helper for `solidcash.config.ts` (mirrors hardhat `defineConfig`). */
@@ -57,28 +61,98 @@ export function defineConfig(config: SolidcashConfig): SolidcashConfig {
 const CONFIG_BASENAMES = ['solidcash.config.ts', 'solidcash.config.mjs', 'solidcash.config.js'];
 
 /** Apply defaults to a user config. */
-export function resolveConfig(config: SolidcashConfig = {}): ResolvedConfig {
+export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): ResolvedConfig {
+  const resolvePath = (configured: string | undefined, fallback: string): string => {
+    const value = configured ?? fallback;
+    return baseDir ? resolve(baseDir, value) : value;
+  };
+  const compiler = config.compiler ?? config.solc;
   return {
     paths: {
-      contracts: config.paths?.contracts ?? 'contracts',
-      artifacts: config.paths?.artifacts ?? 'artifacts',
-      tests: config.paths?.tests ?? 'test',
+      contracts: resolvePath(config.paths?.contracts, 'contracts'),
+      // Artifact root. SolidCash-owned files are written beneath its `solidcash/` namespace so native Hardhat
+      // artifacts and build-info can coexist in the same root.
+      artifacts: resolvePath(config.paths?.artifacts, 'artifacts'),
+      tests: resolvePath(config.paths?.tests, 'test'),
+      cache: resolvePath(config.paths?.cache, 'cache'),
     },
     networks: { mock: { type: 'mock' }, ...config.networks },
     defaultNetwork: config.defaultNetwork ?? 'mock',
     mnemonic: config.mnemonic,
     accounts: config.accounts,
-    solc: config.solc,
+    solc: compiler,
+    compiler,
   };
 }
 
-/** Locate a solidcash config file in `dir`, returning its absolute path or undefined. */
+const HARDHAT_CONFIG_BASENAMES = ['hardhat.config.ts', 'hardhat.config.mjs', 'hardhat.config.js'];
+
+function parentDirectories(start: string): string[] {
+  const directories: string[] = [];
+  let current = resolve(start);
+  while (true) {
+    directories.push(current);
+    const parent = dirname(current);
+    if (parent === current) return directories;
+    current = parent;
+  }
+}
+
+/** Locate the nearest SolidCash config, or an explicitly opted-in Hardhat config. */
 export function findConfigFile(dir: string = process.cwd()): string | undefined {
-  for (const name of CONFIG_BASENAMES) {
-    const p = resolve(dir, name);
-    if (existsSync(p)) return p;
+  for (const current of parentDirectories(dir)) {
+    for (const name of CONFIG_BASENAMES) {
+      const candidate = join(current, name);
+      if (existsSync(candidate)) return candidate;
+    }
+    for (const name of HARDHAT_CONFIG_BASENAMES) {
+      const candidate = join(current, name);
+      if (!existsSync(candidate)) continue;
+      const source = readFileSync(candidate, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
+      if (/\bsolidcash\s*:/.test(source) || /\bwithSolidCash\s*\(/.test(source)) return candidate;
+    }
   }
   return undefined;
+}
+
+/** Locate the nearest Hardhat config, including one which has not opted into SolidCash yet. */
+export function findHardhatConfigFile(dir: string = process.cwd()): string | undefined {
+  for (const current of parentDirectories(dir)) {
+    for (const name of HARDHAT_CONFIG_BASENAMES) {
+      const candidate = join(current, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+interface HardhatCompatConfig {
+  solidcash?: SolidcashConfig;
+  paths?: { sources?: string; tests?: string; artifacts?: string; cache?: string };
+  networks?: Record<string, { accounts?: AccountsConfig & { mnemonic?: string } }>;
+}
+
+function fromHardhatConfig(config: HardhatCompatConfig): SolidcashConfig {
+  const embedded = config.solidcash ?? {};
+  const hardhatAccounts = config.networks?.hardhat?.accounts;
+  const inheritedAccounts = hardhatAccounts && {
+    path: hardhatAccounts.path,
+    count: hardhatAccounts.count,
+    initialIndex: hardhatAccounts.initialIndex,
+  };
+  return {
+    ...embedded,
+    paths: {
+      contracts: embedded.paths?.contracts ?? config.paths?.sources,
+      tests: embedded.paths?.tests ?? config.paths?.tests,
+      artifacts: embedded.paths?.artifacts ?? config.paths?.artifacts,
+      cache: embedded.paths?.cache ?? config.paths?.cache,
+    },
+    mnemonic: embedded.mnemonic ?? hardhatAccounts?.mnemonic,
+    accounts: embedded.accounts ?? inheritedAccounts,
+  };
 }
 
 /** Load and resolve the config from `dir` (empty config if none found). */
@@ -86,6 +160,34 @@ export async function loadConfig(dir: string = process.cwd()): Promise<ResolvedC
   const file = findConfigFile(dir);
   if (!file) return resolveConfig({});
   const mod = await import(pathToFileURL(file).href);
-  const user = (mod.default ?? mod.config ?? {}) as SolidcashConfig;
-  return resolveConfig(user);
+  const exported = (mod.default ?? mod.config ?? {}) as SolidcashConfig & HardhatCompatConfig;
+  const isHardhat = HARDHAT_CONFIG_BASENAMES.some((name) => file.endsWith(name));
+  const user = isHardhat ? fromHardhatConfig(exported) : exported;
+  return resolveConfig(user, dirname(file));
+}
+
+/** Generate a standalone SolidCash config from the nearest Hardhat config without modifying the original. */
+export async function migrateHardhatConfig(dir: string = process.cwd()): Promise<string> {
+  const hardhatFile = findHardhatConfigFile(dir);
+  if (!hardhatFile) throw new Error('No hardhat.config.{ts,mjs,js} found in this directory or its parents.');
+  const target = join(dirname(hardhatFile), 'solidcash.config.ts');
+  if (existsSync(target)) throw new Error(`Refusing to overwrite existing ${target}`);
+  const mod = await import(pathToFileURL(hardhatFile).href);
+  const hardhat = (mod.default ?? mod.config ?? {}) as HardhatCompatConfig;
+  const migrated = fromHardhatConfig(hardhat);
+  const lines = [
+    "import { defineConfig } from '@solidcash/testing';",
+    '',
+    'export default defineConfig({',
+    `  paths: ${JSON.stringify(migrated.paths ?? {}, null, 2).replace(/\n/g, '\n  ')},`,
+    '  // Hardhat solidity.settings are intentionally not translated. Set SolidCash compiler options here.',
+    '  compiler: { solidityImportCompat: true },',
+  ];
+  if (migrated.mnemonic) lines.push(`  mnemonic: ${JSON.stringify(migrated.mnemonic)},`);
+  if (migrated.accounts) lines.push(
+    `  accounts: ${JSON.stringify(migrated.accounts, null, 2).replace(/\n/g, '\n  ')},`,
+  );
+  lines.push("  networks: { mock: { type: 'mock' } },", "  defaultNetwork: 'mock',", '});', '');
+  writeFileSync(target, lines.join('\n'), { encoding: 'utf8', flag: 'wx' });
+  return target;
 }

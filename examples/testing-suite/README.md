@@ -24,6 +24,24 @@ This suite doubles as a **drop-in replacement for a Hardhat + ethers + chai test
 ported from Solidity/Hardhat keep their test style. See `HARDHAT-PARITY.md` for the full roadmap/checklist.
 
 - **Config**: `solidcash.config.ts` (`defineConfig`) - paths, networks, mnemonic. Loaded by the `solidcash` CLI.
+
+Existing Hardhat projects can keep a single `hardhat.config.ts` by attaching an explicit SolidCash section:
+
+```ts
+import { defineConfig } from 'hardhat/config';
+import { solidcash, withSolidCash } from '@solidcash/testing/hardhat';
+
+export default withSolidCash(defineConfig({
+  solidity: '0.8.24',
+}), solidcash({
+  compiler: { solidityImportCompat: true, ecrecover: 'p2pkh' },
+  paths: { contracts: './contracts', artifacts: './artifacts' },
+}));
+```
+
+Only unambiguous Hardhat fields such as source, test, artifact, and HD-account paths are inherited. Solidity
+compiler settings and EVM networks are not translated. Run `solidcash init --from-hardhat` to generate a
+standalone `solidcash.config.ts` instead; the Hardhat config is never modified.
 - **CLI**: `npx solidcash <task>` - built-in `compile` / `test` / `run <script>` / `clean` / `node`, plus your
   own `task(...)` definitions. `hre.run(name, args)` invokes tasks programmatically.
 - **Signers**: `const [owner, alice] = await ethers.getSigners()` (from `'@solidcash/testing'` or aliased

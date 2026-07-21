@@ -1,4 +1,4 @@
-import artifact from '../artifacts/example.artifact.js';
+import artifact from '../artifacts/solidcash/example.artifact.js';
 import { Contract, MockNetworkProvider, TransactionBuilder, randomUtxo } from 'solidcash';
 import 'solidcash/vitest';
 

@@ -17,7 +17,7 @@ import { formatArtifact } from '@solidcash/utils';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const contractsDir = path.resolve(here, '../../../../effectiveacceleration.ai/contract/contracts');
-const artifactsDir = path.resolve(here, '../artifacts-real');
+const artifactsDir = path.resolve(here, '../artifacts-real/solidcash');
 const solc = { solidityImportCompat: true, ecrecover: 'p2pkh' };
 
 function findSolSources(dir, out = []) {

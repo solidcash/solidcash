@@ -1,4 +1,4 @@
-import exampleArtifact from '../artifacts/example.artifact.js';
+import exampleArtifact from '../artifacts/solidcash/example.artifact.js';
 import { Contract, TransactionBuilder, randomUtxo } from 'solidcash';
 // Hardhat-parity harness surface (see ../HARDHAT-PARITY.md)
 import { ethers, network, loadFixture, time, mine, mineUpTo, duration } from '@solidcash/testing';

@@ -27,7 +27,7 @@ with no test edits** - the remaining work is porting the contracts, not the harn
 
 ### Portbacks landed this session (in `@solidcash/testing` + `solidcash`)
 1. `hre.ethers.getContractFactory("Name")` / `getContractAt("Name", addr)` / `deployContract("Name", ...)` -
-   resolve a compiled artifact **by name** from `config.paths.artifacts` (`<dir>/<Name>.json` or
+   resolve a compiled artifact **by name** from `config.paths.artifacts/solidcash` (`<dir>/<Name>.json` or
    `<dir>/<Name>.sol/<Name>.json`). (`loadArtifactByName` in hre.ts)
 2. **Config-driven, lazy HRE exports** - `ethers`/`network`/`config`/`run`/`hre` are proxies over the active
    HRE singleton, so a setup-file `initHre()` (loading `solidcash.config.ts`) takes effect.

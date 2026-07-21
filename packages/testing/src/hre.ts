@@ -25,6 +25,7 @@ import {
 import {
   runTask, getTasks, getTask, type TaskArguments, type TaskDefinition,
 } from './tasks.js';
+import { solidcashArtifactsPath } from './artifact-paths.js';
 
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 
@@ -90,7 +91,7 @@ export interface HardhatRuntimeEnvironment {
  * "multiple artifacts" - pass the artifact object to disambiguate).
  */
 export function loadArtifactByName(artifactsDir: string, name: string): Artifact {
-  const base = path.isAbsolute(artifactsDir) ? artifactsDir : path.resolve(process.cwd(), artifactsDir);
+  const base = solidcashArtifactsPath(artifactsDir);
   const target = `${name}.json`;
   const matches: string[] = [];
   const walk = (dir: string): void => {
@@ -115,7 +116,7 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
     );
   }
   throw new Error(
-    `getContractFactory: no artifact named "${name}" in ${base}. Compile it first (\`solidcash compile\`), `
+    `getContractFactory: no SolidCash artifact named "${name}" in ${base}. Compile it first (\`solidcash compile\`), `
     + 'or pass the artifact object directly.',
   );
 }
@@ -206,7 +207,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
 }
 
 function buildConnection(name: string, netCfg: NetworkConfig | undefined, mnemonic: string, opts: EthersOptions)
-: NetworkConnection {
+  : NetworkConnection {
   const provider = createProvider(name, netCfg);
   const ethers = buildEthers(provider, mnemonic, opts);
   return { name, provider, config: netCfg, ethers, networkHelpers: nh };

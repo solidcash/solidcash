@@ -50,7 +50,7 @@ export type { TaskDefinition, TaskArguments, ActionFn } from './tasks.js';
 
 // Config
 export {
-  defineConfig, resolveConfig, loadConfig, findConfigFile,
+  defineConfig, resolveConfig, loadConfig, findConfigFile, findHardhatConfigFile, migrateHardhatConfig,
 } from './config.js';
 export type {
   SolidcashConfig, ResolvedConfig, NetworkConfig, AccountsConfig,

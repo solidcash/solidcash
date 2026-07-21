@@ -1,6 +1,7 @@
 import {
   FunctionDefinitionNode, VariableDefinitionNode, AssignNode, IdentifierNode,
   MethodCallNode, FunctionCallNode, Node,
+  WhileNode, DoWhileNode, CollectionIterationNode,
 } from '../ast/AST.js';
 import { Type, AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -61,14 +62,30 @@ export default class HoistBranchLocalExtcallTargets extends AstTraversal {
       .filter((s) => s instanceof VariableDefinitionNode).map((s) => (s as VariableDefinitionNode).name));
     const declCount = new Map<string, number>();
     const declOf = new Map<string, VariableDefinitionNode>();
-    this.walk(node.body, (n) => {
+    // A target declared INSIDE a loop (`for (..) { address input = path[i]; IToken(input).m(); }`) re-runs each
+    // iteration: hoisting it to one function-top slot pins only the LAST iteration and defeats the per-iteration
+    // loop-dispatch co-spend. Such a target is handled by the loop-array/computed-target dispatch, not here; leave
+    // its declaration in place. (Only BRANCH-local single-execution targets are the intended hoist. Router02.)
+    const loopDeclared = new Set<string>();
+    const scanDepth = (n: unknown, depth: number): void => {
+      if (!n || typeof n !== 'object') return;
       if (n instanceof VariableDefinitionNode) {
         declCount.set(n.name, (declCount.get(n.name) ?? 0) + 1);
         declOf.set(n.name, n);
+        if (depth > 0) loopDeclared.add(n.name);
       }
-    });
+      const childDepth = (n instanceof WhileNode || n instanceof DoWhileNode
+        || n instanceof CollectionIterationNode) ? depth + 1 : depth;
+      for (const k of Object.keys(n as object)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) v.forEach((it) => scanDepth(it, childDepth));
+        else if (v && typeof v === 'object') scanDepth(v, childDepth);
+      }
+    };
+    scanDepth(node.body, 0);
     const hoist = new Set([...targets].filter((t) => !topNames.has(t) && declCount.get(t) === 1
-      && declOf.get(t)?.type instanceof AddressType));
+      && !loopDeclared.has(t) && declOf.get(t)?.type instanceof AddressType));
     if (hoist.size === 0) return node;
 
     // 3. replace each nested `type x = init;` with `x = init;`, collecting the type for a body-top `type x;` decl.

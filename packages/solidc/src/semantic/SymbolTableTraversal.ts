@@ -3931,6 +3931,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
       const addressStateVar = addressParam?.startsWith('__extaddr_')
         ? addressParam.slice('__extaddr_'.length) : undefined;
+      // Loop-body local aliasing a per-iteration array element `address input = path[i]; IToken(input).m()`
+      // (Router02 fee-on-transfer swap binds `(input, output) = (path[i], path[i+1])`). The local holds `arr[i]`
+      // for the CURRENT iteration, so the co-spend target is per-iteration - NOT a function-top fixed slot (which
+      // would pin only the last iteration + fault at the epilogue: `input` is popped when the loop closes). Rewrite
+      // the target to the array element itself so the existing loop-array dispatch co-spends each element (identical
+      // to writing `IToken(path[i]).m()` directly). Guard: init is `<ident>[<ident>]` (an array indexed by a bare
+      // loop counter); a param/literal-indexed or non-array init is left as a fixed target.
+      if (addressParam && !addressStateVar && node.addressExpression instanceof IdentifierNode) {
+        const aliasInit = this.findLocalInit(this.currentFunction?.body, addressParam)
+          ?? this.findTupleInit(this.currentFunction?.body, addressParam);
+        if (aliasInit instanceof ArrayAccessNode && aliasInit.array instanceof IdentifierNode
+          && aliasInit.index instanceof IdentifierNode) {
+          node.addressExpression = cloneNode(aliasInit) as ExpressionNode;
+          addressParam = undefined;
+        }
+      }
       // Array-element target `IFoo(arr[i]).m()` (typically inside a `for` over the array): record the state
       // array. The SDK co-spends every element as a callee and the epilogue loop-verifies each; addressParam
       // stays undefined (the address is per-element, not a single param). State-array element access is a

@@ -297,6 +297,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Per-function count of external calls whose receiver is a given bare local, snapshotted BEFORE any collect-phase
   // rewrite (so the loop-body local-receiver rewrite can restrict to single-use locals immune to rewrite order).
   private extCallReceiverCounts = new Map<string, number>();
+  // Per-function set of local names declared INSIDE a loop (re-bound each iteration). The loop-array-alias ext-call
+  // rewrite fires only for these, so a body-top hoisted target (`__eh = path[path.length-1]`) stays a fixed slot.
+  private loopDeclaredLocals = new Set<string>();
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
@@ -1600,6 +1603,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // into a caller-provided witness; must run BEFORE the receiver-count snapshot so the mutate reads as single-use.
       this.rewriteMultiUseViewCalls(node);
       this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
+      this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
       this.collectExternalCalls(node.body, externalCallSlots);
 
       if (externalCallSlots.length > 0) {
@@ -3883,6 +3887,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     return acc;
   }
 
+  // Local / tuple-element names declared inside a loop body (WhileNode/DoWhileNode/CollectionIterationNode - `for`
+  // desugars to WhileNode). Used to scope the loop-array-alias ext-call rewrite to genuine per-iteration locals.
+  private collectLoopDeclaredLocals(node: Node | undefined): Set<string> {
+    const out = new Set<string>();
+    const seen = new Set<Node>();
+    const walk = (n: Node | undefined, depth: number): void => {
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      if (depth > 0) {
+        if (n instanceof VariableDefinitionNode) out.add(n.name);
+        else if (n instanceof TupleAssignmentNode) {
+          for (const el of n.elements) if (el.name && !el.skip && !el.existing) out.add(el.name);
+        }
+      }
+      const childDepth = (n instanceof WhileNode || n instanceof DoWhileNode
+        || n instanceof CollectionIterationNode) ? depth + 1 : depth;
+      for (const v of Object.values(n)) {
+        if (v instanceof Node) walk(v, childDepth);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e, childDepth);
+      }
+    };
+    walk(node, 0);
+    return out;
+  }
+
   private findLoopIndexInComputedTarget(expr: Node, body: Node | undefined): IdentifierNode | undefined {
     let found: IdentifierNode | undefined;
     const seen = new Set<string>();
@@ -3938,7 +3967,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // the target to the array element itself so the existing loop-array dispatch co-spends each element (identical
       // to writing `IToken(path[i]).m()` directly). Guard: init is `<ident>[<ident>]` (an array indexed by a bare
       // loop counter); a param/literal-indexed or non-array init is left as a fixed target.
-      if (addressParam && !addressStateVar && node.addressExpression instanceof IdentifierNode) {
+      if (addressParam && !addressStateVar && this.loopDeclaredLocals.has(addressParam)
+        && node.addressExpression instanceof IdentifierNode) {
         const aliasInit = this.findLocalInit(this.currentFunction?.body, addressParam)
           ?? this.findTupleInit(this.currentFunction?.body, addressParam);
         if (aliasInit instanceof ArrayAccessNode && aliasInit.array instanceof IdentifierNode

@@ -20,6 +20,7 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
+import HoistNonLoopArrayElemExtcallTargets from './semantic/HoistNonLoopArrayElemExtcallTargets.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
 import DesugarContractMemberFnPtr from './semantic/DesugarContractMemberFnPtr.js';
@@ -421,6 +422,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  // A NON-LOOP param-rooted array-element target `IERC20(path[path.length-1]).m()` -> hoist to a function-top
+  // address local so it is a fixed-slot co-spend (not mistaken for a per-iteration loop-array dispatch).
+  ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
   ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
@@ -634,6 +638,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
+    singleAst = singleAst.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle()) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/

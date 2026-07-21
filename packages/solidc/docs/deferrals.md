@@ -1545,3 +1545,13 @@ elides the re-read.
   the miscompile. Repro scripts in scratchpad (multiret / _scope / _tern / _confirm shapes).
 - **Revisit if:** the inline miscompile is fixed (then re-land single-exit); or a corpus audit surfaces the silent
   miscompile in real code.
+
+### Refinement (2026-07-21, further VM-isolated) - the inline miscompile is BOUNDED to the inline machinery
+The `return <ternary>` inline miscompile above is NOT any of: `this.`-prefixed call (a bare internal call fails the
+same), a name collision (distinct callee/caller param names fail the same), or a ternary-as-var-initializer (the
+DIRECT `int b = bal[u]; bool r = (b<m)?false:true; require(r)` is CORRECT). So the inline machinery
+(InlineReturningStateHelpers.inlineCall: `retDef = new VariableDefinitionNode(returnType, [], retName,
+ret.expressions[0])` for a ternary return expr, hoisted) emits DIFFERENT bytecode from the equivalent direct form
+(~6-byte divergence near the OP_LESSTHAN/OP_IF of the ternary) and it evaluates wrong. A future fix should diff the
+inline vs direct ASM at that point - the direct form is the correct reference. This is the sole blocker for the
+single-exit multi-return feature.

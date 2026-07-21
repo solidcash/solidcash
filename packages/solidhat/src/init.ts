@@ -58,9 +58,9 @@ function mergePackageJson(current: Record<string, any>, typescript: boolean): Re
   for (const [name, command] of Object.entries(desiredScripts)) scripts[name] ??= command;
   const devDependencies = { ...(current.devDependencies ?? {}) };
   devDependencies['@solidcash/solidhat'] ??= '^0.13.0';
+  devDependencies.vitest ??= '^4.0.15';
   if (typescript) {
     devDependencies.typescript ??= '^5.9.2';
-    devDependencies.vitest ??= '^4.0.15';
   }
   return { ...current, private: current.private ?? true, scripts, devDependencies };
 }
@@ -92,6 +92,18 @@ const SAMPLE_CONTRACT = 'pragma solidcash ^0.13.0;\n\ncontract Counter() {\n    
 
 function sampleTest(target: CompatibilityTarget): string {
   return `import { describe, expect, it } from 'vitest';\nimport { ethers } from '@solidcash/solidhat/hardhat${target.hardhat}';\n\ndescribe('Counter', () => {\n  it('loads its factory', async () => {\n    const factory = await ethers.getContractFactory('Counter');\n    expect(factory).toBeDefined();\n  });\n});\n`;
+}
+
+function projectReadme(
+  name: string, target: CompatibilityTarget, template: Template, manager: PackageManager,
+): string {
+  const sample = template === 'empty'
+    ? 'Add `.scash` contracts under `contracts/` and tests under `test/`.'
+    : `The included \`Counter.scash\` and \`Counter.test.${template === 'javascript' ? 'js' : 'ts'}\` demonstrate artifact and factory resolution.`;
+  const install = manager === 'yarn' ? 'yarn' : `${manager} install`;
+  const run = (script: string): string => (manager === 'npm' ? `npm run ${script}` : `${manager} ${script}`);
+  const extension = template === 'javascript' ? 'js' : 'ts';
+  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nsolidcash.config.${extension}        Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ncache/solidcash/            Incremental compilation cache\n\`\`\`\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph and reuses unchanged cached roots.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:clean')}\` removes only \`artifacts/solidcash\` and \`cache/solidcash\`.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
 }
 
 function gitignore(current = ''): string {
@@ -178,6 +190,20 @@ export function initializeProject(options: InitOptions = {}): InitResult {
   if (json(currentPackage) === json(mergedPackage)) skipped.push(packageFile);
   else plans.push({ path: packageFile, content: json(mergedPackage), kind: existsSync(packageFile) ? 'updated' : 'created' });
 
+  if (!existingProject) {
+    const readmeFile = join(directory, 'README.md');
+    if (existsSync(readmeFile)) skipped.push(readmeFile);
+    else {
+      planFile(
+        plans,
+        skipped,
+        readmeFile,
+        projectReadme(String(mergedPackage.name ?? basename(directory)), compatibility, template, manager),
+        false,
+      );
+    }
+  }
+
   const configName = typescript ? 'solidcash.config.ts' : 'solidcash.config.js';
   planFile(plans, skipped, join(directory, configName), configTemplate(typescript ? 'ts' : 'js'), options.force ?? false);
   planFile(
@@ -197,7 +223,8 @@ export function initializeProject(options: InitOptions = {}): InitResult {
   const includeSample = options.sample ?? (!existingProject && template !== 'empty');
   if (includeSample) {
     planFile(plans, skipped, join(directory, 'contracts', 'Counter.scash'), SAMPLE_CONTRACT, options.force ?? false);
-    planFile(plans, skipped, join(directory, 'test', 'Counter.test.ts'), sampleTest(compatibility), options.force ?? false);
+    const testName = template === 'javascript' ? 'Counter.test.js' : 'Counter.test.ts';
+    planFile(plans, skipped, join(directory, 'test', testName), sampleTest(compatibility), options.force ?? false);
   }
 
   if (!options.dryRun) applyPlans(plans);

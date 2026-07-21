@@ -31,9 +31,28 @@ describe('initializeProject', () => {
     expect(existsSync(join(directory, 'solidcash.config.ts'))).toBe(true);
     expect(existsSync(join(directory, 'contracts', 'Counter.scash'))).toBe(true);
     expect(existsSync(join(directory, 'test', 'Counter.test.ts'))).toBe(true);
+    expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('# counter');
+    expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('Hardhat 3 and Ethers 6');
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
     expect(pkg.devDependencies['@solidcash/solidhat']).toBe('^0.13.0');
     expect(pkg.scripts['solidhat:compile']).toBe('solidhat compile');
+  });
+
+  it('documents and scaffolds the JavaScript/pnpm template accurately', () => {
+    const parent = temporaryDirectory('javascript');
+    initializeProject({
+      cwd: parent, target: 'js-app', template: 'javascript', packageManager: 'pnpm', install: false,
+    });
+    const directory = join(parent, 'js-app');
+    const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
+    const readme = readFileSync(join(directory, 'README.md'), 'utf8');
+
+    expect(existsSync(join(directory, 'test', 'Counter.test.js'))).toBe(true);
+    expect(existsSync(join(directory, 'test', 'Counter.test.ts'))).toBe(false);
+    expect(pkg.devDependencies.vitest).toBe('^4.0.15');
+    expect(pkg.devDependencies.typescript).toBeUndefined();
+    expect(readme).toContain('pnpm solidhat:test');
+    expect(readme).toContain('solidcash.config.js');
   });
 
   it('injects alongside Hardhat without modifying its files or EVM artifacts', () => {
@@ -41,6 +60,7 @@ describe('initializeProject', () => {
     const hardhatConfig = "export default { solidity: '0.8.28' };\n";
     writeFileSync(join(directory, 'hardhat.config.ts'), hardhatConfig);
     writeFileSync(join(directory, 'package.json'), '{"name":"evm-app","scripts":{"test":"hardhat test"}}\n');
+    writeFileSync(join(directory, 'README.md'), '# Existing EVM project\n');
     mkdirSync(join(directory, 'artifacts', 'contracts'), { recursive: true });
     writeFileSync(join(directory, 'artifacts', 'contracts', 'Token.json'), '{"abi":[]}\n');
 
@@ -53,6 +73,7 @@ describe('initializeProject', () => {
     expect(readFileSync(join(directory, 'artifacts', 'contracts', 'Token.json'), 'utf8')).toBe('{"abi":[]}\n');
     expect(existsSync(join(directory, 'solidcash.config.ts'))).toBe(true);
     expect(existsSync(join(directory, 'contracts', 'Counter.scash'))).toBe(false);
+    expect(readFileSync(join(directory, 'README.md'), 'utf8')).toBe('# Existing EVM project\n');
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
     expect(pkg.scripts.test).toBe('hardhat test');
     expect(pkg.scripts['solidhat:test']).toBe('solidhat test');

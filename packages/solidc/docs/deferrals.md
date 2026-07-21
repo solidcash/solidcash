@@ -1434,14 +1434,25 @@ deferral above (a cheaper ladder would help both).
 - **Revisit if:** BentoBox/Kashi/BoringRebase port is prioritized, OR the corpus shows `L.f(m[k])` storage-ptr frequency.
   NOTE overlaps the C2/storage machinery under active churn - coordinate before landing.
 
-## RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)
-- **STATUS: SHIPPED + VM-proven** (StoragePointerReturningFn.test.ts, 3 e2e: stmt / expr-assign / expr-require-guard).
-  The RMW fix landed IN InlineReturningStateHelpers.inlineCall (as the "What it'd take" below predicted), reusing that
-  pass's hoisting machinery so it covers BOTH statement and expression position; gated on the body WRITING the pointer
-  so read-only get/size helpers are unchanged. Advanced BentoBoxV1 from line 330 to line 985. The remaining BentoBoxV1
-  wall (985: `require(_tokenBalanceOf(token) >= totals[token].addElastic(fee.to128()))`) is a BentoBox-SPECIFIC combo -
-  neither an interface-keyed mapping expr-position call NOR a method-call arg (`fee.to128()`) reproduces it in
-  isolation (both compile); needs on-site investigation. Original analysis kept below for the record.
+## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
+- **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):
+  void + returning fn, mapping/array/state-var element, statement + expression position, direct + using-for spelling,
+  `this.`-prefixed + BARE (no this., real-Solidity) spelling. All routed through a shared `elementAccess()` helper
+  (read-modify-write the element; a bare `m[k]` = ArrayAccess-on-mapping-identifier is rebuilt to a MappingAccess so it
+  resolves via the collection). Regression-clean (solidc 2221, e2e 148). Advanced BentoBoxV1 through the addElastic
+  walls (330, 985) to line 835.
+- **NEW BentoBoxV1 wall (line 835, SEPARATE vein):** `_tokenBalanceOf(token).sub(total.elastic)` fails "Found
+  parameters (address) in call to '_tokenBalanceOf' where (address,bytes,bigint,bytes4,bigint) were expected" - an
+  overload/name-resolution confusion (the 5-arg signature is not `_tokenBalanceOf`'s; it looks like a low-level-call
+  helper's). Does NOT reproduce in isolation (a returning ext-call helper + BoringMath `.sub()` compiles) - BentoBox-
+  specific. NOT storage-pointer. Investigate on-site if BentoBox is prioritized.
+- Original returning-fn analysis kept below for the record.
+
+## (superseded) RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)
+- **STATUS: SHIPPED + VM-proven** (StoragePointerReturningFn.test.ts). The RMW fix landed IN
+  InlineReturningStateHelpers.inlineCall (as the "What it'd take" below predicted), reusing that pass's hoisting
+  machinery so it covers BOTH statement and expression position; gated on the body WRITING the pointer so read-only
+  get/size helpers are unchanged. (The 985 wall it advanced to was then cleared by the bare-access fix a4727002.)
 - **What:** A struct-storage-pointer fn that RETURNS a value (`function addElastic(Rebase storage t, uint e)
   returns(uint newElastic){ t.elastic += e; newElastic = t.elastic; }`) fails "Undefined reference to symbol <param>"
   whether called in STATEMENT position (`totals[k].addElastic(x);` - return discarded, BentoBoxV1:1064,1068) or

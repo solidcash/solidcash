@@ -9081,10 +9081,42 @@ export class StatefulFunctionCall {
     return this;
   }
 
+  /**
+   * True when awaiting this call should READ the return value (ethers `view`/`pure` semantics) instead of SENDing
+   * a transaction: a single-output function that provably writes no state (`writesState === false`, which fails
+   * closed to `true`), is not a deploy/external-call view, and has no send-intent config attached (transfers,
+   * emitReturn, state/entry overrides, split/merge, container ops). Multi-value returns still SEND (their packed
+   * encoding is not decodable yet). `.staticCall()` / `.send()` remain the explicit, typed escapes.
+   */
+  private _isPureRead(): boolean {
+    if (!this.parentContract || this.functionName === undefined) return false;
+    const abiFn = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
+    if (!abiFn || abiFn.writesState !== false) return false;
+    if ((abiFn.outputs?.length ?? 0) !== 1) return false;
+    if (abiFn.modifiers?.includes('deploy')) return false;
+    if ((abiFn.externalCalls?.length ?? 0) > 0) return false;
+    return this.transfers.length === 0 && !this.emitReturnFlag
+      && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
+      && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0
+      && this.entryDeleteSlots.length === 0 && this.extraOutputs.length === 0
+      && this.tokenContainerTransfers.length === 0 && this.tokenContainerTransferNfts.length === 0
+      && this.externalCallInfos.length === 0 && this.callInfos.length === 0
+      && this.registryExternalStateOverrides.size === 0
+      && this.containerDepositAmount === 0n && !this.splitFundingConfig && !this.mergeConfig;
+  }
+
   then<TResult1 = TransactionDetails, TResult2 = never>(
     onfulfilled?: ((value: TransactionDetails) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
+    // ethers view semantics: awaiting a pure read resolves to the decoded return value, not a transaction. TS
+    // still types the result as TransactionDetails (the thenable is not per-function-typed) - use .staticCall()
+    // for a typed read, or .send() to force a send.
+    if (this._isPureRead()) {
+      return this.parentContract!._deriveReturnValue(
+        this.functionName!, (this.functionArgs ?? []) as FunctionArgument[],
+      ).then(onfulfilled as (value: unknown) => TResult1 | PromiseLike<TResult1>, onrejected);
+    }
     return this.send().then(onfulfilled, onrejected);
   }
 

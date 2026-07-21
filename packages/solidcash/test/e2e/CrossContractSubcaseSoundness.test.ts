@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin, vmNumberToBigInt, bigIntToVmNumber } from '@bitauth/libauth';
-import { Contract, StatefulContract, SignatureTemplate, keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
+import { hexToBin } from '@bitauth/libauth';
+import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// Cross-contract callee sorted writes support scalar UPDATE/INSERT/msg.sender (see CrossContractSortedWrite). Two
-// harder callee shapes are NOT wired yet and MUST stay fail-closed (the VM rejects the tx), never a silent wrong
-// write: (A) a CHUNKED (>60 B) value, (B) a LOOP write. This locks that in - "fail-closed OR correct, never
+// Cross-contract callee sorted writes support scalar UPDATE/INSERT/msg.sender (see CrossContractSortedWrite) and
+// LOOP writes (see CrossContractLoopWrite). A CHUNKED (>60 B) callee value is NOT wired yet and MUST stay fail-closed
+// (the VM rejects the tx), never a silent wrong write. This locks that in - "fail-closed OR correct, never
 // silent-wrong": a throw passes; a sent tx must read back the CORRECT value (so an accidental silent write is caught).
 describe('cross-contract callee subcase soundness (fail-closed, never silent-wrong)', () => {
   const provider = createTestProvider();
@@ -52,25 +52,5 @@ describe('cross-contract callee subcase soundness (fail-closed, never silent-wro
       expect((await bank.chk(9n, big, alicePub, sig).send()).txid).toBeDefined();
     } // else: fail-closed (VM rejected), which is the currently-expected, sound outcome.
     expect(true).toBe(true);
-  });
-
-  it('(B) loop write cross-contract is fail-closed or correct', async () => {
-    const IBANK = `interface IBank { function credit(int[] ks, int[] vs); }`;
-    const BANK = `pragma solidcash >=0.8.0;\n${IBANK}\ncontract Bank() is IBank { mapping(int => int) bal; function credit(int[] ks, int[] vs) { for (int i = 0; i < ks.length; i++) { this.bal[ks[i]] = this.bal[ks[i]] + vs[i]; } } }`;
-    const CALLER = `pragma solidcash >=0.8.0;\n${IBANK}\ncontract Caller(bytes bankAddr) { bigint calls; function poke(int[] ks, int[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); IBank(bankAddr).credit(ks, vs); this.calls = this.calls + 1; } }`;
-    const artBank = compileString(BANK, { forceStateful: true });
-    const artCaller = compileString(CALLER, { forceStateful: true });
-    const { contract: bank, categoryId: catBank } = await deploy(artBank, []);
-    await fund(bank.address);
-    await bank.credit([3n], [10n]).send(); // seed bal[3]=10
-    const bankAddr = bank.inner.withCategory(hexToBin(catBank)).lockingBytecode;
-    const { contract: caller } = await deploy(artCaller, [bankAddr]);
-    await fund(caller.address);
-    const didSend = await sent(() => caller.poke([3n], [5n], alicePub, sig).withExternalCall(bank, 'credit', [[3n], [5n]]).send());
-    const ea = getEntryNftAddress(bank.inner, catBank, 'bal');
-    const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(bigIntToVmNumber(3n)));
-    const bal3 = e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
-    // Fail-closed: bal[3] stays the seeded 10. If it sent, it MUST be the correct 15 (never a silent wrong value).
-    expect(bal3).toBe(didSend ? 15n : 10n);
   });
 });

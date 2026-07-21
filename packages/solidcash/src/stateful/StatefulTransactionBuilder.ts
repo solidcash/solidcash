@@ -98,6 +98,13 @@ export interface ExternalCallUtxoGroup {
   keccakInputs?: UnlockableUtxo[];
   /** B's keccak256 compute side-car recreation OUTPUTS (both paths), committing each computed R_i. */
   keccakRecreates?: Output[];
+  /** Cross-contract callee LOOP write (docs/deferrals.md #1): SDK-computed updated commitments for B's trailing loop
+   * entries, in co-spend order. The trailing entries are appended to blockInputs starting at entryLoopStart. */
+  entryLoopCommitments?: string[];
+  /** blockInputs index where the trailing loop entries begin (== B's blockSize). */
+  entryLoopStart?: number;
+  /** B's collection signature for the loop entries (for the derive-time master-index unlocker patch). */
+  entryLoopCollection?: string;
 }
 
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
@@ -1344,6 +1351,25 @@ export class StatefulTransactionBuilder {
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
+
+          // Trailing cross-contract callee LOOP entry (no block-layout slot, si >= entryLoopStart): mint B's
+          // SDK-computed updated commitment. B's covenant pins output[master+blockSize+counter] == coSlot|coNext|newVal,
+          // so a wrong commitment reverts (never silent-wrong).
+          if (group.entryLoopStart !== undefined && si >= group.entryLoopStart) {
+            const commit = group.entryLoopCommitments?.[si - group.entryLoopStart];
+            builder.addOutput(commit !== undefined
+              ? {
+                to: input.unlocker.generateLockingBytecode(),
+                amount: input.satoshis,
+                token: {
+                  amount: input.token?.amount ?? 0n,
+                  category: group.categoryId,
+                  nft: { capability: input.token?.nft?.capability ?? 'mutable', commitment: commit },
+                },
+              }
+              : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token });
+            continue;
+          }
 
           // keccak256 side-car slots: recreate with the computed result R_i (from the group's keccakRecreates).
           if (slot?.kind === 'keccakSideCar') {

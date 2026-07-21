@@ -4351,6 +4351,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (!acc) continue;
               input.unlocker = createEntryNftUnlocker(bScPatch.inner, bMasterIdx, group.categoryId, acc.collection);
             }
+            // Cross-contract callee LOOP entries (trailing, no block slot): patch their write-mode unlockers with B's
+            // real master input index too (the entry covenant's flag=1 path verifies the minting master there).
+            if (group.entryLoopStart !== undefined && group.entryLoopCollection && bScPatch) {
+              for (let j = 0; j < (group.entryLoopCommitments?.length ?? 0); j++) {
+                const input = group.blockInputs[group.entryLoopStart + j];
+                if (input?.token?.nft) {
+                  input.unlocker = createEntryNftUnlocker(
+                    bScPatch.inner, bMasterIdx, group.categoryId, group.entryLoopCollection,
+                  );
+                }
+              }
+            }
           }
 
           // Run VM on B's master input
@@ -6449,6 +6461,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : undefined;
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
+        // Cross-contract callee LOOP write metadata (docs/deferrals.md #1): populated after the block build below.
+        let bEntryLoopCommitments: string[] | undefined;
+        let bEntryLoopStart: number | undefined;
+        let bEntryLoopCollection: string | undefined;
+        const bHasLoop = (bAbiFunc?.sortedUpsertLoopInfo?.length ?? 0) > 0;
         // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them.
         const bKeccak = await this._resolveExternalKeccakSideCars(
           bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as StatefulContract | null,
@@ -6463,7 +6480,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const hasExtraSlots = bBlockLayout.slots.some(
             (s) => fullBlockKinds.has(s.kind),
           );
-          if (hasExtraSlots && bSc) {
+          if ((hasExtraSlots || bHasLoop) && bSc) {
             // Build B's full block following blockLayout slot order.
             // Fetch B's real UTXOs for entries/TC/SC where they exist on-chain;
             // use funder inputs for output-only slots and non-existing entries/TCs.
@@ -6667,6 +6684,95 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
 
+        // Cross-contract callee LOOP write (docs/deferrals.md #1): B's function loops `for(i) this.m[ks[i]] (+)= vs[i]`
+        // (sortedUpsertLoopInfo). B's block has NO fixed entry slot for these - the entries are trailing (read by B's
+        // covenant at master+blockSize+counter). Co-spend each EXISTING entry (UPDATE-only; an absent key = insert =
+        // fail-closed) and SDK-compute its updated commitment; the STB mints B's trailing outputs and B's covenant
+        // verifies. Sound by fail-closed: a wrong commitment reverts (B pins output==coSlot|coNext|newValue), a
+        // misplaced input trips B's per-iteration coSlot==Hk check. INT values, one collection, no dup keys.
+        if (bBlockInputs && bHasLoop && bSc) {
+          const bLoopInfos = bAbiFunc!.sortedUpsertLoopInfo!;
+          if (bLoopInfos.length > 1) {
+            throw new Error('cross-contract callee loop over multiple collections is not supported (fails closed).');
+          }
+          const bCore = bBlockInputs.length; // loop entries begin here (== B's blockSize for a dense block)
+          if (bCore !== (bBlockLayout?.blockSize ?? bCore) || bCore > 1) {
+            // The callee loop function must touch ONLY the looped mapping (block = master alone). A callee that also
+            // reads/writes OTHER state (a data NFT slot) needs its data-NFT derivation interleaved with the loop
+            // co-spend; not yet wired, so fail closed cleanly rather than emitting a mispositioned block.
+            throw new Error('cross-contract callee loop: the callee loop function must access only the looped mapping '
+              + '(a callee that also reads/writes other state is not yet supported cross-contract; fails closed).');
+          }
+          const bLoopCommitments: string[] = [];
+          const bArgOf = (name: string | undefined): unknown => {
+            if (!name) return undefined;
+            const i = bAbiFunc!.inputs.findIndex((p) => p.name === name);
+            return i >= 0 ? callInfo.args[i] : undefined;
+          };
+          const encK = (v: unknown, keyType: string): Uint8Array => (
+            keyType === 'address' && typeof v === 'string' && v.includes(':') ? addressToLockScript(v)
+              : typeof v === 'bigint' ? bigIntToVmNumber(v)
+                : v instanceof Uint8Array ? v
+                  : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                    : bigIntToVmNumber(BigInt(v as string)));
+          const toB = (v: unknown): bigint => {
+            if (typeof v === 'bigint') return v;
+            if (typeof v === 'number' || typeof v === 'string') return BigInt(v);
+            throw new Error('cross-contract callee loop: non-int value is not supported cross-contract (fails closed).');
+          };
+          for (const li of bLoopInfos) {
+            if (li.op !== '+' && li.op !== 'set') {
+              throw new Error(`cross-contract callee loop op '${li.op}' on '${li.collection}' is not supported `
+                + '(fails closed).');
+            }
+            const bColl = (bStatelayout.collections ?? []).find((c) => c.name === li.collection);
+            if (!bColl) {
+              throw new Error(`cross-contract callee loop: collection '${li.collection}' not in callee layout.`);
+            }
+            const keyTypes = bColl.keyTypes ?? [bColl.keyType];
+            const varyType = keyTypes[li.fixedKeyParams.length] ?? bColl.keyType;
+            const fixedBins = li.fixedKeyParams.map((p, i) => encK(bArgOf(p), keyTypes[i] ?? bColl.keyType));
+            const ks = bArgOf(li.varyingArrayParam);
+            if (!Array.isArray(ks)) {
+              throw new Error(`cross-contract callee loop: key array '${li.varyingArrayParam}' missing.`);
+            }
+            const vs = li.valueArrayParam ? bArgOf(li.valueArrayParam) : undefined;
+            const scalarV = li.valueScalarParam !== undefined ? toB(bArgOf(li.valueScalarParam))
+              : li.valueConst !== undefined ? BigInt(li.valueConst) : undefined;
+            const bEntryAddr = getEntryNftAddress(bSc.inner, externalCategoryId, bColl.signature);
+            const bList = SortedList.fromUtxos((await this.inner.provider.getUtxos(bEntryAddr)).filter((u) => (
+              u.token?.category === externalCategoryId && u.token?.nft?.capability === 'mutable'
+              && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)));
+            const seen = new Set<string>();
+            for (let i = 0; i < ks.length; i++) {
+              const slot = keyToSlotMulti([...fixedBins, encK(ks[i], varyType)]);
+              const slotHex = binToHex(slot);
+              if (seen.has(slotHex)) {
+                throw new Error(`cross-contract callee loop on '${li.collection}': duplicate key (fails closed).`);
+              }
+              seen.add(slotHex);
+              const entry = bList.find(slot);
+              if (!entry) {
+                throw new Error(`cross-contract callee loop on '${li.collection}': key ${i} has no entry - a `
+                  + 'cross-contract insert is not supported (fails closed).');
+              }
+              const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
+              const add = vs ? toB((vs as unknown[])[i]) : scalarV!;
+              const newVal = li.op === 'set' ? add : oldVal + add;
+              bLoopCommitments.push(
+                binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))),
+              );
+              // Co-spend the entry (write mode). masterInputIndex is patched to B's real master at derive time.
+              bBlockInputs.push({
+                ...entry.utxo,
+                unlocker: createEntryNftUnlocker(bSc.inner, 0, externalCategoryId, bColl.signature),
+              });
+            }
+            bEntryLoopCollection = bColl.signature;
+          }
+          if (bLoopCommitments.length > 0) { bEntryLoopCommitments = bLoopCommitments; bEntryLoopStart = bCore; }
+        }
+
         externalCallUtxoGroups.push({
           categoryId: externalCategoryId,
           stateLayout: bStatelayout,
@@ -6679,6 +6785,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
+          ...(bEntryLoopCommitments && {
+            entryLoopCommitments: bEntryLoopCommitments,
+            entryLoopStart: bEntryLoopStart,
+            entryLoopCollection: bEntryLoopCollection,
+          }),
         });
       }
 

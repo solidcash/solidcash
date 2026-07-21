@@ -3373,3 +3373,21 @@ describe('abi.decode to an interface/contract type (BentoBox/Kashi)', () => {
     { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('overloaded returning-helper inline disambiguated by return arity (Kashi RebaseLibrary.add)', () => {
+  // Two same-arity overloads differing by return count (`add(R,x,bool) returns (R,base)` vs `add(R,x,base) returns R`).
+  // A using-for method call in the bodies marks them for inline; the ambiguous inline is disambiguated by RETURN
+  // ARITY at the call site (a 1-value assign -> the 1-return overload, a tuple -> the K-return one) rather than
+  // failing "Cannot inline call ... multiple N-argument overloads". Advances KashiPairMediumRiskV1 past this wall.
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).contractName;
+  const LIB = 'struct R { int e; int b; }'
+    + ' library M { function id(int a) internal pure returns (int) { return a; } }'
+    + ' library L { using M for int;'
+    + ' function add(R total, int x, bool up) internal pure returns (R, int base) { base = up ? x.id()+1 : x.id(); total.e = total.e+x; total.b = total.b+base; return (total, base); }'
+    + ' function add(R total, int x, int base) internal pure returns (R) { total.e = total.e+x.id(); total.b = total.b+base; return total; } }';
+  it('compiles both call contexts (1-value assign and tuple destructure) of the ambiguous overload', () => {
+    expect(ok(`${LIB} contract C() { using L for R; R rr;`
+      + ' function one(int x, int b) { R t = R(0,0); t = t.add(x, b); this.rr = t; require(true); }'
+      + ' function two(int x) { R t = R(0,0); int bb; (t, bb) = t.add(x, true); this.rr = t; require(bb >= 0); } }')).toBe('C');
+  });
+});

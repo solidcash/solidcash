@@ -69,6 +69,7 @@ const PREFIX = '__rh';
 export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   private funcByKey: Map<string, FunctionDefinitionNode> = new Map(); // keyed by inlineKey(name, arity) for overloads
+  private overloadsByKey: Map<string, FunctionDefinitionNode[]> = new Map(); // ALL overloads per (name, arity)
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
@@ -99,9 +100,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
     this.funcByKey = new Map();
+    this.overloadsByKey = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) {
       this.funcByName.set(fn.name, fn);
       this.funcByKey.set(inlineKey(fn.name, fn.parameters.length), fn);
+      const key = inlineKey(fn.name, fn.parameters.length);
+      (this.overloadsByKey.get(key) ?? this.overloadsByKey.set(key, []).get(key)!).push(fn);
     }
     this.qualifySiblingCalls();
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
@@ -290,6 +294,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // functionCall/3). Undefined when no overload has that arity - the call is then left as-is (not inlinable).
   private lookupOverload(name: string, arity: number): FunctionDefinitionNode | undefined {
     return this.funcByKey.get(inlineKey(name, arity));
+  }
+
+  // Disambiguate an inline of an overloaded (name, arity) by RETURN arity: an expression-position inline needs the
+  // 1-return overload, a K-tuple inline needs the K-return overload (RebaseLibrary.add - `(t,b)=t.add(x,true)` picks
+  // the 2-return overload, `t=t.add(x,y)` the 1-return one). Returns the UNIQUE overload with `want` return values,
+  // or undefined when zero/several match (stay ambiguous - fail closed). `want<0` means "any multi-value" (>=2).
+  private pickOverloadByReturnArity(name: string, arity: number, want: number): FunctionDefinitionNode | undefined {
+    const all = this.overloadsByKey.get(inlineKey(name, arity)) ?? [];
+    const matches = all.filter((f) => (want < 0 ? f.returnTypes.length >= 2 : f.returnTypes.length === want));
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   // A same-library sibling call is written unqualified (`functionCallWithValue` inside `Address.functionCall`) but
@@ -520,14 +534,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters); // inner calls inlined first
     const name = node.identifier.name;
-    const callee = this.lookupOverload(name, node.parameters.length) ?? this.funcByName.get(name);
+    const arity = node.parameters.length;
+    // An expression-position inline uses the 1-return overload. For an ambiguous (name, arity) - RebaseLibrary.add
+    // has a 1-return and a 2-return arity-3 overload - resolve to it UP FRONT: lookupOverload returns an arbitrary
+    // overload, and a wrong (2-return) pick would fail the `returnTypes.length === 1` gate before disambiguation.
+    let callee = this.lookupOverload(name, arity) ?? this.funcByName.get(name);
+    if (callee && this.inlinedFns.has(name) && this.ambiguousInlineKeys.has(inlineKey(name, arity))) {
+      callee = this.pickOverloadByReturnArity(name, arity, 1) ?? callee;
+    }
     if (callee) this.reorderNamedTail(node, callee);
     if (!this.suppress && callee && this.inlinedFns.has(name)
-      && !this.stack.includes(inlineKey(name, node.parameters.length))
-      && node.parameters.length === callee.parameters.length
+      && !this.stack.includes(inlineKey(name, arity))
+      && arity === callee.parameters.length
       && callee.returnTypes.length === 1) {
-      if (this.ambiguousInlineKeys.has(inlineKey(name, node.parameters.length))) {
-        throw new AmbiguousInlineOverloadError(node, name, node.parameters.length);
+      if (this.ambiguousInlineKeys.has(inlineKey(name, arity)) && !this.pickOverloadByReturnArity(name, arity, 1)) {
+        throw new AmbiguousInlineOverloadError(node, name, arity);
       }
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
       // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
@@ -558,12 +579,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private tryInlineMultiValue(expr: ExpressionNode): IdentifierNode[] | undefined {
     if (this.suppress || !(expr instanceof FunctionCallNode)) return undefined;
     const name = expr.identifier.name;
-    const callee = this.lookupOverload(name, expr.parameters.length) ?? this.funcByName.get(name);
-    if (!callee || !this.inlinedFns.has(name) || this.stack.includes(inlineKey(name, expr.parameters.length))
-      || expr.parameters.length !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
-    if (this.ambiguousInlineKeys.has(inlineKey(name, expr.parameters.length))) {
-      throw new AmbiguousInlineOverloadError(expr, name, expr.parameters.length);
+    const arity = expr.parameters.length;
+    // A tuple-position inline needs the multi-value overload; resolve it UP FRONT for an ambiguous (name, arity)
+    // so the `returnTypes.length < 2` gate below sees it (lookupOverload may return the 1-return sibling).
+    let callee = this.lookupOverload(name, arity) ?? this.funcByName.get(name);
+    if (callee && this.inlinedFns.has(name) && this.ambiguousInlineKeys.has(inlineKey(name, arity))) {
+      callee = this.pickOverloadByReturnArity(name, arity, -1) ?? callee;
     }
+    if (!callee || !this.inlinedFns.has(name) || this.stack.includes(inlineKey(name, arity))
+      || arity !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
     expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
     return this.inlineCall(callee, expr.parameters as ExpressionNode[]);
   }

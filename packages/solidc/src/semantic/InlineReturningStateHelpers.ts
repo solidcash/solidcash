@@ -18,6 +18,9 @@ import {
   AssignNode,
   StateAccessNode,
   StateAssignNode,
+  MappingAssignNode,
+  StateArrayAssignNode,
+  MappingFieldAssignNode,
   WhileNode,
   DoWhileNode,
   UncheckedNode,
@@ -32,7 +35,7 @@ import {
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
-import { StructType, AddressType } from '@solidcash/utils';
+import { StructType, AddressType, MappingType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -69,6 +72,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private mappingNames: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private stillCalled: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
@@ -102,6 +106,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.qualifySiblingCalls();
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
 
     this.inlinedFns = new Set();
@@ -610,13 +615,31 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
+    const rmwPrologue: StatementNode[] = [];
+    const rmwEpilogue: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {
       if (p.modifier.includes(Modifier.STORAGE)) {
         // A storage pointer is a compile-time reference: alias a bare state-var arg by NAME (so `map__field`
         // renames to the caller's `<arg>__field`), or substitute a complex access path by expression.
         const arg = args[i];
-        if (arg instanceof IdentifierNode) rename.set(p.name, arg.name);
-        else subs.set(p.name, cloneNode(arg) as ExpressionNode);
+        // A struct storage-pointer bound to a MAPPING/ARRAY element (or bare state struct var) that the body
+        // WRITES cannot be substituted (the write lowers to an lvalue expression substitution can't rewrite into
+        // a mapping/array-element assign). Read-modify-write instead: `S t = m[k]; <body>; m[k] = t;` (this covers
+        // BentoBox `totals[k].addElastic(x)` - a returning storage-pointer write-helper). Matches the same fix in
+        // InlineStoragePointerCalls; gated on the body actually WRITING so read-only get/size helpers are unchanged.
+        const wb = this.elementWriteBack(arg, `${PREFIX}${n}_${p.name}`);
+        if (p.type instanceof StructType && wb && this.isWritten(callee.body, p.name)) {
+          const local = `${PREFIX}${n}_${p.name}`;
+          rename.set(p.name, local);
+          const decl = new VariableDefinitionNode(p.type, [], local, cloneNode(arg) as ExpressionNode);
+          decl.location = arg.location ?? callee.location;
+          rmwPrologue.push(decl as StatementNode);
+          rmwEpilogue.push(wb);
+        } else if (arg instanceof IdentifierNode) {
+          rename.set(p.name, arg.name);
+        } else {
+          subs.set(p.name, cloneNode(arg) as ExpressionNode);
+        }
       } else {
         rename.set(p.name, `${PREFIX}${n}_${p.name}`);
       }
@@ -669,8 +692,42 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       id.location = callee.location;
       ids.push(id);
     }
-    this.hoists.push(...bindings, ...processed.slice(0, -1), ...retDefs);
+    this.hoists.push(...bindings, ...rmwPrologue, ...processed.slice(0, -1), ...retDefs, ...rmwEpilogue);
     return ids;
+  }
+
+  // Write-back statement for a struct storage-pointer bound to a mapping/array element or bare state struct var:
+  // `m[k] = local`, `arr[i] = local`, or `sv = local` (the RMW epilogue). Undefined for any other access shape.
+  private elementWriteBack(arg: Node, local: string): StatementNode | undefined {
+    const at = (s: StatementNode): StatementNode => { s.location = arg.location; return s; };
+    const id = (): IdentifierNode => { const x = new IdentifierNode(local); x.location = arg.location; return x; };
+    if (arg instanceof MappingAccessNode) {
+      const keys = arg.keys.map((k) => cloneNode(k) as ExpressionNode);
+      if (this.mappingNames.has(arg.name)) return at(new MappingAssignNode(arg.name, keys, id()));
+      if ((this.stateVarNames.has(arg.name) || this.collectionNames.has(arg.name)) && keys.length === 1) {
+        return at(new StateArrayAssignNode(arg.name, keys[0], id()));
+      }
+      return undefined;
+    }
+    if (arg instanceof ArrayAccessNode && arg.array instanceof IdentifierNode) {
+      return at(new StateArrayAssignNode(arg.array.name, cloneNode(arg.index) as ExpressionNode, id()));
+    }
+    if (arg instanceof StateAccessNode && this.stateVarNames.has(arg.name)) {
+      return at(new StateAssignNode(arg.name, id()));
+    }
+    return undefined;
+  }
+
+  // The body writes storage pointer `name` (an AssignNode target, or a state/mapping/array/field assign on it).
+  private isWritten(body: Node | undefined, name: string): boolean {
+    let found = false;
+    this.walk(body, (n) => {
+      if (found) return;
+      if (n instanceof AssignNode && n.identifier.name === name) found = true;
+      else if ((n instanceof StateAssignNode || n instanceof MappingAssignNode || n instanceof StateArrayAssignNode
+        || n instanceof MappingFieldAssignNode) && n.name === name) found = true;
+    });
+    return found;
   }
 
   private applyRename(root: Node, map: Map<string, string>): void {

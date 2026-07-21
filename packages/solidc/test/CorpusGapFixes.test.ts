@@ -3304,3 +3304,30 @@ describe('void storage-pointer library fn on a mapping/array element (BentoBox B
       + ' function f(int x) { L.addBase(this.tot, x); require(true); } }')).toBe('C');
   });
 });
+
+describe('RETURNING storage-pointer library fn on a mapping element (BentoBox addElastic, stmt + expr position)', () => {
+  // A struct-storage-pointer fn that RETURNS a value AND mutates the pointer (BoringRebase `addElastic(Rebase
+  // storage,..) returns(uint)`). InlineReturningStateHelpers now read-modify-writes the element inside its hoisting
+  // machinery, so the mutation persists AND the return value is captured - in statement position (discarded) and
+  // expression position (return used). Was: "Undefined reference to symbol <param>" (grabbed by the read-oriented
+  // eligibleStructPtr inline that left the write's param dangling).
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true, forceStateful: true }).contractName;
+  const LIB = 'struct T { int base; int elastic; }'
+    + ' library L { function addElastic(T storage t, int e) returns (int newElastic) { newElastic = t.elastic = t.elastic + e; } }';
+  it('statement position: L.addElastic(this.m[k], e) - return discarded', () => {
+    expect(ok(`${LIB} contract C() { mapping(int => T) m;`
+      + ' function f(int k, int e) { L.addElastic(this.m[k], e); require(true); } }')).toBe('C');
+  });
+  it('expression position: this.last = L.addElastic(this.m[k], e) - return assigned', () => {
+    expect(ok(`${LIB} contract C() { mapping(int => T) m; int last;`
+      + ' function f(int k, int e) { this.last = L.addElastic(this.m[k], e); require(true); } }')).toBe('C');
+  });
+  it('expression position in a require comparison (BentoBox shape): require(max >= addElastic(..))', () => {
+    expect(ok(`${LIB} contract C() { mapping(int => T) m;`
+      + ' function f(int k, int e, int max) { require(max >= L.addElastic(this.m[k], e)); } }')).toBe('C');
+  });
+  it('using-for method spelling this.m[k].addElastic(e), both positions', () => {
+    expect(ok(`${LIB} contract C() { using L for T; mapping(int => T) m; int last;`
+      + ' function f(int k, int e) { this.m[k].addElastic(e); this.last = this.m[k].addElastic(e); require(true); } }')).toBe('C');
+  });
+});

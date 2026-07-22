@@ -9,9 +9,9 @@ contract MarketplaceV1() {
   event Unpaused(address account);
   event VersionChanged(int version);
 
-  address owner;
-  bool paused;
-  int version;
+  address public owner;
+  bool public paused;
+  int public version;
   bool initialized;
   address marketplaceDataAddress;
 

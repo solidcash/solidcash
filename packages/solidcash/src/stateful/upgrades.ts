@@ -178,12 +178,14 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
   return new Proxy(handle, {
     get(target, prop, receiver) {
       if (typeof prop === 'string' && !(prop in target)) {
-        if (implAbi.has(prop)) return (...args: FunctionArgument[]) => target.forward(prop, args);
         if (stateVars.has(prop)) {
           const connected = target.runner instanceof Signer ? target.proxy.connect(target.runner) : target.proxy;
           const underlying = connected as unknown as Record<string, (...a: unknown[]) => unknown>;
           if (typeof underlying[prop] === 'function') return (...args: unknown[]) => underlying[prop](...args);
         }
+        // Public state variables also have generated ABI getter entries. State sugar must win that collision;
+        // forwarding the getter would build and send a delegate transaction instead of returning its value.
+        if (implAbi.has(prop)) return (...args: FunctionArgument[]) => target.forward(prop, args);
       }
       return Reflect.get(target, prop, receiver);
     },

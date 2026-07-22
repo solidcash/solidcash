@@ -1,13 +1,10 @@
 import { defineConfig } from '@solidcash/testing';
 
 export default defineConfig({
-  // Compile and execute the upstream EACC Solidity sources verbatim. Oversized contracts are emitted as
-  // `<Contract>.split.json`; Hardhat-compatible factory lookup transparently prefers those bundles.
-  paths: {
-    contracts: '../../../../../effectiveacceleration.ai/contract/contracts',
-    artifacts: 'artifacts-real',
-    tests: 'test',
-  },
+  // The unchanged upstream test runs against BCH-native simplified ports while `tasks/compile-real.mjs` keeps the
+  // verbatim Solidity/sharding benchmark separate in artifacts-real. This avoids changing either upstream source
+  // tree while runtime compatibility and finer-grained (>10KB single-entry) sharding advance independently.
+  paths: { contracts: 'contracts-scash', artifacts: 'artifacts', tests: 'test' },
   solc: { solidityImportCompat: true, ecrecover: 'p2pkh' },
   typegen: {
     targets: [{

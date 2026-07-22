@@ -46,6 +46,7 @@ export const debugTemplate = (template: WalletTemplate, artifacts: Artifact[]): 
   }
 
   const results: DebugResults = {};
+  const evaluationErrors: unknown[] = [];
   // Filter out body unlock scripts - they are for IDE visualization only, not for programmatic debugging.
   // Body scripts use Key-typed signature variables and lockingType: 'standard', which don't evaluate
   // correctly in the programmatic debug flow (e.g., Key variables require operation identifiers like
@@ -60,8 +61,21 @@ export const debugTemplate = (template: WalletTemplate, artifacts: Artifact[]): 
     const matchingArtifact = artifacts.find((artifact) => unlockingScriptId.startsWith(artifact.contractName));
 
     for (const scenarioId of scenarioIds) {
-      results[`${unlockingScriptId}.${scenarioId}`] = debugSingleScenario(template, matchingArtifact, unlockingScriptId, scenarioId);
+      try {
+        results[`${unlockingScriptId}.${scenarioId}`] = debugSingleScenario(
+          template, matchingArtifact, unlockingScriptId, scenarioId,
+        );
+      } catch (error) {
+        // A composed transaction can fail at both a wrapper/proxy input and its delegated implementation input.
+        // Inspect every input so a source-level require from the implementation is not masked by the proxy's
+        // generic `delegatecall(...)` OP_VERIFY failure.
+        evaluationErrors.push(error);
+      }
     }
+  }
+
+  if (evaluationErrors.length > 0) {
+    throw evaluationErrors.find((error) => error instanceof FailedRequireError) ?? evaluationErrors[0];
   }
 
   verifyFullTransaction(template);

@@ -123,9 +123,10 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   // An `initialize` delegate: state is set by running it through the proxy (the OZ/Ethereum initializer flow).
   const INIT_IMPL = `pragma solidcash >=0.8.0;
     contract InitImpl() {
-      int a;
+      int public a;
       int b;
       function initialize(int a_, int b_) delegate { this.a = a_; this.b = b_; }
+      function requireUninitialized() delegate { require(this.a == 0, "AlreadyInitialized"); }
       function auth(pubkey p, sig s) unsafe { require(checkSig(s, p)); }
     }`;
 
@@ -137,6 +138,9 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const state = await (proxy.proxy as any).getState();
     expect(state.a).toBe(7n);
     expect(state.b).toBe(9n);
+    expect(await (proxy as any).a()).toBe(7n);
+    const failing = await (proxy as any).requireUninitialized().build();
+    expect(() => failing.debug()).toThrow('AlreadyInitialized');
   });
 
   it('initializer: false seeds state at genesis (SolidCash constructor style)', async () => {

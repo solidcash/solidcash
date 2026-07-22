@@ -159,7 +159,13 @@ class Assertion {
 
   // --- equality ---
   equal(expected: any): this {
-    const [a, e] = normalizeAddressPair(this.actual, expected);
+    let [a, e] = normalizeAddressPair(this.actual, expected);
+    // Hardhat's chai matchers treat integer-like JS numbers and ethers bigint results as the same numeric value.
+    // Preserve strict equality for all other values while allowing unchanged Solidity tests to use either form.
+    if ((typeof a === 'bigint' && typeof e === 'number') || (typeof a === 'number' && typeof e === 'bigint')) {
+      a = big(a);
+      e = big(e);
+    }
     const ev = ensureVitest();
     (this.negate ? ev(a).not : ev(a)).toEqual(e);
     return this;

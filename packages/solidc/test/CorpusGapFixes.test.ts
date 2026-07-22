@@ -2341,7 +2341,7 @@ describe('low-level call with mapping-entry operands (block-layout slot allocati
   const src = 'contract C { struct T { address dest; uint val; bytes data; bool done; } mapping(uint=>T) txs;'
     + ' function exec(uint id) public { T storage t = txs[id]; (t.done,) = t.dest.call{value: t.val}(t.data); } }';
   it('allocates entry slots for a .call{value:} with entry operands (default entry model)', () => {
-    expect(() => compileString(src, { solidityImportCompat: true, sortedMappingsAll: false })).not.toThrow();
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
   it('same under C2-default (the -1 slot no longer trips the sorted read)', () => {
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
@@ -2364,16 +2364,16 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     + ' function f(int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
     + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }';
   const abiOf = (loop: string): ReturnType<typeof compileString>['abi'][number] | undefined =>
-    compileString(mkBigint(loop), { sortedMappingsAll: true, forceStateful: true }).abi.find((f) => f.name === 'f');
+    compileString(mkBigint(loop), { forceStateful: true }).abi.find((f) => f.name === 'f');
   const silOf = (loop: string): string[] | undefined => abiOf(loop)?.sortedInsertLoops;
   it('unrolls a fixed-bound C2 loop (static upserts handle the actual value)', () => {
     expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
-      { sortedMappingsAll: true, forceStateful: true })).not.toThrow();
+      { forceStateful: true })).not.toThrow();
   });
   it('compiles a dynamic bool-value C2 set loop via the upsert loop (op=set, multi-gap + update)', () => {
     // bool `= true`/`= false` now routes to the upsert loop (bool = int 1/0) - gains multi-gap + update, not just the
     // one-gap range-splice.
-    const art = compileString(boolLoop, { sortedMappingsAll: true, forceStateful: true });
+    const art = compileString(boolLoop, { forceStateful: true });
     const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
     expect(info?.op).toBe('set');
   });
@@ -3282,7 +3282,7 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
     expect(() => compileString('contract C { mapping(address => bool) w;'
       + ' function f() public { address[] memory a = new address[](0); a.push(address(0));'
       + ' for (uint256 i = 0; i < a.length; i++) { w[a[i]] = true; } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/not yet compiled/);
+    { solidityImportCompat: true })).toThrow(/not yet supported/);
   });
 });
 

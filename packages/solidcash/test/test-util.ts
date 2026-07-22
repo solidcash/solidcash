@@ -14,7 +14,10 @@ import {
 import {
   MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
 } from '../src/index.js';
-import { getDataNftAddress, getTokenContainerAddress } from '../src/stateful/covenant-helpers.js';
+import {
+  getDataNftAddress, getEntryNftAddress, getTokenContainerAddress,
+} from '../src/stateful/covenant-helpers.js';
+import { headSentinelCommitment } from '../src/stateful/SortedList.js';
 import {
   network as defaultNetwork, alicePub, alicePriv, alicePkh,
 } from './fixture/vars.js';
@@ -309,6 +312,7 @@ export async function setupStatefulUtxos(
   const dataNftSatoshis = opts?.dataNftSatoshis ?? 10000n;
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const dataNftCount = commitments.length;
+  const sortedCollections = (stateLayout.collections ?? []).filter((collection) => collection.sorted);
 
   // Chosen-category genesis (mock only): seed master+data at txid=categoryId via addUtxo. Needed when a
   // category must be known BEFORE building a dependent contract - e.g. a branded library whose __brand is the
@@ -330,6 +334,17 @@ export async function setupStatefulUtxos(
         token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[i] } },
       }));
     }
+    for (let i = 0; i < sortedCollections.length; i++) {
+      const collection = sortedCollections[i];
+      const addr = getEntryNftAddress(pinnedContract, categoryId, collection.name);
+      await (provider as any).addUtxo(addr, {
+        txid: categoryId, vout: commitments.length + i + 1, satoshis: dataNftSatoshis,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
+        },
+      });
+    }
     return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses };
   }
 
@@ -349,6 +364,14 @@ export async function setupStatefulUtxos(
         satoshis: dataNftSatoshis,
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: commitments[i] } },
       })),
+      ...sortedCollections.map((collection) => ({
+        address: getEntryNftAddress(pinnedContract, categoryId, collection.name),
+        satoshis: dataNftSatoshis,
+        token: {
+          amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: binToHex(headSentinelCommitment()) },
+        },
+      })),
       ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),
     ];
   });
@@ -365,6 +388,6 @@ export async function setupStatefulUtxos(
     masterUtxo: result.utxos[0],
     dataNftUtxos: result.utxos.slice(1, 1 + dataNftCount),
     dataNftAddresses,
-    extraUtxos: result.utxos.slice(1 + dataNftCount),
+    extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length),
   };
 }

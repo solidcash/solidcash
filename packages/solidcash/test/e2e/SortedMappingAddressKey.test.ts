@@ -21,7 +21,7 @@ describe('sorted address-keyed mapping (ERC20 balance shape)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('bal[addr] keyed by the address; distinct addresses independent', async () => {
-    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
     const slotOfAddr = (addr: string): Uint8Array => keyToSlot(addressToLockScript(addr));

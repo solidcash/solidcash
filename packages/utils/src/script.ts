@@ -455,13 +455,3 @@ const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocation
     return lowest;
   }, locations[0]);
 };
-
-const mergeAsm = (asm1: string, asm2: string): string => {
-  // Append two ASM strings with a single separating space. asm1 is the accumulated result of prior merges and
-  // is already normalised, so we only normalise the (small) newly-appended asm2 rather than re-scanning the
-  // whole accumulated string on every append - the latter was O(N^2) on large scripts (huge fixed arrays).
-  const b = asm2.replace(/\s+/g, ' ').trim();
-  if (asm1 === '') return b;
-  if (b === '') return asm1;
-  return `${asm1} ${b}`;
-};

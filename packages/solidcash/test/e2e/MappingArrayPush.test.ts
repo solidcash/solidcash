@@ -5,7 +5,7 @@ import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.j
 // This suite exercises + asserts the DEFAULT (entry-model) push/pop byte format. C2 push/pop (the default now) is
 // covered by SortedMappingArrayElementWrite; opt this file out so it keeps testing the default entry model.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
-  _csRawSolidc(s, { sortedMappingsAll: false, ...o });
+  _csRawSolidc(s, o);
 import { createTestProvider, setupStatefulUtxos, getTxOutputs } from '../test-util.js';
 import { alicePub, alicePriv, aliceAddress } from '../fixture/vars.js';
 

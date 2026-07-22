@@ -1122,46 +1122,80 @@ export function parseChunkCommitment(hex: string): { chunkIndex: number; chunkDa
   return { chunkIndex: Number(key as bigint), chunkData: value as Uint8Array };
 }
 
-// ===== P5b value chunks (LONG sorted-mapping values, covenant-pinned - Design D) =====
-// A long value's bytes persist in chunk NFTs at a COMPILE-TIME per-collection address (so the write covenant can
-// derive it without runtime hashing); the (slot, digest) that identify the value VERSION live in the commitment:
-//   slot(32) ++ digest(32) ++ pushdata(chunkIndex) ++ pushdata(chunkData)
-// The covenant pins each chunk output to this exact commitment (built from the on-stack value), so a read
-// reassembles the authentic value - a forged/absent chunk is rejected at WRITE time, not just fail-closed on read.
+// ===== Root-addressed C2 value chunks =====
+// Long values keep a prefix in the entry head. Continuation NFTs are isolated at an address derived from
+// (category, collection, slot, root), so their commitments need only a canonical uint16 index and raw data.
 
-/** Value-chunk data size (bytes). Smaller than DYNAMIC_CHUNK_SIZE: the commitment carries slot(32)+digest(32). */
-export const VALUE_CHUNK_SIZE = 56;
+export const VALUE_HEAD_SIZE = 28;
+export const VALUE_CHUNK_INDEX_SIZE = 2;
+export const VALUE_CHUNK_SIZE = 128 - VALUE_CHUNK_INDEX_SIZE;
+export const VALUE_CHUNK_MAX_COUNT = 1 << 15;
 
-/** Split a long value into VALUE_CHUNK_SIZE-byte pieces (the last may be shorter). */
+/** Split only the bytes after the VALUE_HEAD_SIZE-byte entry prefix into full 126-byte continuation chunks. */
 export function splitValueIntoValueChunks(value: Uint8Array): Uint8Array[] {
   const chunks: Uint8Array[] = [];
-  for (let off = 0; off < value.length; off += VALUE_CHUNK_SIZE) {
+  for (let off = VALUE_HEAD_SIZE; off < value.length; off += VALUE_CHUNK_SIZE) {
     chunks.push(value.slice(off, off + VALUE_CHUNK_SIZE));
   }
+  if (chunks.length > VALUE_CHUNK_MAX_COUNT) throw new RangeError('C2 value requires too many chunks');
   return chunks;
 }
 
-/** Build a value-chunk commitment: slot(32) ++ digest(32) ++ pushdata(index) ++ pushdata(data). */
-export function buildValueChunkCommitment(
-  slot: Uint8Array, digest: Uint8Array, chunkIndex: number, chunkData: Uint8Array,
-): string {
-  return binToHex(slot) + binToHex(digest) + buildChunkCommitment(chunkIndex, chunkData);
+/** Build a canonical continuation commitment: uint16-le index || raw chunk data. */
+export function buildValueChunkCommitment(chunkIndex: number, chunkData: Uint8Array): string {
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= VALUE_CHUNK_MAX_COUNT) {
+    throw new RangeError(`C2 value chunk index out of range: ${chunkIndex}`);
+  }
+  if (chunkData.length < 1 || chunkData.length > VALUE_CHUNK_SIZE) {
+    throw new RangeError(`C2 value chunk data must contain 1..${VALUE_CHUNK_SIZE} bytes, got ${chunkData.length}`);
+  }
+  const commitment = new Uint8Array(VALUE_CHUNK_INDEX_SIZE + chunkData.length);
+  new DataView(commitment.buffer).setUint16(0, chunkIndex, true);
+  commitment.set(chunkData, VALUE_CHUNK_INDEX_SIZE);
+  return binToHex(commitment);
 }
 
-/** Parse a value-chunk commitment into slot, digest, index and data. */
-export function parseValueChunkCommitment(
-  hex: string,
-): { slot: Uint8Array; digest: Uint8Array; chunkIndex: number; chunkData: Uint8Array } {
-  const slot = hexToBin(hex.slice(0, 64));
-  const digest = hexToBin(hex.slice(64, 128));
-  const { chunkIndex, chunkData } = parseChunkCommitment(hex.slice(128));
-  return { slot, digest, chunkIndex, chunkData };
+/** Parse the canonical uint16-le index || raw data continuation commitment. */
+export function parseValueChunkCommitment(hex: string): { chunkIndex: number; chunkData: Uint8Array } {
+  const commitment = hexToBin(hex);
+  if (commitment.length < VALUE_CHUNK_INDEX_SIZE + 1 || commitment.length > 128) {
+    throw new RangeError(`invalid C2 value chunk commitment length: ${commitment.length}`);
+  }
+  return {
+    chunkIndex: new DataView(commitment.buffer, commitment.byteOffset, commitment.byteLength).getUint16(0, true),
+    chunkData: commitment.slice(VALUE_CHUNK_INDEX_SIZE),
+  };
 }
 
-/** Value-chunk collection signature for a collection (compile-time address key). */
-export function valueChunkSignature(collection: string): string {
-  return `${collection}$valuechunks`;
+/** Strictly validate and reconstruct a root-addressed long value. */
+export function joinValueChunks(
+  headData: Uint8Array, chunks: readonly { chunkIndex: number; chunkData: Uint8Array }[], totalLength: number,
+): Uint8Array {
+  if (!Number.isInteger(totalLength) || totalLength <= 60) throw new RangeError('chunked C2 value length must exceed 60');
+  if (headData.length !== VALUE_HEAD_SIZE) throw new RangeError(`C2 value head must contain exactly ${VALUE_HEAD_SIZE} bytes`);
+  const remaining = totalLength - VALUE_HEAD_SIZE;
+  const expectedCount = Math.ceil(remaining / VALUE_CHUNK_SIZE);
+  if (chunks.length !== expectedCount) throw new RangeError(`C2 value chunk count mismatch: expected ${expectedCount}, got ${chunks.length}`);
+  const out = new Uint8Array(totalLength);
+  out.set(headData, 0);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (chunk.chunkIndex !== i) throw new RangeError(`C2 value chunk index mismatch: expected ${i}, got ${chunk.chunkIndex}`);
+    const expectedSize = i + 1 < expectedCount ? VALUE_CHUNK_SIZE : remaining - VALUE_CHUNK_SIZE * i;
+    if (chunk.chunkData.length !== expectedSize) {
+      throw new RangeError(`C2 value chunk ${i} size mismatch: expected ${expectedSize}, got ${chunk.chunkData.length}`);
+    }
+    out.set(chunk.chunkData, VALUE_HEAD_SIZE + i * VALUE_CHUNK_SIZE);
+  }
+  return out;
 }
+
+/** Value-chunk covenant domain for a collection and authenticated value version. */
+export function valueChunkSignature(collection: string, slot?: Uint8Array, root?: Uint8Array): string {
+  const suffix = slot && root ? `$${binToHex(slot)}$${binToHex(root)}` : '';
+  return `${collection}$valuechunks${suffix}`;
+}
+
 
 /** Concatenate chunk data (ordered by chunkIndex) and truncate to the authoritative length. */
 export function joinChunks(orderedChunkData: Uint8Array[], totalLength: number): Uint8Array {
@@ -1464,6 +1498,15 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
 /**
  * Build the hex-encoded bytecode for the entry-NFT covenant seeded with a category and collection signature.
  */
+/** Entry-NFT spend rules salted by a C2 value version. The salts only domain-separate the P2SH32 address. */
+export function buildValueChunkCovenantScript(
+  categoryId: Uint8Array, collectionHash: Uint8Array, slot: Uint8Array, root: Uint8Array,
+): Script {
+  if (slot.length !== 32 || root.length !== 32) throw new RangeError('value chunk slot/root must be 32 bytes');
+  const base = buildEntryNftCovenantScript(categoryId, collectionHash);
+  return [...base.slice(0, -1), slot, Op.OP_DROP, root, Op.OP_DROP, Op.OP_1];
+}
+
 export function buildEntryNftCovenantBytecode(categoryIdHex: string, collectionSignature: string): string {
   const categoryId = hexToBin(categoryIdHex);
   const collectionHash = computeCollectionHash(collectionSignature);
@@ -1488,10 +1531,7 @@ export function computeErrorSignature(errorName: string, paramTypes: string[]): 
  * Build the canonical function signature string: "Name(type1,type2,...)"
  */
 export function computeFunctionSignature(funcName: string, paramTypes: string[]): string {
-  // Payability is an expression-level type restriction, not part of Solidity's canonical ABI type. In
-  // particular, f(address) and f(address payable) have the same external signature and selector.
-  const canonicalTypes = paramTypes.map((type) => type.replace(/address payable/g, 'address'));
-  return `${funcName}(${canonicalTypes.join(',')})`;
+  return `${funcName}(${paramTypes.join(',')})`;
 }
 
 /**

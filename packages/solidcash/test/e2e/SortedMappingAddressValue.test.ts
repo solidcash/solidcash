@@ -21,7 +21,7 @@ describe('sorted address-valued mapping (NFT owner shape)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('owner[k]=addr stores an address value; a read matches it and updates', async () => {
-    const art = compileString(SRC, { sortedMappings: ['owner'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
 

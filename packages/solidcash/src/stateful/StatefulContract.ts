@@ -1317,6 +1317,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Determine counts for constructor features
     const entryAccesses = constructorAbi?.entryAccesses ?? [];
     const entryCount = entryAccesses.length;
+    const entryOutputCount = entryAccesses.reduce((count, access) => {
+      const collection = stateLayout.collections?.find((item) => item.name === access.collection);
+      return count + (collection?.sorted ? 2 : 1);
+    }, 0);
     const emitCount = constructorAbi?.emits?.length ?? 0;
 
     const threadCount = options.threadCount ?? 1;
@@ -1327,7 +1331,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const initialBalance = options.initialBalance ?? 0n;
     const totalMaster = masterAmount * BigInt(threadCount);
     const totalDataNft = dataNftAmount * BigInt(stateLayout.dataNftCount);
-    const totalEntryNft = dataNftAmount * BigInt(entryCount);
+    const totalEntryNft = dataNftAmount * BigInt(entryOutputCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
     const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + initialBalance + fee;
     const changeAmount = options.fundingUtxo.satoshis - totalRequired;
@@ -1401,17 +1405,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Entry NFT outputs (mapping writes in constructor)
-    for (let i = 0; i < entryCount; i++) {
-      const access = entryAccesses[i];
+    let entryCommitmentIndex = 0;
+    for (const access of entryAccesses) {
       const entryNftAddress = getEntryNftAddress(contract, categoryId, access.collection);
-      builder.addOutput({
-        to: entryNftAddress,
-        amount: dataNftAmount,
-        token: {
-          category: categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: entryCommitments[i] ?? '' },
-        },
-      });
+      const collection = stateLayout.collections?.find((item) => item.name === access.collection);
+      const outputCount = collection?.sorted ? 2 : 1;
+      for (let output = 0; output < outputCount; output++) {
+        builder.addOutput({
+          to: entryNftAddress,
+          amount: dataNftAmount,
+          token: {
+            category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: entryCommitments[entryCommitmentIndex++] ?? '' },
+          },
+        });
+      }
     }
 
     // C2 (sorted) mapping HEAD sentinels: a sorted mapping needs a HEAD[slot 0 | nextKey 0] to anchor the linked
@@ -2877,6 +2885,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
     const entryAccesses = constructorAbi?.entryAccesses ?? [];
     const entryCount = entryAccesses.length;
+    const entryOutputCount = entryAccesses.reduce((count, access) => {
+      const collection = stateLayout.collections?.find((item) => item.name === access.collection);
+      return count + (collection?.sorted ? 2 : 1);
+    }, 0);
     const transferCount = constructorAbi?.transferCount ?? 0;
     const emitInfos = constructorAbi?.emits ?? [];
     const emitCount = emitInfos.length;
@@ -2944,10 +2956,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (nft, i) => probeBuilder.addInput(nft, dataNftUnlockers[i]),
       );
 
-      // Plain (no-token) inputs at the constructor's entry-write slots, so the write covenant's slot-exists
-      // check reads "empty" -> new entry (genesis has no pre-existing entries). Placed right after the data
-      // NFTs to match the block layout (master, data NFTs, entries) for a constructor without external reads.
+      // Constructor C2 writes are probed against a synthetic empty HEAD. The real genesis is funder-authorized,
+      // but the probe must present the same authenticated predecessor shape the runtime upsert code consumes.
       for (let e = 0; e < entryCount; e++) {
+        const access = entryAccesses[e];
+        const collection = stateLayout.collections?.find((item) => item.name === access.collection);
+        if (collection?.sorted) {
+          probeBuilder.addInput({
+            txid: `${'00'.repeat(31)}ee`, vout: e, satoshis: dataNftAmount,
+            token: {
+              category: categoryId, amount: 0n,
+              nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
+            },
+          }, createEntryNftUnlocker(contract, 0, categoryId, access.collection));
+          continue;
+        }
         probeBuilder.addInput(
           { txid: `${'00'.repeat(31)}ee`, vout: e, satoshis: dataNftAmount },
           {
@@ -2993,6 +3016,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             nft: { capability: 'mutable' as const, commitment: '' },
           },
         });
+        const collection = stateLayout.collections?.find((item) => item.name === access.collection);
+        if (collection?.sorted) {
+          probeBuilder.addOutput({
+            to: lockingBytecode,
+            amount: dataNftAmount,
+            token: {
+              category: categoryId, amount: 0n,
+              nft: { capability: 'mutable' as const, commitment: '' },
+            },
+          });
+        }
       }
 
       // Transfer placeholder outputs
@@ -3050,23 +3084,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         !newStateCommitments
         || newStateCommitments.length < requiredIndices.length
       ) {
+        const vmError = fullTrace.find((state) => state.error)?.error;
         throw new Error(
           'Failed to derive initial state commitments from '
           + 'constructor. Ensure the constructor writes all '
-          + 'state variables.',
+          + `state variables.${vmError ? ` VM error: ${vmError}` : ''}`,
         );
       }
 
       // Extract entry commitments
       entryCommits = [];
-      if (entryCount > 0) {
+      if (entryOutputCount > 0) {
         const entryOutputBase = 1 + stateLayout.dataNftCount;
         const entryOutputRange = {
           min: entryOutputBase,
-          max: entryOutputBase + entryCount,
+          max: entryOutputBase + entryOutputCount,
         };
         entryCommits = extractCommitmentsFromTrace(
-          fullTrace, entryCount, entryOutputRange,
+          fullTrace, entryOutputCount, entryOutputRange,
         ) ?? [];
       }
 
@@ -5290,10 +5325,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const keyNames = access.keyParams.map((name, i) => access.keySources?.[i]?.paramName ?? name);
           const keyTypes = collection.keyTypes ?? [collection.keyType];
           const encodeKey = (paramName: string, keyType: string, ki: number): Uint8Array => {
+            const source = access.keySources?.[ki];
+            if (source?.kind === 'constant') {
+              return bigIntToVmNumber(BigInt(source.constantValue ?? '0'));
+            }
             // msg.sender / tx.origin key: slot = keyToSlot(the sender's native P2PKH lockscript = tx.origin). The
             // sender funds via _signer.unlockP2PKH(), so the covenant's on-chain emitTxOrigin resolves to the same
             // lockscript; a wrong address just fails the on-chain slot check (fail-closed).
-            if (access.keySources?.[ki]?.kind === 'msgSender') {
+            if (source?.kind === 'msgSender') {
               if (!this._signer) {
                 throw new Error("A msg.sender/tx.origin-keyed sorted mapping requires a Signer (the sender funds via "
                   + 'its native P2PKH input): connect one with StatefulContract.connect(signer).');
@@ -5303,9 +5342,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // Expression/computed key (e.g. balances[hash160(pk)] with a local var): not a function param, so
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
-            if (access.keySources?.[ki]?.kind === 'expression') {
+            if (source?.kind === 'expression') {
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
-              const auto = evalComputedKey(access.keySources[ki].expressionLabel, args, abiFunction!.inputs);
+              const auto = evalComputedKey(source.expressionLabel, args, abiFunction!.inputs);
               if (auto) return auto;
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
               if (ov !== undefined) {
@@ -5327,7 +5366,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
-          const kv = access.keySources?.[0]?.kind === 'msgSender'
+          const kv = access.keySources?.[0]?.kind === 'constant'
+            ? BigInt(access.keySources[0].constantValue ?? '0')
+            : access.keySources?.[0]?.kind === 'msgSender'
             ? addressToLockScript(this._signer!.getAddress())
             : access.keySources?.[0]?.kind === 'expression'
               ? (evalComputedKey(access.keySources[0].expressionLabel, args, abiFunction!.inputs)

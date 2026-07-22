@@ -32,7 +32,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       mapping(int => bytes) data;
       function put(int k, bytes v, pubkey pk, sig s) { require(checkSig(s, pk)); data[k] = v; }
     }`;
-    const art = compileString(WRITE_SRC, { sortedMappings: ['data'] });
+    const art = compileString(WRITE_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));
@@ -66,7 +66,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       mapping(int => bytes) data;
       function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
     }`;
-    const art = compileString(READ_SRC, { sortedMappings: ['data'] });
+    const art = compileString(READ_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));
@@ -134,7 +134,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       mapping(int => bytes) data;
       function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
     }`;
-    const art = compileString(READ_SRC, { sortedMappings: ['data'] });
+    const art = compileString(READ_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));
@@ -176,7 +176,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       function put(int k, bytes a, pubkey pk, sig s) { require(checkSig(s, pk)); bytes v = a; data[k] = v; }
       function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
     }`;
-    const art = compileString(SRC, { sortedMappings: ['data'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));
@@ -231,7 +231,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       mapping(int => bytes) data;
       function put(int k, bytes v, pubkey pk, sig s) { require(checkSig(s, pk)); data[k] = v; }
     }`;
-    const art = compileString(WRITE_SRC, { sortedMappings: ['data'] });
+    const art = compileString(WRITE_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));

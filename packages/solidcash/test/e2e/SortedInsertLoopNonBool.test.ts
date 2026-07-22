@@ -24,18 +24,18 @@ describe('C2 per-key value + delete loops compile; only =default nullify fails c
 
   it('per-key value assign loop (w[ks[i]] = vs[i]) COMPILES via the per-iteration UPSERT loop (op=set)', () => {
     // Absolute per-key set: each iteration co-spends k[i]'s entry (update) or predecessor (insert) + mints v[i].
-    const art = compileString(nonBool, { sortedMappings: ['w'] });
+    const art = compileString(nonBool, {});
     const info = art.abi.find((f) => f.name === 'setmany')?.sortedUpsertLoopInfo?.[0];
     expect(info?.valueArrayParam).toBe('vs');
     expect(info?.op).toBe('set');
   });
   it('diff-key RMW loop (w[ks[i]] += vs[i]) COMPILES via the per-iteration UPDATE loop (multitransfer credit)', () => {
     // Now supported: each iteration co-spends k[i]'s EXISTING entry + mints the updated value (SortedUpsertLoop).
-    const art = compileString(rmw, { sortedMappings: ['w'] });
+    const art = compileString(rmw, {});
     expect(art.abi.find((f) => f.name === 'addmany')?.sortedUpsertLoopInfo?.[0]?.valueArrayParam).toBe('vs');
   });
   it('the bool set loop (w[ks[i]] = true) still compiles (range-splice supported)', () => {
-    expect(() => compileString(boolSet, { sortedMappings: ['w'] })).not.toThrow();
+    expect(() => compileString(boolSet, {})).not.toThrow();
   });
 
   // A per-iteration C2 `delete m[k[i]]` COMPILES via the upsert loop (op=delete): each iteration co-spends k[i]'s
@@ -51,13 +51,13 @@ describe('C2 per-key value + delete loops compile; only =default nullify fails c
     function zero(int[] ks) { for (int i = 0; i < ks.length; i++) { w[ks[i]] = 0; } }
   }`;
   it('C2 delete-in-loop COMPILES via the upsert loop (op=delete)', () => {
-    const art = compileString(delLoop, { sortedMappings: ['w'] });
+    const art = compileString(delLoop, {});
     const info = art.abi.find((f) => f.name === 'clear')?.sortedUpsertLoopInfo?.[0];
     expect(info?.op).toBe('delete');
     expect(info?.valueArrayParam).toBeUndefined(); // delete has no value array
   });
   it('C2 =literal set-in-loop (w[ks[i]] = 0) COMPILES via the upsert loop (op=set, valueConst)', () => {
-    const info = compileString(nullifyLoop, { sortedMappings: ['w'] }).abi
+    const info = compileString(nullifyLoop, {}).abi
       .find((f) => f.name === 'zero')?.sortedUpsertLoopInfo?.[0];
     expect(info?.op).toBe('set');
     expect(info?.valueConst).toBe('0');

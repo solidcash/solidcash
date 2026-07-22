@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from '../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 
 // Structs, mappings, and nested lvalue writes: field/element writes, storage pointers, and delete.
 

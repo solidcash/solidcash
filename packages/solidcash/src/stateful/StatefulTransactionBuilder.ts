@@ -2272,10 +2272,16 @@ export class StatefulTransactionBuilder {
 
 
     // -- Phase 1: build the covenant transaction (logic only, no fee) --
-    const covenantBuilder = this.build();
+    let covenantBuilder = this.build();
     try { covenantBuilder.debug(); } catch (_e) {
       if (typeof _e === 'object' && _e) console.debug('STB debug() best-effort error:', (_e as Error).message);
     }
+
+    // The debug probe can discover commitments and output counts for dynamic C2 inserts/chunks. Rebuild before
+    // measuring and funding so the fee calculation sees the converged covenant shape rather than the smaller
+    // pre-probe transaction. Otherwise a newly learned entry output is added only by the final build, leaving its
+    // dust value unfunded (for example: 2400 sats in, 3600 sats out for the first mapping insertion).
+    covenantBuilder = this.build();
 
     // -- Phase 2: measure shape -> compute fee -> fund --
     // Build the covenant-only tx to measure its byte size.

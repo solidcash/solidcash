@@ -20,7 +20,7 @@ describe('sorted mapping bytes32 value', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('hash[k]=h stores a bytes32; a read matches it and rejects a wrong value', async () => {
-    const art = compileString(SRC, { sortedMappings: ['hash'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
     const H = hexToBin('aa'.repeat(32));

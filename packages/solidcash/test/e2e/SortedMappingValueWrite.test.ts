@@ -21,7 +21,7 @@ describe('sorted mapping compiled value write / upsert (mapping(K=>int))', () =>
   const sig = new SignatureTemplate(alicePriv);
 
   it('bal[k]=v inserts an absent key and updates a present key; reads reflect the value', async () => {
-    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
 

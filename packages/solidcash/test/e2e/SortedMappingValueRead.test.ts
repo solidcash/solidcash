@@ -19,7 +19,7 @@ describe('sorted mapping compiled value read (mapping(K=>int))', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('bal[k] returns the stored value for a present key and 0 (default) for an absent key', async () => {
-    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    const art = compileString(SRC, {});
     expect(art.stateLayout?.collections?.find((c) => c.name === 'bal')?.sorted).toBe(true);
     const contract = new Contract(art, [], { provider });
 

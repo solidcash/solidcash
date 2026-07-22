@@ -19,7 +19,7 @@ describe('sorted mapping compiled read (C2 end-to-end)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('require(!claimed[k]) passes for an absent key, reverts for a present (claimed) key', async () => {
-    const art = compileString(SRC, { sortedMappings: ['claimed'] });
+    const art = compileString(SRC, {});
     expect(art.stateLayout?.collections?.find((c) => c.name === 'claimed')?.sorted).toBe(true);
     const contract = new Contract(art, [], { provider });
 

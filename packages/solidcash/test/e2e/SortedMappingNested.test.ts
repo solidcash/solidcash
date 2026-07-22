@@ -22,7 +22,7 @@ describe('sorted nested mapping (composite key)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('allow[a][b] upsert/read/RMW keyed by the (a,b) pair, distinct pairs independent', async () => {
-    const art = compileString(SRC, { sortedMappings: ['allow'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
     const slotOf = (a: bigint, b: bigint): Uint8Array => keyToSlotMulti([bigIntToVmNumber(a), bigIntToVmNumber(b)]);

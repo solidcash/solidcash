@@ -23,7 +23,7 @@ describe('C2 mapping deploy-time HEAD sentinel', () => {
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
 
   it('mints HEAD[0|0] at genesis so a fresh empty sorted mapping is writable', async () => {
-    const art = compileString(SRC, { sortedMappings: ['balances'], forceStateful: true });
+    const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const result = await StatefulContract.deploy(art, [], {

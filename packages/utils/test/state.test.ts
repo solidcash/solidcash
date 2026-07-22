@@ -16,6 +16,12 @@ import {
   buildChunkCommitment,
   parseChunkCommitment,
   joinChunks,
+  VALUE_HEAD_SIZE,
+  VALUE_CHUNK_SIZE,
+  splitValueIntoValueChunks,
+  buildValueChunkCommitment,
+  parseValueChunkCommitment,
+  joinValueChunks,
   packFixedWidthArray,
   unpackFixedWidthArray,
   packFixedWidthElement,
@@ -786,5 +792,41 @@ describe('attachDecodedAccessors (typechain .toObject() / .toArray() at the user
     const enc = encodePushdataValue({ id: 9n, inner: { x: 5n, y: 6n }, label: 'Z' }, 'Outer', structs);
     const value = attachDecodedAccessors(decodePushdataValue(enc, 0, 'Outer', structs).value);
     expect(encodePushdataValue(value, 'Outer', structs)).toEqual(enc);
+  });
+});
+
+
+describe('root-addressed C2 value chunk codec', () => {
+  const bytesOf = (n: number): Uint8Array => Uint8Array.from({ length: n }, (_v, i) => (i * 13 + 7) & 0xff);
+
+  it('keeps 28 bytes in the head and packs continuation commitments to 128 bytes', () => {
+    const value = bytesOf(VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * 2 + 9);
+    const chunks = splitValueIntoValueChunks(value);
+    expect(chunks.map((c) => c.length)).toEqual([VALUE_CHUNK_SIZE, VALUE_CHUNK_SIZE, 9]);
+    const commitments = chunks.map((data, i) => buildValueChunkCommitment(i, data));
+    expect(commitments.map((c) => c.length / 2)).toEqual([128, 128, 11]);
+    const parsed = commitments.map(parseValueChunkCommitment);
+    expect(joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), parsed, value.length)).toEqual(value);
+  });
+
+  it('rejects missing, duplicate, reordered, short intermediate, and oversized chunks', () => {
+    const value = bytesOf(VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE + 5);
+    const good = splitValueIntoValueChunks(value).map((chunkData, chunkIndex) => ({ chunkIndex, chunkData }));
+    expect(() => joinValueChunks(value.slice(0, 27), good, value.length)).toThrow(/head/);
+    expect(() => joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), good.slice(1), value.length)).toThrow(/count/);
+    expect(() => joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), [good[0], good[0]], value.length)).toThrow(/index/);
+    expect(() => joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), [good[1], good[0]], value.length)).toThrow(/index/);
+    expect(() => joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), [
+      { chunkIndex: 0, chunkData: good[0].chunkData.slice(0, VALUE_CHUNK_SIZE - 1) }, good[1],
+    ], value.length)).toThrow(/size/);
+    expect(() => buildValueChunkCommitment(0, bytesOf(VALUE_CHUNK_SIZE + 1))).toThrow(/1../);
+    expect(() => buildValueChunkCommitment(32767, bytesOf(1))).not.toThrow();
+    expect(() => buildValueChunkCommitment(32768, bytesOf(1))).toThrow(/index/);
+  });
+
+  it('rejects permissive truncation and requires the exact final chunk length', () => {
+    const value = bytesOf(VALUE_HEAD_SIZE + 40);
+    const chunk = { chunkIndex: 0, chunkData: bytesOf(41) };
+    expect(() => joinValueChunks(value.slice(0, VALUE_HEAD_SIZE), [chunk], value.length)).toThrow(/size/);
   });
 });

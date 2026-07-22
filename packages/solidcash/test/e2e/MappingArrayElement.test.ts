@@ -3,7 +3,7 @@ import { compileString as _csRawSolidc } from 'solidc';
 // Asserts the DEFAULT (entry-model) fixed-array byte format via buildEntryCommitment seeding. Fixed arrays are now
 // C2 by default (SortedMappingFixedArrayValue covers that); opt out so this keeps testing the default entry model.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
-  _csRawSolidc(s, { sortedMappingsAll: false, ...o });
+  _csRawSolidc(s, o);
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider,

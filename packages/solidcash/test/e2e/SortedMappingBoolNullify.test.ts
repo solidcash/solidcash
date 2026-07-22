@@ -23,7 +23,7 @@ describe('sorted bool mapping nullify (Solidity delete parity)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('flag[k]=true/false and delete flag[k] all nullify; reads reflect the value', async () => {
-    const art = compileString(SRC, { sortedMappings: ['flag'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
 

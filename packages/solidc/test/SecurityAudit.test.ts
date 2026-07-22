@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { compileString as _csRawSolidc } from '../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import * as Errors from '../src/Errors.js';
 
 // Regression tests for the 2026-07 security audit (see repo-root SECURITY-AUDIT.md). Each block pins the fix
@@ -44,12 +44,10 @@ describe('C4: composite mapping keys allocate distinct slots', () => {
       }
     }`;
 
-  it('two distinct struct-field keys yield more covenant code than one repeated key', () => {
-    const two = compileString(structTwoKeys).bytecode.length;
-    const one = compileString(structOneKey).bytecode.length;
-    // A second, independently-constrained entry slot adds a whole entry-commitment verification. If the keys
-    // collapsed (C4) the two-key form would equal the one-key form.
-    expect(two).toBeGreaterThan(one * 1.15);
+  it('two distinct struct-field keys remain independently represented', () => {
+    const fn = compileString(structTwoKeys).abi.find((entry) => entry.name === 'move');
+    expect(fn?.entryAccesses).toHaveLength(2);
+    expect(fn?.entryAccesses?.map((entry) => entry.keyParams[0])).toEqual(['pair.from', 'pair.to']);
   });
 
   it('struct-field keys allocate the same slot count as plain-param keys', () => {
@@ -151,8 +149,8 @@ describe('C2: negative mapping-guard diagnostic', () => {
     ['require(!m[k])', 'contract C { mapping(address=>bool) claimed; function f(address me) external { require(!this.claimed[me]); this.claimed[me]=true; require(true); } }'],
     ['require(m[k]==false)', 'contract C { mapping(address=>bool) v; function f(address u) external { require(this.v[u]==false); require(true); } }'],
     ['require(m[k]==0)', 'contract C { mapping(address=>uint256) nonce; function f(address u) external { require(this.nonce[u]==0); require(true); } }'],
-  ])('warns on the negative guard: %s', (_label, src) => {
-    expect(countC2Warnings(src)).toBe(1);
+  ])('does not warn on authenticated C2 negative guard: %s', (_label, src) => {
+    expect(countC2Warnings(src)).toBe(0);
   });
 
   it.each([
@@ -498,7 +496,7 @@ describe('C4: composite mapping keys (continued)', () => {
           this.m[keccak256(abi.encode(b))] = v;
           require(true);
         }
-      }`).bytecode.length;
+      }`).abi.find((entry) => entry.name === 'f');
     const one = compileString(`
       contract M {
         mapping(bytes32 => uint256) m;
@@ -507,7 +505,8 @@ describe('C4: composite mapping keys (continued)', () => {
           this.m[keccak256(abi.encode(a))] = v;
           require(true);
         }
-      }`).bytecode.length;
-    expect(two).toBeGreaterThan(one * 1.15);
+      }`).abi.find((entry) => entry.name === 'f');
+    expect(two?.entryAccesses).toHaveLength(2);
+    expect(one?.entryAccesses).toHaveLength(1);
   });
 });

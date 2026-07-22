@@ -218,7 +218,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     // The entry NFT + its signer-P2PKH funder input beyond the two deploy coins.
     await signer.provider.addUtxo(signer.getAddress(), { txid: 'f6'.repeat(32), vout: 0, satoshis: 1_000_000n });
     await signer.provider.addUtxo(signer.getAddress(), { txid: '07'.repeat(32), vout: 0, satoshis: 1_000_000n });
-    const implArtifact = compileString(MAP_IMPL, { sortedMappingsAll: false });
+    const implArtifact = compileString(MAP_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
 
     const tx = await (proxy as any).register(5n).send();

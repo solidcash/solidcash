@@ -19,7 +19,7 @@ describe('sorted mapping compiled write / claim-once (C2 end-to-end)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('claim(k) inserts the key on-chain; a second claim of the same key reverts', async () => {
-    const art = compileString(SRC, { sortedMappings: ['claimed'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
 

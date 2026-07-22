@@ -9,7 +9,7 @@ import { URL } from 'url';
 import { getSubdirectories, readCashFiles } from '../test-utils.js';
 import * as Errors from '../../src/Errors.js';
 import { compileString as _csRawSolidc } from '../../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import type { SolidCashErrorListener } from '../../src/index.js';
 
 const VALID_SOURCE = `

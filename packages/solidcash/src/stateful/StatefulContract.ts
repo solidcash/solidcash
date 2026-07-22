@@ -2996,7 +2996,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       });
 
-      // Entry NFT placeholder outputs
+      // Entry NFT outputs. Previously learned commitments are fed into the next probe iteration so a constructor
+      // whose mapping write precedes scalar writes can progress past the entry equality checks.
+      let probeEntryCommitmentIndex = 0;
       for (const access of entryAccesses) {
         const collectionSig = stateLayout.collections?.find(
           (c) => c.name === access.collection,
@@ -3013,7 +3015,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: {
             category: categoryId, amount: 0n,
-            nft: { capability: 'mutable' as const, commitment: '' },
+            nft: {
+              capability: 'mutable' as const,
+              commitment: entryCommits[probeEntryCommitmentIndex++] ?? '',
+            },
           },
         });
         const collection = stateLayout.collections?.find((item) => item.name === access.collection);
@@ -3023,7 +3028,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             amount: dataNftAmount,
             token: {
               category: categoryId, amount: 0n,
-              nft: { capability: 'mutable' as const, commitment: '' },
+              nft: {
+                capability: 'mutable' as const,
+                commitment: entryCommits[probeEntryCommitmentIndex++] ?? '',
+              },
             },
           });
         }
@@ -3073,6 +3081,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         transaction,
       }) as AuthenticationProgramStateCommon[];
 
+      // Learn entry commitments even from a trace that stops at their placeholder equality check. On the next
+      // iteration those commitments are present, allowing execution to reach later state/event derivations.
+      let learnedEntryCommits: string[] = [];
+      if (entryOutputCount > 0) {
+        const entryOutputBase = 1 + stateLayout.dataNftCount;
+        learnedEntryCommits = extractCommitmentsFromTrace(fullTrace, entryOutputCount, {
+          min: entryOutputBase,
+          max: entryOutputBase + entryOutputCount,
+        }) ?? [];
+      }
+      const entryLearningChanged = learnedEntryCommits.length > 0
+        && learnedEntryCommits.some((commitment, index) => commitment !== entryCommits[index]);
+      if (entryLearningChanged) {
+        entryCommits = learnedEntryCommits;
+        continue;
+      }
+
       // Extract state commitments with output-index range filtering
       const stateOutputRange = {
         min: 1, max: 1 + requiredIndices.length,
@@ -3084,16 +3109,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         !newStateCommitments
         || newStateCommitments.length < requiredIndices.length
       ) {
-        const vmError = fullTrace.find((state) => state.error)?.error;
+        const failedState = fullTrace.find((state) => state.error);
+        const vmError = failedState?.error;
+        const vmPosition = failedState ? ` at instruction ${failedState.ip}` : '';
         throw new Error(
           'Failed to derive initial state commitments from '
           + 'constructor. Ensure the constructor writes all '
-          + `state variables.${vmError ? ` VM error: ${vmError}` : ''}`,
+          + `state variables.${vmError ? ` VM error${vmPosition}: ${vmError}` : ''}`,
         );
       }
 
       // Extract entry commitments
-      entryCommits = [];
       if (entryOutputCount > 0) {
         const entryOutputBase = 1 + stateLayout.dataNftCount;
         const entryOutputRange = {
@@ -3108,7 +3134,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Extract event commitments
       eventCommits = [];
       if (emitCount > 0) {
-        const eventBase = 1 + stateLayout.dataNftCount + entryCount
+        const eventBase = 1 + stateLayout.dataNftCount + entryOutputCount
           + transferCount;
         const eventOutputRange = {
           min: eventBase, max: eventBase + emitCount,
@@ -3121,7 +3147,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Extract transfer outputs
       transferOuts = [];
       if (transferCount > 0) {
-        const tBase = 1 + stateLayout.dataNftCount + entryCount;
+        const tBase = 1 + stateLayout.dataNftCount + entryOutputCount;
         const bytecodes = extractVerifiedValuesFromTrace(
           fullTrace, Op.OP_OUTPUTBYTECODE,
           { min: tBase, max: tBase + transferCount },

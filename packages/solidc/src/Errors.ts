@@ -68,6 +68,12 @@ export class SolidCashError extends Error {
   }
 }
 
+export class UnsupportedMemoryAliasingError extends SolidCashError {
+  constructor(node: VariableDefinitionNode, names: string[]) {
+    super(node, `Memory alias group '${names.join(', ')}' reaches an operation that cannot yet preserve Solidity aliasing`);
+  }
+}
+
 export class ParseError extends Error {
   constructor(
     message: string,
@@ -382,6 +388,12 @@ export class CalldataModificationError extends SolidCashError {
   ) {
     super(node, `Tried to write to read-only 'calldata' variable '${node.name}'. `
       + 'Copy it into a plain (memory) variable first to modify it.');
+  }
+}
+
+export class InvalidDataLocationError extends SolidCashError {
+  constructor(node: Node, message: string) {
+    super(node, `Invalid data location: ${message}`);
   }
 }
 

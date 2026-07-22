@@ -4972,7 +4972,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // isReassign = a whole-variable `x = y` rebind (vs a DATA write: `x[i]=v`, `x.push()`, `delete x`, field write).
   // A calldata binding is read-only DATA, but rebinding the local pointer to another calldata value is allowed in
   // Solidity (`x = y; x[i]` reads y[i]) - it reduces to a value-copy of y into x. Only data writes are rejected.
-  private checkReadOnlyModification(sym: Symbol, isReassign = false): void {
+  private checkReadOnlyModification(sym: Symbol, isReassign = false, isReferenceDataWrite = false): void {
     if (sym.symbolType === SymbolType.CONSTANT) {
       throw new ConstantModificationError(sym.definition as ConstantDefinitionNode);
     }
@@ -4983,12 +4983,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new ConstantModificationError(v);
       }
       if (modifier === Modifier.CALLDATA) {
-        // `x = y` rebind allowed ONLY for a calldata ARRAY (rebinds the local to a value-copy of y). Structs /
-        // bytes / string are excluded: their field/element write desugars to a `x = <rebuilt>` reassign that
-        // aliases this rebind path, so allowing it would write to read-only calldata. Arrays use a separate
-        // ArrayAssign path. Value types, compound (`x += 1`), and element/field writes reject.
+        // A user-authored whole-reference assignment rebinds the local calldata pointer. AstBuilder marks
+        // field/element writes which happen to lower to an AssignNode so those remain data mutations.
         const t = (sym.definition as { type?: Type })?.type;
-        const isRefRebind = isReassign && t instanceof ArrayType;
+        const isRefRebind = isReassign && !isReferenceDataWrite
+          && (t instanceof ArrayType || t instanceof StructType || t instanceof BytesType || t === PrimitiveType.STRING);
         if (!isRefRebind) {
           throw new CalldataModificationError(v as VariableDefinitionNode | ParameterNode);
         }
@@ -5074,7 +5073,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (sym) {
-      this.checkReadOnlyModification(sym, true); // whole `x = y` rebind: allowed for calldata (pointer rebind)
+      this.checkReadOnlyModification(sym, true, node.isReferenceDataWrite);
     }
 
     super.visitAssign(node);

@@ -758,15 +758,19 @@ describe('using-for directive inside an interface body (SushiSwap IRewarder, val
   });
 });
 
-describe('address is implicitly castable to address payable (payable is a no-op on BCH; OZ 0.6.x _msgSender)', () => {
+describe('address payable conversions follow Solidity directionality', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('accepts `return msg.sender` into an `address payable` return (OZ Context._msgSender)', () => {
-    expect(cc('contract C { function _msgSender() internal view returns (address payable) { return msg.sender; }'
-      + ' function f() public view returns (address payable) { return _msgSender(); } }')).toBe('C');
+  it('requires an explicit payable conversion for a plain address return', () => {
+    expect(() => cc('contract C { function _msgSender() internal view returns (address payable) { return msg.sender; }'
+      + ' function f() public view returns (address payable) { return _msgSender(); } }')).toThrow();
   });
-  it('accepts assigning a plain address to an address payable variable', () => {
-    expect(cc('contract C { function f(address a) public pure returns (address payable) { address payable p = a;'
-      + ' return p; } }')).toBe('C');
+  it('rejects assigning a plain address to an address payable variable', () => {
+    expect(() => cc('contract C { function f(address a) public pure returns (address payable) { address payable p = a;'
+      + ' return p; } }')).toThrow();
+  });
+  it('allows payable address to plain address and explicit payable(address)', () => {
+    expect(cc('contract C { function f(address payable p) public pure returns (address) { address a = p;'
+      + ' return a; } function g(address a) public pure returns (address payable) { return payable(a); } }')).toBe('C');
   });
 });
 
@@ -859,7 +863,7 @@ describe('erc7201 as a Yul builtin -> spec-conformant slot (reuses the erc7201 f
   });
 });
 
-describe('payable(x) cast on a bytes source (payable is a no-op on BCH)', () => {
+describe('payable(x) cast requires an address expression', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts payable(this) (this is the contract bytes identity)', () => {
     expect(cc('contract C { function f() external view returns (address) { return payable(this); } }')).toBe('C');
@@ -867,8 +871,12 @@ describe('payable(x) cast on a bytes source (payable is a no-op on BCH)', () => 
   it('accepts payable(this).balance', () => {
     expect(cc('contract C { function f() external view returns (uint256) { return payable(this).balance; } }')).toBe('C');
   });
-  it('accepts payable(bytes20Value)', () => {
-    expect(cc('contract C { function f(bytes20 b) external pure returns (address) { return payable(b); } }')).toBe('C');
+  it('rejects payable(bytes20Value) without address conversion', () => {
+    expect(() => cc('contract C { function f(bytes20 b) external pure returns (address) { return payable(b); } }')).toThrow();
+  });
+  it('accepts payable(address(bytes20Value))', () => {
+    expect(cc('contract C { function f(bytes20 b) external pure returns (address payable) {'
+      + ' return payable(address(b)); } }')).toBe('C');
   });
 });
 
@@ -1014,7 +1022,7 @@ describe('.selector on a single-assignment function-pointer local folds to the t
     // g takes a storage pointer (removed from freeFunctions by the inliner) - the selector must still fold
     // from the parse-time signature. Distinct signatures give distinct selectors; h twice gives the same.
     const src = 'library L { function f(uint256 x) external returns (uint) { return x; }'
-      + ' function g(uint256[] storage s) external returns (uint) { return s.length; }'
+      + ' function g(uint256[] storage s) internal returns (uint) { return s.length; }'
       + ' function h(uint256[] memory m) public returns (uint) { return m.length; } }'
       + ' contract C { function f() public pure {'
       + ' require(L.f.selector != L.g.selector);'

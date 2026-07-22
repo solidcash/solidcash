@@ -1488,7 +1488,10 @@ export function computeErrorSignature(errorName: string, paramTypes: string[]): 
  * Build the canonical function signature string: "Name(type1,type2,...)"
  */
 export function computeFunctionSignature(funcName: string, paramTypes: string[]): string {
-  return `${funcName}(${paramTypes.join(',')})`;
+  // Payability is an expression-level type restriction, not part of Solidity's canonical ABI type. In
+  // particular, f(address) and f(address payable) have the same external signature and selector.
+  const canonicalTypes = paramTypes.map((type) => type.replace(/address payable/g, 'address'));
+  return `${funcName}(${canonicalTypes.join(',')})`;
 }
 
 /**

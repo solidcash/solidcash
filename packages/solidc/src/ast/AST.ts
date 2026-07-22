@@ -311,6 +311,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];
+  // Data-location annotations parallel to returnTypes. Retained for semantic validation and source fidelity;
+  // unlike ABI types, storage/memory/calldata affect whether a source declaration is legal.
+  returnModifiers: string[][] = [];
   returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
@@ -553,6 +556,9 @@ export class TupleAssignmentNode extends StatementNode {
 
 export class AssignNode extends StatementNode {
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state assign)
+  // True when AstBuilder lowered a write through a reference (for example `s.field = v` or `b[i] = v`)
+  // into a whole-value assignment. This must not be confused with a user-authored calldata pointer rebind.
+  isReferenceDataWrite = false;
 
   constructor(
     public identifier: IdentifierNode,

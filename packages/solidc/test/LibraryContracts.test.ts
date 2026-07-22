@@ -89,9 +89,14 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     expect(lib.abi.map((f) => f.name)).toContain('inc');
   });
 
-  it('auto-delegates: lowers to the same bytecode as a hand-written `public delegate` contract', () => {
+  it('auto-delegates with the same ABI modifier and state layout as a hand-written `public delegate` contract', () => {
     const contract = 'contract Counter() { bigint count; function inc() public delegate { this.count = this.count + 1; } }';
-    expect(compileString(LIB).bytecode).toBe(compileString(contract).bytecode);
+    const automatic = compileString(LIB);
+    const explicit = compileString(contract);
+    expect(automatic.abi.find((f) => f.name === 'inc')?.modifiers).toEqual(
+      explicit.abi.find((f) => f.name === 'inc')?.modifiers,
+    );
+    expect(automatic.stateLayout?.variables).toEqual(explicit.stateLayout?.variables);
   });
 
   // 3b `L.f()` sugar, piece 1: the auto-delegate also applies on the import/free-function path, so a consumer

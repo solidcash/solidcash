@@ -45,6 +45,14 @@ export {
   type DeployContractOptions, type DeployedContract,
 } from './ContractFactory.js';
 export {
+  deriveLogicalCreateAddress, deriveLogicalAddressFromSeed,
+  encodeLogicalIdentityCommitment, decodeLogicalIdentityCommitment,
+  encodeLogicalFacetCommitment, decodeLogicalFacetCommitment,
+  buildLogicalIdentityCommitment, resolveLogicalIdentity, resolveSplitLogicalIdentity,
+  createLogicalIdentityUnlocker,
+  type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
+} from './logical-identity.js';
+export {
   upgrades, deployProxy, ProxyContract,
   type DeployProxyOptions, type ProxyInitialState,
 } from './upgrades.js';

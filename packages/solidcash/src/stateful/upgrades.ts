@@ -10,6 +10,7 @@ import { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
+import { deriveLogicalCreateAddress } from './logical-identity.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -105,9 +106,9 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   ) {}
 
   /** The proxy address (the stable, state-holding address callers interact with). */
-  get address(): string { return this.proxy.address; }
+  get address(): string { return this.proxy.target; }
 
-  getAddress(): Promise<string> { return Promise.resolve(this.proxy.address); }
+  getAddress(): Promise<string> { return Promise.resolve(this.proxy.target); }
 
   /** Await both genesis transactions (ethers `waitForDeployment`). */
   async waitForDeployment(): Promise<this> {
@@ -260,7 +261,12 @@ export async function deployProxy<TImpl extends Artifact>(
     });
   }
   const runner = options.runner ?? implementationFactory.runner;
-  const nonceReservation = runner instanceof Signer ? runner.reserveTransactionNonce() : undefined;
+  const deploymentSigner = runner instanceof Signer ? runner : undefined;
+  const nonceReservation = deploymentSigner?.reserveTransactionNonce();
+  const logicalIdentity = nonceReservation ? {
+    deployer: deploymentSigner!.getAddress(), nonce: nonceReservation.nonce,
+    address: deriveLogicalCreateAddress(deploymentSigner!.getAddress(), nonceReservation.nonce),
+  } : undefined;
   try {
     const auth = options.auth ?? defaultAuth;
     const implArtifact = implementationFactory.artifact;
@@ -280,12 +286,16 @@ export async function deployProxy<TImpl extends Artifact>(
     let shape: ForwardShape;
     if (options.proxy) {
       proxy = await new ContractFactory(options.proxy, runner)
-        .deploy({ ...options.proxyOverrides, initialState: seededState, logicalNonce: false });
+        .deploy({
+          ...options.proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
+        });
       shape = detectForwardShape(options.proxy, options.forwardFunction);
     } else {
       const implLbc = addressToLockScript(implementation.address);
       proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
-        .deploy(implLbc, { ...options.proxyOverrides, initialState: seededState, logicalNonce: false });
+        .deploy(implLbc, {
+          ...options.proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
+        });
       shape = { name: '__forward', mode: 'baked' };
     }
 

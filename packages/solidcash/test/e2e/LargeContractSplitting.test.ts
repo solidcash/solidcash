@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringSplit } from 'solidc';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { Signer, SplitContractBundle, upgrades } from '../../src/index.js';
+import { Signer, SplitContractBundle, deriveLogicalCreateAddress, upgrades } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 
@@ -38,9 +38,12 @@ describe('split contract SDK', () => {
   it('deploys branded master-only facets and routes calls into one shared root state', async () => {
     const signer = await fundedSigner();
     const compiled = compileStringSplit(SOURCE, { forceSplit: true });
-    const deployed = await SplitContractBundle.from(compiled, signer)
+    const sdk = SplitContractBundle.from(compiled, signer);
+    const predicted = deriveLogicalCreateAddress(signer.getAddress(), 0n);
+    const deployed = await sdk
       .deploy([], { initialState: { x: 1n, y: 2n } });
     expect(await signer.getNonce()).toBe(1);
+    expect(deployed.address).toBe(predicted);
 
     expect(Object.keys(deployed.facets)).toHaveLength(1);
     expect(new Set(Object.values(deployed.facets).map((facet) => facet.categoryId)).size).toBe(1);
@@ -81,6 +84,11 @@ describe('split contract SDK', () => {
     expect(attached.address).toBe(deployed.address);
     const attachedTx = await attached.call.addX(1n).send();
     expect(stateFromTx(attachedTx, attached.categoryId, compiled.root.stateLayout).x).toBe(18n);
+
+    const rediscovered = await SplitContractBundle.from(compiled, signer).at(predicted);
+    expect(rediscovered.deploymentRecord()).toEqual(deployed.deploymentRecord());
+    const rediscoveredTx = await rediscovered.call.addX(1n).send();
+    expect(stateFromTx(rediscoveredTx, rediscovered.categoryId, compiled.root.stateLayout).x).toBe(19n);
   });
 
   it('rejects a missing facet during attachment', async () => {

@@ -26,8 +26,10 @@ function findSolSources(dir: string, out: string[] = []): string[] {
 task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, Hardhat-style layout)')
   .addFlag('quiet', 'Suppress per-file output')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
-    const { compileString, compileStringMulti, compileFileMulti } = await import('solidc');
-    const { formatArtifact } = await import('@solidcash/utils');
+    const {
+      compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
+    } = await import('solidc');
+    const { formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = path.resolve(hre.config.paths.artifacts);
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
@@ -54,6 +56,13 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         const primary = compileString(source, hre.config.solc);
         fs.writeFileSync(path.join(artifactsDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(artifactsDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
+        const split = compileStringSplit(source, hre.config.solc);
+        if (split.manifest.facets.length > 0) {
+          fs.writeFileSync(
+            path.join(artifactsDir, `${split.manifest.logicalContractName}.split.json`),
+            formatSplitArtifactBundle(split, 'json'),
+          );
+        }
         if (!args.quiet) console.log(`Compiled ${fn} -> ${Object.keys(map).join(', ')}`);
         ok++;
       } catch (e: any) {
@@ -79,6 +88,13 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           fs.writeFileSync(path.join(artifactsDir, `${name}.json`), formatArtifact(artifact as any, 'json'));
           fresh.push(name);
           contracts++;
+        }
+        const split = compileFileSplit(full, { solidityImportCompat: true, ...hre.config.solc });
+        if (split.manifest.facets.length > 0) {
+          fs.writeFileSync(
+            path.join(artifactsDir, `${split.manifest.logicalContractName}.split.json`),
+            formatSplitArtifactBundle(split, 'json'),
+          );
         }
         if (!args.quiet) console.log(`Compiled ${rel}${fresh.length ? ` -> ${fresh.join(', ')}` : ' (all names already emitted)'}`);
         solOk++;

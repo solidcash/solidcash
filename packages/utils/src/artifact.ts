@@ -521,6 +521,11 @@ export interface SplitManifest {
   stateLayoutFingerprint: string;
   deploymentMode: 'immutable-one-hop';
   algorithm: 'state-affinity-best-fit-v2';
+  identityBinding: {
+    scheme: 'solidcash-create-v1';
+    owner: 'root';
+    facetIdentity: 'physical-only';
+  };
   routes: readonly SplitRoute[];
   facets: readonly SplitFacetInfo[];
 }

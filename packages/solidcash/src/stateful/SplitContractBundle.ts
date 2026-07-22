@@ -3,8 +3,12 @@ import { Contract } from '../Contract.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import {
+  buildLogicalIdentityCommitment, deriveLogicalCreateAddress, encodeLogicalFacetCommitment,
+  resolveSplitLogicalIdentity,
+} from './logical-identity.js';
 import {
   ContractFactory, DeployedContract, DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
@@ -19,6 +23,7 @@ export interface SplitDeployOptions extends DeployContractOptions {
 export interface SplitDeploymentRecord {
   rootCategory: string;
   facetCategories: Record<string, string>;
+  logicalAddress?: string;
 }
 
 export class SplitContract {
@@ -35,10 +40,28 @@ export class SplitContract {
         ? (...args: FunctionArgument[]) => this.getFunction(prop)(...args)
         : undefined,
     }) as Record<string, (...args: FunctionArgument[]) => StatefulFunctionCall>;
+    // ethers/typechain parity: expose ABI functions directly as well as through `.call`.
+    for (const route of bundle.manifest.routes) {
+      if (route.function in this) continue;
+      Object.defineProperty(this, route.function, {
+        enumerable: true,
+        value: (...args: FunctionArgument[]) => this.getFunction(route.function)(...args),
+      });
+    }
   }
 
-  get address(): string { return this.root.address; }
+  get address(): string { return this.root.target; }
   get categoryId(): string { return this.root.categoryId; }
+  getAddress(): Promise<string> { return Promise.resolve(this.address); }
+
+  async waitForDeployment(): Promise<this> {
+    for (const transaction of this.deploymentTransactions as Array<{ wait?: () => Promise<unknown> }>) {
+      await transaction.wait?.();
+    }
+    return this;
+  }
+
+  deploymentTransaction(): unknown { return this.deploymentTransactions.at(-1); }
 
   getFunction(name: string): (...args: FunctionArgument[]) => StatefulFunctionCall {
     const route = this.bundle.manifest.routes.find((r) => r.function === name);
@@ -62,6 +85,7 @@ export class SplitContract {
     return {
       rootCategory: this.root.categoryId,
       facetCategories: Object.fromEntries(Object.entries(this.facets).map(([name, facet]) => [name, facet.categoryId])),
+      logicalAddress: this.root._logicalAddress,
     };
   }
 }
@@ -90,7 +114,9 @@ export class SplitContractBundle {
     const rootConstructorCount = this.bundle.root.constructorInputs.length - facetCount;
     const rootConstructorArgs = constructorArgs.slice(0, rootConstructorCount);
     const rootInitArgs = constructorArgs.slice(rootConstructorCount);
-    const rootFunding = options.fundingUtxo ?? await selectGenesisFundingUtxo(signer!, this.bundle.root);
+    const rootFunding = options.fundingUtxo ?? await selectGenesisFundingUtxo(
+      signer!, this.bundle.root, new Set(), this.bundle.manifest.facets.length + 1,
+    );
     const rootCategory = rootFunding.txid;
     const reserved = new Set([`${rootFunding.txid}:${rootFunding.vout}`]);
     const facets: Record<string, DeployedContract> = {};
@@ -144,6 +170,8 @@ export class SplitContractBundle {
     assertSplitRedeemSize('root', rootPreview.bytesize);
 
     const nonceReservation = signer?.reserveTransactionNonce();
+    const logicalAddress = nonceReservation
+      ? deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce) : undefined;
     try {
       for (const info of this.bundle.manifest.facets) {
         const { artifact, override } = facetPreflight[info.name];
@@ -160,11 +188,23 @@ export class SplitContractBundle {
         rootOverrides.funder ??= signer.unlockP2PKH();
         rootOverrides.changeAddress ??= signer.getAddress();
       }
+      if (logicalAddress) {
+        rootOverrides.identityAnchors = [{
+          to: addressToLockScript(logicalAddress),
+          commitment: buildLogicalIdentityCommitment(
+            signer!.getAddress(), nonceReservation!.nonce, rootPreview.address,
+          ),
+        }, ...this.bundle.manifest.facets.map((info, index) => ({
+          to: addressToLockScript(logicalAddress),
+          commitment: encodeLogicalFacetCommitment(index, facets[info.name].categoryId),
+        }))];
+      }
       const root = await new ContractFactory(this.bundle.root, this.runner)
         .deploy(...rootConstructorArgs, ...facetLinks, ...rootInitArgs, {
           ...rootOverrides, fundingUtxo: rootFunding, logicalNonce: false,
         });
       transactions.push(root.deploymentTransaction());
+      if (logicalAddress) (root as StatefulContract)._logicalAddress = logicalAddress;
       nonceReservation?.commit();
       return new SplitContract(this.bundle, root, facets, transactions);
     } catch (error) {
@@ -194,12 +234,40 @@ export class SplitContractBundle {
     );
     const attachedRoot = StatefulContract.withCategory(rootContract, record.rootCategory);
     const root = this.runner instanceof Signer ? attachedRoot.connect(this.runner) : attachedRoot;
+    if (record.logicalAddress) (root as StatefulContract)._logicalAddress = record.logicalAddress;
     return new SplitContract(this.bundle, root, facets);
+  }
+
+  /** Reconstruct a split deployment from its authenticated logical CREATE address without process-local state. */
+  async at(logicalAddress: string, constructorArgs: ConstructorArgument[] = []): Promise<SplitContract> {
+    const provider = this.runner instanceof Signer ? this.runner.provider : this.runner;
+    const identity = await resolveSplitLogicalIdentity(
+      provider, logicalAddress, this.bundle.manifest.facets.length,
+    );
+    const attached = this.attach({
+      rootCategory: identity.categoryId,
+      facetCategories: Object.fromEntries(this.bundle.manifest.facets.map(
+        (facet, index) => [facet.name, identity.facetCategories[index]],
+      )),
+      logicalAddress,
+    }, constructorArgs);
+    // Authenticate the anchor's physical root bytecode against the exact reconstructed bundle topology.
+    if (binToHex(addressToLockScript(attached.root.inner.address)) !== binToHex(identity.rootLockingBytecode)) {
+      throw new Error(`Logical split identity ${logicalAddress} does not match the reconstructed root bytecode.`);
+    }
+    return attached;
   }
 }
 
 function validateSplitBundle(bundle: SplitArtifactBundle): void {
   if (bundle.format !== 'solidcash-split-v1') throw new Error(`Unsupported split bundle format '${bundle.format}'.`);
+  if (
+    bundle.manifest.identityBinding?.scheme !== 'solidcash-create-v1'
+    || bundle.manifest.identityBinding.owner !== 'root'
+    || bundle.manifest.identityBinding.facetIdentity !== 'physical-only'
+  ) {
+    throw new Error('Invalid split bundle: unsupported or missing logical identity binding metadata.');
+  }
   const selectors = new Set<string>();
   for (const route of bundle.manifest.routes) {
     if (route.selector && selectors.has(route.selector)) throw new Error(`Duplicate split selector '${route.selector}'.`);

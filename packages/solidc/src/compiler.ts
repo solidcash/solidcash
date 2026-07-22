@@ -709,6 +709,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
       abi: baseline.abi,
       stateLayoutFingerprint: splitStateLayoutFingerprint(baseline.stateLayout),
       deploymentMode: 'immutable-one-hop', algorithm: 'state-affinity-best-fit-v2', routes,
+      identityBinding: { scheme: 'solidcash-create-v1', owner: 'root', facetIdentity: 'physical-only' },
       facets: facetRecords.map((f) => ({
         name: f.name, functions: f.plans.map((p) => p.name), brandArgument: '__brand',
         linkArgument: f.link, delegateOnly: true, estimatedRedeemBytes: byteSize(f.artifact),
@@ -733,6 +734,7 @@ function unsplitBundle(root: Artifact, plans: PlannedFunction[]): SplitArtifactB
       logicalContractName: root.contractName, abi: root.abi,
       stateLayoutFingerprint: splitStateLayoutFingerprint(root.stateLayout),
       deploymentMode: 'immutable-one-hop', algorithm: 'state-affinity-best-fit-v2',
+      identityBinding: { scheme: 'solidcash-create-v1', owner: 'root', facetIdentity: 'physical-only' },
       routes: (root.abi as readonly any[]).map((fn) => ({
         selector: fn.selector ?? '', function: fn.name, target: 'root' as const,
         footprint: plans.find((p) => p.name === fn.name)?.footprint ?? emptyFootprint(),

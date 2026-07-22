@@ -222,10 +222,27 @@ deployment planner. An ordinary contract, split root plus all facets, or flatten
 split proxy consumes one logical nonce. Facets have physical categories but no
 Solidity-visible CREATE identity and never perturb deployment order.
 
-The current `ethers` CREATE shim deterministically derives a logical address from
-`(signer address, nonce)`. Completing native interlinked deployment additionally
-requires the deployed root to bind that identity to its category, Hardhat factory
-lookup to load split bundles transparently, typed external calls to resolve the
-root binding, and contract-origin `msg.sender` to authenticate and expose the same
-logical identity. Hash-derived placeholders without this binding are not sufficient
-for peer authorization.
+The `ethers` CREATE shim deterministically derives a spendable P2SH20 logical
+address from `(signer address, nonce)`. Genesis mints an immutable, category-bearing
+SCID anchor at that address. Its commitment records the canonical deployer locking
+bytecode, nonce, and physical root locking bytecode. Resolution recomputes the
+logical address, requires exactly one valid anchor, and checks the physical root
+against the artifact and constructor arguments. Split roots additionally mint
+ordered SCIF records for their physical facet categories. Consequently an SDK can
+reconstruct a normal or split deployment in another session without a local
+deployment registry.
+
+Hardhat compilation emits `.split.json` beside ordinary artifacts, and factory
+lookup prefers that bundle so positional `deploy()` and `getContractAt()` route
+through `SplitContractBundle` without test-source changes.
+
+Three boundaries remain explicit. Typed external calls still pin the physical
+root and do not yet accept a co-spent SCID anchor as a logical target.
+Contract-origin `msg.sender` still exposes the
+authenticated physical caller root: exposing its logical address requires a
+stack-safe extension of the minting-input verifier and a VM regression that rejects
+missing, duplicate, wrong-category, and wrong-root anchors. Also, a typed call whose
+callee is itself split must co-spend and route the selected facet in addition to the
+callee root. Until those paths are implemented, peer authorization must not assume
+logical `msg.sender`, and split callees are not advertised as transparent external
+targets. Hash-derived placeholders without the SCID binding are never sufficient.

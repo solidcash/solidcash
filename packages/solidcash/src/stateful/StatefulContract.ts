@@ -87,6 +87,7 @@ import {
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
 } from './covenant-helpers.js';
+import { resolveLogicalIdentity } from './logical-identity.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
@@ -139,6 +140,8 @@ export interface DeployOptions {
   addressType?: AddressType;
   threadCount?: number;    // number of master minting NFTs (default: 1)
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
+  /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
+  identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
@@ -760,6 +763,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private _inner!: Contract<TArtifact>;
   private _categoryId = '';
   private _pendingAddress?: string;
+  /** Solidity-visible CREATE identity; physical covenant addressing remains on `inner`. */
+  _logicalAddress?: string;
   private _resolved = false;
 
   get inner(): Contract<TArtifact> { return this._inner; }
@@ -1026,7 +1031,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // instances. Called at the top of every async operation that needs the category.
   async _ensureResolved(): Promise<void> {
     if (this._resolved) return;
-    this._categoryId = await resolveCategoryFromAddress(this._inner.provider, this._pendingAddress!);
+    const pendingAddress = this._pendingAddress!;
+    try {
+      const identity = await resolveLogicalIdentity(this._inner.provider, pendingAddress);
+      this._categoryId = identity.categoryId;
+      const connected = this._inner.withCategory(hexToBin(this._categoryId));
+      if (binToHex(addressToLockScript(connected.address)) !== binToHex(identity.rootLockingBytecode)) {
+        throw new Error(
+          `Logical identity ${pendingAddress} binds category ${this._categoryId} to a different root bytecode.`,
+        );
+      }
+      this._inner = connected;
+      this._logicalAddress = pendingAddress;
+      this._resolved = true;
+      return;
+    } catch (error) {
+      // A physical contract address has no SCID anchor; retain legacy category discovery. An address containing
+      // SCID-looking but invalid/ambiguous records must fail closed rather than silently selecting another token.
+      const utxos = await this._inner.provider.getUtxos(pendingAddress);
+      const hasIdentityRecord = utxos.some((utxo) => utxo.token?.nft?.commitment?.startsWith('53434944'));
+      if (hasIdentityRecord) throw error;
+    }
+    this._categoryId = await resolveCategoryFromAddress(this._inner.provider, pendingAddress);
     this._inner = this._inner.withCategory(hexToBin(this._categoryId));
     this._resolved = true;
   }
@@ -1334,7 +1360,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalDataNft = delegateOnly ? 0n : dataNftAmount * BigInt(stateLayout.dataNftCount);
     const totalEntryNft = dataNftAmount * BigInt(entryCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
-    const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + initialBalance + fee;
+    const identityAnchors = options.identityAnchors ?? [];
+    const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
+    const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft
+      + totalIdentity + initialBalance + fee;
     const changeAmount = options.fundingUtxo.satoshis - totalRequired;
 
     if (changeAmount < 0n) {
@@ -1474,6 +1503,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (initialBalance > 0n) {
       const satoshiContainerAddress = getSatoshiContainerAddress(contract, categoryId);
       builder.addOutput({ to: satoshiContainerAddress, amount: initialBalance });
+    }
+
+    // Immutable CREATE identity anchors are category-bearing discovery records. They are intentionally appended
+    // after constructor-governed outputs so existing ABI output indices remain stable.
+    for (const anchor of identityAnchors) {
+      builder.addOutput({
+        to: anchor.to,
+        amount: anchor.amount ?? dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: anchor.commitment },
+        },
+      });
     }
 
     // Change output (account for transfer amounts)
@@ -3258,12 +3300,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`). */
   get target(): string {
-    return this.address;
+    return this._logicalAddress ?? this.address;
   }
 
   /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */
   async getAddress(): Promise<string> {
-    return this.address;
+    return this.target;
   }
 
   async getState(): Promise<Record<string, StateValueType>> {

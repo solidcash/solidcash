@@ -1,12 +1,16 @@
 import { Artifact } from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
+import { Contract } from '../Contract.js';
 import { ConstructorArgument } from '../Argument.js';
 import { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
 import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
+import { addressToLockScript } from '../utils.js';
+import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -24,6 +28,10 @@ export interface DeployContractOptions {
   initArgs?: DeployOptions['initArgs'];
   /** Internal composition escape: a split/proxy parent owns the one logical transaction nonce. */
   logicalNonce?: false;
+  /** Internal composition: anchors supplied by a split/proxy parent that owns logical nonce reservation. */
+  identityAnchors?: DeployOptions['identityAnchors'];
+  /** Internal composition: parent-owned logical CREATE identity for the contract deployed by this factory. */
+  logicalIdentity?: { deployer: string; nonce: bigint; address: string };
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -42,9 +50,10 @@ function looksLikeOverrides(x: unknown): boolean {
 // on any provider) and uses that. This makes sequential deploys from one account unbounded.
 export async function selectGenesisFundingUtxo(
   signer: Signer, artifact: Artifact, excludedOutpoints: ReadonlySet<string> = new Set(),
+  identityNftCount = 1,
 ): Promise<Utxo> {
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
-  const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
+  const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + 5000n + 2400n;
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
   const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find(
     (u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u),
@@ -136,8 +145,22 @@ export class ContractFactory<T extends Artifact = Artifact> {
 
     const nonceReservation = signer && overrides.logicalNonce !== false
       ? signer.reserveTransactionNonce() : undefined;
+    const logicalIdentity = nonceReservation ? {
+      deployer: signer!.getAddress(), nonce: nonceReservation.nonce,
+      address: deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce),
+    } : overrides.logicalIdentity;
+    const logicalAddress = logicalIdentity?.address;
     let result: Awaited<ReturnType<typeof StatefulContract.deploy<T>>>;
     try {
+      const identityAnchors = overrides.identityAnchors ?? (logicalAddress ? [{
+        to: addressToLockScript(logicalAddress),
+        commitment: buildLogicalIdentityCommitment(
+          logicalIdentity!.deployer, logicalIdentity!.nonce,
+          new Contract(this.artifact, constructorArgs as never, {
+            provider, addressType: overrides.addressType, category: hexToBin(fundingUtxo.txid),
+          }).address,
+        ),
+      }] : undefined);
       result = await StatefulContract.deploy<T>(this.artifact, constructorArgs, {
         provider,
         fundingUtxo,
@@ -149,6 +172,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         threadCount: overrides.threadCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
+        identityAnchors,
       });
       nonceReservation?.commit();
     } catch (error) {
@@ -157,6 +181,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
 
     const contract = result.contract as DeployedContract<T>;
+    if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
     if (signer) (contract as StatefulContract)._logicalNonceSigner = signer;
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;

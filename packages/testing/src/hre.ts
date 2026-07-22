@@ -6,13 +6,14 @@
  */
 import fs from 'fs';
 import path from 'path';
-import type { Artifact } from '@solidcash/utils';
+import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import {
   type NetworkProvider,
   MockNetworkProvider, RegtestNetworkProvider, ElectrumNetworkProvider,
   Signer, HDSigner, signersFromMnemonic,
   StatefulContract, type ContractRunner, type ConnectedStatefulContract,
   ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract,
+  SplitContractBundle, type SplitContract, type SplitDeployOptions,
   type DeployedContract, type DeployContractOptions,
   type ConstructorArgument, type Utxo, randomUtxo,
 } from 'solidcash';
@@ -45,7 +46,7 @@ export interface SolidcashEthers {
   getSigners(count?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer[]>;
   getSigner(index?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer>;
   // Accept a compiled artifact object OR a contract name (hardhat `getContractFactory("Name")`).
-  getContractFactory<T extends Artifact>(artifactOrName: T | string, runner?: ContractRunner): ContractFactory<T>;
+  getContractFactory<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string, runner?: ContractRunner): any;
   getContractAt<T extends Artifact>(artifactOrName: T | string, addressOrCategory: string, runner?: ContractRunner)
   : Promise<ConnectedStatefulContract<T>>;
   deployContract<T extends Artifact>(artifactOrName: T | string, args?: ConstructorArgument[], runner?: ContractRunner,
@@ -57,8 +58,34 @@ export interface SolidcashEthers {
   // ethers `Wallet` (`new Wallet(wif, provider)`) plus a BCH `createRandom` that returns a funded ad-hoc HDSigner.
   Wallet: typeof Signer & { createRandom(provider?: NetworkProvider): HDSigner };
   HDSigner: typeof HDSigner;
-  HDNodeWallet: typeof HDSigner;
+  HDNodeWallet: { fromMnemonic(mnemonic: string | { phrase: string }, path?: string): HDSigner };
   [k: string]: unknown; // forwarded ethers utils (parseEther, keccak256, AbiCoder, constants, ...)
+}
+
+function isSplitBundle(value: unknown): value is SplitArtifactBundle {
+  return typeof value === 'object' && value !== null
+    && (value as { format?: string }).format === 'solidcash-split-v1';
+}
+
+/** Positional ethers deploy facade over the SDK's explicit split-bundle deployment API. */
+class HardhatSplitContractFactory {
+  constructor(readonly split: SplitContractBundle) {}
+  get runner(): ContractRunner { return this.split.runner; }
+  get artifact(): Artifact { return this.split.bundle.root; }
+  connect(runner: ContractRunner): HardhatSplitContractFactory {
+    return new HardhatSplitContractFactory(SplitContractBundle.from(this.split.bundle, runner));
+  }
+  async deploy(...values: unknown[]): Promise<SplitContract> {
+    let options: SplitDeployOptions = {};
+    const last = values.at(-1);
+    if (typeof last === 'object' && last !== null && !(last instanceof Uint8Array) && !Array.isArray(last)) {
+      options = values.pop() as SplitDeployOptions;
+    }
+    return this.split.deploy(values as ConstructorArgument[], options);
+  }
+  at(address: string, constructorArgs: ConstructorArgument[] = []): Promise<SplitContract> {
+    return this.split.at(address, constructorArgs);
+  }
 }
 
 export interface NetworkConnection {
@@ -120,12 +147,19 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
   );
 }
 
+export function loadArtifactOrSplitByName(artifactsDir: string, name: string): Artifact | SplitArtifactBundle {
+  const base = path.isAbsolute(artifactsDir) ? artifactsDir : path.resolve(process.cwd(), artifactsDir);
+  const splitPath = path.join(base, `${name}.split.json`);
+  if (fs.existsSync(splitPath)) return JSON.parse(fs.readFileSync(splitPath, 'utf-8')) as SplitArtifactBundle;
+  return loadArtifactByName(artifactsDir, name);
+}
+
 interface EthersOptions { artifactsDir: string; accountsPath?: string }
 
 function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOptions): SolidcashEthers {
   const { artifactsDir, accountsPath } = opts;
-  const resolveArtifact = <T extends Artifact>(a: T | string): T =>
-    (typeof a === 'string' ? loadArtifactByName(artifactsDir, a) : a) as T;
+  const resolveArtifact = <T extends Artifact>(a: T | SplitArtifactBundle | string): T | SplitArtifactBundle =>
+    (typeof a === 'string' ? loadArtifactOrSplitByName(artifactsDir, a) : a) as T | SplitArtifactBundle;
 
   // hardhat `getContractFactory("Name")` binds to the default deployer = signers[0]. Derive it synchronously
   // (same identity `getSigners()` funds), so `factory.deploy(...)` funds the genesis from that account.
@@ -167,6 +201,12 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       return s;
     }
   }
+  const HDNodeWallet = class {
+    static fromMnemonic(mnemonicValue: string | { phrase: string }, path?: string): HDSigner {
+      const phrase = typeof mnemonicValue === 'string' ? mnemonicValue : mnemonicValue.phrase;
+      return HDSigner.fromPhrase(phrase, provider, path ?? "m/44'/60'/0'/0/0");
+    }
+  };
 
   const ethers: SolidcashEthers = {
     ...ethersUtils,
@@ -182,19 +222,34 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       });
       return signer;
     },
-    getContractFactory: <T extends Artifact>(artifactOrName: T | string, runner?: ContractRunner): ContractFactory<T> =>
-      sdkGetContractFactory(resolveArtifact(artifactOrName), runner ?? defaultRunner()),
+    getContractFactory: <T extends Artifact>(
+      artifactOrName: T | SplitArtifactBundle | string, runner?: ContractRunner,
+    ): ContractFactory<T> | HardhatSplitContractFactory => {
+      const loaded = resolveArtifact(artifactOrName);
+      const boundRunner = runner ?? defaultRunner();
+      return isSplitBundle(loaded)
+        ? new HardhatSplitContractFactory(SplitContractBundle.from(loaded, boundRunner))
+        : sdkGetContractFactory(loaded as T, boundRunner);
+    },
     getContractAt: <T extends Artifact>(artifactOrName: T | string, addressOrCategory: string, runner?: ContractRunner) =>
-      StatefulContract.at(addressOrCategory, resolveArtifact(artifactOrName), runner ?? defaultRunner()),
+      isSplitBundle(resolveArtifact(artifactOrName))
+        ? new HardhatSplitContractFactory(SplitContractBundle.from(
+          resolveArtifact(artifactOrName) as SplitArtifactBundle, runner ?? defaultRunner(),
+        )).at(addressOrCategory) as any
+        : StatefulContract.at(addressOrCategory, resolveArtifact(artifactOrName) as T, runner ?? defaultRunner()),
     deployContract: <T extends Artifact>(artifactOrName: T | string, args: ConstructorArgument[] = [],
       runner?: ContractRunner, overrides?: DeployContractOptions) =>
-      sdkDeployContract(resolveArtifact(artifactOrName), args, runner ?? defaultRunner(), overrides),
+      isSplitBundle(resolveArtifact(artifactOrName))
+        ? new HardhatSplitContractFactory(SplitContractBundle.from(
+          resolveArtifact(artifactOrName) as SplitArtifactBundle, runner ?? defaultRunner(),
+        )).deploy(...args, ...(overrides ? [overrides] : [])) as any
+        : sdkDeployContract(resolveArtifact(artifactOrName) as T, args, runner ?? defaultRunner(), overrides),
     Contract: StatefulContract,
     ContractFactory,
     Signer,
     Wallet,
     HDSigner,
-    HDNodeWallet: HDSigner,
+    HDNodeWallet,
   };
   return ethers;
 }

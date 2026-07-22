@@ -1513,9 +1513,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         node.entryAccesses = ordered;
 
-        // Two or more fixed writes to one C2 collection are one atomic list transition. In particular, absent keys
-        // may share a predecessor and must not be modeled as independent upserts (duplicate input + conflicting P').
-        // Record the group after final slot assignment so codegen/SDK share stable indices.
+        // Multiple fixed C2 writes in one function are verified as transaction-wide batches, grouped by collection.
+        // A group may contain one target when another collection is also written: using the same batch path keeps
+        // shared key parameters live and gives every collection an independent exact-output-count proof.
         const batchByCollection = new Map<string, number[]>();
         for (const info of ordered) {
           if (info.inLoop || !isWritten(info)) continue;
@@ -1525,9 +1525,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           slots.push(info.slotIndex);
           batchByCollection.set(info.collection, slots);
         }
-        node.sortedBatchInfo = [...batchByCollection]
-          .filter(([, slots]) => slots.length > 1)
-          .map(([collection, slotIndices]) => ({ collection, slotIndices }));
+        const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
+        node.sortedBatchInfo = fixedSortedWriteCount > 1
+          ? [...batchByCollection].map(([collection, slotIndices]) => ({ collection, slotIndices }))
+          : [];
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.

@@ -22,10 +22,10 @@ describe('dynamic-bound loop mapping write (runtime OP_BEGIN/OP_UNTIL entry mint
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
-  it('compiles to a loop covenant (not unrolled): entryLoopWrites metadata is present', () => {
+  it('compiles to a C2 upsert-loop covenant (not unrolled)', () => {
     const art = compileString(SRC);
     const setAll = art.abi.find((f) => f.name === 'setAll');
-    expect(setAll?.entryLoopWrites).toEqual(['bal']);
+    expect(setAll?.sortedUpsertLoopInfo?.map((info) => info.collection)).toEqual(['bal']);
     // The loop write is NOT surfaced as a fixed entry slot.
     expect(setAll?.entryAccesses).toBeUndefined();
   });
@@ -60,7 +60,8 @@ describe('dynamic-bound loop mapping write (runtime OP_BEGIN/OP_UNTIL entry mint
       function check(int k, int e, pubkey pk, sig sg) { require(checkSig(sg, pk)); require(bal[k] == e); }
     }`;
     const art = compileString(src);
-    expect(art.abi.find((f) => f.name === 'setAll')?.entryLoopWrites).toEqual(['bal']);
+    expect(art.abi.find((f) => f.name === 'setAll')?.sortedUpsertLoopInfo?.map((info) => info.collection))
+      .toEqual(['bal']);
     const contract = new Contract(art, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
     let sc = StatefulContract.withCategory(contract, categoryId);

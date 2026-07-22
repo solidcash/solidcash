@@ -516,19 +516,71 @@ function evalComputedKey(
   label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string }[],
 ): Uint8Array | undefined {
   if (!label) return undefined;
-  const evalNode = (s: string): Uint8Array | undefined => {
+  const encode = (value: unknown): Uint8Array | undefined => {
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === 'bigint') return bigIntToVmNumber(value);
+    if (typeof value === 'number') return bigIntToVmNumber(BigInt(value));
+    if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
+    if (typeof value === 'string' && value.includes(':')) return addressToLockScript(value);
+    return undefined;
+  };
+  const splitTopLevel = (s: string): [string, string] | undefined => {
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++;
+      else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth--;
+      else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+    }
+    return undefined;
+  };
+  const evalValue = (s: string): unknown => {
     let m = s.match(/^id:(.+)$/);
     if (m) {
       const idx = inputs.findIndex((i) => i.name === m![1]);
       if (idx < 0) return undefined;
-      const v = args[idx];
-      return v instanceof Uint8Array ? v : typeof v === 'bigint' ? bigIntToVmNumber(v) : undefined;
+      return args[idx];
     }
+    m = s.match(/^lit:(.+)$/);
+    if (m) {
+      if (m[1] === 'true') return true;
+      if (m[1] === 'false') return false;
+      if (/^-?[0-9][0-9_]*$/.test(m[1])) return BigInt(m[1].replace(/_/g, ''));
+      if (/^0x[0-9a-f]*$/i.test(m[1])) return hexToBin(m[1].slice(2));
+      return undefined;
+    }
+    m = s.match(/^const:(-?[0-9][0-9_]*)$/);
+    if (m) return BigInt(m[1].replace(/_/g, ''));
     m = s.match(/^cast:[a-z0-9]+\((.*)\)$/i);
-    if (m) return evalNode(m[1]); // a bytes/bytesN cast is identity on the underlying bytes
+    if (m) return evalValue(m[1]); // a bytes/bytesN cast is identity on the underlying value
+    m = s.match(/^arridx\((.*)\)$/);
+    if (m) {
+      const pair = splitTopLevel(m[1]);
+      if (!pair) return undefined;
+      const array = evalValue(pair[0]);
+      const index = evalValue(pair[1]);
+      const n = typeof index === 'bigint' ? Number(index) : typeof index === 'number' ? index : NaN;
+      return Array.isArray(array) && Number.isSafeInteger(n) ? array[n] : undefined;
+    }
+    m = s.match(/^field:([^()]+)\((.*)\)$/);
+    if (m) {
+      const object = evalValue(m[2]);
+      return object && typeof object === 'object' ? (object as Record<string, unknown>)[m[1]] : undefined;
+    }
+    m = s.match(/^binop:([^()]+)\((.*)\)$/);
+    if (m) {
+      const pair = splitTopLevel(m[2]);
+      if (!pair) return undefined;
+      const left = evalValue(pair[0]);
+      const right = evalValue(pair[1]);
+      if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
+      if (m[1] === '+') return left + right;
+      if (m[1] === '-') return left - right;
+      if (m[1] === '*') return left * right;
+      return undefined;
+    }
     m = s.match(/^call:(\w+)\((.*)\)$/);
     if (m) {
-      const inner = evalNode(m[2]);
+      const inner = encode(evalValue(m[2]));
       if (!inner) return undefined;
       switch (m[1]) {
         case 'hash160': return hash160Sync(inner);
@@ -540,7 +592,7 @@ function evalComputedKey(
     }
     return undefined;
   };
-  return evalNode(label);
+  return encode(evalValue(label));
 }
 
 /**
@@ -5339,6 +5391,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // so they are consumed rather than orphaned as dust. Digest-keyed, so only the exact old version is reclaimed.
     const valueChunkGc: Array<{ collection: string; slotHex: string; oldDigestHex: string }> = [];
     const batchTargetSlots = new Map<number, Uint8Array>();
+    const batchTargetPlaceholders = new Map<number, string>();
     const batchPredCommitments = new Map<string, string[]>();
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
@@ -5401,6 +5454,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               return addressToLockScript(this._signer.getAddress());
             }
+            if (source?.kind === 'stateArrayLast') {
+              const values = onChainState.state[source.stateArrayName ?? ''];
+              if (!Array.isArray(values) || values.length === 0) {
+                throw new Error(`C2 key source '${source.stateArrayName}' has no last element`);
+              }
+              const value = values[values.length - 1];
+              if (keyType === 'address' && typeof value === 'string' && value.includes(':')) {
+                return addressToLockScript(value);
+              }
+              if (value instanceof Uint8Array) return value;
+              if (typeof value === 'bigint') return bigIntToVmNumber(value);
+              if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
+              throw new Error(`Unsupported C2 state-array key value for '${source.stateArrayName}'`);
+            }
             // Expression/computed key (e.g. balances[hash160(pk)] with a local var): not a function param, so
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
@@ -5431,6 +5498,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             batchTargetSlots.set(slotIndex, slot);
           }
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
+          const stateArrayKeyValues = access.keySources?.[0]?.kind === 'stateArrayLast'
+            ? onChainState.state[access.keySources[0].stateArrayName ?? ''] as unknown[] : undefined;
           const kv = access.keySources?.[0]?.kind === 'constant'
             ? BigInt(access.keySources[0].constantValue ?? '0')
             : access.keySources?.[0]?.kind === 'msgSender'
@@ -5438,6 +5507,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : access.keySources?.[0]?.kind === 'expression'
               ? (evalComputedKey(access.keySources[0].expressionLabel, args, abiFunction!.inputs)
                 ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
+              : access.keySources?.[0]?.kind === 'stateArrayLast'
+                ? stateArrayKeyValues![stateArrayKeyValues!.length - 1] as bigint | boolean | Uint8Array | string
               : args[kvIdx] as bigint | boolean | Uint8Array | string;
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
@@ -5729,6 +5800,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // proof input. The block slot of the first logical owner carries that UTXO; later aliases receive funders and
       // point at the owner's relative block offset through __internal__c2BatchProof_N.
       const batchWitnesses: unknown[] = [];
+      let batchPredOutputBase = abiFunction?.blockLayout?.blockSize ?? 1;
       for (const batch of abiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown C2 batch collection: ${batch.collection}`);
@@ -5760,13 +5832,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (offset === undefined) throw new Error(`C2 batch '${batch.collection}' has no block slot ${owner}`);
           const out = plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(slot));
           if (!out) throw new Error(`C2 batch '${batch.collection}' has no planned output for slot ${slotIndex}`);
+          // Seed the fixed target output in native C2 form (slot || next || empty value). Do not pin it: the
+          // derivation probe replaces the empty value with the covenant-computed value. Without this seed, a fresh
+          // target falls through StatefulTransactionBuilder's generic default encoder, which is intentionally the
+          // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
+          batchTargetPlaceholders.set(slotIndex, binToHex(out.commitment));
           const proofSlot = bytesToSlotValue(proof.slot).toString();
           const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
-          const predOut = predOrdinal < 0 ? -1n : BigInt((abiFunction!.blockLayout?.blockSize ?? 1) + predOrdinal);
+          const predOut = predOrdinal < 0 ? -1n : BigInt(batchPredOutputBase + predOrdinal);
           const raw = this._rawC2BatchWitness?.get(slotIndex);
           batchWitnesses.push(raw?.slot ?? slot, raw?.proof ?? BigInt(offset),
             raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut);
         }
+        batchPredOutputBase += predOutputs.length;
       }
       for (const witness of batchWitnesses) finalArgs = [...finalArgs, witness];
 
@@ -7950,6 +8028,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
     });
+
+    for (const [slotIndex, commitment] of batchTargetPlaceholders) {
+      builder.setEntryRawCommitment(slotIndex, commitment);
+    }
 
     // C2 sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new
     // node minted at the trailing loop-entry output). Both are known exactly from the off-chain list - no VM-trace

@@ -14,6 +14,7 @@ import { createTestProvider } from '../test-util.js';
 describe('returning struct storage-pointer fn on a mapping element (RMW + return capture)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
+  let deploymentNonce = 0x6a00;
 
   const SRC = `struct T { int base; int elastic; }
     library L { function addElastic(T storage t, int e) returns (int newElastic) { newElastic = t.elastic = t.elastic + e; } }
@@ -35,8 +36,7 @@ describe('returning struct storage-pointer fn on a mapping element (RMW + return
   }> => {
     const art = compileString(SRC, { solidityImportCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    let nonce = 0x6a00;
-    const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
+    const uid = (): string => { deploymentNonce += 1; return deploymentNonce.toString(16).padStart(64, '0'); };
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const { contract, categoryId } = await StatefulContract.deploy(art, [], {

@@ -183,7 +183,16 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
-    ...(func.entryLoopWrites && func.entryLoopWrites.length > 0 && { entryLoopWrites: [...func.entryLoopWrites] }),
+    ...(func.entryLoopWrites && func.entryLoopWrites.some(
+      (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
+    ) && {
+      // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
+      // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
+      // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
+      entryLoopWrites: func.entryLoopWrites.filter(
+        (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
+      ),
+    }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
     ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && { sortedInsertLoopInfo: [...func.sortedInsertLoopInfo] }),
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && { sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo] }),

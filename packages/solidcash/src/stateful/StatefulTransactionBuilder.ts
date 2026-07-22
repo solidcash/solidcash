@@ -139,6 +139,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   externalCallUtxoGroups?: ExternalCallUtxoGroup[];
   lowLevelCallUtxoGroups?: ExternalCallUtxoGroup[];
   lowLevelCallRawInputs?: UnlockableUtxo[];
+  /** Delegate implementation master/data outputs precede grafted proxy-state entry slots. */
+  delegateEntriesAfterLowLevel?: boolean;
+  batchEntriesBeforeDynamicChunks?: boolean;
   iterationEntryInputs?: UnlockableUtxo[];
   // C2 diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
   // outputs (unlike iterationEntryInputs) - they are MODIFIED to P' which is emitted via loopEntryVars. Kept separate
@@ -210,6 +213,8 @@ export class StatefulTransactionBuilder {
   private externalCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallRawInputs: UnlockableUtxo[];
+  private delegateEntriesAfterLowLevel: boolean;
+  private batchEntriesBeforeDynamicChunks: boolean;
   private iterationEntryInputs: UnlockableUtxo[];
   private insertLoopPredecessorInputs: UnlockableUtxo[];
   private keccakLoopSideCars: UnlockableUtxo[];
@@ -240,6 +245,7 @@ export class StatefulTransactionBuilder {
   private loopEntryVars: Array<{ collection: string; lockingBytecode: Uint8Array }> = [];
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
+  private requiredLoopEntryCounts: Map<string, number> = new Map();
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
   // extractor would otherwise read as NEW nodes. Pinned like pinEntrySlot pins a fixed entry slot.
@@ -273,6 +279,8 @@ export class StatefulTransactionBuilder {
     this.externalCallUtxoGroups = options.externalCallUtxoGroups ?? [];
     this.lowLevelCallUtxoGroups = options.lowLevelCallUtxoGroups ?? [];
     this.lowLevelCallRawInputs = options.lowLevelCallRawInputs ?? [];
+    this.delegateEntriesAfterLowLevel = options.delegateEntriesAfterLowLevel ?? false;
+    this.batchEntriesBeforeDynamicChunks = options.batchEntriesBeforeDynamicChunks ?? false;
     this.entryNfts = options.entryNfts ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
     this.dynamicChunkVars = options.dynamicChunkVars ?? [];
@@ -420,7 +428,17 @@ export class StatefulTransactionBuilder {
           case 'lowLevelCall':
             // Place the actual low-level call input (target master) at its block layout
             // position so the compiler's emitBlockSlotIndex reads the correct INPUTBYTECODE.
-            if (llcIdx < lowLevelCallInputs.length) positioned[slot.offset] = lowLevelCallInputs[llcIdx++];
+            if (llcIdx < lowLevelCallInputs.length) {
+              positioned[slot.offset] = lowLevelCallInputs[llcIdx++];
+              if (this.delegateEntriesAfterLowLevel) {
+                // A delegate's own data NFTs immediately follow its master; grafted entry slots begin after this
+                // implementation block, so keep their absolute offsets instead of compacting the gap away.
+                let off = slot.offset + 1;
+                while (llcIdx < lowLevelCallInputs.length && positioned[off] === undefined) {
+                  positioned[off++] = lowLevelCallInputs[llcIdx++];
+                }
+              }
+            }
             else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent':
@@ -795,6 +813,12 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  setValueChunkLockingBytecode(collection: string, lockingBytecode: Uint8Array): this {
+    if (!this.valueChunkVars.has(collection)) throw new Error(`value chunk collection not registered: ${collection}`);
+    this.valueChunkVars.set(collection, lockingBytecode);
+    return this;
+  }
+
   getValueChunkVars(): Array<{ collection: string; lockingBytecode: Uint8Array }> {
     return [...this.valueChunkVars.entries()].map(([collection, lockingBytecode]) => ({ collection, lockingBytecode }));
   }
@@ -812,7 +836,9 @@ export class StatefulTransactionBuilder {
   getValueChunkOutputBase(): number {
     let base = this.getChunkOutputBase();
     for (const dv of this.dynamicChunkVars) base += (this.chunkRawCommitments.get(dv.name) ?? []).length;
-    for (const lv of this.loopEntryVars) base += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
+    if (!this.batchEntriesBeforeDynamicChunks) {
+      for (const lv of this.loopEntryVars) base += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
+    }
     return base;
   }
 
@@ -893,7 +919,8 @@ export class StatefulTransactionBuilder {
     // runtime returnOutputIdx<0 adjustment in emitDynamicWriteVerification.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
     if (hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0) base -= 1;
-    return base + this.iterationEntryInputs.length;
+    return base + this.iterationEntryInputs.length
+      + (this.batchEntriesBeforeDynamicChunks ? this._loopEntryOutputCount() : 0);
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -919,6 +946,15 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  requireLoopEntryCount(collection: string, count: number): this {
+    this.requiredLoopEntryCounts.set(collection, count);
+    return this;
+  }
+
+  getRequiredLoopEntryCount(collection: string): number {
+    return this.requiredLoopEntryCounts.get(collection) ?? 0;
+  }
+
   private _loopEntryOutputCount(): number {
     let n = 0;
     for (const lv of this.loopEntryVars) n += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
@@ -930,6 +966,7 @@ export class StatefulTransactionBuilder {
    * exclusive in a given function by construction), placed after any chunk outputs.
    */
   getLoopEntryOutputBase(): number {
+    if (this.batchEntriesBeforeDynamicChunks) return this.getChunkOutputBase() - this._loopEntryOutputCount();
     return this.getChunkOutputBase() + this._dynamicChunkOutputCount();
   }
 
@@ -1051,7 +1088,8 @@ export class StatefulTransactionBuilder {
     // Skip the main block's output-only funder inputs (event/transfer): they sit inside the proxy block,
     // before the low-level call inputs. A delegatecall'd impl that emits events reserves such slots here.
     for (const s of this.blockLayout?.slots ?? []) {
-      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer' || s.kind === 'entry') base += 1;
+      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer'
+        || (s.kind === 'entry' && !this.delegateEntriesAfterLowLevel)) base += 1;
     }
     // Skip preceding low-level call groups
     for (let i = 0; i < groupIdx; i++) {
@@ -1469,6 +1507,20 @@ export class StatefulTransactionBuilder {
       }
     }
 
+    if (this.delegateEntriesAfterLowLevel) {
+      for (const group of this.lowLevelCallUtxoGroups.filter((g) => g.callMode === 'delegatecall')) {
+        const bMaster = group.masterUtxo as UnlockableUtxo;
+        builder.addOutput({
+          to: bMaster.unlocker.generateLockingBytecode(), amount: bMaster.satoshis, token: bMaster.token,
+        });
+        for (const nftUtxo of group.dataNftUtxos) {
+          builder.addOutput({
+            to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
+          });
+        }
+      }
+    }
+
     // Create entry NFT outputs (written/preserved entries, excluding deleted ones). Entry outputs occupy
     // consecutive block-layout offsets; the covenant reads each existing/written slot's output at its FIXED
     // offset. A slot that produces no output (soft-delete of an ABSENT key, or an alias-skipped write) would
@@ -1479,10 +1531,10 @@ export class StatefulTransactionBuilder {
     for (const entry of sortedEntries) {
       if (this.entryDeletes.has(entry.slotIndex)) {
         if (entry.slotIndex < fillThreshold) {
-          // Position-holding placeholder: plain BCH (no token) to the collection's entry address. The covenant
-          // existence-gates this absent slot away (its input is a funder), so this output is never verified.
-          const phLbc = this.entryNftLockingBytecodes.get(entry.collection);
-          if (phLbc) builder.addOutput({ to: phLbc, amount: 1000n });
+          // Position-holding placeholder: neutral OP_TRUE, outside the collection address namespace. The covenant
+          // existence-gates this absent slot away, so it is never verified; using the entry address here would
+          // incorrectly increase C2's exact collection-output cardinality.
+          builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
         }
         continue;
       }
@@ -1540,6 +1592,28 @@ export class StatefulTransactionBuilder {
           },
         },
       });
+    }
+
+    // A delegate implementation evaluates with OP_INPUTINDEX pointing at its own master. Its C2 trailing region
+    // therefore begins immediately after [implementation master, data NFTs, grafted entry slots]. Proxy-only
+    // preservation outputs (notably the caller input used to establish msg.sender) must not split that region.
+    if (this.delegateEntriesAfterLowLevel) {
+      for (const lv of this.loopEntryVars) {
+        const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
+        for (const commitment of commitments) {
+          const entryOutput = {
+            to: lv.lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n,
+              category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment },
+            },
+          };
+          entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+          builder.addOutput(entryOutput);
+        }
+      }
     }
 
     // Create satoshi container preservation output (after entries, before transfers)
@@ -1755,6 +1829,7 @@ export class StatefulTransactionBuilder {
 
     // Create low-level call outputs (after A's block slots, matching block layout ordering)
     for (const group of this.lowLevelCallUtxoGroups) {
+      if (this.delegateEntriesAfterLowLevel && group.callMode === 'delegatecall') continue;
       const bMaster = group.masterUtxo as UnlockableUtxo;
       builder.addOutput({
         to: bMaster.unlocker.generateLockingBytecode(),
@@ -1837,6 +1912,20 @@ export class StatefulTransactionBuilder {
       });
     }
 
+    if (this.batchEntriesBeforeDynamicChunks) {
+      for (const lv of this.loopEntryVars) {
+        for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
+          const entryOutput = {
+            to: lv.lockingBytecode, amount: 1200n,
+            token: { amount: 0n, category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment } },
+          };
+          entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+          builder.addOutput(entryOutput);
+        }
+      }
+    }
+
     // Dynamic-storage chunk outputs (trailing, after the preserved iteration-entry outputs). One mutable NFT
     // per chunk of each dynamic var; commitments come from auto-derivation (the covenant builds them on-chain).
     for (const dv of this.dynamicChunkVars) {
@@ -1859,7 +1948,8 @@ export class StatefulTransactionBuilder {
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
     // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
-    for (const lv of this.loopEntryVars) {
+    for (const lv of (this.delegateEntriesAfterLowLevel || this.batchEntriesBeforeDynamicChunks
+      ? [] : this.loopEntryVars)) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {

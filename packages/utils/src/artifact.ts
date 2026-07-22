@@ -30,13 +30,6 @@ export interface CompilerOptions {
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
-  // C2 fix opt-in: names of mapping state vars to back with the sorted-linked-list model (provable non-existence,
-  // closes the omission attack). See docs/sorted-mapping-c2.md. Other mappings keep the default entry model.
-  sortedMappings?: readonly string[];
-  // C2 parity mode: back EVERY mapping with the sorted-linked-list model (unforgeable/exclusion-proof reads =
-  // Solidity storage parity), not just the named ones. The intended end-state default; opt-in today so legacy
-  // callers keep the (forgeable-on-absent) default entry model. See docs/evm-storage-parity.md.
-  sortedMappingsAll?: boolean;
   // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
   // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
   // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
@@ -179,6 +172,8 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
+  /** Fixed straight-line C2 writes sharing one atomic linked-list transition. */
+  sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];

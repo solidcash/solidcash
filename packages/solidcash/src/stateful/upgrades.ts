@@ -100,7 +100,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
     readonly implementation: DeployedContract<TImpl>,
     private readonly forwardShape: ForwardShape,
     private readonly auth: (signer: Signer) => FunctionArgument[],
-    private readonly runner: ContractRunner,
+    readonly runner: ContractRunner,
   ) {}
 
   /** The proxy address (the stable, state-holding address callers interact with). */
@@ -178,7 +178,8 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
       if (typeof prop === 'string' && !(prop in target)) {
         if (implAbi.has(prop)) return (...args: FunctionArgument[]) => target.forward(prop, args);
         if (stateVars.has(prop)) {
-          const underlying = target.proxy as unknown as Record<string, (...a: unknown[]) => unknown>;
+          const connected = target.runner instanceof Signer ? target.proxy.connect(target.runner) : target.proxy;
+          const underlying = connected as unknown as Record<string, (...a: unknown[]) => unknown>;
           if (typeof underlying[prop] === 'function') return (...args: unknown[]) => underlying[prop](...args);
         }
       }

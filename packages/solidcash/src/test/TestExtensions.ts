@@ -38,7 +38,8 @@ interface ArtifactHolder {
 }
 
 function getArtifact(contract: EmittingContract): ArtifactHolder {
-  return (contract as any).artifact ?? (contract as any).inner?.artifact ?? {};
+  return (contract as any).artifact ?? (contract as any).inner?.artifact
+    ?? (contract as any).implementation?.inner?.artifact ?? {};
 }
 
 interface Debuggable {

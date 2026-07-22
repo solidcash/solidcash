@@ -90,7 +90,7 @@ async function runAction(action: any): Promise<void> {
 
 /** Ordered event field names from a contract's artifact, for positional `.withArgs`. */
 function eventFieldNames(contract: any, eventName: string): string[] {
-  const art = contract?.artifact ?? contract?.inner?.artifact ?? {};
+  const art = contract?.artifact ?? contract?.inner?.artifact ?? contract?.implementation?.inner?.artifact ?? {};
   const def = (art.events ?? []).find((e: any) => e.name === eventName);
   return (def?.inputs ?? []).map((i: any) => i.name);
 }
@@ -101,7 +101,11 @@ class EmitAssertion implements PromiseLike<void> {
   private assert(args?: Record<string, any>): Promise<void> {
     const e = ensureVitest();
     const base = this.negate ? e(this.actual).not : e(this.actual);
-    return Promise.resolve(base.toEmit(this.contract, this.event, args));
+    return Promise.resolve(base.toEmit(this.contract, this.event, args)).then(async () => {
+      // A SolidCash function call is lazy, unlike an ethers ContractTransactionResponse. Hardhat's matcher
+      // observes an already-submitted transaction, so submit the successfully inspected call here as well.
+      if (this.actual && typeof this.actual.send === 'function') await this.actual.send();
+    });
   }
 
   /** Assert emitted args. Accepts an object (field-keyed) or positional values mapped via the event ABI order. */

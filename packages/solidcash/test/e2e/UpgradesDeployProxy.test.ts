@@ -152,8 +152,9 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     contract EventImpl() {
       event Changed(int v);
       int version;
-      function initialize(int v) delegate { this.version = v; }
-      function setVersion(int v) delegate { emit Changed(v); this.version = v; }
+      address owner;
+      function initialize(int v) delegate { this.owner = msg.sender; this.version = v; }
+      function setVersion(int v) delegate { require(msg.sender == this.owner); emit Changed(v); this.version = v; }
     }`;
 
   it('emits an event from inside a delegate function (event NFT lands in the proxy block)', async () => {
@@ -172,6 +173,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     );
     expect(eventOut).toBeDefined();
     expect(eventOut!.token!.nft!.commitment).toBe('0119');
+    // Getter dispatch must retain the connected runner so its return-event output uses a real P2PKH funder.
+    expect(await (proxy as any).version()).toBe(25n);
   });
 
   // Robustness of events-in-delegate: an indexed param, two emits in one call, and a no-arg event.

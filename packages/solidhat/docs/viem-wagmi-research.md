@@ -1,8 +1,12 @@
-# Compatibility architecture and roadmap
+# Viem, Wagmi, and BCH WalletConnect research
 
-SolidHat aims to move existing Hardhat applications to Bitcoin Cash without immediately rewriting their tests,
-deployment scripts, and browser integrations. TypeScript API compatibility does not imply EVM execution or EVM
-wire encoding. Items in this document are planned until their entry points are exported as public API.
+> **Research status:** this records design findings only. ABI projection, Viem clients/actions, Wagmi adapters,
+> and WalletConnect are excluded from the current SolidHat implementation plan. Nothing here is a scheduled public
+> API.
+
+The motivating application is `effectiveacceleration.ai/website`, while the incomplete sibling `wagmi-test`
+experiment explores conformant BCH chains, Electrum transports, typed RPC schemas, client extensions,
+subscriptions, accounts, and wallet actions.
 
 ## Goals
 
@@ -42,15 +46,14 @@ wire encoding. Items in this document are planned until their entry points are e
 WalletConnect is not the chain-data provider. Reads and broadcast use the BCH public client; the wallet supplies
 accounts, authorization, and signatures.
 
-## ABI convergence: the foundation
+## ABI projection without changing SolidCash ABI
 
-ABI convergence comes first because TypeChain, Viem, Wagmi, documentation, and explorers all depend on it.
-Where semantics overlap, the canonical ABI uses conventional fields: `type`, `name`, `inputs`, `outputs`,
-`stateMutability`, tuple `components`, event `indexed`, constructors, functions, events, errors, and deterministic
-canonical selector types.
+The preferred experiment preserves the canonical SolidCash ABI. A generator projects only the information Wagmi
+and ABIType consume into conventional entries: names, inputs, outputs, mutability, tuples, arrays, events, errors,
+constructors, selectors, and getter-shaped entries for public state variables.
 
-This structure enables ABIType/Viem inference. It does **not** authorize an EVM ABI encoder to construct
-SolidCash unlocking bytecode.
+This readonly projection can enable inference without changing the compiler ABI. It does **not** contain enough
+execution information to construct a SolidCash transaction and does not authorize EVM calldata encoding.
 
 ### Type projection
 
@@ -73,8 +76,8 @@ Lossy or BCH-specific types preserve their meaning in `internalType` and version
 | fixed-point | selected integer type | Scale and signedness require metadata |
 | contract/category locator | `bytes32` or `bytes` | Depends on locator kind |
 
-Mappings, persistent arrays, lifecycle modifiers, state layout, and CashToken containers live in a versioned
-`solidcash` artifact section or `x-solidcash` ABI extensions.
+Mappings, persistent arrays, lifecycle modifiers, state layout, CashToken containers, bytecode, and debug data
+remain in the unmodified SolidCash artifact rather than being forced into the projected ABI.
 
 ### Encoding boundary
 
@@ -157,38 +160,14 @@ Ethers into compile-only applications. Integrations use explicit entry points/pa
 `sideEffects: false`, and type-only imports. Dependencies flow from schema to TypeChain/Viem, then from Viem to
 Wagmi and WalletConnect—never back into the compiler.
 
-## Implementation priority
+## Open research questions
 
-### P0: schema and ABI convergence
+- Can ABIType infer every representable tuple, array, overload, event, and error without widening types?
+- Which state variables should become getter-shaped entries, and which require SolidCash-only state APIs?
+- Can Wagmi core be adapted safely, or is a source-compatible `@solidcash/wagmi` surface preferable?
+- What stable BCH locator covers locking bytecode, category IDs, networks, and evolving state?
+- Which BCH WalletConnect v2 methods and capabilities interoperate across the target wallets?
+- Which result shapes remain portable without misrepresenting fees, confirmations, or replacement?
 
-1. Inventory artifacts and define the normalized, versioned schema.
-2. Specify types, tuples, mutability, events, errors, constructors, selectors, and BCH extensions.
-3. Update compiler emission with schema validation and fixtures for every type/member.
-4. Verify ABIType/Viem inference and enforce the EVM-encoding boundary.
-
-This blocks all reliable generated shims and therefore comes first.
-
-### P1: generator framework and TypeChain targets
-
-1. Build the shared artifact-to-TypeScript IR and incremental generator.
-2. Emit SolidCash-native typed contracts/factories.
-3. Add TypeChain-compatible Ethers 6 output, then Ethers 5.
-4. Connect generated name maps to SolidHat HRE helpers.
-5. Replace EACC's handwritten TypeChain stand-ins and type-check its tests/scripts.
-
-TypeChain validates the complete contract model before React and wallet lifecycle are introduced.
-
-### P2: Viem ABI target and BCH public client
-
-1. Emit readonly `as const` ABI/artifact modules.
-2. Promote `wagmi-test` chain, transport, schemas, accounts, subscriptions, and actions into tested modules.
-3. Add contract read, simulation, write, deployment, lifecycle, and confirmation actions.
-4. Keep Viem optional and enforce per-entry-point bundle isolation.
-
-### P3: BCH WalletConnect v2 connector
-
-1. Implement BCH session/capability mapping.
-2. Connect simulation to wallet signing, validate responses, and broadcast through the public client.
-3. Test restoration, rejection, expiry, account/network changes, malformed responses, and real-wallet interop.
-
-### P4: Wagmi core and React shims
+These questions should be answered with `wagmi-test` and the EACC website before packages or timelines are
+proposed.

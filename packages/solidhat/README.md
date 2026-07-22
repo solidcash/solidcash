@@ -3,8 +3,9 @@
 Hardhat-style project tooling for SolidCash. SolidHat adds whole-project compilation, incremental caching,
 namespaced artifacts, a task runner, and compatibility entry points for Hardhat and Ethers test suites.
 
-See [Compatibility architecture and roadmap](./docs/compatibility-roadmap.md) for the planned ABI, TypeChain,
-Viem, Wagmi, and BCH WalletConnect integrations and their implementation order.
+See the [current implementation plan](./docs/implementation-plan.md) for the scoped TypeChain work. Viem, Wagmi,
+ABI projection, and BCH WalletConnect findings are recorded as [future research](./docs/viem-wagmi-research.md)
+and are not part of that plan.
 
 ## Requirements
 

@@ -19,7 +19,9 @@ export interface NetworkConfig {
     maximumInputBytes: number;
     maximumStackItemBytes: number;
     maximumTransactionBytes: number;
+    maximumNftCommitmentBytes: number;
   }>;
+  policy?: Partial<{ enforceDust: boolean }>;
 }
 
 export interface AccountsConfig {

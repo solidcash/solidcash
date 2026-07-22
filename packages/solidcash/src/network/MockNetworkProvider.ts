@@ -1,9 +1,10 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
+import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider, { ConsensusLimits } from './NetworkProvider.js';
+import NetworkProvider, { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
@@ -19,16 +20,19 @@ export interface MockNetworkProviderOptions {
   vmTarget?: VmTarget;
   /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
   consensusLimits: ConsensusLimits;
+  policy: NetworkPolicy;
 }
 
-export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits'>> & {
+export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
   consensusLimits?: Partial<ConsensusLimits>;
+  policy?: Partial<NetworkPolicy>;
 };
 
 export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
   maximumInputBytes: 1_000_000,
   maximumStackItemBytes: 1_000_000,
   maximumTransactionBytes: 10_000_000,
+  maximumNftCommitmentBytes: 1_000_000,
 };
 
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
@@ -49,6 +53,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   public options: MockNetworkProviderOptions;
   public vmTarget: VmTarget;
   public consensusLimits: ConsensusLimits;
+  public policy: NetworkPolicy;
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -64,9 +69,11 @@ export default class MockNetworkProvider implements NetworkProvider {
       updateUtxoSet: true,
       ...options,
       consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...options?.consensusLimits },
+      policy: { enforceDust: false, ...options?.policy },
     };
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
     this.consensusLimits = this.options.consensusLimits;
+    this.policy = this.options.policy;
 
     const overrides = {
       maximumBytecodeLength: this.consensusLimits.maximumInputBytes,
@@ -75,9 +82,11 @@ export default class MockNetworkProvider implements NetworkProvider {
       maximumStandardLockingBytecodeLength: this.consensusLimits.maximumInputBytes,
       maximumTransactionLengthBytes: this.consensusLimits.maximumTransactionBytes,
       maximumStandardTransactionSize: this.consensusLimits.maximumTransactionBytes,
+      maximumTokenCommitmentLength: this.consensusLimits.maximumNftCommitmentBytes,
     };
     const verifier = createTxVerifier({
       vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
+      dustRelayFeePerKb: this.policy.enforceDust ? undefined : 0n,
       consensus: overrides,
     } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });
     this.indexer = createIndexer({ verifier });
@@ -234,7 +243,18 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
-    const result = this.indexer.submitTransaction(txHex);
+    // libauth's CashToken introspection operations in current releases call the common checked-push helper rather
+    // than the selected BCH instruction set's stack-item limit. mem-cash overrides those operations natively in
+    // its next release; keep 0.0.8 compatible by scoping the legacy common value to this synchronous mock check.
+    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
+    const previousStackItemLength = commonConsensus.maximumStackItemLength;
+    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    let result;
+    try {
+      result = this.indexer.submitTransaction(txHex);
+    } finally {
+      commonConsensus.maximumStackItemLength = previousStackItemLength;
+    }
     if (!result.success) {
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }

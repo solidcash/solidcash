@@ -25,6 +25,9 @@ export default defineConfig({
   paths: { contracts: findEaccContracts(), artifacts: 'artifacts', tests: 'test' },
   solc: {
     solidityImportCompat: true,
+    // Preserve production-compatible state partitioning while mocknet relaxes the commitment itself for large
+    // fixed packed values (for example OpenZeppelin storage gaps).
+    commitmentLimit: 128,
     ecrecover: 'p2pkh',
     // Most EACC mappings use the compact entry backend to keep the generated
     // facets below BCH's script-size limit. These two mappings are updated for

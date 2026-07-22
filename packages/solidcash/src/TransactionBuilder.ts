@@ -570,7 +570,7 @@ export class TransactionBuilder {
 
   addOutputs(outputs: Output[]): this {
     outputs.forEach((output) => {
-      validateOutput(output);
+      validateOutput(output, this.provider.policy?.enforceDust ?? true);
       validateChangeLocks(this.changeLocks, output.token?.category);
     });
     this.outputs = this.outputs.concat(outputs);

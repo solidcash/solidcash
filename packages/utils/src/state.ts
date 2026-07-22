@@ -893,6 +893,7 @@ export function buildPushdataCommitment(
   layout: StateLayout,
   values: Record<string, StateValue>,
   nftIndex: number,
+  commitmentLimit: number | undefined = layout.commitmentLimit,
 ): string {
   const fieldsForNft = layout.variables
     .filter((v: StateVariableInfo) => v.nftIndex === nftIndex)
@@ -927,9 +928,9 @@ export function buildPushdataCommitment(
   }
 
   // Validate commitment size against layout limit
-  if (layout.commitmentLimit !== undefined && result.length > layout.commitmentLimit) {
+  if (commitmentLimit !== undefined && result.length > commitmentLimit) {
     throw new Error(
-      `Commitment for NFT index ${nftIndex} exceeds limit: ${result.length} bytes > ${layout.commitmentLimit} byte limit`,
+      `Commitment for NFT index ${nftIndex} exceeds limit: ${result.length} bytes > ${commitmentLimit} byte limit`,
     );
   }
 
@@ -992,11 +993,12 @@ export function parsePushdataCommitment(
 export function buildInitialStateCommitments(
   layout: StateLayout,
   initialState: Record<string, StateValue>,
+  commitmentLimit?: number,
 ): string[] {
   const commitments: string[] = [];
 
   for (let nftIdx = 0; nftIdx < layout.dataNftCount; nftIdx++) {
-    commitments.push(buildPushdataCommitment(layout, initialState, nftIdx));
+    commitments.push(buildPushdataCommitment(layout, initialState, nftIdx, commitmentLimit ?? layout.commitmentLimit));
   }
 
   return commitments;

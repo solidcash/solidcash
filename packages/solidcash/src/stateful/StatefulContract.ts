@@ -1415,10 +1415,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           + 'Provide options.initialState with explicit initial values.',
         );
       }
-      commitments = buildInitialStateCommitments(stateLayout, options.initialState);
+      commitments = buildInitialStateCommitments(
+        stateLayout, options.initialState, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
     } else {
       // No constructor: use explicit initialState or zero-initialized defaults
-      commitments = buildInitialStateCommitments(stateLayout, options.initialState ?? {});
+      commitments = buildInitialStateCommitments(
+        stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
     }
 
     // Build and send actual genesis transaction
@@ -1981,7 +1985,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Compute child's initial state commitments
     const childCommitments = buildInitialStateCommitments(
-      childLayout, options.childInitialState ?? {},
+      childLayout, options.childInitialState ?? {}, provider.consensusLimits?.maximumNftCommitmentBytes,
     );
 
     // Determine which data NFTs the factory's deploy function needs
@@ -2954,7 +2958,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Explicit initial state seeds fields the constructor does not write (for example compiler-injected immutable
     // block-oracle ownership). Constructor execution still derives and authenticates its writes over this pre-state.
-    const zeroCommitments = buildInitialStateCommitments(stateLayout, options.initialState ?? {});
+    const zeroCommitments = buildInitialStateCommitments(
+      stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+    );
 
     // Synthetic master UTXO (contract's locking script + minting NFT)
     const syntheticMaster: Utxo = {

@@ -41,6 +41,14 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
     const maximumInputBytes = hre.network.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
+    const compilerOptions = {
+      ...hre.config.solc,
+      commitmentLimit: Math.min(
+        (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,
+        maximumNftCommitmentBytes,
+      ),
+    };
     if (!fs.existsSync(contractsDir)) throw new Error(`Contracts dir not found: ${contractsDir}`);
     fs.rmSync(outputDir, { recursive: true, force: true });
     fs.mkdirSync(outputDir, { recursive: true });
@@ -54,7 +62,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         const source = fs.readFileSync(path.join(contractsDir, fn), 'utf-8');
         // Hardhat mirror: one artifact JSON per CONTRACT (by contract name), nested under the source file dir.
         // This is what `getContractFactory("Name")` resolves against.
-        const map = compileStringMulti(source, hre.config.solc);
+        const map = compileStringMulti(source, compilerOptions);
         const nestDir = path.join(outputDir, contractsBase, fn);
         fs.mkdirSync(nestDir, { recursive: true });
         for (const [name, artifact] of Object.entries(map)) {
@@ -63,11 +71,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           contracts++;
         }
         // Backward-compat flat artifact (the file's primary contract, by file name) for direct `import` usage.
-        const primary = compileString(source, hre.config.solc);
+        const primary = compileString(source, compilerOptions);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
         if (primary.bytecode.length / 2 > maximumInputBytes) {
-          const split = compileStringSplit(source, { ...hre.config.solc, maxShardBytes: maximumInputBytes });
+          const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes: maximumInputBytes });
           fs.writeFileSync(
             path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
             formatSplitArtifactBundle(split, 'json'),
@@ -93,7 +101,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     try {
       const result = compileSolidityProject(
         solFiles,
-        { solidityImportCompat: true, ...hre.config.solc },
+        { solidityImportCompat: true, ...compilerOptions },
         compileFileMulti,
         {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
@@ -120,7 +128,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         let split;
         try {
           split = compileFileSplit(full, {
-            solidityImportCompat: true, ...hre.config.solc, maxShardBytes: maximumInputBytes,
+            solidityImportCompat: true, ...compilerOptions, maxShardBytes: maximumInputBytes,
           });
         } catch (error: any) {
           throw new Error(`Failed to shard ${path.relative(contractsDir, full)}: ${error.message}`, { cause: error });

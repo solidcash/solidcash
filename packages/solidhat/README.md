@@ -114,16 +114,18 @@ export default defineConfig({
   networks: {
     mock: {
       type: 'mock',
-      // Defaults: 1MB inputs/stack items and 10MB transactions.
+      // Defaults: 1MB inputs, stack items, and NFT commitments; 10MB transactions.
       consensus: { maximumInputBytes: 500_000 },
+      policy: { enforceDust: false },
     },
   },
   defaultNetwork: 'mock',
 });
 ```
 
-Mock consensus overrides are test-harness-only. Real network providers retain BCH consensus limits. The compiler
-and split-contract deployment use the active provider's input limit when deciding whether bytecode must be sharded.
+Mock consensus and relay-policy overrides are test-harness-only. Real network providers retain BCH limits. The
+compiler uses the active input and NFT commitment limits for sharding and state layout; deployment uses the same
+limits for preflight validation. Dust relay policy is disabled on mocknet by default and can be re-enabled above.
 
 `typegen.targets[].sourceDir` can preserve an original Solidity source layout when the compiled fixture sources live elsewhere (for example, lightweight BCH test stubs). It affects generated module paths only; artifacts remain the source of runtime data and types.
 

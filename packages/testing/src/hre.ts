@@ -37,9 +37,10 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
     case 'regtest': return new RegtestNetworkProvider();
     case 'electrum': return new ElectrumNetworkProvider();
     case 'mock':
-    default: return new MockNetworkProvider(netCfg?.consensus ? {
-      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...netCfg.consensus },
-    } : undefined);
+    default: return new MockNetworkProvider({
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...netCfg?.consensus },
+      policy: netCfg?.policy,
+    });
   }
 }
 

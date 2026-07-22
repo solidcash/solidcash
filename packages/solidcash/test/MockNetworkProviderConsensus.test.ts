@@ -9,8 +9,10 @@ describe('MockNetworkProvider consensus limits', () => {
       maximumInputBytes: 1_000_000,
       maximumStackItemBytes: 1_000_000,
       maximumTransactionBytes: 10_000_000,
+      maximumNftCommitmentBytes: 1_000_000,
     });
     expect(provider.consensusLimits).not.toBe(MOCK_CONSENSUS_LIMITS);
+    expect(provider.policy).toEqual({ enforceDust: false });
   });
 
   it('allows individual limits to be overridden', () => {
@@ -53,6 +55,36 @@ describe('MockNetworkProvider consensus limits', () => {
       locktime: 0,
     });
 
+    await expect(provider.sendRawTransaction(binToHex(raw))).resolves.toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('evaluates token commitment introspection above the legacy 520-byte stack-item limit', async () => {
+    const provider = new MockNetworkProvider();
+    const parentTxid = 'bb'.repeat(32);
+    const category = 'cc'.repeat(32);
+    const commitment = 'dd'.repeat(1_364);
+    const lockingBytecode = Uint8Array.of(0x00, 0xcf, 0x75, 0x51);
+    await provider.addUtxo(binToHex(lockingBytecode), {
+      txid: parentTxid,
+      vout: 0,
+      satoshis: 10_000n,
+      token: { category, amount: 0n, nft: { capability: 'mutable', commitment } },
+    });
+    const raw = encodeTransactionBch({
+      version: 2,
+      inputs: [{
+        outpointTransactionHash: hexToBin(parentTxid), outpointIndex: 0,
+        sequenceNumber: 0xffffffff, unlockingBytecode: new Uint8Array(),
+      }],
+      outputs: [{
+        lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 8_000n,
+        token: {
+          category: hexToBin(category), amount: 0n,
+          nft: { capability: 'mutable', commitment: hexToBin(commitment) },
+        },
+      }],
+      locktime: 0,
+    });
     await expect(provider.sendRawTransaction(binToHex(raw))).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 });

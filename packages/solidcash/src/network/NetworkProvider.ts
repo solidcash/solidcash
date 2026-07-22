@@ -7,6 +7,12 @@ export interface ConsensusLimits {
   maximumStackItemBytes: number;
   /** Maximum serialized transaction size. */
   maximumTransactionBytes: number;
+  maximumNftCommitmentBytes: number;
+}
+
+export interface NetworkPolicy {
+  /** Apply node relay dust thresholds when constructing and validating outputs. */
+  enforceDust: boolean;
 }
 
 export default interface NetworkProvider {
@@ -17,6 +23,8 @@ export default interface NetworkProvider {
 
   /** Optional provider-specific consensus limits. Omitted providers use BCH production limits. */
   consensusLimits?: ConsensusLimits;
+  /** Optional relay-policy behavior. Omitted providers use production policy. */
+  policy?: NetworkPolicy;
 
   /**
    * Retrieve all UTXOs (confirmed and unconfirmed) for a given address.

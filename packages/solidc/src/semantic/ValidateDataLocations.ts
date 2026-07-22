@@ -87,8 +87,9 @@ export default class ValidateDataLocations extends AstTraversal {
       return;
     }
     if (context === 'return') {
-      if (location === Modifier.CALLDATA) {
-        throw new InvalidDataLocationError(node, "return parameters cannot have 'calldata' location");
+      if (location === Modifier.CALLDATA && visibility !== 'internal' && visibility !== 'private') {
+        throw new InvalidDataLocationError(node,
+          "'calldata' return parameters are only valid on internal or private functions");
       }
       if (location === Modifier.STORAGE && visibility !== 'internal' && visibility !== 'private') {
         throw new InvalidDataLocationError(node,

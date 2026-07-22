@@ -81,6 +81,13 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
       .toThrow(/only valid on internal or private/);
   });
 
+  it('allows an internal calldata view return (OpenZeppelin Context._msgData shape)', () => {
+    expect(compiles('function f(bytes calldata x) internal pure returns (bytes calldata) { return x; }'
+      + ' function g(bytes calldata x) external { require(f(x).length == x.length); }')).toBe('C');
+    expect(() => compiles('function f() external returns (bytes calldata) { }'))
+      .toThrow(/only valid on internal or private/);
+  });
+
   it('rejects duplicate/conflicting locations and mutability modifiers', () => {
     expect(() => compiles('function f(bytes memory calldata x) external { require(x.length > 0); }'))
       .toThrow(/multiple data locations/);

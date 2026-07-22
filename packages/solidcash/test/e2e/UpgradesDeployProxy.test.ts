@@ -66,6 +66,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const Impl = getContractFactory(implArtifact, signer);
     const proxy = await upgrades.deployProxy(Impl, { counter: 5n });   // no options.proxy
     await proxy.waitForDeployment();
+    expect(await signer.getNonce()).toBe(1);
 
     expect(proxy.address).toMatch(/^bchtest:|^bitcoincash:|^bchreg:/);
     expect(await proxy.getAddress()).toBe(proxy.address);
@@ -73,6 +74,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
     // Forward the implementation's `increment` through the default proxy: counter 5 -> 6.
     const tx = await (proxy as any).increment().send();
+    expect(await signer.getNonce()).toBe(2);
     expect(tx.txid).toBeDefined();
     expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(6n);
   });

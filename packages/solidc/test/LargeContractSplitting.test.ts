@@ -36,11 +36,10 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.every((route) => route.target === 'root')).toBe(true);
   });
 
-  it('groups overlapping state access and separates disjoint state', () => {
+  it('prioritizes overlapping state access and packs disjoint groups when they fit', () => {
     const bundle = compileStringSplit(SOURCE, { forceSplit: true });
     const groups = bundle.manifest.facets.map((facet) => [...facet.functions].sort());
-    expect(groups).toContainEqual(['addX', 'setX']);
-    expect(groups).toContainEqual(['setY']);
+    expect(groups).toEqual([['addX', 'setX', 'setY']]);
     expect(bundle.manifest.routes.find((route) => route.function === 'getX')?.target).toBe('root');
     expect(bundle.manifest.routes.find((route) => route.function === 'setX')?.footprint.writes)
       .toContain('state:x');
@@ -97,9 +96,11 @@ describe('large-contract state-local splitting', () => {
         function two(int v) { this.values[2] = v; require(v >= 0); }
       }
     `, { forceSplit: true });
-    expect(constants.manifest.facets).toHaveLength(2);
+    expect(constants.manifest.facets).toHaveLength(1);
     expect(constants.manifest.routes.find((route) => route.function === 'one')?.footprint.writes)
       .toEqual(['collection:values:1']);
+    expect(constants.manifest.routes.find((route) => route.function === 'two')?.footprint.writes)
+      .toEqual(['collection:values:2']);
 
     const wildcard = compileStringSplit(`
       contract Regions() {

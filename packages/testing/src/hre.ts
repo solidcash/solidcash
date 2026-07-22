@@ -133,17 +133,11 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   const defaultRunner = (): ContractRunner => {
     const anyProvider = provider as unknown as { getSigners?: unknown };
     if (typeof anyProvider.getSigners !== 'function') return provider; // live net: no local signer
-    cachedSigner ??= signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath })[0];
+    const cacheable = provider as unknown as { getCachedSigner?: (index: number, opts: object) => Signer };
+    cachedSigner ??= typeof cacheable.getCachedSigner === 'function'
+      ? cacheable.getCachedSigner(0, { mnemonic, path: accountsPath })
+      : signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath })[0];
     return cachedSigner;
-  };
-
-  // Drop-in emulation of ethers' account nonce. BCH (UTXO) has no per-account nonce, so the base Signer.getNonce
-  // throws; here (the hardhat-parity layer) a fresh test account reads as nonce 0. The CREATE-address predictors
-  // that consume it (getCreateAddress) are redirected to BCH category identity in the ethers-shim, so a ported
-  // fixture's address-precompute block runs. Real deployed addresses come from `contract.getAddress()`.
-  const withNonce = (signers: Signer[]): Signer[] => {
-    for (const s of signers) (s as unknown as { getNonce: () => Promise<number> }).getNonce = async (): Promise<number> => 0;
-    return signers;
   };
 
   const getSigners = async (
@@ -154,9 +148,9 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // One funding UTXO per signer is enough: the deploy step fans out fresh vout-0 genesis coins on demand
       // (ContractFactory.selectGenesisFundingUtxo), so an account can deploy any number of contracts. Override
       // `fundingUtxos` to pre-split (saves a fan-out tx per deploy).
-      return withNonce(await anyProvider.getSigners(count, { mnemonic, path: accountsPath, ...o }));
+      return anyProvider.getSigners(count, { mnemonic, path: accountsPath, ...o });
     }
-    return withNonce(signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath }));
+    return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
   };
 
   // ethers `Wallet.createRandom()` returns a fresh HDNodeWallet with no provider; ported tests then
@@ -230,6 +224,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     create: async (n?: string): Promise<NetworkConnection> => {
       const cn = n ?? name;
       const conn = buildConnection(cn, config.networks[cn], mnemonic, ethersOpts);
+      await conn.ethers.getSigners(config.accounts?.count ?? 20);
       setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
       return conn;
     },
@@ -279,6 +274,8 @@ export const getActiveHre = getDefaultHre;
 export async function initHre(dir?: string, networkName?: string): Promise<HardhatRuntimeEnvironment> {
   const config = await loadConfig(dir);
   singleton = createHardhatRuntimeEnvironment(config, networkName);
+  // Hardhat places configured account balances in genesis; initialize the mock account set before tests run.
+  await singleton.ethers.getSigners(config.accounts?.count ?? 20);
   return singleton;
 }
 

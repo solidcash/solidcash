@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileStringSplit } from 'solidc';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { Signer, SplitContractBundle, upgrades } from '../../src/index.js';
-import { alicePriv } from '../fixture/vars.js';
+import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 
 const SOURCE = `
@@ -40,9 +40,10 @@ describe('split contract SDK', () => {
     const compiled = compileStringSplit(SOURCE, { forceSplit: true });
     const deployed = await SplitContractBundle.from(compiled, signer)
       .deploy([], { initialState: { x: 1n, y: 2n } });
+    expect(await signer.getNonce()).toBe(1);
 
-    expect(Object.keys(deployed.facets)).toHaveLength(2);
-    expect(new Set(Object.values(deployed.facets).map((facet) => facet.categoryId)).size).toBe(2);
+    expect(Object.keys(deployed.facets)).toHaveLength(1);
+    expect(new Set(Object.values(deployed.facets).map((facet) => facet.categoryId)).size).toBe(1);
     expect(Object.values(deployed.facets).every((facet) => facet.categoryId !== deployed.categoryId)).toBe(true);
 
     // Each facet genesis contains its minting master but no application mutable data NFT.
@@ -106,6 +107,7 @@ describe('split contract SDK', () => {
       SplitContractBundle.from(compiled, signer), { x: 3n, y: 4n },
     );
     // Two facet genesis transactions plus one state-root genesis: no implementation-router deployment.
+    expect(await signer.getNonce()).toBe(1);
     expect(deployed.deploymentTransactions).toHaveLength(compiled.manifest.facets.length + 1);
     const tx = await deployed.call.addX(2n).send();
     const state = stateFromTx(tx, deployed.categoryId, compiled.root.stateLayout);
@@ -115,5 +117,21 @@ describe('split contract SDK', () => {
     await expect(upgrades.deployProxy(
       SplitContractBundle.from(compiled, await fundedSigner()), {}, { proxy: compiled.root },
     )).rejects.toThrow(/cannot be wrapped in a custom proxy/i);
+  });
+
+  it('keeps constructor initialization compatible with facet-injected oracle state', async () => {
+    const signer = await fundedSigner();
+    const compiled = compileStringSplit(`
+      pragma solidity ^0.8.7;
+      contract SplitInit {
+        uint value;
+        constructor(uint initial) { value = initial; }
+        function set(uint next) external { value = next + block.timestamp; require(next > 0); }
+      }
+    `, { forceSplit: true, solidityImportCompat: true });
+    const deployed = await SplitContractBundle.from(compiled, signer).deploy([7n], {
+      initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
+    });
+    expect((await deployed.root.getState()).value).toBe(7n);
   });
 });

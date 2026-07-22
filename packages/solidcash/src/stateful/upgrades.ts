@@ -260,44 +260,51 @@ export async function deployProxy<TImpl extends Artifact>(
     });
   }
   const runner = options.runner ?? implementationFactory.runner;
-  const auth = options.auth ?? defaultAuth;
-  const implArtifact = implementationFactory.artifact;
+  const nonceReservation = runner instanceof Signer ? runner.reserveTransactionNonce() : undefined;
+  try {
+    const auth = options.auth ?? defaultAuth;
+    const implArtifact = implementationFactory.artifact;
 
-  // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
-  const initializer = resolveInitializer(options.initializer, implArtifact);
-  const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
+    // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
+    const initializer = resolveInitializer(options.initializer, implArtifact);
+    const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
 
-  // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-  const implementation = await implementationFactory.connect(runner).deploy(
-    ...(options.implementationOverrides ? [options.implementationOverrides] : []),
-  ) as DeployedContract<TImpl>;
+    // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
+    const implementation = await implementationFactory.connect(runner).deploy({
+      ...(options.implementationOverrides ?? {}), logicalNonce: false,
+    }) as DeployedContract<TImpl>;
 
-  // 2. Deploy the proxy. Custom proxy -> its own genesis; default proxy -> graft the implementation's layout + bake
-  //    the implementation's locking bytecode as the constructor arg. With no initializer, seed the state here.
-  let proxy: DeployedContract;
-  let shape: ForwardShape;
-  if (options.proxy) {
-    proxy = await new ContractFactory(options.proxy, runner)
-      .deploy({ ...options.proxyOverrides, initialState: seededState });
-    shape = detectForwardShape(options.proxy, options.forwardFunction);
-  } else {
-    const implLbc = addressToLockScript(implementation.address);
-    proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
-      .deploy(implLbc, { ...options.proxyOverrides, initialState: seededState });
-    shape = { name: '__forward', mode: 'baked' };
-  }
-
-  const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
-
-  // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
-  if (initializer) {
-    if (initialState !== undefined && !Array.isArray(initialState)) {
-      throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
+    // 2. Deploy the proxy. Custom proxy -> its own genesis; default proxy -> graft the implementation's layout + bake
+    //    the implementation's locking bytecode as the constructor arg. With no initializer, seed the state here.
+    let proxy: DeployedContract;
+    let shape: ForwardShape;
+    if (options.proxy) {
+      proxy = await new ContractFactory(options.proxy, runner)
+        .deploy({ ...options.proxyOverrides, initialState: seededState, logicalNonce: false });
+      shape = detectForwardShape(options.proxy, options.forwardFunction);
+    } else {
+      const implLbc = addressToLockScript(implementation.address);
+      proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
+        .deploy(implLbc, { ...options.proxyOverrides, initialState: seededState, logicalNonce: false });
+      shape = { name: '__forward', mode: 'baked' };
     }
-    await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).send();
-  }
 
-  return handle;
+    const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
+
+    // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
+    if (initializer) {
+      if (initialState !== undefined && !Array.isArray(initialState)) {
+        throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
+      }
+      await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).withoutLogicalNonce().send();
+    }
+
+    nonceReservation?.commit();
+    return handle;
+  } catch (error) {
+    nonceReservation?.release();
+    throw error;
+  }
 }
 
 /** The ethers/hardhat `upgrades` namespace. */

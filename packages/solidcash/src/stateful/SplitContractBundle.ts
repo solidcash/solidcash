@@ -86,6 +86,10 @@ export class SplitContractBundle {
       throw new Error('Split deployment needs a Signer runner or an explicit reserved root fundingUtxo.');
     }
     const signer = this.runner instanceof Signer ? this.runner : undefined;
+    const facetCount = this.bundle.manifest.facets.length;
+    const rootConstructorCount = this.bundle.root.constructorInputs.length - facetCount;
+    const rootConstructorArgs = constructorArgs.slice(0, rootConstructorCount);
+    const rootInitArgs = constructorArgs.slice(rootConstructorCount);
     const rootFunding = options.fundingUtxo ?? await selectGenesisFundingUtxo(signer!, this.bundle.root);
     const rootCategory = rootFunding.txid;
     const reserved = new Set([`${rootFunding.txid}:${rootFunding.vout}`]);
@@ -134,30 +138,39 @@ export class SplitContractBundle {
       });
       return addressToLockScript(preview.address);
     });
-    const rootPreview = new Contract(this.bundle.root, [...constructorArgs, ...previewLinks] as never[], {
+    const rootPreview = new Contract(this.bundle.root, [...rootConstructorArgs, ...previewLinks] as never[], {
       provider, addressType: options.addressType, category: hexToBin(rootCategory),
     });
     assertSplitRedeemSize('root', rootPreview.bytesize);
 
-    for (const info of this.bundle.manifest.facets) {
-      const { artifact, override } = facetPreflight[info.name];
-      const facet = await new ContractFactory(artifact, this.runner)
-        .deploy(StatefulContract.libraryBrand(rootCategory), override!);
-      facets[info.name] = facet;
-      transactions.push(facet.deploymentTransaction());
-    }
+    const nonceReservation = signer?.reserveTransactionNonce();
+    try {
+      for (const info of this.bundle.manifest.facets) {
+        const { artifact, override } = facetPreflight[info.name];
+        const facet = await new ContractFactory(artifact, this.runner)
+          .deploy(StatefulContract.libraryBrand(rootCategory), { ...override!, logicalNonce: false });
+        facets[info.name] = facet;
+        transactions.push(facet.deploymentTransaction());
+      }
 
-    const facetLinks = this.bundle.manifest.facets.map((info) => addressToLockScript(facets[info.name].address));
-    const rootOverrides = { ...options };
-    delete rootOverrides.facetOverrides;
-    if (signer) {
-      rootOverrides.funder ??= signer.unlockP2PKH();
-      rootOverrides.changeAddress ??= signer.getAddress();
+      const facetLinks = this.bundle.manifest.facets.map((info) => addressToLockScript(facets[info.name].address));
+      const rootOverrides = { ...options };
+      delete rootOverrides.facetOverrides;
+      if (signer) {
+        rootOverrides.funder ??= signer.unlockP2PKH();
+        rootOverrides.changeAddress ??= signer.getAddress();
+      }
+      const root = await new ContractFactory(this.bundle.root, this.runner)
+        .deploy(...rootConstructorArgs, ...facetLinks, ...rootInitArgs, {
+          ...rootOverrides, fundingUtxo: rootFunding, logicalNonce: false,
+        });
+      transactions.push(root.deploymentTransaction());
+      nonceReservation?.commit();
+      return new SplitContract(this.bundle, root, facets, transactions);
+    } catch (error) {
+      nonceReservation?.release();
+      throw error;
     }
-    const root = await new ContractFactory(this.bundle.root, this.runner)
-      .deploy(...constructorArgs, ...facetLinks, { ...rootOverrides, fundingUtxo: rootFunding });
-    transactions.push(root.deploymentTransaction());
-    return new SplitContract(this.bundle, root, facets, transactions);
   }
 
   attach(record: SplitDeploymentRecord, constructorArgs: ConstructorArgument[] = []): SplitContract {
@@ -175,7 +188,10 @@ export class SplitContractBundle {
       facets[info.name] = this.runner instanceof Signer ? attached.connect(this.runner) : attached;
     }
     const links = this.bundle.manifest.facets.map((info) => addressToLockScript(facets[info.name].address));
-    const rootContract = new Contract(this.bundle.root, [...constructorArgs, ...links] as never[], { provider });
+    const rootConstructorCount = this.bundle.root.constructorInputs.length - links.length;
+    const rootContract = new Contract(
+      this.bundle.root, [...constructorArgs.slice(0, rootConstructorCount), ...links] as never[], { provider },
+    );
     const attachedRoot = StatefulContract.withCategory(rootContract, record.rootCategory);
     const root = this.runner instanceof Signer ? attachedRoot.connect(this.runner) : attachedRoot;
     return new SplitContract(this.bundle, root, facets);
@@ -197,13 +213,22 @@ function validateSplitBundle(bundle: SplitArtifactBundle): void {
     if (!artifact || !artifact.delegateOnly || !artifact.brandedLibrary) {
       throw new Error(`Invalid split facet '${info.name}': expected branded delegate-only artifact.`);
     }
-    if (JSON.stringify(artifact.stateLayout ?? {}) !== bundle.manifest.stateLayoutFingerprint) {
+    if (splitStateLayoutFingerprint(artifact.stateLayout) !== bundle.manifest.stateLayoutFingerprint) {
       throw new Error(`Invalid split facet '${info.name}': state layout differs from the logical root.`);
     }
   }
-  if (JSON.stringify(bundle.root.stateLayout ?? {}) !== bundle.manifest.stateLayoutFingerprint) {
+  if (splitStateLayoutFingerprint(bundle.root.stateLayout) !== bundle.manifest.stateLayoutFingerprint) {
     throw new Error('Invalid split bundle: root state layout does not match its manifest fingerprint.');
   }
+}
+
+function splitStateLayoutFingerprint(layout: SplitArtifactBundle['root']['stateLayout']): string {
+  if (!layout) return '{}';
+  // Solidity constructor inputs initialize root state but are not storage offsets and are intentionally absent
+  // from delegate-only facets. Every variable, collection, and struct descriptor must still match exactly.
+  const storageLayout = { ...layout };
+  delete storageLayout.constructorInputs;
+  return JSON.stringify(storageLayout);
 }
 
 function assertSplitRedeemSize(name: string, bytes: number): void {

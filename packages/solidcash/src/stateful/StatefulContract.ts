@@ -952,6 +952,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** Bound signer for automatic transaction funding. Set via `connect(signer)`. */
   _signer?: Signer;
+  /** Signer identity retained for logical nonce parity without changing legacy funding behavior. */
+  _logicalNonceSigner?: Signer;
 
   /**
    * Maximum number of VM probe iterations for auto-derivation.
@@ -1232,6 +1234,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     (sc as StatefulContract)._deployDefaults = { ...this._deployDefaults };
     (sc as StatefulContract)._signer = signer;
+    (sc as StatefulContract)._logicalNonceSigner = signer;
     return sc;
   }
 
@@ -1250,6 +1253,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (sc as StatefulContract)._libraryRegistry.set(name, lib);
     }
     if (this._signer) (sc as StatefulContract)._signer = this._signer;
+    if (this._logicalNonceSigner) (sc as StatefulContract)._logicalNonceSigner = this._logicalNonceSigner;
     return sc;
   }
 
@@ -2887,7 +2891,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const emitInfos = constructorAbi?.emits ?? [];
     const emitCount = emitInfos.length;
 
-    const zeroCommitments = buildInitialStateCommitments(stateLayout, {});
+    // Explicit initial state seeds fields the constructor does not write (for example compiler-injected immutable
+    // block-oracle ownership). Constructor execution still derives and authenticates its writes over this pre-state.
+    const zeroCommitments = buildInitialStateCommitments(stateLayout, options.initialState ?? {});
 
     // Synthetic master UTXO (contract's locking script + minting NFT)
     const syntheticMaster: Utxo = {
@@ -3144,7 +3150,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     return {
-      stateCommitments,
+      // `stateCommitments` contains only constructor-required indices. Return the complete converged state so
+      // untouched, explicitly seeded NFTs are materialized rather than becoming undefined genesis commitments.
+      stateCommitments: currentCommitments,
       entryCommitments: entryCommits,
       eventCommitments: eventCommits,
       transferOutputs: transferOuts,
@@ -8776,6 +8784,7 @@ export class StatefulFunctionCall {
   private callInfos: CallInfo[] = [];
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
+  private consumesLogicalNonce = true;
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -8870,6 +8879,12 @@ export class StatefulFunctionCall {
    */
   emitReturn(): this {
     this.emitReturnFlag = true;
+    return this;
+  }
+
+  /** Internal composition escape: the enclosing top-level SDK operation owns the nonce. */
+  withoutLogicalNonce(): this {
+    this.consumesLogicalNonce = false;
     return this;
   }
 
@@ -9149,6 +9164,19 @@ export class StatefulFunctionCall {
   }
 
   async send(): Promise<TransactionDetails> {
+    const reservation = this.consumesLogicalNonce
+      ? this.parentContract?._logicalNonceSigner?.reserveTransactionNonce() : undefined;
+    try {
+      const result = await this._sendWithoutLogicalNonce();
+      reservation?.commit();
+      return result;
+    } catch (error) {
+      reservation?.release();
+      throw error;
+    }
+  }
+
+  private async _sendWithoutLogicalNonce(): Promise<TransactionDetails> {
     const splitMergeBuilder = await this._trySplitMergeBuild();
     if (splitMergeBuilder) {
       // Split/merge bypass the debug step (covenant scripts don't fully validate

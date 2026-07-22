@@ -520,7 +520,7 @@ export interface SplitManifest {
   abi: readonly AbiFunction[];
   stateLayoutFingerprint: string;
   deploymentMode: 'immutable-one-hop';
-  algorithm: 'state-interference-v1';
+  algorithm: 'state-affinity-best-fit-v2';
   routes: readonly SplitRoute[];
   facets: readonly SplitFacetInfo[];
 }

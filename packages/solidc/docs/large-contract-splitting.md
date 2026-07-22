@@ -41,11 +41,16 @@ bundle. `--split` cannot be combined with raw ASM/hex output.
 The planner runs after imports, inheritance, and modifier expansion. It forms a
 complete internal call closure for every movable entry point, then derives a
 conservative state/effect footprint. Calls are hard colocation edges. Shared
-state is a soft affinity: functions touching the same scalar or possibly-aliasing
-collection region are grouped when the measured facet still fits. Constant,
+state is a soft affinity: the planner tries functions touching the same scalar or
+possibly-aliasing collection region together first. It then best-fit packs
+independent groups when their union fits, reducing duplicated facet masters and
+deployment transactions without weakening the call-closure boundary. Constant,
 distinct mapping keys are treated as disjoint; dynamic keys widen to a wildcard.
-Candidate groups are compiled through the normal optimizer, so the limit is
-decided using emitted bytecode rather than AST estimates.
+Candidate ordering uses cached component sizes, but every accepted union is
+compiled through the normal optimizer, so the limit is decided using emitted
+bytecode rather than an AST or additive estimate. `maxShardBytes` is also the
+packing ceiling; deployments wanting operational headroom can set it below the
+10,000-byte consensus limit.
 
 V1 moves terminal public/external state transitions, including return-valued
 transitions. View/pure functions, fallback/receive, and lifecycle/delegate/unsafe
@@ -158,8 +163,58 @@ All limits fail closed. They should be lifted only with a protocol and tests tha
 preserve the security invariants above.
 
 The Solidity-import Unicrow corpus now passes the split size gate because `pay`
-and its authenticated return channel can move. The measured compilation used
-a roughly 6.9 KB root and seven facets, with the largest facet roughly 9.8 KB.
-These are regression observations rather than stable ABI promises: optimization
-changes can move the exact figures, while every emitted artifact is remeasured
-against the configured limit.
+and its authenticated return channel can move. Against the 23,931.5-byte
+monolith, the oracle-safe affinity/best-fit planner measured a 7,483.5-byte root
+and four facets of 9,696.5, 9,787, 9,450.5, and 3,647.5 bytes: 40,065 bytes
+deployed in total, or 67.42% aggregate bytecode overhead. The earlier
+affinity-only planner emitted seven facets totaling 46,609 bytes (94.76%
+overhead), so packing removes three facet masters and 6,544 deployed bytes. These are regression observations rather
+than stable ABI promises: optimization changes can move the exact figures, while
+every emitted artifact is remeasured against the configured limit. The largest
+default-limit facet has 213 bytes of consensus headroom; production policy
+should choose a lower `maxShardBytes` if upgrade/compiler-growth margin matters.
+
+The exact imported Unicrow constructor does not yet deploy through the SDK even
+as an ordinary unsplit artifact: constructor commitment derivation fails before
+the faceted path can broadcast. The opt-in `SOLIDC_REAL_CORPUS=1` SDK diagnostic
+records that baseline and confirms the split bundle reaches the same constructor
+boundary after layout/link validation. Native escrow transition parity therefore
+remains blocked on that pre-existing constructor-runtime gap, not on facet routing.
+
+## Hardhat-compatible deployment sequencing
+
+The unchanged Effective Acceleration marketplace test is the integration target.
+Its Unicrow fixture reads one signer nonce, predicts four CREATE identities, then
+deploys four contracts in that exact order with circular peer addresses. These
+identities remain security-relevant: the contracts later use them as typed call
+targets and compare them with contract-origin `msg.sender`.
+
+SolidCash models the EVM account nonce as a signer-local **logical transaction
+nonce**. It advances once for each user-visible transaction initiated by that
+signer: a deployment, `deployProxy`, stateful function send, or value transfer.
+A composite BCH implementation may broadcast several transactions, but facet
+staging, proxy implementation deployment, root funding preparation, and other
+subordinate transactions execute under the parent's reservation and do not
+advance it independently. Reads, static calls, and transaction construction do
+not consume a nonce. A failure before broadcast releases its reservation.
+
+Mock-network accounts follow Hardhat's lifecycle: the provider derives and funds
+configured accounts once, caches one signer object per mnemonic/path/index, and
+`getSigner(i)` and repeated `getSigners()` calls return those same objects. A
+fixture snapshot captures both UTXO state and signer nonce state. Network reset
+creates a fresh account set and nonce sequence. Cross-process reconstruction
+from BCH address history is deliberately not attempted: incoming payments and
+internal funding transactions make history length different from an EVM nonce.
+
+Genesis-eligible funding inputs are prepared by each deployment, not by a global
+deployment planner. An ordinary contract, split root plus all facets, or flattened
+split proxy consumes one logical nonce. Facets have physical categories but no
+Solidity-visible CREATE identity and never perturb deployment order.
+
+The current `ethers` CREATE shim deterministically derives a logical address from
+`(signer address, nonce)`. Completing native interlinked deployment additionally
+requires the deployed root to bind that identity to its category, Hardhat factory
+lookup to load split bundles transparently, typed external calls to resolve the
+root binding, and contract-origin `msg.sender` to authenticate and expose the same
+logical identity. Hash-derived placeholders without this binding are not sufficient
+for peer authorization.

@@ -606,27 +606,66 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     return unsplitBundle(baseline, plans);
   }
 
-  // Hard-union entries that call one another. State overlap across independent entry points is a soft affinity:
-  // attempt the merge only when the resulting real facet remains below the limit.
+  // Hard-union entries that call one another. Then pack the atomic groups by two objectives: preserve state/effect
+  // affinity first, and minimize facet count second. Candidate ordering uses cached component sizes as a cheap
+  // best-fit heuristic; acceptance always compiles the union and checks its actual optimized bytecode, including
+  // shared helpers and delegate covenant overhead. This avoids eagerly recompiling every pair on every round.
   let groups = hardClosureGroups(plans);
+  const measuredBytes = new Map<string, number>();
+  const groupKey = (group: PlannedFunction[]): string => group.map((plan) => plan.name).sort().join(',');
+  const measure = (group: PlannedFunction[]): number => {
+    const key = groupKey(group);
+    const cached = measuredBytes.get(key);
+    if (cached !== undefined) return cached;
+    const bytes = byteSize(compileFacet(code, merged, errorListener, group, 'ProbeFacet'));
+    measuredBytes.set(key, bytes);
+    return bytes;
+  };
+  // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
+  // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
   let mergedAffinity = true;
   while (mergedAffinity) {
     mergedAffinity = false;
-    const affinityPairs: Array<[number, number, number]> = [];
+    const candidates: Array<{
+      affinity: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+    }> = [];
     for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
-      affinityPairs.push([stateAffinity(groups[i], groups[j]), i, j]);
+      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+      const affinity = stateAffinity(groups[i], groups[j]);
+      if (affinity > 0) candidates.push({
+        affinity, left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+      });
     }
-    affinityPairs.sort((a, b) => b[0] - a[0] || a[1] - b[1] || a[2] - b[2]);
-    for (const [score, leftIndex, rightIndex] of affinityPairs) {
-      if (score === 0) break;
-      const candidate = uniquePlans([...groups[leftIndex], ...groups[rightIndex]]);
-      const candidateArtifact = compileFacet(code, merged, errorListener, candidate, 'ProbeFacet');
-      if (byteSize(candidateArtifact) <= maxShardBytes) {
-        groups[leftIndex] = candidate;
-        groups.splice(rightIndex, 1);
-        mergedAffinity = true;
-        break;
-      }
+    candidates.sort((a, b) => b.affinity - a.affinity || a.key.localeCompare(b.key));
+    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+    if (selected) {
+      groups[selected.left] = selected.plans;
+      groups.splice(selected.right, 1);
+      mergedAffinity = true;
+    }
+  }
+
+  // Phase two reduces facet count. At this smaller frontier, deterministic best-fit tries the fullest estimated
+  // union first, while the cached real compilation remains the acceptance authority.
+  let packed = true;
+  while (packed) {
+    packed = false;
+    const candidates: Array<{
+      estimate: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+    }> = [];
+    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+      candidates.push({
+        estimate: measure(groups[i]) + measure(groups[j]),
+        left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+      });
+    }
+    candidates.sort((a, b) => b.estimate - a.estimate || a.key.localeCompare(b.key));
+    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+    if (selected) {
+      groups[selected.left] = selected.plans;
+      groups.splice(selected.right, 1);
+      packed = true;
     }
   }
 
@@ -668,8 +707,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     manifest: {
       logicalContractName: logicalName,
       abi: baseline.abi,
-      stateLayoutFingerprint: JSON.stringify(baseline.stateLayout ?? {}),
-      deploymentMode: 'immutable-one-hop', algorithm: 'state-interference-v1', routes,
+      stateLayoutFingerprint: splitStateLayoutFingerprint(baseline.stateLayout),
+      deploymentMode: 'immutable-one-hop', algorithm: 'state-affinity-best-fit-v2', routes,
       facets: facetRecords.map((f) => ({
         name: f.name, functions: f.plans.map((p) => p.name), brandArgument: '__brand',
         linkArgument: f.link, delegateOnly: true, estimatedRedeemBytes: byteSize(f.artifact),
@@ -680,14 +719,20 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
 
 function byteSize(artifact: Artifact): number { return artifact.bytecode.length / 2; }
 function emptyFootprint(): SplitStateFootprint { return { reads: [], writes: [], effects: [], unknown: false }; }
+function splitStateLayoutFingerprint(layout: Artifact['stateLayout']): string {
+  if (!layout) return '{}';
+  const storageLayout = { ...layout };
+  delete storageLayout.constructorInputs;
+  return JSON.stringify(storageLayout);
+}
 
 function unsplitBundle(root: Artifact, plans: PlannedFunction[]): SplitArtifactBundle {
   return {
     format: 'solidcash-split-v1', root, facets: {},
     manifest: {
       logicalContractName: root.contractName, abi: root.abi,
-      stateLayoutFingerprint: JSON.stringify(root.stateLayout ?? {}),
-      deploymentMode: 'immutable-one-hop', algorithm: 'state-interference-v1',
+      stateLayoutFingerprint: splitStateLayoutFingerprint(root.stateLayout),
+      deploymentMode: 'immutable-one-hop', algorithm: 'state-affinity-best-fit-v2',
       routes: (root.abi as readonly any[]).map((fn) => ({
         selector: fn.selector ?? '', function: fn.name, target: 'root' as const,
         footprint: plans.find((p) => p.name === fn.name)?.footprint ?? emptyFootprint(),
@@ -831,6 +876,9 @@ function prepareSplitAst(
   ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
   ast = expandInheritance(ast);
   ast = expandModifiers(ast);
+  // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
+  // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
+  ast = ast.accept(new SynthesizeBlockOracle()) as Ast;
   return ast;
 }
 

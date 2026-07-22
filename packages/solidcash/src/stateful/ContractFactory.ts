@@ -22,6 +22,8 @@ export interface DeployContractOptions {
   threadCount?: number;
   initialBalance?: bigint;
   initArgs?: DeployOptions['initArgs'];
+  /** Internal composition escape: a split/proxy parent owns the one logical transaction nonce. */
+  logicalNonce?: false;
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -132,20 +134,30 @@ export class ContractFactory<T extends Artifact = Artifact> {
       throw new Error('ContractFactory.deploy needs a funder + changeAddress (from a Signer runner or overrides).');
     }
 
-    const result = await StatefulContract.deploy<T>(this.artifact, constructorArgs, {
-      provider,
-      fundingUtxo,
-      funder,
-      changeAddress,
-      initialState: overrides.initialState as DeployOptions['initialState'],
-      fee: overrides.fee,
-      addressType: overrides.addressType,
-      threadCount: overrides.threadCount,
-      initialBalance: overrides.initialBalance,
-      initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
-    });
+    const nonceReservation = signer && overrides.logicalNonce !== false
+      ? signer.reserveTransactionNonce() : undefined;
+    let result: Awaited<ReturnType<typeof StatefulContract.deploy<T>>>;
+    try {
+      result = await StatefulContract.deploy<T>(this.artifact, constructorArgs, {
+        provider,
+        fundingUtxo,
+        funder,
+        changeAddress,
+        initialState: overrides.initialState as DeployOptions['initialState'],
+        fee: overrides.fee,
+        addressType: overrides.addressType,
+        threadCount: overrides.threadCount,
+        initialBalance: overrides.initialBalance,
+        initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
+      });
+      nonceReservation?.commit();
+    } catch (error) {
+      nonceReservation?.release();
+      throw error;
+    }
 
     const contract = result.contract as DeployedContract<T>;
+    if (signer) (contract as StatefulContract)._logicalNonceSigner = signer;
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
     const awaitDeployed = async (): Promise<DeployedContract<T>> => {

@@ -15,6 +15,7 @@ import {
   MappingAccessNode,
   MappingAssignNode,
   MappingDeleteNode,
+  MappingFieldAssignNode,
   ArrayAccessNode,
   ArrayAssignNode,
   ArrayPushNode,
@@ -23,10 +24,13 @@ import {
   NullaryOpNode,
   VariableDefinitionNode,
   AssignNode,
+  FieldAccessNode,
+  FunctionCallNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
-import { MappingType, ArrayType, Type } from '@solidcash/utils';
+import { MappingType, ArrayType, StructType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
 
 const PREFIX = '__c2cache_';
 
@@ -88,6 +92,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // reverts. Read-once/mutate-local/write-once (a single upsert) fixes it. Gated on `sorted` (the default entry
   // model has its own write-in-loop handling); depth 1 only.
   private scalarMappings: Map<string, Type> = new Map();
+  private structMappings: Map<string, StructType> = new Map();
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -98,13 +103,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.arrayMappings = new Map();
     this.scalarMappings = new Map();
+    this.structMappings = new Map();
     for (const col of node.collections) {
       if (col.type instanceof MappingType && col.depth === 1) {
         if (col.innermostValueType instanceof ArrayType) this.arrayMappings.set(col.name, col.innermostValueType);
-        else if (col.sorted) this.scalarMappings.set(col.name, col.innermostValueType);
+        else if (col.sorted && col.innermostValueType instanceof StructType) {
+          this.structMappings.set(col.name, col.innermostValueType);
+        } else if (col.sorted) this.scalarMappings.set(col.name, col.innermostValueType);
       }
     }
-    if (this.arrayMappings.size === 0 && this.scalarMappings.size === 0) return node;
+    if (this.arrayMappings.size === 0 && this.scalarMappings.size === 0 && this.structMappings.size === 0) return node;
     for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
       if (fn?.body) this.transformFunction(fn);
     }
@@ -114,7 +122,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private transformFunction(fn: FunctionDefinitionNode): void {
     for (const e of this.collectCacheableEntries(fn.body)) {
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
-      new EntryRedirect(e.mapping, e.key, local).visit(fn.body);
+      new EntryRedirect(e.mapping, e.key, local, e.valueType).visit(fn.body);
       const cacheRead = new MappingAccessNode(e.mapping, [buildKeyNode(e.key, fn.body.location)]); // T[] local = m[k];
       cacheRead.fromModifier = e.fromModifier;
       cacheRead.location = fn.body.location;
@@ -205,6 +213,15 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (n instanceof MappingDeleteNode && this.scalarMappings.has(n.name)) {
         const e = get(n.name, n.keys[0]); if (e) e.bad = true;
       }
+      if (n instanceof MappingFieldAssignNode && this.structMappings.has(n.name)) {
+        const e = get(n.name, n.keys[0]);
+        if (e) {
+          e.fromModifier ??= n.fromModifier;
+          e.count += 1;
+          e.written = true;
+          if (inLoop) e.inLoop = true;
+        }
+      }
       const nowLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
       for (const key of Object.keys(n)) {
         if (key === 'location') continue;
@@ -216,12 +233,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     scan(body, false);
     const out: Array<{ mapping: string; key: KeyKind; valueType: Type; fromModifier?: string }> = [];
     for (const e of info.values()) {
-      if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite)) continue;
+      if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite || this.structMappings.has(e.mapping))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
       if (e.key.kind === 'id' && this.assignsName(body, e.key.name)) continue;
       out.push({
         mapping: e.mapping, key: e.key,
-        valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping))!,
+        valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)
+          ?? this.structMappings.get(e.mapping))!,
         fromModifier: e.fromModifier,
       });
     }
@@ -295,7 +313,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 // m[k][j]=v / .push / .pop are MappingAssignNodes -> local array ops; READS m[k] / m[k][j] are ArrayAccessNodes
 // (bottoming out at IdentifierNode(m)) -> local / local[j].
 class EntryRedirect extends AstTraversal {
-  constructor(private mapping: string, private key: KeyKind, private local: string) { super(); }
+  constructor(
+    private mapping: string, private key: KeyKind, private local: string, private valueType: Type,
+  ) { super(); }
 
   private entryIndex(node: MappingAccessNode | MappingAssignNode): Node | undefined {
     if (node.arrayIndex) return node.arrayIndex;
@@ -359,6 +379,23 @@ class EntryRedirect extends AstTraversal {
       return asgn;
     }
     return visited;
+  }
+
+  visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    const visited = super.visitMappingFieldAssign(node) as MappingFieldAssignNode;
+    if (!(visited instanceof MappingFieldAssignNode) || !this.matches(visited.name, visited.keys)) return visited;
+    if (!(this.valueType instanceof StructType) || (visited.trailingMembers?.length ?? 0) > 0) return visited;
+    const args = this.valueType.fields.map((field) => {
+      if (field.name === visited.fieldName) return cloneNode(visited.expression) as typeof visited.expression;
+      const base = new IdentifierNode(this.local); base.location = visited.location;
+      const read = new FieldAccessNode(base, field.name); read.location = visited.location;
+      return read;
+    });
+    const ctorName = new IdentifierNode(this.valueType.name); ctorName.location = visited.location;
+    const rebuilt = new FunctionCallNode(ctorName, args); rebuilt.location = visited.location;
+    const local = new IdentifierNode(this.local); local.location = visited.location;
+    const write = new AssignNode(local, rebuilt); write.location = visited.location;
+    return write;
   }
 
   visitArrayAssign(node: ArrayAssignNode): Node {

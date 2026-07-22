@@ -9,7 +9,6 @@ import { createTestProvider } from '../test-util.js';
 // whole-field writes to the same C2 mapping entry are collapsed to one entry read + one whole-struct write. Each
 // `chk*` reads the stored entry back and requires the exact values on the VM, so a miscompile fails the spend.
 describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
-  const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
   const SRC = `contract C() {
@@ -31,6 +30,7 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
   }`;
 
   const setup = async (): Promise<Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'] & { fund: () => Promise<void> } | any> => {
+    const provider = createTestProvider();
     const art = compileString(SRC);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x9c00;

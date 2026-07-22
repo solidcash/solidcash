@@ -295,6 +295,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     valueArrayOffset?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
+  // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
+  sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];

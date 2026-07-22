@@ -201,32 +201,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // into the derived contract's functions too.
   ast = lowerTransientStateVars(ast);
 
-  // C2 opt-in: mark the requested mappings to use the sorted-linked-list backend (provable non-existence). See
-  // docs/sorted-mapping-c2.md. Only affects the named collections; all others keep the default entry model.
-  // C2 is the DEFAULT: every mapping whose VALUE type C2 can store is C2-backed (exclusion-proof reads = Solidity
-  // parity). This now covers ALL value types including large ones - scalars, bytesN, enum, address, unbounded
-  // bytes/string, structs, and arrays (fixed T[N] or dynamic T[]) - because any variable-width value chunks
-  // off-commitment (P5b). A struct with a mapping/array field is field-decomposed into per-field C2 collections.
-  // Opt the whole contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings).
-  // ARRAYS ARE C2-BY-DEFAULT (EVM parity): the EVM makes EVERY storage read unforgeable, incl. an array
-  // length/presence guard `require(m[k].length == 0)` (the trie commits the length slot to 0 - the entry model
-  // can't prove absent-vs-withheld, so that guard would be omission-forgeable). Large arrays chunk off-commitment
-  // (P5b), matching the EVM's unbounded arrays. Enums too (an enum = int with a meaningful 0th-member default).
-  const c2StorableValue = (vt: Type): boolean => (
-    vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
-    || vt instanceof EnumType || vt instanceof ArrayType
-    || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
-    // Internal fn-ptr = an immutable integer functionId (the 'int' kind); C2 gives its dispatch table exclusion-proof
-    // reads. External fn-ptr as a mapping value stays fail-closed at type-check (isValidStateType), never marked here.
-    || (vt instanceof FunctionType && !vt.isExternal)
-  );
-  if (mergedCompilerOptions.sortedMappingsAll !== false) {
-    for (const col of ast.contract.collections) {
-      if (col.type instanceof MappingType && c2StorableValue(col.innermostValueType)) col.sorted = true;
-    }
-  } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
-    const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
-    for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;
+  // Every mapping uses the authenticated C2 backend. There is no omission-prone legacy mapping fallback.
+  for (const col of ast.contract.collections) {
+    if (col.type instanceof MappingType) col.sorted = true;
   }
 
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc

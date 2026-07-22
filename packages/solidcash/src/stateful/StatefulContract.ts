@@ -5513,6 +5513,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');
+          const isSoftDelete = abiFunction?.blockLayout?.slots.some(
+            (s) => s.kind === 'entry' && s.slotIndex === slotIndex && s.softDelete,
+          ) ?? false;
           const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
             keyValue: kv as bigint | boolean | Uint8Array, exists: true,
@@ -5526,6 +5529,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
             if (present) {
               entryNfts.push({ ...entryBase, utxo: { ...list.find(slot)!.utxo, unlocker: wUnlocker } });
+            } else if (isSoftDelete) {
+              // A branch-lowered delete is existence-gated. For an absent key its block slot must remain a plain
+              // funder and produce no entry output; inserting a default-valued C2 node would mutate a no-op path.
+              entryNfts.push({ ...entryBase, exists: false, utxo: undefined });
             } else {
               const plan = list.planInsert(slot);
               entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
@@ -5881,12 +5888,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const condSoftDeleteSlots = new Set<number>();
     if (entryAccesses) {
       for (let i = 0; i < entryAccesses.length; i++) {
-        if (!entryAccesses[i].operations.includes('delete')) continue;
         const softDelete = abiFunction?.blockLayout?.slots.some(
           (s) => s.kind === 'entry' && s.slotIndex === i && s.softDelete,
         );
-        if (softDelete) condSoftDeleteSlots.add(i);
-        else entryDeleteSlots.add(i);
+        if (softDelete) {
+          condSoftDeleteSlots.add(i);
+        } else if (entryAccesses[i].operations.includes('delete')) {
+          entryDeleteSlots.add(i);
+        }
       }
     }
 

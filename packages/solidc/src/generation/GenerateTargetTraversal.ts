@@ -11849,6 +11849,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets
     // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
+      const slotIndex = node.entrySlotIndex;
+      if (this.condDeleteSlots.has(slotIndex)) {
+        // Conditional C2 delete: the preallocated key register contains the complete input commitment so the
+        // untaken path preserves it exactly. On the taken path authenticate H(key) against input.slot, retain
+        // input.slot||input.next as the commitment prefix, and replace only the value tail with the type default.
+        // This must run before the ordinary sorted upsert path: emitting both mechanisms for one slot corrupts
+        // the tracked stack and attempts two incompatible transitions.
+        const collection = node.collection;
+        const loc = { location: node.location, positionHint: PositionHint.END };
+        this.emitSortedKeyHash(node, slotIndex, loc); // [Hk]
+        this.emit(Op.OP_DUP, loc);                    // [Hk, Hk]
+        this.emitEntryInputIndex(slotIndex, loc, 2);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);    // [Hk, Hk, commitment]
+        this.emit(encodeInt(32n), loc);
+        this.emit(Op.OP_SPLIT, loc);                  // [Hk, Hk, slot, rest]
+        this.emit(Op.OP_DROP, loc);                   // [Hk, Hk, slot]
+        this.emit(Op.OP_EQUALVERIFY, loc);            // [Hk]
+        this.emit(Op.OP_DROP, loc);                   // []
+
+        this.emitEntryInputIndex(slotIndex, loc, 0);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        this.emit(encodeInt(64n), loc);
+        this.emit(Op.OP_SPLIT, loc);                  // [slot||next, oldValue]
+        this.emit(Op.OP_DROP, loc);                   // [slot||next]
+        this.pushToStack('(value)');
+        this.emitReplace(this.getStackIndex(`__entry_key_enc_${slotIndex}`), node);
+        this.popFromStack();
+
+        const vt = collection.innermostValueType;
+        this.emitDefaultValue(loc, vt);
+        this.pushToStack('(value)');
+        if (this.isChunkableValue(vt)) this.emitChunkableValueTail(loc);
+        else if (this.sortedValueKind(vt) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+        this.emitReplace(this.getStackIndex(`__entry_value_enc_${slotIndex}`), node);
+        this.popFromStack();
+        return node;
+      }
       // Per-iteration DELETE loop `for(i) delete m[k[i]]` (batch nullify): route to the upsert loop (op=delete) - each
       // iteration co-spends k[i]'s existing entry + mints it nullified (value = default); absent keys fail closed.
       if (this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === node.collection.name) {

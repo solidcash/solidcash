@@ -317,3 +317,18 @@ the derive path is the user's active C2 WIP (memory ea_deploy_wall "do NOT touch
 paths.artifacts to the stub `artifacts/` (the debugging setup); artifacts-real/ is kept for when large-contract
 deploy lands. **So: cross-compilation is 15/15 (real Solidity -> BCH); the runtime deploy of the LARGE real contracts
 is gated on BCH's 10 KB script/stack limit + the user's C2 derive WIP.**
+
+## 2026-07-22 - sharded-artifact integration resumed against upstream sources
+The harness now points directly at `/Code/effectiveacceleration.ai/contract/contracts` and `artifacts-real`; no
+contract or test source is edited. Project compilation selects `<Contract>.split.json` automatically for oversized
+artifacts. Exercising real OZ inheritance found and fixed two generic planner defects:
+
+- Synthetic facets no longer revalidate already-resolved `override(Base)` metadata after the flattened contract is
+  renamed. This unblocked OZ's `override(Nonces)` path.
+- Compiler-generated maintenance entry points such as `__updateBlockOracle` remain root-owned rather than being
+  treated as user-facing movable shards.
+
+The next sharding level is now explicit: entry-point-only facets are insufficient for the real OZ contracts.
+`EACCToken.approve` alone produces a 14,992-byte facet, and FakeToken currently exposes inherited-constructor/helper
+pruning (`_mint` becomes unresolved in a synthetic facet). The next implementation step is safe intra-entry helper
+partitioning/pruning; ordinary whole-project cross-compilation remains 15/15.

@@ -11,9 +11,13 @@ type StateReturnTypeMap = {
 
 // Process a single state variable definition into its getter return type.
 type ProcessStateVariable<Variable> = Variable extends { type: infer Type }
-  ? Type extends keyof StateReturnTypeMap
-    ? StateReturnTypeMap[Type]
-    : any
+  ? Type extends `int${number}` | `uint${number}` | `fixed${string}` | `ufixed${string}`
+    ? bigint
+    : Type extends 'uint' | 'bigint' | 'fixed' | 'ufixed'
+      ? bigint
+      : Type extends keyof StateReturnTypeMap
+        ? StateReturnTypeMap[Type]
+        : any
   : any;
 
 // Process a single state variable into a getter mapping.

@@ -53,8 +53,13 @@ export {
   defineConfig, resolveConfig, loadConfig, findConfigFile, findHardhatConfigFile, migrateHardhatConfig,
 } from './config.js';
 export type {
-  SolidcashConfig, ResolvedConfig, NetworkConfig, AccountsConfig,
+  SolidcashConfig, ResolvedConfig, NetworkConfig, AccountsConfig, TypegenConfig,
 } from './config.js';
+
+export { generateTypechainTargets } from './typegen.js';
+export type {
+  TypegenTarget, TypegenTargetConfig, GenerateTypechainOptions, TypegenResult,
+} from './typegen.js';
 
 // Network helpers (also available at solidcash/network-helpers)
 export {

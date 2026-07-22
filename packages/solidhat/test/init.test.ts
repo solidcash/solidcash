@@ -36,6 +36,7 @@ describe('initializeProject', () => {
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
     expect(pkg.devDependencies['@solidcash/solidhat']).toBe('^0.13.0');
     expect(pkg.scripts['solidhat:compile']).toBe('solidhat compile');
+    expect(pkg.scripts['solidhat:typegen']).toBe('solidhat typegen');
   });
 
   it('documents and scaffolds the JavaScript/pnpm template accurately', () => {
@@ -120,6 +121,7 @@ describe('initializeProject', () => {
 
     expect(result.updated).toContain(join(directory, 'solidcash.config.ts'));
     expect(readFileSync(join(directory, 'solidcash.config.ts'), 'utf8')).toContain('defineConfig');
+    expect(readFileSync(join(directory, 'solidcash.config.ts'), 'utf8')).toContain("target: 'ethers6'");
   });
 
   it('rolls back earlier files if an atomic replacement fails', () => {

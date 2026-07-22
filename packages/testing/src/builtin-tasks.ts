@@ -11,6 +11,7 @@ import type { HardhatRuntimeEnvironment } from './hre.js';
 import { compileSolidityProject } from './project-compiler.js';
 import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
+import { generateTypechainTargets } from './typegen.js';
 
 // Recursively collect `.sol` sources, skipping vendored dependency trees (node_modules + `@scope` package dirs like
 // @openzeppelin / @sablier) - those are resolved as imports by compileFileMulti, not compiled as top-level targets.
@@ -92,6 +93,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       for (const [name, artifact] of Object.entries(result.artifacts)) {
         writtenNames.add(name);
         fs.writeFileSync(path.join(outputDir, `${name}.json`), formatArtifact(artifact as any, 'json'));
+        fs.writeFileSync(path.join(outputDir, `${name}.artifact.ts`), formatArtifact(artifact as any, 'ts'));
         contracts++;
       }
       solOk = solFiles.length;
@@ -115,11 +117,31 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     }
     fs.rmSync(artifactsDir, { recursive: true, force: true });
     fs.renameSync(outputDir, artifactsDir);
+    const typegen = generateTypechainTargets({
+      artifactsDir,
+      contractsDir,
+      cacheDir: path.join(hre.config.paths.cache, 'solidcash'),
+      targets: hre.config.typegen.targets,
+    });
     const totalFiles = files.length + solFiles.length;
     if (!args.quiet) console.log(`Compiled ${ok + solOk}/${totalFiles} file(s), ${contracts} contract artifact(s).`);
     return {
-      compiled: ok + solOk, total: totalFiles, contracts, compilerJobs, cacheHits,
+      compiled: ok + solOk, total: totalFiles, contracts, compilerJobs, cacheHits, typegen,
     };
+  });
+
+task('typegen', 'Generate TypeChain-compatible contract bindings from compiled artifacts')
+  .setAction(async (_args, hre: HardhatRuntimeEnvironment) => {
+    const results = generateTypechainTargets({
+      artifactsDir: solidcashArtifactsPath(hre.config.paths.artifacts),
+      contractsDir: path.resolve(hre.config.paths.contracts),
+      cacheDir: path.join(hre.config.paths.cache, 'solidcash'),
+      targets: hre.config.typegen.targets,
+    });
+    for (const result of results) {
+      console.log(`${result.skipped ? 'Reused' : 'Generated'} ${result.target} bindings in ${result.outDir}`);
+    }
+    return results;
   });
 
 task('init', 'Create SolidCash configuration')
@@ -157,7 +179,8 @@ task('clean', 'Delete the artifacts directory')
     const cacheDir = path.join(hre.config.paths.cache, 'solidcash');
     fs.rmSync(artifactsDir, { recursive: true, force: true });
     fs.rmSync(cacheDir, { recursive: true, force: true });
-    console.log(`Removed ${artifactsDir} and ${cacheDir}`);
+    for (const target of hre.config.typegen.targets) fs.rmSync(target.outDir, { recursive: true, force: true });
+    console.log(`Removed ${artifactsDir}, ${cacheDir}, and configured generated bindings`);
   });
 
 task('node', 'Info about the in-process mock network (no separate server needed)')

@@ -7,6 +7,7 @@
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
+import type { TypegenTarget } from './typegen.js';
 
 export interface NetworkConfig {
   /** Which provider backs this network. */
@@ -22,6 +23,10 @@ export interface AccountsConfig {
   initialIndex?: number;
   /** Per-account funding on mock/regtest, in satoshis. */
   satoshis?: bigint;
+}
+
+export interface TypegenConfig {
+  targets: readonly { target: TypegenTarget; layout?: 'typechain'; outDir?: string }[];
 }
 
 export interface SolidcashConfig {
@@ -40,6 +45,8 @@ export interface SolidcashConfig {
   solc?: Record<string, unknown>;
   /** Compiler options passed through to solidc. Preferred over the legacy `solc` name. */
   compiler?: Record<string, unknown>;
+  /** Optional generated TypeChain-compatible bindings. */
+  typegen?: TypegenConfig;
 }
 
 /** Fully-resolved config (defaults applied). */
@@ -51,6 +58,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
+  typegen: { targets: { target: TypegenTarget; layout: 'typechain'; outDir: string }[] };
 }
 
 /** Typed identity helper for `solidcash.config.ts` (mirrors hardhat `defineConfig`). */
@@ -67,6 +75,8 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     return baseDir ? resolve(baseDir, value) : value;
   };
   const compiler = config.compiler ?? config.solc;
+  const configuredTargets = config.typegen?.targets ?? [];
+  const multipleTargets = configuredTargets.length > 1;
   return {
     paths: {
       contracts: resolvePath(config.paths?.contracts, 'contracts'),
@@ -82,6 +92,15 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     accounts: config.accounts,
     solc: compiler,
     compiler,
+    typegen: {
+      targets: configuredTargets.map((target) => ({
+        target: target.target,
+        layout: target.layout ?? 'typechain',
+        outDir: resolvePath(
+          target.outDir, multipleTargets ? `typechain-types-${target.target}` : 'typechain-types',
+        ),
+      })),
+    },
   };
 }
 

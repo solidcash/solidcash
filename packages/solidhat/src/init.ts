@@ -52,6 +52,7 @@ function mergePackageJson(current: Record<string, any>, typescript: boolean): Re
   const scripts = { ...(current.scripts ?? {}) };
   const desiredScripts: Record<string, string> = {
     'solidhat:compile': 'solidhat compile',
+    'solidhat:typegen': 'solidhat typegen',
     'solidhat:test': 'solidhat test',
     'solidhat:clean': 'solidhat clean',
   };
@@ -65,9 +66,9 @@ function mergePackageJson(current: Record<string, any>, typescript: boolean): Re
   return { ...current, private: current.private ?? true, scripts, devDependencies };
 }
 
-function configTemplate(extension: 'ts' | 'js'): string {
+function configTemplate(extension: 'ts' | 'js', target: CompatibilityTarget): string {
   const annotation = extension === 'ts' ? "import { defineConfig } from '@solidcash/solidhat/config';" : "import { defineConfig } from '@solidcash/solidhat/config';";
-  return `${annotation}\n\nexport default defineConfig({\n  paths: {\n    contracts: 'contracts',\n    artifacts: 'artifacts',\n    cache: 'cache',\n    tests: 'test',\n  },\n  compiler: { solidityImportCompat: true },\n  networks: { mock: { type: 'mock' } },\n  defaultNetwork: 'mock',\n});\n`;
+  return `${annotation}\n\nexport default defineConfig({\n  paths: {\n    contracts: 'contracts',\n    artifacts: 'artifacts',\n    cache: 'cache',\n    tests: 'test',\n  },\n  compiler: { solidityImportCompat: true },\n  typegen: {\n    targets: [{ target: 'ethers${target.ethers}', layout: 'typechain', outDir: 'typechain-types' }],\n  },\n  networks: { mock: { type: 'mock' } },\n  defaultNetwork: 'mock',\n});\n`;
 }
 
 function dependencyMajor(pkg: Record<string, any>, name: string): number | undefined {
@@ -103,7 +104,7 @@ function projectReadme(
   const install = manager === 'yarn' ? 'yarn' : `${manager} install`;
   const run = (script: string): string => (manager === 'npm' ? `npm run ${script}` : `${manager} ${script}`);
   const extension = template === 'javascript' ? 'js' : 'ts';
-  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nsolidcash.config.${extension}        Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ncache/solidcash/            Incremental compilation cache\n\`\`\`\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph and reuses unchanged cached roots.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:clean')}\` removes only \`artifacts/solidcash\` and \`cache/solidcash\`.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
+  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nsolidcash.config.${extension}        Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ntypechain-types/            Generated Ethers ${target.ethers} contract bindings\ncache/solidcash/            Incremental compilation cache\n\`\`\`\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph, reuses unchanged roots, and updates bindings.\n- \`${run('solidhat:typegen')}\` regenerates bindings from existing artifacts.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:clean')}\` removes generated artifacts, cache data, and configured bindings.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
 }
 
 function gitignore(current = ''): string {
@@ -205,7 +206,7 @@ export function initializeProject(options: InitOptions = {}): InitResult {
   }
 
   const configName = typescript ? 'solidcash.config.ts' : 'solidcash.config.js';
-  planFile(plans, skipped, join(directory, configName), configTemplate(typescript ? 'ts' : 'js'), options.force ?? false);
+  planFile(plans, skipped, join(directory, configName), configTemplate(typescript ? 'ts' : 'js', compatibility), options.force ?? false);
   planFile(
     plans,
     skipped,

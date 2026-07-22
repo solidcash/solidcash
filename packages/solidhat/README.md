@@ -66,6 +66,7 @@ The initializer adds namespaced package scripts:
 
 ```sh
 npm run solidhat:compile
+npm run solidhat:typegen
 npm run solidhat:test
 npm run solidhat:clean
 ```
@@ -74,9 +75,12 @@ The CLI can also be invoked directly:
 
 ```sh
 npx solidhat compile
+npx solidhat typegen
 npx solidhat test
 npx solidhat clean
 ```
+
+When `typegen.targets` are configured, `solidhat compile` updates TypeChain-compatible bindings after artifacts are committed. `solidhat typegen` regenerates them from existing artifacts. Generation is content-addressed and atomically replaces only its configured output directory.
 
 `solidhat test` compiles the project first, matching Hardhat's normal test workflow. Compilation resolves the full
 source dependency graph, reuses cached roots whose content and effective compiler configuration are unchanged,
@@ -97,6 +101,9 @@ export default defineConfig({
   },
   compiler: {
     solidityImportCompat: true,
+  },
+  typegen: {
+    targets: [{ target: 'ethers6', layout: 'typechain', outDir: 'typechain-types' }],
   },
   networks: {
     mock: { type: 'mock' },

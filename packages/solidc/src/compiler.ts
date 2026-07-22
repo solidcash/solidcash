@@ -164,7 +164,9 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
-function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: CompilerOptions): Artifact {
+function compileResolvedAst(
+  ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
+): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -453,6 +455,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // msg.data is only reconstructible at an entry point, so a dead one would fail the whole compile. Conservative
   // by name (every non-internal method is a root), so nothing live is dropped.
   ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
+
+  // Facets are deployed as branded delegate-only libraries and never execute the logical contract's constructor.
+  // Several normalization passes can synthesize or reconstruct a constructor after inheritance flattening, so
+  // enforce omission at the semantic boundary rather than relying only on the early facet mutation.
+  if (omitConstructor) ast.contract.constructorDef = undefined;
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -925,7 +932,7 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
     const noop = new FunctionDefinitionNode('__split_noop', [], body); noop.location = contract.location;
     noop.modifiers = [FunctionModifier.PUBLIC, FunctionModifier.DELEGATE]; contract.functions.push(noop);
   }
-  const artifact = compileResolvedAst(ast, code, options);
+  const artifact = compileResolvedAst(ast, code, options, true);
   artifact.delegateOnly = true;
   return artifact;
 }
@@ -936,6 +943,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
   // the VM limit. Preserve helpers reachable from root-local entries and the constructor.
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of contract.functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+  if (contract.constructorDef) byName.set(contract.constructorDef.name, [contract.constructorDef]);
   const rootHelpers = new Set<string>();
   const roots = contract.functions.filter((fn) => fn.isEntryPoint && !routes.has(fn.name));
   if (contract.constructorDef) roots.push(contract.constructorDef);

@@ -166,6 +166,23 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.routes.find((route) => route.function === '__updateBlockOracle')?.target).toBe('root');
   });
 
+  it('does not compile the logical constructor into inherited-function facets', () => {
+    const bundle = compileStringSplit(`
+      contract Base() {
+        int total;
+        function _mint(int v) internal { this.total = v; require(v >= 0); }
+        function transfer(int v) public { this.total = v; require(v >= 0); }
+      }
+      contract Derived() is Base() {
+        constructor(int supply) { _mint(supply); }
+        function burn(int v) public { this.total = this.total - v; require(v >= 0); }
+      }
+    `, { forceSplit: true });
+    expect(Object.values(bundle.facets).every((facet) => facet.constructorInputs
+      .every((input) => input.name !== 'supply'))).toBe(true);
+    expect(bundle.manifest.routes.find((route) => route.function === 'transfer')?.target).not.toBe('root');
+  });
+
   it('moves return-valued state transitions with their state-affinity group', () => {
     const bundle = compileStringSplit(`
       contract Returning() {

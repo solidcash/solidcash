@@ -1237,16 +1237,22 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
 
     // For payable() cast, determine the correct target type based on source type
+    let validPayableLiteral = false;
     if (node.type instanceof AddressType && node.type.payable) {
       const sourceType = node.expression.type;
       if (sourceType instanceof AddressType) {
         // payable(addr) -> AddressType(payable=true)
         node.type = new AddressType(true);
       }
-      // Otherwise fall through to the generic check which will fail
+      // Solidity additionally accepts the zero literal and address-shaped hex literals. `this` is represented
+      // internally as the active input locking bytecode rather than AddressType, but is an address expression.
+      validPayableLiteral = (node.expression instanceof IntLiteralNode && node.expression.value === 0n)
+        || (node.expression instanceof HexLiteralNode && node.expression.value.length === 20)
+        || (node.expression instanceof UnaryOpNode
+          && node.expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE);
     }
 
-    if (!explicitlyCastable(node.expression.type, node.type)) {
+    if (!validPayableLiteral && !explicitlyCastable(node.expression.type, node.type)) {
       throw new CastTypeError(node);
     }
 

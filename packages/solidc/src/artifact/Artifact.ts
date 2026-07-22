@@ -24,7 +24,7 @@ function abiTypeString(type: Type | undefined): string {
   // on BCH a contract handle is an address, so default to 'address' rather than crashing on undefined.toString().
   if (!type) return 'address';
   if (type instanceof ValueType) return type.underlyingType.toString();
-  return type.toString();
+  return type.toString().replace(/address payable/g, 'address');
 }
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
@@ -348,6 +348,9 @@ export function generateArtifact(
         name: parameter.name,
         type: abiTypeString(parameter.type),
       })),
+      ...(contract.constructorDef.modifiers.length > 0 && {
+        modifiers: contract.constructorDef.modifiers.map((m) => m.toString()),
+      }),
       ...buildFunctionAbiMetadata(contract.constructorDef),
     });
   }
@@ -358,6 +361,9 @@ export function generateArtifact(
       ...(contract.fallbackDef.functionSelector && { selector: binToHex(contract.fallbackDef.functionSelector) }),
       inputs: [],
       isFallback: true,
+      ...(contract.fallbackDef.modifiers.length > 0 && {
+        modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
+      }),
       ...buildFunctionAbiMetadata(contract.fallbackDef),
     });
   }

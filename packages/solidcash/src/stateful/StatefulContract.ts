@@ -8986,6 +8986,16 @@ export class StatefulFunctionCall {
    * The extra sats are sourced from the fee funder.
    */
   withValue(amount: bigint): this {
+    if (amount < 0n) throw new Error('Call value cannot be negative.');
+    if (amount > 0n) {
+      if (!this.parentContract || this.functionName === undefined) {
+        throw new Error('withValue is only available on a contract function call.');
+      }
+      const abiFunction = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
+      if (!abiFunction?.modifiers?.includes('payable')) {
+        throw new Error(`Cannot attach value to non-payable function '${this.functionName}'.`);
+      }
+    }
     this.containerDepositAmount = amount;
     return this;
   }

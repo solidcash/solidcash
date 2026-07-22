@@ -311,6 +311,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];
+  // Data-location annotations parallel to returnTypes. Retained for semantic validation and source fidelity;
+  // unlike ABI types, storage/memory/calldata affect whether a source declaration is legal.
+  returnModifiers: string[][] = [];
   returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions

@@ -55,8 +55,10 @@ describe('Visibility on free / library functions', () => {
 });
 
 describe('Constructor payable + interface body ordering', () => {
-  it('accepts payable on a constructor (ignored)', () => {
-    expect(compileString('contract C() { int n; constructor() payable { this.n = 1; } function f() { this.n = this.n + 1; } }').contractName).toBe('C');
+  it('accepts and retains payable on a constructor', () => {
+    const artifact = compileString('contract C() { int n; constructor() payable { this.n = 1; }'
+      + ' function f() { this.n = this.n + 1; } }');
+    expect(artifact.abi.find((f) => f.name === '__construct')?.modifiers).toContain('payable');
   });
 
   it('accepts events/errors interleaved with functions in an interface body', () => {

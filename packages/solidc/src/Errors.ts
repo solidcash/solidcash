@@ -385,6 +385,12 @@ export class CalldataModificationError extends SolidCashError {
   }
 }
 
+export class InvalidDataLocationError extends SolidCashError {
+  constructor(node: Node, message: string) {
+    super(node, `Invalid data location: ${message}`);
+  }
+}
+
 export class ArrayElementError extends SolidCashError {
   constructor(
     node: ArrayNode,

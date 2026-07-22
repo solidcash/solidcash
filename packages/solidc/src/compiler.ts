@@ -51,6 +51,7 @@ import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
+import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
@@ -190,6 +191,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Inheritance expansion (after import resolution, before modifier expansion)
   ast = expandInheritance(ast);
+
+  // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
+  // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
+  ast = ast.accept(new ValidateDataLocations()) as Ast;
 
   // Lower `transient` state vars to per-function locals - AFTER inheritance so a base's transient var is lowered
   // into the derived contract's functions too.

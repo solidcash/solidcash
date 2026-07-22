@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, getDataNftAddress, getEntryNftAddress,
+  encodeEntryCommitment, keyToSlot, keyToSlotMulti, slotValueToBytes,
 } from '../src/index.js';
 import {
-  buildInitialStateCommitments, buildEntryCommitment, buildEntryCommitmentMultiKey, type StateLayout,
+  buildInitialStateCommitments, type StateLayout,
 } from '@solidcash/utils';
 import { alicePkh, bobPkh } from './fixture/vars.js';
 import { createTestProvider } from './test-util.js';
@@ -56,9 +57,11 @@ describe('Solidity-getter sugar (sc.<name>() / sc.<mapping>(key))', () => {
   async function deploy(): Promise<any> {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
-    const balEntry = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint');
-    const allowKeyTypes = stateLayout.collections!.find((c) => c.name === 'allowances')!.keyTypes!;
-    const allowEntry = buildEntryCommitmentMultiKey([alicePkh, bobPkh], allowKeyTypes, 500n, 'bigint');
+    const zero = slotValueToBytes(0n);
+    const balEntry = binToHex(encodeEntryCommitment(keyToSlot(alicePkh), zero, bigIntToVmNumber(100n)));
+    const allowEntry = binToHex(encodeEntryCommitment(
+      keyToSlotMulti([alicePkh, bobPkh]), zero, bigIntToVmNumber(500n),
+    ));
     const categoryId = await setupWithEntries(
       provider, contract, stateLayout, { counter: 7n, owner: alicePkh },
       [{ collection: 'balances', commitment: balEntry }, { collection: 'allowances', commitment: allowEntry }],

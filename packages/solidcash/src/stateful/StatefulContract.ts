@@ -60,6 +60,7 @@ import {
   bigIntToVmNumber,
   vmNumberToBigInt,
   utf8ToBin,
+  binToUtf8,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
 import {
@@ -3785,10 +3786,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         let raw = parsed.value;
         if (collection.chunkableValue && raw.length >= 4) {
           const len = raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24);
-          raw = raw.slice(4, 4 + Math.max(0, len)); // long values remain root+head; authenticated reads materialize them
+          if (len <= 60) {
+            if (raw.length !== 4 + len) throw new RangeError('invalid inline C2 value length');
+            raw = raw.slice(4);
+          } else {
+            if (raw.length !== 4 + 32 + VALUE_HEAD_SIZE) throw new RangeError('invalid chunked C2 value head');
+            const root = raw.slice(4, 36);
+            const headData = raw.slice(36);
+            const chunkAddress = getValueChunkAddress(
+              this.inner, this.categoryId, collection.name, parsed.slot, root,
+            );
+            const chunks = (await this.inner.provider.getUtxos(chunkAddress))
+              .filter((chunk) => chunk.token?.category === this.categoryId
+                && chunk.token?.nft?.capability === 'mutable'
+                && !!chunk.token.nft.commitment)
+              .map((chunk) => parseValueChunkCommitment(chunk.token!.nft!.commitment))
+              .sort((a, b) => a.chunkIndex - b.chunkIndex);
+            raw = joinValueChunks(headData, chunks, len);
+            if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+              throw new Error('C2 value chunks do not match the authenticated root');
+            }
+          }
         }
         let value: StateValue;
-        if (type === 'bool') value = vmNumberToBigInt(raw) !== 0n;
+        if (collection.chunkableValue && type === 'bytes') value = raw;
+        else if (collection.chunkableValue && type === 'string') value = binToUtf8(raw);
+        else if (type === 'bool') value = vmNumberToBigInt(raw) !== 0n;
         else if (/^(u?int|bigint|[u]?fixed|enum)/.test(type)) value = vmNumberToBigInt(raw);
         else {
           try { value = attachDecodedAccessors(decodePushdataValue(raw, 0, type, structs).value) as StateValue; }

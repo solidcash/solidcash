@@ -91,6 +91,10 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
     const categoryId = result.categoryId;
 
     let sc = StatefulContract.withCategory(contract, categoryId);
+    const enumerated = await sc.getEntries('data');
+    expect(enumerated).toHaveLength(1);
+    expect(enumerated[0].slot).toEqual(s5);
+    expect(enumerated[0].value).toEqual(bigVal);
     expect((await sc.check(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // present long -> witness verified
 
     sc = StatefulContract.withCategory(contract, categoryId);

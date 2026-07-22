@@ -112,11 +112,18 @@ export default defineConfig({
     targets: [{ target: 'ethers6', layout: 'typechain', outDir: 'typechain-types' }],
   },
   networks: {
-    mock: { type: 'mock' },
+    mock: {
+      type: 'mock',
+      // Defaults: 1MB inputs/stack items and 10MB transactions.
+      consensus: { maximumInputBytes: 500_000 },
+    },
   },
   defaultNetwork: 'mock',
 });
 ```
+
+Mock consensus overrides are test-harness-only. Real network providers retain BCH consensus limits. The compiler
+and split-contract deployment use the active provider's input limit when deciding whether bytecode must be sharded.
 
 `typegen.targets[].sourceDir` can preserve an original Solidity source layout when the compiled fixture sources live elsewhere (for example, lightweight BCH test stubs). It affects generated module paths only; artifacts remain the source of runtime data and types.
 

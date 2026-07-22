@@ -9,7 +9,7 @@ import path from 'path';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import {
   type NetworkProvider,
-  MockNetworkProvider, RegtestNetworkProvider, ElectrumNetworkProvider,
+  MockNetworkProvider, MOCK_CONSENSUS_LIMITS, RegtestNetworkProvider, ElectrumNetworkProvider,
   Signer, HDSigner, signersFromMnemonic,
   StatefulContract, type ContractRunner, type ConnectedStatefulContract,
   ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract,
@@ -37,7 +37,9 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
     case 'regtest': return new RegtestNetworkProvider();
     case 'electrum': return new ElectrumNetworkProvider();
     case 'mock':
-    default: return new MockNetworkProvider();
+    default: return new MockNetworkProvider(netCfg?.consensus ? {
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...netCfg.consensus },
+    } : undefined);
   }
 }
 

@@ -14,6 +14,12 @@ export interface NetworkConfig {
   type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc';
   electrum?: { host: string; port?: number };
   rpc?: { url: string; user?: string; password?: string };
+  /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */
+  consensus?: Partial<{
+    maximumInputBytes: number;
+    maximumStackItemBytes: number;
+    maximumTransactionBytes: number;
+  }>;
 }
 
 export interface AccountsConfig {

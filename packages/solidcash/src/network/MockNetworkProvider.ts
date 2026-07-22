@@ -3,7 +3,7 @@ import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider from './NetworkProvider.js';
+import NetworkProvider, { ConsensusLimits } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
@@ -17,7 +17,19 @@ export interface TokenGenesisOutput {
 export interface MockNetworkProviderOptions {
   updateUtxoSet: boolean;
   vmTarget?: VmTarget;
+  /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
+  consensusLimits: ConsensusLimits;
 }
+
+export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits'>> & {
+  consensusLimits?: Partial<ConsensusLimits>;
+};
+
+export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
+  maximumInputBytes: 1_000_000,
+  maximumStackItemBytes: 1_000_000,
+  maximumTransactionBytes: 10_000_000,
+};
 
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
 export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
@@ -36,6 +48,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   public blockHeight: number = 133700;
   public options: MockNetworkProviderOptions;
   public vmTarget: VmTarget;
+  public consensusLimits: ConsensusLimits;
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -46,13 +59,27 @@ export default class MockNetworkProvider implements NetworkProvider {
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
 
-  constructor(options?: Partial<MockNetworkProviderOptions>) {
-    this.options = { updateUtxoSet: true, ...options };
+  constructor(options?: MockNetworkProviderOverrides) {
+    this.options = {
+      updateUtxoSet: true,
+      ...options,
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...options?.consensusLimits },
+    };
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
+    this.consensusLimits = this.options.consensusLimits;
 
+    const overrides = {
+      maximumBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumStackItemLength: this.consensusLimits.maximumStackItemBytes,
+      maximumStandardUnlockingBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumStandardLockingBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumTransactionLengthBytes: this.consensusLimits.maximumTransactionBytes,
+      maximumStandardTransactionSize: this.consensusLimits.maximumTransactionBytes,
+    };
     const verifier = createTxVerifier({
       vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
-    });
+      consensus: overrides,
+    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });
     this.indexer = createIndexer({ verifier });
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }

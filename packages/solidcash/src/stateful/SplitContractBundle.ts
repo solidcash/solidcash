@@ -182,7 +182,7 @@ export class SplitContractBundle {
       const preview = new Contract(artifact, [StatefulContract.libraryBrand(rootCategory)], {
         provider, addressType: override.addressType, category: hexToBin(override.fundingUtxo.txid),
       });
-      assertSplitRedeemSize(info.name, preview.bytesize);
+      assertSplitRedeemSize(info.name, preview.bytesize, provider);
       facetPreflight[info.name] = { artifact, override, funding: override.fundingUtxo };
     }
 
@@ -196,7 +196,7 @@ export class SplitContractBundle {
     const rootPreview = new Contract(this.bundle.root, [...rootConstructorArgs, ...previewLinks] as never[], {
       provider, addressType: options.addressType, category: hexToBin(rootCategory),
     });
-    assertSplitRedeemSize('root', rootPreview.bytesize);
+    assertSplitRedeemSize('root', rootPreview.bytesize, provider);
 
     const nonceReservation = signer?.reserveTransactionNonce();
     const logicalAddress = nonceReservation
@@ -328,6 +328,9 @@ function splitStateLayoutFingerprint(layout: SplitArtifactBundle['root']['stateL
   return JSON.stringify(storageLayout);
 }
 
-function assertSplitRedeemSize(name: string, bytes: number): void {
-  if (bytes > 10_000) throw new Error(`Split shard '${name}' constructed redeem script is ${bytes} bytes (limit 10000).`);
+function assertSplitRedeemSize(name: string, bytes: number, provider: NetworkProvider): void {
+  const limit = provider.consensusLimits?.maximumInputBytes ?? 10_000;
+  if (bytes > limit) {
+    throw new Error(`Split shard '${name}' constructed redeem script is ${bytes} bytes (limit ${limit}).`);
+  }
 }

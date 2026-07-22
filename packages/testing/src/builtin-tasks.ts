@@ -40,6 +40,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
+    const maximumInputBytes = hre.network.provider.consensusLimits?.maximumInputBytes ?? 10_000;
     if (!fs.existsSync(contractsDir)) throw new Error(`Contracts dir not found: ${contractsDir}`);
     fs.rmSync(outputDir, { recursive: true, force: true });
     fs.mkdirSync(outputDir, { recursive: true });
@@ -65,8 +66,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         const primary = compileString(source, hre.config.solc);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
-        if (primary.bytecode.length / 2 > 10_000) {
-          const split = compileStringSplit(source, hre.config.solc);
+        if (primary.bytecode.length / 2 > maximumInputBytes) {
+          const split = compileStringSplit(source, { ...hre.config.solc, maxShardBytes: maximumInputBytes });
           fs.writeFileSync(
             path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
             formatSplitArtifactBundle(split, 'json'),
@@ -113,12 +114,14 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           .map((match) => match[1]);
         const needsSplit = declarations.some((name) => {
           const artifact = result.artifacts[name];
-          return artifact && artifact.bytecode.length / 2 > 10_000;
+          return artifact && artifact.bytecode.length / 2 > maximumInputBytes;
         });
         if (!needsSplit) continue;
         let split;
         try {
-          split = compileFileSplit(full, { solidityImportCompat: true, ...hre.config.solc });
+          split = compileFileSplit(full, {
+            solidityImportCompat: true, ...hre.config.solc, maxShardBytes: maximumInputBytes,
+          });
         } catch (error: any) {
           throw new Error(`Failed to shard ${path.relative(contractsDir, full)}: ${error.message}`, { cause: error });
         }

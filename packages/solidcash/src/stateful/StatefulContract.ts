@@ -51,7 +51,6 @@ import {
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
 import {
-  createVirtualMachineBch2026,
   binToHex,
   hexToBin,
   binsAreEqual,
@@ -61,6 +60,7 @@ import {
   vmNumberToBigInt,
   utf8ToBin,
 } from '@bitauth/libauth';
+import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
@@ -2973,7 +2973,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const requiredIndices = constructorAbi?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(options.provider);
     const allEventDefs = artifact.events ?? [];
     // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
     // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
@@ -3754,7 +3754,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     base: number, slotCount: number,
   ): Promise<Array<{ inputIndex: number; n: bigint }>> {
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const b = new CovenantTransactionBuilder({ provider: this.inner.provider });
     b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
     const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(this.inner, 0, this.categoryId));
@@ -3922,7 +3922,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'blockhash oracles) do not fill the slots before the keccak side-car; cannot position the probe.');
     }
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const lock = keccakComputeLockingBytecode(salt, true);
     let guard = 0;
     while (preimages.some((p) => p === null)) {
@@ -3985,7 +3985,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const scUtxos = (await this.inner.provider.getUtxosForLockingBytecode(lock))
       .filter((u) => u.token?.nft?.capability === 'mutable');
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const MAX_ITERS = 64; // budget/standardness cap on runtime keccak side-cars per tx
     const preimages: Uint8Array[] = [];
     for (let k = 1; k <= MAX_ITERS + 1; k++) {
@@ -4184,7 +4184,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // cleanly distinguishable from programming bugs or configuration errors.
       try {
         const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-        const vm = createVirtualMachineBch2026();
+        const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
 
         // Probe with optional data NFT output commitment overrides (default: current).
         const runProbe = (dataNftOutputCommitments?: string[]): AuthenticationProgramStateCommon[] => {
@@ -4462,7 +4462,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           // Run VM on B's master input
-          const vm = createVirtualMachineBch2026();
+          const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
           const fullTrace = vm.debug({
             inputIndex: bMasterIdx,
             sourceOutputs,
@@ -4524,7 +4524,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // OP_OUTPUTTOKENCOMMITMENT and pushes the real NEW commitment; extract it and replace the placeholder.
             if (insertHandles.length > 0) {
               const pb2 = stb.build();
-              const map2 = extractCommitmentMapFromTrace(createVirtualMachineBch2026().debug({
+              const map2 = extractCommitmentMapFromTrace(createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
                 inputIndex: bMasterIdx, sourceOutputs: generateLibauthSourceOutputs(pb2.inputs),
                 transaction: pb2.buildLibauthTransaction(),
               }) as AuthenticationProgramStateCommon[]);
@@ -4549,7 +4549,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const probeBuilderRet = stb.build();
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
-            const vmRet = createVirtualMachineBch2026();
+            const vmRet = createVirtualMachineBch2026ForProvider(this.inner.provider);
             const fullTraceRet = vmRet.debug({
               inputIndex: bMasterIdx,
               sourceOutputs: sourceOutputsRet,
@@ -4587,7 +4587,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const probeBuilder2 = stb.build();
                 const transaction2 = probeBuilder2.buildLibauthTransaction();
                 const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
-                const vm2 = createVirtualMachineBch2026();
+                const vm2 = createVirtualMachineBch2026ForProvider(this.inner.provider);
                 const fullTrace2 = vm2.debug({
                   inputIndex: bMasterIdx,
                   sourceOutputs: sourceOutputs2,
@@ -4634,7 +4634,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
             const bMasterIdx = stb.getExternalOutStateMasterInputIndex(groupIdx);
-            const vm = createVirtualMachineBch2026();
+            const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
             const fullTrace = vm.debug({
               inputIndex: bMasterIdx,
               sourceOutputs,
@@ -4668,7 +4668,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
             const bMasterIdx = stb.getLowLevelCallMasterInputIndex(groupIdx);
-            const vm = createVirtualMachineBch2026();
+            const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
             const fullTrace = vm.debug({
               inputIndex: bMasterIdx,
               sourceOutputs,
@@ -4765,7 +4765,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const transaction2 = probeBuilder2.buildLibauthTransaction();
           const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
 
-          const vm2 = createVirtualMachineBch2026();
+          const vm2 = createVirtualMachineBch2026ForProvider(this.inner.provider);
           const fullTrace2 = vm2.debug({
             inputIndex: delegatecallInputIndex ?? 0,
             sourceOutputs: sourceOutputs2,
@@ -8228,7 +8228,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const probe = builder.build();
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,

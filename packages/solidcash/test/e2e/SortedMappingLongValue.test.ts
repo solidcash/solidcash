@@ -8,10 +8,10 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// P5b: a sorted (C2) mapping with an unbounded bytes/string VALUE that EXCEEDS the 64 B inline tail. The entry
-// commitment stores len(4 B LE) ++ sha256(value) (100 B total, real-chain-valid <= 128 B); the full value persists
+// P5b: a sorted (C2) mapping with an unbounded bytes/string VALUE that EXCEEDS the 60 B inline body. The entry
+// commitment stores len(4 B LE) ++ sha256(value) ++ head28 (128 B total); the full value persists
 // off-commitment in per-slot value chunks and a read verifies a caller witness against the stored hash. This closes
-// the last C2 value-type gap: C2 is the unforgeable default for bytes/string of ANY practical length, not just <=64 B.
+// the last C2 value-type gap: C2 is the unforgeable default for bytes/string of ANY practical length, not just <=60 B.
 
 const ZERO = slotValueToBytes(0n);
 
@@ -19,11 +19,11 @@ const ZERO = slotValueToBytes(0n);
 function valueTail(v: Uint8Array): Uint8Array {
   const len4 = new Uint8Array(4);
   new DataView(len4.buffer).setUint32(0, v.length, true);
-  const body = v.length > 60 ? sha256.hash(v) : v;
+  const body = v.length > 60 ? new Uint8Array([...sha256.hash(v), ...v.slice(0, 28)]) : v;
   return new Uint8Array([...len4, ...body]);
 }
 
-describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)', () => {
+describe('sorted mapping with a LONG (>60 B) unbounded bytes/string value (P5b)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
@@ -75,16 +75,16 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
     const result = await provider.addTokenUtxosDynamic((cat: string) => {
       const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
       const ea = getEntryNftAddress(pinned, cat, 'data');
-      const chunkAddr = getValueChunkAddress(pinned, cat, 'data');
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', s5, digest);
       const outs = [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(bigVal))) } } },
       ];
-      // Seed the value chunks (100 B -> a single 120 B chunk) at the per-(collection, slot, digest) address.
+      // Seed the value chunks (100 B -> one 72 B trailing chunk) at the per-(collection, slot, digest) address.
       splitValueIntoValueChunks(bigVal).forEach((data, i) => outs.push({
         address: chunkAddr, satoshis: 1500n, // >= dust for the ~200 B chunk-commitment token output on a live node
-        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, digest, i, data) } },
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(i, data) } },
       }));
       return outs;
     });
@@ -150,7 +150,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       const ea = getEntryNftAddress(pinned, cat, 'data');
       // Chunks are seeded at the address keyed by the ENTRY's digest (sha256(realVal)) but carry FORGED bytes -
       // the SDK reassembles them into the witness, and the covenant's sha256(witness)==digest check must reject.
-      const chunkAddr = getValueChunkAddress(pinned, cat, 'data');
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', s5, digest);
       const outs = [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
@@ -158,7 +158,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       ];
       splitValueIntoValueChunks(forgedVal).forEach((data, i) => outs.push({
         address: chunkAddr, satoshis: 1500n, // >= dust for the ~200 B chunk-commitment token output on a live node
-        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, digest, i, data) } },
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(i, data) } },
       }));
       return outs;
     });
@@ -196,7 +196,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
     });
     const categoryId = result.categoryId;
 
-    const bigVal = hexToBin('7a'.repeat(150)); // 150-byte computed value -> 3 chunks (derived from the trace)
+    const bigVal = hexToBin('7a'.repeat(150)); // 150-byte computed value -> one 122-byte trailing chunk (derived from the trace)
     let sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.put(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // computed update: chunks derived
 
@@ -239,12 +239,12 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));
-    const v1 = hexToBin('a1'.repeat(150)); // old long value -> 3 chunks
+    const v1 = hexToBin('a1'.repeat(150)); // old long value -> one 122-byte trailing chunk
     const d1 = sha256.hash(v1);
     const result = await provider.addTokenUtxosDynamic((cat: string) => {
       const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
       const ea = getEntryNftAddress(pinned, cat, 'data');
-      const chunkAddr = getValueChunkAddress(pinned, cat, 'data');
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', s5, d1);
       const outs = [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
@@ -252,24 +252,23 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       ];
       splitValueIntoValueChunks(v1).forEach((data, i) => outs.push({
         address: chunkAddr, satoshis: 1500n, // >= dust for the ~200 B chunk-commitment token output on a live node
-        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, d1, i, data) } },
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(i, data) } },
       }));
       return outs;
     });
     const categoryId = result.categoryId;
-    const chunkAddr = getValueChunkAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'data');
-    const oldChunkCount = (await provider.getUtxos(chunkAddr)).length;
-    expect(oldChunkCount).toBe(3); // v1's 3 chunks seeded
+    const oldChunkAddr = getValueChunkAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'data', s5, d1);
+    const oldChunkCount = (await provider.getUtxos(oldChunkAddr)).length;
+    expect(oldChunkCount).toBe(1); // v1.s trailing chunk seeded
 
     const v2 = hexToBin('b2'.repeat(150)); // new long value (different digest)
     const sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.put(5n, v2, alicePub, sig).send()).txid).toBeDefined(); // overwrite: mint v2 chunks, consume v1's
 
-    // Only v2's chunks remain at the address; v1's old chunks were co-spent (consumed), not orphaned.
-    const remaining = (await provider.getUtxos(chunkAddr))
-      .filter((u) => u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
-      .map((u) => binToHex(parseValueChunkCommitment(u.token!.nft!.commitment).digest));
-    expect(remaining.every((d) => d === binToHex(sha256.hash(v2)))).toBe(true); // no v1-digest chunks left
-    expect(remaining.length).toBe(3); // exactly v2's 3 chunks
+    // The old root address is empty; the new version lives at a distinct root-specific address.
+    expect((await provider.getUtxos(oldChunkAddr)).length).toBe(0);
+    const d2 = sha256.hash(v2);
+    const newChunkAddr = getValueChunkAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'data', s5, d2);
+    expect((await provider.getUtxos(newChunkAddr)).length).toBe(1);
   });
 });

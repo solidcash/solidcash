@@ -328,6 +328,21 @@ and scans the transaction for the exact number of outputs at the collection addr
 predecessors, three-or-more target chains, and mixed existing-node updates plus adjacent inserts without double-
 spending or conflicting predecessor rewrites.
 
+Swap-remove patterns require one additional authenticated case. In
+`indexOf[lastKey] = index; delete indexOf[key]`, the computed write and delete can resolve to the same slot when
+`key == lastKey`. The compiler marks that relationship, binds both hidden slots to their independently computed
+`H(key)` values, and executes the write only when the slots differ. The SDK uses predecessor-output sentinel `-2`
+exactly on the equal-slot path; the covenant proves the biconditional `(slots equal) == (sentinel == -2)`. The
+delete owner remains authenticated against its fixed input slot and old successor. A neutral `OP_TRUE` positional
+placeholder is used for omitted fixed outputs so placeholders cannot inflate the exact collection-address output
+count.
+
+An early-return guard such as `if (!inserted[key]) return` receives the real authenticated predecessor when the key
+is absent. Presence is tested by commitment-slot equality, never merely by “this input has a token” (a predecessor
+is also a token). If absent, batch planning emits no target or predecessor outputs and the topology verifier is
+skipped; state, chunks, and entries are preserved. The topology verifier runs after state and dynamic-chunk checks,
+so VM-based output derivation can converge without weakening any final transaction check.
+
 Runtime-loop machinery handles updates, inserts, same-gap insertion chains, credited-predecessor merges, sender-
 debit merges, duplicate recipients, self-transfers, and canonical counter-key delete-to-default. The exclusion
 proof is always anchored in a real input node's old link.
@@ -426,6 +441,7 @@ Important coverage includes:
 - HEAD deployment and iteration completeness;
 - same-key coalescing and distinct-key runtime loops;
 - atomic straight-line shared-predecessor batches and forged proof/link/predecessor/orphan rejection;
+- swap-remove computed-key aliasing, absent-key guarded no-ops, and forged alias/non-alias sentinel rejection;
 - arrays, structs, push/pop, and inline/chunked transitions;
 - long direct and computed values, tampered chunks, strict reconstruction, and overwrite collection;
 - malformed, cyclic, duplicated, and disconnected sorted lists.

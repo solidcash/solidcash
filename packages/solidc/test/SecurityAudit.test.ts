@@ -47,7 +47,10 @@ describe('C4: composite mapping keys allocate distinct slots', () => {
   it('two distinct struct-field keys remain independently represented', () => {
     const fn = compileString(structTwoKeys).abi.find((entry) => entry.name === 'move');
     expect(fn?.entryAccesses).toHaveLength(2);
-    expect(fn?.entryAccesses?.map((entry) => entry.keyParams[0])).toEqual(['pair.from', 'pair.to']);
+    expect(fn?.entryAccesses?.map((entry) => entry.keyParams[0])).toEqual([
+      'field:from(id:t)',
+      'field:to(id:t)',
+    ]);
   });
 
   it('struct-field keys allocate the same slot count as plain-param keys', () => {

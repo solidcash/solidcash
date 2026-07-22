@@ -1513,6 +1513,42 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         node.entryAccesses = ordered;
 
+        // Two or more fixed writes to one C2 collection are one atomic list transition. In particular, absent keys
+        // may share a predecessor and must not be modeled as independent upserts (duplicate input + conflicting P').
+        // Record the group after final slot assignment so codegen/SDK share stable indices.
+        const batchByCollection = new Map<string, number[]>();
+        for (const info of ordered) {
+          if (info.inLoop || !isWritten(info)) continue;
+          const coll = this.collectionMap.get(info.collection);
+          if (!coll?.sorted) continue;
+          const slots = batchByCollection.get(info.collection) ?? [];
+          slots.push(info.slotIndex);
+          batchByCollection.set(info.collection, slots);
+        }
+        node.sortedBatchInfo = [...batchByCollection]
+          .filter(([, slots]) => slots.length > 1)
+          .map(([collection, slotIndices]) => ({ collection, slotIndices }));
+
+        // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
+        // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
+        for (const batch of node.sortedBatchInfo) {
+          for (const slotIndex of batch.slotIndices) {
+            for (const param of [
+              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${slotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${slotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${slotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${slotIndex}`),
+            ]) {
+              param.location = node.location;
+              node.parameters.push(param);
+              this.symbolTables[0].set(Symbol.variable(param));
+              const sym = this.symbolTables[0].get(param.name);
+              if (sym) sym.references.push({ name: param.name } as IdentifierNode);
+              this.pushToStack(param);
+            }
+          }
+        }
+
         // Chunkable-value READ (unbounded bytes/string, C2): inject witness param __internal__valueWitness_N. A
         // long value is stored as its sha256 hash; the covenant materializes it by verifying sha256(witness)==hash,
         // so the SDK supplies the value (from its persisted chunks) and a forged witness fails closed.
@@ -4972,7 +5008,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // isReassign = a whole-variable `x = y` rebind (vs a DATA write: `x[i]=v`, `x.push()`, `delete x`, field write).
   // A calldata binding is read-only DATA, but rebinding the local pointer to another calldata value is allowed in
   // Solidity (`x = y; x[i]` reads y[i]) - it reduces to a value-copy of y into x. Only data writes are rejected.
-  private checkReadOnlyModification(sym: Symbol, isReassign = false, isReferenceDataWrite = false): void {
+  private checkReadOnlyModification(sym: Symbol, isReassign = false): void {
     if (sym.symbolType === SymbolType.CONSTANT) {
       throw new ConstantModificationError(sym.definition as ConstantDefinitionNode);
     }
@@ -4983,11 +5019,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new ConstantModificationError(v);
       }
       if (modifier === Modifier.CALLDATA) {
-        // A user-authored whole-reference assignment rebinds the local calldata pointer. AstBuilder marks
-        // field/element writes which happen to lower to an AssignNode so those remain data mutations.
+        // `x = y` rebind allowed ONLY for a calldata ARRAY (rebinds the local to a value-copy of y). Structs /
+        // bytes / string are excluded: their field/element write desugars to a `x = <rebuilt>` reassign that
+        // aliases this rebind path, so allowing it would write to read-only calldata. Arrays use a separate
+        // ArrayAssign path. Value types, compound (`x += 1`), and element/field writes reject.
         const t = (sym.definition as { type?: Type })?.type;
-        const isRefRebind = isReassign && !isReferenceDataWrite
-          && (t instanceof ArrayType || t instanceof StructType || t instanceof BytesType || t === PrimitiveType.STRING);
+        const isRefRebind = isReassign && t instanceof ArrayType;
         if (!isRefRebind) {
           throw new CalldataModificationError(v as VariableDefinitionNode | ParameterNode);
         }
@@ -5073,7 +5110,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (sym) {
-      this.checkReadOnlyModification(sym, true, node.isReferenceDataWrite);
+      this.checkReadOnlyModification(sym, true); // whole `x = y` rebind: allowed for calldata (pointer rebind)
     }
 
     super.visitAssign(node);

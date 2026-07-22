@@ -320,10 +320,17 @@ Iteration follows authenticated `nextSlot` links from HEAD to the tail. The SDK 
 link order, and the covenant verifies adjacency and termination. Key iteration additionally requires caller-supplied
 original keys whose canonical hashes match the stored slots because the hash-derived slot cannot be inverted.
 
-Batch writes to distinct keys co-spend distinct nodes/predecessors and emit their updates/splices in deterministic
-order. Runtime-loop machinery handles updates, inserts, same-gap insertion chains, credited-predecessor merges,
-sender-debit merges, duplicate recipients, and self-transfers. The exclusion proof is always anchored in a real
-input node's old link.
+Straight-line writes to two or more distinct keys in one collection are one atomic transition. The SDK plans all
+targets against the original list, deduplicates shared proof inputs, and rebuilds the final union. The covenant
+binds each hidden slot to `H(key)`, authenticates every proof input, proves each final successor is the nearest
+batch target or the original successor, preserves non-target predecessor values, pins target/predecessor outputs,
+and scans the transaction for the exact number of outputs at the collection address. This covers shared HEAD/gap
+predecessors, three-or-more target chains, and mixed existing-node updates plus adjacent inserts without double-
+spending or conflicting predecessor rewrites.
+
+Runtime-loop machinery handles updates, inserts, same-gap insertion chains, credited-predecessor merges, sender-
+debit merges, duplicate recipients, self-transfers, and canonical counter-key delete-to-default. The exclusion
+proof is always anchored in a real input node's old link.
 
 Batch size is bounded by transaction size, input/output count, fees, and VM resource limits. Larger batches must be
 paginated across transactions.
@@ -418,6 +425,7 @@ Important coverage includes:
 - nested and address keys;
 - HEAD deployment and iteration completeness;
 - same-key coalescing and distinct-key runtime loops;
+- atomic straight-line shared-predecessor batches and forged proof/link/predecessor/orphan rejection;
 - arrays, structs, push/pop, and inline/chunked transitions;
 - long direct and computed values, tampered chunks, strict reconstruction, and overwrite collection;
 - malformed, cyclic, duplicated, and disconnected sorted lists.

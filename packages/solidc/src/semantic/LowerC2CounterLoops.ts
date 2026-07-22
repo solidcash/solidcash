@@ -1,6 +1,6 @@
 import {
   ArrayAccessNode, ArrayAssignNode, AssignNode, BinaryOpNode, ContractNode, ExpressionNode,
-  FunctionDefinitionNode, IdentifierNode, Node, ParameterNode, SourceFileNode, WhileNode,
+  FunctionDefinitionNode, IdentifierNode, MappingDeleteNode, Node, ParameterNode, SourceFileNode, WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { BinaryOperator } from '../ast/Operator.js';
@@ -42,7 +42,8 @@ export default class LowerC2CounterLoops extends AstTraversal {
           ? condition.left.name : undefined;
         const count = condition instanceof BinaryOpNode && condition.right instanceof IdentifierNode
           ? condition.right.name : undefined;
-        const writes = stmts.filter((s) => s instanceof ArrayAssignNode) as ArrayAssignNode[];
+        const writes = stmts.filter((s) => s instanceof ArrayAssignNode || s instanceof MappingDeleteNode) as
+          Array<ArrayAssignNode | MappingDeleteNode>;
         let update: AssignNode | undefined;
         const findUpdate = (x: Node): void => {
           if (x instanceof AssignNode && x.identifier.name === logical) { update = x; return; }
@@ -53,11 +54,12 @@ export default class LowerC2CounterLoops extends AstTraversal {
             else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) findUpdate(e);
           }
         };
-        for (const s of stmts) if (!(s instanceof ArrayAssignNode)) findUpdate(s);
+        for (const s of stmts) if (!(s instanceof ArrayAssignNode) && !(s instanceof MappingDeleteNode)) findUpdate(s);
         const canonicalUpdate = logical && update?.identifier.name === logical;
+        const writeKey = writes[0] instanceof ArrayAssignNode ? writes[0].index : writes[0]?.keys[0];
         if (logical && count && writes.length === 1 && stmts.length === 2 && canonicalUpdate
-          && this.collections.has(writes[0].name) && writes[0].index instanceof IdentifierNode
-          && writes[0].index.name === logical) {
+          && this.collections.has(writes[0].name) && writeKey instanceof IdentifierNode
+          && writeKey.name === logical) {
           const hidden = `${PREFIX}${count}_${this.serial++}`;
           const physical = (): IdentifierNode => {
             const id = new IdentifierNode(logical); id.location = n.location; return id;
@@ -79,8 +81,12 @@ export default class LowerC2CounterLoops extends AstTraversal {
             return x;
           };
           const write = writes[0];
-          write.index = permRead();
-          write.value = replace(write.value) as ExpressionNode;
+          if (write instanceof ArrayAssignNode) {
+            write.index = permRead();
+            write.value = replace(write.value) as ExpressionNode;
+          } else {
+            write.keys[0] = permRead();
+          }
           const p = new ParameterNode(new ArrayType(new IntType(true, 256)), hidden);
           p.location = node.location;
           added.push(p);

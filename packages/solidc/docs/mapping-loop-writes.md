@@ -1,9 +1,12 @@
 # Mapping writes in loops
 
-Writing an entry-backed mapping inside a loop (`for (uint i = 0; i < n; i++) m[k[i]] = v[i];`) is supported in
-two forms. Both reduce to the same entry model: one entry NFT per `(key, value)` pair, minted from the master
-NFT, at the collection's per-collection P2SH32 (`buildEntryNftCovenantScript`), commitment `pushdata(key) ++
-pushdata(value)`.
+Writing a C2 mapping inside a loop (`for (uint i = 0; i < n; i++) m[k[i]] = v[i];`) is supported through fixed
+unrolling, invariant-key caching, and the runtime sorted-upsert covenant. The old unsorted `key || value` entry
+model described in early design notes is gone; every persisted node is `slot[32] || nextSlot[32] || valueTail`.
+
+Current runtime support includes pure set, `+=`, `-=`, and delete-to-default, including absent-key insertion,
+same-gap chains, repeated recipients, and canonical counter loops (`m[i]`) reordered by an authenticated SDK-
+supplied slot permutation. The remainder of this file records both the shipped design and historical rationale.
 
 ## 1. Fixed-bound loops -> unrolled
 
@@ -31,7 +34,12 @@ The SDK derives the N `(key, value)` pairs from the VM trace progressively (the 
 `OP_EQUALVERIFY`, so each probe reveals one more commitment) and builds N trailing entry outputs. This is a
 runtime-variable output count, exactly like `dynamicChunkVars`.
 
-## Soundness rules (what compiles vs what is rejected)
+## Soundness rules
+
+The following bullets describe the original unsorted loop-mint path and are retained as historical threat-model
+context. Mandatory C2 now routes varying-key writes through the sorted-upsert machinery; invariant keys are cached
+and flushed once. Current restrictions are multi-collection interleaving and chunked (>60-byte) values in one
+runtime loop, both of which still fail closed.
 
 The write is sound only when each iteration writes a **distinct** entry. The compiler enforces the checkable part
 of that and fails closed (`EntryWriteInLoopError`) otherwise:
@@ -48,7 +56,7 @@ of that and fails closed (`EntryWriteInLoopError`) otherwise:
 - **Negative-existence guard** (`require(!m[k])` inside the loop) is **rejected** - and is unsound even outside a
   loop (finding C2, `mapping-omission-security.md`).
 
-## Read-modify-write is deferred (blocked on C2)
+## Historical RMW blocker and C2 resolution
 
 `for (i<n) m[k[i]] += v[i]` (ERC1155 `_batchMint`/`_batchBurn`/`_batchTransfer`) needs to read the OLD value of
 `m[k[i]]` each iteration, add, and write the sum. This splits by whether the key already exists:
@@ -71,12 +79,10 @@ and `emitVerifyChunkUtxoCount(isOutput=false)` for the input-count pin), gated t
 Closing the new-key case needs the C2 fix itself: an entry-set accumulator (count / merkle / nullifier root)
 committed in the master, so an existing entry cannot be omitted.
 
-**Update: under C2-default (`sortedMappings`) the omission hazard above is already closed** - every read is unforgeable
-via the sorted linked list, so the new-key reset attack does not apply. A different-key batch write/RMW under C2 is then
-not a fund-safety dead-end but the SAME-RANGE sorted-write feature, decomposed by difficulty (batch update of existing
-keys / contiguous-range insert / scattered insert / delete) in `sorted-mapping-c2.md` ("Multiple writes in one
-transaction") and tracked in `deferrals.md` section 6(a); it currently fails closed at `GenerateTargetTraversal.ts:10633`.
-The SAME-key case - N writes to a single `m[k]` - is already handled by coalescing (`CacheMappingEntryInLoop`).
+**Resolution:** mandatory C2 closes the omission hazard because every old-value read is membership- or exclusion-
+proven. The runtime sorted-upsert loop now implements existing updates, absent inserts, same-gap chains, and
+delete-to-default. The same-key case is coalesced by `CacheMappingEntryInLoop`; canonical counter keys are lowered
+by `LowerC2CounterLoops` to full-width slot order.
 
 ### Accepted gaps (correctness, not fund-safety)
 
@@ -90,4 +96,4 @@ The SAME-key case - N writes to a single `m[k]` - is already handled by coalesci
 
 `packages/solidcash/test/e2e/DynamicLoopEntry.test.ts` (for / while / do-while, N=1..3, each entry reads back),
 `DynamicLoopEntryAdversarial.test.ts` (wrong commitment, redirected address, and orphan output all rejected),
-`EntryWriteBehavior.test.ts` (the supported loop forms plus the invariant-key / RMW / delete rejections).
+`EntryWriteBehavior.test.ts` (invariant-key caching, counter/array-key set and RMW, and counter-key deletes).

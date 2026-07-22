@@ -62,7 +62,10 @@ import {
   utf8ToBin,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
-import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment } from './SortedList.js';
+import {
+  SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment,
+  decodeEntryCommitment,
+} from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -5146,6 +5149,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // entry -> chain break).
   private _iterationKeys?: Map<string, Uint8Array[]>;
   private _rawIterationKeysBlob?: Map<string, Uint8Array>;
+  private _rawC2BatchWitness?: Map<number, { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint }>;
 
   /**
    * Supply the keys for a sorted `enumerable mapping` KEYS/ENTRIES iteration. Required for such iterations (the
@@ -5164,6 +5168,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   _setRawIterationKeysBlob(collectionName: string, blob: Uint8Array): this {
     (this._rawIterationKeysBlob ??= new Map()).set(collectionName, blob);
+    return this;
+  }
+
+  /** @internal Test hook: override a derived atomic-batch witness to exercise covenant rejection paths. */
+  _setRawC2BatchWitness(
+    slotIndex: number, witness: { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint },
+  ): this {
+    (this._rawC2BatchWitness ??= new Map()).set(slotIndex, witness);
     return this;
   }
 
@@ -5326,6 +5338,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // P5b overwrite GC: on an UPDATE whose OLD value was long, co-spend its old chunks (collection, slot, oldDigest)
     // so they are consumed rather than orphaned as dust. Digest-keyed, so only the exact old version is reclaimed.
     const valueChunkGc: Array<{ collection: string; slotHex: string; oldDigestHex: string }> = [];
+    const batchTargetSlots = new Map<number, Uint8Array>();
+    const batchPredCommitments = new Map<string, string[]>();
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
@@ -5413,6 +5427,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   : bigIntToVmNumber(BigInt(v as unknown as string));
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
+          if (abiFunction?.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
+            batchTargetSlots.set(slotIndex, slot);
+          }
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const kv = access.keySources?.[0]?.kind === 'constant'
             ? BigInt(access.keySources[0].constantValue ?? '0')
@@ -5457,7 +5474,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   newNode = encodeEntryCommitment(slot, plan.predecessor.nextKey, tail);
                 }
               }
-              sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment, newNode });
+              if (!abiFunction?.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
+                sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment, newNode });
+              }
             }
           } else {
             const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
@@ -5705,6 +5724,51 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           utxo: matchingUtxo ? { ...matchingUtxo, unlocker: entryUnlocker } : undefined,
         });
       }
+
+      // Atomic fixed-write batches: collapse logical accesses that share an original predecessor onto one physical
+      // proof input. The block slot of the first logical owner carries that UTXO; later aliases receive funders and
+      // point at the owner's relative block offset through __internal__c2BatchProof_N.
+      const batchWitnesses: unknown[] = [];
+      for (const batch of abiFunction?.sortedBatchInfo ?? []) {
+        const collection = stateLayout.collections.find((c) => c.name === batch.collection);
+        if (!collection) throw new Error(`Unknown C2 batch collection: ${batch.collection}`);
+        const collectionEntries = await collectionEntriesFor(collection.signature);
+        const list = SortedList.fromUtxos(collectionEntries);
+        const writes = batch.slotIndices.map((slotIndex) => ({
+          slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array(),
+        }));
+        if (writes.some((w) => !w.slot)) throw new Error(`C2 batch '${batch.collection}' is missing a target slot`);
+        const plan = list.planBatchUpsert(writes);
+        const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
+        const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
+        batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
+        const ownerByUtxo = new Map<string, number>();
+        for (const slotIndex of batch.slotIndices) {
+          const slot = batchTargetSlots.get(slotIndex)!;
+          const proof = list.find(slot) ?? list.predecessorOf(slot);
+          const uid = `${proof.utxo.txid}:${proof.utxo.vout}`;
+          let owner = ownerByUtxo.get(uid);
+          if (owner === undefined) { owner = slotIndex; ownerByUtxo.set(uid, owner); }
+          if (owner !== slotIndex) {
+            const duplicate = entryNfts.find((e) => e.slotIndex === slotIndex)!;
+            duplicate.exists = false;
+            duplicate.utxo = undefined;
+          }
+          const offset = abiFunction!.blockLayout?.slots.find(
+            (s) => s.kind === 'entry' && s.slotIndex === owner,
+          )?.offset;
+          if (offset === undefined) throw new Error(`C2 batch '${batch.collection}' has no block slot ${owner}`);
+          const out = plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(slot));
+          if (!out) throw new Error(`C2 batch '${batch.collection}' has no planned output for slot ${slotIndex}`);
+          const proofSlot = bytesToSlotValue(proof.slot).toString();
+          const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
+          const predOut = predOrdinal < 0 ? -1n : BigInt((abiFunction!.blockLayout?.blockSize ?? 1) + predOrdinal);
+          const raw = this._rawC2BatchWitness?.get(slotIndex);
+          batchWitnesses.push(raw?.slot ?? slot, raw?.proof ?? BigInt(offset),
+            raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut);
+        }
+      }
+      for (const witness of batchWitnesses) finalArgs = [...finalArgs, witness];
 
       // Append the P5b value witnesses in slotIndex order (SymbolTable injects them right after blockhash, before
       // the iteration params - matching this position in finalArgs). Empty for short/absent, the full value for long.
@@ -7836,7 +7900,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // entry covenant address (N derived from the VM trace). Mirrors dynamicChunkVars (variable trailing outputs).
     const entryLoopWrites = abiFunction?.entryLoopWrites ?? [];
     const loopEntryVars = (stateLayout.collections ?? [])
-      .filter((c) => entryLoopWrites.includes(c.name) || sortedLoopCommitments.has(c.name))
+      .filter((c) => entryLoopWrites.includes(c.name) || sortedLoopCommitments.has(c.name)
+        || batchPredCommitments.has(c.name))
       .map((c) => ({
         collection: c.name,
         lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, c.name),
@@ -7904,6 +7969,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // C2 diff-key INSERT loop: the 2N interleaved [P'_0, NEW_0, P'_1, NEW_1, ...] trailing outputs are known exactly
     // from the off-chain list; inject + pin them so the auto-derivation skips this collection (nothing to trace).
     for (const [collectionName, commitments] of sortedLoopCommitments) {
+      builder.setLoopEntryCommitments(collectionName, commitments);
+      builder.pinLoopEntry(collectionName);
+    }
+    for (const [collectionName, commitments] of batchPredCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
       builder.pinLoopEntry(collectionName);
     }

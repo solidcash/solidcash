@@ -46,6 +46,26 @@ Cross-function sharing is currently limited:
 
 The nearly linear growth makes collection-address and output-verifier sharing worthwhile.
 
+### Atomic fixed-batch verifier (2026-07-22)
+
+The complete shared-predecessor verifier adds nearest-link proofs, predecessor preservation, and an exact
+collection-address output scan. Optimized one-function measurements on the accepted implementation are:
+
+| Distinct straight-line writes | Contract bytecode |
+|---:|---:|
+| 1 (ordinary upsert, no batch verifier) | 451 B |
+| 2 | 2,849 B |
+| 3 | 5,460 B |
+| 4 | 8,957 B |
+| 5 | 13,333 B (over the 10 KB contract limit) |
+
+The current verifier is quadratic because it proves target membership/minimality pairwise. It is sound and useful
+for the common two-party transfer and small atomic-update cases, but it is the dominant remaining bytecode target.
+A linear successor should use an SDK-supplied sorted `(slot,next,proof,predOut)` blob plus a bounded rank per logical
+write: bind each `H(key)` to `blob[rank]`, prove ranks form a permutation, validate adjacent links once, and validate
+each distinct predecessor once. This retains full-width 32-byte links and all current adversarial guarantees while
+moving ordering from O(N^2) unrolled comparisons to O(N) fixed-field checks (or one covenant loop).
+
 ## Where the current cost concentrates
 
 ### Category-specialized entry address construction

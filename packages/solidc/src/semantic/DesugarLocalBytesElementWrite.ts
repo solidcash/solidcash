@@ -68,6 +68,8 @@ export default class DesugarLocalBytesElementWrite extends AstTraversal {
     const suffix = at(new SliceNode(read(), iPlus1, len));
     const cat = at(new BinaryOpNode(at(new BinaryOpNode(prefix, BinaryOperator.PLUS, value)),
       BinaryOperator.PLUS, suffix));
-    return at(new AssignNode(read(), cat));
+    const assign = at(new AssignNode(read(), cat));
+    assign.isReferenceDataWrite = true;
+    return assign;
   }
 }

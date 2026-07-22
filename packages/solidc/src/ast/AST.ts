@@ -556,6 +556,9 @@ export class TupleAssignmentNode extends StatementNode {
 
 export class AssignNode extends StatementNode {
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state assign)
+  // True when AstBuilder lowered a write through a reference (for example `s.field = v` or `b[i] = v`)
+  // into a whole-value assignment. This must not be confused with a user-authored calldata pointer rebind.
+  isReferenceDataWrite = false;
 
   constructor(
     public identifier: IdentifierNode,

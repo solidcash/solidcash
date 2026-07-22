@@ -85,10 +85,10 @@ Full treatment: [solidity-import-compat.md](./solidity-import-compat.md), "trans
 
 | Modifier | EVM | SolidCash |
 | --- | --- | --- |
-| `memory` | Mutable scratch RAM for reference types. | The mutable on-stack default (same as omitting it). No memory aliasing - SolidCash is value-semantic. |
+| `memory` | Mutable scratch RAM for reference types. | Mutable linear memory with reference aliasing for supported arrays, bytes, strings, structs, and internal/private helper paths. Unsupported observable alias paths fail at compile time rather than value-copying silently. |
 | `calldata` | Read-only, cheaper call input; default for external reference params. | Enforced read-only: writing a `calldata` param/local is a compile error. Copy it into a plain variable to modify. |
 
-Deep dive, the no-modifier default, and the no-aliasing divergence: [data-locations.md](./data-locations.md).
+Deep dive, the no-modifier default, and memory-model boundaries: [data-locations.md](./data-locations.md).
 
 ### `storage`
 

@@ -68,6 +68,12 @@ export class SolidCashError extends Error {
   }
 }
 
+export class UnsupportedMemoryAliasingError extends SolidCashError {
+  constructor(node: VariableDefinitionNode, names: string[]) {
+    super(node, `Memory alias group '${names.join(', ')}' reaches an operation that cannot yet preserve Solidity aliasing`);
+  }
+}
+
 export class ParseError extends Error {
   constructor(
     message: string,

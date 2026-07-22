@@ -3840,6 +3840,7 @@ export default class AstBuilder
     const assign: StatementNode = useState
       ? new StateAssignNode(rawName, rebuilt)
       : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode
+    if (assign instanceof AssignNode) assign.isReferenceDataWrite = true;
     assign.location = loc;
     return assign;
   }
@@ -5782,9 +5783,10 @@ export default class AstBuilder
       : stamp(new BinaryOpNode(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
     const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, newByte));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));
-    return isState
-      ? stamp(new StateAssignNode(name, cat2))
-      : stamp(new AssignNode(stamp(new IdentifierNode(name)), cat2));
+    if (isState) return stamp(new StateAssignNode(name, cat2));
+    const assign = stamp(new AssignNode(stamp(new IdentifierNode(name)), cat2));
+    assign.isReferenceDataWrite = true;
+    return assign;
   }
 
   private desugarBytesPop(name: string, ctx: ParserRuleContext): StateAssignNode {

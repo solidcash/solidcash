@@ -69,7 +69,9 @@ export interface SolidcashEthers {
   // ethers `Wallet` (`new Wallet(wif, provider)`) plus a BCH `createRandom` that returns a funded ad-hoc HDSigner.
   Wallet: typeof Signer & { createRandom(provider?: NetworkProvider): HDSigner };
   HDSigner: typeof HDSigner;
-  HDNodeWallet: typeof HDSigner;
+  HDNodeWallet: typeof HDSigner & {
+    fromMnemonic(mnemonic: string | { phrase: string }, path?: string): HDSigner;
+  };
   [k: string]: unknown; // forwarded ethers utils (parseEther, keccak256, AbiCoder, constants, ...)
 }
 
@@ -188,6 +190,15 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
   }
 
+  // ethers v6 keeps this compatibility constructor on HDNodeWallet. Unlike `HDSigner.fromPhrase`, its
+  // provider is supplied later with `.connect(provider)`, so bind the active HRE provider temporarily.
+  const HDNodeWallet = Object.assign(HDSigner, {
+    fromMnemonic(mnemonicValue: string | { phrase: string }, derivationPath?: string): HDSigner {
+      const phrase = typeof mnemonicValue === 'string' ? mnemonicValue : mnemonicValue.phrase;
+      return HDSigner.fromPhrase(phrase, provider, derivationPath);
+    },
+  });
+
   const contractFactory = (artifactOrName: Artifact | string, runner?: ContractRunner): ContractFactory<Artifact> =>
     sdkGetContractFactory(resolveArtifact(artifactOrName), runner ?? defaultRunner());
   const contractAt = (artifactOrName: Artifact | string, addressOrCategory: string, runner?: ContractRunner)
@@ -219,7 +230,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     Signer,
     Wallet,
     HDSigner,
-    HDNodeWallet: HDSigner,
+    HDNodeWallet,
   };
   return ethers;
 }

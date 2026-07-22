@@ -1,18 +1,33 @@
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
-import { hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
-  getDataNftAddress, getEntryNftAddress,
+  bytesToSlotValue, encodeEntryCommitment, getDataNftAddress, getEntryNftAddress, keyToSlot, slotValueToBytes,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
-  buildEntryCommitment,
 } from '@solidcash/utils';
 import {
   alicePkh, bobPkh,
 } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
+
+const c2Entries = (address: string, entries: Array<[Uint8Array, bigint]>): any[] => {
+  const zero = slotValueToBytes(0n);
+  const sorted = entries.map(([key, value]) => ({ slot: keyToSlot(key), value }))
+    .sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1);
+  const commitment = (slot: Uint8Array, next: Uint8Array, value?: bigint): string => binToHex(
+    encodeEntryCommitment(slot, next, value === undefined ? new Uint8Array() : bigIntToVmNumber(value)),
+  );
+  return [
+    { address, satoshis: 10000n, token: { nft: { capability: 'mutable', commitment: commitment(zero, sorted[0]?.slot ?? zero) } } },
+    ...sorted.map((entry, i) => ({
+      address, satoshis: 10000n,
+      token: { nft: { capability: 'mutable', commitment: commitment(entry.slot, sorted[i + 1]?.slot ?? zero, entry.value) } },
+    })),
+  ];
+};
 
 // ===== Contract Sources =====
 
@@ -139,6 +154,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+          ...c2Entries(getEntryNftAddress(salted, cat, 'balances'), []),
         ];
       });
 
@@ -164,10 +180,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
+          ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
         ];
       });
 
@@ -177,8 +190,8 @@ describe('Collection Iteration', () => {
         .send();
       expect(tx.txid).toBeDefined();
       // Transaction should include the 2 entry NFTs as iteration inputs
-      // Total inputs: master(1) + data NFT(1) + iteration entries(2) + fee funder(1) = 5
-      expect(tx.inputs.length).toBe(5);
+      // Total inputs: master(1) + data NFT(1) + HEAD+entries(3) + fee funder(1) = 6
+      expect(tx.inputs.length).toBe(6);
     });
 
     it('should include entry NFTs as iteration inputs for countKeys', async () => {
@@ -195,20 +208,18 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
+          ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
         ];
       });
 
       const sc = StatefulContract.withCategory(contract, categoryId);
+      sc.setIterationKeys('balances', [alicePkh, bobPkh]);
       // count = 2 keys; auto-derived via iterative VM probe
       const tx = await sc.countKeys()
         .send();
       expect(tx.txid).toBeDefined();
       // master(1) + data NFT(1) + iteration entries(2) + fee funder(1) = 5
-      expect(tx.inputs.length).toBe(5);
+      expect(tx.inputs.length).toBe(6);
     });
 
     it('should include entry NFTs as iteration inputs for sumEntries', async () => {
@@ -225,20 +236,18 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
+          ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
         ];
       });
 
       const sc = StatefulContract.withCategory(contract, categoryId);
+      sc.setIterationKeys('balances', [alicePkh, bobPkh]);
       // sum = 100 + 200 = 300; auto-derived via iterative VM probe
       const tx = await sc.sumEntries()
         .send();
       expect(tx.txid).toBeDefined();
       // master(1) + data NFT(1) + iteration entries(2) + fee funder(1) = 5
-      expect(tx.inputs.length).toBe(5);
+      expect(tx.inputs.length).toBe(6);
     });
 
     it('should filter out non-mutable NFTs from iteration entries', async () => {
@@ -255,8 +264,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'bigint') } } },
+          ...c2Entries(entryAddress, [[alicePkh, 50n]]),
           // Invalid: non-mutable NFT (should be filtered)
           { address: entryAddress, satoshis: 10000n,
             token: { nft: { capability: 'none', commitment: 'deadbeef' } } },
@@ -269,7 +277,7 @@ describe('Collection Iteration', () => {
       // Invalid: wrong category (separate genesis -> different category, should be filtered)
       await (provider as any).addTokenUtxosDynamic(() => [
         { address: entryAddress, satoshis: 10000n,
-          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'bigint') } } },
+          token: { nft: { capability: 'mutable', commitment: '00'.repeat(64) } } },
       ]);
 
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -277,8 +285,8 @@ describe('Collection Iteration', () => {
       const tx = await sc.sumValues()
         .send();
       expect(tx.txid).toBeDefined();
-      // Only 1 valid entry, so: master(1) + data(1) + iteration entries(1) + fee funder(1) = 4
-      expect(tx.inputs.length).toBe(4);
+      // One valid entry plus HEAD: master(1) + data(1) + iteration inputs(2) + fee funder(1) = 5
+      expect(tx.inputs.length).toBe(5);
     });
   });
 });
@@ -325,10 +333,7 @@ describe('Collection iteration + dynamic storage (W4)', () => {
           token: { nft: { capability: 'minting', commitment: '' } } },
         { address: getDataNftAddress(salted, cat), satoshis: 10000n,
           token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-        { address: entryAddress, satoshis: 10000n,
-          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
-        { address: entryAddress, satoshis: 10000n,
-          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
+        ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
       ];
     });
     const sc = StatefulContract.withCategory(contract, categoryId);

@@ -66,9 +66,8 @@ describe('read-after-write same key', () => {
 });
 
 describe('write in loop', () => {
-  // A pure-write mapping loop (`for(i<n) m[k[i]]=v[i]`) now compiles to a runtime counter-indexed entry-mint
-  // covenant loop, and a fixed-bound loop unrolls to N static writes - both sound. A read-modify-write or a
-  // delete in a loop stays rejected (stale-read / omission unsoundness): still EntryWriteInLoopError.
+  // Invariant-key loops cache the entry locally and flush one authenticated upsert. Varying array-key loops use
+  // the C2 upsert-loop covenant. Deletes with unsupported evolving keys remain rejected.
   const rej = (src: string): void => {
     expect(() => compileString(src, { forceStateful: true })).toThrow(EntryWriteInLoopError);
   };
@@ -82,16 +81,20 @@ describe('write in loop', () => {
     function chk(int idx, int ev) external { require(a[idx] == ev); } }`;
 
   describe('entry-backed state write inside a loop', () => {
-    it('rejects a mapping read-modify-write in a loop (invariant key, stale read)', () => {
-      rej(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = m[k] + 1; } require(true); }'));
+    it('caches an invariant-key read-modify-write loop and accumulates every iteration', async () => {
+      const sc = await dep(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = m[k] + 1; } require(true); }'));
+      await sc.f(4n, 3n).send();
+      await sc.chk(4n, 3n).send();
     });
 
     it('rejects a mapping delete in a loop', () => {
       rej(MAP('function f(int n) external { for (int i = 0; i < n; i++) { delete m[i]; } require(true); }'));
     });
 
-    it('rejects an invariant-key write in a loop (m[k]=i would mint duplicate entries)', () => {
-      rej(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }'));
+    it('caches an invariant-key pure-write loop and persists the final value', async () => {
+      const sc = await dep(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }'));
+      await sc.f(6n, 3n).send();
+      await sc.chk(6n, 2n).send();
     });
 
     it('writes distinct mapping keys in a dynamic for-loop (m[i]=i+1 for i<n)', async () => {

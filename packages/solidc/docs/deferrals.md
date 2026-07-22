@@ -4,6 +4,12 @@ A running log of features/fixes that were **investigated and intentionally defer
 roughly what they'd take, but not shipped because the value/risk/effort did not justify it at the time. This is
 the "we looked, here's why not yet, here's the trigger to revisit" list, distinct from unknown/unscoped gaps.
 
+Entries are chronological research notes and may describe intermediate states that were later superseded. In
+particular, all references to `sortedMappings`, `sortedMappingsAll`, a non-C2/default entry backend, unpinned value
+chunks, or pending C2 compiler/SDK plumbing predate the completed 2026-07-22 C2 merge. Current mapping behavior is
+defined only by [`sorted-mapping-c2.md`](sorted-mapping-c2.md); every mapping is C2 and unsupported shapes fail
+closed. Do not use historical opt-out instructions from this log.
+
 Related: `examples/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
 `docs/platform-differences.md` (BCH-vs-EVM primitives), `docs/solidity-gap-analysis.md`.
 

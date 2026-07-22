@@ -1,5 +1,13 @@
 # Mapping omission and negative guards (C2)
 
+> **Resolution (2026-07-22): fixed by mandatory C2.** The omission-prone entry model described below has been
+> removed. Every mapping now uses the authenticated sorted-linked-list backend, and there is no compiler opt-out.
+> Reads prove either exact membership or adjacent non-membership; unsupported source shapes fail compilation.
+> This document is retained as the vulnerability analysis and design rationale. The normative current protocol is
+> [`sorted-mapping-c2.md`](sorted-mapping-c2.md).
+
+## Historical vulnerability
+
 A mapping read `m[k]` compiles to a live introspection of whether an entry NFT sits at the entry slot's
 input index: present -> read its committed value; absent -> read the type **default** (`false` / `0` / empty).
 This mirrors Solidity's "unset key = default value" semantics.
@@ -29,7 +37,7 @@ The same shape defeats `require(!hasVoted[u])`, `require(!blacklisted[u])`, and 
 **Positive guards are fail-safe.** `require(this.balances[k] >= amt)` or `require(this.allowed[u])` read the
 default (`0` / `false`) on omission, which *fails* the guard - the worst case is a spender denying themselves.
 
-## Compiler diagnostic
+## Historical compiler diagnostic
 
 The compiler warns (`SECURITY-AUDIT C2`) when a `require()` condition is a direct negative guard on a mapping
 read: `require(!m[k])`, `require(m[k] == false)`, or `require(m[k] == 0)` (and the mirror image). Rewrite the
@@ -88,13 +96,13 @@ mappings compile unchanged. Suggested phases: (1) nullifier primitive (reuses th
 (2) the authenticated-set mapping type(s) matched to the access pattern (the heavy lift, the only irreducibly
 authenticated-data-structure piece); (3) the diagnostic-as-error backstop, once (1)/(2) give a redirect.
 
-## Status: the sorted-linked-list fix is VM-proven
+## Current status: shipped end to end
 
-The B2 sorted-linked-list authenticated set (case 3) is **implemented and proven sound at the covenant level**
+The B2 sorted-linked-list authenticated set (case 3) is **implemented and proven end to end**
 (`sorted-mapping-c2.md`). Absence of `k` is witnessed by co-spending the bracketing predecessor `P` with
 `P.slot < k < P.nextKey`; there is **no default-on-absent branch to omit** - a missing/invalid witness reverts.
-Proven end to end in 20 raw-VM tests (`packages/solidcash/test/e2e/SortedMapping*.test.ts`): a present key has no
-valid bracket, a fabricated predecessor fails category authentication, insert/delete splices are forced correct,
-the comparison is sound at full 32-byte width, and a claim-once (`require(!claimed[a]); claimed[a]=true`) works
-end to end. The remaining work is the compiler opt-in + codegen and the SDK list-management plumbing (engineering,
-no soundness risk) - see `sorted-mapping-c2.md`.
+The compiler, artifact metadata, SDK planning, transaction construction, hostile-provider validation, batching,
+iteration, computed values, compound values, and root-addressed large-value chunks are all integrated. Adversarial
+tests cover fabricated predecessors, omission, malformed/disconnected lists, incorrect splices, shared-gap batches,
+swap-remove aliasing, and corrupted chunks. Slots and links remain full-width 32-byte values. The old compiler
+options and legacy mapping-entry backend no longer exist.

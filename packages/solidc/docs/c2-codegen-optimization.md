@@ -295,6 +295,14 @@ introducing a narrower-link collision bound or runtime truncation logic.
 
 ## Straight-line multi-key writes: required batch transition
 
+**Implementation status (2026-07-22): shipped.** The accepted implementation adds fixed-batch metadata to the AST
+and artifact, plans a deduplicated original-list proof in the SDK, and emits an authenticated final-union verifier.
+It covers shared predecessors, adjacent insert chains, mixed updates/inserts, exact collection-output cardinality,
+conditional no-op paths, and computed-key swap-remove aliasing. `C2BatchMetadata`, `C2BatchAdversarial`, and
+`IterableMappingRemove` contain the metadata, topology-mutation, and alias-sentinel regression coverage. The design
+notes below explain the failure mode that required batching and the constraints used by the implementation; future-
+tense statements describe the original implementation plan, not an open soundness gap.
+
 The July 2026 merge audit found that two fixed writes to distinct absent keys are not merely an SDK duplicate-input
 case. If both keys occupy the same original gap, both fixed upserts currently select the same predecessor, and both
 also address the single `master + blockSize` trailing NEW-node output. Deduplicating the input alone is therefore
@@ -315,7 +323,7 @@ The compact, sound implementation is a function-exit batch transition:
    construction. Existing-key assignments remain updates and must preserve their original link unless that node is
    the predecessor of an inserted chain, in which case its one recreated output carries the new first link.
 
-This should be a dedicated artifact/codegen shape, not an extension of `sortedUpsertLoopInfo`. A prototype that
+This is implemented as a dedicated artifact/codegen shape, not an extension of `sortedUpsertLoopInfo`. A prototype that
 described counter keys as a synthetic key array reached the upsert-loop body but failed its per-iteration slot proof:
 array-driven upserts and straight-line/range insertion have different stack and output-index invariants.
 

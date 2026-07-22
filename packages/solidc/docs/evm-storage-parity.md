@@ -5,12 +5,11 @@ Status: **Tier-1 (assembly-storage) + OZ StorageSlot param-factory SHIPPED and r
 reflect shipped reality (the earlier "nothing implemented" text was stale) and to fold in two things: the
 128-byte-commitment PACKING cost model, and the prerequisites the EVM-ABI-parity work retired.
 
-**Current mapping-default note (2026-07-21):** later sections retain some design-era references to C2 as an
-"opt-in". The compiler now selects the C2 sorted/exclusion-proof backend by default for supported mapping value
-shapes; `sortedMappingsAll: false` is the contract-wide legacy opt-out, while `sortedMappings` can selectively keep
-C2 mappings in that mode. Read `compiler.ts` and `deferrals.md` section "C2 sorted backend as the DEFAULT" for the
-current policy. Tier-2 below refers to re-homing all high-level state onto an EVM-like raw slot model, not to making
-ordinary mappings omission-proof; current C2 mappings already provide that property.
+**Current mapping note (2026-07-22):** every mapping uses the mandatory C2 sorted/exclusion-proof backend. The
+legacy entry backend and the `sortedMappingsAll` / `sortedMappings` options have been removed. Later design-era
+references to an opt-in or fallback are historical only; [`sorted-mapping-c2.md`](sorted-mapping-c2.md) is normative.
+Tier-2 below refers to re-homing all high-level state onto an EVM-like raw slot model, not to making ordinary
+mappings omission-proof; C2 already provides that property.
 
 The question was: can Solidity's storage model be mapped soundly onto solidcash, including the assembly that
 manipulates storage slots directly (`sstore`/`sload` with derived slots)? Earlier this was called
@@ -314,14 +313,11 @@ contract relying on the guard is silently exploitable.
 
 C2's bracketing (`P.slot < H(k) < P.nextKey`) recovers Solidity's unforgeable "absent => 0". So **C2 is a parity
 requirement for mappings, not an enumeration feature** - enumeration is the bonus the same structure provides.
-The parity-correct DEFAULT is therefore C2, with plain as an explicit UNSAFE OPT-OUT (mappings that provably
-never do a negative-existence read, or signed-use where the only withholder is the signer). Two gates before
-flipping the default:
-1. **P5 is now a PREREQUISITE, not niche.** C2 fails closed on unbounded bytes/string VALUES (128B entry can't
-   hold slot+next+long value); plain supports them via chunks. So C2-by-default REQUIRES closing P5 (chunk the
-   sorted-entry value) first, else string-valued mappings regress.
-2. **Cost is the price of the guarantee.** C2 adds a bracketing co-spend per write (one extra UTXO) - the same
-   soundness EVM buys with the trie/gas. Necessary, not avoidable overhead.
+The parity-correct backend is therefore mandatory C2; the unsafe plain opt-out was removed in the 2026-07-22 merge.
+The former P5 prerequisite is also complete: values beyond the inline commitment capacity use authenticated,
+root-addressed chunks, including unbounded bytes/string and encoded compound values. Cost remains the price of the
+guarantee: C2 requires an authenticated exact node or bracketing predecessor, analogous to the proof work purchased
+by EVM trie gas.
 
 Type story then collapses: `mapping` = the C2 backend (sound exclusion proofs = parity) with iteration GATED
 (Solidity mappings are not iterable, so the default surface stays non-enumerable though the structure could
@@ -340,23 +336,14 @@ in via `enumerable` is where the dev acknowledges "I will keep this bounded / pa
 small reversible change (drop the keyword + un-gate). This does NOT revert the C2-default direction - the
 structure is universal; only the iteration SURFACE stays opt-in.
 
-### Mergeability: `enumerable` == `sorted` (C2), NOT `mapping` == `enumerable mapping`
+### Mapping and enumeration resolution
 
-- **`mapping` (plain) and `enumerable mapping` do NOT merge.** The linked-list is a DECLARATION-TIME commitment
-  - it must be maintained from the first insert (you cannot retroactively enumerate an unlinked set without
-  re-sorting every entry), so whether a mapping carries the linkage is fixed at declaration. Plain stays the
-  cheap Solidity-parity default (single mint/update per write, no nextKey field, no HEAD sentinel, no
-  bracketing); making EVERY mapping pay the C2 cost - even ones never iterated - is the tradeoff that keeps them
-  separate. (Also currently blocked: C2 fails closed on unbounded bytes/string VALUES = the deferred P5, which
-  plain mappings support via chunks.)
-- **But `enumerable` and the existing `sorted` (C2) flag ARE the same thing - merge them.** The sorted
-  linked list simultaneously gives (a) negative-existence SOUNDNESS via bracketing (`P.slot < H(k) < P.nextKey`)
-  and (b) ENUMERATION via linkage traversal (HEAD -> nextKey -> tail) - both from the SAME nextKey chain + HEAD
-  sentinel. A `sorted` mapping already HAS the structure an `enumerable` one needs; enabling iteration is only
-  the traversal codegen on top. So collapse the two opt-in concepts into ONE C2 mapping type: `enumerable
-  mapping` == the sorted/C2 mapping (sound AND iterable); a user who wants only sound negative-existence just
-  never iterates it. Net type system: TWO mappings - plain `mapping` (parity default) and `enumerable mapping`
-  (C2: sound negative-existence + iteration). This subsumes `CompilerOptions.sortedMappings` into the type.
+All mappings maintain the C2 linked list from deployment onward. This is required for sound default-on-absent
+reads; a cheaper unlinked mapping would reintroduce the omission vulnerability and is no longer available.
+`enumerable mapping` is therefore not a different storage backend. It enables source-level traversal over the same
+authenticated C2 chain. Plain `mapping` retains Solidity's non-iterable language surface while receiving identical
+membership and exclusion security. Unbounded bytes/string, structs, and arrays use the root-addressed chunk format
+when their encoded value exceeds the inline commitment capacity.
 
 ## Soundness - and why the slot space does NOT need a sorted linked list
 

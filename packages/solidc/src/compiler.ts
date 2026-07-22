@@ -1,10 +1,12 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
-  Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
-  SourceFileNode, TypeIntrospectionNode, VariableDefinitionNode,
+  Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode,
+  FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode, LowLevelCallStatementNode, Node, ParameterNode,
+  RequireNode,
+  SourceFileNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -73,6 +75,7 @@ import expandInheritance from './semantic/InheritanceExpansionTransformation.js'
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
+import { MAX_INPUT_BYTESIZE } from './constants.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -85,6 +88,13 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 
 export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
+}
+
+export interface SplitCompileOptions extends CompileOptions {
+  /** Maximum redeem-script bytes for each generated shard. Defaults to the BCH input limit. */
+  maxShardBytes?: number;
+  /** Split eligible entry points even when the original artifact already fits. Useful for testing/tuning. */
+  forceSplit?: boolean;
 }
 
 // Optional process-wide memoization of pure string compiles (same code+options -> same artifact).
@@ -552,6 +562,403 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
   }
 
   return map;
+}
+
+type PlannedFunction = {
+  name: string;
+  closure: Set<string>;
+  footprint: SplitStateFootprint;
+};
+
+const LIFECYCLE_MODIFIERS = new Set([
+  FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
+  FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE, FunctionModifier.DELEGATE,
+]);
+
+/**
+ * Compile a contract into a statically-linked one-hop root/facet bundle. This API is additive: ordinary compile
+ * entry points retain their existing Artifact return type and bytecode. The splitter operates on fresh ASTs for
+ * every shard, so the normal mutating compiler pipeline remains isolated per artifact.
+ */
+export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
+  const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
+  const merged = { ...DEFAULT_COMPILER_OPTIONS, ...artifactOptions };
+  const baseline = compileString(code, { ...artifactOptions, errorListener });
+  const probe = prepareSplitAst(code, merged, errorListener);
+  const logicalName = probe.contract.name;
+  const functions = probe.contract.functions;
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+  const overloadedEntries = [...byName.entries()].filter(([, defs]) => defs.filter((fn) => fn.isEntryPoint).length > 1);
+  if (forceSplit && overloadedEntries.length > 0) {
+    throw new Error(
+      `Cannot split '${logicalName}': overloaded entry points require selector-keyed SDK routing: `
+      + overloadedEntries.map(([name]) => name).join(', '),
+    );
+  }
+
+  const plans = (baseline.stateLayout ? functions.filter((fn) => isMovableSplitEntry(fn)) : []).map((fn) => ({
+    name: fn.name,
+    closure: collectFunctionClosure(fn, byName),
+    footprint: analyseSplitFootprint(fn, byName),
+  }));
+
+  if ((!forceSplit && byteSize(baseline) <= maxShardBytes) || plans.length === 0) {
+    if (byteSize(baseline) > maxShardBytes) {
+      throw new Error(splitFailureMessage(logicalName, baseline, maxShardBytes, functions));
+    }
+    return unsplitBundle(baseline, plans);
+  }
+
+  // Hard-union entries that call one another. Then pack the atomic groups by two objectives: preserve state/effect
+  // affinity first, and minimize facet count second. Candidate ordering uses cached component sizes as a cheap
+  // best-fit heuristic; acceptance always compiles the union and checks its actual optimized bytecode, including
+  // shared helpers and delegate covenant overhead. This avoids eagerly recompiling every pair on every round.
+  let groups = hardClosureGroups(plans);
+  const measuredBytes = new Map<string, number>();
+  const groupKey = (group: PlannedFunction[]): string => group.map((plan) => plan.name).sort().join(',');
+  const measure = (group: PlannedFunction[]): number => {
+    const key = groupKey(group);
+    const cached = measuredBytes.get(key);
+    if (cached !== undefined) return cached;
+    const bytes = byteSize(compileFacet(code, merged, errorListener, group, 'ProbeFacet'));
+    measuredBytes.set(key, bytes);
+    return bytes;
+  };
+  // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
+  // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
+  let mergedAffinity = true;
+  while (mergedAffinity) {
+    mergedAffinity = false;
+    const candidates: Array<{
+      affinity: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+    }> = [];
+    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+      const affinity = stateAffinity(groups[i], groups[j]);
+      if (affinity > 0) candidates.push({
+        affinity, left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+      });
+    }
+    candidates.sort((a, b) => b.affinity - a.affinity || a.key.localeCompare(b.key));
+    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+    if (selected) {
+      groups[selected.left] = selected.plans;
+      groups.splice(selected.right, 1);
+      mergedAffinity = true;
+    }
+  }
+
+  // Phase two reduces facet count. At this smaller frontier, deterministic best-fit tries the fullest estimated
+  // union first, while the cached real compilation remains the acceptance authority.
+  let packed = true;
+  while (packed) {
+    packed = false;
+    const candidates: Array<{
+      estimate: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+    }> = [];
+    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+      candidates.push({
+        estimate: measure(groups[i]) + measure(groups[j]),
+        left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+      });
+    }
+    candidates.sort((a, b) => b.estimate - a.estimate || a.key.localeCompare(b.key));
+    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+    if (selected) {
+      groups[selected.left] = selected.plans;
+      groups.splice(selected.right, 1);
+      packed = true;
+    }
+  }
+
+  const facets: ArtifactMap = {};
+  const facetRecords: Array<{ name: string; link: string; plans: PlannedFunction[]; artifact: Artifact }> = [];
+  groups.sort((a, b) => a.map((p) => p.name).join(',').localeCompare(b.map((p) => p.name).join(',')));
+  groups.forEach((group, index) => {
+    const name = `${logicalName}__Facet${index}`;
+    const artifact = compileFacet(code, merged, errorListener, group, name);
+    if (byteSize(artifact) > maxShardBytes) {
+      throw new Error(`Cannot split '${logicalName}': facet '${name}' is ${byteSize(artifact)} bytes `
+        + `(limit ${maxShardBytes}); closure: ${group.map((p) => p.name).join(', ')}.`);
+    }
+    facets[name] = artifact;
+    facetRecords.push({ name, link: `__facetAddr_${index}`, plans: group, artifact });
+  });
+
+  const rootAst = prepareSplitAst(code, merged, errorListener);
+  const routeByName = new Map<string, { facet: string; link: string }>();
+  for (const facet of facetRecords) for (const plan of facet.plans) {
+    routeByName.set(plan.name, { facet: facet.name, link: facet.link });
+  }
+  prepareSplitRoot(rootAst.contract, routeByName);
+  const root = compileResolvedAst(rootAst, code, merged);
+  if (byteSize(root) > maxShardBytes) {
+    throw new Error(`Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`);
+  }
+
+  const routes = (baseline.abi as readonly any[]).filter((fn) => fn.type === 'function' || fn.name).map((abiFn) => {
+    const plan = plans.find((p) => p.name === abiFn.name);
+    const target = routeByName.get(abiFn.name)?.facet ?? 'root';
+    return {
+      selector: abiFn.selector ?? '', function: abiFn.name, target,
+      footprint: plan?.footprint ?? emptyFootprint(),
+    };
+  });
+  return {
+    format: 'solidcash-split-v1', root, facets,
+    manifest: {
+      logicalContractName: logicalName,
+      abi: baseline.abi,
+      stateLayoutFingerprint: splitStateLayoutFingerprint(baseline.stateLayout),
+      deploymentMode: 'immutable-one-hop', algorithm: 'state-affinity-best-fit-v2', routes,
+      identityBinding: { scheme: 'solidcash-create-v1', owner: 'root', facetIdentity: 'physical-only' },
+      facets: facetRecords.map((f) => ({
+        name: f.name, functions: f.plans.map((p) => p.name), brandArgument: '__brand',
+        linkArgument: f.link, delegateOnly: true, estimatedRedeemBytes: byteSize(f.artifact),
+      })),
+    },
+  };
+}
+
+function byteSize(artifact: Artifact): number { return artifact.bytecode.length / 2; }
+function emptyFootprint(): SplitStateFootprint { return { reads: [], writes: [], effects: [], unknown: false }; }
+function splitStateLayoutFingerprint(layout: Artifact['stateLayout']): string {
+  if (!layout) return '{}';
+  const storageLayout = { ...layout };
+  delete storageLayout.constructorInputs;
+  return JSON.stringify(storageLayout);
+}
+
+function unsplitBundle(root: Artifact, plans: PlannedFunction[]): SplitArtifactBundle {
+  return {
+    format: 'solidcash-split-v1', root, facets: {},
+    manifest: {
+      logicalContractName: root.contractName, abi: root.abi,
+      stateLayoutFingerprint: splitStateLayoutFingerprint(root.stateLayout),
+      deploymentMode: 'immutable-one-hop', algorithm: 'state-affinity-best-fit-v2',
+      identityBinding: { scheme: 'solidcash-create-v1', owner: 'root', facetIdentity: 'physical-only' },
+      routes: (root.abi as readonly any[]).map((fn) => ({
+        selector: fn.selector ?? '', function: fn.name, target: 'root' as const,
+        footprint: plans.find((p) => p.name === fn.name)?.footprint ?? emptyFootprint(),
+      })), facets: [],
+    },
+  };
+}
+
+function isMovableSplitEntry(fn: FunctionDefinitionNode): boolean {
+  return fn.isEntryPoint && !fn.isFallback && !fn.isReceive
+    && !fn.modifiers.includes(FunctionModifier.VIEW) && !fn.modifiers.includes(FunctionModifier.PURE)
+    && !fn.modifiers.some((m) => LIFECYCLE_MODIFIERS.has(m));
+}
+
+function walkAst(node: unknown, visit: (node: Node) => void, seen = new Set<object>()): void {
+  if (!(node instanceof Node) || seen.has(node)) return;
+  seen.add(node); visit(node);
+  for (const value of Object.values(node)) {
+    if (value instanceof Node) walkAst(value, visit, seen);
+    else if (Array.isArray(value)) for (const item of value) walkAst(item, visit, seen);
+  }
+}
+
+function directCalls(fn: FunctionDefinitionNode): Set<string> {
+  const calls = new Set<string>();
+  walkAst(fn.body, (node) => {
+    if (node instanceof FunctionCallNode && !node.fromThisCall) calls.add(node.identifier.name);
+  });
+  return calls;
+}
+
+function collectFunctionClosure(
+  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>,
+): Set<string> {
+  const closure = new Set<string>();
+  const pending = [fn.name];
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (closure.has(name)) continue;
+    closure.add(name);
+    for (const candidate of byName.get(name) ?? []) for (const called of directCalls(candidate)) {
+      if (byName.has(called)) pending.push(called);
+    }
+  }
+  return closure;
+}
+
+function analyseSplitFootprint(
+  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>,
+): SplitStateFootprint {
+  const reads = new Set<string>(); const writes = new Set<string>(); const effects = new Set<string>();
+  const result = { unknown: false };
+  for (const name of collectFunctionClosure(fn, byName)) for (const candidate of byName.get(name) ?? []) {
+    walkAst(candidate.body, (node) => {
+      const kind = node.constructor.name;
+      const shaped = node as unknown as { name?: string; keys?: Node[] };
+      const resourceName = shaped.name;
+      const collectionResource = resourceName ? splitCollectionResource(resourceName, shaped.keys) : undefined;
+      if (kind === 'StateAccessNode' && resourceName) reads.add(`state:${resourceName}`);
+      else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource) {
+        reads.add(collectionResource);
+      } else if (/^(StateAssign|DeleteState)/.test(kind) && resourceName) writes.add(`state:${resourceName}`);
+      else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
+        .test(kind) && collectionResource) writes.add(collectionResource);
+      else if (kind === 'EmitStatementNode') effects.add('events');
+      else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') effects.add('value');
+      else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') effects.add('external-call');
+      else if (kind === 'IndirectCallNode') result.unknown = true;
+    });
+  }
+  return { reads: [...reads].sort(), writes: [...writes].sort(), effects: [...effects].sort(), ...result };
+}
+
+function splitCollectionResource(name: string, keys: Node[] | undefined): string {
+  if (!keys || keys.length === 0) return `collection:${name}:*`;
+  const literals = keys.map((key) => {
+    const shaped = key as unknown as { value?: unknown };
+    const kind = key.constructor.name;
+    if (!['IntLiteralNode', 'BoolLiteralNode', 'HexLiteralNode', 'StringLiteralNode'].includes(kind)) return '*';
+    const value = shaped.value;
+    return value instanceof Uint8Array ? binToHex(value) : String(value);
+  });
+  return `collection:${name}:${literals.includes('*') ? '*' : literals.join('/')}`;
+}
+
+function hardClosureGroups(plans: PlannedFunction[]): PlannedFunction[][] {
+  const groups = plans.map((p) => [p]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer: for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+      const namesI = new Set(groups[i].map((p) => p.name));
+      const namesJ = new Set(groups[j].map((p) => p.name));
+      if (groups[i].some((p) => [...p.closure].some((n) => namesJ.has(n)))
+        || groups[j].some((p) => [...p.closure].some((n) => namesI.has(n)))) {
+        groups[i] = uniquePlans([...groups[i], ...groups[j]]); groups.splice(j, 1); changed = true; break outer;
+      }
+    }
+  }
+  return groups;
+}
+
+function uniquePlans(plans: PlannedFunction[]): PlannedFunction[] {
+  return [...new Map(plans.map((p) => [p.name, p])).values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function stateAffinity(a: PlannedFunction[], b: PlannedFunction[]): number {
+  const af = mergeFootprints(a); const bf = mergeFootprints(b);
+  if (af.unknown || bf.unknown) return 1;
+  const ar = new Set([...af.reads, ...af.writes]); const br = new Set([...bf.reads, ...bf.writes]);
+  let score = 0;
+  for (const left of ar) if ([...br].some((right) => splitResourcesOverlap(left, right))) score += 2;
+  for (const e of af.effects) if (bf.effects.includes(e)) score += 1;
+  return score;
+}
+
+function splitResourcesOverlap(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (!a.startsWith('collection:') || !b.startsWith('collection:')) return false;
+  const [aKind, aName, aKey] = a.split(':'); const [bKind, bName, bKey] = b.split(':');
+  return aKind === bKind && aName === bName && (aKey === '*' || bKey === '*');
+}
+
+function mergeFootprints(plans: PlannedFunction[]): SplitStateFootprint {
+  const merge = (key: 'reads' | 'writes' | 'effects'): string[] => (
+    [...new Set(plans.flatMap((p) => p.footprint[key]))].sort()
+  );
+  return {
+    reads: merge('reads'), writes: merge('writes'), effects: merge('effects'),
+    unknown: plans.some((p) => p.footprint.unknown),
+  };
+}
+
+/** Prepare the complete logical contract before deciding physical placement. The normal compiler repeats these
+ * passes, but each is idempotent after it has consumed its source metadata. This keeps split planning aware of
+ * inherited entry points, inherited state, and modifier-injected calls/effects. */
+function prepareSplitAst(
+  code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
+): Ast {
+  let ast = parseAndResolve(code, options, listener);
+  ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  ast = expandInheritance(ast);
+  ast = expandModifiers(ast);
+  // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
+  // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
+  ast = ast.accept(new SynthesizeBlockOracle()) as Ast;
+  return ast;
+}
+
+function compileFacet(code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
+  plans: PlannedFunction[], facetName: string): Artifact {
+  const ast = prepareSplitAst(code, options, listener);
+  const keep = new Set(plans.flatMap((p) => [...p.closure]));
+  const contract = ast.contract;
+  contract.name = facetName;
+  contract.parameters = [new ParameterNode(new BytesType(32), '__brand')];
+  contract.parameters[0].location = contract.location;
+  contract.parameters[0].syntheticallyUsed = true;
+  contract.constructorDef = undefined;
+  contract.isLibraryContract = true;
+  contract.isBrandedLibrary = true;
+  // A facet intentionally exposes only its assigned selectors, so it is not independently an implementation of
+  // the logical contract's Solidity interfaces. The root retains the complete logical ABI.
+  contract.implements = [];
+  contract.parentInvocations = [];
+  contract.functions = contract.functions.filter((fn) => keep.has(fn.name));
+  for (const fn of contract.functions) if (plans.some((p) => p.name === fn.name)) {
+    fn.modifiers = fn.modifiers.filter((m) => ![
+      FunctionModifier.INTERNAL, FunctionModifier.PRIVATE, FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC,
+      FunctionModifier.PURE, FunctionModifier.VIEW,
+    ].includes(m));
+    fn.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.DELEGATE);
+  }
+  if (contract.functions.filter((fn) => fn.isEntryPoint).length < 2) {
+    const truth = new BoolLiteralNode(true); truth.location = contract.location;
+    const noopGuard = new RequireNode(truth); noopGuard.location = contract.location;
+    const body = new BlockNode([noopGuard]); body.location = contract.location;
+    const noop = new FunctionDefinitionNode('__split_noop', [], body); noop.location = contract.location;
+    noop.modifiers = [FunctionModifier.PUBLIC, FunctionModifier.DELEGATE]; contract.functions.push(noop);
+  }
+  const artifact = compileResolvedAst(ast, code, options);
+  artifact.delegateOnly = true;
+  return artifact;
+}
+
+function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: string; link: string }>): void {
+  // Once moved entry bodies become forwarders, helpers reachable only from those entries belong exclusively to
+  // facets. Leaving their OP_INVOKE bodies in the root defeats splitting and can keep an otherwise valid root over
+  // the VM limit. Preserve helpers reachable from root-local entries and the constructor.
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of contract.functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+  const rootHelpers = new Set<string>();
+  const roots = contract.functions.filter((fn) => fn.isEntryPoint && !routes.has(fn.name));
+  if (contract.constructorDef) roots.push(contract.constructorDef);
+  for (const fn of roots) for (const name of collectFunctionClosure(fn, byName)) rootHelpers.add(name);
+  contract.functions = contract.functions.filter((fn) => fn.isEntryPoint || rootHelpers.has(fn.name));
+
+  const links = [...new Map([...routes.values()].map((r) => [r.link, r])).values()];
+  for (const route of links) {
+    const param = new ParameterNode(new AddressType(), route.link); param.location = contract.location;
+    contract.parameters.push(param);
+  }
+  for (const fn of contract.functions) {
+    const route = routes.get(fn.name); if (!route) continue;
+    for (const param of fn.parameters) param.syntheticallyUsed = true;
+    const signature = computeFunctionSignature(fn.name, fn.parameters.map((p) => p.type.toString()));
+    const target = new IdentifierNode(route.link); target.location = fn.location;
+    const data = new HexLiteralNode(computeFunctionSelector(signature)); data.location = fn.location;
+    const call = new LowLevelCallStatementNode(target, data, 'delegatecall'); call.location = fn.location;
+    call.synthesizedFromLibraryCall = true;
+    const truth = new BoolLiteralNode(true); truth.location = fn.location;
+    const guard = new RequireNode(truth); guard.location = fn.location;
+    fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
+  }
+}
+
+function splitFailureMessage(name: string, artifact: Artifact, limit: number, functions: FunctionDefinitionNode[]): string {
+  const retained = functions.filter((fn) => !isMovableSplitEntry(fn)).map((fn) => fn.name);
+  return `Cannot split '${name}': artifact is ${byteSize(artifact)} bytes (limit ${limit}) and has no movable `
+    + `entry point. Root-local/unsupported functions: ${retained.join(', ') || '(none)'}.`;
 }
 
 /**

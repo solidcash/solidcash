@@ -1,8 +1,8 @@
 import fs, { PathLike } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Artifact, ArtifactMap } from '@solidcash/utils';
-import { compileString, compileStringMulti, CompileOptions } from './compiler.js';
+import { Artifact, ArtifactMap, SplitArtifactBundle } from '@solidcash/utils';
+import { compileString, compileStringMulti, compileStringSplit, CompileOptions, SplitCompileOptions } from './compiler.js';
 
 // Read a file + build the node import resolver, returning the source and the options to pass to
 // compileString / compileStringMulti. Shared by compileFile and compileFileMulti.
@@ -76,4 +76,12 @@ export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions 
 export function compileFileMulti(codeFile: PathLike, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
   return compileStringMulti(code, options);
+}
+
+/** Compile a file to a statically-linked root/facet bundle. */
+export function compileFileSplit(
+  codeFile: PathLike, compilerOptions: SplitCompileOptions = {},
+): SplitArtifactBundle {
+  const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
+  return compileStringSplit(code, { ...options, ...compilerOptions });
 }

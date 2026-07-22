@@ -668,7 +668,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
       }
 
-      if (sv.visibility === StateVariableVisibility.EXTERNAL) {
+      if (sv.isolatedNft) {
+        if (currentNftUsed > 0) {
+          nftIndex++;
+          fieldIndex = 0;
+          currentNftUsed = 0;
+        }
+        sv.nftIndex = nftIndex;
+        sv.fieldIndex = 0;
+        nftIndex++;
+        fieldIndex = 0;
+        currentNftUsed = 0;
+      } else if (sv.visibility === StateVariableVisibility.EXTERNAL) {
         // External variables always get their own dedicated NFT
         if (currentNftUsed > 0) {
           nftIndex++;

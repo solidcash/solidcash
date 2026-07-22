@@ -32,9 +32,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   .addFlag('quiet', 'Suppress per-file output')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const {
-      compileString, compileStringMulti, compileFileMulti, version: compilerVersion,
+      compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
+      version: compilerVersion,
     } = await import('solidc');
-    const { formatArtifact } = await import('@solidcash/utils');
+    const { formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
@@ -64,6 +65,13 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         const primary = compileString(source, hre.config.solc);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
+        if (primary.bytecode.length / 2 > 10_000) {
+          const split = compileStringSplit(source, hre.config.solc);
+          fs.writeFileSync(
+            path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
+            formatSplitArtifactBundle(split, 'json'),
+          );
+        }
         if (!args.quiet) console.log(`Compiled ${fn} -> ${Object.keys(map).join(', ')}`);
         ok++;
       } catch (e: any) {
@@ -96,6 +104,23 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         fs.writeFileSync(path.join(outputDir, `${name}.json`), formatArtifact(artifact as any, 'json'));
         fs.writeFileSync(path.join(outputDir, `${name}.artifact.ts`), formatArtifact(artifact as any, 'ts'));
         contracts++;
+      }
+      // Splitting is needed only for roots whose normal artifact exceeds the consensus script limit. Preserve the
+      // project DAG/cache fast path for ordinary contracts rather than independently recompiling every source.
+      for (const full of solFiles) {
+        const source = fs.readFileSync(full, 'utf8');
+        const declarations = [...source.matchAll(/\b(?:abstract\s+)?contract\s+([A-Za-z_$][\w$]*)/g)]
+          .map((match) => match[1]);
+        const needsSplit = declarations.some((name) => {
+          const artifact = result.artifacts[name];
+          return artifact && artifact.bytecode.length / 2 > 10_000;
+        });
+        if (!needsSplit) continue;
+        const split = compileFileSplit(full, { solidityImportCompat: true, ...hre.config.solc });
+        if (split.manifest.facets.length > 0) fs.writeFileSync(
+          path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
+          formatSplitArtifactBundle(split, 'json'),
+        );
       }
       solOk = solFiles.length;
       compilerJobs = result.compiledRoots.length;

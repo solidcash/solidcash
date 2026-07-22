@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Signer, getContractFactory, upgrades,
+  Signer, deriveLogicalCreateAddress, getContractFactory, resolveLogicalIdentity, upgrades,
 } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { alicePriv } from '../fixture/vars.js';
@@ -62,17 +62,22 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   it('uses the built-in default proxy (no proxy artifact needed) and forwards a call', async () => {
     const signer = await fundedSigner();
     const implArtifact = compileString(DELEGATE_IMPL);
+    const predicted = deriveLogicalCreateAddress(signer.getAddress(), 0n);
 
     const Impl = getContractFactory(implArtifact, signer);
     const proxy = await upgrades.deployProxy(Impl, { counter: 5n });   // no options.proxy
     await proxy.waitForDeployment();
+    expect(await signer.getNonce()).toBe(1);
 
     expect(proxy.address).toMatch(/^bchtest:|^bitcoincash:|^bchreg:/);
     expect(await proxy.getAddress()).toBe(proxy.address);
+    expect(proxy.address).toBe(predicted);
+    expect((await resolveLogicalIdentity(signer.provider, predicted)).categoryId).toBe(proxy.proxy.categoryId);
     expect(proxy.deploymentTransaction().txid).toBeDefined();
 
     // Forward the implementation's `increment` through the default proxy: counter 5 -> 6.
     const tx = await (proxy as any).increment().send();
+    expect(await signer.getNonce()).toBe(2);
     expect(tx.txid).toBeDefined();
     expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(6n);
   });

@@ -9,6 +9,8 @@ import SignatureTemplate from '../SignatureTemplate.js';
 import { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
+import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
+import { deriveLogicalCreateAddress } from './logical-identity.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -104,9 +106,9 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   ) {}
 
   /** The proxy address (the stable, state-holding address callers interact with). */
-  get address(): string { return this.proxy.address; }
+  get address(): string { return this.proxy.target; }
 
-  getAddress(): Promise<string> { return Promise.resolve(this.proxy.address); }
+  getAddress(): Promise<string> { return Promise.resolve(this.proxy.target); }
 
   /** Await both genesis transactions (ethers `waitForDeployment`). */
   async waitForDeployment(): Promise<this> {
@@ -218,50 +220,102 @@ function graftDefaultProxy(impl: Artifact): Artifact {
  * state-holding proxy, seed the state, and return a handle whose method calls forward to the implementation
  * through the pinned delegatecall. Uses the built-in SolidCashProxy unless `options.proxy` is given.
  */
+export function deployProxy<TImpl extends Artifact>(
+  implementationFactory: ContractFactory<TImpl>, initialState?: ProxyInitialState,
+  options?: DeployProxyOptions,
+): Promise<ProxyContract<TImpl>>;
+export function deployProxy(
+  implementationFactory: SplitContractBundle, initialState?: ProxyInitialState,
+  options?: DeployProxyOptions,
+): Promise<SplitContract>;
 export async function deployProxy<TImpl extends Artifact>(
-  implementationFactory: ContractFactory<TImpl>,
+  implementationFactory: ContractFactory<TImpl> | SplitContractBundle,
   initialState?: ProxyInitialState,
   options: DeployProxyOptions = {},
-): Promise<ProxyContract<TImpl>> {
-  const runner = options.runner ?? implementationFactory.runner;
-  const auth = options.auth ?? defaultAuth;
-  const implArtifact = implementationFactory.artifact;
-
-  // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
-  const initializer = resolveInitializer(options.initializer, implArtifact);
-  const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
-
-  // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-  const implementation = await implementationFactory.connect(runner).deploy(
-    ...(options.implementationOverrides ? [options.implementationOverrides] : []),
-  ) as DeployedContract<TImpl>;
-
-  // 2. Deploy the proxy. Custom proxy -> its own genesis; default proxy -> graft the implementation's layout + bake
-  //    the implementation's locking bytecode as the constructor arg. With no initializer, seed the state here.
-  let proxy: DeployedContract;
-  let shape: ForwardShape;
-  if (options.proxy) {
-    proxy = await new ContractFactory(options.proxy, runner)
-      .deploy({ ...options.proxyOverrides, initialState: seededState });
-    shape = detectForwardShape(options.proxy, options.forwardFunction);
-  } else {
-    const implLbc = addressToLockScript(implementation.address);
-    proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
-      .deploy(implLbc, { ...options.proxyOverrides, initialState: seededState });
-    shape = { name: '__forward', mode: 'baked' };
-  }
-
-  const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
-
-  // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
-  if (initializer) {
-    if (initialState !== undefined && !Array.isArray(initialState)) {
-      throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
+): Promise<ProxyContract<TImpl> | SplitContract> {
+  // A compiler-generated split bundle already contains the state-holding root. Deploy it directly: its
+  // forwarders target facets in one hop, so no P -> implementation-router -> facet stack is introduced.
+  if (implementationFactory instanceof SplitContractBundle) {
+    if (options.proxy) throw new Error('A split implementation cannot be wrapped in a custom proxy (nested delegatecall is unsupported).');
+    if (typeof options.initializer === 'string') {
+      throw new Error('A split implementation does not support delegate initializer routing; seed state at genesis.');
     }
-    await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).send();
+    const nonLinkCtorInputs = implementationFactory.bundle.root.constructorInputs.filter(
+      (input) => !input.name.startsWith('__facetAddr_'),
+    );
+    if (nonLinkCtorInputs.length > 0) {
+      throw new Error(
+        'Split deployProxy requires a constructor-free logical implementation; found: '
+        + nonLinkCtorInputs.map((input) => input.name).join(', '),
+      );
+    }
+    const seeded = toInitialState(initialState, implementationFactory.bundle.root);
+    const facetOverrides = options.implementationOverrides
+      ? Object.fromEntries(implementationFactory.bundle.manifest.facets.map(
+        (facet) => [facet.name, options.implementationOverrides!],
+      ))
+      : undefined;
+    return implementationFactory.deploy([], {
+      ...options.proxyOverrides,
+      initialState: seeded,
+      ...(facetOverrides && { facetOverrides }),
+    });
   }
+  const runner = options.runner ?? implementationFactory.runner;
+  const deploymentSigner = runner instanceof Signer ? runner : undefined;
+  const nonceReservation = deploymentSigner?.reserveTransactionNonce();
+  const logicalIdentity = nonceReservation ? {
+    deployer: deploymentSigner!.getAddress(), nonce: nonceReservation.nonce,
+    address: deriveLogicalCreateAddress(deploymentSigner!.getAddress(), nonceReservation.nonce),
+  } : undefined;
+  try {
+    const auth = options.auth ?? defaultAuth;
+    const implArtifact = implementationFactory.artifact;
 
-  return handle;
+    // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
+    const initializer = resolveInitializer(options.initializer, implArtifact);
+    const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
+
+    // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
+    const implementation = await implementationFactory.connect(runner).deploy({
+      ...(options.implementationOverrides ?? {}), logicalNonce: false,
+    }) as DeployedContract<TImpl>;
+
+    // 2. Deploy the proxy. Custom proxy -> its own genesis; default proxy -> graft the implementation's layout + bake
+    //    the implementation's locking bytecode as the constructor arg. With no initializer, seed the state here.
+    let proxy: DeployedContract;
+    let shape: ForwardShape;
+    if (options.proxy) {
+      proxy = await new ContractFactory(options.proxy, runner)
+        .deploy({
+          ...options.proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
+        });
+      shape = detectForwardShape(options.proxy, options.forwardFunction);
+    } else {
+      const implLbc = addressToLockScript(implementation.address);
+      proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
+        .deploy(implLbc, {
+          ...options.proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
+        });
+      shape = { name: '__forward', mode: 'baked' };
+    }
+
+    const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
+
+    // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
+    if (initializer) {
+      if (initialState !== undefined && !Array.isArray(initialState)) {
+        throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
+      }
+      await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).withoutLogicalNonce().send();
+    }
+
+    nonceReservation?.commit();
+    return handle;
+  } catch (error) {
+    nonceReservation?.release();
+    throw error;
+  }
 }
 
 /** The ethers/hardhat `upgrades` namespace. */

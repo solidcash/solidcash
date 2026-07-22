@@ -6,13 +6,14 @@ import {
   CompilerOptions,
   countOpcodes,
   formatArtifact,
+  formatSplitArtifactBundle,
   scriptToAsm,
   scriptToBytecode,
 } from '@solidcash/utils';
 import { program, Option } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { compileFile, version } from './index.js';
+import { compileFile, compileFileSplit, version } from './index.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 
 program
@@ -25,6 +26,7 @@ program
   .option('-A, --asm', 'Compile the contract to ASM format rather than a full artifact.')
   .option('-c, --opcount', 'Display the number of opcodes in the compiled bytecode.')
   .option('-s, --size', 'Display the size in bytes of the compiled bytecode.')
+  .option('--split', 'Emit a state-local one-hop root/facet bundle (explicit; never enabled silently).')
   .option('-S, --skip-enforce-function-parameter-types', 'Do not enforce function parameter types.')
   .option('-L, --skip-enforce-locktime-guard', 'Do not inject a tx.time guard when tx.locktime is used.')
   .addOption(
@@ -42,6 +44,7 @@ run();
 function run(): void {
   ensure(program.args.length === 1, 'Please provide exactly one source file');
   ensure(!(opts.asm && opts.hex), 'Flags --asm and --hex cannot be used together');
+  ensure(!opts.split || !(opts.asm || opts.hex), '--split cannot be used with --asm or --hex');
   ensure(!(opts.asm || opts.hex) || !opts.output, 'Flags --asm or --hex cannot be used with --output');
   ensure(!opts.args || opts.asm || opts.hex, '--args can only be used with --asm or --hex');
 
@@ -56,6 +59,27 @@ function run(): void {
   };
 
   try {
+    if (opts.split) {
+      const bundle = compileFileSplit(sourceFile, { ...compilerOptions, forceSplit: true });
+      if (opts.opcount || opts.size) {
+        const rows = [['root', bundle.root], ...Object.entries(bundle.facets)] as const;
+        for (const [name, item] of rows) {
+          const shardScript = asmToScript(item.bytecode);
+          if (opts.opcount) console.log(`${name} opcode count:`, countOpcodes(shardScript));
+          if (opts.size) console.log(`${name} bytesize:`, calculateBytesize(shardScript));
+        }
+        return;
+      }
+      const formatted = formatSplitArtifactBundle(bundle, opts.format);
+      if (outputFile) {
+        const outputDir = path.dirname(outputFile);
+        if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+        fs.writeFileSync(outputFile, formatted);
+      } else {
+        console.log(formatted);
+      }
+      return;
+    }
     const artifact = compileFile(sourceFile, compilerOptions);
     const script = asmToScript(artifact.bytecode);
 

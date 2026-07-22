@@ -43,6 +43,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   private fundingNonce = 0x1000;
   private snapshotNonce = 0;
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
+  private signerCache = new Map<string, HDSigner>();
+  private fundedSignerKeys = new Set<string>();
 
   constructor(options?: Partial<MockNetworkProviderOptions>) {
     this.options = { updateUtxoSet: true, ...options };
@@ -127,10 +129,16 @@ export default class MockNetworkProvider implements NetworkProvider {
   async takeSnapshot(): Promise<SnapshotRestorer> {
     const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
     const height = this.blockHeight;
+    const fundingNonce = this.fundingNonce;
+    const signerNonces = new Map(
+      [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
+    );
     const snapshotId = `0x${(this.snapshotNonce++).toString(16)}`;
     const restore = async (): Promise<void> => {
       this.indexer.restore(snap);
       this.blockHeight = height;
+      this.fundingNonce = fundingNonce;
+      for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
     };
     return { snapshotId, restore };
   }
@@ -271,11 +279,30 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   reset(): void {
     this.indexer.reset();
+    this.signerCache.clear();
+    this.fundedSignerKeys.clear();
+    this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
   private nextFundingTxid(): string {
     return (this.fundingNonce++).toString(16).padStart(64, '0');
+  }
+
+  private signerKey(mnemonic: string, path: string | undefined, index: number): string {
+    return `${mnemonic}\u0000${path ?? ''}\u0000${index}`;
+  }
+
+  /** Return the stable signer object for an account, creating but not funding it if necessary. */
+  getCachedSigner(index = 0, opts: { mnemonic?: string; path?: string } = {}): HDSigner {
+    const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
+    const key = this.signerKey(mnemonic, opts.path, index);
+    let signer = this.signerCache.get(key);
+    if (!signer) {
+      [signer] = signersFromMnemonic(mnemonic, this, { initialIndex: index, count: 1, path: opts.path });
+      this.signerCache.set(key, signer);
+    }
+    return signer;
   }
 
   /**
@@ -290,26 +317,24 @@ export default class MockNetworkProvider implements NetworkProvider {
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
-    const signers = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { count, path: opts.path },
-    );
-    for (const signer of signers) {
+    const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
+    const signers = Array.from({ length: count }, (_, index) => this.getCachedSigner(index, { mnemonic, path: opts.path }));
+    for (let index = 0; index < signers.length; index++) {
+      const signer = signers[index];
+      const key = this.signerKey(mnemonic, opts.path, index);
+      if (this.fundedSignerKeys.has(key)) continue;
       for (let i = 0; i < fundingUtxos; i++) {
         await this.addUtxo(signer.getAddress(), { txid: this.nextFundingTxid(), vout: 0, satoshis });
       }
+      this.fundedSignerKeys.add(key);
     }
     return signers;
   }
 
   /** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
   async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string; path?: string } = {}): Promise<HDSigner> {
-    const [signer] = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { initialIndex: index, count: 1, path: opts.path },
-    );
-    await this.addUtxo(signer.getAddress(), {
-      txid: this.nextFundingTxid(), vout: 0, satoshis: opts.satoshis ?? 1_000_000n,
-    });
-    return signer;
+    await this.getSigners(index + 1, opts);
+    return this.getCachedSigner(index, opts);
   }
 }
 

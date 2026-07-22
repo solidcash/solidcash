@@ -407,6 +407,9 @@ export class StateVariableNode extends Node implements Named, Typed {
   // Dynamic-storage var (string / unbounded bytes): the data-NFT field holds a uint32 length header
   // (<name>$len) and the value lives in chunk UTXOs. See docs/dynamic-storage.md.
   isDynamic: boolean = false;
+  // Compiler-generated security registers may require a stable, dedicated commitment without adopting the
+  // user-facing `external` storage semantics.
+  isolatedNft: boolean = false;
   initializer?: ExpressionNode; // inline `= expr` init, lowered into the constructor by the AstBuilder
   contractTypeName?: string;
   nftIndex: number = 0;

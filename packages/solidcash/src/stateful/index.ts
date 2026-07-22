@@ -37,9 +37,21 @@ export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
 export {
-  ContractFactory, getContractFactory, deployContract,
+  SplitContractBundle, SplitContract,
+  type SplitDeployOptions, type SplitDeploymentRecord,
+} from './SplitContractBundle.js';
+export {
+  ContractFactory, getContractFactory, deployContract, selectGenesisFundingUtxo,
   type DeployContractOptions, type DeployedContract,
 } from './ContractFactory.js';
+export {
+  deriveLogicalCreateAddress, deriveLogicalAddressFromSeed,
+  encodeLogicalIdentityCommitment, decodeLogicalIdentityCommitment,
+  encodeLogicalFacetCommitment, decodeLogicalFacetCommitment,
+  buildLogicalIdentityCommitment, resolveLogicalIdentity, resolveSplitLogicalIdentity,
+  createLogicalIdentityUnlocker,
+  type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
+} from './logical-identity.js';
 export {
   upgrades, deployProxy, ProxyContract,
   type DeployProxyOptions, type ProxyInitialState,

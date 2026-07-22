@@ -1604,3 +1604,30 @@ entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
   OP_SHA256`) reflects a correct offset; the local path emits nothing/rolls the wrong item.
 - **The real fix** needs the entry-read to use a CORRECT stack offset for a local key (reconcile the tracker), or to
   capture the key value into the entry-read working area BEFORE the layout is set up. A focused C2-codegen change.
+## Split deployment follow-ups: constructor resolved; authenticated CREATE identity remains (2026-07-22)
+
+- **RESOLVED: imported multi-NFT constructor deployment.** The 23.8 KB Unicrow monolith correctly fails because its
+  redeem script makes the constructor unlocking bytecode exceed BCH's 10 KB limit. The split root exposed a real
+  inference bug: the VM stops at the first mismatched output placeholder, while the SDK expected every commitment
+  from one trace and fed learned outputs back as constructor inputs. Non-idempotent initialization repeated, and
+  subroutine trace slicing could associate a partial commitment with the wrong NFT. Constructors now covenant the
+  complete genesis layout; every probe retains one fixed zero/explicit pre-state; and state, entry, and event
+  placeholders converge by exact output index. VM failures include instruction and stack context. The real imported
+  Unicrow split deploys four facets and reads back protocolFee=100, its peer/governance addresses, and
+  escrowIdCounter=1.
+
+- **STILL DEFERRED: signer/nonce CREATE identity authenticated to the root category.** Signer-local nonce sequencing
+  now matches Hardhat, but the hash-derived `ethers.getCreateAddress({ from, nonce })` result remains a logical
+  placeholder. It cannot safely resolve typed calls or authorize `msg.sender` until an on-chain binding proves
+  logical identity -> root category.
+
+  A sound implementation needs a category-bearing identity anchor created by the signed genesis transaction at the
+  deterministic logical address, plus compiler/SDK rules authenticating it against the self-pinned root. Resolution
+  must reject ambiguous or spam anchors, reconstruct and verify the physical root, and carry the authenticated
+  logical identity through typed external-call and contract-origin `msg.sender` paths. Facets remain physical
+  implementation details and never acquire logical CREATE identities or consume logical nonces.
+
+  **Acceptance:** Hardhat artifact lookup automatically chooses a split bundle; four circular Unicrow peer addresses
+  predicted from one signer nonce sequence resolve after deployment; forged anchors/categories and physical facet
+  addresses fail; snapshots preserve sequencing; and `examples/effectiveacceleration/test/marketplace.test.ts`
+  runs unchanged on the BCH HRE.

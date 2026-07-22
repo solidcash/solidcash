@@ -22,8 +22,8 @@ export * from 'ethers/utils';
 export * from 'ethers/wallet';
 export * from 'ethers/wordlists';
 
-import { encodeCashAddress, utf8ToBin, binToHex } from '@bitauth/libauth';
-import { hash160 } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
+import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash';
 
 type Prefix = 'bitcoincash' | 'bchtest' | 'bchreg';
 function prefixOf(from: string): Prefix {
@@ -34,15 +34,9 @@ function prefixOf(from: string): Prefix {
   return 'bitcoincash';
 }
 
-// A deterministic p2sh CashAddress from a seed string. Distinct seeds => distinct addresses, so precomputed-address
-// patterns stay collision-free; this is NOT the real deployed address (see file docs - use contract.getAddress()).
-function bchAddressFromSeed(seed: string, prefix: Prefix): string {
-  return encodeCashAddress({ prefix, type: 'p2sh', payload: hash160(utf8ToBin(seed)), throwErrors: true }).address;
-}
-
 /** BCH redirect for ethers `getCreateAddress({ from, nonce })` (see file docs - identity is category, not nonce). */
 export function getCreateAddress(tx: { from: string; nonce: number | bigint }): string {
-  return bchAddressFromSeed(`create:${tx.from}:${BigInt(tx.nonce).toString()}`, prefixOf(tx.from));
+  return deriveLogicalCreateAddress(tx.from, tx.nonce);
 }
 
 /** BCH redirect for ethers `getCreate2Address(from, salt, initCodeHash)` (the salt maps to our CREATE2 segment). */
@@ -51,5 +45,6 @@ export function getCreate2Address(
 ): string {
   const saltHex = typeof salt === 'string' ? salt : binToHex(salt);
   const codeHex = typeof initCodeHash === 'string' ? initCodeHash : binToHex(initCodeHash);
-  return bchAddressFromSeed(`create2:${from}:${saltHex}:${codeHex}`, prefixOf(from));
+  // CREATE2 remains a deterministic compatibility placeholder until its separate salt registry is implemented.
+  return deriveLogicalAddressFromSeed(`create2:${from}:${saltHex}:${codeHex}`, prefixOf(from));
 }

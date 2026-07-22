@@ -29,7 +29,7 @@ export interface TypegenResult {
 export interface TypegenWatcher { close(): void }
 
 interface ArtifactFile { artifact: Artifact; file: string; sourceModule: string }
-const GENERATOR_VERSION = 4;
+const GENERATOR_VERSION = 5;
 
 function walk(dir: string, accept: (file: string) => boolean, out: string[] = []): string[] {
   if (!fs.existsSync(dir)) return out;

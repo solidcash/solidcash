@@ -58,6 +58,7 @@ describe('incremental compile task', () => {
     expect(cold.cacheHits).toBe(0);
     expect(jobFiles(root)).toHaveLength(1);
     expect(loadArtifactByName(config.paths.artifacts, 'Root').contractName).toBe('Root');
+    expect(loadArtifactByName(config.paths.artifacts, 'contracts/Root.sol:Root').contractName).toBe('Root');
 
     const warm = await runTask('compile', { quiet: true }, hre) as {
       compilerJobs: number; cacheHits: number;

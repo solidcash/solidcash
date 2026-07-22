@@ -66,6 +66,27 @@ export function defineConfig(config: SolidcashConfig): SolidcashConfig {
   return config;
 }
 
+/** JSON Schema for editor integrations and generated configuration UIs. */
+export const solidcashConfigSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  title: 'SolidCash configuration', type: 'object', additionalProperties: false,
+  properties: {
+    paths: { type: 'object', additionalProperties: false, properties: {
+      contracts: { type: 'string' }, artifacts: { type: 'string' }, tests: { type: 'string' }, cache: { type: 'string' },
+    } },
+    defaultNetwork: { type: 'string' }, mnemonic: { type: 'string' },
+    compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
+    networks: { type: 'object', additionalProperties: { type: 'object' } },
+    accounts: { type: 'object' },
+    typegen: { type: 'object', properties: { targets: { type: 'array', items: {
+      type: 'object', required: ['target'], properties: {
+        target: { enum: ['ethers5', 'ethers6'] }, layout: { const: 'typechain' },
+        outDir: { type: 'string' }, sourceDir: { type: 'string' },
+      },
+    } } } },
+  },
+} as const;
+
 const CONFIG_BASENAMES = ['solidcash.config.ts', 'solidcash.config.mjs', 'solidcash.config.js'];
 
 /** Apply defaults to a user config. */

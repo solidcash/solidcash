@@ -11,7 +11,8 @@ import type { HardhatRuntimeEnvironment } from './hre.js';
 import { compileSolidityProject } from './project-compiler.js';
 import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
-import { generateTypechainTargets } from './typegen.js';
+import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
+import { diagnoseProject } from './doctor.js';
 
 // Recursively collect `.sol` sources, skipping vendored dependency trees (node_modules + `@scope` package dirs like
 // @openzeppelin / @sablier) - those are resolved as imports by compileFileMulti, not compiled as top-level targets.
@@ -131,17 +132,39 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   });
 
 task('typegen', 'Generate TypeChain-compatible contract bindings from compiled artifacts')
+  .addFlag('watch', 'Regenerate bindings when sources or artifacts change')
   .setAction(async (_args, hre: HardhatRuntimeEnvironment) => {
-    const results = generateTypechainTargets({
+    const options = {
       artifactsDir: solidcashArtifactsPath(hre.config.paths.artifacts),
       contractsDir: path.resolve(hre.config.paths.contracts),
       cacheDir: path.join(hre.config.paths.cache, 'solidcash'),
       targets: hre.config.typegen.targets,
-    });
+    };
+    if (_args.watch) {
+      const watcher = watchTypechainTargets(options, (generated) => generated.forEach((result) => {
+        console.log(`${result.skipped ? 'Reused' : 'Generated'} ${result.target} bindings in ${result.outDir}`);
+      }));
+      console.log('Watching SolidCash sources and artifacts for type changes.');
+      await new Promise<void>((resolve) => process.once('SIGINT', () => { watcher.close(); resolve(); }));
+      return [];
+    }
+    const results = generateTypechainTargets(options);
     for (const result of results) {
       console.log(`${result.skipped ? 'Reused' : 'Generated'} ${result.target} bindings in ${result.outDir}`);
     }
     return results;
+  });
+
+task('doctor', 'Check SolidHat configuration, artifacts, generated files, and migration readiness')
+  .addFlag('json', 'Print machine-readable JSON')
+  .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
+    const findings = diagnoseProject(hre.config);
+    if (args.json) console.log(JSON.stringify(findings, null, 2));
+    else findings.forEach((finding) => console.log(
+      `${finding.severity.toUpperCase()} [${finding.code}] ${finding.message}${finding.path ? ` (${finding.path})` : ''}`,
+    ));
+    if (findings.some((finding) => finding.severity === 'error')) process.exitCode = 1;
+    return findings;
   });
 
 task('init', 'Create SolidCash configuration')

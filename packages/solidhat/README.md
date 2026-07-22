@@ -76,11 +76,17 @@ The CLI can also be invoked directly:
 ```sh
 npx solidhat compile
 npx solidhat typegen
+npx solidhat typegen --watch
+npx solidhat doctor
 npx solidhat test
 npx solidhat clean
 ```
 
 When `typegen.targets` are configured, `solidhat compile` updates TypeChain-compatible bindings after artifacts are committed. `solidhat typegen` regenerates them from existing artifacts. Generation is content-addressed and atomically replaces only its configured output directory.
+
+`solidhat doctor` performs a read-only check of configured paths, namespaced artifacts, unsafe or colliding
+type-generation outputs, and manually added files in generated trees. Use `--json` in CI or editor integrations.
+The exported `solidcashConfigSchema` provides the same configuration surface as JSON Schema.
 
 `solidhat test` compiles the project first, matching Hardhat's normal test workflow. Compilation resolves the full
 source dependency graph, reuses cached roots whose content and effective compiler configuration are unchanged,
@@ -160,7 +166,11 @@ Factories resolve from that namespace:
 import { ethers } from '@solidcash/solidhat/hardhat3';
 
 const Counter = await ethers.getContractFactory('Counter');
+const QualifiedCounter = await ethers.getContractFactory('contracts/Counter.scash:Counter');
 ```
+
+Fully-qualified names disambiguate contracts which share a name. Generated TypeChain modules retain the source
+tree and export all contracts declared in a source file; stale files are removed by atomic regeneration.
 
 `solidhat clean` removes only `artifacts/solidcash` and `cache/solidcash`.
 

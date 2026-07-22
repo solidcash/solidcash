@@ -61,17 +61,38 @@ describe('TypeChain-compatible generation', () => {
     });
     expect(result).toMatchObject({ target: 'ethers6', skipped: false, files: 3 });
     const contract = fs.readFileSync(path.join(outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8');
-    expect(contract).toContain('export type Counter = StatefulContract<typeof artifact>;');
+    expect(contract).toContain('export type Counter = StatefulContract<typeof CounterArtifact>;');
     expect(contract).toContain('export type ItemStruct = { amount: bigint; tag: Uint8Array | string; };');
     expect(contract).toContain('export type ItemStructOutput = [amount: bigint, tag: Uint8Array | string]');
     expect(contract).toContain('export type Status = 0n | 1n;');
-    expect(contract).toContain('export class Counter__factory extends ContractFactory<typeof artifact>');
+    expect(contract).toContain('export class Counter__factory extends ContractFactory<typeof CounterArtifact>');
     expect(contract).toContain('static connect(categoryId: string, runner: ContractRunner): Promise<Counter>');
     expect(fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8'))
       .toContain("export * from './contracts/nested/Counter.js';");
     const registry = fs.readFileSync(path.join(outDir, 'registry.ts'), 'utf8');
     expect(registry).toContain('interface SolidcashArtifactMap');
     expect(registry).toContain("'Counter': typeof import(");
+  });
+  it('emits every contract declared by the same source into one source module', () => {
+    const root = project();
+    writeFixture(root, artifact());
+    const source = path.join(root, 'contracts', 'nested', 'Counter.scash');
+    fs.writeFileSync(source, 'contract Counter {} contract Helper {}');
+    const artifactDir = path.join(root, 'artifacts', 'solidcash', 'contracts', 'nested', 'Counter.scash');
+    const helper = { ...artifact(), contractName: 'Helper' };
+    fs.writeFileSync(path.join(artifactDir, 'Helper.json'), JSON.stringify(helper));
+    fs.writeFileSync(path.join(artifactDir, 'Helper.artifact.ts'), `export default ${JSON.stringify(helper)} as const;\n`);
+    const outDir = path.join(root, 'typechain-types');
+    const [result] = generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }],
+    });
+    expect(result.files).toBe(3);
+    const generated = fs.readFileSync(path.join(outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8');
+    expect(generated).toContain('export type Counter =');
+    expect(generated).toContain('export type Helper =');
   });
   it('reuses timestamp-only changes and atomically regenerates semantic changes', () => {
     const root = project();

@@ -736,6 +736,14 @@ describe('Debugging tests', () => {
       expect(transaction).toBeReverted();
     });
 
+    it('toBeReverted accepts async call builders', async () => {
+      const transaction = new TransactionBuilder({ provider })
+        .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
+        .addOutput({ to: contractTestRequires.address, amount: 1000n });
+      const call = { build: async () => transaction };
+      await expect(call as any).toBeRevertedWith('1 should equal 2');
+    });
+
     it('not.toBeReverted should pass when transaction succeeds', () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_require_no_failure())

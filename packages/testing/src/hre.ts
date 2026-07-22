@@ -107,13 +107,20 @@ export interface HardhatRuntimeEnvironment {
  */
 export function loadArtifactByName(artifactsDir: string, name: string): Artifact {
   const base = solidcashArtifactsPath(artifactsDir);
-  const target = `${name}.json`;
+  const separator = name.lastIndexOf(':');
+  const sourceName = separator === -1 ? undefined : name.slice(0, separator).replace(/\\/g, '/');
+  const contractName = separator === -1 ? name : name.slice(separator + 1);
+  const target = `${contractName}.json`;
   const matches: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(p);
-      else if (entry.name === target) matches.push(p);
+      else if (entry.name === target) {
+        const relative = path.relative(base, p).replace(/\\/g, '/');
+        if (!sourceName || !relative.includes('/') || relative.includes(`/${sourceName}/`) || relative.startsWith(`${sourceName}/`)
+          || relative.includes(`/${sourceName}.scash/`) || relative.includes(`/${sourceName}.sol/`)) matches.push(p);
+      }
     }
   };
   if (fs.existsSync(base)) walk(base);
@@ -127,7 +134,7 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
   if (distinct.size > 1) {
     throw new Error(
       `getContractFactory: multiple DISTINCT artifacts named "${name}" (${matches.map((m) => path.relative(base, m)).join(', ')}). `
-      + 'Pass the artifact object to disambiguate.',
+      + 'Use a fully-qualified name (`source/path.scash:Contract`) or pass the artifact object to disambiguate.',
     );
   }
   throw new Error(

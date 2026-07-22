@@ -49,6 +49,18 @@ interface Buildable {
   build(): string | Promise<any>;
 }
 
+async function debugTransaction(transaction: Debuggable | (Buildable & Partial<Debuggable>) | Promise<unknown>): Promise<void> {
+  if (transaction && typeof (transaction as Debuggable).debug === 'function') {
+    (transaction as Debuggable).debug();
+    return;
+  }
+  if (transaction && typeof (transaction as Buildable).build === 'function') {
+    const built = await (transaction as Buildable).build();
+    if (built && typeof built.debug === 'function') { built.debug(); return; }
+  }
+  await transaction;
+}
+
 type TestFramework = typeof vi;
 const testFramework: TestFramework = (globalThis as any).vi ?? (globalThis as any).jest;
 
@@ -137,9 +149,9 @@ expect.extend({
 
   // Solidity-style aliases (Hardhat/ethers compatibility)
   // await expect(contractA.action(params)).toBeReverted()
-  toBeReverted(transaction: Debuggable) {
+  async toBeReverted(transaction: Debuggable | Promise<Debuggable>) {
     try {
-      transaction.debug();
+      await debugTransaction(transaction);
       const message = (): string => 'Expected transaction to be reverted, but it succeeded.';
       return { message, pass: false };
     } catch (transactionError: any) {
@@ -150,9 +162,9 @@ expect.extend({
   },
 
   // await expect(contractA.action(params)).toBeRevertedWith(reason)
-  toBeRevertedWith(transaction: Debuggable, match: RegExp | string) {
+  async toBeRevertedWith(transaction: Debuggable | Promise<Debuggable>, match: RegExp | string) {
     try {
-      transaction.debug();
+      await debugTransaction(transaction);
       const matcherHint = this.utils.matcherHint('toBeRevertedWith', 'transaction', match.toString(), { isNot: this.isNot });
       const message = (): string => `${matcherHint}\n\nExpected transaction to be reverted, but it succeeded.`;
       return { message, pass: false };
@@ -172,9 +184,9 @@ expect.extend({
   },
 
   // Short aliases: await expect(...).toRevert() / .toRevertWith(reason)
-  toRevert(transaction: Debuggable) {
+  async toRevert(transaction: Debuggable | Promise<Debuggable>) {
     try {
-      transaction.debug();
+      await debugTransaction(transaction);
       const message = (): string => 'Expected transaction to revert, but it succeeded.';
       return { message, pass: false };
     } catch (transactionError: any) {
@@ -184,9 +196,9 @@ expect.extend({
     }
   },
 
-  toRevertWith(transaction: Debuggable, match: RegExp | string) {
+  async toRevertWith(transaction: Debuggable | Promise<Debuggable>, match: RegExp | string) {
     try {
-      transaction.debug();
+      await debugTransaction(transaction);
       const matcherHint = this.utils.matcherHint('toRevertWith', 'transaction', match.toString(), { isNot: this.isNot });
       const message = (): string => `${matcherHint}\n\nExpected transaction to revert, but it succeeded.`;
       return { message, pass: false };

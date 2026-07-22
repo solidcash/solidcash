@@ -272,3 +272,34 @@ Implementation order:
 
 Keep `slot` and `nextSlot` at 32 bytes. The optimizations above save more contract and transaction bytes without
 introducing a narrower-link collision bound or runtime truncation logic.
+
+## Straight-line multi-key writes: required batch transition
+
+The July 2026 merge audit found that two fixed writes to distinct absent keys are not merely an SDK duplicate-input
+case. If both keys occupy the same original gap, both fixed upserts currently select the same predecessor, and both
+also address the single `master + blockSize` trailing NEW-node output. Deduplicating the input alone is therefore
+incorrect: the two independently emitted covenants still demand incompatible predecessor rewrites and NEW nodes.
+
+The compact, sound implementation is a function-exit batch transition:
+
+1. Cache every invariant-key scalar entry used by the function once. Preserve source-order reads and writes against
+   the locals, including read-after-write dependencies such as `m[a] = 5; m[b] = m[a]`.
+2. Flush distinct dirty entries as one C2 batch. The SDK sorts absent slots within each original gap and groups
+   present updates separately.
+3. Co-spend each present node and each untouched bracketing predecessor exactly once.
+4. For a gap containing new slots `k1 < ... < kn`, verify and emit exactly
+   `P' = P.slot || k1 || P.value`, then `k1 || k2 || v1`, ..., `kn || P.oldNext || vn`.
+5. Assign a unique block-layout output to every emitted node. Do not use the existing single-upsert convention where
+   every insertion places NEW at `master + blockSize`.
+6. Pin the number of entry-address inputs and outputs for the batch, and reject duplicate slots before transaction
+   construction. Existing-key assignments remain updates and must preserve their original link unless that node is
+   the predecessor of an inserted chain, in which case its one recreated output carries the new first link.
+
+This should be a dedicated artifact/codegen shape, not an extension of `sortedUpsertLoopInfo`. A prototype that
+described counter keys as a synthetic key array reached the upsert-loop body but failed its per-iteration slot proof:
+array-driven upserts and straight-line/range insertion have different stack and output-index invariants.
+
+The transformation must recurse through return paths and conditionals in the same way as the existing invariant-entry
+cache. A conditional dirty bit is required when a write is not guaranteed to execute; otherwise the batch would turn
+a skipped source assignment into an on-chain write. Long values additionally need unique chunk-output bases computed
+after the batch's variable entry-output count.

@@ -12052,6 +12052,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const batch of node.sortedBatchInfo ?? []) {
       const collectionHash = computeCollectionHash(this.entrySlots[batch.slotIndices[0]].collectionSignature);
       const targets = batch.slotIndices;
+      if (targets.length === 1) {
+        const slot = targets[0];
+        const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
+          commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
+        };
+        // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
+        directProofField('next'); arg(`__internal__c2BatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+        directProofField('slot'); arg(`__internal__c2BatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
+        bin(Op.OP_IF);
+        // UPDATE: no separate predecessor output is permitted.
+        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+        bin(Op.OP_ELSE);
+        // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value.
+        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+        bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
+        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+        proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+        bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+        this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+        this.emitVerifyCatBaseEqMaster(loc);
+        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+        directProofField('slot', 1); arg(`__internal__c2BatchSlot_${slot}`, 2); bin(Op.OP_CAT);
+        directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+        bin(Op.OP_ENDIF);
+      } else {
       // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
       // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
       for (const slot of [...targets].reverse()) {
@@ -12179,6 +12205,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
       }
       bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
+      }
 
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.

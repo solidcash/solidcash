@@ -12392,7 +12392,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let varyingArrayParam: string | undefined;
     for (const src of keySources) {
       if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
-      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),id:\w+\)$/);
+      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/);
       if (m) varyingArrayParam = m[1];
     }
     if (varyingArrayParam) {
@@ -12632,10 +12632,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // (whitelistWorkers; bool = int 1/0). N keys can land in MULTIPLE gaps + update existing.
         const isConstSet = upsertVk === 'int' && e instanceof IntLiteralNode;
         const isBoolSet = upsertVk === 'int' && e instanceof BoolLiteralNode;
+        const isOffsetArraySet = upsertVk === 'int' && e instanceof BinaryOpNode
+          && e.operator === BinaryOperator.PLUS && e.left instanceof ArrayAccessNode
+          && e.left.array instanceof IdentifierNode && e.right instanceof IntLiteralNode;
         // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
         // invariant param `= a` OR per-key `= vs[i]`.
         const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
-        if (rawbytesOk || (upsertVk === 'int' && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet))) {
+        if (rawbytesOk || (upsertVk === 'int'
+          && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet || isOffsetArraySet))) {
           found = n; return;
         }
       }
@@ -12702,7 +12706,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let varyingArrayParam: string | undefined;
     for (const src of keySources) {
       if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
-      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),id:\w+\)$/);
+      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/);
       if (m) varyingArrayParam = m[1];
     }
     const isDelete = writeNode instanceof MappingDeleteNode;
@@ -12710,11 +12714,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let valueArrayParam: string | undefined;    // per-key vs[i]
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
+    let valueArrayOffset: string | undefined;
     if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
     } else {
       const expr = (writeNode as MappingAssignNode).expression;
-      const isRmw = expr instanceof BinaryOpNode;
+      const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
       op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
       let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
       // Inlining OZ ERC20 `_update` binds its `value` param to a single-assign LOCAL (`__inlN_value = amounts[i]`),
@@ -12729,6 +12734,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
         valueArrayParam = valueRight.array.name;                        // per-key vs[i]
+      } else if (!isRmw && valueRight instanceof BinaryOpNode
+        && valueRight.operator === BinaryOperator.PLUS && valueRight.left instanceof ArrayAccessNode
+        && valueRight.left.array instanceof IdentifierNode && valueRight.right instanceof IntLiteralNode) {
+        valueArrayParam = valueRight.left.array.name;
+        valueArrayOffset = valueRight.right.value.toString();
       } else if (valueRight instanceof IdentifierNode
         && this.currentFunction.parameters.some((p) => p.name === (valueRight as IdentifierNode).name)) {
         valueScalarParam = valueRight.name;                            // loop-INVARIANT param (same for every key)
@@ -12746,7 +12756,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!infos.some((x) => x.collection === collection.name)) {
       infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam,
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
-        ...(valueConst !== undefined && { valueConst }), op });
+        ...(valueConst !== undefined && { valueConst }),
+        ...(valueArrayOffset !== undefined && { valueArrayOffset }), op });
     }
     this.sortedWrittenCollections.add(collection.name);
 

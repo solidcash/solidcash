@@ -49,6 +49,7 @@ import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
+import LowerC2CounterLoops from './semantic/LowerC2CounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
@@ -282,6 +283,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
   ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+
+  // Canonical dynamic C2 `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
+  ast = ast.accept(new LowerC2CounterLoops()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);

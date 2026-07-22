@@ -310,6 +310,7 @@ export interface SortedUpsertLoopAbi {
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
+  valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default

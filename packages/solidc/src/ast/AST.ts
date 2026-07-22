@@ -292,6 +292,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
+    valueArrayOffset?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve

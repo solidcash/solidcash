@@ -5222,7 +5222,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Append _msgSenderCategory if function uses msg.sender
-    let finalArgs = args;
+    let finalArgs = [...args];
+
+    // Canonical C2 counter loops are lowered to read their logical key from a hidden permutation array. Build that
+    // witness from the public bound: [0..n) sorted by the same full-width slot hash used by the covenant. The lowered
+    // body uses perm[physical_i] everywhere the source used logical i, so key and derived value stay paired.
+    for (const input of abiFunction?.inputs ?? []) {
+      const m = input.name.match(/^__internal__c2CounterPerm_(.+)_(\d+)$/);
+      if (!m) continue;
+      const countIdx = abiFunction!.inputs.findIndex((p) => p.name === m[1]);
+      const count = countIdx >= 0 ? BigInt(args[countIdx]) : -1n;
+      if (count < 0n || count > 10000n) {
+        throw new Error(`C2 counter loop bound '${m[1]}' must be between 0 and 10000`);
+      }
+      const perm = Array.from({ length: Number(count) }, (_, i) => BigInt(i));
+      perm.sort((a, b) => {
+        const av = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(a)]));
+        const bv = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(b)]));
+        return av < bv ? -1 : av > bv ? 1 : 0;
+      });
+      const hiddenIdx = abiFunction!.inputs.findIndex((p) => p.name === input.name);
+      args[hiddenIdx] = perm;
+      finalArgs = [...finalArgs, perm];
+    }
 
     // Multi-use view+mutate loop (getReserves() + swap() on one pair): auto-fill each `__internal__viewReturn<n>`
     // witness from the co-spent pairs' state. The pairs are the loopTargets slot's registered instances; the SDK
@@ -5983,6 +6005,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       const perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
+        valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
+      }
       // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
       // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).
       const perKeyRawbytes = perKey && Array.isArray(valsArr) && (valsArr as unknown[]).length > 0
@@ -6024,7 +6049,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (vArr) {
             valsArr = order.map((i) => merged.get(slotHexes[i])!);
             const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
+            if (amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+              args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
+            }
           }
         }
       }
@@ -6065,7 +6092,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const vArr = valsArr as unknown[];
               valsArr = keepIdx.map((i) => vArr[i]);
               const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
-              if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
+              if (amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+                args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
+              }
             }
           }
         }
@@ -6120,7 +6149,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const vArr = valsArr as unknown[];
             valsArr = order.map((i) => vArr[i]);
             const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
+            if (amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+              args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
+            }
           }
         }
       }

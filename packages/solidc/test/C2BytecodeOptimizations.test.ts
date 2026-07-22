@@ -44,4 +44,35 @@ describe('general C2 bytecode sharing', () => {
     expect(asm).toContain('0030 OP_DEFINE');
     expect(artifact.bytecode.length / 2).toBeLessThan(9300);
   });
+
+  it('allocates collision-free structural and field-prefix helpers across entry points', () => {
+    const artifact = compileString(
+      'struct S { int a; string b; int c; } struct T { address a; bytes b; bool c; }'
+      + ' contract C { S[] x; T[] y;'
+      + ' function f(int i) external { require(x[i].c>=0); }'
+      + ' function g(int i) external { require(x[i].c>=0); }'
+      + ' function h(int i) external { require(x[i].c>=0 && y[i].c); }'
+      + ' function j(int i) external { require(y[i].c); }'
+      + ' function k(int i) external { require(y[i].c); } }',
+      { forceStateful: true },
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    expect(asm).toContain('0040 OP_DEFINE');
+    expect(asm).toContain('0140 OP_DEFINE');
+    expect(asm).toContain('0050 OP_DEFINE');
+    expect(asm).toContain('0150 OP_DEFINE');
+    expect(artifact.bytecode.length / 2).toBeLessThan(3800);
+  });
+
+  it('shares repeated variable-width array element extraction', () => {
+    const artifact = compileString(
+      'struct S { int a; string b; int c; } contract C { S[] x;'
+      + ' function f(int i) external { S[] a=x;'
+      + ' require(a[i].c>=0 && a[i].c>=0 && a[i].c>=0); } }',
+      { forceStateful: true },
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    expect(asm).toContain('0060 OP_DEFINE');
+    expect(artifact.bytecode.length / 2).toBeLessThan(2800);
+  });
 });

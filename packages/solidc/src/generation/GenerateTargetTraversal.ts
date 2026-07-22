@@ -369,6 +369,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private subroutineUseCount = new Map<bigint, number>();
   private structSkipIds = new Map<string, bigint>();
   private structSkipTypes = new Map<string, StructType | ArrayType>();
+  private structFieldPrefixIds = new Map<string, bigint>();
+  private structFieldPrefixes = new Map<string, { type: StructType; fieldIndex: number }>();
+  private scanLoopIds = new Map<string, bigint>();
+  private scanLoopTypes = new Map<string, Type>();
+  private arrayElementIds = new Map<string, bigint>();
+  private arrayElementTypes = new Map<string, Type>();
 
   // 2-byte subroutine IDs from 0x1000: disjoint by length from user function IDs (small ints)
   // and 4-byte selectors, so the dispatcher's 4-byte selector check keeps them unreachable.
@@ -916,6 +922,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         span: this.defineCapturedSubroutine(id, (t) => t.emitPushdataSkipCompositeInline(type, loc), loc),
       });
     }
+    for (const [key, id] of this.structFieldPrefixIds) {
+      if (count(id) < 3) continue;
+      const prefix = this.structFieldPrefixes.get(key)!;
+      spans.push({
+        id,
+        span: this.defineCapturedSubroutine(id,
+          (t) => t.emitStructFieldPrefixSkipInline(prefix.type, prefix.fieldIndex, loc), loc),
+      });
+    }
+    for (const [key, id] of this.scanLoopIds) {
+      if (count(id) < 3) continue;
+      const type = this.scanLoopTypes.get(key)!;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, (t) => t.emitScanLoopInline(type, loc), loc) });
+    }
+    for (const [key, id] of this.arrayElementIds) {
+      if (count(id) < 3) continue;
+      const type = this.arrayElementTypes.get(key)!;
+      spans.push({
+        id,
+        span: this.defineCapturedSubroutine(id, (t) => t.emitVariableArrayElementExtractInline(type, loc), loc),
+      });
+    }
 
     this.subroutineUseCount = new Map();
     this.emitFunctionDefinesAndDispatch(node);
@@ -1108,6 +1136,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.emitFunctionDefinesAndDispatch(node);
       this.structSkipIds = new Map(probe.structSkipIds);
       this.structSkipTypes = new Map(probe.structSkipTypes);
+      this.structFieldPrefixIds = new Map(probe.structFieldPrefixIds);
+      this.structFieldPrefixes = new Map(probe.structFieldPrefixes);
+      this.scanLoopIds = new Map(probe.scanLoopIds);
+      this.scanLoopTypes = new Map(probe.scanLoopTypes);
+      this.arrayElementIds = new Map(probe.arrayElementIds);
+      this.arrayElementTypes = new Map(probe.arrayElementTypes);
       return probe.subroutineUseCount;
     } catch {
       return new Map(GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.map((id) => [id, 2]));
@@ -1241,8 +1275,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Compiled child bytecodes (for `type(C).creationCode` / `new C()` inside an extracted function body).
     subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
-    subTraversal.structSkipIds = new Map(this.structSkipIds);
-    subTraversal.structSkipTypes = new Map(this.structSkipTypes);
+    // Dynamic structural helper registries are contract-wide. Sharing the maps lets independently compiled
+    // function bodies allocate collision-free IDs and lets the dry-run retain the key behind every use count.
+    subTraversal.structSkipIds = this.structSkipIds;
+    subTraversal.structSkipTypes = this.structSkipTypes;
+    subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
+    subTraversal.structFieldPrefixes = this.structFieldPrefixes;
+    subTraversal.scanLoopIds = this.scanLoopIds;
+    subTraversal.scanLoopTypes = this.scanLoopTypes;
+    subTraversal.arrayElementIds = this.arrayElementIds;
+    subTraversal.arrayElementTypes = this.arrayElementTypes;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
     // via visitParameter (pushToStack with pushToBottom=true)
@@ -1457,8 +1499,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
-    subTraversal.structSkipIds = new Map(this.structSkipIds);
-    subTraversal.structSkipTypes = new Map(this.structSkipTypes);
+    subTraversal.structSkipIds = this.structSkipIds;
+    subTraversal.structSkipTypes = this.structSkipTypes;
+    subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
+    subTraversal.structFieldPrefixes = this.structFieldPrefixes;
+    subTraversal.scanLoopIds = this.scanLoopIds;
+    subTraversal.scanLoopTypes = this.scanLoopTypes;
+    subTraversal.arrayElementIds = this.arrayElementIds;
+    subTraversal.arrayElementTypes = this.arrayElementTypes;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
 
     // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
@@ -6089,6 +6137,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Stack before: [..., blob, count]
   // Stack after:  [..., remaining_blob]
   private emitScanLoop(elemType: Type, locationData: SingleLocationData): void {
+    const typeKey = elemType instanceof StructType ? this.structShapeKey(elemType) : elemType.toString();
+    const key = `scan:${typeKey}`;
+    let id = this.scanLoopIds.get(key);
+    if (id === undefined) {
+      id = 0x5000n + BigInt(this.scanLoopIds.size);
+      this.scanLoopIds.set(key, id);
+      this.scanLoopTypes.set(key, elemType);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), locationData);
+      this.emit(Op.OP_INVOKE, locationData);
+      return;
+    }
+    this.emitScanLoopInline(elemType, locationData);
+  }
+
+  private emitScanLoopInline(elemType: Type, locationData: SingleLocationData): void {
     // Loop: skip count elements from blob
     this.emit(Op.OP_BEGIN, locationData);
     //   Check if counter > 0
@@ -6107,6 +6173,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_UNTIL, locationData);
     this.emit(Op.OP_DROP, locationData); // drop counter (0)
+  }
+
+  /** Extract a variable-width array element from [elements_blob, index]. */
+  private emitVariableArrayElementExtract(elemType: Type, locationData: SingleLocationData): void {
+    const typeKey = elemType instanceof StructType ? this.structShapeKey(elemType) : elemType.toString();
+    const key = `array-element:${typeKey}`;
+    let id = this.arrayElementIds.get(key);
+    if (id === undefined) {
+      id = 0x6000n + BigInt(this.arrayElementIds.size);
+      this.arrayElementIds.set(key, id);
+      this.arrayElementTypes.set(key, elemType);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), locationData);
+      this.emit(Op.OP_INVOKE, locationData);
+      return;
+    }
+    this.emitVariableArrayElementExtractInline(elemType, locationData);
+  }
+
+  private emitVariableArrayElementExtractInline(elemType: Type, locationData: SingleLocationData): void {
+    this.emitScanLoop(elemType, locationData);
+    this.emitPushdataDecode(elemType, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_NIP, locationData);
   }
 
   // Index into an array VALUE already on the stack (`pushdata(count) ++ elems`): visits `indexNode`, leaves the
@@ -6142,13 +6234,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(elements)');
       this.pushToStack('(count)');
-      this.emitScanLoop(elemType, locationData);
+      this.emitVariableArrayElementExtract(elemType, locationData);
       this.popFromStack(2);
-      this.pushToStack('(remaining)');
-      this.emitPushdataDecode(elemType, locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.popFromStack();
       this.pushToStack('(value)');
     }
     return visitedIndex;
@@ -7863,10 +7950,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Find the target field index
     const fieldIndex = structType.fields.findIndex((f) => f.name === node.name);
 
-    // Skip preceding fields
-    for (let i = 0; i < fieldIndex; i++) {
-      this.emitPushdataSkip(structType.fields[i].type, locationData);
-    }
+    // Skip preceding fields. Repeated accesses to the same field share this potentially large prefix traversal.
+    this.emitStructFieldPrefixSkip(structType, fieldIndex, locationData);
 
     // Decode target field
     const isLast = fieldIndex === structType.fields.length - 1;
@@ -9577,10 +9662,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // BCH's fixed-layout state, so reject cleanly instead of overflowing the stack.
   private pushdataSkipStructs: Set<StructType> = new Set();
 
+  private structShapeKey(type: StructType): string {
+    return `${type.name}{${type.fields.map((f) => `${f.name}:${f.type}`).join(',')}}`;
+  }
+
+  /** Skip the encoded prefix before one struct field, sharing repeated field-access traversals contract-wide. */
+  private emitStructFieldPrefixSkip(
+    type: StructType,
+    fieldIndex: number,
+    locationData: SingleLocationData,
+  ): void {
+    if (fieldIndex === 0) return;
+    const key = `field-prefix:${this.structShapeKey(type)}:${fieldIndex}`;
+    let id = this.structFieldPrefixIds.get(key);
+    if (id === undefined) {
+      id = 0x4000n + BigInt(this.structFieldPrefixIds.size);
+      this.structFieldPrefixIds.set(key, id);
+      this.structFieldPrefixes.set(key, { type, fieldIndex });
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), locationData);
+      this.emit(Op.OP_INVOKE, locationData);
+      return;
+    }
+    this.emitStructFieldPrefixSkipInline(type, fieldIndex, locationData);
+  }
+
+  private emitStructFieldPrefixSkipInline(
+    type: StructType,
+    fieldIndex: number,
+    locationData: SingleLocationData,
+  ): void {
+    for (let i = 0; i < fieldIndex; i += 1) this.emitPushdataSkip(type.fields[i].type, locationData);
+  }
+
   private emitPushdataSkip(type: Type, locationData: SingleLocationData): void {
     if (type instanceof StructType || type instanceof ArrayType) {
       const key = type instanceof StructType
-        ? `struct:${type.name}{${type.fields.map((f) => `${f.name}:${f.type}`).join(',')}}`
+        ? `struct:${this.structShapeKey(type)}`
         : `array:${type.toString()}`;
       let id = this.structSkipIds.get(key);
       if (id === undefined) {

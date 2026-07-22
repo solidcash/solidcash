@@ -103,3 +103,21 @@ Selected final function bodies on that source:
 An attempted loop-invariant nested-key prefix cache increased the synthetic nested-loop script from 3849 to
 3874 bytes: a Bitcoin Script loop body is emitted once, while the cache requires setup and cleanup. It was
 therefore discarded from this byte-size optimization series.
+
+## Structural sharing follow-up
+
+Profiling the optimized artifact exposed that dynamic structural helper registries were copied into each
+function traversal. Multi-function contracts retained use counts but lost the corresponding structural keys,
+preventing contract-wide helpers from being emitted. Sharing those registries contract-wide also guarantees
+that independently compiled entry points cannot allocate the same helper ID to different shapes.
+
+Further general extraction was then added for repeated struct-field prefixes, variable-width scan loops, and
+variable-width array element decoding. On the same current MarketplaceV1 source:
+
+| Stage | Bytes | Incremental reduction |
+| --- | ---: | ---: |
+| Previous final | 461310 | - |
+| Contract-wide structural and field-prefix sharing | 235419 | 225891 (49.0%) |
+| Shared variable-width scan loops | 223099 | 12320 (5.2%) |
+| Shared variable-width element extraction | 174533 | 48566 (21.8%) |
+| **Follow-up total** | **174533** | **286777 (62.2%)** |

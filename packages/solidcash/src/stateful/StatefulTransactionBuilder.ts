@@ -21,7 +21,9 @@ import {
 } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
-import { scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust } from '../utils.js';
+import {
+  addressToLockScript, scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust,
+} from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import { parseEventCommitment } from './StateReader.js';
@@ -1689,10 +1691,15 @@ export class StatefulTransactionBuilder {
         let value = eventEmit.args[i];
         const type = eventDef.parameters[i].type;
         if (typeof value === 'string') {
-          if (!isHex(value)) {
+          if (type === 'string') {
+            value = new TextEncoder().encode(value);
+          } else if (type === 'address' && value.includes(':')) {
+            value = addressToLockScript(value);
+          } else if (!isHex(value)) {
             throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
+          } else {
+            value = hexToBin(value);
           }
-          value = hexToBin(value);
         }
         encodedParts.push(encodePushdataValue(value, type, this.stateLayout.structs));
       }

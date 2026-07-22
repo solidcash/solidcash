@@ -41,7 +41,11 @@ export const debugTemplate = (template: WalletTemplate, artifacts: Artifact[]): 
     ),
   );
 
-  if (hasArtifactNameCollision) {
+  // Split transactions can legitimately include multiple state/entry unlockers carrying different generated
+  // root variants plus uniquely named branded facets. Facet script IDs remain unambiguous, so retain legacy
+  // collision rejection for ordinary transactions but allow the compiler-authenticated split topology.
+  const isSplitTransaction = artifacts.some((artifact) => artifact.brandedLibrary && artifact.delegateOnly);
+  if (hasArtifactNameCollision && !isSplitTransaction) {
     throw new Error('There are multiple artifacts with the same contractName. Please make sure that all artifacts have unique names.');
   }
 
@@ -75,7 +79,9 @@ export const debugTemplate = (template: WalletTemplate, artifacts: Artifact[]): 
   }
 
   if (evaluationErrors.length > 0) {
-    throw evaluationErrors.find((error) => error instanceof FailedRequireError) ?? evaluationErrors[0];
+    throw evaluationErrors.find((error) => error instanceof FailedRequireError)
+      ?? evaluationErrors.find((error) => (error as { artifact?: Artifact })?.artifact?.brandedLibrary)
+      ?? evaluationErrors[0];
   }
 
   verifyFullTransaction(template);

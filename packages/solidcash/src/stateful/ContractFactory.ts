@@ -53,7 +53,8 @@ export async function selectGenesisFundingUtxo(
   identityNftCount = 1,
 ): Promise<Utxo> {
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
-  const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + 5000n + 2400n;
+  const deployFee = BigInt(Math.max(5000, Math.ceil(artifact.bytecode.length / 2) + 2000));
+  const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n;
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
   const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find(
     (u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u),

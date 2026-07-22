@@ -5,7 +5,9 @@ export default defineConfig({
   // verbatim Solidity/sharding benchmark separate in artifacts-real. This avoids changing either upstream source
   // tree while runtime compatibility and finer-grained (>10KB single-entry) sharding advance independently.
   paths: { contracts: 'contracts-scash', artifacts: 'artifacts', tests: 'test' },
-  solc: { solidityImportCompat: true, ecrecover: 'p2pkh' },
+  // The marketplace compatibility fixture only needs keyed lookup, not ordered mapping iteration. The compact
+  // entry backend also avoids paying the sorted-list predecessor covenant cost for these simplified contracts.
+  solc: { solidityImportCompat: true, ecrecover: 'p2pkh', sortedMappingsAll: false },
   typegen: {
     targets: [{
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',

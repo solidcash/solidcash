@@ -579,7 +579,7 @@ type PlannedFunction = {
 
 const LIFECYCLE_MODIFIERS = new Set([
   FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
-  FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE, FunctionModifier.DELEGATE,
+  FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE,
 ]);
 
 /**
@@ -921,7 +921,7 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   for (const fn of contract.functions) if (plans.some((p) => p.name === fn.name)) {
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.INTERNAL, FunctionModifier.PRIVATE, FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC,
-      FunctionModifier.PURE, FunctionModifier.VIEW,
+      FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.DELEGATE);
   }
@@ -957,6 +957,10 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
   }
   for (const fn of contract.functions) {
     const route = routes.get(fn.name); if (!route) continue;
+    // A split delegate implementation is flattened into a directly state-holding root by deployProxy. Its root
+    // forwarder therefore becomes an ordinary covenant entry, while the facet remains `delegate`: root -> facet
+    // is one delegate hop, avoiding the unsupported proxy -> implementation -> facet nested-delegate topology.
+    fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.DELEGATE);
     for (const param of fn.parameters) param.syntheticallyUsed = true;
     const signature = computeFunctionSignature(fn.name, fn.parameters.map((p) => p.type.toString()));
     const target = new IdentifierNode(route.link); target.location = fn.location;

@@ -241,5 +241,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         && (o.token?.nft?.commitment?.length ?? 0) > 20,
     );
     expect(entryOut).toBeDefined();
+    expect(await (proxy as any).users(signer.getAddress())).toBe(5n);
+    expect(await (proxy as any).getUsers(0, 0)).toEqual([5n]);
   });
 });

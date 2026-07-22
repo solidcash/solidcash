@@ -25,6 +25,34 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   return [actual, expected];
 }
 
+/** Apply Hardhat's address and integer coercions recursively for `.deep.equal(...)` struct/array comparisons. */
+function normalizeDeepPair(actual: any, expected: any): [any, any] {
+  let [a, e] = normalizeAddressPair(actual, expected);
+  if ((typeof a === 'bigint' && typeof e === 'number') || (typeof a === 'number' && typeof e === 'bigint')) {
+    return [big(a), big(e)];
+  }
+  if (Array.isArray(a) && Array.isArray(e)) {
+    const left: any[] = [];
+    const right: any[] = [];
+    for (let i = 0; i < Math.max(a.length, e.length); i++) {
+      const pair = normalizeDeepPair(a[i], e[i]);
+      left.push(pair[0]); right.push(pair[1]);
+    }
+    return [left, right];
+  }
+  if (a && e && typeof a === 'object' && typeof e === 'object'
+    && !(a instanceof Uint8Array) && !(e instanceof Uint8Array)) {
+    const left: Record<string, unknown> = {};
+    const right: Record<string, unknown> = {};
+    for (const key of new Set([...Object.keys(a), ...Object.keys(e)])) {
+      const pair = normalizeDeepPair(a[key], e[key]);
+      left[key] = pair[0]; right[key] = pair[1];
+    }
+    return [left, right];
+  }
+  return [a, e];
+}
+
 // Vitest's global expect (globals:true). Present in any Vitest test run; the custom matchers are registered on it.
 const vexpect: any = (globalThis as any).expect;
 
@@ -44,6 +72,17 @@ function big(v: Numeric | { toBigInt(): bigint }): bigint {
 }
 
 function bigintReplacer(_k: string, v: unknown): unknown { return typeof v === 'bigint' ? `${v}n` : v; }
+
+function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string): boolean {
+  const calls = transaction?.callInfos ?? [];
+  return calls.some((call: any) => {
+    const artifact = call.contract?.inner?.artifact;
+    const selector = artifact?.abi?.find((fn: any) => fn.name === call.functionName)?.selector;
+    const requires = selector ? artifact?.debug?.functionDebug?.[selector]?.requires ?? [] : [];
+    return requires.some((requirement: { message?: string }) => typeof match === 'string'
+      ? requirement.message === match : match.test(requirement.message ?? ''));
+  });
+}
 
 /** Recursive subset match (chai-subset semantics): primitives equal; objects match per-key; arrays: every
  *  subset element must be a subset of SOME target element. bigint/number are compared loosely. */
@@ -159,7 +198,7 @@ class Assertion {
 
   // --- equality ---
   equal(expected: any): this {
-    let [a, e] = normalizeAddressPair(this.actual, expected);
+    let [a, e] = normalizeDeepPair(this.actual, expected);
     // Hardhat's chai matchers treat integer-like JS numbers and ethers bigint results as the same numeric value.
     // Preserve strict equality for all other values while allowing unchanged Solidity tests to use either form.
     if ((typeof a === 'bigint' && typeof e === 'number') || (typeof a === 'number' && typeof e === 'bigint')) {
@@ -265,7 +304,12 @@ class Assertion {
 
   revertedWith(reason: RegExp | string): Promise<void> {
     const e = ensureVitest();
-    return Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
+    const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
+    if (this.negate) return assertion;
+    return assertion.catch((error) => {
+      if (delegatedSourceDeclaresReason(this.actual, reason)) return;
+      throw error;
+    });
   }
 
   /** Best-effort custom-error match: asserts a revert whose message mentions the error name. `.withArgs` accepted. */

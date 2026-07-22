@@ -205,7 +205,11 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // One funding UTXO per signer is enough: the deploy step fans out fresh vout-0 genesis coins on demand
       // (ContractFactory.selectGenesisFundingUtxo), so an account can deploy any number of contracts. Override
       // `fundingUtxos` to pre-split (saves a fan-out tx per deploy).
-      return anyProvider.getSigners(count, { mnemonic, path: accountsPath, ...o });
+      // Hardhat accounts are effectively pre-funded for large deployment suites. Split BCH contracts consume
+      // several genesis outputs, so use a similarly generous mock default while retaining an explicit override.
+      return anyProvider.getSigners(count, {
+        satoshis: 100_000_000n, fundingUtxos: 32, mnemonic, path: accountsPath, ...o,
+      });
     }
     return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
   };

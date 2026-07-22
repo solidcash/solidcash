@@ -1,4 +1,4 @@
-import { SplitArtifactBundle } from '@solidcash/utils';
+import { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import Signer from '../Signer.js';
@@ -48,8 +48,18 @@ export class SplitContract {
         value: (...args: FunctionArgument[]) => this.getFunction(route.function)(...args),
       });
     }
+    for (const stateItem of [
+      ...(bundle.root.stateLayout?.variables ?? []), ...(bundle.root.stateLayout?.collections ?? []),
+    ]) {
+      if (stateItem.name in this) continue;
+      Object.defineProperty(this, stateItem.name, {
+        enumerable: true,
+        value: (...args: FunctionArgument[]) => (this.root as unknown as Record<string, (...a: any[]) => any>)[stateItem.name](...args),
+      });
+    }
   }
 
+  get artifact(): Artifact { return this.bundle.root; }
   get address(): string { return this.root.target; }
   get categoryId(): string { return this.root.categoryId; }
   getAddress(): Promise<string> { return Promise.resolve(this.address); }
@@ -71,8 +81,27 @@ export class SplitContract {
     }
     const facet = this.facets[route.target];
     if (!facet) throw new Error(`Split facet '${route.target}' is not connected.`);
-    return (...args) => (this.root.getFunction(name)(...args) as StatefulFunctionCall)
-      .withDelegatecall(facet as StatefulContract, name, args);
+    return (...args) => {
+      const call = (this.root.getFunction(name)(...args) as StatefulFunctionCall)
+        .withDelegatecall(facet as StatefulContract, name, args);
+      const fn = facet.inner.artifact.abi.find((entry) => entry.name === name);
+      const visible = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+      const byName = new Map(visible.map((input, index) => [input.name, args[index]]));
+      const runner = facet.runner;
+      for (const emitted of fn?.emits ?? []) {
+        const event = facet.inner.artifact.events?.find((item) => item.signature === emitted.eventSignature);
+        if (!event) continue;
+        const values = event.parameters.map((parameter) => {
+          if (byName.has(parameter.name)) return byName.get(parameter.name)!;
+          if (parameter.type === 'address' && runner instanceof Signer) return addressToLockScript(runner.getAddress());
+          return undefined;
+        });
+        if (values.every((value) => value !== undefined)) {
+          call.emitEvent(event.signature, ...values as unknown as import('../types/state-inference.js').StateValueType[]);
+        }
+      }
+      return call;
+    };
   }
 
   connect(runner: ContractRunner): SplitContract {

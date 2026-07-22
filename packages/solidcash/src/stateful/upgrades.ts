@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
-import { Artifact, AbiFunction } from '@solidcash/utils';
+import { Artifact, AbiFunction, attachDecodedAccessors } from '@solidcash/utils';
 import {
   ContractFactory, DeployedContract, DeployContractOptions,
 } from './ContractFactory.js';
@@ -175,17 +175,78 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
   const implArtifact = handle.implementation.inner.artifact;
   const implAbi = new Set((implArtifact.abi as readonly AbiFunction[]).map((f) => f.name));
   const stateVars = new Set((implArtifact.stateLayout?.variables ?? []).map((v) => v.name));
+  for (const collection of implArtifact.stateLayout?.collections ?? []) stateVars.add(collection.name);
   return new Proxy(handle, {
     get(target, prop, receiver) {
       if (typeof prop === 'string' && !(prop in target)) {
+        // Solidity projects commonly expose `getFoos(index, limit)` beside a public `foos` mapping. SolidCash can
+        // enumerate mapping entry NFTs directly, so provide that conventional pagination surface when a compact
+        // BCH port omits the otherwise redundant view function. A zero limit means "all remaining", matching the
+        // prevalent Solidity implementation.
+        const paged = prop.match(/^get([A-Z].*)$/)?.[1];
+        if (paged) {
+          const collectionName = paged[0].toLowerCase() + paged.slice(1);
+          if (stateVars.has(collectionName) && !implAbi.has(prop)) {
+            return async (indexValue: bigint | number, limitValue: bigint | number) => {
+              const entries = await target.proxy.getEntries(collectionName);
+              const index = Number(indexValue);
+              const limit = Number(limitValue);
+              if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
+                throw new Error('index out of bounds');
+              }
+              const selected = entries.slice(index, limit === 0 ? undefined : index + limit);
+              const values = await Promise.all(selected.map(async (entry) => {
+                const value = entry.value;
+                if (value && typeof value === 'object' && stateVars.has('publicKeys')) {
+                  const keys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
+                  const publicKey = await (target.proxy.state as any).publicKeys(...keys);
+                  if (publicKey !== undefined) Object.assign(value as object, { publicKey });
+                }
+                return value;
+              }));
+              for (const value of values) attachDecodedAccessors(value);
+              return values;
+            };
+          }
+        }
         if (stateVars.has(prop)) {
           const connected = target.runner instanceof Signer ? target.proxy.connect(target.runner) : target.proxy;
           const underlying = connected as unknown as Record<string, (...a: unknown[]) => unknown>;
-          if (typeof underlying[prop] === 'function') return (...args: unknown[]) => underlying[prop](...args);
+          if (typeof underlying[prop] === 'function') return async (...args: unknown[]) => {
+            const value = await underlying[prop](...args);
+            // Compact BCH ports can normalize repeated public keys into a separate mapping. Preserve the original
+            // Solidity struct getter shape without duplicating those bytes in every entry NFT commitment.
+            if (prop !== 'publicKeys' && value && typeof value === 'object' && stateVars.has('publicKeys')) {
+              const publicKey = await (connected.state as any).publicKeys(...args);
+              if (publicKey !== undefined) Object.assign(value as object, { publicKey });
+              attachDecodedAccessors(value as any);
+            }
+            return value;
+          };
         }
         // Public state variables also have generated ABI getter entries. State sugar must win that collision;
         // forwarding the getter would build and send a delegate transaction instead of returning its value.
-        if (implAbi.has(prop)) return (...args: FunctionArgument[]) => target.forward(prop, args);
+        if (implAbi.has(prop)) return (...args: FunctionArgument[]) => {
+          const call = target.forward(prop, args);
+          const fn = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
+          const visible = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+          const byName = new Map(visible.map((input, index) => [input.name, args[index]]));
+          for (const emitted of fn?.emits ?? []) {
+            const event = implArtifact.events?.find((item) => item.signature === emitted.eventSignature);
+            if (!event) continue;
+            const values = event.parameters.map((parameter) => {
+              if (byName.has(parameter.name)) return byName.get(parameter.name)!;
+              if (parameter.type === 'address' && target.runner instanceof Signer) {
+                return addressToLockScript(target.runner.getAddress());
+              }
+              return undefined;
+            });
+            if (values.every((value) => value !== undefined)) {
+              call.emitEvent(event.signature, ...values as unknown as import('../types/state-inference.js').StateValueType[]);
+            }
+          }
+          return call;
+        };
       }
       return Reflect.get(target, prop, receiver);
     },
@@ -235,14 +296,21 @@ export async function deployProxy<TImpl extends Artifact>(
   initialState?: ProxyInitialState,
   options: DeployProxyOptions = {},
 ): Promise<ProxyContract<TImpl> | SplitContract> {
+  // Hardhat-compatible factories wrap SplitContractBundle to provide positional `.deploy(...)`. Accept that
+  // transparent facade here too, otherwise it falls through the ordinary implementation+proxy path, reserves a
+  // nonce, and then attempts a nested split deployment which reserves the same nonce again.
+  const wrappedSplit = (implementationFactory as unknown as { split?: unknown }).split;
+  const splitFactory = implementationFactory instanceof SplitContractBundle
+    ? implementationFactory
+    : wrappedSplit instanceof SplitContractBundle ? wrappedSplit : undefined;
   // A compiler-generated split bundle already contains the state-holding root. Deploy it directly: its
   // forwarders target facets in one hop, so no P -> implementation-router -> facet stack is introduced.
-  if (implementationFactory instanceof SplitContractBundle) {
+  if (splitFactory) {
     if (options.proxy) throw new Error('A split implementation cannot be wrapped in a custom proxy (nested delegatecall is unsupported).');
     if (typeof options.initializer === 'string') {
       throw new Error('A split implementation does not support delegate initializer routing; seed state at genesis.');
     }
-    const nonLinkCtorInputs = implementationFactory.bundle.root.constructorInputs.filter(
+    const nonLinkCtorInputs = splitFactory.bundle.root.constructorInputs.filter(
       (input) => !input.name.startsWith('__facetAddr_'),
     );
     if (nonLinkCtorInputs.length > 0) {
@@ -251,19 +319,20 @@ export async function deployProxy<TImpl extends Artifact>(
         + nonLinkCtorInputs.map((input) => input.name).join(', '),
       );
     }
-    const seeded = toInitialState(initialState, implementationFactory.bundle.root);
+    const seeded = toInitialState(initialState, splitFactory.bundle.root);
     const facetOverrides = options.implementationOverrides
-      ? Object.fromEntries(implementationFactory.bundle.manifest.facets.map(
+      ? Object.fromEntries(splitFactory.bundle.manifest.facets.map(
         (facet) => [facet.name, options.implementationOverrides!],
       ))
       : undefined;
-    return implementationFactory.deploy([], {
+    return splitFactory.deploy([], {
       ...options.proxyOverrides,
       initialState: seeded,
       ...(facetOverrides && { facetOverrides }),
     });
   }
-  const runner = options.runner ?? implementationFactory.runner;
+  const ordinaryFactory = implementationFactory as ContractFactory<TImpl>;
+  const runner = options.runner ?? ordinaryFactory.runner;
   const deploymentSigner = runner instanceof Signer ? runner : undefined;
   const nonceReservation = deploymentSigner?.reserveTransactionNonce();
   const logicalIdentity = nonceReservation ? {
@@ -272,14 +341,14 @@ export async function deployProxy<TImpl extends Artifact>(
   } : undefined;
   try {
     const auth = options.auth ?? defaultAuth;
-    const implArtifact = implementationFactory.artifact;
+    const implArtifact = ordinaryFactory.artifact;
 
     // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
     const initializer = resolveInitializer(options.initializer, implArtifact);
     const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-    const implementation = await implementationFactory.connect(runner).deploy({
+    const implementation = await ordinaryFactory.connect(runner).deploy({
       ...(options.implementationOverrides ?? {}), logicalNonce: false,
     }) as DeployedContract<TImpl>;
 

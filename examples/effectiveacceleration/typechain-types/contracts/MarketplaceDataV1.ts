@@ -7,6 +7,10 @@ import MarketplaceDataV1Artifact from '../../artifacts/solidcash/contracts-scash
 
 export type JobEventDataStruct = { type_: bigint; address_: Uint8Array | string; data_: Uint8Array | string; timestamp_: bigint; };
 export type JobEventDataStructOutput = [type_: bigint, address_: Uint8Array | string, data_: Uint8Array | string, timestamp_: bigint] & { type_: bigint; address_: Uint8Array | string; data_: Uint8Array | string; timestamp_: bigint; };
+export type UserDataStruct = { address_: Uint8Array | string; name: string; bio: string; avatar: string; reputationUp: bigint; reputationDown: bigint; };
+export type UserDataStructOutput = [address_: Uint8Array | string, name: string, bio: string, avatar: string, reputationUp: bigint, reputationDown: bigint] & { address_: Uint8Array | string; name: string; bio: string; avatar: string; reputationUp: bigint; reputationDown: bigint; };
+export type ArbitratorDataStruct = { address_: Uint8Array | string; name: string; bio: string; avatar: string; fee: bigint; settledCount: bigint; refusedCount: bigint; };
+export type ArbitratorDataStructOutput = [address_: Uint8Array | string, name: string, bio: string, avatar: string, fee: bigint, settledCount: bigint, refusedCount: bigint] & { address_: Uint8Array | string; name: string; bio: string; avatar: string; fee: bigint; settledCount: bigint; refusedCount: bigint; };
 
 export type MarketplaceDataV1 = StatefulContract<typeof MarketplaceDataV1Artifact>;
 export type MarketplaceDataV1ConstructorArgs = [];

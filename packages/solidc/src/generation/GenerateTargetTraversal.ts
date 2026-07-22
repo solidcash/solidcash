@@ -393,6 +393,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entrySlots: EntryAccessInfo[] = [];
   private pendingEntryWrites: Map<number, { keyStackName: string; valueStackName: string }> = new Map();
   private pendingEntryDeletes: Set<number> = new Set();
+  // Straight-line repeated RMWs of one chunkable C2 value are accumulated locally and covenant-pinned once at the
+  // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
+  private sortedCompositeWritesRemaining: Map<number, number> = new Map();
+  private sortedCompositeValueCache: Map<number, string> = new Map();
   // Depth of plain counting loops (while / do-while / for) currently being emitted. A mapping WRITE inside such
   // a loop is unsound: the entry-write model reserves ONE output slot per (mapping, key-descriptor), so a loop
   // that writes distinct runtime keys keeps only the LAST entry (silent data loss), and a read-modify-write
@@ -1798,6 +1802,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(this.inlineDeployCounterName);
       this.inlineDeployActive = true;
+    }
+
+    this.sortedCompositeWritesRemaining.clear();
+    this.sortedCompositeValueCache.clear();
+    if ((node.sortedBatchInfo?.length ?? 0) > 0) {
+      const seen = new WeakSet<Node>();
+      const scan = (candidate: Node): void => {
+        if (seen.has(candidate)) return;
+        seen.add(candidate);
+        if (candidate instanceof MappingAssignNode && candidate.collection?.sorted
+          && this.isChunkableValue(candidate.collection.innermostValueType)
+          && (candidate.arrayIndex || candidate.arrayPush || candidate.arrayPop)) {
+          this.sortedCompositeWritesRemaining.set(candidate.entrySlotIndex,
+            (this.sortedCompositeWritesRemaining.get(candidate.entrySlotIndex) ?? 0) + 1);
+        }
+        for (const value of Object.values(candidate as unknown as Record<string, unknown>)) {
+          if (value instanceof Node) scan(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item);
+        }
+      };
+      scan(node.body);
     }
 
     node.body = this.visit(node.body) as BlockNode;
@@ -10419,6 +10444,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (slotIndex < 0 || !this.entrySlots[slotIndex]) {
       throw new SortedMappingCodegenPendingError(node, collection.name);
     }
+    const cached = this.sortedCompositeValueCache.get(slotIndex);
+    if (cached !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(cached))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      return node;
+    }
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
     // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving
@@ -11042,7 +11074,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // materializes the current array (Phase 1), applies element/push/pop surgery (Phase 2), and leaves the modified
       // blob for emitSortedValueUpsert to chunk/store (Phase 3). push/pop CHANGE the element count, so the value can
       // flip across the inline<->chunked size boundary; the SDK derives the new chunk set from the trace.
-      return this.emitSortedValueUpsert(node, () => { this.emitMappingArrayElementAssign(node, true); });
+      const remaining = this.sortedCompositeWritesRemaining.get(node.entrySlotIndex) ?? 1;
+      if (remaining > 1) {
+        this.sortedCompositeWritesRemaining.set(node.entrySlotIndex, remaining - 1);
+        this.emitMappingArrayElementAssign(node, true);
+        this.replaceSortedCompositeCache(node.entrySlotIndex, node);
+        return node;
+      }
+      this.sortedCompositeWritesRemaining.delete(node.entrySlotIndex);
+      return this.emitSortedValueUpsert(node, () => {
+        this.emitMappingArrayElementAssign(node, true);
+        this.discardSortedCompositeCache(node.entrySlotIndex, node);
+      });
     }
     if (node.collection?.sorted) {
       throw new SortedMappingCodegenPendingError(node, node.collection.name); // unsupported sorted shape/value type
@@ -11118,6 +11161,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     return node;
+  }
+
+  private discardSortedCompositeCache(slotIndex: number, node: Node): void {
+    const cached = this.sortedCompositeValueCache.get(slotIndex);
+    if (cached === undefined) return;
+    const depth = this.getStackIndex(cached);
+    this.emit(encodeInt(BigInt(depth)), { location: node.location, positionHint: PositionHint.END });
+    this.emit(Op.OP_ROLL, { location: node.location, positionHint: PositionHint.END });
+    this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+    this.removeFromStack(depth);
+    this.sortedCompositeValueCache.delete(slotIndex);
+  }
+
+  private replaceSortedCompositeCache(slotIndex: number, node: Node): void {
+    this.discardSortedCompositeCache(slotIndex, node);
+    const name = `(__c2_composite_${slotIndex})`;
+    this.stack[0] = name;
+    this.sortedCompositeValueCache.set(slotIndex, name);
   }
 
   // Whether an expression subtree reads the entry at `slotIndex` (a MappingAccess resolving to that slot).

@@ -17,7 +17,9 @@ import {
   buildValueChunkCommitment,
   parseValueChunkCommitment,
   splitValueIntoValueChunks,
+  VALUE_HEAD_SIZE,
   joinChunks,
+  joinValueChunks,
   DYNAMIC_CHUNK_SIZE,
   computeEventNameHash,
   parsePushdataCommitment,
@@ -4944,7 +4946,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const slot = slotOrder[outIdx - entryOutputBase];
               // Pinned slots (a sorted-insert P', known exactly) must not be re-derived - the covenant reads the
               // predecessor's input commitment too, which the extraction would otherwise oscillate onto.
-              if (slot !== undefined && !stb.isEntrySlotPinned(slot)) {
+              // A native C2 node always contains slot32||next32. Ignore shorter OTC observations: they belong to
+              // unrelated empty/default comparisons at the same output index and otherwise oscillate a valid
+              // derived target back to the legacy empty commitment.
+              if (slot !== undefined && commit.length >= 128 && !stb.isEntrySlotPinned(slot)) {
                 stb.setEntryRawCommitment(slot, commit); orderedCommits.push(commit);
               }
             }
@@ -5026,7 +5031,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // chunks converge the NEW OTC never runs and derivedCount is 0. Do NOT drop the seeded loop entry to 0
               // (that would shift vcBase and misalign the chunk derivation) - keep the count of 1 until NEW derives.
               const hasValueChunks = stb.getValueChunkVars().some((v) => v.collection === lv.collection);
-              if (isSortedValueMint && hasValueChunks && derivedCount === 0 && existing.length > 0) {
+              const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
+              if (isSortedValueMint && derivedCount === 0 && existing.length > 0
+                && (hasValueChunks || requiredCount > 0)) {
                 loopOffset += existing.length;
                 continue;
               }
@@ -5035,6 +5042,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const next: string[] = [];
               for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
               if (stillLearning) next.push('00');
+              while (next.length < requiredCount) next.push(existing[next.length] ?? '00');
               stb.setLoopEntryCommitments(lv.collection, next);
               commitmentProgress += derivedCount;
               latestLoopEntryCommits = latestLoopEntryCommits.concat(next);
@@ -5056,6 +5064,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 continue;
               }
               const range = { min: vcOffset, max: vcOffset + LOOP_ENTRY_MAX_ITERATIONS };
+              const derivedBytecodes = extractVerifiedValuesFromTrace(fullTrace2, Op.OP_OUTPUTBYTECODE, range);
+              if (derivedBytecodes.length > 0) {
+                stb.setValueChunkLockingBytecode(vcv.collection, derivedBytecodes[0]);
+                commitmentProgress += 1;
+              }
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
               for (const [outIdx, commit] of commitMap) derived[outIdx - vcOffset] = commit;
@@ -5203,7 +5216,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // while the probe still errors (bounded by maxIterations). Non-value-chunk txs keep the original break so
           // an expected-revert derivation still exits fast.
           const probeHadError = fullTrace2.some((s: any) => s.error);
-          const needsPassingProbe = stb.getValueChunkVars().length > 0;
+          const needsPassingProbe = stb.getValueChunkVars().length > 0
+            || stb.getDynamicChunkVars().length > 0 || stb.getLoopEntryVars().length > 0;
           if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !probeHadError)) break;
           if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !probeHadError)) {
             throw new AutoDerivationError(
@@ -5605,8 +5619,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   : bigIntToVmNumber(BigInt(v as unknown as string));
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
+          batchTargetSlots.set(slotIndex, slot);
           if (abiFunction?.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
-            batchTargetSlots.set(slotIndex, slot);
           }
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const stateArrayKeyValues = access.keySources?.[0]?.kind === 'stateArrayLast'
@@ -5641,15 +5655,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (present) {
               entryNfts.push({ ...entryBase, utxo: { ...list.find(slot)!.utxo, unlocker: wUnlocker } });
             } else if (isSoftDelete) {
-              // A branch-lowered delete is existence-gated. For an absent key its block slot must remain a plain
-              // funder and produce no entry output; inserting a default-valued C2 node would mutate a no-op path.
-              entryNfts.push({ ...entryBase, exists: false, utxo: undefined });
+              // The same slot is read by the early-return guard, so absence still needs the authenticated
+              // predecessor. The covenant's slot-equality guard prevents any write/output on this no-op path.
+              const predecessor = list.predecessorOf(slot);
+              entryNfts.push({ ...entryBase, utxo: { ...predecessor.utxo, unlocker: wUnlocker } });
             } else {
               const plan = list.planInsert(slot);
               entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
               // P5b: for a chunkable-value INSERT the covenant chunk-pin adds OP_OUTPUTTOKENCOMMITMENT calls in the
               // loop-entry output range, so the trace-derivation of the NEW node reads chunk commitments by mistake.
-              // Compute NEW exactly from the direct value param (slot ++ oldNext ++ len4 ++ [v|sha256(v)]) and inject
+              // Compute NEW exactly from the direct value param (slot ++ oldNext ++ len4 ++ [v|sha256(v)++head28]) and inject
               // it PINNED so the derivation skips this collection entirely (see setLoopEntryCommitments + pinning).
               let newNode: Uint8Array | undefined;
               if (collection.chunkableValue && access.valueParam) {
@@ -5659,7 +5674,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (vB) {
                   const len4 = new Uint8Array(4);
                   new DataView(len4.buffer).setUint32(0, vB.length, true);
-                  const tail = new Uint8Array([...len4, ...(vB.length > 60 ? sha256Sync(vB) : vB)]);
+                  const longBody = new Uint8Array([...sha256Sync(vB), ...vB.slice(0, VALUE_HEAD_SIZE)]);
+                  const tail = new Uint8Array([...len4, ...(vB.length > 60 ? longBody : vB)]);
                   newNode = encodeEntryCommitment(slot, plan.predecessor.nextKey, tail);
                 }
               }
@@ -5685,17 +5701,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (tail.length >= 4) {
                 const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
                 if (len > 60) {
-                  const digestHex = binToHex(tail.slice(4, 36));
-                  const slotHex = binToHex(slot);
-                  const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, access.collection);
-                  const chunkData = (await this.inner.provider.getUtxos(chunkAddr))
+                  const root = tail.slice(4, 36);
+                  const headData = tail.slice(36, 64);
+                  const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, access.collection, slot, root);
+                  const chunks = (await this.inner.provider.getUtxos(chunkAddr))
                     .filter((u) => u.token?.category === this.categoryId
                       && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
                     .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
-                    .filter((c) => binToHex(c.slot) === slotHex && binToHex(c.digest) === digestHex)
-                    .sort((a, b) => a.chunkIndex - b.chunkIndex)
-                    .map((c) => c.chunkData);
-                  witness = joinChunks(chunkData, len);
+                    .sort((a, b) => a.chunkIndex - b.chunkIndex);
+                  witness = joinValueChunks(headData, chunks, len);
+                  if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
+                    throw new Error(`C2 value chunks do not match the authenticated root`);
+                  }
                 }
               }
             }
@@ -5914,17 +5931,60 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
 
+      const batchAliasSkips = new Set<number>();
+      for (const entry of entryNfts) {
+        const ownerSlot = entryAccesses[entry.slotIndex]?.aliasCondDeleteSlot;
+        const owner = ownerSlot === undefined ? undefined
+          : entryNfts.find((candidate) => candidate.slotIndex === ownerSlot);
+        const entrySlot = batchTargetSlots.get(entry.slotIndex);
+        const ownerTarget = ownerSlot === undefined ? undefined : batchTargetSlots.get(ownerSlot);
+        if (owner && entry.collection === owner.collection && entrySlot && ownerTarget
+          && binToHex(entrySlot) === binToHex(ownerTarget)) batchAliasSkips.add(entry.slotIndex);
+      }
+      const batchGuardSlot = abiFunction?.blockLayout?.slots.find(
+        (slot) => slot.kind === 'entry' && slot.softDelete,
+      )?.slotIndex;
+      const batchGuardEntry = batchGuardSlot === undefined ? undefined
+        : entryNfts.find((entry) => entry.slotIndex === batchGuardSlot);
+      const batchNoOp = !!(batchGuardEntry?.utxo?.token?.nft?.commitment && batchGuardSlot !== undefined
+        && binToHex(decodeEntryCommitment(hexToBin(batchGuardEntry.utxo.token.nft.commitment)).slot)
+          !== binToHex(batchTargetSlots.get(batchGuardSlot)!));
+
       // Atomic fixed-write batches: collapse logical accesses that share an original predecessor onto one physical
       // proof input. The block slot of the first logical owner carries that UTXO; later aliases receive funders and
       // point at the owner's relative block offset through __internal__c2BatchProof_N.
       const batchWitnesses: unknown[] = [];
-      let batchPredOutputBase = abiFunction?.blockLayout?.blockSize ?? 1;
+      let batchTrailingCount = 0;
+      // Read-only dynamic chunks are preserved first in the trailing output region. Batch planning happens before
+      // those witnesses are materialized below, so count them from the same deterministic addresses here.
+      let preservedTrailingCount = 0;
+      const dynamicWriteSet = new Set(abiFunction?.dynamicWrites ?? []);
+      for (const varName of new Set(abiFunction?.dynamicReads ?? [])) {
+        if (dynamicWriteSet.has(varName)) continue;
+        const variable = stateLayout.variables.find((v) => v.name === varName && v.dynamic);
+        if (!variable) continue;
+        const address = getDynamicChunkAddress(this.inner, this.categoryId, variable.name, variable.type);
+        preservedTrailingCount += (await this.inner.provider.getUtxos(address)).filter((u) =>
+          u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
+          && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
+      }
+      let batchPredOutputBase = (abiFunction?.blockLayout?.blockSize ?? 1) + preservedTrailingCount;
       for (const batch of abiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown C2 batch collection: ${batch.collection}`);
+        if (batchNoOp) {
+          for (const slotIndex of batch.slotIndices) {
+            const offset = abiFunction!.blockLayout?.slots.find(
+              (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
+            )?.offset;
+            if (offset === undefined) throw new Error(`C2 no-op slot has no block offset ${slotIndex}`);
+            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32), -3n);
+          }
+          continue;
+        }
         const collectionEntries = await collectionEntriesFor(collection.signature);
         const list = SortedList.fromUtxos(collectionEntries);
-        const writes = batch.slotIndices.map((slotIndex) => ({
+        const writes = batch.slotIndices.filter((slotIndex) => !batchAliasSkips.has(slotIndex)).map((slotIndex) => ({
           slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array(),
         }));
         if (writes.some((w) => !w.slot)) throw new Error(`C2 batch '${batch.collection}' is missing a target slot`);
@@ -5934,6 +5994,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
+          if (batchAliasSkips.has(slotIndex)) {
+            const ownerSlot = entryAccesses[slotIndex].aliasCondDeleteSlot!;
+            const ownerOffset = abiFunction!.blockLayout?.slots.find(
+              (slot) => slot.kind === 'entry' && slot.slotIndex === ownerSlot,
+            )?.offset;
+            if (ownerOffset === undefined) throw new Error(`C2 alias owner has no block slot ${ownerSlot}`);
+            const raw = this._rawC2BatchWitness?.get(slotIndex);
+            batchWitnesses.push(raw?.slot ?? batchTargetSlots.get(ownerSlot)!, raw?.proof ?? BigInt(ownerOffset),
+              raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
+            continue;
+          }
           const slot = batchTargetSlots.get(slotIndex)!;
           const proof = list.find(slot) ?? list.predecessorOf(slot);
           const uid = `${proof.utxo.txid}:${proof.utxo.vout}`;
@@ -5963,7 +6034,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut);
         }
         batchPredOutputBase += predOutputs.length;
+        batchTrailingCount += predOutputs.length;
       }
+      if ((abiFunction?.sortedBatchInfo?.length ?? 0) > 0) batchWitnesses.push(BigInt(batchTrailingCount));
       for (const witness of batchWitnesses) finalArgs = [...finalArgs, witness];
 
       // Append the P5b value witnesses in slotIndex order (SymbolTable injects them right after blockhash, before
@@ -7763,12 +7836,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .find((f) => f.name === g.functionName);
         const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
         if (extra.length === 0 || !extra.every((s) => s.kind === 'event' || s.kind === 'entry')) continue;
+        const existingCallSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'lowLevelCall');
+        const callOffset = existingCallSlot?.offset ?? (abiFunction?.blockLayout?.blockSize ?? 1);
+        const hasEntrySlot = extra.some((s) => s.kind === 'entry');
+        if (hasEntrySlot && !existingCallSlot && !delegateEventSlots.some((s) => s.kind === 'lowLevelCall')) {
+          delegateEventSlots.push({ kind: 'lowLevelCall', offset: callOffset });
+        }
         for (const s of extra) {
-          delegateEventSlots.push({ kind: s.kind, offset: s.offset, ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }) });
+          delegateEventSlots.push({
+            kind: s.kind, offset: s.kind === 'entry' ? callOffset + s.offset : s.offset,
+            ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }),
+          });
         }
       }
       lowLevelCallInputBase = 1 + requiredNftIndices.length
-        + externalReadUtxos.length + outStateInputCount + externalCallInputCount + delegateEventSlots.length;
+        + externalReadUtxos.length + outStateInputCount + externalCallInputCount
+        + delegateEventSlots.filter((s) => s.kind === 'event').length;
 
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
@@ -8083,27 +8166,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // do not orphan as dust. Co-spent (destroyed) with flag=1; the covenant does not verify them (the new chunks
     // are pinned), so this is a pure reclaim. Digest-keyed filter reclaims only the exact old version.
     for (const gc of valueChunkGc) {
-      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, gc.collection);
-      const oldChunks = (await this.inner.provider.getUtxos(chunkAddr)).filter((u) => {
-        if (u.token?.category !== this.categoryId || !u.token?.nft?.commitment || u.token.nft.commitment.length === 0) return false;
-        const p = parseValueChunkCommitment(u.token.nft.commitment);
-        return binToHex(p.slot) === gc.slotHex && binToHex(p.digest) === gc.oldDigestHex;
-      });
+      const gcSlot = hexToBin(gc.slotHex);
+      const gcRoot = hexToBin(gc.oldDigestHex);
+      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, gc.collection, gcSlot, gcRoot);
+      const oldChunks = (await this.inner.provider.getUtxos(chunkAddr)).filter((u) =>
+        u.token?.category === this.categoryId && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0);
       for (const utxo of oldChunks) {
-        dynamicChunkInputs.push({ ...utxo, unlocker: createValueChunkUnlocker(this.inner, 0, this.categoryId, gc.collection) });
+        dynamicChunkInputs.push({ ...utxo, unlocker:
+          createValueChunkUnlocker(this.inner, 0, this.categoryId, gc.collection, gcSlot, gcRoot) });
       }
     }
 
     // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`): N new entry NFTs at the collection's
     // entry covenant address (N derived from the VM trace). Mirrors dynamicChunkVars (variable trailing outputs).
     const entryLoopWrites = abiFunction?.entryLoopWrites ?? [];
-    const loopEntryVars = (stateLayout.collections ?? [])
-      .filter((c) => entryLoopWrites.includes(c.name) || sortedLoopCommitments.has(c.name)
-        || batchPredCommitments.has(c.name))
-      .map((c) => ({
-        collection: c.name,
-        lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, c.name),
-      }));
+    // Trailing C2 output indices are part of the covenant ABI. Fixed batches are assigned bases in
+    // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
+    // that order here or two collections written out of declaration order receive each other's locking bytecode.
+    const orderedLoopCollections: string[] = [];
+    const addLoopCollection = (name: string): void => {
+      if (!orderedLoopCollections.includes(name)) orderedLoopCollections.push(name);
+    };
+    for (const batch of abiFunction?.sortedBatchInfo ?? []) addLoopCollection(batch.collection);
+    for (const name of entryLoopWrites) addLoopCollection(name);
+    for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
+    for (const name of batchPredCommitments.keys()) addLoopCollection(name);
+    // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
+    // proxy's entryLoopWrites cannot advertise a scalar C2 INSERT. The insertion plan itself is authoritative.
+    for (const ins of sortedInserts) addLoopCollection(ins.collection);
+    const loopEntryVars = orderedLoopCollections.map((name) => ({
+      collection: name,
+      lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, name),
+    }));
 
     // Extend the block layout with the event/transfer slots of any delegatecall'd impl. A delegate fn's event is
     // verified at proxyMaster+offset (emitMasterInputIndex=proxyMasterIndex), which is INSIDE the proxy's block -
@@ -8142,6 +8236,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(externalCallUtxoGroups.length > 0 && { externalCallUtxoGroups }),
       ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
       ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
+      ...(delegateEventSlots.some((s) => s.kind === 'entry') && { delegateEntriesAfterLowLevel: true }),
+      ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
@@ -8165,6 +8261,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (ins.newNode !== undefined) {
         builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
         builder.pinLoopEntry(ins.collection);
+      } else {
+        // The off-chain list already proves this is an INSERT, so reserve its trailing NEW output before the first
+        // VM probe. Without the placeholder, an earlier dynamic-storage output can occupy the computed NEW index;
+        // the VM then aborts before exposing the commitment and derivation incorrectly converges to an UPDATE.
+        builder.setLoopEntryCommitments(ins.collection, ['00']);
+        builder.requireLoopEntryCount(ins.collection, 1);
+      }
+    }
+    // Break the first-probe ordering cycle when a scalar C2 INSERT follows newly-written dynamic state chunks:
+    // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
+    // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
+    if (sortedInserts.length > 0) {
+      for (const dv of builder.getDynamicChunkVars()) {
+        if (builder.getChunkRawCommitments(dv.name).length === 0) builder.setChunkRawCommitments(dv.name, ['00']);
       }
     }
 
@@ -8183,7 +8293,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
     // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
     for (const collectionName of computedValueChunkCollections) {
-      builder.registerValueChunkVar(collectionName, getValueChunkLockingBytecode(this.inner, this.categoryId, collectionName));
+      builder.registerValueChunkVar(collectionName, DUMMY_FUNDER_LOCKING_BYTECODE);
     }
     for (const collectionName of computedValueUpdateCollections) {
       builder.setLoopEntryCommitments(collectionName, []);
@@ -8196,13 +8306,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // LAST covenant-managed outputs (after the entries + NEW node), matching the covenant's base masterInput+
     // blockSize+isInsert.
     for (const mint of valueChunkMints) {
-      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection);
+      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
       mint.chunks.forEach((data, i) => builder.addValueChunkOutput({
         to: chunkAddr,
         amount: 1000n,
         token: {
           category: this.categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: buildValueChunkCommitment(mint.slot, mint.digest, i, data) },
+          nft: { capability: 'mutable', commitment: buildValueChunkCommitment(i, data) },
         },
       }));
     }

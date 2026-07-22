@@ -303,3 +303,12 @@ The transformation must recurse through return paths and conditionals in the sam
 cache. A conditional dirty bit is required when a write is not guaranteed to execute; otherwise the batch would turn
 a skipped source assignment into an on-chain write. Long values additionally need unique chunk-output bases computed
 after the batch's variable entry-output count.
+
+### Dormant range-splice warning
+
+`findSortedInsertLoopWrite` intentionally returns no match, so ordinary loops continue to use the more capable active
+multi-gap upsert covenant. The retained first-cut range-splice is nevertheless hardened for future reuse: its SDK
+planner reorders the invariant-value key-array argument by hashed slot and writes that order into the encoded call
+arguments, while the covenant body independently proves every chain-node slot equals `H(runtimeKey)`. The existing
+duplicate/present-key checks make this reorder semantics-preserving for the splice's insert-only, invariant-value
+scope. Counter-key loops cannot use this technique because there is no reorderable key-array argument.

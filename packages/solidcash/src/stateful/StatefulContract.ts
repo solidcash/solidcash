@@ -5874,7 +5874,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : bigIntToVmNumber(BigInt(v as string)));
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
-      const arr = argOf(info.varyingArrayParam);
+      let arr = argOf(info.varyingArrayParam);
       if (!Array.isArray(arr)) continue;
       let valueTail: Uint8Array;
       if (info.valueBool !== undefined) valueTail = info.valueBool ? new Uint8Array([1]) : new Uint8Array(0);
@@ -5886,9 +5886,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // RANGE-SPLICE: all N keys must fall in ONE gap (share the bracketing predecessor P). Co-spend P once and mint
       // the sorted chain P' -> k1 -> k2 -> .. -> kN -> P.oldNext (P' = P re-pointed to the smallest new key). N+1
       // trailing entry outputs, ONE predecessor input. The covenant verifies the chain is sorted + bracketed by P.
-      const slots = (arr as unknown[]).map((elem) => keyToSlotMulti([...fixedBins, encKey(elem, varyType)]));
+      let slots = (arr as unknown[]).map((elem) => keyToSlotMulti([...fixedBins, encKey(elem, varyType)]));
       if (slots.length === 0) continue;
-      const sorted = [...slots].sort((a, b) => (bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1));
+      // The covenant walks the linked outputs in ascending slot order and now also proves each node's slot equals
+      // H(the runtime key). Reorder the invariant-value key array itself so source-loop evaluation follows that same
+      // order. This is semantics-preserving because every iteration assigns the same value and keys are rejected when
+      // duplicated or already present. Write through to finalArgs so the unlocking bytecode carries this exact order.
+      const order = slots.map((_, i) => i).sort((a, b) => (
+        bytesToSlotValue(slots[a]) < bytesToSlotValue(slots[b]) ? -1 : 1
+      ));
+      arr = order.map((i) => (arr as unknown[])[i]);
+      slots = order.map((i) => slots[i]);
+      const arrIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+      if (arrIdx >= 0) { args[arrIdx] = arr; finalArgs[arrIdx] = arr; }
+      const sorted = slots;
       for (let i = 1; i < sorted.length; i++) {
         if (bytesToSlotValue(sorted[i]) === bytesToSlotValue(sorted[i - 1])) throw new Error(`C2 insert loop ${info.collection}: duplicate key`);
       }

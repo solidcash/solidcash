@@ -12509,6 +12509,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., slot(u), next(u), value(u)]
 
+    // Bind the chain node to THIS source iteration's key. The SDK may reorder an invariant-value key array into
+    // slot order, but it cannot choose an unrelated sorted chain: slot must equal H(runtime keys) on every step.
+    this.emitSortedKeyHash(node, slotIndex, loc); // [.., slot, next, value, Hk]
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy output slot
+    this.emit(Op.OP_EQUALVERIFY, loc); // [.., slot, next, value]
+
     // slot == expected_slot (chain linkage).
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopExpectedName) + 4)), loc);

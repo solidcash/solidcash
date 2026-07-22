@@ -1512,6 +1512,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (const info of ordered) info.slotIndex = slotIndex++;
 
         node.entryAccesses = ordered;
+        this.detectAliasConditionalWrites(node.body, ordered);
 
         // Multiple fixed C2 writes in one function are verified as transaction-wide batches, grouped by collection.
         // A group may contain one target when another collection is also written: using the same batch path keeps
@@ -1573,7 +1574,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Propagate slot indices to individual mapping nodes (looks up the shared info by key)
         this.assignEntrySlotIndices(node.body, entryAccessMap);
 
-        this.detectAliasConditionalWrites(node.body, ordered);
       }
     }
 
@@ -4921,7 +4921,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const wOrder = writeOrder.get(wKey);
       if (wOrder === undefined) continue;
       for (const [dKey, dInfo] of bySlotKey) {
-        if (dKey === wKey || dInfo.collection !== wInfo.collection || !dInfo.operations.includes('delete')) continue;
+        if (dKey === wKey || dInfo.collection !== wInfo.collection) continue;
         const dOrder = deleteOrder.get(dKey);
         if (dOrder !== undefined && dOrder > wOrder) { wInfo.aliasCondDeleteSlot = dInfo.slotIndex; break; }
       }

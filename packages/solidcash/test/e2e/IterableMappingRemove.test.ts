@@ -1,4 +1,4 @@
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
@@ -118,5 +118,17 @@ describe('IterableMapping remove() - swap-remove with computed-key index update'
     await sc.keyAt(0n, a1).send();
     await sc.valOf(a1, 100n).send();                        // preserved
     await sc.idxOf(a1, 0n).send();
+  });
+
+  it('rejects an alias transition without the authenticated alias sentinel', async () => {
+    const sc = await seed3();
+    sc._setRawC2BatchWitness(3, { predOut: -1n });
+    await expect(sc.remove(a3, alicePub, sig()).send()).rejects.toThrow();
+  });
+
+  it('rejects the alias sentinel when the runtime keys do not alias', async () => {
+    const sc = await seed3();
+    sc._setRawC2BatchWitness(3, { predOut: -2n });
+    await expect(sc.remove(a1, alicePub, sig()).send()).rejects.toThrow();
   });
 });

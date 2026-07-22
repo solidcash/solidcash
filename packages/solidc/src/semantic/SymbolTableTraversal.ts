@@ -1527,9 +1527,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           batchByCollection.set(info.collection, slots);
         }
         const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
-        node.sortedBatchInfo = fixedSortedWriteCount > 1
-          ? [...batchByCollection].map(([collection, slotIndices]) => ({ collection, slotIndices }))
-          : [];
+        const stateArrayLastCollections = new Set(ordered.filter((info) =>
+          info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
+        node.sortedBatchInfo = [...batchByCollection]
+          .filter(([collection]) => fixedSortedWriteCount > 1 || stateArrayLastCollections.has(collection))
+          .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
@@ -1549,6 +1551,15 @@ export default class SymbolTableTraversal extends AstTraversal {
               this.pushToStack(param);
             }
           }
+        }
+        if (node.sortedBatchInfo.length > 0) {
+          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__c2BatchTrailingCount');
+          param.location = node.location;
+          node.parameters.push(param);
+          this.symbolTables[0].set(Symbol.variable(param));
+          const sym = this.symbolTables[0].get(param.name);
+          if (sym) sym.references.push({ name: param.name } as IdentifierNode);
+          this.pushToStack(param);
         }
 
         // Chunkable-value READ (unbounded bytes/string, C2): inject witness param __internal__valueWitness_N. A

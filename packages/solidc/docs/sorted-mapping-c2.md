@@ -1,256 +1,427 @@
-# Sorted-linked-list mappings (the C2 fix)
+# C2 mappings: authenticated sorted linked lists
 
-C2 (`mapping-omission-security.md`) is that a negative guard `require(!m[k])`, or any read-then-write of `m[k]`,
-is bypassable: BCH cannot force a spender to co-spend a particular UTXO, so a spender omits an existing entry, the
-covenant reads the type default (`0`/`false`), and the guard passes (or a `+=` resets a balance). The sound fix
-(design B2 in `mapping-soundness-research.md`) makes non-existence **provable**: entries are a sorted singly-linked
-list, and absence of `k` is witnessed by co-spending the bracketing predecessor. There is no default-on-absent
-branch to omit - a missing witness reverts.
+This document is the normative specification for mapping storage in SolidCash. Every mapping uses C2. There is no
+compiler option selecting another mapping backend and no soundness fallback to the legacy, omission-prone entry
+model. An unsupported access shape must produce a compiler error rather than weaker bytecode.
 
-This design is **VM-proven sound end to end** (raw-VM tests, no compiler/SDK needed yet):
-`packages/solidcash/test/e2e/SortedMappingNonMembership.test.ts`, `SortedMappingInsertDelete.test.ts`,
-`SortedMappingClaimOnce.test.ts` (19 tests). The remaining work is the compiler sugar + SDK plumbing to emit and
-drive these covenants from ordinary source; the covenant logic itself is fixed and proven.
+C2 preserves Solidity's observable rule that an unset key reads as its type's default while proving that the key
+is actually absent. It also makes mappings enumerable when the source requests iteration.
 
-## Entry layout
+## 1. Threat model and security goal
 
-Each entry is a mutable (0x01) NFT of the contract's category, at the existing per-collection entry P2SH32
-(`buildEntryNftCovenantScript` - reused unchanged; the linked-list logic lives in the contract's function
-covenant, not the entry covenant). Commitment (fixed-width, so the covenant splits it with `OP_SPLIT`):
+A mapping entry is a UTXO. Bitcoin Script can authenticate an input that is present, but it cannot query the UTXO
+set or force a transaction author to include an arbitrary UTXO. A mapping implementation of the form
 
 ```
-slot(32) ++ nextKey(32) [++ value]
+entry input present ? committed value : default value
 ```
 
-- **slot = H(key) with the high bit masked** (`slot = sha256(key) mod 2^255`). Fixed 32-byte, type-agnostic,
-  collision-resistant. The mask keeps it a **positive** script number so `OP_BIN2NUM` + `OP_LESSTHAN` compare
-  slots as **unsigned** (BCH numbers are little-endian sign-magnitude; an unmasked hash would read as negative
-  half the time). Proven at full width in `SortedMappingNonMembership.test.ts` with 2^200 / 2^254-1 slots.
-- **Sentinels:** `nextKey = 0` = +infinity; a reserved head entry `slot = 0` anchors the low end. The empty map
-  is one entry `HEAD[0|0]`.
-- **value** (optional): the mapped value for `mapping(K=>V)`. A bool set stores a 1-bit value (`true` = `0x01`
-  tail, `false` = empty tail) so `m[k]=false`/`delete` can nullify without removing the node; a present entry with
-  an empty tail reads false. The value is the last field, so a fixed-width or empty tail is unambiguous.
+is therefore unsound. A spender can omit an existing entry and make `m[k]` appear to be zero, false, or empty.
+This breaks negative guards, replay maps, claim-once maps, read-modify-write, and any logic whose result differs
+between “absent” and “present with a non-default value.”
 
-## The covenant (proven)
+C2 requires an authenticated proof for both possible results:
 
-All three ops authenticate every co-spent/produced entry by `category base == the contract's` (an attacker cannot
-mint that category - it is master-guarded), then:
+- Membership: spend the unique node whose `slot == H(key)`.
+- Non-membership: spend the unique predecessor whose link brackets `H(key)`.
 
-| Op | Co-spends | Produces | Checks (all fields pinned) |
-|---|---|---|---|
-| **Non-membership** `!m[k]` | predecessor `P` (read-only) | - | `P.slot < k < P.nextKey` (nextKey 0 = +inf). No default branch. |
-| **Membership** `m[k]` present | entry `k` (read-only) | - | `entry.slot == k` -> its value. |
-| **Insert** (absent upsert) | predecessor `P` | `P'[Ps|k]`, `NEW[k|S]` | bracket `Ps<k<S`; `P'` = P with next->k; `NEW` = k->S (P's old next). |
-| **Update** (present upsert) | entry `k` | `k'[k|S|v']` | slot+next preserved, value only. |
-| **Delete** | `P[Ps|k]` + node `k[k|S]` | `P'[Ps|S]` | `P.next==k==node.slot`; `P'` splices k out. |
+The required security properties are:
 
-Links move only on insert/delete, each a single splice touching only the predecessor; the covenant pins every
-32-byte field, so skip-node / corrupt-predecessor / non-adjacent / dangling-link / present-key attacks all revert
-(proven). A claim-once (`require(!claimed[a]); claimed[a]=true`) is just an insert - proven end to end in
-`SortedMappingClaimOnce.test.ts`.
+1. An existing key cannot be presented as absent.
+2. An absent key cannot be presented as present.
+3. A node cannot be substituted from another contract or collection.
+4. An update cannot change the node's key or link.
+5. An insertion cannot skip, replace, or detach an existing node.
+6. A malformed, incomplete, cyclic, duplicated, or disconnected off-chain list is rejected.
+7. Large values are reconstructed completely and authenticated by their entry root.
 
-## Block layout (compiler)
+The adversary controls transaction construction, input/output order outside fixed covenant slots, witnesses,
+provider responses, and all UTXOs not protected by the contract's category and covenants.
 
-Sorted ops need input/output slots beyond the current fixed entry slot:
+## 2. Authenticated set
 
-- **Non-membership read:** 1 read-only predecessor **input** (co-spent, preserved) at a `sortedPred` slot; no
-  output beyond preservation.
-- **Insert:** the predecessor **input** + two entry **outputs** (`P'` at the predecessor slot, `NEW` as a
-  trailing mint - the runtime counter machinery is not needed; insert count is static per write site).
-- **Delete:** predecessor + node **inputs**, one `P'` **output**.
+Each mapping is a sorted, singly-linked list of mutable NFTs. All nodes use the contract's CashToken category and
+the collection-specific entry P2SH32 covenant.
 
-These are static per write site (unlike the loop-write trailing region), so they fit the existing 1:1 block
-layout with new slot kinds (`sortedPred`, `sortedNew`). The SDK fills them by predecessor lookup.
+### 2.1 Slot derivation
 
-## SDK list management (SHIPPED)
+For a single key:
 
-`SortedList` (`packages/solidcash/src/stateful/SortedList.ts`, exported from the SDK) maintains the off-chain image
-of the list: a sorted array of `(slot, nextKey, value, utxo)` rebuilt from the collection's entry NFTs via
-`SortedList.fromUtxos`. `keyToSlot` = `sha256(key)` with the high bit masked (positive 255-bit, little-endian) so
-the covenant's `OP_BIN2NUM`/`OP_LESSTHAN` compare as unsigned. Operations:
+```
+slot = positive255(sha256(canonicalKeyEncoding))
+```
 
-- `predecessorOf(k)` = the entry with the greatest `slot < k` (the bracketing predecessor; `HEAD` for the low gap).
-- `planNonMembership(k)` / `planMembership(k)`: the entry to co-spend (read).
-- `planInsert(k, value?)`: predecessor to co-spend + the `P'` (next->k) and `NEW` (k->old next) commitments.
-- `planUpdate(k, value)`: the entry + new commitment (link preserved, value only).
-- `planDelete(k)`: predecessor + node to co-spend + the `P'` (next->node.next) commitment.
-- Impossible proofs (non-membership of a present key, insert of a present key, ...) are refused off-chain.
+For nested mappings:
 
-Every plan is **VM-verified against the proven covenants** (`SortedListSdk.test.ts`): the plan's co-spends +
-commitments, assembled into a transaction, are accepted by the insert/delete/update/non-membership covenants; and
-chained inserts evolve the list correctly. Commitments are still derived from the VM trace (as today), so the SDK
-need not reconstruct pushdata encodings; it only chooses which entries to co-spend and the link targets.
+```
+slot = positive255(sha256(sha256(k0) || sha256(k1) || ... || sha256(kn)))
+```
 
-## Compiler codegen plan
+`positive255` clears the high bit of the final byte. Slots are 32-byte little-endian values. Clearing the sign bit
+allows BCH `OP_BIN2NUM` and numeric comparison opcodes to order the full 255-bit domain without interpreting half
+of the hashes as negative numbers.
 
-1. **Opt-in (DONE).** `CollectionNode.sorted` set from `CompilerOptions.sortedMappings`; the artifact carries
-   `sorted: true` in the collection metadata. Only sorted collections use this backend; the existing entry model
-   is untouched.
-2. **Read codegen (DONE + VM-verified end to end).** `visitMappingAccess` co-spends ONE entry (the exact k-entry if
-   present, else the bracketing predecessor) and returns the real value: compute `slot = sha256(k)` high-bit-masked,
-   pin `input[slot]` bytecode to the collection's entry P2SH, read `slot||nextKey||value`, and if `slot==H(k)`
-   return the value tail (int/bool `OP_BIN2NUM`-normalized, `bytesN` verbatim), else prove `slot<H(k)<nextKey` and
-   return the type default. No default-on-absent branch, so omitting the entry reverts. The SDK co-spends the
-   k-entry (or predecessor) read-only, never getter-skipped. Proven in `SortedMappingCompiledRead.test.ts` (a
-   compiled `require(!claimed[k])` passes for absent, reverts for present) + `SortedMappingValueRead.test.ts`.
-3. **Write codegen (DONE + VM-verified end to end).** Every sorted write `m[k]=v` is an UPSERT (`emitSortedValueUpsert`):
-   co-spend one entry and branch at runtime on `slot==H(k)`. Present -> UPDATE: pin the entry output `k' =
-   slot||nextKey||v` (link preserved, value set). Absent -> INSERT: verify `slot<H(k)<nextKey`, pin `P' =
-   slot||H(k)||predValue` at the entry output + a trailing `NEW = H(k)||nextKey||v`. The SDK co-spends the exact
-   entry (update) or predecessor (insert, `P'` injected + pinned); the value-carrying outputs (`k'`/`NEW`) derive
-   from the VM trace. Proven from source in `SortedMappingCompiledWrite.test.ts` (claim-once): a compiled `claim(k)`
-   inserts the key, a re-claim reverts on `require(!claimed[k])`, and a different key still inserts - the
-   C2 negative-guard attack closed end-to-end for writes.
-4. **Value read + write / upsert (DONE + VM-verified end to end).** A value-typed sorted `mapping(K=>int)` compiles
-   its read `bal[k]` (present -> the raw value tail; absent -> the type default, proven-absent via the bracket) and
-   its write `bal[k]=v` as an **upsert**: the covenant branches at runtime on `slot==H(k)` - present -> UPDATE (pin
-   the entry output `k' = link||v`, link preserved); absent -> INSERT (`P' = slot||H(k)||predValue` + trailing
-   `NEW = H(k)||next||v`). The value is stored raw (minimal script number) in the commitment tail. The SDK
-   co-spends the exact entry (update) or predecessor (insert); the value-carrying outputs derive from the VM trace
-   (the covenant pins them). Proven from source in `SortedMappingValueRead.test.ts` / `SortedMappingValueWrite.test.ts`
-   (insert, update, second insert, reads). Two SDK derivation subtleties: a known `P'` is **pinned** so it is not
-   re-derived (the covenant's input-commitment read would otherwise oscillate it), and an UPDATE's zero trailing
-   outputs are not re-seeded (which oscillated the loop count 0<->1).
-5. **Read-modify-write (DONE + VM-verified).** `bal[k] += v` / `bal[k] -= v` on a value mapping just work: the read
-   (RHS) and the write co-spend the SAME entry (the exact entry if present, else the predecessor), so a present-key
-   RMW is an UPDATE with the old value read from the co-spent entry, and an absent-key RMW is an INSERT of `0+v`.
-   This is the original C2-blocked pattern (a `+=` was resettable by omitting the entry). Proven in
-   `SortedMappingRMW.test.ts`. Unblocks balances / vote counts / accumulators.
-6. **Delete = NULLIFY (DONE + VM-verified) - Solidity parity.** Solidity `delete m[k]` **assigns the type default**
-   to `m[k]` (`libsolidity` compiles it to `storageSetToZero`); it does **not** physically remove the entry
-   (mappings have no length/enumeration). So `delete m[k]` and `m[k] = <default>` are the same op - an upsert to the
-   default. A **value** mapping (`mapping(K=>int)`, `bytesN`) nullifies to `0` (present -> update to 0, absent ->
-   insert 0). A **bool set** is just a value mapping over a 1-bit value: `true` = a `0x01` value tail, `false` /
-   `delete` = an **empty** value tail. So `claimed[k]=true/false` and `delete claimed[k]` are all upserts, the entry
-   **stays** in the list (nullified, not removed), and the read returns the value (present-false and absent both
-   read false; only a present-true entry reads true). No splice, and C2 still holds - omitting a present-true entry
-   can't satisfy the bracket. Proven in `SortedMappingValueDelete.test.ts` + `SortedMappingBoolNullify.test.ts`.
+Hashing every nested key independently makes the composition unambiguous. Address keys use their canonical locking
+bytecode, not a display string. The compiler and SDK must use the same type encoding before hashing.
 
-## Status
+Slot zero is reserved for the HEAD sentinel. Reaching it through hashing has negligible probability, but SDK and
+list validation still treat it as reserved. SHA-256 collision resistance is the security bound for slots and value
+roots; links remain 32 bytes.
 
-- **Proven & done:** the FULL covenant op set - non-membership, membership, insert, delete, update, and the
-  combined **read** (one covenant returns the real membership bit: `slot==H(k)` -> 1, `slot<H(k)<nextKey` -> 0,
-  neither/no-co-spend -> revert; `SortedMappingRead.test.ts`), plus full-width unsigned slot comparison and the
-  claim-once application. The design is sound; C2 has a fix, and the codegen now only has to emit proven fragments.
-- **SDK done:** `SortedList` (rebuild from chain, predecessor lookup, the full plan op set) - each plan
-  VM-verified against the proven covenants (`SortedListSdk.test.ts`). Full-transaction composition (contract
-  master-preservation + insert splice + entry-address pinning + the REAL entry-NFT covenant on the predecessor)
-  is VM-verified, and a live `MockNetworkProvider` round-trip drives real sends end to end (genesis -> fetch ->
-  plan -> submit -> persisted entry NFT, multi-claim sequence, re-claim refused) - `SortedMappingFullTx.test.ts`.
-- **Codegen done (read + set insert + value upsert/RMW + value delete):** a sorted `mapping(K=>bool)` set and a
-  `mapping(K=>int)` value mapping compile end to end from source - the membership/non-membership read
-  (`SortedMappingCompiledRead.test.ts`), the value read (`SortedMappingValueRead.test.ts`), the set-insert write
-  (`SortedMappingCompiledWrite.test.ts`), the value upsert - insert **and** update (`SortedMappingValueWrite.test.ts`),
-  read-modify-write (`SortedMappingRMW.test.ts`), and value delete == set-to-default (`SortedMappingValueDelete.test.ts`),
-  read-modify-write (`SortedMappingRMW.test.ts`), value delete/nullify (`SortedMappingValueDelete.test.ts`), and
-  bool-set true/false/delete nullify (`SortedMappingBoolNullify.test.ts`), all VM-verified. Every op - read, write,
-  RMW, delete - is a **read and/or upsert over one linked-list value entry**; there is no physical-removal splice
-  (Solidity `delete` nullifies, so the node stays). Value types: `bool` (1-bit value), `int`/`uint` (raw minimal
-  number tail), fixed-width `bytesN` (raw N-byte tail, e.g. `bytes32` - `SortedMappingBytesValue.test.ts`), `address`
-  (locking bytecode), `struct` (encoded blob), and an INTERNAL function pointer (its immutable int functionId - a
-  dispatch table with exclusion-proof reads, `FunctionTypeState.test.ts`) stored verbatim in the tail, and unbounded `bytes`/`string` of ANY
-  practical length (P5b): `len(4 B) ++ value` inline for <= 60 B, `len(4 B) ++ sha256(value)` with the full value in
-  per-(collection, slot, digest) chunk NFTs for > 60 B (a read reassembles + verifies the witness against the hash -
-  `SortedMappingLongValue.test.ts` + migrated `SortedMappingDynBytesValue.test.ts`). Array-valued `mapping(K => T[])` is
-  also C2-backed: element read/write at any depth (`m[k][i]` direct; `m[k][i][j]` and deeper via the
-  `DesugarNestedArrayWrite` whole-value read-modify-write-back, incl. nested mapping keys - `MappingArray2dWrite.test.ts`),
-  `push`/`pop` across the inline<->chunked boundary, and whole-array
-  assign all route through the chunk-aware upsert (`emitMappingArrayElementAssign` in `sortedRmw` mode), and multiple
-  writes to the SAME entry in one call coalesce to one upsert (`CacheMappingEntryInLoop`). A multi-KEY runtime loop
-  `for(i) m[ks[i]] = a` also works for a loop-invariant value - int, and an INLINE (<=60 B) rawbytes value
-  (bytes/string/int[]/bytesN); a chunked (>60 B) value in a loop stays fail-closed (`SortedArrayValueLoop.test.ts`).
-- **Nested / composite-key mappings (DONE + VM-verified):** `mapping(A => mapping(B => V))` (e.g. ERC20 allowances,
-  ERC1155 balances) works - the slot for `m[a][b]...` is `sha256(sha256(a) ++ sha256(b) ++ ...)` high-bit-masked
-  (`emitSortedKeyHash` / SDK `keyToSlotMulti`). Each key is hashed independently to 32 bytes, so the concatenation
-  is unambiguous for any key type; a single key reduces to `sha256(k)`. Proven in `SortedMappingNested.test.ts`
-  (`allow[a][b]` upsert/read/RMW, distinct pairs independent, `(20,10) != (10,20)`). Multi-key with an expression
-  key (not a plain param) fails closed.
-- **Key types:** `int`/`uint`, fixed-width `bytesN`, and `address` (hashed as its locking bytecode; the SDK matches
-  via `addressToLockScript`) all work as (single or composite) keys - so `mapping(address => uint)` (ERC20 balances)
-  and `mapping(address => mapping(address => uint))` (allowances) compile and run. VM-verified in
-  `SortedMappingAddressKey.test.ts`.
+For `q` independently distributed occupied slots, the approximate probability of any slot collision is
+`q(q-1) / 2^256` (the 255-bit masked domain has `2^255` points and the birthday denominator is twice that). The
+probability that any key lands on reserved slot zero is approximately `q / 2^255`. Even at one billion distinct
+keys, these are roughly `8.6 * 10^-60` and `1.7 * 10^-68`, respectively. Practical limits are reached many orders
+of magnitude earlier. Root collisions retain the full SHA-256 bound.
 
-## Multiple writes in one transaction (same value vs. same range)
+### 2.2 Node commitment
 
-Writing more than one thing per call splits into two independent problems, and the split is forced by a hard BCH rule:
-**a transaction cannot spend an output it creates in the same transaction.** So N sequential state transitions of one
-UTXO are impossible in one tx, while N transitions of N distinct UTXOs are fine.
+Every node begins with:
 
-### Same value - N writes to the SAME entry `m[k]` (same key) - DONE
+```
+slot[32] || nextSlot[32] || valueTail[0..64]
+```
 
-Because the entry is a single UTXO, one tx can produce exactly ONE new version of it. Two upserts of the same entry in
-one tx would co-spend the same (now already-spent) input twice and the covenant `OP_VERIFY`s fail. So N logical writes
-to `m[k]` must COALESCE to one physical upsert. `CacheMappingEntryInLoop` (a pre-semantic pass) does this: it reads
-`m[k]` once into a local, redirects every access of `m[k]` (element write/read, `push`/`pop`, whole assign) to the
-local, and flushes a single `m[k] = local` upsert before each return and at the tail. This makes loops
-(`for (..) m[k][j] = v`), consecutive writes (`m[k][0] = x; m[k][2] = z`), and read-after-write (`m[k][j] = m[k][j-1] +
-1`, which reads the value being built) all work with correct values. The loop stays a runtime loop over the LOCAL
-array - it is never unrolled, so the covenant does not grow with N. This is the ceiling that physics allows in one tx;
-truly separate physical upserts of one entry require N transactions. Residual gaps are compiler COVERAGE only (a key
-reassigned mid-function, a `delete` interleaved with element writes, multi-collection entanglement), not a covenant
-limitation.
+- `slot` is this node's slot.
+- `nextSlot` is the next node's slot.
+- `nextSlot == 0` means positive infinity/end of list.
+- `valueTail` encodes the mapped value.
 
-### Same range - N writes to DIFFERENT keys - largely SHIPPED
+The empty mapping contains exactly one node:
 
-N different keys are N different entry UTXOs, so they CAN all be co-spent and re-emitted in one tx (N inputs -> N
-outputs), bounded only by transaction size / input count. Most of this is now shipped via the **per-iteration UPSERT
-loop** (`emitSortedUpsertLoop{Setup,Body,Teardown}`), which co-spends one entry per recipient (its own entry for an
-UPDATE, or its bracketing predecessor for an INSERT) and mints the result, with dual counters (co-spends vs cumulative
-mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
+```
+HEAD = 0[32] || 0[32]
+```
 
-1. **Batch update of N existing keys - SHIPPED** (`941dd7de`). `for(i) m[k[i]] += v[i]` (and `-=`, `= vs[i]`) reads each
-   key's current value and mints the updated node with `next` preserved. Source order == counter order = no permutation.
-2. **Batch insert into DISTINCT gaps - SHIPPED** (`125cb014`). Each new recipient co-spends its own bracketing
-   predecessor and mints P' + NEW; 1:1 co-spend/mint per recipient. Same-gap chains are handled (item 7); a duplicate
-   recipient is merged in the SDK (item 9).
-3. **Loop-invariant value + delete + set - SHIPPED.** Fixed-amount airdrop `+= amount` (param) / `+= 100` (literal)
-   (`7673bc51`), absolute `= vs[i]` (op=set, `644532b1`), batch nullify `delete m[k[i]]` (op=delete, `bbc280a1`). All ops.
-4. **The FULL ERC-20 multiTransfer - SHIPPED** (`090f4e35` + `5856dfc5` + `69d1ed93`). The cached `bal[msg.sender] -=`
-   DEBIT and the credit loop coexist; a NEW recipient whose predecessor is UNTOUCHED works, and a NEW recipient whose
-   predecessor is the DEBITED msg.sender works too via the **merge**: the debit entry is co-spent once and re-pointed to
-   the new node (a re-point register set by the loop, applied by the debit flush; the covenant's in-gap check vs the
-   debit's real input is the omission anchor; two-in-gap fails closed). Adversarially VM-proven (`MsgSenderMerge`).
+Deployment creates one HEAD per mapping collection. For every reachable non-tail node, `slot < nextSlot`. The
+last node has `nextSlot == 0`.
 
-5. **CASE (b) - a NEW recipient whose predecessor is another CREDITED recipient - SHIPPED** (pending-defer register).
-   Unlike the msg.sender merge (a fixed debit with an after-loop flush), the predecessor P here is co-spent inside the
-   loop, so its value-update and link-re-point live in different iterations. Solved by DEFERRING each UPDATE's mint by
-   one iteration into pending registers (`pu_slot`/`pu_val`/`pu_next`): the next iteration's flush re-points the pending
-   to the current key iff `pu_slot < Hk < pu_next` (proving Hk a new node right after P), minting P'=[P|Hk|P.newVal] +
-   NEW=[Hk|P.oldNext|amt] and skipping the current key's own processing; else it mints the pending normally (teardown
-   flushes the last). Look-BEHIND, so no cross-index read; the defer preserves output order, so every prior case is
-   unchanged. The in-gap check vs P's REAL nextKey is the omission anchor. SDK mirrors it via `lastDeferred`
-   (re-points the predecessor's commitment in place). Adversarially VM-proven (`MergeCaseB` + `FullMultiTransfer`).
+```
+HEAD(0) ──▶ K1 ──▶ K2 ──▶ ... ──▶ Kn ──▶ 0 (+infinity)
+```
 
-6. **ORDER-INDEPENDENT case (b)** - the credited predecessor P need not be passed immediately before the new recipient
-   R. The SDK reorders recipients+amounts (as a pair, preserving each recipient's amount) to place each such R right
-   after P, writing the reordered arrays to both the commitment builder and the encoded tx argument. The multiTransfer
-   result is order-independent, so this is transparent; it fires only when a case-b pair exists.
+### 2.3 Collection and contract authentication
 
-7. **SAME-GAP CHAINS off ANY predecessor** - 2+ new recipients in ONE gap (P -> R1 -> R2 -> P.oldNext), whether P is a
-   credited update, an untouched entry, the HEAD sentinel (a fresh-map airdrop cluster), OR the debited msg.sender's own
-   gap. Each new node is DEFERRED (set as the new pending) instead of minted, so the next new key folds into it via the
-   same in-gap flush - one predecessor co-spend serves the whole chain. For the msg.sender gap the debit merge defers R1
-   (recording register = R1 for the debit re-point) and the SDK runs the geometric fold before the debit-merge check.
-   Omission-proof: P's REAL nextKey proves the gap is empty of existing entries. The reorder is gap-based (groups +
-   ascending-sorts each gap's inserts) so all chains are order-independent. VM-proven (`SameGapChain`: credited chain,
-   fresh-map HEAD chain, descending-input reorder; `MsgSenderMerge`: bob -> carol -> alice in the debit's gap).
+An entry is accepted only when all of these match:
 
-8. **SELF-TRANSFER** - msg.sender listed as one of its own recipients (allowed in Solidity). A self-transfer nets out,
-   so the SDK drops the msg.sender entry from recipients+amounts: the debit sums (total - own) and msg.sender is
-   co-spent once (the debit), for the identical net. VM-proven (`FullMultiTransfer`).
+- the contract's token category;
+- mutable NFT capability;
+- the collection-specific entry covenant locking bytecode;
+- the block-layout input assigned to that access.
 
-9. **DUPLICATE RECIPIENT** - the same key listed 2+ times. Solidity accumulates for += / -= ([a,a],[10,20] -> a += 30),
-   takes the last for =, and delete is idempotent. Per-key: the SDK merges duplicates into ONE entry (co-spent once)
-   with the combined amount before the self-transfer filter / reorder; for += the merged sum equals the original, so a
-   coexisting debit is unchanged. Scalar/const (no per-key array to merge): the SDK groups the occurrences adjacent and
-   the covenant's pending flush accumulates on Hk == pu_slot (co-spend once, apply the scalar per occurrence); scalar
-   set + delete are idempotent so the SDK dedupes. Scalar `-=` accumulates too (the pending-defer is active for `-`,
-   with its insert path gated off). Works for existing (accumulate) and new (single insert), every op. VM-proven
-   (`FullMultiTransfer`, `SortedUpsertLoop`).
+The collection hash domain-separates mappings that use identical key and value types. The category prevents an
+attacker from manufacturing a node for another contract and presenting it as part of this list.
 
-**COMPLETE end-to-end.** Every multiTransfer shape - existing / new / any-gap chain (order-independent) / self-transfer /
-duplicate (incl. scalar) - works. The only residual is N per tx bounded by transaction size, and that bound is generous
-(thousands of entries), so it is a practical non-issue; pagination across txs covers larger batches. Cross-cutting
-invariant: the exclusion proof survives every batch shape above (rejecting forged / omitted / misordered / duplicated
-entries), so no batch reopens the C2 exclusion hole.
+## 3. Value encoding
+
+The 64 bytes after `slot || nextSlot` are the complete value for fixed/small types or an authenticated descriptor
+for variable-width values.
+
+### 3.1 Inline fixed and bounded values
+
+Values whose canonical storage encoding is at most 64 bytes are stored directly. Examples include:
+
+- bool and integers, using canonical/minimal numeric encoding where applicable;
+- `bytes1` through `bytes32`;
+- addresses and public keys;
+- fixed/ufixed and user-defined value types through their underlying type;
+- `datasig`, whose 64 bytes fill the commitment exactly;
+- internal function identifiers.
+
+A Schnorr transaction signature can be 65 bytes and is therefore chunkable. A Schnorr data signature is 64 bytes
+and fits exactly: `32 + 32 + 64 = 128`.
+
+Solidity `delete m[k]` means assignment of the type default. It does not physically remove the node. A bool node
+may therefore remain present with an empty/false value tail. Reads distinguish membership internally but return
+false for both absent and present-false, as Solidity requires.
+
+### 3.2 Variable-width values
+
+Strings, unbounded bytes, chunkable structs/arrays, signatures over 64 bytes, and other variable-width encodings use
+a four-byte unsigned little-endian length prefix.
+
+For values of at most 60 bytes:
+
+```
+lengthLE32[4] || value[0..60]
+```
+
+For values longer than 60 bytes, the entry commitment is exactly 128 bytes:
+
+```
+slot[32] || nextSlot[32] || lengthLE32[4] || root[32] || headData[28]
+```
+
+where:
+
+```
+root     = sha256(fullValue)
+headData = fullValue[0:28]
+```
+
+The 28-byte authenticated head uses every remaining commitment byte. The rest is stored in root-addressed chunk
+NFTs.
+
+### 3.3 Root-addressed chunks
+
+The chunk locking bytecode commits to:
+
+```
+contract category || collection hash || slot || root
+```
+
+Its P2SH32 address is therefore unique to one version of one mapping value. Overwriting the same slot with a new
+root produces a different chunk address and allows the old version to be collected without ambiguity.
+
+Each chunk commitment is exactly:
+
+```
+chunkIndexLE16[2] || chunkData[1..126]
+```
+
+The first chunk starts at full-value offset 28. Every non-final chunk contains exactly 126 data bytes. The final
+chunk contains exactly the remaining number of bytes. There are no pushdata frames, repeated slots, or repeated
+roots inside commitments; those fields are authenticated by the address.
+
+For a full value of length `L > 60`:
+
+```
+chunkCount = ceil((L - 28) / 126)
+chunk[i]   = value[28 + 126*i : min(L, 28 + 126*(i+1))]
+```
+
+The two-byte positive Script-number index supports indices `0..32767`, hence at most 32,768 chunks. The practical
+format limit is:
+
+```
+28 + 32768 * 126 = 4,128,796 bytes
+```
+
+This is far above practical transaction and covenant execution limits; applications will usually encounter
+transaction size, UTXO count, fee, or script-operation limits first.
+
+### 3.4 Strict reconstruction
+
+The SDK must reject a chunk set unless all conditions hold:
+
+1. `L > 60` and `headData.length == 28`.
+2. The number of chunks equals `ceil((L - 28) / 126)` exactly.
+3. Sorted indexes are precisely `0, 1, ..., count-1`, with no duplicates or gaps.
+4. Every non-final chunk contains 126 bytes.
+5. The final chunk has exactly the expected remaining length.
+6. Reconstruction produces exactly `L` bytes, with no truncation or trailing bytes.
+7. `sha256(reconstructed) == root`.
+
+The on-chain writer independently pins the chunk output bytecodes and commitments to the value on the stack. A
+malicious provider can make a value unavailable by hiding or corrupting chunks, but cannot make the covenant accept
+a different value.
+
+## 4. Read algorithm
+
+The SDK rebuilds and validates the collection, hashes the requested key, and supplies one entry input:
+
+- exact node if the slot exists;
+- strict predecessor otherwise.
+
+The covenant authenticates the entry address/category, splits its commitment, and executes:
+
+```
+if node.slot == requestedSlot:
+    decode and return node.value
+else:
+    require(node.slot < requestedSlot)
+    require(node.nextSlot == 0 || requestedSlot < node.nextSlot)
+    return default(V)
+```
+
+The second branch is the exclusion proof. If the requested node actually exists, no adjacent predecessor can
+bracket it because the real predecessor links directly to it. Omitting the node therefore does not create a valid
+absence witness.
+
+For a long value, the SDK supplies the reconstructed full value as an internal witness and the covenant verifies
+its SHA-256 root before using it.
+
+Constructor/genesis reads require no entry input because mappings are known to be empty before deployment. They
+materialize the type default, while deployment creates the HEAD nodes needed by later calls.
+
+## 5. Write algorithm
+
+Every source-level mapping assignment is an upsert. The SDK supplies either the exact node or the predecessor, and
+the covenant selects the path from the authenticated input commitment.
+
+| Operation | Authenticated entry inputs | Entry outputs | Essential invariant |
+|---|---:|---:|---|
+| Present read | exact node | preserved read-only node | `node.slot == H(key)` |
+| Absent read | predecessor | preserved read-only predecessor | `P.slot < H(key) < P.nextSlot` |
+| Update | exact node | updated node | slot and link unchanged |
+| Insert | predecessor | rewritten predecessor + NEW | old successor preserved |
+| Delete | exact node or predecessor | default-valued upsert | Solidity nullification semantics |
+
+### 5.1 Update
+
+Given existing node `N = [K, S, oldValue]`, produce:
+
+```
+N' = [K, S, newValue]
+```
+
+The covenant pins `K` and `S` unchanged. Only the value may change.
+
+### 5.2 Insert
+
+Given predecessor `P = [Ps, S, predValue]` and `Ps < K < S` (with `S == 0` as infinity), produce:
+
+```
+P'  = [Ps, K, predValue]
+NEW = [K,  S, newValue]
+```
+
+Both output commitments and their positions are pinned. This is one atomic splice: it cannot skip the old successor,
+change the predecessor's value, or create a detached node.
+
+The compiler assigns each required entry input/output a deterministic block-layout slot. The predecessor rewrite
+occupies its corresponding entry output slot; an inserted NEW node precedes that write site's trailing chunk region.
+Read-only entry inputs are recreated unchanged. Layout-relative indexes are used so unrelated fee/change handling
+cannot shift a covenant-managed output into the expected position.
+
+### 5.3 Delete/nullify
+
+`delete m[k]` is encoded as an upsert of `default(V)`, matching Solidity. Nodes are not physically spliced out by
+ordinary source-level delete. This avoids changing observable semantics and keeps default-valued keys available for
+iteration according to the stored-node model.
+
+### 5.4 Long-value writes and garbage collection
+
+Before the entry update/insert check, the covenant derives the value root, root-addressed P2SH32 locking bytecode,
+chunk count, each two-byte index, and each data slice. It verifies the corresponding trailing outputs' locking
+bytecodes and commitments.
+
+For direct ABI values, the SDK can construct these outputs immediately. For computed values, it seeds placeholders
+and derives the covenant-pinned bytecodes/commitments from VM traces until transaction construction converges.
+
+When overwriting a long value, the SDK co-spends all old chunks using the old `(collection, slot, root)` covenant.
+No old-root chunk UTXOs remain as storage dust after a successful update.
+
+## 6. Read-modify-write and compound values
+
+Operations such as `m[k] += x`, struct-field assignment, array-element assignment, `push`, and `pop` materialize the
+authenticated old value, modify it on the stack or in a cached local, and perform one upsert.
+
+Multiple logical writes to the same key in one transaction must coalesce into one physical upsert because a UTXO
+cannot be spent twice. Compiler caching passes redirect same-entry operations to a local value and flush a single
+upsert at the function tail and return paths.
+
+Chunking is transparent to these operations. An array or struct can cross the 60-byte boundary in either direction;
+the result is re-encoded, re-rooted, rechunked, and the obsolete chunks are collected.
+
+## 7. Iteration and batch writes
+
+Iteration follows authenticated `nextSlot` links from HEAD to the tail. The SDK supplies the reachable entries in
+link order, and the covenant verifies adjacency and termination. Key iteration additionally requires caller-supplied
+original keys whose canonical hashes match the stored slots because the hash-derived slot cannot be inverted.
+
+Batch writes to distinct keys co-spend distinct nodes/predecessors and emit their updates/splices in deterministic
+order. Runtime-loop machinery handles updates, inserts, same-gap insertion chains, credited-predecessor merges,
+sender-debit merges, duplicate recipients, and self-transfers. The exclusion proof is always anchored in a real
+input node's old link.
+
+Batch size is bounded by transaction size, input/output count, fees, and VM resource limits. Larger batches must be
+paginated across transactions.
+
+## 8. SDK validation and planning
+
+`SortedList.fromUtxos` treats provider data as hostile. It validates:
+
+- commitment length and field structure;
+- exactly one HEAD;
+- unique slots;
+- strict ascending links;
+- every non-zero link resolves to exactly one node;
+- no cycles;
+- no disconnected/orphan nodes;
+- termination at `nextSlot == 0`;
+- category/address filtering performed by the caller.
+
+Planning operations refuse impossible states:
+
+- membership/update of an absent slot;
+- non-membership/insert of a present slot;
+- insertion at reserved slot zero;
+- deletion of HEAD;
+- any plan based on an invalid list.
+
+The SDK chooses witnesses and proposes commitments; the covenant remains authoritative and pins all security-critical
+fields on chain.
+
+## 9. Compiler and artifact contract
+
+All `MappingType` collections are marked `sorted: true`. The artifact records collection signatures, key/value types,
+entry accesses, block slots, key sources, iteration requirements, and whether values are chunkable. The SDK uses this
+metadata to select entries and construct outputs.
+
+There is no `sortedMappings` or `sortedMappingsAll` compiler option. Tests and integrations must not seed or expect
+the old key/value entry commitment format.
+
+Unsupported C2 shapes raise `SortedMappingCodegenPendingError`. This error is a safety boundary: code generation may
+not route the access through an omission-prone implementation.
+
+## 10. Security invariants and failure behavior
+
+The implementation relies on these invariants:
+
+1. **Identity:** every accepted node belongs to the expected category and collection covenant.
+2. **Uniqueness:** a valid list has one reachable node per slot and one HEAD.
+3. **Order:** every non-tail link increases strictly.
+4. **Completeness:** every supplied list node is reachable from HEAD and every non-zero link resolves.
+5. **Exclusion:** absence requires an authenticated adjacent bracket.
+6. **Update preservation:** an update preserves slot and next link.
+7. **Splice preservation:** insertion preserves predecessor value and old successor.
+8. **Value binding:** long-value entry root, head, address, indexes, chunk lengths, and reconstructed bytes agree.
+9. **Atomicity:** all required entry and chunk inputs/outputs are part of the same transaction.
+
+Malformed commitments, missing witnesses, wrong addresses, incorrect categories, bad brackets, duplicate/gapped
+chunks, wrong roots, output misplacement, and unsupported compiler shapes all fail closed. Availability is not
+guaranteed: a provider or UTXO owner can withhold required data/inputs and prevent progress, but cannot cause an
+incorrect mapping result to be accepted.
+
+## 11. Cost model
+
+A point read or update requires one entry input. An insert requires one predecessor input and two entry outputs.
+Long values additionally require `ceil((L - 28) / 126)` chunk outputs; overwrites consume the old chunk set.
+
+The on-chain cost of root-addressed chunks includes deriving one P2SH32 address from category, collection, slot, and
+root, then looping over chunk indexes to verify output bytecode and commitment. Keeping 32-byte links avoids a second
+collision assumption and avoids runtime truncation logic. A narrower link can be revisited only as a versioned format
+change with an explicit collision/risk and covenant-cost analysis.
+
+Link computation itself is one canonical key encoding, one SHA-256 per key (plus one final SHA-256 for composite
+keys), a high-bit mask, and numeric comparisons. The root-addressed chunk covenant adds constant address derivation
+per value version and linear verification in the number of chunks. Compared with the former repeated-metadata chunk
+layout, it moves `slot || root` from every commitment into one P2SH32 address derivation and recovers 126 data bytes
+per chunk. It does not shorten the authenticated mapping links or weaken their collision bound.
+
+## 12. Implementation and tests
+
+Primary implementation locations:
+
+- Compiler covenant generation: `packages/solidc/src/generation/GenerateTargetTraversal.ts`
+- Compiler mapping selection/artifacts: `packages/solidc/src/compiler.ts`, `packages/solidc/src/artifact/Artifact.ts`
+- SDK planning and transaction construction: `packages/solidcash/src/stateful/StatefulContract.ts`
+- Hostile-list validation: `packages/solidcash/src/stateful/SortedList.ts`
+- Entry/chunk covenant helpers: `packages/solidcash/src/stateful/covenant-helpers.ts`
+- Shared commitment codecs: `packages/utils/src/state.ts`
+
+Important coverage includes:
+
+- membership/non-membership and claim-once;
+- insert/update/RMW/nullify;
+- nested and address keys;
+- HEAD deployment and iteration completeness;
+- same-key coalescing and distinct-key runtime loops;
+- arrays, structs, push/pop, and inline/chunked transitions;
+- long direct and computed values, tampered chunks, strict reconstruction, and overwrite collection;
+- malformed, cyclic, duplicated, and disconnected sorted lists.
+
+See `mapping-omission-security.md` for the original vulnerability and `mapping-soundness-research.md` for the design
+alternatives that led to C2. See `c2-codegen-optimization.md` for measured bytecode/runtime overhead and the ranked
+optimization plan.

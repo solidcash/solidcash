@@ -1,13 +1,38 @@
 import { defineConfig } from '@solidcash/testing';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+
+function findEaccContracts(): string {
+  if (process.env.EACC_CONTRACTS_DIR) return resolve(process.env.EACC_CONTRACTS_DIR);
+  let current = process.cwd();
+  while (true) {
+    const project = join(current, 'effectiveacceleration.ai', 'contract');
+    if (existsSync(join(project, 'contracts')) && existsSync(join(project, 'node_modules'))) {
+      return join(project, 'contracts');
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  // The checked-in mirror is still useful for editor navigation, but package imports require the upstream
+  // Hardhat project's node_modules. The compiler will report that actionable missing dependency if unavailable.
+  return 'contracts';
+}
 
 export default defineConfig({
-  // The unchanged upstream test runs against BCH-native simplified ports while `tasks/compile-real.mjs` keeps the
-  // verbatim Solidity/sharding benchmark separate in artifacts-real. This avoids changing either upstream source
-  // tree while runtime compatibility and finer-grained (>10KB single-entry) sharding advance independently.
-  paths: { contracts: 'contracts-scash', artifacts: 'artifacts', tests: 'test' },
-  // The marketplace compatibility fixture only needs keyed lookup, not ordered mapping iteration. The compact
-  // entry backend also avoids paying the sorted-list predecessor covenant cost for these simplified contracts.
-  solc: { solidityImportCompat: true, ecrecover: 'p2pkh', sortedMappingsAll: false },
+  // Compile and run the unmodified upstream EACC Solidity contracts. `contracts-scash` is retained only as
+  // historical fixture material; it is not part of the canonical compile or test path.
+  paths: { contracts: findEaccContracts(), artifacts: 'artifacts', tests: 'test' },
+  solc: {
+    solidityImportCompat: true,
+    ecrecover: 'p2pkh',
+    // Most EACC mappings use the compact entry backend to keep the generated
+    // facets below BCH's script-size limit. These two mappings are updated for
+    // runtime-selected keys inside loops, so they selectively use the sorted
+    // (C2) backend, which can prove both existing and absent entries.
+    sortedMappingsAll: false,
+    sortedMappings: ['_balances', 'whitelistWorkers'],
+  },
   typegen: {
     targets: [{
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',

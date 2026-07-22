@@ -373,10 +373,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
-  // The set of contract functions that DIRECTLY or TRANSITIVELY write a sorted mapping (a fn calling one that does
-  // also writes one after that callee inlines into it). All must inline so the whole chain lands in an entry
-  // point's block layout - inlining only the direct writer would leave its caller a subroutine holding the write
-  // (block-layout fail) or, once the direct writer is dropped, a dangling call. Fixpoint over the call graph.
+  // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
+  // state-touching helper becomes state-touching after that helper is inlined, so selecting only direct readers
+  // leaves wrapper chains such as OZ ERC20 `_transfer -> _update -> _balances[...]` as layout-less subroutines.
+  // Compute the full fixpoint before rewriting any bodies.
   private computeTransitiveSortedWriters(fns: FunctionDefinitionNode[]): Set<string> {
     const names = new Set(fns.map((f) => f.name));
     const calleesOf = (f: FunctionDefinitionNode): Set<string> => {
@@ -386,7 +386,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       });
       return out;
     };
-    const result = new Set<string>(fns.filter((f) => this.directlyWritesSortedEntry(f)).map((f) => f.name));
+    const result = new Set<string>(fns.filter((f) => (
+      this.readsEntry(f) || this.touchesScalarState(f) || this.directlyWritesSortedEntry(f)
+    )).map((f) => f.name));
     let changed = true;
     while (changed) {
       changed = false;

@@ -174,7 +174,11 @@ export function compileSolidityProject(
       }
     }
     if (!compiled) {
-      compiled = compileFile(source.path, options);
+      try {
+        compiled = compileFile(source.path, options);
+      } catch (error: any) {
+        throw new Error(`Failed to compile project root ${source.path}: ${error.message}`, { cause: error });
+      }
       compiledRoots.push(source.path);
       if (jobFile) writeAtomic(jobFile, serialize(compiled));
     }

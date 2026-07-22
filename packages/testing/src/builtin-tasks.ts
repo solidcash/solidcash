@@ -116,7 +116,12 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           return artifact && artifact.bytecode.length / 2 > 10_000;
         });
         if (!needsSplit) continue;
-        const split = compileFileSplit(full, { solidityImportCompat: true, ...hre.config.solc });
+        let split;
+        try {
+          split = compileFileSplit(full, { solidityImportCompat: true, ...hre.config.solc });
+        } catch (error: any) {
+          throw new Error(`Failed to shard ${path.relative(contractsDir, full)}: ${error.message}`, { cause: error });
+        }
         if (split.manifest.facets.length > 0) fs.writeFileSync(
           path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
           formatSplitArtifactBundle(split, 'json'),
@@ -134,6 +139,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       }
     } catch (e: any) {
       console.error(`Error compiling Solidity project: ${e.message.split('\n')[0]}`);
+      if (process.env.SOLIDC_DEBUG && e.stack) console.error(e.stack);
       failures.push(new Error(`Solidity project: ${e.message}`));
     }
 

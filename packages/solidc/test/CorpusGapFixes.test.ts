@@ -2497,6 +2497,22 @@ describe('C2-default: an inherited method accessing its OWN contract private map
   });
 });
 
+describe('compact mappings: transitive state helper chains inline into entry points', () => {
+  it('compiles an OZ-style transfer -> _transfer -> _update mapping read/write chain', () => {
+    const src = 'pragma solidity ^0.8.20; contract Token {'
+      + ' mapping(address => uint256) private _balances;'
+      + ' function _update(address from, address to, uint256 value) internal {'
+      + ' uint256 balance = _balances[from]; require(balance >= value);'
+      + ' _balances[from] = balance - value; _balances[to] = _balances[to] + value; }'
+      + ' function _transfer(address from, address to, uint256 value) internal { _update(from, to, value); }'
+      + ' function transfer(address to, uint256 value) public returns (bool) {'
+      + ' _transfer(msg.sender, to, value); return true; } }';
+    expect(() => compileString(src, {
+      solidityImportCompat: true, sortedMappingsAll: false,
+    })).not.toThrow();
+  });
+});
+
 describe('C2-default: OVERLOADED internal C2-writer chain inlines by (name, arity) (OZ ERC20 _approve/3 -> _approve/4)', () => {
   // `_approve/3` calls `_approve/4` (which writes the C2 `_allowances`). InlineStoragePointerCalls resolved callees
   // and its recursion guard by NAME only, so the arity-4 call inside `_approve/3` was never inlined yet `_approve`

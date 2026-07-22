@@ -613,7 +613,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private getBlockSlotOffset(kind: BlockSlotKind, slotIndex?: number): number {
     const layout = this.currentFunction.blockLayout;
-    if (!layout) throw new Error('Block layout not available');
+    if (!layout) throw new Error(`Block layout not available while compiling '${this.currentFunction.name}'`);
     const slot = layout.slots.find(
       (s) => s.kind === kind && (slotIndex === undefined || s.slotIndex === slotIndex),
     );

@@ -559,6 +559,8 @@ export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): strin
 const indent = (level: number): string => '  '.repeat(level);
 
 function stringifyAsTs(obj: any, indentationLevel: number = 1): string {
+  if (obj === null) return 'null';
+
   // For strings we use JSON.stringify to handle escaping, but we want to use single quotes instead of double quotes
   // around string values inside objects, to match regular TS style
   if (typeof obj === 'string') {

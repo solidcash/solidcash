@@ -59,7 +59,7 @@ describe('TypeChain-compatible generation', () => {
       cacheDir: path.join(root, 'cache', 'solidcash'),
       targets: [{ target: 'ethers6', outDir }],
     });
-    expect(result).toMatchObject({ target: 'ethers6', skipped: false, files: 2 });
+    expect(result).toMatchObject({ target: 'ethers6', skipped: false, files: 3 });
     const contract = fs.readFileSync(path.join(outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8');
     expect(contract).toContain('export type Counter = StatefulContract<typeof artifact>;');
     expect(contract).toContain('export type ItemStruct = { amount: bigint; tag: Uint8Array | string; };');
@@ -69,8 +69,10 @@ describe('TypeChain-compatible generation', () => {
     expect(contract).toContain('static connect(categoryId: string, runner: ContractRunner): Promise<Counter>');
     expect(fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8'))
       .toContain("export * from './contracts/nested/Counter.js';");
+    const registry = fs.readFileSync(path.join(outDir, 'registry.ts'), 'utf8');
+    expect(registry).toContain('interface SolidcashArtifactMap');
+    expect(registry).toContain("'Counter': typeof import(");
   });
-
   it('reuses timestamp-only changes and atomically regenerates semantic changes', () => {
     const root = project();
     writeFixture(root, artifact());
@@ -91,5 +93,20 @@ describe('TypeChain-compatible generation', () => {
     expect(fs.existsSync(path.join(options.targets[0].outDir, 'stale.ts'))).toBe(false);
     expect(fs.readFileSync(path.join(options.targets[0].outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8'))
       .toContain('Ethers 5-compatible layout');
+  });
+  it('can preserve a compatibility source tree independently of compiled sources', () => {
+    const root = project();
+    writeFixture(root, artifact());
+    const compatibilitySources = path.join(root, 'ported-contracts', 'legacy');
+    fs.mkdirSync(compatibilitySources, { recursive: true });
+    fs.writeFileSync(path.join(compatibilitySources, 'Counter.sol'), 'contract Counter {}');
+    const outDir = path.join(root, 'bindings');
+    generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir, sourceDir: path.join(root, 'ported-contracts') }],
+    });
+    expect(fs.existsSync(path.join(outDir, 'contracts', 'legacy', 'Counter.ts'))).toBe(true);
   });
 });

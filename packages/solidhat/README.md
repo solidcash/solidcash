@@ -112,6 +112,8 @@ export default defineConfig({
 });
 ```
 
+`typegen.targets[].sourceDir` can preserve an original Solidity source layout when the compiled fixture sources live elsewhere (for example, lightweight BCH test stubs). It affects generated module paths only; artifacts remain the source of runtime data and types.
+
 Compiler options are forwarded to `solidc`. A Hardhat config containing an explicit `solidcash` section remains
 supported, but a standalone SolidCash config is recommended because it avoids changing the EVM toolchain.
 

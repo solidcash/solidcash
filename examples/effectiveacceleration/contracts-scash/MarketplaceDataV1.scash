@@ -1,4 +1,11 @@
 pragma solidcash ^0.13.0;
+
+struct JobEventData {
+  uint8 type_;
+  bytes address_;
+  bytes data_;
+  uint32 timestamp_;
+}
 contract MarketplaceDataV1() {
   address marketplaceAddress;
   function initialize(address marketplace) delegate {

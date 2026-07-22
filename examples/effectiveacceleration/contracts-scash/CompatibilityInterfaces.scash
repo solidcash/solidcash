@@ -1,0 +1,9 @@
+pragma solidcash ^0.13.0;
+
+// Compile-time compatibility declarations used by the ported Hardhat custom-error matchers. The corresponding
+// EVM libraries are not executable BCH contracts in this stub-backed fixture; generated factories provide their
+// familiar TypeChain names and interface metadata shape.
+contract IERC20Errors() {}
+contract ECDSA() {}
+contract OwnableUpgradeable() {}
+contract Initializable() {}

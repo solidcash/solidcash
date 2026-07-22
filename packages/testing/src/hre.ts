@@ -40,17 +40,28 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
   }
 }
 
+/** Augmented by generated TypeChain registries so literal contract names retain their artifact type. */
+export interface SolidcashArtifactMap {}
+export type ArtifactForName<Name extends string> = Name extends keyof SolidcashArtifactMap
+  ? SolidcashArtifactMap[Name]
+  : Artifact;
+
 /** The BCH-native `hre.ethers` object: forwarded utils + network-bound signer/contract helpers. */
 export interface SolidcashEthers {
   provider: NetworkProvider;
   getSigners(count?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer[]>;
   getSigner(index?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer>;
   // Accept a compiled artifact object OR a contract name (hardhat `getContractFactory("Name")`).
-  getContractFactory<T extends Artifact>(artifactOrName: T | string, runner?: ContractRunner): ContractFactory<T>;
-  getContractAt<T extends Artifact>(artifactOrName: T | string, addressOrCategory: string, runner?: ContractRunner)
-  : Promise<ConnectedStatefulContract<T>>;
-  deployContract<T extends Artifact>(artifactOrName: T | string, args?: ConstructorArgument[], runner?: ContractRunner,
-    overrides?: DeployContractOptions): Promise<DeployedContract<T>>;
+  getContractFactory<Value extends Artifact | string>(artifactOrName: Value, runner?: ContractRunner)
+  : ContractFactory<Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>;
+  getContractAt<Value extends Artifact | string>(artifactOrName: Value, addressOrCategory: string,
+    runner?: ContractRunner): Promise<ConnectedStatefulContract<
+  Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact
+  >>;
+  deployContract<Value extends Artifact | string>(artifactOrName: Value, args?: ConstructorArgument[],
+    runner?: ContractRunner, overrides?: DeployContractOptions): Promise<DeployedContract<
+  Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact
+  >>;
   // classes (BCH-native)
   Contract: typeof StatefulContract;
   ContractFactory: typeof ContractFactory;
@@ -177,6 +188,15 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
   }
 
+  const contractFactory = (artifactOrName: Artifact | string, runner?: ContractRunner): ContractFactory<Artifact> =>
+    sdkGetContractFactory(resolveArtifact(artifactOrName), runner ?? defaultRunner());
+  const contractAt = (artifactOrName: Artifact | string, addressOrCategory: string, runner?: ContractRunner)
+  : Promise<ConnectedStatefulContract<Artifact>> =>
+    StatefulContract.at(addressOrCategory, resolveArtifact(artifactOrName), runner ?? defaultRunner());
+  const contractDeploy = (artifactOrName: Artifact | string, args: ConstructorArgument[] = [],
+    runner?: ContractRunner, overrides?: DeployContractOptions): Promise<DeployedContract<Artifact>> =>
+    sdkDeployContract(resolveArtifact(artifactOrName), args, runner ?? defaultRunner(), overrides);
+
   const ethers: SolidcashEthers = {
     ...ethersUtils,
     provider,
@@ -191,13 +211,9 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       });
       return signer;
     },
-    getContractFactory: <T extends Artifact>(artifactOrName: T | string, runner?: ContractRunner): ContractFactory<T> =>
-      sdkGetContractFactory(resolveArtifact(artifactOrName), runner ?? defaultRunner()),
-    getContractAt: <T extends Artifact>(artifactOrName: T | string, addressOrCategory: string, runner?: ContractRunner) =>
-      StatefulContract.at(addressOrCategory, resolveArtifact(artifactOrName), runner ?? defaultRunner()),
-    deployContract: <T extends Artifact>(artifactOrName: T | string, args: ConstructorArgument[] = [],
-      runner?: ContractRunner, overrides?: DeployContractOptions) =>
-      sdkDeployContract(resolveArtifact(artifactOrName), args, runner ?? defaultRunner(), overrides),
+    getContractFactory: contractFactory as SolidcashEthers['getContractFactory'],
+    getContractAt: contractAt as SolidcashEthers['getContractAt'],
+    deployContract: contractDeploy as SolidcashEthers['deployContract'],
     Contract: StatefulContract,
     ContractFactory,
     Signer,

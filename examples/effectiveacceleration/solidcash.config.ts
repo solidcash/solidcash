@@ -9,6 +9,11 @@ export default defineConfig({
   // deploy (script splitting / raised local VM limit) lands.
   paths: { contracts: 'contracts-scash', artifacts: 'artifacts', tests: 'test' },
   solc: { solidityImportCompat: true, ecrecover: 'p2pkh' },
+  typegen: {
+    targets: [{
+      target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',
+    }],
+  },
   networks: { mock: { type: 'mock' } },
   defaultNetwork: 'mock',
   // The EA hardhat.config mnemonic + Ethereum derivation path, so getSigners() matches the project.

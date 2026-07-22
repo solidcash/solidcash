@@ -26,7 +26,7 @@ export interface AccountsConfig {
 }
 
 export interface TypegenConfig {
-  targets: readonly { target: TypegenTarget; layout?: 'typechain'; outDir?: string }[];
+  targets: readonly { target: TypegenTarget; layout?: 'typechain'; outDir?: string; sourceDir?: string }[];
 }
 
 export interface SolidcashConfig {
@@ -58,7 +58,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
-  typegen: { targets: { target: TypegenTarget; layout: 'typechain'; outDir: string }[] };
+  typegen: { targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[] };
 }
 
 /** Typed identity helper for `solidcash.config.ts` (mirrors hardhat `defineConfig`). */
@@ -96,6 +96,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
       targets: configuredTargets.map((target) => ({
         target: target.target,
         layout: target.layout ?? 'typechain',
+        sourceDir: target.sourceDir ? resolvePath(target.sourceDir, target.sourceDir) : undefined,
         outDir: resolvePath(
           target.outDir, multipleTargets ? `typechain-types-${target.target}` : 'typechain-types',
         ),

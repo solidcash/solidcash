@@ -141,6 +141,31 @@ describe('large-contract state-local splitting', () => {
     expect(routed[0].target).not.toBe('root');
   });
 
+  it('does not revalidate resolved override bases on synthetic facets', () => {
+    const bundle = compileStringSplit(`
+      contract Base() {
+        int x;
+        function set(int v) public virtual { this.x = v; require(v >= 0); }
+      }
+      contract Derived() is Base() {
+        function set(int v) public override(Base) { this.x = v + 1; require(v >= 0); }
+        function reset() public { this.x = 0; require(true); }
+      }
+    `, { forceSplit: true });
+    expect(bundle.manifest.routes.find((route) => route.function === 'set')?.target).not.toBe('root');
+  });
+
+  it('keeps compiler-generated maintenance entry points on the root', () => {
+    const bundle = compileStringSplit(`
+      contract OracleUser() {
+        uint seen;
+        function record() public { this.seen = block.number; require(true); }
+        function reset() public { this.seen = 0; require(true); }
+      }
+    `, { forceSplit: true });
+    expect(bundle.manifest.routes.find((route) => route.function === '__updateBlockOracle')?.target).toBe('root');
+  });
+
   it('moves return-valued state transitions with their state-affinity group', () => {
     const bundle = compileStringSplit(`
       contract Returning() {

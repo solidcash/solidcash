@@ -748,7 +748,7 @@ function unsplitBundle(root: Artifact, plans: PlannedFunction[]): SplitArtifactB
 }
 
 function isMovableSplitEntry(fn: FunctionDefinitionNode): boolean {
-  return fn.isEntryPoint && !fn.isFallback && !fn.isReceive
+  return fn.isEntryPoint && !fn.name.startsWith('__') && !fn.isFallback && !fn.isReceive
     && !fn.modifiers.includes(FunctionModifier.VIEW) && !fn.modifiers.includes(FunctionModifier.PURE)
     && !fn.modifiers.some((m) => LIFECYCLE_MODIFIERS.has(m));
 }
@@ -905,6 +905,12 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   contract.implements = [];
   contract.parentInvocations = [];
   contract.functions = contract.functions.filter((fn) => keep.has(fn.name));
+  // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets are
+  // renamed synthetic contracts with no Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make
+  // the idempotent inheritance pass validate resolved source metadata against the synthetic facet and reject it.
+  for (const resolved of [contract, ...ast.importedContracts]) {
+    for (const fn of resolved.functions) fn.overrideBases = [];
+  }
   for (const fn of contract.functions) if (plans.some((p) => p.name === fn.name)) {
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.INTERNAL, FunctionModifier.PRIVATE, FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC,

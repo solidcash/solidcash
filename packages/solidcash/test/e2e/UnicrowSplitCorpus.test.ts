@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { compileFile, compileFileSplit } from 'solidc';
 import { ContractFactory, Signer, SplitContractBundle } from '../../src/index.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
 describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', () => {
-  it('documents the ordinary imported constructor blocker', async () => {
+  it('rejects the unsplit corpus at the BCH unlocking-script limit', async () => {
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     const fundingUtxo = await provider.addUtxo(signer.getAddress(), {
@@ -24,10 +25,10 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
         changeAddress: signer.getAddress(),
         initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
       },
-    )).rejects.toThrow(/Failed to derive initial state commitments from constructor/);
+    )).rejects.toThrow(/unlocking bytecode exceeds the maximum bytecode length/i);
   }, 240_000);
 
-  it('reaches the same imported constructor blocker through its planned facets', async () => {
+  it('deploys the imported constructor through its planned facets', async () => {
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     const fundingUtxos = [];
@@ -47,11 +48,18 @@ describe.skipIf(process.env.SOLIDC_REAL_CORPUS !== '1')('Unicrow split corpus', 
     const facetOverrides = Object.fromEntries(compiled.manifest.facets.map((facet, index) => [
       facet.name, { fundingUtxo: fundingUtxos[index + 1] },
     ]));
-    await expect(factory.deploy(constructorArgs, {
+    const deployed = await factory.deploy(constructorArgs, {
       fundingUtxo: fundingUtxos[0],
       facetOverrides,
       initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
-    })).rejects.toThrow(/Failed to derive initial state commitments from constructor/);
-    expect(compiled.manifest.facets.length).toBeGreaterThan(0);
+    });
+    const state = await deployed.root.getState();
+
+    expect(Object.keys(deployed.facets)).toHaveLength(compiled.manifest.facets.length);
+    expect(state.protocolFee).toBe(100n);
+    const expectedAddress = addressToLockScript(address);
+    expect(state.governanceAddress).toEqual(expectedAddress);
+    expect(state.unicrowClaim).toEqual(expectedAddress);
+    expect(state.escrowIdCounter).toEqual({ _value: 1n });
   }, 240_000);
 });

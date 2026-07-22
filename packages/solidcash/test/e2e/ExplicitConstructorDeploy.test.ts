@@ -25,7 +25,7 @@ const p2pkh = new Contract(
 // Returns the deploy result plus the genesis funding txid. On mocknet the funding UTXO keeps the given seed
 // txid; on regtest addUtxo mutates it to the real one - either way the derived category equals that txid.
 async function deploy(artifact: ReturnType<typeof compileString>, constructorArgs: unknown[],
-  seed: string, initialState: Record<string, bigint>):
+  seed: string, initialState: Record<string, bigint>, initArgs?: unknown[]):
   Promise<{ result: Awaited<ReturnType<typeof StatefulContract.deploy>>; categoryId: string }> {
   const fundingUtxo: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: 300000n };
   await provider.addUtxo(p2pkh.address, fundingUtxo);
@@ -34,6 +34,7 @@ async function deploy(artifact: ReturnType<typeof compileString>, constructorArg
     fundingUtxo,
     funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
     initialState,
+    initArgs: initArgs as never,
     changeAddress: p2pkh.address,
   });
   return { result, categoryId: fundingUtxo.txid };
@@ -50,6 +51,25 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     `);
     const { result, categoryId } = await deploy(artifact, [], 'a1b2', { count: 1n });
     expect(result.categoryId).toBe(categoryId);
+  });
+
+  it('progressively derives multiple NFTs from one fixed constructor pre-state', async () => {
+    const artifact = compileString(`
+      contract C() {
+          int counter;
+          int fee;
+          int untouched;
+          constructor(int value) {
+              this.counter = this.counter + 1;
+              this.fee = value;
+          }
+          function read() view returns (int) { return this.counter; }
+      }
+    `, { commitmentLimit: 4 });
+    const { result } = await deploy(artifact, [], 'b2c3', {}, [100n]);
+    const state = await result.contract.getState();
+    expect(artifact.stateLayout!.dataNftCount).toBeGreaterThan(1);
+    expect(state).toMatchObject({ counter: 1n, fee: 100n, untouched: 0n });
   });
 
   it('deploys a constructor that reads an uninitialized mapping (read-before-write, returns default)', async () => {

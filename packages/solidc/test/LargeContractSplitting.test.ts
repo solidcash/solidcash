@@ -157,4 +157,20 @@ describe('large-contract state-local splitting', () => {
     expect(setAbi?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')).toBe(true);
   });
 
+  it('covenants the complete genesis state layout even when the constructor leaves a field untouched', () => {
+    const artifact = compileString(`
+      contract Genesis() {
+        int initialized;
+        int untouched;
+        constructor(int value) { this.initialized = value; }
+        function read() view returns (int) { return this.untouched; }
+      }
+    `, { commitmentLimit: 8 });
+    const constructorAbi = artifact.abi.find((fn) => fn.name === '__construct');
+    expect(artifact.stateLayout?.dataNftCount).toBeGreaterThan(1);
+    expect(constructorAbi?.requiredNftIndices).toEqual(
+      Array.from({ length: artifact.stateLayout!.dataNftCount }, (_, index) => index),
+    );
+  });
+
 });

@@ -174,12 +174,23 @@ every emitted artifact is remeasured against the configured limit. The largest
 default-limit facet has 213 bytes of consensus headroom; production policy
 should choose a lower `maxShardBytes` if upgrade/compiler-growth margin matters.
 
-The exact imported Unicrow constructor does not yet deploy through the SDK even
-as an ordinary unsplit artifact: constructor commitment derivation fails before
-the faceted path can broadcast. The opt-in `SOLIDC_REAL_CORPUS=1` SDK diagnostic
-records that baseline and confirms the split bundle reaches the same constructor
-boundary after layout/link validation. Native escrow transition parity therefore
-remains blocked on that pre-existing constructor-runtime gap, not on facet routing.
+The exact imported Unicrow monolith cannot deploy, as expected: its 23.8 KB redeem
+script is embedded in the constructor input and exceeds BCH's 10 KB unlocking
+bytecode limit. This was previously misdiagnosed as a constructor-runtime gap
+because commitment inference replaced the underlying VM error with a generic
+message.
+
+The faceted root now deploys that constructor natively. Genesis codegen covenants
+the complete data-NFT layout, including untouched/default and compiler-injected
+fields. SDK inference converges progressively because VM execution stops at the
+first placeholder commitment mismatch: probe 1 learns NFT 0, probe 2 can reach
+NFT 1, and so on, followed by a complete validation run. Every probe reads the
+same zero/explicit constructor pre-state; only synthetic output placeholders are
+updated, so non-idempotent initialization executes once per deployment. Entry
+and event commitments converge by exact output index. The opt-in
+`SOLIDC_REAL_CORPUS=1` regression verifies all four facets deploy, the imported
+constructor initializes its peer/governance addresses and protocol fee, and the
+inlined `Counters.Counter.increment()` leaves the escrow counter at one.
 
 ## Hardhat-compatible deployment sequencing
 

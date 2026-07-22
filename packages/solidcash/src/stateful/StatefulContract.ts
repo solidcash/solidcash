@@ -2914,13 +2914,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
     const vm = createVirtualMachineBch2026();
     const allEventDefs = artifact.events ?? [];
-    const maxDeployIterations = 5;
+    // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
+    // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
+    const maxDeployIterations = Math.max(5, requiredIndices.length + 2);
     const seenDeployKeys = new Set<string>();
 
+    let deployConverged = false;
     let currentCommitments = [...zeroCommitments];
     let stateCommitments: string[] = [];
-    let entryCommits: string[] = [];
-    let eventCommits: string[] = [];
+    const entryCommits: string[] = Array.from({ length: entryCount }, () => '');
+    const eventCommits: string[] = Array.from({ length: emitCount }, () => '');
     let transferOuts: Array<{
       lockingBytecode: Uint8Array; amount: bigint;
     }> = [];
@@ -2934,7 +2937,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             category: categoryId, amount: 0n,
             nft: {
               capability: 'mutable' as const,
-              commitment: currentCommitments[i],
+              // A constructor always executes from its original zero/explicit pre-state. Only the synthetic
+              // OUTPUT placeholders converge; feeding a prior result back as input repeats non-idempotent writes.
+              commitment: zeroCommitments[i],
             },
           },
         }),
@@ -2981,12 +2986,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probeBuilder.addOutput({
           to: dataNftUnlockers[i].generateLockingBytecode(),
           amount: dataNftAmount,
-          token: nft.token,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: {
+              capability: 'mutable' as const,
+              commitment: currentCommitments[i],
+            },
+          },
         });
       });
 
       // Entry NFT placeholder outputs
-      for (const access of entryAccesses) {
+      for (const [entryIndex, access] of entryAccesses.entries()) {
         const collectionSig = stateLayout.collections?.find(
           (c) => c.name === access.collection,
         )?.signature ?? access.collection;
@@ -3002,7 +3014,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: {
             category: categoryId, amount: 0n,
-            nft: { capability: 'mutable' as const, commitment: '' },
+            nft: { capability: 'mutable' as const, commitment: entryCommits[entryIndex] },
           },
         });
       }
@@ -3016,7 +3028,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       // Event NFT placeholder outputs
-      for (const emitInfo of emitInfos) {
+      for (const [eventIndex, emitInfo] of emitInfos.entries()) {
         const eventDef = allEventDefs.find(
           (e) => e.signature === emitInfo.eventSignature,
         );
@@ -3035,7 +3047,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: {
             category: categoryId, amount: 0n,
-            nft: { capability: 'mutable' as const, commitment: '' },
+            nft: { capability: 'mutable' as const, commitment: eventCommits[eventIndex] },
           },
         });
       }
@@ -3055,44 +3067,57 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const stateOutputRange = {
         min: 1, max: 1 + requiredIndices.length,
       };
-      const newStateCommitments = extractCommitmentsFromTrace(
-        fullTrace, requiredIndices.length, stateOutputRange,
+      const stateCommitmentMap = extractCommitmentMapFromTrace(
+        fullTrace, stateOutputRange,
       );
-      if (
-        !newStateCommitments
-        || newStateCommitments.length < requiredIndices.length
-      ) {
+      if (stateCommitmentMap.size === 0) {
+        const failedStep = [...fullTrace].reverse().find((step) => step.error);
+        const vmError = failedStep?.error;
+        const vmLocation = failedStep === undefined
+          ? ''
+          : ` at instruction ${failedStep.ip}/${failedStep.instructions.length}`;
+        const vmStack = failedStep === undefined
+          ? ''
+          : ` (stack: ${failedStep.stack.slice(-4).map((item) => binToHex(item)).join(', ')})`;
         throw new Error(
           'Failed to derive initial state commitments from '
           + 'constructor. Ensure the constructor writes all '
-          + 'state variables.',
+          + 'state variables.'
+          + (vmError === undefined ? '' : ` VM error${vmLocation}: ${vmError}${vmStack}`),
         );
       }
 
+      // A subroutine-aware trace slice may expose only the last failing verification, so a partial positional
+      // list cannot be assumed to be a prefix. Map each observed output slot back to its exact required NFT.
+      for (const [outputIndex, commitment] of stateCommitmentMap) {
+        const compactIndex = outputIndex - stateOutputRange.min;
+        const nftIndex = requiredIndices[compactIndex];
+        if (nftIndex !== undefined) currentCommitments[nftIndex] = commitment;
+      }
+      stateCommitments = requiredIndices.map((nftIndex) => currentCommitments[nftIndex]);
+
       // Extract entry commitments
-      entryCommits = [];
       if (entryCount > 0) {
         const entryOutputBase = 1 + stateLayout.dataNftCount;
         const entryOutputRange = {
           min: entryOutputBase,
           max: entryOutputBase + entryCount,
         };
-        entryCommits = extractCommitmentsFromTrace(
-          fullTrace, entryCount, entryOutputRange,
-        ) ?? [];
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, entryOutputRange)) {
+          entryCommits[outputIndex - entryOutputBase] = commitment;
+        }
       }
 
       // Extract event commitments
-      eventCommits = [];
       if (emitCount > 0) {
         const eventBase = 1 + stateLayout.dataNftCount + entryCount
           + transferCount;
         const eventOutputRange = {
           min: eventBase, max: eventBase + emitCount,
         };
-        eventCommits = extractCommitmentsFromTrace(
-          fullTrace, emitCount, eventOutputRange,
-        ) ?? [];
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, eventOutputRange)) {
+          eventCommits[outputIndex - eventBase] = commitment;
+        }
       }
 
       // Extract transfer outputs
@@ -3120,16 +3145,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      stateCommitments = newStateCommitments;
-
-      // Check convergence: did commitments change from previous iter?
-      const currentStateCommitments = stateCommitments;
-      const converged = requiredIndices.every(
-        (idx) => currentCommitments[idx] === currentStateCommitments[
-          requiredIndices.indexOf(idx)
-        ],
-      );
-      if (converged) break;
+      // Once the complete constructor probe validates, every learned output placeholder is a fixed point.
+      if (!fullTrace.some((step) => step.error !== undefined)) {
+        deployConverged = true;
+        break;
+      }
 
       // Oscillation detection: if we've seen this exact commitment set before,
       // the derivation is cycling without converging.
@@ -3142,11 +3162,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
       seenDeployKeys.add(deployKey);
+    }
 
-      // Update current commitments for next iteration
-      for (let j = 0; j < requiredIndices.length; j++) {
-        currentCommitments[requiredIndices[j]] = stateCommitments[j];
-      }
+    if (!deployConverged) {
+      throw new Error(
+        `Constructor commitment derivation did not converge after ${maxDeployIterations} probes.`,
+      );
     }
 
     return {

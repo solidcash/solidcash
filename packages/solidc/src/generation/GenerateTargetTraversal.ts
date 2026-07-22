@@ -1561,6 +1561,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // split/merge: empty [] (no data NFTs - purely minting NFT lifecycle).
     const isSplitOrMerge = node.modifiers.includes(FunctionModifier.SPLIT)
       || node.modifiers.includes(FunctionModifier.MERGE);
+    const isConstructor = node.name === '__construct';
     const isUnsafeTier0 = node.modifiers.includes(FunctionModifier.UNSAFE) && (node.unsafeTier ?? 0) === 0;
     const hasFullStateModifier = node.modifiers.some((m) => m === FunctionModifier.UPGRADE
       || m === FunctionModifier.SELFDESTRUCT
@@ -1570,7 +1571,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasDelegatecall = node.lowLevelCalls?.some((lc) => lc.callMode === 'delegatecall') ?? false;
     if (isSplitOrMerge && this.dataNftCount > 0) {
       node.requiredNftIndices = [];
-    } else if ((hasFullStateModifier || hasDelegatecall) && this.dataNftCount > 0) {
+    } else if (
+      // Genesis mints the complete state layout. Even untouched/default fields must be covenant-authenticated:
+      // otherwise a hostile deployment can seed arbitrary commitments in NFTs the constructor does not access.
+      (isConstructor || hasFullStateModifier || hasDelegatecall)
+      && this.dataNftCount > 0
+    ) {
       node.requiredNftIndices = Array.from({ length: this.dataNftCount }, (_, i) => i);
     } else if (this.dataNftCount > 0 || accessedNftIndices.length > 0) {
       node.requiredNftIndices = accessedNftIndices;

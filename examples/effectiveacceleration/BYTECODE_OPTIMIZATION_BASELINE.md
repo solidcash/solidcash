@@ -153,10 +153,14 @@ accesses, but it was neutral on this MarketplaceV1 source.
 | Shared variable-width mutation split | 89035 | 574 (0.6%) |
 | Shared physical state-field decoding | 86789 | 2246 (2.5%) |
 | Shared non-delegate state fetch and decode | 86444 | 345 (0.4%) |
-| **Current total** | **86444** | **88089 (50.5%)** |
+| Shared variable-width truncation composition | 86444 | 0 |
+| Shared state reconstruction reads | 82804.5 | 3639.5 (4.2%) |
+| Shared data-NFT bytecode/category preservation | 82072.5 | 732 (0.9%) |
+| Shared read-only commitment preservation | 81906.5 | 166 (0.2%) |
+| **Current total** | **81906.5** | **92626.5 (53.1%)** |
 
 Relative to the same-source 461310-byte measurement before the structural-sharing follow-ups, the current
-artifact is 374866 bytes smaller (81.3%).
+artifact is 379403.5 bytes smaller (82.2%).
 
 ## Final implementation summary
 
@@ -171,9 +175,13 @@ names, or its particular state schema.
 - Ordinary packed state arrays, mapping-backed arrays, literal-index reads, and compatible delete paths use the
   same canonical variable-width element extraction.
 - Variable-width local/state assignment and swap-delete paths share their scan-and-split mutation primitive.
+- Variable-width local/state pop paths compose the same split helper into a cost-selected truncation helper.
 - Physical data-NFT field reads share tag verification, preceding-field traversal, and target decoding. Normal
   state reads may also share the commitment-fetch prefix; delegate reads keep it inline because their proxy
   master index occupies the altstack beneath the `OP_INVOKE` return address.
+- Commitment reconstruction reuses the same physical state-read helpers for every unchanged field.
+- Per-data-NFT locking-bytecode, token-category, and read-only commitment preservation tails are shared by
+  compact offset. Delegate paths remain inline for the same altstack reason.
 - Captured helpers record helper-to-helper dependencies, and dead-definition removal retains reachable
   dependencies.
 - Helper extraction compares actual encoded definition and invocation sizes against repeated inline emission.
@@ -187,7 +195,7 @@ source does not exercise them enough to change its total. These are identified a
 
 ## Validation
 
-The final 86444-byte measurement was produced after a clean `solidc` build. The complete monorepo test run
+The final 81906.5-byte measurement was produced after a clean `solidc` build. The complete monorepo test run
 passed:
 
 | Workspace | Result |

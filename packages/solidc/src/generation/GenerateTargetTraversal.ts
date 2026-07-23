@@ -380,6 +380,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private arrayElementTypes = new Map<string, Type>();
   private arraySplitIds = new Map<string, bigint>();
   private arraySplitTypes = new Map<string, Type>();
+  private arrayTruncateIds = new Map<string, bigint>();
+  private arrayTruncateTypes = new Map<string, Type>();
   private stateDecodeIds = new Map<string, bigint>();
   private stateDecodes = new Map<string, {
     nftIndex: number;
@@ -399,6 +401,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       tagged: boolean;
     };
   }>();
+  private dataNftPreserveIds = new Map<number, bigint>();
+  private dataNftCommitPreserveIds = new Map<number, bigint>();
   private compactHelperIds = {
     next: 127n,
     fallback: 0x2000n,
@@ -1030,6 +1034,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
       spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
     }
+    for (const [offset, id] of this.dataNftPreserveIds) {
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitDataNftPreservationInline(offset, loc);
+      };
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
+    for (const [offset, id] of this.dataNftCommitPreserveIds) {
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitDataNftCommitmentPreservationInline(offset, loc);
+      };
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
     // A struct's field-prefix helpers are cumulative: prefix N includes every skip in prefix M<N. Define them in
     // ascending field order and make each larger helper invoke the nearest smaller helper, then emit only its
     // incremental suffix. This avoids embedding the same potentially-large variable-width traversal in every
@@ -1071,6 +1089,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const type = this.arraySplitTypes.get(key)!;
       const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
         t.emitVariableArraySplitInline(type, loc);
+      };
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
+    for (const [key, id] of this.arrayTruncateIds) {
+      const type = this.arrayTruncateTypes.get(key)!;
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitVariableArrayTruncateInline(type, loc);
       };
       if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
       spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
@@ -1259,10 +1285,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.arrayElementTypes = this.arrayElementTypes;
     sub.arraySplitIds = this.arraySplitIds;
     sub.arraySplitTypes = this.arraySplitTypes;
+    sub.arrayTruncateIds = this.arrayTruncateIds;
+    sub.arrayTruncateTypes = this.arrayTruncateTypes;
     sub.stateDecodeIds = this.stateDecodeIds;
     sub.stateDecodes = this.stateDecodes;
     sub.stateReadIds = this.stateReadIds;
     sub.stateReads = this.stateReads;
+    sub.dataNftPreserveIds = this.dataNftPreserveIds;
+    sub.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
     this.subroutineDependencies.set(id, new Set(
@@ -1301,10 +1331,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.arrayElementTypes = this.arrayElementTypes;
     sub.arraySplitIds = this.arraySplitIds;
     sub.arraySplitTypes = this.arraySplitTypes;
+    sub.arrayTruncateIds = this.arrayTruncateIds;
+    sub.arrayTruncateTypes = this.arrayTruncateTypes;
     sub.stateDecodeIds = this.stateDecodeIds;
     sub.stateDecodes = this.stateDecodes;
     sub.stateReadIds = this.stateReadIds;
     sub.stateReads = this.stateReads;
+    sub.dataNftPreserveIds = this.dataNftPreserveIds;
+    sub.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
     const body = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
@@ -1373,10 +1407,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.arrayElementTypes = new Map(probe.arrayElementTypes);
       this.arraySplitIds = new Map(probe.arraySplitIds);
       this.arraySplitTypes = new Map(probe.arraySplitTypes);
+      this.arrayTruncateIds = new Map(probe.arrayTruncateIds);
+      this.arrayTruncateTypes = new Map(probe.arrayTruncateTypes);
       this.stateDecodeIds = new Map(probe.stateDecodeIds);
       this.stateDecodes = new Map(probe.stateDecodes);
       this.stateReadIds = new Map(probe.stateReadIds);
       this.stateReads = new Map(probe.stateReads);
+      this.dataNftPreserveIds = new Map(probe.dataNftPreserveIds);
+      this.dataNftCommitPreserveIds = new Map(probe.dataNftCommitPreserveIds);
       this.compactHelperIds = probe.compactHelperIds;
       return probe.subroutineUseCount;
     } catch {
@@ -1525,10 +1563,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.arrayElementTypes = this.arrayElementTypes;
     subTraversal.arraySplitIds = this.arraySplitIds;
     subTraversal.arraySplitTypes = this.arraySplitTypes;
+    subTraversal.arrayTruncateIds = this.arrayTruncateIds;
+    subTraversal.arrayTruncateTypes = this.arrayTruncateTypes;
     subTraversal.stateDecodeIds = this.stateDecodeIds;
     subTraversal.stateDecodes = this.stateDecodes;
     subTraversal.stateReadIds = this.stateReadIds;
     subTraversal.stateReads = this.stateReads;
+    subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
+    subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     subTraversal.compactHelperIds = this.compactHelperIds;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
@@ -1756,10 +1798,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.arrayElementTypes = this.arrayElementTypes;
     subTraversal.arraySplitIds = this.arraySplitIds;
     subTraversal.arraySplitTypes = this.arraySplitTypes;
+    subTraversal.arrayTruncateIds = this.arrayTruncateIds;
+    subTraversal.arrayTruncateTypes = this.arrayTruncateTypes;
     subTraversal.stateDecodeIds = this.stateDecodeIds;
     subTraversal.stateDecodes = this.stateDecodes;
     subTraversal.stateReadIds = this.stateReadIds;
     subTraversal.stateReads = this.stateReads;
+    subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
+    subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     subTraversal.compactHelperIds = this.compactHelperIds;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
 
@@ -6500,6 +6546,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, locationData);
   }
 
+  /** Convert [elements_blob, new_length] into pushdata(new_length) ++ retained elements. */
+  private emitVariableArrayTruncate(elemType: Type, locationData: SingleLocationData): void {
+    const key = `array-truncate:${this.structuralTypeKey(elemType)}`;
+    let id = this.arrayTruncateIds.get(key);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.arrayTruncateIds.set(key, id);
+      this.arrayTruncateTypes.set(key, elemType);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), locationData);
+      this.emit(Op.OP_INVOKE, locationData);
+      return;
+    }
+    this.emitVariableArrayTruncateInline(elemType, locationData);
+  }
+
+  private emitVariableArrayTruncateInline(elemType: Type, locationData: SingleLocationData): void {
+    this.emit(Op.OP_TUCK, locationData);
+    this.emitVariableArraySplit(elemType, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+  }
+
   // Index into an array VALUE already on the stack (`pushdata(count) ++ elems`): visits `indexNode`, leaves the
   // element value. Shared by visitArrayAccess and the extra-key drill of a fixed-inner packed state array
   // (`a[i][j]`: after reading the row, index into it).
@@ -6660,27 +6734,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(value)');
     } else {
-      // Variable-width: scan to element new_length, split there, keep prefix
-      // [..., elements_blob, new_length]
-      this.emit(Op.OP_TUCK, locationData); // [..., new_length, elements_blob, new_length]
-      this.emit(Op.OP_OVER, locationData); // [..., new_length, elements_blob, new_length, elements_copy]
-      this.emit(Op.OP_SWAP, locationData); // [..., new_length, elements_blob, elements_copy, new_length]
-      // Scan loop on copy to find remaining size
-      this.emitScanLoop(elemType, locationData);
-      // [..., new_length, elements_blob, remaining_of_copy]
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., new_length, elements_blob, remaining_size]
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., new_length, elements_blob, rem_size, total_size]
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_SUB, locationData); // [..., new_length, elements_blob, keep_size]
-      this.emit(Op.OP_SPLIT, locationData); // [..., new_length, trimmed, rest]
-      this.emit(Op.OP_DROP, locationData); // [..., new_length, trimmed]
-      this.emit(Op.OP_SWAP, locationData); // [..., trimmed, new_length]
-      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
-      this.emit(Op.OP_SWAP, locationData); // [..., new_len_enc, trimmed]
-      this.emit(Op.OP_CAT, locationData); // [..., new_blob]
+      this.emitVariableArrayTruncate(elemType, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
     }
@@ -7301,25 +7355,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(value)');
     } else {
-      // Variable-width: scan to element new_length, split there, keep prefix
-      this.emit(Op.OP_TUCK, locationData);
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emitScanLoop(elemType, locationData);
-      // [..., new_length, elements_blob, remaining_of_copy]
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_SUB, locationData); // [..., new_length, elements_blob, keep_size]
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData); // [..., new_length, trimmed]
-      this.emit(Op.OP_SWAP, locationData); // [..., trimmed, new_length]
-      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
-      this.emit(Op.OP_SWAP, locationData); // [..., new_len_enc, trimmed]
-      this.emit(Op.OP_CAT, locationData); // [..., new_blob]
+      this.emitVariableArrayTruncate(elemType, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
     }
@@ -13061,29 +13097,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.pushToStack('(value)');
           } else {
             // Read from input commitment, decode, re-encode
-            this.emitMasterInputIndex(locationData);
-            this.emit(encodeInt(BigInt(compactOffset)), locationData);
-            this.emit(Op.OP_ADD, locationData);
-            this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-
-            // Verify the leading nftIndex tag == the NFT index (multi-data-NFT anti-substitution, H1)
-            if (this.isMultiDataNft()) this.emitNftIndexTagVerify(nftIdx, locationData);
-
-            // Skip preceding fields
-            for (let i = 0; i < sv.fieldIndex; i++) {
-              this.emitPushdataSkip(this.physicalFieldType(sortedFields[i]), locationData);
-            }
-
             // Decode this field. An unwritten dynamic var preserves its uint32 A$len header verbatim
             // (see physicalFieldType), not a value of its declared type.
             const fieldType = this.physicalFieldType(sv);
-            const isLast = sv.fieldIndex === sortedFields[sortedFields.length - 1].fieldIndex;
-            if (isLast) {
-              this.emitPushdataDecodeLastField(fieldType, locationData);
-            } else {
-              this.emitPushdataDecode(fieldType, locationData);
-              this.emit(Op.OP_DROP, locationData); // drop remainder (top of stack)
-            }
+            this.emitStateFieldRead(sv, fieldType, sortedFields, locationData);
 
             // Track the decoded value (produced by untracked opcodes above)
             // so that emitPushdataEncode's internal popFromStack pops the right entry
@@ -13112,53 +13129,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack(2);
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(compactOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
-        this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-        this.pushToStack('(value)');
-
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(compactOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-        this.pushToStack('(value)');
-
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-        this.popFromStack(2);
+        this.emitDataNftCommitmentPreservation(compactOffset, locationData);
       }
 
-      // Verify output locking bytecode preserved
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
-      this.pushToStack('(value)');
-
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-      this.pushToStack('(value)');
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.popFromStack(2);
-
-      // Verify output token category preserved
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.pushToStack('(value)');
-
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-      this.pushToStack('(value)');
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.popFromStack(2);
+      this.emitDataNftPreservation(compactOffset, locationData);
     }
 
     // Clean up pending state write values from the stack
@@ -14933,6 +14907,86 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
     this.emitStateFieldDecodeInline(read.decode, loc);
+  }
+
+  /** Verify a data NFT preserves its locking bytecode and token category. */
+  private emitDataNftPreservation(offset: number, loc: SingleLocationData): void {
+    if (this.currentFunctionIsDelegate) {
+      this.emitDataNftPreservationInline(offset, loc, true);
+      return;
+    }
+    let id = this.dataNftPreserveIds.get(offset);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.dataNftPreserveIds.set(offset, id);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitDataNftPreservationInline(offset, loc);
+  }
+
+  private emitDataNftPreservationInline(
+    offset: number,
+    loc: SingleLocationData,
+    delegate: boolean = false,
+  ): void {
+    const emitIndex = (): void => {
+      if (delegate) this.emitMasterInputIndex(loc);
+      else this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    };
+    emitIndex();
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    emitIndex();
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    emitIndex();
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    emitIndex();
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  private emitDataNftCommitmentPreservation(offset: number, loc: SingleLocationData): void {
+    if (this.currentFunctionIsDelegate) {
+      this.emitDataNftCommitmentPreservationInline(offset, loc, true);
+      return;
+    }
+    let id = this.dataNftCommitPreserveIds.get(offset);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.dataNftCommitPreserveIds.set(offset, id);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitDataNftCommitmentPreservationInline(offset, loc);
+  }
+
+  private emitDataNftCommitmentPreservationInline(
+    offset: number,
+    loc: SingleLocationData,
+    delegate: boolean = false,
+  ): void {
+    const emitIndex = (): void => {
+      if (delegate) this.emitMasterInputIndex(loc);
+      else this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    };
+    emitIndex();
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    emitIndex();
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
   }
 
   /** Decode one physical data-NFT field from a commitment already on top of the stack. */

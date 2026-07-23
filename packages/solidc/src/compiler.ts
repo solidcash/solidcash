@@ -78,6 +78,9 @@ import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
+import {
+  analyseFunctionFootprint, collectNamedFunctionClosure,
+} from './analysis/InvocationAnalysis.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -627,8 +630,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
 
   const plans = (baseline.stateLayout ? functions.filter((fn) => isMovableSplitEntry(fn)) : []).map((fn) => ({
     name: fn.name,
-    closure: collectFunctionClosure(fn, byName),
-    footprint: analyseSplitFootprint(fn, byName),
+    closure: collectNamedFunctionClosure(fn, byName),
+    footprint: analyseFunctionFootprint(fn, byName),
   }));
 
   if ((!forceSplit && byteSize(baseline) <= maxShardBytes) || plans.length === 0) {
@@ -781,77 +784,6 @@ function isMovableSplitEntry(fn: FunctionDefinitionNode): boolean {
     && !fn.modifiers.some((m) => LIFECYCLE_MODIFIERS.has(m));
 }
 
-function walkAst(node: unknown, visit: (node: Node) => void, seen = new Set<object>()): void {
-  if (!(node instanceof Node) || seen.has(node)) return;
-  seen.add(node); visit(node);
-  for (const value of Object.values(node)) {
-    if (value instanceof Node) walkAst(value, visit, seen);
-    else if (Array.isArray(value)) for (const item of value) walkAst(item, visit, seen);
-  }
-}
-
-function directCalls(fn: FunctionDefinitionNode): Set<string> {
-  const calls = new Set<string>();
-  walkAst(fn.body, (node) => {
-    if (node instanceof FunctionCallNode && !node.fromThisCall) calls.add(node.identifier.name);
-  });
-  return calls;
-}
-
-function collectFunctionClosure(
-  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>,
-): Set<string> {
-  const closure = new Set<string>();
-  const pending = [fn.name];
-  while (pending.length > 0) {
-    const name = pending.pop()!;
-    if (closure.has(name)) continue;
-    closure.add(name);
-    for (const candidate of byName.get(name) ?? []) for (const called of directCalls(candidate)) {
-      if (byName.has(called)) pending.push(called);
-    }
-  }
-  return closure;
-}
-
-function analyseSplitFootprint(
-  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>,
-): SplitStateFootprint {
-  const reads = new Set<string>(); const writes = new Set<string>(); const effects = new Set<string>();
-  const result = { unknown: false };
-  for (const name of collectFunctionClosure(fn, byName)) for (const candidate of byName.get(name) ?? []) {
-    walkAst(candidate.body, (node) => {
-      const kind = node.constructor.name;
-      const shaped = node as unknown as { name?: string; keys?: Node[] };
-      const resourceName = shaped.name;
-      const collectionResource = resourceName ? splitCollectionResource(resourceName, shaped.keys) : undefined;
-      if (kind === 'StateAccessNode' && resourceName) reads.add(`state:${resourceName}`);
-      else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource) {
-        reads.add(collectionResource);
-      } else if (/^(StateAssign|DeleteState)/.test(kind) && resourceName) writes.add(`state:${resourceName}`);
-      else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
-        .test(kind) && collectionResource) writes.add(collectionResource);
-      else if (kind === 'EmitStatementNode') effects.add('events');
-      else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') effects.add('value');
-      else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') effects.add('external-call');
-      else if (kind === 'IndirectCallNode') result.unknown = true;
-    });
-  }
-  return { reads: [...reads].sort(), writes: [...writes].sort(), effects: [...effects].sort(), ...result };
-}
-
-function splitCollectionResource(name: string, keys: Node[] | undefined): string {
-  if (!keys || keys.length === 0) return `collection:${name}:*`;
-  const literals = keys.map((key) => {
-    const shaped = key as unknown as { value?: unknown };
-    const kind = key.constructor.name;
-    if (!['IntLiteralNode', 'BoolLiteralNode', 'HexLiteralNode', 'StringLiteralNode'].includes(kind)) return '*';
-    const value = shaped.value;
-    return value instanceof Uint8Array ? binToHex(value) : String(value);
-  });
-  return `collection:${name}:${literals.includes('*') ? '*' : literals.join('/')}`;
-}
-
 function hardClosureGroups(plans: PlannedFunction[]): PlannedFunction[][] {
   const groups = plans.map((p) => [p]);
   let changed = true;
@@ -968,7 +900,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
   const rootHelpers = new Set<string>();
   const roots = contract.functions.filter((fn) => fn.isEntryPoint && !routes.has(fn.name));
   if (contract.constructorDef) roots.push(contract.constructorDef);
-  for (const fn of roots) for (const name of collectFunctionClosure(fn, byName)) rootHelpers.add(name);
+  for (const fn of roots) for (const name of collectNamedFunctionClosure(fn, byName)) rootHelpers.add(name);
   contract.functions = contract.functions.filter((fn) => fn.isEntryPoint || rootHelpers.has(fn.name));
 
   const links = [...new Map([...routes.values()].map((r) => [r.link, r])).values()];

@@ -22,7 +22,7 @@ describe('sorted value mapping read-modify-write (C2 unblocked)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('bal[k]+=v updates a present entry and inserts an absent one; bal[k]-=v decrements', async () => {
-    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
     const s30 = keyToSlot(bigIntToVmNumber(30n));

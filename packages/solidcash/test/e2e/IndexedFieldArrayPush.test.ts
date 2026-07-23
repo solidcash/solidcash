@@ -3,7 +3,7 @@ import { compileString as _csRawSolidc } from 'solidc';
 
 // Default (entry-model) inner-array push/pop; C2 push/pop is covered by SortedMappingArrayElementWrite.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
-  _csRawSolidc(s, { sortedMappingsAll: false, ...o });
+  _csRawSolidc(s, o);
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 

@@ -30,13 +30,6 @@ export interface CompilerOptions {
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
-  // C2 fix opt-in: names of mapping state vars to back with the sorted-linked-list model (provable non-existence,
-  // closes the omission attack). See docs/sorted-mapping-c2.md. Other mappings keep the default entry model.
-  sortedMappings?: readonly string[];
-  // C2 parity mode: back EVERY mapping with the sorted-linked-list model (unforgeable/exclusion-proof reads =
-  // Solidity storage parity), not just the named ones. The intended end-state default; opt-in today so legacy
-  // callers keep the (forgeable-on-absent) default entry model. See docs/evm-storage-parity.md.
-  sortedMappingsAll?: boolean;
   // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
   // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
   // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
@@ -179,24 +172,29 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
+  /** Fixed straight-line C2 writes sharing one atomic linked-list transition. */
+  sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;
-  externalLibraries?: readonly string[];  // names of external script libraries this function uses (e.g. 'keccak256')
-  externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count (sizes the SDK budget pad)
-  keccakCompute?: boolean;      // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars + fills results
+  externalLibraries?: readonly string[];  // names of external script libraries this function uses
+  externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count
+  // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars and fills results.
+  keccakCompute?: boolean;
   keccakPreimageParams?: readonly (string | null)[]; // per keccak256 call (order): the param feeding it (send()
-                                                     // computes each R + co-spends per call)
+  // computes each R + co-spends per call)
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds keccakPreimageParams.length;
-                                // deploy MORE side-cars than the static count (the loop bound is the real minimum)
+  // deploy MORE side-cars than the static count (the loop bound is the real minimum)
   keccakLoopReads?: boolean;    // STATEFUL dynamic keccak loop: the SDK progressively co-spends N (runtime
-                                // iteration count) compute side-cars into the trailing region [blockSize, ..)
-  ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR per call; send() co-spends 2N inputs
-  ecrecoverArgParams?: readonly (readonly (string | null)[])[]; // per ecrecoverPubKey call (order): its [hash,v,r,s] param names
-  ecrecoverEvmFlags?: readonly boolean[]; // per ecrecover call (order): is it ecrecoverEvm? (also co-spends a keccak side-car)
+  // iteration count) compute side-cars into the trailing region [blockSize, ..)
+  // ecrecoverPubKey uses a co-spent recovery side-car pair per call; send() co-spends 2N inputs.
+  ecrecoverCompute?: boolean;
+  // Per ecrecoverPubKey call (in order), its [hash, v, r, s] parameter names.
+  ecrecoverArgParams?: readonly (readonly (string | null)[])[];
+  ecrecoverEvmFlags?: readonly boolean[]; // also identifies calls that need a keccak side-car
   ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
 }
 
@@ -307,6 +305,7 @@ export interface SortedUpsertLoopAbi {
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
+  valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
@@ -363,8 +362,10 @@ export interface ExternalCallAbi {
   // sel[i] from it (not a witness), so the SDK resolves each element's method from its selector + skips the witness.
   selectorArrayVar?: string;
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
-  fnPtrCall?: boolean; // foreign fn-ptr call: the SDK fills a per-call `__internal__extcallMasterIdx<i>` with the callee master index
-  needsSelectorVerification?: boolean; // regular direct call: true = has a witness selector param the SDK fills; false = single-method callee (none)
+  // Foreign fn-ptr call: the SDK fills a per-call master-index witness.
+  fnPtrCall?: boolean;
+  // A regular direct call needs a selector witness unless the callee has only one method.
+  needsSelectorVerification?: boolean;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];
@@ -442,7 +443,7 @@ export interface DeployReadHint {
 export interface ExternalLibraryAbi {
   name: string;       // the builtin resolves its library by this name (e.g. 'keccak256')
   blobHash?: string;  // hash256 of the library script blob; matches the integrity check (absent for resultNft:
-                      // the compute side-car runs a covenant, not a loaded blob)
+  // the compute side-car runs a covenant, not a loaded blob)
   branded: boolean;   // true: side-car address salted with the contract category (per-contract); false: shared
   inline?: boolean;   // true: blob embedded in the contract redeem (no side-car); false: loaded from a side-car
   codeBegin?: number; // byte offset where the blob begins in the side-car input bytecode
@@ -450,11 +451,11 @@ export interface ExternalLibraryAbi {
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
   code?: string;      // hex blob; present for user-supplied libraries
   resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
-                       // its NFT commitment (the contract reads it), rather than the contract running the blob
+  // its NFT commitment (the contract reads it), rather than the contract running the blob
   minInstances?: number; // (resultNft) minimum side-car instances to deploy at creation: the max keccak256 call
-                         // count across the contract's functions (each function co-spends its own per-call side-cars)
+  // count across the contract's functions (each function co-spends its own per-call side-cars)
   unbounded?: boolean;   // (resultNft) some function hashes inside a loop -> minInstances is a LOWER BOUND; the
-                         // real need is the loop's runtime count, so provision extra side-cars
+  // real need is the loop's runtime count, so provision extra side-cars
 }
 
 export interface Artifact {

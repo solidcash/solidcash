@@ -12,6 +12,7 @@ import { createTestProvider } from '../test-util.js';
 describe('storage-pointer library fn on a mapping element (RMW inline)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
+  let deploymentNonce = 0x5c00;
 
   const SRC = `struct P { int x; int y; }
     library L {
@@ -31,8 +32,7 @@ describe('storage-pointer library fn on a mapping element (RMW inline)', () => {
   const deploy = async (): Promise<{ contract: Record<string, (...a: unknown[]) => { send: () => Promise<{ txid: string }> }>; fund: () => Promise<void> }> => {
     const art = compileString(SRC, { solidityImportCompat: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    let nonce = 0x5c00;
-    const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
+    const uid = (): string => { deploymentNonce += 1; return deploymentNonce.toString(16).padStart(64, '0'); };
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
     const { contract } = await StatefulContract.deploy(art, [], {

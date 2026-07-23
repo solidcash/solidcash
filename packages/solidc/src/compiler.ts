@@ -51,8 +51,10 @@ import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
+import LowerC2CounterLoops from './semantic/LowerC2CounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
+import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
@@ -211,38 +213,17 @@ function compileResolvedAst(
     ast.contract.stateVariables = ast.contract.stateVariables.filter((variable) => variable.name !== '__gap');
   }
 
+  // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
+  // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
+  ast = ast.accept(new ValidateDataLocations()) as Ast;
+
   // Lower `transient` state vars to per-function locals - AFTER inheritance so a base's transient var is lowered
   // into the derived contract's functions too.
   ast = lowerTransientStateVars(ast);
 
-  // C2 opt-in: mark the requested mappings to use the sorted-linked-list backend (provable non-existence). See
-  // docs/sorted-mapping-c2.md. Only affects the named collections; all others keep the default entry model.
-  // C2 is the DEFAULT: every mapping whose VALUE type C2 can store is C2-backed (exclusion-proof reads = Solidity
-  // parity). This now covers ALL value types including large ones - scalars, bytesN, enum, address, unbounded
-  // bytes/string, structs, and arrays (fixed T[N] or dynamic T[]) - because any variable-width value chunks
-  // off-commitment (P5b). A struct with a mapping/array field is field-decomposed into per-field C2 collections.
-  // Opt the whole contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings).
-  // ARRAYS ARE C2-BY-DEFAULT (EVM parity): the EVM makes EVERY storage read unforgeable, incl. an array
-  // length/presence guard `require(m[k].length == 0)` (the trie commits the length slot to 0 - the entry model
-  // can't prove absent-vs-withheld, so that guard would be omission-forgeable). Large arrays chunk off-commitment
-  // (P5b), matching the EVM's unbounded arrays. Enums too (an enum = int with a meaningful 0th-member default).
-  const c2StorableValue = (vt: Type): boolean => (
-    vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
-    || vt instanceof EnumType || vt instanceof ArrayType
-    || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
-    // Internal fn-ptr = an immutable integer functionId (the 'int' kind); C2 gives its dispatch table exclusion-proof
-    // reads. External fn-ptr as a mapping value stays fail-closed at type-check (isValidStateType), never marked here.
-    || (vt instanceof FunctionType && !vt.isExternal)
-  );
-  if (mergedCompilerOptions.sortedMappingsAll !== false) {
-    for (const col of ast.contract.collections) {
-      if (col.type instanceof MappingType && c2StorableValue(col.innermostValueType)) col.sorted = true;
-    }
-  } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
-    const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
-    for (const col of ast.contract.collections) {
-      if (sortedSet.has(col.name) || sortedSet.has(`${ast.contract.name}.${col.name}`)) col.sorted = true;
-    }
+  // Every mapping uses the authenticated C2 backend. There is no omission-prone legacy mapping fallback.
+  for (const col of ast.contract.collections) {
+    if (col.type instanceof MappingType) col.sorted = true;
   }
 
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc
@@ -319,6 +300,9 @@ function compileResolvedAst(
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
   ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+
+  // Canonical dynamic C2 `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
+  ast = ast.accept(new LowerC2CounterLoops()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);
@@ -490,6 +474,13 @@ function compileResolvedAst(
   // Several normalization passes can synthesize or reconstruct a constructor after inheritance flattening, so
   // enforce omission at the semantic boundary rather than relying only on the early facet mutation.
   if (omitConstructor) ast.contract.constructorDef = undefined;
+
+  // Storage-lowering passes can synthesize mappings after the source collections were normalized above
+  // (notably assembly sstore/sload and ERC-7201 storage pointers). Keep the backend invariant global: every
+  // mapping, including compiler-generated mappings, uses authenticated C2 storage.
+  for (const col of ast.contract.collections) {
+    if (col.type instanceof MappingType) col.sorted = true;
+  }
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -1103,6 +1094,9 @@ function compileReferencedContracts(
     // sound; codegen skips their standalone bodies (only the child contract is emitted).
     (singleAst as SourceFileNode).freeFunctions = ast.freeFunctions;
     (singleAst as SourceFileNode).constantDefinitions = ast.constantDefinitions; // library constants those fns read
+    for (const col of singleAst.contract.collections) {
+      if (col.type instanceof MappingType) col.sorted = true;
+    }
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal()) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;

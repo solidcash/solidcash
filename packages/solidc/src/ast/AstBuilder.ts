@@ -1028,13 +1028,23 @@ export default class AstBuilder
         .filter((p) => !this.contractParamNames.has(p.name));
       const functionDefinition = new FunctionDefinitionNode('__construct', ownParams, block);
       functionDefinition.location = Location.fromCtx(ctx);
+      this.applyConstructorModifiers(ctx, functionDefinition);
       return functionDefinition;
     }
 
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     const functionDefinition = new FunctionDefinitionNode('__construct', parameters, block);
     functionDefinition.location = Location.fromCtx(ctx);
+    this.applyConstructorModifiers(ctx, functionDefinition);
     return functionDefinition;
+  }
+
+  private applyConstructorModifiers(ctx: ConstructorDefinitionContext, node: FunctionDefinitionNode): void {
+    const supported = new Set(['public', 'internal', 'external', 'payable']);
+    for (const child of ctx.children ?? []) {
+      const text = child.getText();
+      if (supported.has(text)) node.modifiers.push(text as FunctionModifier);
+    }
   }
 
   visitFallbackDefinition(ctx: FallbackDefinitionContext): FunctionDefinitionNode {
@@ -1399,7 +1409,6 @@ export default class AstBuilder
       type = this.resolveType(tn) ?? new AddressType(false, tn);
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
-    this.warnNoopDataLocation(ctx.modifier_list());
     const name = ctx.anyIdentifier().getText();
 
     // `uint x = y = 3;` - the initializer is an assignment chain: run the chain first, then initialize from
@@ -3831,6 +3840,7 @@ export default class AstBuilder
     const assign: StatementNode = useState
       ? new StateAssignNode(rawName, rebuilt)
       : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode
+    if (assign instanceof AssignNode) assign.isReferenceDataWrite = true;
     assign.location = loc;
     return assign;
   }
@@ -4593,29 +4603,13 @@ export default class AstBuilder
   private applyReturnType(fn: FunctionDefinitionNode, ctx: ReturnTypeContext): void {
     const params = ctx.returnParam_list();
     fn.returnTypes = params.map((p) => this.returnParamType(p));
+    fn.returnModifiers = params.map((p) => p.modifier_list().map((m) => m.getText()));
     const named = params.filter((p) => p.anyIdentifier() !== null);
     // Solidity allows a mix of named and unnamed return values (always on, the default). Synthesize a name for
     // each unnamed slot so all are named (a named return may be returned implicitly; an explicit `return (...)`
     // overrides).
     if (named.length > 0) {
       fn.returnNames = params.map((p, i) => (p.anyIdentifier() ? p.anyIdentifier()!.getText() : `__ret_${i}`));
-    }
-    // Warn about no-op data-location modifiers on parameters.
-    for (const p of params) this.warnNoopDataLocation(p.modifier_list());
-  }
-
-  // `memory` / `calldata` on a local or parameter is a no-op: BCH has no EVM-style data locations, and local
-  // reference types use the memory model regardless of the annotation (`storage` is a real storage pointer, so it
-  // is not warned). Emitted per occurrence at parse time so the source line is reported.
-  private warnNoopDataLocation(modCtxs: { getText(): string }[]): void {
-    for (const mod of modCtxs) {
-      const text = mod.getText();
-      if (text === Modifier.MEMORY || text === Modifier.CALLDATA) {
-        const loc = Location.fromCtx(mod as never);
-        const line = loc ? ` at line ${loc.start.line}` : '';
-        console.log(`Warning: '${text}' data location modifier is a no-op in SolidCash${line}. `
-          + 'All data lives on-stack in the BCH VM; local reference types use the memory model regardless.');
-      }
     }
   }
 
@@ -5789,9 +5783,10 @@ export default class AstBuilder
       : stamp(new BinaryOpNode(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
     const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, newByte));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));
-    return isState
-      ? stamp(new StateAssignNode(name, cat2))
-      : stamp(new AssignNode(stamp(new IdentifierNode(name)), cat2));
+    if (isState) return stamp(new StateAssignNode(name, cat2));
+    const assign = stamp(new AssignNode(stamp(new IdentifierNode(name)), cat2));
+    assign.isReferenceDataWrite = true;
+    return assign;
   }
 
   private desugarBytesPop(name: string, ctx: ParserRuleContext): StateAssignNode {

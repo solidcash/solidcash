@@ -1,11 +1,8 @@
 import { compileString as _csRawSolidc } from 'solidc';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import {
   Contract, StatefulContract,
 } from '../../src/index.js';
-import {
-  parseEntryCommitment,
-} from '@solidcash/utils';
 import {
   alicePkh,
 } from '../fixture/vars.js';
@@ -128,18 +125,9 @@ describe('Dynamic Mapping Keys', () => {
       expect(tx.txid).toBeDefined();
       const txOutputs = getTxOutputs(tx);
       expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-
-      // Verify entry NFT commitment
-      const entryOutput = txOutputs.find(
-        (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId
-          && o !== txOutputs[1], // skip data NFT
-      );
-      if (entryOutput) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token!.nft!.commitment, 'bytes20', 'bigint',
-        );
-        expect(parsed.value).toBe(amount);
-      }
+      const entries = await sc.getEntries('balances');
+      expect(entries).toHaveLength(1);
+      expect(entries[0].value).toBe(amount);
     });
   });
 

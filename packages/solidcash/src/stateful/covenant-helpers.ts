@@ -10,6 +10,7 @@ import {
   buildTokenContainerCovenantScript,
   buildSatoshiContainerCovenantScript,
   buildEntryNftCovenantScript,
+  buildValueChunkCovenantScript,
   buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript,
   computeCollectionHash,
@@ -160,27 +161,23 @@ export function getDynamicChunkAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
-// Value-chunk address for a LONG (>60 B) sorted-mapping value (P5b, Design D). A per-COLLECTION compile-time
-// address (so the write covenant can derive it without runtime hashing); the (slot, digest) that identify the
-// value version live in the chunk commitment. The write covenant PINS each chunk output here to the exact
-// commitment built from the on-stack value, so a read reassembles the authentic value - forged/absent chunks
-// are rejected at write time. A read fetches all chunks here and filters by (slot == H(k), digest).
+// Root-addressed value-chunk covenant. The address commits to collection, slot, and value root, so chunk
+// commitments carry only uint16 index || raw data.
 export function getValueChunkAddress(
-  contract: Contract<any, any>, categoryId: string, collection: string,
+  contract: Contract<any, any>, categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
 ): string {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root);
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
-/** Locking bytecode (P2SH32) form of the value-chunk address, for covenant-derived (computed-value) chunk outputs. */
 export function getValueChunkLockingBytecode(
-  contract: Contract<any, any>, categoryId: string, collection: string,
+  contract: Contract<any, any>, categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
 ): Uint8Array {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
-  return scriptToLockingBytecode(buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash), 'p2sh32');
+  return scriptToLockingBytecode(buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root), 'p2sh32');
 }
 
 export function getEventNftAddress(
@@ -354,12 +351,12 @@ export function createDynamicChunkUnlocker(
 // master. Used to GC the OLD chunks of a long sorted-mapping value when it is overwritten (the value chunks
 // reuse the entry NFT covenant, keyed by the collection's value-chunk signature).
 export function createValueChunkUnlocker(
-  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, collection: string,
+  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
 ): ContractUnlocker {
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root);
   return createCovenantContractUnlocker(
     contract,
     `ValueChunkNft_${categoryId.slice(0, 8)}`,

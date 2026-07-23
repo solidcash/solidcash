@@ -1,13 +1,11 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, bigIntToVmNumber } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
-  getDataNftAddress, getEntryNftAddress,
+  getDataNftAddress, getEntryNftAddress, encodeEntryCommitment, keyToSlot, keyToSlotMulti,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
-  buildEntryCommitment,
-  buildEntryCommitmentMultiKey,
   type StateLayout,
 } from '@solidcash/utils';
 import {
@@ -17,6 +15,9 @@ import { createTestProvider } from '../test-util.js';
 import { MockNetworkProvider, RegtestNetworkProvider } from '../../src/index.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
+const ZERO = new Uint8Array(32);
+const c2Entry = (slot: Uint8Array, value: bigint): string =>
+  binToHex(encodeEntryCommitment(slot, ZERO, bigIntToVmNumber(value)));
 
 // One entry NFT to genesis under the contract's real category.
 interface EntrySpec {
@@ -110,7 +111,8 @@ describe('Mapping Enumeration (getEntries)', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       // Add an entry NFT for alice with balance 100
-      const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint');
+      const slot = keyToSlot(alicePkh);
+      const entryCommitment = c2Entry(slot, 100n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: 'balances', commitment: entryCommitment }],
@@ -120,7 +122,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const entries = await sc.getEntries('balances');
 
       expect(entries).toHaveLength(1);
-      expect(entries[0].key).toEqual(alicePkh);
+      expect(entries[0].slot).toEqual(slot);
       expect(entries[0].value).toBe(100n);
     });
 
@@ -128,8 +130,10 @@ describe('Mapping Enumeration (getEntries)', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       // Add two entry NFTs
-      const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint');
-      const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint');
+      const aliceSlot = keyToSlot(alicePkh);
+      const bobSlot = keyToSlot(bobPkh);
+      const entry1 = c2Entry(aliceSlot, 100n);
+      const entry2 = c2Entry(bobSlot, 200n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 2n },
         [
@@ -145,9 +149,9 @@ describe('Mapping Enumeration (getEntries)', () => {
 
       // Sort by value for deterministic check
       const sorted = entries.sort((a, b) => Number(a.value as bigint) - Number(b.value as bigint));
-      expect(sorted[0].key).toEqual(alicePkh);
+      expect(sorted[0].slot).toEqual(aliceSlot);
       expect(sorted[0].value).toBe(100n);
-      expect(sorted[1].key).toEqual(bobPkh);
+      expect(sorted[1].slot).toEqual(bobSlot);
       expect(sorted[1].value).toBe(200n);
     });
 
@@ -155,7 +159,8 @@ describe('Mapping Enumeration (getEntries)', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       // One valid entry NFT + a non-mutable NFT (skipped), both under the real category.
-      const entry = buildEntryCommitment(alicePkh, 'bytes20', 50n, 'bigint');
+      const slot = keyToSlot(alicePkh);
+      const entry = c2Entry(slot, 50n);
       const { categoryId, saltedContract } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [
@@ -175,7 +180,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const entries = await sc.getEntries('balances');
 
       expect(entries).toHaveLength(1);
-      expect(entries[0].key).toEqual(alicePkh);
+      expect(entries[0].slot).toEqual(slot);
       expect(entries[0].value).toBe(50n);
     });
 
@@ -184,7 +189,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const contract = new Contract(artifact, [], { provider });
 
       const collection = stateLayout.collections!.find((c) => c.name === 'balances')!;
-      const entry = buildEntryCommitment(alicePkh, 'bytes20', 42n, 'bigint');
+      const entry = c2Entry(keyToSlot(alicePkh), 42n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: collection.signature, commitment: entry }],
@@ -218,10 +223,8 @@ describe('Mapping Enumeration (getEntries)', () => {
 
       // Create multi-key entry: allowances[alice][bob] = 500
       const collection = stateLayout.collections!.find((c) => c.name === 'allowances')!;
-      const keyTypes = collection.keyTypes ?? [collection.keyType];
-      const entryCommitment = buildEntryCommitmentMultiKey(
-        [alicePkh, bobPkh], keyTypes, 500n, 'bigint',
-      );
+      const slot = keyToSlotMulti([alicePkh, bobPkh]);
+      const entryCommitment = c2Entry(slot, 500n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: 'allowances', commitment: entryCommitment }],
@@ -231,10 +234,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const entries = await sc.getEntries('allowances');
 
       expect(entries).toHaveLength(1);
-      expect(entries[0].keys).toBeDefined();
-      expect(entries[0].keys).toHaveLength(2);
-      expect(entries[0].keys![0]).toEqual(alicePkh);
-      expect(entries[0].keys![1]).toEqual(bobPkh);
+      expect(entries[0].slot).toEqual(slot);
       expect(entries[0].value).toBe(500n);
     });
   });

@@ -325,7 +325,10 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             byName.set(input.name, args[index]);
             byName.set(input.name.replace(/_+$/, ''), args[index]);
           });
-          for (const emitted of fn?.emits ?? []) {
+          // Native delegate probing derives emitted values from the covenant. The compatibility shortcut below is
+          // only safe for a single event whose parameters map directly to call arguments; with multiple emits it
+          // would place a later event at index zero and expressions such as `v + 1` cannot be inferred by name.
+          for (const emitted of (fn?.emits?.length === 1 ? fn.emits : [])) {
             const event = implArtifact.events?.find((item) => item.signature === emitted.eventSignature);
             if (!event) continue;
             const values = event.parameters.map((parameter) => {

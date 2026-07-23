@@ -19,7 +19,7 @@ describe('sorted value mapping delete (== set to default)', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('delete bal[k] zeroes a present entry; a read then returns 0', async () => {
-    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
     const s30 = keyToSlot(bigIntToVmNumber(30n));

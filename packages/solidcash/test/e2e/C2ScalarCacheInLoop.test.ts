@@ -27,7 +27,7 @@ describe('C2 scalar same-key cache-in-loop is sound (accumulates then one upsert
   const fund = async (a: string): Promise<void> => { await provider.addUtxo(a, { txid: uid(), vout: 0, satoshis: 100000n }); };
 
   it('for(i) balance[owner] -= amts[i] : 100 - 10 - 20 - 30 = 40 (exact), wrong value reverts', async () => {
-    const art = compileString(SRC, { sortedMappings: ['balance'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const owner = 42n;
     const slot = keyToSlot(bigIntToVmNumber(owner));

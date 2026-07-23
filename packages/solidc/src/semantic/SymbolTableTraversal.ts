@@ -861,7 +861,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const selectorMap = new Map<string, FunctionDefinitionNode>();
     for (const func of node.functions) {
       if (!func.isEntryPoint || func.isAbstract) continue;
-      const paramTypes = func.parameters.map((p) => p.type.toString());
+      // Solidity ABI selectors erase address payability (including inside arrays), matching artifact ABI types.
+      const paramTypes = func.parameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
       const sig = computeFunctionSignature(func.name, paramTypes);
       const selector = computeFunctionSelector(sig);
       const selectorHex = binToHex(selector);
@@ -1031,7 +1032,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    if (node.name.startsWith('__internal__')) {
+    if (node.name.startsWith('__internal__') && !node.name.startsWith('__internal__c2CounterPerm_')) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
     }
     const existing = this.symbolTables[0].get(node.name);
@@ -1523,6 +1524,55 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (const info of ordered) info.slotIndex = slotIndex++;
 
         node.entryAccesses = ordered;
+        this.detectAliasConditionalWrites(node.body, ordered);
+
+        // Multiple fixed C2 writes in one function are verified as transaction-wide batches, grouped by collection.
+        // A group may contain one target when another collection is also written: using the same batch path keeps
+        // shared key parameters live and gives every collection an independent exact-output-count proof.
+        const batchByCollection = new Map<string, number[]>();
+        for (const info of ordered) {
+          if (info.inLoop || !isWritten(info)) continue;
+          const coll = this.collectionMap.get(info.collection);
+          if (!coll?.sorted) continue;
+          const slots = batchByCollection.get(info.collection) ?? [];
+          slots.push(info.slotIndex);
+          batchByCollection.set(info.collection, slots);
+        }
+        const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
+        const stateArrayLastCollections = new Set(ordered.filter((info) =>
+          info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
+        node.sortedBatchInfo = [...batchByCollection]
+          .filter(([collection]) => fixedSortedWriteCount > 1 || stateArrayLastCollections.has(collection))
+          .map(([collection, slotIndices]) => ({ collection, slotIndices }));
+
+        // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
+        // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
+        for (const batch of node.sortedBatchInfo) {
+          for (const slotIndex of batch.slotIndices) {
+            for (const param of [
+              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${slotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${slotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${slotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${slotIndex}`),
+            ]) {
+              param.location = node.location;
+              node.parameters.push(param);
+              this.symbolTables[0].set(Symbol.variable(param));
+              const sym = this.symbolTables[0].get(param.name);
+              if (sym) sym.references.push({ name: param.name } as IdentifierNode);
+              this.pushToStack(param);
+            }
+          }
+        }
+        if (node.sortedBatchInfo.length > 0) {
+          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__c2BatchTrailingCount');
+          param.location = node.location;
+          node.parameters.push(param);
+          this.symbolTables[0].set(Symbol.variable(param));
+          const sym = this.symbolTables[0].get(param.name);
+          if (sym) sym.references.push({ name: param.name } as IdentifierNode);
+          this.pushToStack(param);
+        }
 
         // Chunkable-value READ (unbounded bytes/string, C2): inject witness param __internal__valueWitness_N. A
         // long value is stored as its sha256 hash; the covenant materializes it by verifying sha256(witness)==hash,
@@ -1547,7 +1597,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Propagate slot indices to individual mapping nodes (looks up the shared info by key)
         this.assignEntrySlotIndices(node.body, entryAccessMap);
 
-        this.detectAliasConditionalWrites(node.body, ordered);
       }
     }
 
@@ -4895,7 +4944,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const wOrder = writeOrder.get(wKey);
       if (wOrder === undefined) continue;
       for (const [dKey, dInfo] of bySlotKey) {
-        if (dKey === wKey || dInfo.collection !== wInfo.collection || !dInfo.operations.includes('delete')) continue;
+        if (dKey === wKey || dInfo.collection !== wInfo.collection) continue;
         const dOrder = deleteOrder.get(dKey);
         if (dOrder !== undefined && dOrder > wOrder) { wInfo.aliasCondDeleteSlot = dInfo.slotIndex; break; }
       }
@@ -4994,12 +5043,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new ConstantModificationError(v);
       }
       if (modifier === Modifier.CALLDATA) {
-        // `x = y` rebind allowed ONLY for a calldata ARRAY (rebinds the local to a value-copy of y). Structs /
-        // bytes / string are excluded: their field/element write desugars to a `x = <rebuilt>` reassign that
-        // aliases this rebind path, so allowing it would write to read-only calldata. Arrays use a separate
-        // ArrayAssign path. Value types, compound (`x += 1`), and element/field writes reject.
+        // A whole-variable assignment rebinds the local calldata reference; element/field mutation paths call
+        // this guard with isReassign=false and remain forbidden. All SolidCash reference types are represented by
+        // arrays, structs, or bytes/string (BytesType), so value types and compound writes still reject.
         const t = (sym.definition as { type?: Type })?.type;
-        const isRefRebind = isReassign && t instanceof ArrayType;
+        const isRefRebind = isReassign && (t instanceof ArrayType || t instanceof StructType
+          || t instanceof BytesType || t === PrimitiveType.STRING);
         if (!isRefRebind) {
           throw new CalldataModificationError(v as VariableDefinitionNode | ParameterNode);
         }
@@ -5085,7 +5134,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (sym) {
-      this.checkReadOnlyModification(sym, true); // whole `x = y` rebind: allowed for calldata (pointer rebind)
+      // Reference element/field writes are lowered to AssignNode but explicitly marked by AstBuilder.
+      this.checkReadOnlyModification(sym, !node.isReferenceDataWrite);
     }
 
     super.visitAssign(node);

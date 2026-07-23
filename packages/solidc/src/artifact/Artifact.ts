@@ -24,7 +24,7 @@ function abiTypeString(type: Type | undefined): string {
   // on BCH a contract handle is an address, so default to 'address' rather than crashing on undefined.toString().
   if (!type) return 'address';
   if (type instanceof ValueType) return type.underlyingType.toString();
-  return type.toString();
+  return type.toString().replace(/address payable/g, 'address');
 }
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
@@ -183,10 +183,20 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
-    ...(func.entryLoopWrites && func.entryLoopWrites.length > 0 && { entryLoopWrites: [...func.entryLoopWrites] }),
+    ...(func.entryLoopWrites && func.entryLoopWrites.some(
+      (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
+    ) && {
+      // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
+      // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
+      // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
+      entryLoopWrites: func.entryLoopWrites.filter(
+        (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
+      ),
+    }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
     ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && { sortedInsertLoopInfo: [...func.sortedInsertLoopInfo] }),
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && { sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo] }),
+    ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };
@@ -348,6 +358,9 @@ export function generateArtifact(
         name: parameter.name,
         type: abiTypeString(parameter.type),
       })),
+      ...(contract.constructorDef.modifiers.length > 0 && {
+        modifiers: contract.constructorDef.modifiers.map((m) => m.toString()),
+      }),
       ...buildFunctionAbiMetadata(contract.constructorDef),
     });
   }
@@ -358,6 +371,9 @@ export function generateArtifact(
       ...(contract.fallbackDef.functionSelector && { selector: binToHex(contract.fallbackDef.functionSelector) }),
       inputs: [],
       isFallback: true,
+      ...(contract.fallbackDef.modifiers.length > 0 && {
+        modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
+      }),
       ...buildFunctionAbiMetadata(contract.fallbackDef),
     });
   }

@@ -41,7 +41,7 @@ function buildEntries(kvs: [bigint, bigint][]): { slot: Uint8Array; next: Uint8A
 describe('sorted mapping VALUES iteration (linkage completeness)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
-  const art = compileString(SRC, { sortedMappings: ['bal'] });
+  const art = compileString(SRC, {});
 
   // Seed a data NFT (register) + the given entry UTXOs; return a StatefulContract pinned to the minted category.
   async function seed(

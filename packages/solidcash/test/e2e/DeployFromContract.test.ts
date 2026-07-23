@@ -1,10 +1,10 @@
 import { compileString as _csRawSolidc } from 'solidc';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract, SignatureTemplate, StatefulContract, decodeEntryCommitment, keyToSlot,
 } from '../../src/index.js';
-import { parsePushdataCommitment, parseEntryCommitment } from '@solidcash/utils';
+import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,
   alicePriv,
@@ -95,6 +95,14 @@ contract NoDeployFactory() {
 describe('StatefulContract.deployFrom()', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const findC2Entry = (outputs: ReturnType<typeof getTxOutputs>, category: string, key: Uint8Array) => {
+    const slotHex = binToHex(keyToSlot(key));
+    const output = outputs.find((o) => o.token?.category === category
+      && o.token?.nft?.capability === 'mutable'
+      && o.token.nft.commitment.slice(0, 64) === slotHex);
+    if (!output?.token?.nft?.commitment) throw new Error('C2 target output not found');
+    return decodeEntryCommitment(hexToBin(output.token.nft.commitment));
+  };
 
   const factoryArtifact = compileString(FACTORY);
   const childArtifact = compileString(CHILD);
@@ -288,11 +296,11 @@ describe('StatefulContract.deployFrom()', () => {
       };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
-      // New entry: funding doubles as the entry-slot filler, so fundingInputIndex = master + data NFTs
+      // C2 always co-spends a proof node (HEAD for the first insert), so funding follows the entry slot.
       const create3Abi = create3FactoryArtifact.abi.find((f) => f.name === 'create3')!;
       const requiredNftCount = create3Abi.requiredNftIndices?.length
         ?? create3FactoryArtifact.stateLayout!.dataNftCount;
-      const fundingInputIndex = 1 + requiredNftCount; // master + data NFTs
+      const fundingInputIndex = 2 + requiredNftCount; // master + data NFTs + C2 predecessor
 
       const result = await StatefulContract.deployFrom({
         provider,
@@ -328,8 +336,8 @@ describe('StatefulContract.deployFrom()', () => {
       const entryOutput = txOutputs[2];
       expect(entryOutput.token?.category).toBe(factory.categoryId);
       expect(entryOutput.token?.nft?.capability).toBe('mutable');
-      const entry = parseEntryCommitment(entryOutput.token!.nft!.commitment, 'bytes32', 'bytes32');
-      expect(binToHex(entry.key as Uint8Array)).toBe(salt);
+      const entry = findC2Entry(txOutputs, factory.categoryId, hexToBin(salt));
+      expect(binToHex(entry.slot)).toBe(binToHex(keyToSlot(hexToBin(salt))));
       // Stored value is outpointTransactionHash (internal byte order = reversed txid)
       const childCategoryInternal = binToHex(hexToBin(result.childCategoryId).reverse());
       expect(binToHex(entry.value as Uint8Array)).toBe(childCategoryInternal);
@@ -367,16 +375,16 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factory.categoryId).toBe(fundingUtxo.txid);
     });
 
-    it('should create the entry on first deploy (new entry, fundingInputIndex=2)', async () => {
+    it('should create the entry on first deploy with a C2 predecessor proof', async () => {
       const childFundingUtxo: Utxo = { txid: 'e2cd'.repeat(16), vout: 0, satoshis: 100000n };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
-      // New entry: funding fills the entry slot, so fundingInputIndex = master + data NFTs = 2
+      // HEAD fills the C2 proof slot, so funding follows it at input 3.
       const result = await StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'recreate',
-        deployFunctionArgs: [salt, 2n],
+        deployFunctionArgs: [salt, 3n],
         childArtifact,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
@@ -386,8 +394,8 @@ describe('StatefulContract.deployFrom()', () => {
       });
 
       const txOutputs = getTxOutputs(result.tx);
-      const entry = parseEntryCommitment(txOutputs[2].token!.nft!.commitment, 'bytes32', 'bytes32');
-      expect(binToHex(entry.key as Uint8Array)).toBe(salt);
+      const entry = findC2Entry(txOutputs, factory.categoryId, hexToBin(salt));
+      expect(binToHex(entry.slot)).toBe(binToHex(keyToSlot(hexToBin(salt))));
       expect(binToHex(entry.value as Uint8Array)).toBe(binToHex(hexToBin(result.childCategoryId).reverse()));
 
       const entries = await factory.getEntries('children');
@@ -396,7 +404,7 @@ describe('StatefulContract.deployFrom()', () => {
       factory = result.factory;
     });
 
-    it('should overwrite the existing entry on second deploy (existing entry input, fundingInputIndex=3)', async () => {
+    it('should overwrite the existing C2 entry on second deploy', async () => {
       const childFundingUtxo: Utxo = { txid: 'e3cd'.repeat(16), vout: 0, satoshis: 100000n };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
@@ -423,8 +431,8 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factoryState.childCount).toBe(2n);
 
       // Entry overwritten in place with the new child's category, same key
-      const entry = parseEntryCommitment(txOutputs[2].token!.nft!.commitment, 'bytes32', 'bytes32');
-      expect(binToHex(entry.key as Uint8Array)).toBe(salt);
+      const entry = findC2Entry(txOutputs, factory.categoryId, hexToBin(salt));
+      expect(binToHex(entry.slot)).toBe(binToHex(keyToSlot(hexToBin(salt))));
       expect(binToHex(entry.value as Uint8Array)).toBe(binToHex(hexToBin(result.childCategoryId).reverse()));
 
       // Exactly one entry remains - overwritten, not duplicated

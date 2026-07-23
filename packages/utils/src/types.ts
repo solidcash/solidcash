@@ -281,9 +281,10 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
 
   // Address type explicit casts
   if (to instanceof AddressType) {
-    // bytes -> address. Also allows `payable(x)` (address payable) where x is bytes (e.g. `payable(this)`, this
-    // being the contract's bytes identity): payable is a no-op cosmetic distinction on BCH (every address can
-    // receive value), so the payable variant is as valid as the plain address() cast.
+    // `payable(x)` is deliberately narrower than `address(x)`: Solidity requires x to already be an address
+    // expression (apart from address literals handled with expression context by the type checker).
+    if (to.payable) return from instanceof AddressType;
+    // bytes -> plain address (the BCH representation is locking bytecode).
     if (from instanceof BytesType) return true;
     // address -> address (any payable combo, including contract type constructors)
     if (from instanceof AddressType) return true;
@@ -430,13 +431,12 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   // Token containers can't be implicitly cast
   if (actual instanceof TokenContainerType || expected instanceof TokenContainerType) return false;
 
-  // Address type implicit casts. `payable` is a NO-OP cosmetic distinction on BCH (every address can receive
-  // value - see the cast comment below), so ANY payable combination is implicitly castable, including
-  // non-payable -> payable. This is what BCH semantics allow and what older Solidity (0.6.x, where `msg.sender`
-  // is `address payable`) relies on: OZ Context._msgSender() does `return msg.sender` into an `address payable`
-  // return, which a strict non-payable->payable rule would reject on every OZ-based contract.
+  // Solidity's address mutability conversion is directional: a payable address may be used where a plain
+  // address is expected, but a plain address must pass through an explicit `payable(addressExpr)` conversion
+  // before value-sending members become available. Keep this type distinction even though both values have the
+  // same BCH locking-bytecode representation.
   if (actual instanceof AddressType && expected instanceof AddressType) {
-    return true;
+    return actual.payable || !expected.payable;
   }
   if (actual instanceof AddressType && expected instanceof BytesType) {
     // address -> unbounded bytes: OK (address is lbc bytes at VM level)
@@ -475,6 +475,10 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
 
   // Arrays can be cast if their elements can be cast and bounds are compatible
   if (actual instanceof ArrayType && expected instanceof ArrayType) {
+    // Solidity does not apply the scalar address-payability widening conversion through array references:
+    // address[] and address payable[] are distinct, invariant array types in memory and storage.
+    if ((actual.elementType instanceof AddressType || expected.elementType instanceof AddressType)
+      && !typesEqual(actual.elementType, expected.elementType)) return false;
     if (!implicitlyCastable(actual.elementType, expected.elementType)) return false;
     // Two bounded arrays must have matching bounds
     if (actual.bound !== undefined && expected.bound !== undefined) {

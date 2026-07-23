@@ -1,9 +1,9 @@
 // Mapping-entry write behavior pins: read-after-write, writes in loops, chained struct-field and
 // array-element writes.
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc, EntryWriteInLoopError } from 'solidc';
+import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
-  _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+  _csRawSolidc(s, o);
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
@@ -62,16 +62,30 @@ describe('read-after-write same key', () => {
       const sc = await dep(M('function f(int a, int b, int v) external { m[a] = m[a] - v; m[b] = m[b] + v; require(true); }'));
       await sc.f(1n, 2n, 3n).send();
     });
+
+    it('atomically inserts three targets sharing the HEAD predecessor', async () => {
+      const sc = await dep(M('function f(int a, int b, int c) external { m[a] = 11; m[b] = 22; m[c] = 33; require(true); }'));
+      await sc.f(1n, 2n, 3n).send();
+      await sc.chk(1n, 11n).send();
+      await sc.chk(2n, 22n).send();
+      await sc.chk(3n, 33n).send();
+    });
+
+    it('atomically updates an existing node while inserting an adjacent node', async () => {
+      const sc = await dep(M(`
+        function seed(int k) external { m[k] = 7; require(true); }
+        function f(int a, int b) external { m[a] = m[a] + 4; m[b] = 9; require(true); }`));
+      await sc.seed(1n).send();
+      await sc.f(1n, 2n).send();
+      await sc.chk(1n, 11n).send();
+      await sc.chk(2n, 9n).send();
+    });
   });
 });
 
 describe('write in loop', () => {
-  // A pure-write mapping loop (`for(i<n) m[k[i]]=v[i]`) now compiles to a runtime counter-indexed entry-mint
-  // covenant loop, and a fixed-bound loop unrolls to N static writes - both sound. A read-modify-write or a
-  // delete in a loop stays rejected (stale-read / omission unsoundness): still EntryWriteInLoopError.
-  const rej = (src: string): void => {
-    expect(() => compileString(src, { forceStateful: true })).toThrow(EntryWriteInLoopError);
-  };
+  // Invariant-key loops cache the entry locally and flush one authenticated upsert. Varying array-key loops and
+  // canonical counter-key loops use the C2 upsert-loop covenant, including Solidity-style delete-to-default.
   const dep = async (src: string): Promise<any> =>
     getContractFactory(compileString(src, { forceStateful: true }), await fundedSigner()).deploy();
   const MAP = (body: string): string => `contract C { mapping(int => int) m;
@@ -82,16 +96,26 @@ describe('write in loop', () => {
     function chk(int idx, int ev) external { require(a[idx] == ev); } }`;
 
   describe('entry-backed state write inside a loop', () => {
-    it('rejects a mapping read-modify-write in a loop (invariant key, stale read)', () => {
-      rej(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = m[k] + 1; } require(true); }'));
+    it('caches an invariant-key read-modify-write loop and accumulates every iteration', async () => {
+      const sc = await dep(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = m[k] + 1; } require(true); }'));
+      await sc.f(4n, 3n).send();
+      await sc.chk(4n, 3n).send();
     });
 
-    it('rejects a mapping delete in a loop', () => {
-      rej(MAP('function f(int n) external { for (int i = 0; i < n; i++) { delete m[i]; } require(true); }'));
+    it('deletes distinct mapping keys in a dynamic counter loop', async () => {
+      const sc = await dep(MAP(`
+        function seed(int n) external { for (int i = 0; i < n; i++) { m[i] = i + 1; } require(true); }
+        function f(int n) external { for (int i = 0; i < n; i++) { delete m[i]; } require(true); }`));
+      await sc.seed(3n).send();
+      await sc.f(3n).send();
+      await sc.chk(0n, 0n).send();
+      await sc.chk(2n, 0n).send();
     });
 
-    it('rejects an invariant-key write in a loop (m[k]=i would mint duplicate entries)', () => {
-      rej(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }'));
+    it('caches an invariant-key pure-write loop and persists the final value', async () => {
+      const sc = await dep(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }'));
+      await sc.f(6n, 3n).send();
+      await sc.chk(6n, 2n).send();
     });
 
     it('writes distinct mapping keys in a dynamic for-loop (m[i]=i+1 for i<n)', async () => {

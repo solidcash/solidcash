@@ -105,14 +105,13 @@ int storage p = this.balances[user];
 p = p + amount;            // == this.balances[user] = this.balances[user] + amount;
 ```
 
-### Divergence: no memory aliasing
+### Memory aliasing
 
-SolidCash is value-semantic. Solidity's `memory` is reference-semantic: `bytes memory a = b;` makes `a` and
-`b` the same buffer, so `a[0] = x` also changes `b`, and a `memory` argument passed to an internal function is
-mutated in place. SolidCash has no heap or pointers - locals and arguments are independent stack values, so
-assignment and argument passing **copy**, and mutations never propagate back. This is the one Solidity
-`memory` behavior SolidCash does not reproduce; it is rarely relied upon (and a frequent footgun when it is).
-The write-through `storage` alias above is the only aliasing mechanism, and it targets state, not locals.
+`memory` reference values use the compiler's shared linear-memory model. Assigning one memory array, bytes value,
+string, or supported struct to another aliases the same buffer, and supported internal/private helper calls pass
+those references through. If an alias group reaches an operation the pointer lowering cannot yet represent, the
+compiler fails closed instead of silently reverting to value-copy behavior. A standalone reference with no alias
+may still use the legacy value representation when doing so is unobservable.
 
 ## The lifetime modifiers
 

@@ -4,6 +4,12 @@ A running log of features/fixes that were **investigated and intentionally defer
 roughly what they'd take, but not shipped because the value/risk/effort did not justify it at the time. This is
 the "we looked, here's why not yet, here's the trigger to revisit" list, distinct from unknown/unscoped gaps.
 
+Entries are chronological research notes and may describe intermediate states that were later superseded. In
+particular, all references to `sortedMappings`, `sortedMappingsAll`, a non-C2/default entry backend, unpinned value
+chunks, or pending C2 compiler/SDK plumbing predate the completed 2026-07-22 C2 merge. Current mapping behavior is
+defined only by [`sorted-mapping-c2.md`](sorted-mapping-c2.md); every mapping is C2 and unsupported shapes fail
+closed. Do not use historical opt-out instructions from this log.
+
 Related: `examples/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
 `docs/platform-differences.md` (BCH-vs-EVM primitives), `docs/solidity-gap-analysis.md`.
 
@@ -240,7 +246,11 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   Only the loop var `= i` (not a param/array) and `= <default>`/delete truly fail closed. A reassigned param or
   non-param local mints a mismatching/empty tail and reverts (sound).
 
-**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** Every C2 shape is now SOUND (fail-closed where incomplete).
+**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM; superseded in part by the 2026-07-22 merge audit).** The
+surveyed shapes are SOUND (fail-closed where incomplete). It did not cover two distinct straight-line absent-key
+writes sharing one predecessor: fixed upserts independently select the same input and trailing NEW output. That shape
+is sound only because transaction construction rejects the duplicate input, but is not complete. The required batch
+transition is specified in `c2-codegen-optimization.md` under "Straight-line multi-key writes".
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
 address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, LOOP-INVARIANT
 int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SAME-identifier-key scalar RMW-in-loop

@@ -292,8 +292,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
+    valueArrayOffset?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
+  // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
+  sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];
@@ -311,6 +314,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];
+  // Data-location annotations parallel to returnTypes. Retained for semantic validation and source fidelity;
+  // unlike ABI types, storage/memory/calldata affect whether a source declaration is legal.
+  returnModifiers: string[][] = [];
   returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
@@ -451,8 +457,8 @@ export class StateAssignNode extends StatementNode {
 
 export class CollectionNode extends Node implements Named {
   immutable: boolean = false;
-  // C2 sorted-linked-list backend (opt-in via CompilerOptions.sortedMappings): entries form a sorted list keyed
-  // by H(key), so non-existence is provable (co-spend the bracketing predecessor) - closes the omission attack.
+  // C2 sorted-linked-list backend: mapping entries form a sorted list keyed by H(key), so non-existence is
+  // authenticated by co-spending the bracketing predecessor. This is mandatory for every mapping.
   sorted: boolean = false;
   // `enumerable mapping(...)`: the mapping may be iterated (`for..of`/`for..in`). A plain `mapping` is NOT
   // enumerable (Solidity parity - mappings are not iterable in Solidity). Only marks intent; arrays are always
@@ -556,6 +562,9 @@ export class TupleAssignmentNode extends StatementNode {
 
 export class AssignNode extends StatementNode {
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state assign)
+  // True when AstBuilder lowered a write through a reference (for example `s.field = v` or `b[i] = v`)
+  // into a whole-value assignment. This must not be confused with a user-authored calldata pointer rebind.
+  isReferenceDataWrite = false;
 
   constructor(
     public identifier: IdentifierNode,

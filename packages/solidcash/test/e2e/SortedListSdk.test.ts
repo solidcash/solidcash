@@ -150,6 +150,41 @@ describe('SortedList SDK: rebuild from chain + predecessor lookup', () => {
   });
 });
 
+describe('SortedList SDK: atomic batch upsert planning', () => {
+  const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
+
+  it('co-spends a shared predecessor once and emits one final same-gap chain', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planBatchUpsert([
+      { slot: s(20), value: hexToBin('14') },
+      { slot: s(30), value: hexToBin('1e') },
+    ]);
+    expect(plan.inputs.map((e) => Number(bytesToSlotValue(e.slot)))).toEqual([10]);
+    const decoded = plan.outputs.map((o) => decodeEntryCommitment(o.commitment));
+    expect(decoded.map((e) => Number(bytesToSlotValue(e.slot)))).toEqual([10, 20, 30]);
+    expect(decoded.map((e) => Number(bytesToSlotValue(e.nextKey)))).toEqual([20, 30, 50]);
+    expect(decoded.map((e) => binToHex(e.value))).toEqual(['', '14', '1e']);
+  });
+
+  it('combines an updated predecessor value with its inserted successor link', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planBatchUpsert([
+      { slot: s(10), value: hexToBin('aa') },
+      { slot: s(20), value: hexToBin('bb') },
+    ]);
+    expect(plan.inputs.map((e) => Number(bytesToSlotValue(e.slot)))).toEqual([10]);
+    const decoded = plan.outputs.map((o) => decodeEntryCommitment(o.commitment));
+    expect(decoded.map((e) => Number(bytesToSlotValue(e.slot)))).toEqual([10, 20]);
+    expect(decoded.map((e) => Number(bytesToSlotValue(e.nextKey)))).toEqual([20, 50]);
+    expect(decoded.map((e) => binToHex(e.value))).toEqual(['aa', 'bb']);
+  });
+
+  it('rejects duplicate logical slots before transaction construction', () => {
+    const list = SortedList.fromUtxos(sampleUtxos());
+    expect(() => list.planBatchUpsert([
+      { slot: s(20), value: hexToBin('01') }, { slot: s(20), value: hexToBin('02') },
+    ])).toThrow('duplicate slot');
+  });
+});
+
 describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () => {
   const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
 

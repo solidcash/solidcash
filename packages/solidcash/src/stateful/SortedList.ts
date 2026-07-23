@@ -101,6 +101,14 @@ export interface DeletePlan {
 /** Plan for updating a present key's value: co-spend its entry, rewrite value only (link slot||nextKey preserved). */
 export interface UpdatePlan { kind: 'update'; slot: Uint8Array; entry: SortedEntry; newCommitment: Uint8Array }
 
+/** Atomic plan for distinct-key upserts against one original authenticated list. */
+export interface BatchUpsertPlan {
+  /** Unique original nodes that must be co-spent (existing targets and absent targets' predecessors). */
+  inputs: SortedEntry[];
+  /** Final recreated/new affected nodes, sorted by slot and emitted exactly once. */
+  outputs: Array<{ slot: Uint8Array; commitment: Uint8Array; existed: boolean }>;
+}
+
 export class SortedList {
   private entries: SortedEntry[]; // sorted ascending by slot value
 
@@ -170,6 +178,61 @@ export class SortedList {
     if (entry === undefined) throw new Error('key is absent; use insert, not update');
     // Link (slot, nextKey) preserved; only the value tail changes.
     return { kind: 'update', slot, entry, newCommitment: encodeEntryCommitment(entry.slot, entry.nextKey, newValue) };
+  }
+
+  /**
+   * Plan simultaneous distinct-key upserts. All predecessor decisions are made against the ORIGINAL list, then
+   * links are rebuilt over the final union. This is the off-chain mirror for the fixed straight-line C2 batch
+   * covenant: shared predecessors are consumed once, same-gap inserts become one ascending chain, and an updated
+   * existing predecessor carries both its new value and its new first-successor link in one output.
+   */
+  planBatchUpsert(writes: Array<{ slot: Uint8Array; value: Uint8Array }>): BatchUpsertPlan {
+    const bySlot = new Map<string, { slot: Uint8Array; value: Uint8Array }>();
+    for (const w of writes) {
+      const n = bytesToSlotValue(w.slot);
+      if (n === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
+      const key = n.toString();
+      if (bySlot.has(key)) throw new Error('C2 batch upsert contains a duplicate slot');
+      bySlot.set(key, w);
+    }
+    if (bySlot.size === 0) return { inputs: [], outputs: [] };
+
+    const inputMap = new Map<string, SortedEntry>();
+    const affected = new Set<string>();
+    for (const w of bySlot.values()) {
+      const present = this.find(w.slot);
+      const source = present ?? this.predecessorOf(w.slot);
+      const sourceKey = bytesToSlotValue(source.slot).toString();
+      inputMap.set(`${source.utxo.txid}:${source.utxo.vout}`, source);
+      affected.add(sourceKey);
+      affected.add(bytesToSlotValue(w.slot).toString());
+    }
+
+    const finalSlots = new Map<string, { slot: Uint8Array; value: Uint8Array; existed: boolean }>();
+    for (const e of this.entries) {
+      const key = bytesToSlotValue(e.slot).toString();
+      finalSlots.set(key, { slot: e.slot, value: bySlot.get(key)?.value ?? e.value, existed: true });
+    }
+    for (const [key, w] of bySlot) {
+      if (!finalSlots.has(key)) finalSlots.set(key, { slot: w.slot, value: w.value, existed: false });
+    }
+    const ordered = [...finalSlots.values()].sort((a, b) => {
+      const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);
+      return av < bv ? -1 : av > bv ? 1 : 0;
+    });
+    const outputs: BatchUpsertPlan['outputs'] = [];
+    for (let i = 0; i < ordered.length; i++) {
+      const cur = ordered[i];
+      const key = bytesToSlotValue(cur.slot).toString();
+      if (!affected.has(key)) continue;
+      const next = i + 1 < ordered.length ? ordered[i + 1].slot : ZERO_SLOT;
+      outputs.push({ slot: cur.slot, commitment: encodeEntryCommitment(cur.slot, next, cur.value), existed: cur.existed });
+    }
+    const inputs = [...inputMap.values()].sort((a, b) => {
+      const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);
+      return av < bv ? -1 : av > bv ? 1 : 0;
+    });
+    return { inputs, outputs };
   }
 
   planDelete(slot: Uint8Array): DeletePlan {

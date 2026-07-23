@@ -21,7 +21,7 @@ describe('sorted struct-valued mapping', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('pos[k]=P(x,y) stores a struct value; pos[k].x/.y read fields; update works', async () => {
-    const art = compileString(SRC, { sortedMappings: ['pos'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const ZERO = slotValueToBytes(0n);
 

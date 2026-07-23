@@ -37,6 +37,7 @@ import {
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { UnsupportedMemoryAliasingError } from '../Errors.js';
 import {
   YULMEM,
   memReservedInit as buildReservedInit,
@@ -366,9 +367,11 @@ export default class LowerMemoryModel extends AstTraversal {
     //    a decl whose init is another candidate (ident alias) OR a ref-field/element read of one (`tmp = s.a`) -
     //    resolved to a FIXPOINT (a struct must be known a candidate before its ref-field read makes tmp one).
     const candType = new Map<string, Type>();
+    const definitions = new Map<string, VariableDefinitionNode>();
     const derived = new Map<string, ExpressionNode>(); // name -> init whose type derives from another candidate
     const collect = (n: Node): void => {
       if (n instanceof VariableDefinitionNode) {
+        definitions.set(n.name, n);
         const ty = n.type;
         const fresh = n.expression instanceof NewArrayNode && !n.expression.rawBytes;
         // A `bytes` buffer root: `new bytes(runtimeN)` (NewArrayNode rawBytes) OR `new bytes(constN)`, which the
@@ -590,6 +593,25 @@ export default class LowerMemoryModel extends AstTraversal {
 
     // 4. A group is convertible iff no member is tainted.
     const taintedRoots = new Set([...tainted].map(find));
+    // Falling an actual alias group back to the legacy value-copy representation silently changes Solidity
+    // semantics: a later write through one name is no longer visible through the other. Until every consumer is
+    // pointer-lowered, reject such a group instead of emitting observably incorrect bytecode. A single tainted
+    // value has no alias to observe and can safely retain the legacy representation.
+    const groups = new Map<string, string[]>();
+    for (const name of candidates) {
+      const root = find(name);
+      groups.set(root, [...(groups.get(root) ?? []), name]);
+    }
+    for (const root of taintedRoots) {
+      const names = groups.get(root) ?? [];
+      // Compiler-generated __nlv temporaries implement an explicit read/modify/write sequence; they are not
+      // source-level aliases whose identity is observable. Require at least two user bindings in the group.
+      const observableNames = names.filter((name) => !name.startsWith('__'));
+      if (observableNames.length > 1) {
+        const definition = definitions.get(observableNames[0]);
+        if (definition) throw new UnsupportedMemoryAliasingError(definition, observableNames);
+      }
+    }
     return new Set([...candidates].filter((c) => !taintedRoots.has(find(c))));
   }
 

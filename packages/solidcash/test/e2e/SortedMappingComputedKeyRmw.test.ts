@@ -25,7 +25,7 @@ describe('sorted mapping RMW with a computed/local key', () => {
   const sig = new SignatureTemplate(alicePriv);
 
   it('balances[pkh] = balances[pkh] + amt reads old value and writes old+amt', async () => {
-    const art = compileString(SRC, { sortedMappings: ['balances'] });
+    const art = compileString(SRC, {});
     expect(art.stateLayout?.collections?.find((c) => c.name === 'balances')?.sorted).toBe(true);
     const contract = new Contract(art, [], { provider });
 
@@ -56,7 +56,7 @@ describe('sorted mapping RMW with a computed/local key', () => {
   });
 
   it('INSERT branch: an absent computed key mints a new entry (balances[pkh] = 0 + amt)', async () => {
-    const art = compileString(SRC, { sortedMappings: ['balances'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const pkh = hash160(alicePub);
@@ -92,7 +92,7 @@ describe('sorted mapping RMW with a computed/local key', () => {
         this.balances[hash160(pk)] = this.balances[hash160(pk)] + amt;
       }
     }`;
-    const art = compileString(DIRECT_SRC, { sortedMappings: ['balances'] });
+    const art = compileString(DIRECT_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const pkh = hash160(alicePub);

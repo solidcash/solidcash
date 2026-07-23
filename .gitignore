@@ -109,3 +109,5 @@ manual-test.ts
 
 .claude/
 /codex/
+
+.worktrees

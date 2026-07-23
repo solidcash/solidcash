@@ -4,11 +4,11 @@ import { fundedSigner } from '../test-util.js';
 
 const MEMORY_CALLDATA_CONTRACT = `
 contract MemoryCalldata() {
-    function test(bytes memory data, bigint calldata value) {
+    function test(bytes memory data, bigint value) {
         require(data.length > 0);
         require(value > 0);
 
-        bigint memory localVar = 0;
+        bigint localVar = 0;
         require(localVar == 0);
     }
 }
@@ -81,22 +81,22 @@ describe('MemoryCalldata', () => {
     it('memory modifier in return type should not affect bytecode', () => {
       const withReturnModifier = compileString(`
         contract Test() {
-            function add(bigint a, bigint b) internal pure returns (bigint memory) {
-                return a + b;
+            function add(bytes memory a) internal pure returns (bytes memory) {
+                return a;
             }
-            function run(bigint a, bigint b) {
-                require(add(a, b) > 0);
+            function run(bytes memory a) {
+                require(add(a).length > 0);
             }
         }
       `);
 
       const withoutReturnModifier = compileString(`
         contract Test() {
-            function add(bigint a, bigint b) internal pure returns (bigint) {
-                return a + b;
+            function add(bytes a) internal pure returns (bytes) {
+                return a;
             }
-            function run(bigint a, bigint b) {
-                require(add(a, b) > 0);
+            function run(bytes a) {
+                require(add(a).length > 0);
             }
         }
       `);
@@ -107,22 +107,22 @@ describe('MemoryCalldata', () => {
     it('calldata modifier in return type should not affect bytecode', () => {
       const withReturnModifier = compileString(`
         contract Test() {
-            function getVal(bigint x) internal pure returns (bigint calldata) {
-                return x + 1;
+            function getVal(bytes calldata x) internal pure returns (bytes calldata) {
+                return x;
             }
-            function run(bigint x) {
-                require(getVal(x) > 0);
+            function run(bytes calldata x) {
+                require(getVal(x).length > 0);
             }
         }
       `);
 
       const withoutReturnModifier = compileString(`
         contract Test() {
-            function getVal(bigint x) internal pure returns (bigint) {
-                return x + 1;
+            function getVal(bytes x) internal pure returns (bytes) {
+                return x;
             }
-            function run(bigint x) {
-                require(getVal(x) > 0);
+            function run(bytes x) {
+                require(getVal(x).length > 0);
             }
         }
       `);

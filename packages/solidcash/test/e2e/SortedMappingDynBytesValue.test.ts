@@ -35,7 +35,7 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
   const sig = new SignatureTemplate(alicePriv);
 
   it('reads the stored bytes for a present key; empty (default) for absent - both exclusion-proven', async () => {
-    const art = compileString(READ_SRC, { sortedMappings: ['data'] });
+    const art = compileString(READ_SRC, {});
     expect(art.stateLayout?.collections?.find((c) => c.name === 'data')?.sorted).toBe(true);
     const contract = new Contract(art, [], { provider });
 
@@ -66,7 +66,7 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
   });
 
   it('writes a new bytes value into a present key', async () => {
-    const art = compileString(WRITE_SRC, { sortedMappings: ['data'] });
+    const art = compileString(WRITE_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));
@@ -91,7 +91,7 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
       mapping(int => string) name;
       function check(int k, string expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(name[k] == expected); }
     }`;
-    const art = compileString(STR_SRC, { sortedMappings: ['name'] });
+    const art = compileString(STR_SRC, {});
     const contract = new Contract(art, [], { provider });
 
     const s5 = keyToSlot(bigIntToVmNumber(5n));

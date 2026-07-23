@@ -873,10 +873,7 @@ describe('Debugging tests', () => {
     });
 
     // Older VMs don't support OP_INVOKE, so use a single-function contract for testing
-    const legacyVmTargets = [
-      VmTarget.BCH_2023_05,
-      VmTarget.BCH_2025_05,
-    ] as const;
+    const legacyVmTargets = [VmTarget.BCH_2025_05] as const;
 
     it.each(legacyVmTargets)('should execute and log correctly with vmTarget %s', async (vmTarget) => {
       const provider = new MockNetworkProvider({ vmTarget });

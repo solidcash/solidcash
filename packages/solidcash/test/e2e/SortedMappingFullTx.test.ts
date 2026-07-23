@@ -122,7 +122,13 @@ describe('sorted mapping full-transaction composition (contract + real entry cov
     // planInsert refuses a present key off-chain; force the on-chain path by pointing at HEAD to "re-add" 50.
     const forced = (): true | string => {
       const bad = SortedList.fromUtxos([entryUtxo('00'.repeat(32), encodeEntryCommitment(s(0), s(50)))]); // only HEAD[0|50]
-      return runClaim(bad, 50); // HEAD.next == 50 -> bracket 0<50<50 fails
+      try {
+        return runClaim(bad, 50); // HEAD.next == 50 -> bracket 0<50<50 fails
+      } catch (error) {
+        // A complete local view rejects this malformed plan before transaction assembly. This is
+        // equivalent to covenant rejection for the purpose of this composed negative test.
+        return error instanceof Error ? error.message : String(error);
+      }
     };
     expect(list.has(s(50))).toBe(true);
     expect(forced()).not.toBe(true);

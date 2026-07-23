@@ -1,20 +1,19 @@
 import { compileString as _csRawSolidc } from 'solidc';
 
-// Asserts the DEFAULT (entry-model) fixed-array byte format via buildEntryCommitment seeding. Fixed arrays are now
-// C2 by default (SortedMappingFixedArrayValue covers that); opt out so this keeps testing the default entry model.
+// Asserts fixed-array element surgery through the mandatory C2 entry layout.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
-  _csRawSolidc(s, { sortedMappingsAll: false, ...o });
-import { hexToBin } from '@bitauth/libauth';
+  _csRawSolidc(s, o);
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider,
   StatefulContract,
-  getDataNftAddress, getEntryNftAddress,
+  decodeEntryCommitment, encodeEntryCommitment, getDataNftAddress, getEntryNftAddress, keyToSlot, slotValueToBytes,
   type ConnectedStatefulContract,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
-  buildEntryCommitment,
-  parseEntryCommitment,
+  decodePushdataValue,
+  encodePushdataValue,
 } from '@solidcash/utils';
 import { alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
@@ -53,7 +52,12 @@ describe('Mapping array-element assignment', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-    const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', initialScores, 'bigint[3]');
+    const slot = keyToSlot(alicePkh);
+    const zero = slotValueToBytes(0n);
+    const value = encodePushdataValue(initialScores, 'bigint[3]');
+    const valueTail = new Uint8Array(4 + value.length);
+    new DataView(valueTail.buffer).setUint32(0, value.length, true);
+    valueTail.set(value, 4);
 
     const { categoryId: cat } = await provider.addTokenUtxosDynamic((c) => {
       const salted = contract.withCategory(hexToBin(c));
@@ -63,7 +67,11 @@ describe('Mapping array-element assignment', () => {
         { address: getDataNftAddress(salted, c), satoshis: 10000n,
           token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } } },
         { address: getEntryNftAddress(salted, c, 'scores'), satoshis: 1200n,
-          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: entryCommitment } } },
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, slot)) } } },
+        { address: getEntryNftAddress(salted, c, 'scores'), satoshis: 1200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(slot, zero, valueTail)) } } },
       ];
     });
     categoryId = cat;
@@ -83,11 +91,11 @@ describe('Mapping array-element assignment', () => {
         && o !== txOutputs[1],
     );
     expect(entryOutput).toBeDefined();
-    const parsed = parseEntryCommitment(
-      entryOutput!.token!.nft!.commitment, 'bytes20', 'bigint[3]',
-    );
-    expect(parsed.key).toEqual(alicePkh);
-    return parsed.value as bigint[];
+    const parsed = decodeEntryCommitment(hexToBin(entryOutput!.token!.nft!.commitment));
+    expect(parsed.slot).toEqual(keyToSlot(alicePkh));
+    const size = new DataView(parsed.value.buffer, parsed.value.byteOffset, 4).getUint32(0, true);
+    const decoded = decodePushdataValue(parsed.value.subarray(4, 4 + size), 0, 'bigint[3]');
+    return decoded.value as bigint[];
   }
 
   it('updates the middle element: [10,20,30] with index=1 newValue=99 -> [10,99,30]', async () => {

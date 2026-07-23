@@ -7,7 +7,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// C2 parity mode: compiling with { sortedMappingsAll: true } backs EVERY plain mapping with the C2 model, so
+// C2 default mode backs every mapping with the authenticated linked-list model, so
 // reads are unforgeable (exclusion-proven on absent) = Solidity storage parity, WITHOUT naming each mapping.
 // End-to-end: deploy (HEAD auto-minted) -> write -> present read -> absent read (proven default, not omittable).
 const SRC = `contract C() {
@@ -16,7 +16,7 @@ const SRC = `contract C() {
   function check(int k, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(balances[k] == exp); }
 }`;
 
-describe('C2 parity mode (sortedMappingsAll: every plain mapping is C2)', () => {
+describe('C2 default mode (every mapping is C2)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -24,8 +24,8 @@ describe('C2 parity mode (sortedMappingsAll: every plain mapping is C2)', () => 
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
   const fund = async (addr: string): Promise<void> => { await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 100000n }); };
 
-  it('a plain mapping compiled with sortedMappingsAll deploys + reads/writes with exclusion proofs', async () => {
-    const art = compileString(SRC, { sortedMappingsAll: true, forceStateful: true });
+  it('a plain mapping deploys + reads/writes with exclusion proofs', async () => {
+    const art = compileString(SRC, { forceStateful: true });
     expect(art.stateLayout?.collections?.find((c) => c.name === 'balances')?.sorted).toBe(true); // C2 without naming it
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
@@ -59,7 +59,7 @@ describe('C2 parity mode (sortedMappingsAll: every plain mapping is C2)', () => 
       function set(int k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); _setVia(k, v); }
       function check(int k, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(balances[k] == exp); }
     }`;
-    const art = compileString(src, { sortedMappingsAll: true, forceStateful: true });
+    const art = compileString(src, { forceStateful: true });
     expect(art.abi.some((f) => f.name === '_set' || f.name === '_setVia')).toBe(false); // helpers inlined, not subroutines
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
@@ -83,7 +83,7 @@ describe('C2 parity mode (sortedMappingsAll: every plain mapping is C2)', () => 
       function approve(int b, int v, pubkey pk, sig s) { require(checkSig(s, pk)); allow[hash160(pk)][b] = v; }
       function check(bytes20 owner, int b, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(allow[owner][b] == exp); }
     }`;
-    const art = compileString(src, { sortedMappingsAll: true, forceStateful: true });
+    const art = compileString(src, { forceStateful: true });
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);

@@ -46,7 +46,7 @@ describe('value-returning C2 mapping RMW helper (OZ Nonces._useNonce) inlines so
   const sig = new SignatureTemplate(alicePriv);
 
   async function seedAndRun(method: string, expected: bigint): Promise<bigint | 'revert'> {
-    const art = compileString(SRC, { sortedMappings: ['nonces'] });
+    const art = compileString(SRC, {});
     expect(art.stateLayout?.collections?.find((c) => c.name === 'nonces')?.sorted).toBe(true);
     const contract = new Contract(art, [], { provider });
     const pkh = hash160(alicePub);

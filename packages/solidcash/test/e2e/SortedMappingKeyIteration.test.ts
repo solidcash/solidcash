@@ -79,7 +79,7 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
   }
 
   it('KEYS: walks every key, each verified keyToSlot(k)==slot', async () => {
-    const art = compileString(KEYS_SRC, { sortedMappings: ['bal'] });
+    const art = compileString(KEYS_SRC, {});
     const { entries, keys, lastKey } = build([[bytes20(0x11), 10n], [bytes20(0x22), 20n], [bytes20(0x33), 30n]]);
     const { contract, categoryId } = await seed(art, entries);
 
@@ -89,7 +89,7 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
   });
 
   it('ENTRIES: walks every (key, value); count + sum verified', async () => {
-    const art = compileString(ENTRIES_SRC, { sortedMappings: ['bal'] });
+    const art = compileString(ENTRIES_SRC, {});
     const { entries, keys } = build([[bytes20(0x11), 10n], [bytes20(0x22), 20n], [bytes20(0x33), 30n]]);
     const { contract, categoryId } = await seed(art, entries);
 
@@ -99,7 +99,7 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
   });
 
   it('ADVERSARIAL: a supplied key that does not hash to its entry slot reverts (covenant key-verify backstop)', async () => {
-    const art = compileString(KEYS_SRC, { sortedMappings: ['bal'] });
+    const art = compileString(KEYS_SRC, {});
     const { entries, keys, lastKey } = build([[bytes20(0x11), 10n], [bytes20(0x22), 20n], [bytes20(0x33), 30n]]);
     const { contract, categoryId } = await seed(art, entries);
 
@@ -126,7 +126,7 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
         require(count == expectedCount); require(keySum == expectedKeySum);
       }
     }`;
-    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    const art = compileString(SRC, {});
     // int keys 5, 9, 12 (variable-width minimal script numbers); ascending by slot.
     const items = [5n, 9n, 12n].map((n) => ({ key: bigIntToVmNumber(n), slot: keyToSlot(bigIntToVmNumber(n)) }));
     items.sort((a, b) => (bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1));

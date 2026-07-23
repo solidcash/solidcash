@@ -5,8 +5,8 @@ import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.j
 // This suite exercises + asserts the DEFAULT (entry-model) push/pop byte format. C2 push/pop (the default now) is
 // covered by SortedMappingArrayElementWrite; opt this file out so it keeps testing the default entry model.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
-  _csRawSolidc(s, { sortedMappingsAll: false, ...o });
-import { createTestProvider, setupStatefulUtxos, getTxOutputs } from '../test-util.js';
+  _csRawSolidc(s, o);
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv, aliceAddress } from '../fixture/vars.js';
 
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -30,15 +30,6 @@ async function dep(): Promise<any> {
   return StatefulContract.withCategory(contract, categoryId);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function entryCommitment(tx: any): string {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const entry = getTxOutputs(tx).find((o: any) => o.token?.nft?.capability === 'mutable'
-    && (o.token?.nft?.commitment?.length ?? 0) > 0);
-  expect(entry).toBeDefined();
-  return entry.token.nft.commitment;
-}
-
 describe('mapping(K => T[]) .push() / .pop()', () => {
   it('compiles; push is a read-modify-write entry access', () => {
     const art = compileString(SRC, { solidityImportCompat: true });
@@ -50,26 +41,23 @@ describe('mapping(K => T[]) .push() / .pop()', () => {
 
   it('push encodes the value into the entry array', async () => {
     const sc = await dep();
-    const c = entryCommitment(await sc.push(aliceAddress, 0xABCDn, alicePub, sig()).send());
-    expect(c.includes('cdab')).toBe(true); // 0xABCD little-endian, 32-byte packed
+    await sc.push(aliceAddress, 0xABCDn, alicePub, sig()).send();
+    expect((await sc.getEntries('m'))[0].value).toEqual([0xABCDn]);
   });
 
   it('push,push accumulates [a, b] across txs (co-spends + appends to the prior entry)', async () => {
     const sc = await dep();
-    const c1 = entryCommitment(await sc.push(aliceAddress, 0x42n, alicePub, sig()).send());
-    const c2 = entryCommitment(await sc.push(aliceAddress, 0x37n, alicePub, sig()).send());
-    expect(c1.includes('42')).toBe(true);
-    expect(c2.includes('42')).toBe(true); // first element preserved
-    expect(c2.includes('37')).toBe(true); // second element appended
-    expect(c2.length).toBeGreaterThan(c1.length);
+    await sc.push(aliceAddress, 0x42n, alicePub, sig()).send();
+    expect((await sc.getEntries('m'))[0].value).toEqual([0x42n]);
+    await sc.push(aliceAddress, 0x37n, alicePub, sig()).send();
+    expect((await sc.getEntries('m'))[0].value).toEqual([0x42n, 0x37n]);
   });
 
   it('pop drops the last element', async () => {
     const sc = await dep();
     await sc.push(aliceAddress, 0x42n, alicePub, sig()).send();
     await sc.push(aliceAddress, 0x37n, alicePub, sig()).send();
-    const popped = entryCommitment(await sc.pop(aliceAddress, alicePub, sig()).send());
-    expect(popped.includes('42')).toBe(true);  // first remains
-    expect(popped.includes('37')).toBe(false); // last dropped
+    await sc.pop(aliceAddress, alicePub, sig()).send();
+    expect((await sc.getEntries('m'))[0].value).toEqual([0x42n]);
   });
 });

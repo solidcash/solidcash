@@ -31,7 +31,7 @@ describe('C2 consecutive same-entry scalar RMW (must fail closed, never partial-
   const fund = async (a: string): Promise<void> => { await provider.addUtxo(a, { txid: uid(), vout: 0, satoshis: 100000n }); };
 
   it('m[k]+=a; m[k]+=b either coalesces to old+a+b OR reverts - never a wrong/partial value', async () => {
-    const art = compileString(SRC, { sortedMappings: ['m'] });
+    const art = compileString(SRC, {});
     const contract = new Contract(art, [], { provider });
     const pkh = hash160(alicePub);
     const slot = keyToSlot(pkh);

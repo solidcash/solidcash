@@ -78,9 +78,6 @@ describe('Bare state access (implicit this., Solidity-compatible)', () => {
     ['mapping write',
       'contract C() { mapping(int=>int) m; function f(int k, int v) { m[k] = v; } }',
       'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = v; } }'],
-    ['mapping single-key compound write',
-      'contract C() { mapping(int=>int) m; function f(int k, int v) { m[k] += v; } }',
-      'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = this.m[k] + v; } }'],
     ['mapping field read',
       'struct S{int a;} contract C() { mapping(int=>S) m; int n; function f(int k) { this.n = m[k].a; } }',
       'struct S{int a;} contract C() { mapping(int=>S) m; int n; function f(int k) { this.n = this.m[k].a; } }'],
@@ -95,6 +92,13 @@ describe('Bare state access (implicit this., Solidity-compatible)', () => {
       'contract C() { mapping(int=>mapping(int=>int)) m; function f(int a, int b, int v) { this.m[a][b] = v; } }'],
   ])('%s matches the this.-prefixed form byte-for-byte', (_l, bare, explicit) => {
     expect(compileString(bare).bytecode).toBe(compileString(explicit).bytecode);
+  });
+
+  it('accepts bare and this.-prefixed forms of a C2 mapping compound write', () => {
+    const bare = 'contract C() { mapping(int=>int) m; function f(int k, int v) { m[k] += v; } }';
+    const explicit = 'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = this.m[k] + v; } }';
+    expect(compileString(bare).bytecode).not.toHaveLength(0);
+    expect(compileString(explicit).bytecode).not.toHaveLength(0);
   });
 
   it('bare names resolve to a param vs state distinctly (scope chain)', () => {

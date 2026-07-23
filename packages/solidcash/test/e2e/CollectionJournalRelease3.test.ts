@@ -7,6 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const SOURCE = `pragma solidcash >=0.8.0;
 contract CollectionJournalRelease3() {
   mapping(bytes20 => bigint) balances;
+  bigint[3] fixedScores;
   bytes data;
 
   function credit(bytes20 who, bigint amount) internal {
@@ -28,6 +29,10 @@ contract CollectionJournalRelease3() {
 
   function clearData() internal {
     delete this.data;
+  }
+
+  function addFixed(int index, bigint amount) internal {
+    this.fixedScores[index] = this.fixedScores[index] + amount;
   }
 
   function creditThree(bytes20 who, bigint a, bigint b, bigint c) {
@@ -62,6 +67,17 @@ contract CollectionJournalRelease3() {
     append(kept);
     append(tail);
     require(discarded.length >= 0);
+  }
+
+  function addFixedThree(int index, bigint a, bigint b, bigint c) {
+    addFixed(index, a);
+    addFixed(index, b);
+    addFixed(index, c);
+    require(index >= 0 && index < 3);
+  }
+
+  function checkFixed(int index, bigint expected) {
+    require(this.fixedScores[index] == expected);
   }
 
   function checkData(bytes expected) {
@@ -124,5 +140,13 @@ describe('Release 3 collection journal SDK E2E', () => {
       Uint8Array.from([0xba, 0xbe]),
     ).send();
     await contract.checkData(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe])).send();
+  });
+
+  it('threads one fixed-array element through three reusable helper calls', async () => {
+    const contract = await deploy();
+    await contract.addFixedThree(1n, 2n, 3n, 5n).send();
+    await contract.checkFixed(1n, 10n).send();
+    await contract.checkFixed(0n, 0n).send();
+    await contract.checkFixed(2n, 0n).send();
   });
 });

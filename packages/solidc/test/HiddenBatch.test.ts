@@ -103,6 +103,31 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.hiddenBatch).toBeUndefined();
   });
 
+  it('fails closed without bytecode overhead for ERC-20 transferFrom resource shapes', () => {
+    const source = `contract MappingToken() {
+      mapping(bytes20 => bigint) balances;
+      mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+
+      function transferFrom(
+        bytes20 from, bytes20 to, bytes20 spender, bigint amount
+      ) public {
+        require(this.allowances[from][spender] >= amount);
+        require(this.balances[from] >= amount);
+        this.allowances[from][spender] = this.allowances[from][spender] - amount;
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+      }
+    }`;
+    const baseline = compileString(source, { forceStateful: true });
+    const attempted = compileString(source, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+
+    expect(attempted.hiddenBatch).toBeUndefined();
+    expect(attempted.bytecode).toBe(baseline.bytecode);
+  });
+
   it('allocates one ordered conditional event slot per possible row', () => {
     const artifact = compileString(`contract EventBatch() {
       bigint current;

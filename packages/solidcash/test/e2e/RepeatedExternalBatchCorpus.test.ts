@@ -79,6 +79,67 @@ async function deployCorpus(callerSource: string, functionName: string, args: un
 }
 
 describe('Release 5 surveyed repeated-callee corpus', () => {
+  it('fails closed before construction for a mapping-backed ERC-20 transfer shape', async () => {
+    const provider = createTestProvider();
+    const interfaceSource = `
+      interface IMappingToken {
+        function transferFrom(bytes20 from, bytes20 to, bytes20 spender, bigint amount);
+      }
+    `;
+    const tokenArtifact = compileString(`pragma solidcash >=0.8.0;
+      ${interfaceSource}
+      contract MappingToken() is IMappingToken {
+        mapping(bytes20 => bigint) balances;
+        mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+
+        function transferFrom(
+          bytes20 from, bytes20 to, bytes20 spender, bigint amount
+        ) public {
+          require(this.allowances[from][spender] >= amount);
+          require(this.balances[from] >= amount);
+          this.allowances[from][spender] = this.allowances[from][spender] - amount;
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(tokenArtifact.hiddenBatch).toBeUndefined();
+
+    const tokenInner = new Contract(tokenArtifact, [], { provider });
+    const { categoryId: tokenCategory } = await setupStatefulUtxos(
+      provider, tokenInner, tokenArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const token = StatefulContract.withCategory(tokenInner, tokenCategory);
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      ${interfaceSource}
+      contract TokenRouter(bytes tokenAddress) {
+        bigint runs;
+        function route(
+          bytes20 from, bytes20 first, bytes20 second, bytes20 spender,
+          bigint firstAmount, bigint secondAmount
+        ) public {
+          IMappingToken(tokenAddress).transferFrom(from, first, spender, firstAmount);
+          IMappingToken(tokenAddress).transferFrom(from, second, spender, secondAmount);
+          this.runs = this.runs + 1;
+          require(firstAmount >= 0 && secondAmount >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalRepeatedExternalBatch: true });
+    const tokenAddress = tokenInner.withCategory(hexToBin(tokenCategory)).lockingBytecode;
+    const callerInner = new Contract(callerArtifact, [tokenAddress], { provider });
+    const { categoryId: callerCategory } = await setupStatefulUtxos(
+      provider, callerInner, callerArtifact.stateLayout!, { runs: 0n }, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(callerInner, callerCategory, {
+      externals: { IMappingToken: token },
+    });
+
+    await expect(caller.getFunction('route')(
+      alicePkh, bobPkh, carolPkh, carolPkh, 10n, 20n,
+    ).build()).rejects.toThrow(/does not advertise.*SCB1/);
+  });
+
   it('constructs TreasurySplit.split with two token transfers and one token owner', async () => {
     const source = `pragma solidcash >=0.8.0;
       ${TOKEN_INTERFACE}

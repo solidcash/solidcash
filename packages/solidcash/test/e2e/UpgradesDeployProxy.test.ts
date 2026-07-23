@@ -337,4 +337,30 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     // Solidity mapping delete assigns the value-type default; sorted mappings retain the keyed node.
     expect(await (proxy as any).getUsers(0, 0)).toEqual([0n]);
   });
+
+  it('materializes a returning external call made by a delegated implementation', async () => {
+    const signer = await fundedSigner();
+    await signer.provider.addUtxo(signer.getAddress(), { txid: '18'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract ValueSource() {
+        int marker;
+        function twice(int value) view returns (int) { return value * 2; }
+      }`);
+    const implArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IValueSource { function twice(int value) external view returns (int); }
+      contract NestedCallImpl() {
+        int result;
+        function initialize() delegate { this.result = 0; }
+        function run(address source, int value) delegate { this.result = IValueSource(source).twice(value); }
+      }`, { solidityImportCompat: true });
+    const callee = await getContractFactory(calleeArtifact, signer).deploy({ initialState: { marker: 1n } });
+    const proxy = await upgrades.deployProxy(
+      getContractFactory(implArtifact, signer),
+      [],
+    );
+    (proxy.implementation as any)._externalRegistry.set('IValueSource', callee);
+
+    const tx = await (proxy as any).run(callee.inner.lockingBytecode, 7n).send();
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).result).toBe(14n);
+  });
 });

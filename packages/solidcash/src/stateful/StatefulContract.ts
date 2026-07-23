@@ -8392,6 +8392,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Track per-group proxy master index for delegatecall composability
     const groupProxyMasterIndices: number[] = [];
+    // External calls made by a delegate implementation are still independent co-spends:
+    // the implementation executes against the proxy's state, but its callees must be
+    // materialized in the ordinary external-call section. Keep the child group indices
+    // per delegate group so its hidden witnesses can point at the real inputs/outputs.
+    const delegateExternalGroupIndices = new Map<number, number[]>();
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       const resolvedCalls = overrides?.calls ?? [];
@@ -8450,6 +8455,74 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             callMode: lowLevelCalls[i].callMode,
           });
           groupProxyMasterIndices.push(callInfo.proxyMasterIndex ?? 0);
+
+          if (lowLevelCalls[i].callMode === 'delegatecall') {
+            const delegateGroupIndex = lowLevelCallUtxoGroups.length - 1;
+            const delegateAbi = callInfo.contract.inner.artifact.abi as readonly AbiFunction[];
+            const delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
+            const nestedIndices: number[] = [];
+            for (const nested of delegateFn?.externalCalls ?? []) {
+              // Hardhat-style factories connect externals on the public proxy
+              // instance. A manually assembled delegate may instead connect them
+              // directly on the implementation; accept both, preferring the latter.
+              const callee = (
+                callInfo.contract._externalRegistry.get(nested.interfaceName)
+                ?? this._externalRegistry.get(nested.interfaceName)
+              ) as StatefulContract | undefined;
+              if (!callee) {
+                throw new Error(
+                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} is not connected. `
+                  + `Connect '${nested.interfaceName}' on the implementation before calling through the proxy.`,
+                );
+              }
+              const nestedArgs = callInfo.contract._resolveExternalArgs(
+                nested.argSources, callInfo.args, callInfo.contract.inner.artifact,
+              );
+              if (nestedArgs === undefined) {
+                throw new Error(
+                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} has arguments `
+                  + 'that cannot yet be resolved by the SDK.',
+                );
+              }
+              const childState = await callee.getFullState();
+              if (!childState.masterUtxo) {
+                throw new Error(
+                  `External contract master UTXO not found for ${nested.interfaceName} `
+                  + `(category ${callee.categoryId})`,
+                );
+              }
+              const childLayout = callee.inner.stateLayout!;
+              const childRequired = nested.requiredDataNftIndices.length > 0
+                ? nested.requiredDataNftIndices
+                : Array.from({ length: childLayout.dataNftCount }, (_, idx) => idx);
+              const childData: UnlockableUtxo[] = childRequired.map((nftIndex) => {
+                const utxo = childState.dataNftUtxos[nftIndex];
+                if (!utxo) {
+                  throw new Error(
+                    `External data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
+                  );
+                }
+                return {
+                  ...utxo,
+                  unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
+                };
+              });
+              nestedIndices.push(externalCallUtxoGroups.length);
+              externalCallUtxoGroups.push({
+                categoryId: callee.categoryId,
+                stateLayout: childLayout,
+                masterUtxo: childState.masterUtxo,
+                dataNftUtxos: childData,
+                requiredDataNftIndices: childRequired,
+                functionName: nested.functionName,
+                functionArgs: nestedArgs,
+                externalContract: callee,
+                ...(nested.callMode && { callMode: nested.callMode }),
+              });
+              allGroupEcSlots = [...allGroupEcSlots, nested];
+            }
+            delegateExternalGroupIndices.set(delegateGroupIndex, nestedIndices);
+          }
         } else {
           lowLevelCallRawInputs.push(callInfo.utxo);
         }
@@ -8459,6 +8532,60 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalCallInputCount = externalCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       );
+
+      // Complete the nested callee unlockers now that every external group has a
+      // stable absolute input position.
+      let nestedInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length
+        + outStateInputCount + iterationEntryInputs.length;
+      const nestedMasterIndices: number[] = [];
+      for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
+        const child = externalCallUtxoGroups[groupIdx];
+        nestedMasterIndices[groupIdx] = nestedInputBase;
+        child.dataNftUtxos = child.dataNftUtxos.map((utxo) => ({
+          ...utxo,
+          unlocker: createDataNftUnlocker(child.externalContract.inner, nestedInputBase, child.categoryId),
+        }));
+        nestedInputBase += 1 + child.dataNftUtxos.length;
+      }
+
+      // Delegate-mode return events are emitted immediately after all ordinary
+      // external-call outputs and before the preserved implementation group.
+      const externalOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
+        + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
+        + iterationEntryInputs.length;
+      const delegateReturnOutputBase = externalOutputStart + externalCallUtxoGroups.reduce(
+        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
+      ) + lowLevelCallUtxoGroups
+        .filter((g) => g.callMode === 'delegatecall')
+        .reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0);
+      const returningExternalGroups = externalCallUtxoGroups
+        .map((_, idx) => idx)
+        .filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
+      const returnIndexForGroup = new Map(
+        returningExternalGroups.map((groupIdx, ordinal) => [groupIdx, delegateReturnOutputBase + ordinal]),
+      );
+
+      for (const groupIdx of new Set([...delegateExternalGroupIndices.values()].flat())) {
+        const child = externalCallUtxoGroups[groupIdx];
+        const childFn = (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((f) => f.name === child.functionName);
+        if (!childFn) continue;
+        let visible = 0;
+        const encoded = childFn.inputs.map((input) => {
+          if (!input.name.startsWith('__internal__')) return child.functionArgs[visible++];
+          if (input.name === '__internal__returnOutputIdx') {
+            return BigInt(returnIndexForGroup.get(groupIdx) ?? -1);
+          }
+          if (input.name === '__internal__msgSenderCategory') return hexToBin(this.categoryId);
+          throw new Error(
+            `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
+          );
+        });
+        child.masterUtxo = {
+          ...child.masterUtxo,
+          unlocker: child.externalContract.inner.unlock[child.functionName]!(...encoded),
+        } as UnlockableUtxo;
+      }
       // Reserve the delegatecall'd impl's EVENT slots in the proxy block (its covenant verifies them at
       // proxyMaster+offset). Only handled when the impl fn's block is master + dataNfts + events, so the slot
       // offsets align 1:1 with the proxy block. A delegate that also transfers, reads a mapping/keccak/blockhash,
@@ -8518,6 +8645,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (bFunc) {
           let visibleIndex = 0;
           let batchWitnessIndex = 0;
+          let delegateReturnWitnessIndex = 0;
+          const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
           const encodedArgs: any[] = bFunc.inputs.map((inp) => {
             if (!inp.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
             if (inp.name === '__internal__returnOutputIdx') return BigInt(returnEmitOutputIndex);
@@ -8526,10 +8655,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
             }
             if (inp.name === '__internal__externalCallInputBase') {
-              return BigInt(masterInputIndex + 1 + group.dataNftUtxos.length);
+              const firstNested = nestedGroups[0];
+              return BigInt(firstNested === undefined
+                ? masterInputIndex + 1 + group.dataNftUtxos.length
+                : nestedMasterIndices[firstNested]);
             }
-            if (/^__internal__extcallMasterIdx\d+$/.test(inp.name)) {
-              return BigInt(masterInputIndex + 1 + group.dataNftUtxos.length);
+            if (/^__internal__extcallMasterIdx\d*$/.test(inp.name)) {
+              const suffix = inp.name.slice('__internal__extcallMasterIdx'.length);
+              const slot = suffix === '' ? 0 : Number(suffix);
+              const nestedGroup = nestedGroups[slot];
+              return BigInt(nestedGroup === undefined
+                ? masterInputIndex + 1 + group.dataNftUtxos.length
+                : nestedMasterIndices[nestedGroup]);
             }
             const selectorWitness = inp.name.match(/^__internal__externalCallSelector(\d+)$/);
             if (selectorWitness) {
@@ -8543,7 +8680,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const target = iface?.abi.find((candidate) => candidate.name === call?.functionName);
               return target?.selector ? hexToBin(target.selector) : new Uint8Array(4);
             }
-            if (/^__internal__externalReturnOutputIdx\d+$/.test(inp.name)) return -1n;
+            if (/^__internal__externalReturnOutputIdx\d*$/.test(inp.name)) {
+              const nestedReturning = nestedGroups.filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
+              const nestedGroup = nestedReturning[delegateReturnWitnessIndex++];
+              return BigInt(nestedGroup === undefined ? -1 : returnIndexForGroup.get(nestedGroup) ?? -1);
+            }
             if (inp.name.startsWith('__internal__c2Batch')) {
               const value = entryBatchWitnesses[batchWitnessIndex++];
               if (value !== undefined) {

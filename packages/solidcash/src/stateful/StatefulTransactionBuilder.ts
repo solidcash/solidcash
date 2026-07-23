@@ -1601,7 +1601,11 @@ export class StatefulTransactionBuilder {
     // A delegate facet is preserved at its absolute input index. Materialize the proxy's return channel first,
     // inside the proxy block, so it does not shift behind (and collide with) the facet preservation output.
     if (this.delegateEntriesAfterLowLevel) {
-      for (const re of this.pendingReturnEventOutputs) {
+      // A return emitted by the proxy itself belongs in the proxy block, before
+      // the facet. Returns emitted by an external callee of the facet must follow
+      // the facet preservation outputs; otherwise the return NFT occupies the
+      // facet's absolute output index and its self-preservation check fails.
+      for (const re of this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId)) {
         builder.addOutput({
           to: new Uint8Array([0x51]),
           amount: 800n,
@@ -1622,6 +1626,17 @@ export class StatefulTransactionBuilder {
             to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
           });
         }
+      }
+      for (const re of this.pendingReturnEventOutputs.filter((r) => r.categoryId !== this.categoryId)) {
+        builder.addOutput({
+          to: new Uint8Array([0x51]),
+          amount: 800n,
+          token: {
+            amount: 0n,
+            category: re.categoryId,
+            nft: { capability: 'none', commitment: binToHex(re.commitment) },
+          },
+        });
       }
     }
 
@@ -2294,6 +2309,23 @@ export class StatefulTransactionBuilder {
    * Compute the output index where return event outputs start.
    */
   getReturnEventOutputBase(): number {
+    if (this.delegateEntriesAfterLowLevel) {
+      let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length
+        + this.blockhashCoSpendUtxos.length + this.keccakComputeCoSpendUtxos.length
+        + this.ecrecoverComputeCoSpendUtxos.length;
+      for (const g of this.externalOutStateUtxoGroups) {
+        base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      }
+      base += this.iterationEntryInputs.length;
+      for (const g of this.externalCallUtxoGroups) {
+        base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      }
+      base += this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId).length;
+      for (const g of this.lowLevelCallUtxoGroups.filter((candidate) => candidate.callMode === 'delegatecall')) {
+        base += 1 + g.dataNftUtxos.length;
+      }
+      return base;
+    }
     const layoutOffset = this.getBlockSlotOffset('returnEvent');
     if (layoutOffset !== undefined) return layoutOffset;
     return this.getEventOutputBase() + this.getEventOutputCount();

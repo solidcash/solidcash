@@ -105,7 +105,21 @@ Cross-owner information may cross a call boundary only as authenticated calldata
 data, or an explicitly authenticated final-state read. A foreign `outState` read which influences
 execution before settlement is rejected.
 
-## 2. Canonical transcript carrier
+## 2. Candidate transcript carrier
+
+This section preserves the previously specified carrier for comparison; it is not selected. A future
+format spike MUST compare, in this order:
+
+1. a complete `OP_RETURN`/nulldata blob for witnesses within the 223-byte aggregate relay limit,
+   requiring no carrier signer or redeem-template authentication;
+2. a copy of the blob in each parsing participant's own unlocking bytecode while
+   `participantCount * blobSize` remains comfortably below standard transaction size;
+3. a shared carrier only if measured replication approaches the 100,000-byte standard transaction
+   limit and the carrier's extra authentication surface is justified.
+
+The ordering follows the BCH 2026 budget model: carrying bytes in a parser's own unlocking bytecode
+increases that parser's operation budget, while a separate carrier grants budget to an input which
+does not parse the witness.
 
 ### 2.1 Carrier location
 

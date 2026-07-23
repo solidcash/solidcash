@@ -543,8 +543,9 @@ bytecode failures. The extracted footprint service also removes duplicated split
   summaries.
 - Emit actionable diagnostics with the shortest call chain, repeated owner, conflicting resource,
   and required colocation closure.
-- Hand-measure journal primitives and the small hidden-batch parser under `BCH_2026_05`; this does
-  not enable batch codegen.
+- Hand-measure journal primitives, B's small hidden-batch parser/dispatcher, A's canonical expected
+  blob accumulator, and A's actual-blob extraction/whole-blob comparison under `BCH_2026_05`; this
+  does not enable batch codegen.
 
 **Ship gate:** existing artifacts remain byte-identical; diagnostics are deterministic; measured
 results and rejected examples are checked into tests. This release contains no new covenant surface.
@@ -598,6 +599,14 @@ than only scalars, including ERC-20 balances/allowances and MasterChef-style map
 MasterChef-style updates match a sequential reference model. This release still uses ordinary
 single-entry transactions.
 
+### Covenant protocol boundary
+
+Releases 0-3 change compiler analysis and lowering but add no transaction-visible authorization
+protocol. Releases 4-5 introduce immutable covenant surface: failure can mean accepting a hostile
+transaction rather than rejecting source. Before Release 4 begins, the frozen encoding, parser,
+whole-blob exhaustiveness check, version behavior, and byte/op budgets require a dedicated security
+review. Release 4 and Release 5 each require a separate adversarial review before default enablement.
+
 ### Release 4 - owner-local hidden batch
 
 **Immediate benefit:** one transaction can execute several public handlers of the same contract in
@@ -613,7 +622,9 @@ syntax and ABI remain unchanged.
 
 **Ship gate:** scalar and mapping-backed two/three/eight-row local batches reject malformed,
 duplicated, omitted, and reordered rows and author exactly one post-state. This release has no
-cross-contract batch protocol.
+cross-contract batch protocol. An independent adversarial review MUST cover parser ambiguity,
+unchecked suffixes, row-count substitution, selector confusion, output substitution, and limit
+bypass before default enablement.
 
 ### Release 5 - one repeated external callee
 
@@ -623,13 +634,16 @@ without a general bus.
 
 - Group resolved external callsites by physical owner before allocating transaction layout.
 - Reuse existing target/category/self-pinning and immediate-caller authentication.
-- Make A verify the exact ordered B batch blob and make B execute it once; retain distinct
-  return/event/effect slots.
+- Make A accumulate the canonical rows actually reached and compare one commitment over the complete
+  expected blob with the complete blob extracted from B; make B require canonical complete
+  consumption and execute it once; retain distinct return/event/effect slots.
 - Reject multiple independent callers, callbacks, participant cycles, and unresolved aliases.
 
 **Ship gate:** the three corpus cases pass with one callee transition; caller forgery, target
 substitution, omission, duplication, reordering, result substitution, and duplicate physical B
-inputs all fail. This is the final approved synchronous scope.
+inputs all fail. An independent adversarial review MUST cover conditional injection, unchecked
+suffixes, count substitution, hash-domain ambiguity, target aliasing, and output/effect substitution.
+This is the final approved synchronous scope.
 
 ### Release discipline
 
@@ -737,29 +751,34 @@ Failure of a gate leaves layer 3 disabled. It does not block or weaken the journ
 
 ## 9. Release invariants
 
-The applicable subset must hold for raw hostile transactions, not only SDK-generated ones.
-Invariants 1-4 and 8-10 govern the initial hidden batch. Invariants 5-7 and 11-12 additionally govern
-a future general/asynchronous protocol if released:
+Each invariant asserts one property and is tagged with the first release that requires it. The same
+tags MUST generate the per-release implementation checklist and hostile-transaction suite; they are
+not an informal partition.
 
-1. A category owner is the only physical author of its state outputs.
-2. Every physical participant appears at most once and is pinned to the intended address/category and
-   permitted code/proxy identity.
-3. Every logical invocation is authenticated by its caller and processed exactly once by its target.
-4. Caller identity and call context are derived from the transcript relation, never trusted witness
-   fields in isolation.
-5. All participants parse the same canonical versioned transcript from transaction input 0.
-6. Every declared outbound invocation has one matching inbound invocation; no undeclared invocation
-   affects state or results.
-7. Canonical order, callsite occurrences, arguments, and results are verified in script.
-8. Each owned dirty slot/entry/chunk has exactly one final output, flushed through its existing
-   soundness backend.
-9. Unsupported dynamic access, unresolved artifacts, ambiguous/non-convergent cycles, conflicts, and
-   over-budget batches fail closed with precise diagnostics.
-10. Contracts not using handlers/batching retain the current fast path and security properties.
-11. If asynchronous intents are enabled, delivery and cancellation are mutually exclusive, sender
-    identity and destination are authenticated, and every nonce is consumed at most once.
-12. No accepted transcript relies on cross-input intermediate state, contains two settlement
-    authorities for one state object, or expands an unbounded invocation cycle.
+| first applies | invariant |
+|---|---|
+| R1 | Only the authenticated category owner authors its state output. |
+| R1 | Every dirty scalar has exactly one final value flushed through the existing covenant backend. |
+| R1 | Read-your-writes order matches sequential source execution. |
+| R1 | Contracts not using the new lowering retain their prior fast path and security properties. |
+| R2 | Unsupported or over-budget recursion fails closed before construction. |
+| R3 | Every dirty entry/chunk has exactly one authenticated final output. |
+| R3 | Unsupported dynamic access and unresolved storage witnesses fail closed. |
+| R4 | The local blob is canonical, completely consumed, and contains no unchecked suffix. |
+| R4 | Every local row executes exactly once in canonical order with authenticated arguments and results. |
+| R4 | One batch has only one physical owner input and one settlement authority. |
+| R5 | The callee is pinned to its intended actual locking bytecode, category, and permitted lineage. |
+| R5 | The immediate caller is derived from an actual authenticated co-spent input, never a witness identity. |
+| R5 | A's one whole-blob commitment covers every row actually reached and all bytes B will execute. |
+| R5 | Every A outbound invocation has exactly one B inbound row; no omitted or injected row affects state. |
+| R5 | Canonical order, occurrence, selector, arguments, results, events, and effects are verified in script. |
+| R5 | A repeated callee has exactly one physical owner input and settlement authority. |
+| R5 | Unsupported aliases, multiple callers, callbacks, and cycles fail closed. |
+| Graph A | Every participant validates the same complete graph witness under the selected future format. |
+| Graph A | No accepted graph relies on visibility of foreign cross-input intermediate state. |
+| Graph B | Invocation expansion is finite and contains no future-result dependency. |
+| Async | Delivery and cancellation are mutually exclusive. |
+| Async | Sender, destination, payload, and nonce are authenticated, and each nonce is consumed at most once. |
 
 ---
 

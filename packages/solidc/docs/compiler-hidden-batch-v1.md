@@ -85,6 +85,14 @@ Application arguments, including signatures, are decoded from rows. Physical lay
 remain compiler-owned. The final byte order and maximum count are frozen only after Release 0 measures
 the parser and realistic corpus batches under `BCH_2026_05`.
 
+The blob is deliberately colocated with the covenant which parses it. Under `BCH_2026_05`, an
+input's operation budget is `800 * (41 + |own unlocking bytecode|)`, while reading a byte costs one.
+An N-byte blob therefore gives its parsing input approximately `800N` additional budget while
+costing approximately `N` to read. A separate carrier would grant that budget to the wrong input.
+For a future multi-participant protocol, replicate a small blob beside each parser while
+`participantCount * blobSize` is cheap; consider a shared source only when replication approaches
+the standard transaction-size constraint and its additional authentication surface is justified.
+
 ## 4. Authentication
 
 ### 4.1 Self/local batch
@@ -109,15 +117,21 @@ same physical owner more than once:
 1. the SDK supplies one B owner block;
 2. A's existing external-call covenant verifies B's actual locking bytecode/category and that B's
    unlocking bytecode selects `SCB1`;
-3. A incrementally reconstructs or streaming-compares the expected B batch rows at the original
-   callsites;
-4. B verifies its immediate caller from A's actual co-spent owner input using the existing
+3. as A executes, it appends the canonical row bytes for every external callsite actually reached,
+   including conditional and loop occurrences;
+4. at A's epilogue, A constructs the canonical header with the final reached-row count and MUST
+   assert exactly once that `hash256(expectedCompleteBlob) == hash256(actualCompleteBlob)`, where
+   `actualCompleteBlob` is the single canonical blob extracted from B's actual unlocking bytecode;
+   partial comparison, prefix equality, and unchecked trailing bytes are forbidden;
+5. B verifies its immediate caller from A's actual co-spent owner input using the existing
    `msg.sender`/target-pinning model;
-5. B executes the same rows and flushes once.
+6. B executes the same rows and flushes once.
 
-The batch blob is therefore checked by both its emitter A and target B without inventing a global
-participant identity model. A fabricated caller row is impossible because no caller identity is
-carried in the blob.
+The whole-blob equality is the exhaustiveness proof. Under the hash collision-resistance assumption,
+it makes omission, injection, reordering, argument substitution, count substitution, and trailing
+rows fail even when A is a legitimate co-spent caller. B independently requires canonical complete
+parsing and exact consumption. The protocol therefore reuses caller identity without mistaking that
+identity for authorization of arbitrary rows.
 
 Grouping occurs before physical external-call layout allocation. All grouped callsites share one B
 owner input/output block; per-call return/event/effect slots remain distinct inside that block.
@@ -248,15 +262,17 @@ earlier release is independently useful:
 Detailed tasks and ship gates are normative in section 8 of
 `buffered-state-and-message-bus-research.md`. Additionally:
 
-1. Release 0 MUST measure a hand-emitted parser/dispatcher under `BCH_2026_05` with 2, 3, 8, and
-   candidate-maximum rows, including controller bytes, operation cost, pushed bytes, stack/memory,
-   unlocking size, and complete transaction size.
+1. Release 0 MUST separately measure B's hand-emitted parser/dispatcher and A's expected-blob
+   accumulator plus actual-blob extraction/whole-blob comparator under `BCH_2026_05` with 2, 3, 8,
+   and candidate-maximum rows. Measurements include controller bytes, operation cost, pushed bytes,
+   stack/memory, unlocking size, and complete transaction size.
 2. Release 4 MUST prove owner-local malformed-row rejection, ordering, results, and one flush before
    its artifact capability is enabled by default.
 3. Release 5 MUST prove caller/callee binding with TreasurySplit, Marketplace reward triple, and
    MasterChef double mint before its capability is enabled by default.
 4. Every release MUST measure deployed bytecode impact on relevant Effective Acceleration and split
    corpus artifacts; a regression belongs to the release which introduces it.
+5. Releases 4 and 5 each require an independent adversarial review before default enablement.
 
 During hardening, each new capability remains internal/experimental. A completed earlier release is
 not held back merely because a later batch or graph release is unfinished.
@@ -267,7 +283,9 @@ not held back merely because a later batch or graph release is unfinished.
 2. Existing external target/category/self-pinning checks remain authoritative.
 3. One authenticated immediate caller; no caller identity supplied by the batch blob.
 4. Every row executes exactly once in order and is checked by its emitter and target.
-5. Read-your-writes and one final backend transition per dirty resource.
-6. Artifacts which do not advertise batching remain byte-identical; the ordinary one-call wrapper
+5. The caller commits once to the complete canonical blob; prefix-only comparison and unchecked
+   trailing rows are impossible.
+6. Read-your-writes and one final backend transition per dirty resource.
+7. Artifacts which do not advertise batching remain byte-identical; the ordinary one-call wrapper
    and transaction semantics remain unchanged in batch-capable artifacts.
-7. Unsupported cycles, aliases, facets, effects, and limits fail closed.
+8. Unsupported cycles, aliases, facets, effects, and limits fail closed.

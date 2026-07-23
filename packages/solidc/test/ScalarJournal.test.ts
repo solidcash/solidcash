@@ -37,4 +37,20 @@ describe('Release 1 scalar journal lowering', () => {
     const duplicatedBytes = duplicated.debug.bytecode.length / 2;
     expect(journalizedBytes).toBeLessThan(duplicatedBytes);
   });
+
+  it('marks direct and mutual recursive entry closures for concrete SDK preflight', () => {
+    const direct = compileString(`${PREFIX}
+      function run(int n) { this.x = this.x + 1; if (n > 0) run(n - 1); require(n >= 0); }
+    }`, { forceStateful: true });
+    expect(direct.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+
+    const mutual = compileString(`${PREFIX}
+      function a(int n) internal { this.x = this.x + 1; if (n > 0) b(n - 1); }
+      function b(int n) internal { this.x = this.x + 1; if (n > 0) a(n - 1); }
+      function run(int n) { a(n); require(n >= 0); }
+      function flat() { this.x = this.x + 1; require(this.x > 0); }
+    }`, { forceStateful: true });
+    expect(mutual.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+    expect(mutual.abi.find((entry) => entry.name === 'flat')?.recursiveStateHandler).toBeUndefined();
+  });
 });

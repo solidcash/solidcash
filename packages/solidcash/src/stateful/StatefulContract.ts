@@ -10346,6 +10346,35 @@ export class StatefulFunctionCall {
       && this.containerDepositAmount === 0n && !this.splitFundingConfig && !this.mergeConfig;
   }
 
+  private _requiresRecursivePreflight(): boolean {
+    if (!this.parentContract || this.functionName === undefined) return false;
+    return this.parentContract.inner.artifact.abi
+      .find((fn) => fn.name === this.functionName)?.recursiveStateHandler === true;
+  }
+
+  private _recursivePreflightHasSignatures(): boolean {
+    if (!this.parentContract || this.functionName === undefined) return false;
+    const abi = this.parentContract.inner.artifact.abi.find((fn) => fn.name === this.functionName);
+    return abi?.recursiveStateHandler === true
+      && abi.inputs.some((input) => input.type === 'sig' || input.type === 'datasig');
+  }
+
+  private _preflightRecursiveBuilder(builder: TransactionBuilder): void {
+    if (!this._requiresRecursivePreflight()) return;
+    try {
+      // debug() evaluates with the artifact's BCH VM target and consensus
+      // resource limits. Unlike send()'s best-effort diagnostic probe, this is
+      // an authorization gate for a concrete recursive invocation.
+      builder.debug();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Recursive state invocation '${this.functionName}' does not fit or fails its concrete BCH VM preflight: `
+        + reason,
+      );
+    }
+  }
+
   then<TResult1 = TransactionDetails, TResult2 = never>(
     onfulfilled?: ((value: TransactionDetails) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
@@ -10365,7 +10394,15 @@ export class StatefulFunctionCall {
     const splitMergeBuilder = await this._trySplitMergeBuild();
     if (splitMergeBuilder) return splitMergeBuilder;
     const stb = await this._applyOverrides();
-    return stb.build();
+    const builder = stb.build();
+    if (this._recursivePreflightHasSignatures()) {
+      throw new Error(
+        `Recursive state invocation '${this.functionName}' contains transaction signatures and cannot expose `
+        + 'an unsigned intermediate builder; call .send() so the SDK can preflight the fully funded transaction.',
+      );
+    }
+    this._preflightRecursiveBuilder(builder);
+    return builder;
   }
 
   async send(): Promise<TransactionDetails> {
@@ -10398,6 +10435,7 @@ export class StatefulFunctionCall {
       const stb = await this._applyOverrides();
       if (this.locktimeOverride !== undefined) stb.setLocktime(this.locktimeOverride);
       try {
+        if (this._requiresRecursivePreflight()) stb.enableStrictVmPreflight();
         return await stb.send();
       } catch (err: any) {
         // Only retry on BCH node UTXO-staleness rejection codes, not arbitrary substring matches.

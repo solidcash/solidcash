@@ -94,6 +94,16 @@ contract C() {
   function chk(int expected) { require(this.x == expected); }
 }`;
 
+const UNBOUNDED = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  function recurse() {
+    this.x = this.x + 1;
+    recurse();
+    require(this.x > 0);
+  }
+}`;
+
 describe('recursion in a stateful contract no longer crashes the compiler', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -111,6 +121,31 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.decrement(3n).send();
     await sc.chk(-6n).send();
+  });
+
+  it('rejects an over-budget concrete recursion before returning a transaction builder', async () => {
+    const artifact = compileString(SELF, { forceStateful: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.decrement(10_000n).build()).rejects.toThrow(
+      /Recursive state invocation 'decrement' does not fit or fails its concrete BCH VM preflight/,
+    );
+  });
+
+  it('rejects structurally unbounded recursion before returning a transaction builder', async () => {
+    const artifact = compileString(UNBOUNDED, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'recurse')?.recursiveStateHandler).toBe(true);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.recurse().build()).rejects.toThrow(
+      /Recursive state invocation 'recurse' does not fit or fails its concrete BCH VM preflight/,
+    );
   });
 
   it('a recursive pure helper feeding a state write compiles and runs', async () => {

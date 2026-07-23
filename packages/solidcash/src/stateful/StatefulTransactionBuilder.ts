@@ -172,6 +172,7 @@ export class StatefulTransactionBuilder {
   private _checkMinRelayFee: boolean;
   private _minRelayFeePerKb: bigint;
   private _maximumFeeSatoshis?: bigint;
+  private strictVmPreflight = false;
   private allInputs: UnlockableUtxo[];
   // External-library side-car UTXO, co-spent as the LAST input so the covenant's library loader can read
   // it (via OP_INPUTBYTECODE) during both auto-derivation probes and the final tx. Set by _applyOverrides.
@@ -362,6 +363,14 @@ export class StatefulTransactionBuilder {
       externalOutStateInputs, externalCallInputs,
       lowLevelCallInputs,
     );
+  }
+
+  /** Require the fully funded and signed transaction to pass the artifact's
+   * BCH VM before any network submission. Used for concrete recursive calls,
+   * whose resource usage depends on runtime arguments. */
+  enableStrictVmPreflight(): this {
+    this.strictVmPreflight = true;
+    return this;
   }
 
   /** Build allInputs following block layout when funders are available. */
@@ -2463,6 +2472,18 @@ export class StatefulTransactionBuilder {
     }
   }
 
+  private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
+    const transaction = builder.buildLibauthTransaction(true);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026();
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+      if (state.error) {
+        throw new Error(`input ${inputIndex}: ${state.error}`);
+      }
+    }
+  }
+
   async send(): Promise<TransactionDetails> {
     const provider = this.builderOptions.provider;
     if (!provider) {
@@ -2601,6 +2622,15 @@ export class StatefulTransactionBuilder {
         to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
         amount: this.sidecarUtxo.satoshis,
       });
+    }
+
+    if (this.strictVmPreflight) {
+      try {
+        this._strictRecursiveVmPreflight(finalBuilder);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Recursive state invocation failed concrete BCH VM preflight: ${reason}`);
+      }
     }
 
     const rawTx = finalBuilder.build();

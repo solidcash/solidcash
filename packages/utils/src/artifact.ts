@@ -129,6 +129,9 @@ export interface AbiFunction {
   // call, delegate, dynamic write, split/merge, or covenant-bypass modifier). Lets the SDK skip the multi-pass
   // derivation probe for getters (output state == input state). Absent = unknown/stateless (treat as writing).
   writesState?: boolean;
+  /** The state-handler closure contains direct or mutual recursion. SDKs must
+   * resource-preflight the concrete invocation before returning a builder. */
+  recursiveStateHandler?: boolean;
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];

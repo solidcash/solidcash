@@ -56,6 +56,7 @@ function computeWritesState(func: FunctionDefinitionNode): boolean {
 function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = false): Partial<AbiFunction> {
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
+    ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
     ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {

@@ -1284,6 +1284,62 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    // Identify direct and mutual recursion once on the resolved function-id
+    // graph, then annotate each physical entry whose reachable closure enters a
+    // cycle. This metadata is off-chain only: the SDK uses it to VM-preflight
+    // the concrete arguments before exposing a transaction builder.
+    let nextIndex = 0;
+    const indexById = new Map<number, number>();
+    const lowLink = new Map<number, number>();
+    const tarjanStack: number[] = [];
+    const onStack = new Set<number>();
+    const cyclicIds = new Set<number>();
+    const strongConnect = (id: number): void => {
+      indexById.set(id, nextIndex);
+      lowLink.set(id, nextIndex);
+      nextIndex += 1;
+      tarjanStack.push(id);
+      onStack.add(id);
+      for (const callee of callsById.get(id) ?? []) {
+        if (!callsById.has(callee)) continue;
+        if (!indexById.has(callee)) {
+          strongConnect(callee);
+          lowLink.set(id, Math.min(lowLink.get(id)!, lowLink.get(callee)!));
+        } else if (onStack.has(callee)) {
+          lowLink.set(id, Math.min(lowLink.get(id)!, indexById.get(callee)!));
+        }
+      }
+      if (lowLink.get(id) !== indexById.get(id)) return;
+      const component: number[] = [];
+      while (tarjanStack.length > 0) {
+        const member = tarjanStack.pop()!;
+        onStack.delete(member);
+        component.push(member);
+        if (member === id) break;
+      }
+      if (component.length > 1
+        || (component.length === 1 && (callsById.get(component[0])?.has(component[0]) ?? false))) {
+        for (const member of component) cyclicIds.add(member);
+      }
+    };
+    for (const id of callsById.keys()) if (!indexById.has(id)) strongConnect(id);
+    const reachesCycle = (start: number): boolean => {
+      const pending = [start];
+      const seen = new Set<number>();
+      while (pending.length > 0) {
+        const id = pending.pop()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (cyclicIds.has(id)) return true;
+        for (const callee of callsById.get(id) ?? []) pending.push(callee);
+      }
+      return false;
+    };
+    for (const fn of functions) {
+      if (fn.functionId !== undefined && fn.isEntryPoint && reachesCycle(fn.functionId)) {
+        fn.scalarJournalRecursive = true;
+      }
+    }
     this.journalSlotsByFunctionId = new Map([...slotsById]
       .filter(([id, slots]) => writerIds.has(id) && slots.size > 0)
       .map(([id, slots]) => [id, [...slots.values()]

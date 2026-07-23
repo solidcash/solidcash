@@ -51,6 +51,9 @@ export interface CompilerOptions {
   // (native cross-compilation), 'evm' = the 20-byte keccak EVM address. Omitted = `ecrecover` stays undefined.
   // See docs/ecrecover.md.
   ecrecover?: 'p2pkh' | 'evm';
+  // Experimental Release 4 compiler-hidden owner-local batch route. The
+  // covenant surface remains opt-in until its adversarial review is complete.
+  experimentalHiddenBatch?: boolean;
 }
 
 export interface AbiInput {
@@ -511,6 +514,19 @@ export interface Artifact {
    * eligibility, diagnostics, and hidden-batch planning. No covenant capability
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
+  hiddenBatch?: {
+    version: 1;
+    selector: '53434231';
+    maximumRows: number;
+    route: AbiFunction;
+    handlers: {
+      name: string;
+      selector: string;
+      inputs: AbiInput[];
+      eligible: boolean;
+      rejectionReason?: string;
+    }[];
+  };
   compiler: {
     name: string;
     version: string;

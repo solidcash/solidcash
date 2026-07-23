@@ -53,6 +53,7 @@ import {
   hash256 as hash256Sync,
   parseArrayTypeString,
   decodePackedEventArray,
+  scriptToBytecode,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
@@ -99,7 +100,7 @@ import {
   resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
 } from './covenant-helpers.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
-import { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import { ConstructorArgument, FunctionArgument, encodeFunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
@@ -1279,6 +1280,91 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error(`No function '${name}' on ${this.inner.name}. Available: ${available}.`);
     }
     return fn;
+  }
+
+  /**
+   * Execute several eligible public handlers against one physical owner input.
+   * The compiler-owned SCB1 route is selected only when advertised by the
+   * artifact; one ordinary invocation should continue to use its direct ABI
+   * wrapper.
+   */
+  batch(
+    invocations: readonly { function: string; args?: readonly FunctionArgument[] }[],
+  ): StatefulFunctionCall {
+    const capability = this.inner.artifact.hiddenBatch;
+    if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+    if (invocations.length < 1 || invocations.length > capability.maximumRows) {
+      throw new Error(`SCB1 batch row count must be between 1 and ${capability.maximumRows}`);
+    }
+    const structs = this.inner.artifact.structs ?? this.inner.stateLayout?.structs;
+    const rows = invocations.map((invocation, rowIndex) => {
+      const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
+      if (!handler) throw new Error(`Unknown SCB1 handler '${invocation.function}'`);
+      if (!handler.eligible) {
+        throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
+      }
+      const args = [...(invocation.args ?? [])];
+      if (args.length !== handler.inputs.length) {
+        throw new Error(
+          `Incorrect number of arguments for batched '${handler.name}': expected ${handler.inputs.length}, got ${args.length}`,
+        );
+      }
+      const encoded = args.map((arg, i) =>
+        encodeFunctionArgument(arg, handler.inputs[i].type, structs));
+      if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
+        throw new Error(`Handler '${handler.name}' contains a signature-like argument and cannot use SCB1`);
+      }
+      const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
+      if (argsBlob.length > 0xffff) throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
+      return StatefulContract._concatBytes(
+        hexToBin(handler.selector),
+        StatefulContract._uintLe(BigInt(rowIndex), 4),
+        StatefulContract._uintLe(0n, 2),
+        StatefulContract._uintLe(BigInt(argsBlob.length), 2),
+        argsBlob,
+      );
+    });
+    const blob = StatefulContract._concatBytes(
+      hexToBin('53434231'),
+      Uint8Array.from([1, 0, invocations.length]),
+      ...rows,
+    );
+    return this._batchRaw(blob);
+  }
+
+  /** @internal Adversarial-test hook: execute an exact candidate blob through
+   * the positional SCB1 route without canonical SDK construction. */
+  _batchRaw(blob: Uint8Array): StatefulFunctionCall {
+    const capability = this.inner.artifact.hiddenBatch;
+    if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+    return new StatefulFunctionCall(
+      this._createBuilder('__scb1', [blob], {
+        abiFunction: capability.route,
+        compilerRouteSelector: hexToBin(capability.selector),
+      }),
+      this as unknown as StatefulContract, '__scb1', [blob],
+    );
+  }
+
+  private static _uintLe(value: bigint, width: number): Uint8Array {
+    if (value < 0n || value >= (1n << BigInt(width * 8))) throw new Error(`Unsigned ${width}-byte overflow`);
+    const result = new Uint8Array(width);
+    let rest = value;
+    for (let i = 0; i < width; i++) {
+      result[i] = Number(rest & 0xffn);
+      rest >>= 8n;
+    }
+    return result;
+  }
+
+  private static _concatBytes(...parts: Uint8Array[]): Uint8Array {
+    const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+      result.set(part, offset);
+      offset += part.length;
+    }
+    return result;
   }
 
   /**
@@ -5826,13 +5912,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
+      abiFunction?: AbiFunction;
+      compilerRouteSelector?: Uint8Array;
     },
   ): Promise<StatefulTransactionBuilder> {
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
     const stateLayout = this.inner.stateLayout!;
 
     // Move ABI lookup FIRST so we can determine if full state is needed
-    const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    const abiFunction = overrides?.abiFunction
+      ?? this.inner.artifact.abi.find((f) => f.name === functionName);
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
 
@@ -8584,7 +8673,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // the mapped name, fall back to the ABI name so receive/fallback-only contracts still dispatch.
     const unlockName = functionName === '__fallback' ? 'fallback'
       : functionName === '__receive' ? 'receive' : functionName;
-    const unlockFn = (this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName];
+    const unlockFn = overrides?.compilerRouteSelector && abiFunction
+      ? this.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
+      : ((this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
     const masterUnlocker = unlockFn(...finalArgs);
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(this.inner, 0, this.categoryId),

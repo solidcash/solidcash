@@ -169,6 +169,113 @@ function setPrimaryContract(ast: Ast, name: string): void {
   ast.importedContracts = all.filter((c) => c !== target);
 }
 
+const SCB1_SELECTOR_HEX = '53434231';
+const MAX_HIDDEN_BATCH_ROWS = 8;
+
+/** Add the experimental Release 4 physical dispatcher after source lowering
+ * but before symbol/type analysis. Only signature-free scalar public handlers
+ * enter the initial covenant surface; every other source handler receives an
+ * explicit rejection reason in artifact metadata. */
+function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions): void {
+  if (!compilerOptions.experimentalHiddenBatch) return;
+  const contract = ast.contract;
+  if (contract.functions.some((fn) => fn.functionSelector
+    && binToHex(fn.functionSelector) === SCB1_SELECTOR_HEX)) {
+    throw new Error('Source function selector collides with reserved hidden batch selector 0x53434231');
+  }
+  const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of contract.functions) {
+    const group = byName.get(fn.name) ?? [];
+    group.push(fn);
+    byName.set(fn.name, group);
+  }
+  const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
+    || state.type === PrimitiveType.STRING
+    || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
+  const disallowedModifiers = new Set([
+    FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
+    FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
+  ]);
+  const eligible: FunctionDefinitionNode[] = [];
+  for (const fn of functions) {
+    const footprint = analyseFunctionFootprint(fn, byName);
+    let reason: string | undefined;
+    if (fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
+    else if (fn.returnTypes.length > 0) reason = 'return-routing-not-enabled';
+    else if (fn.parameters.some((parameter) => parameter.type.toString() === 'sig')) {
+      reason = 'transaction-signature-route-binding-required';
+    } else if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
+      reason = 'lifecycle-or-unsafe-handler';
+    } else if (footprint.unknown || footprint.effects.length > 0) reason = 'unresolved-or-effectful-handler';
+    else if ([...footprint.reads, ...footprint.writes].some((resource) =>
+      resource.startsWith('collection:'))) reason = 'collection-batch-journal-not-enabled';
+    else if ([...footprint.reads, ...footprint.writes].some((resource) =>
+      resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
+      reason = 'dynamic-state-batch-journal-not-enabled';
+    }
+    fn.hiddenBatchEligible = reason === undefined;
+    fn.hiddenBatchRejectionReason = reason;
+    if (!reason) eligible.push(fn);
+  }
+  if (eligible.length === 0) return;
+
+  const selector = (fn: FunctionDefinitionNode): string => binToHex(computeFunctionSelector(
+    computeFunctionSignature(fn.name, fn.parameters.map((parameter) =>
+      parameter.type.toString().replace(/address payable/g, 'address'))),
+  ));
+  const decodeAndCall = eligible.map((fn, handlerIndex) => {
+    const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+    if (fn.parameters.length === 0) {
+      return `${condition} { require(rowArgs.length == 0); ${fn.name}(); }`;
+    }
+    const declarations = fn.parameters.map((parameter, i) =>
+      `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
+    const schema = fn.parameters.map((parameter) => parameter.type.toString()).join(', ');
+    const callArgs = fn.parameters.map((_parameter, i) => `__scb_arg_${handlerIndex}_${i}`).join(', ');
+    const decode = declarations.length === 1
+      ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
+      : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
+    return `${condition} { ${decode} ${fn.name}(${callArgs}); }`;
+  }).join(' ');
+  const source = `pragma solidcash >=0.8.0;
+    contract __HiddenBatchHost() {
+      function __scb1(bytes batchBlob) external {
+        require(batchBlob.length >= 7);
+        require(batchBlob.slice(0, 4) == hex"53434231");
+        require(batchBlob.slice(4, 5) == hex"01");
+        require(batchBlob.slice(5, 6) == hex"00");
+        bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
+        require(rowCount >= 1 && rowCount <= ${MAX_HIDDEN_BATCH_ROWS});
+        bigint cursor = 7;
+        for (bigint row = 0; row < rowCount; row = row + 1) {
+          require(cursor + 13 <= batchBlob.length);
+          bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
+          cursor = cursor + 4;
+          bigint callsite = int(bytes.concat(batchBlob.slice(cursor, cursor + 4), hex"00"));
+          cursor = cursor + 4;
+          require(callsite == row);
+          bigint occurrence = int(bytes.concat(batchBlob.slice(cursor, cursor + 2), hex"00"));
+          cursor = cursor + 2;
+          require(occurrence == 0);
+          bigint argsLength = int(bytes.concat(batchBlob.slice(cursor, cursor + 2), hex"00"));
+          cursor = cursor + 2;
+          require(argsLength >= 0 && cursor + argsLength <= batchBlob.length);
+          bytes rowArgs = batchBlob.slice(cursor, cursor + argsLength);
+          cursor = cursor + argsLength;
+          ${decodeAndCall}
+          else { revert("unknown batch selector"); }
+        }
+        require(cursor == batchBlob.length);
+      }
+    }`;
+  const routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
+  const route = routeAst.contract.functions[0];
+  route.hiddenBatchRoute = true;
+  route.location = contract.location;
+  contract.functions.push(route);
+}
+
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
 function compileResolvedAst(
@@ -492,6 +599,8 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
+  synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
+
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
   ast = ast.accept(new TypeCheckTraversal()) as Ast;
@@ -560,6 +669,8 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
+  if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
   const invocationAnalysis = analyseContractInvocations(ast.contract);
   const selectorById = new Map(
     [...ast.contract.functions, ast.contract.fallbackDef, ast.contract.receiveDef]
@@ -585,6 +696,25 @@ function compileResolvedAst(
     })),
     components: invocationAnalysis.components,
   };
+  if (mergedCompilerOptions.experimentalHiddenBatch
+    && ast.contract.functions.some((fn) => fn.hiddenBatchRoute)) {
+    artifact.hiddenBatch = {
+      version: 1,
+      selector: SCB1_SELECTOR_HEX,
+      maximumRows: MAX_HIDDEN_BATCH_ROWS,
+      route: hiddenBatchRouteAbi!,
+      handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
+        name: fn.name,
+        selector: fn.functionSelector ? binToHex(fn.functionSelector) : '',
+        inputs: fn.parameters.map((parameter) => ({
+          name: parameter.name,
+          type: parameter.type.toString().replace(/address payable/g, 'address'),
+        })),
+        eligible: fn.hiddenBatchEligible === true,
+        ...(fn.hiddenBatchRejectionReason && { rejectionReason: fn.hiddenBatchRejectionReason }),
+      })),
+    };
+  }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   return artifact;

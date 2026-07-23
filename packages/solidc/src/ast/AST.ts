@@ -327,6 +327,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   scalarJournalRecursive?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
+  // Compiler-only SCB1 physical route; dispatched on the reserved selector but
+  // omitted from the source ABI.
+  hiddenBatchRoute?: boolean;
+  hiddenBatchEligible?: boolean;
+  hiddenBatchRejectionReason?: string;
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   isFallback: boolean = false;

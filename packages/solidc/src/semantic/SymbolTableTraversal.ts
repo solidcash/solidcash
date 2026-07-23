@@ -864,7 +864,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity ABI selectors erase address payability (including inside arrays), matching artifact ABI types.
       const paramTypes = func.parameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
       const sig = computeFunctionSignature(func.name, paramTypes);
-      const selector = computeFunctionSelector(sig);
+      const selector = func.hiddenBatchRoute
+        ? Uint8Array.from([0x53, 0x43, 0x42, 0x31])
+        : computeFunctionSelector(sig);
       const selectorHex = binToHex(selector);
 
       const collision = selectorMap.get(selectorHex);

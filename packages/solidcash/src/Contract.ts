@@ -420,6 +420,14 @@ export class Contract<
     };
   }
 
+  /** @internal Construct an unlocker for a compiler-owned physical route
+   * which is advertised outside the source ABI (for example SCB1). */
+  createCompilerRouteUnlocker(
+    abiFunction: AbiFunction, selector: Uint8Array,
+  ): ContractFunctionUnlocker {
+    return this.createUnlocker(abiFunction, selector);
+  }
+
   // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so a reader is
   // always STATEFUL and its co-spend is resolved by StatefulContract via the blockhashOracle block-layout
   // slot. Returns [] when the function reads no blockhash; otherwise reaching this base-Contract path means

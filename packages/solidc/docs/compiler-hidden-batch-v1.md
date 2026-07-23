@@ -18,8 +18,9 @@ Implementation snapshot (2026-07-23):
   flushes its chunks once. Runtime-varying aliases and dynamic cold keys retain the conservative path.
 - Release 4 is enabled only by `experimentalHiddenBatch`. It advertises `hiddenBatch.version == 1`,
   keeps `__scb1` out of the source ABI, and admits either signature-free route-stable scalar
-  handlers or handlers sharing one parameter-keyed mapping entry. The latter binds every decoded
-  row key to hidden physical-route witnesses and rejects divergent aliases. A separate bounded route
+  handlers, handlers sharing one parameter-keyed mapping entry, or the exact two-row
+  resource-shaped mapping route described below. The mapping routes bind every decoded row key to
+  hidden physical-route witnesses. A separate bounded route
   mode commits one common return type per row into an eight-slot result blob; event and satoshi-value
   modes allocate one conditional effect slot per row and materialize only the reached prefix. Mixed
   route modes, dynamic state, heterogeneous/multiple returns or effects, caller-sensitive
@@ -34,27 +35,27 @@ Implementation snapshot (2026-07-23):
 - Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
   omission, injection, argument reordering, unchecked suffixes, count substitution, the positional
   blob locator, target and output substitution, capability mismatch, duplicate physical inputs,
-  atomic rollback, and physical owner cardinality. Executable scalar topology slices cover
-  TreasurySplit, Marketplace reward distribution, and MasterChef double mint. They do not model
-  mapping-backed ERC-20 settlement. A real `transferFrom` graduation fixture touching sender
-  balance, recipient balance, and allowance is rejected without hidden-route bytecode overhead,
-  and its repeated external caller fails before transaction construction. Default enablement
-  remains forbidden until that resource shape is supported and the normative independent reviews
-  pass.
-- The final validation snapshot passes 2,297 compiler tests and 3,256 SDK tests; the SDK total
-  excludes the repository's existing 24 skips and 9 todos.
+  atomic rollback, and physical owner cardinality. Executable topology slices cover TreasurySplit,
+  Marketplace reward distribution, MasterChef double mint, and a mapping-backed ERC-20
+  `transferFrom` pair. The ERC-20 fixture shares sender balance and nested allowance across rows,
+  uses distinct existing recipient entries, and settles through one token owner. Repeated physical
+  entry aliases and cold recipient insertion fail before construction in v1.
+- Final full-suite totals are recorded in the review handoff after validation.
 
 Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `ping()` fixture):
 
 | covenant | direct bytes | batch bytes | batch delta |
 |---|---:|---:|---:|
-| B parser/dispatcher | 369 | 1,217 | +848 |
-| A, 2 rows | 407 | 515 | +108 |
-| A, 3 rows | 426 | 539 | +113 |
-| A, 8 rows | 518 | 659 | +141 |
+| B parser/dispatcher | 369 | 1,477 | +1,108 |
+| A, 2 rows | 407 | 518 | +111 |
+| A, 3 rows | 426 | 542 | +116 |
+| A, 8 rows | 518 | 662 | +144 |
+| ERC-20 `transferFrom`, exact 2-row route | 3,047 | 9,775 | +6,728 |
 
-`BatchCostRegression.test.ts` freezes these deployed-byte measurements and the 760-byte hidden route
-body. They are compiler footprint evidence, not a substitute for transaction-specific VM metrics:
+`BatchCostRegression.test.ts` freezes these deployed-byte measurements, the 1,020-byte scalar
+hidden route body, and the 6,532-byte ERC-20 route body. The ERC-20 artifact has only 225 bytes of
+headroom below the 10,000-byte P2SH limit, so any growth is release-significant. These are compiler
+footprint evidence, not a substitute for transaction-specific VM metrics:
 the final Release 0 gate still records evaluated instruction cost, pushed bytes, stack/memory peaks,
 unlocking sizes, and complete transaction sizes from constructed 2/3/8-row transactions.
 
@@ -62,9 +63,9 @@ Constructed Release 5 transactions are pinned under `BCH_2026_05`:
 
 | rows | tx bytes | A instructions | A op cost / budget | A peak items/bytes | A unlock | B instructions | B op cost / budget | B peak items/bytes | B unlock |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | 5,600 | 1,076 | 135,926 / 1,629,600 | 12 / 2,716 | 1,996 | 2,573 | 274,873 / 2,093,600 | 18 / 2,571 | 2,576 |
-| 3 | 5,615 | 1,199 | 148,566 / 1,630,400 | 13 / 2,769 | 1,997 | 3,236 | 343,076 / 2,104,000 | 18 / 2,584 | 2,589 |
-| 8 | 5,669 | 949 | 124,692 / 1,628,000 | 10 / 2,997 | 1,994 | 5,183 | 550,124 / 2,150,400 | 15 / 2,641 | 2,647 |
+| 2 | 5,915 | 1,079 | 138,080 / 1,636,800 | 12 / 3,022 | 2,005 | 2,743 | 316,607 / 2,338,400 | 20 / 5,834 | 2,882 |
+| 3 | 5,943 | 1,202 | 150,798 / 1,637,600 | 13 / 3,088 | 2,006 | 3,424 | 386,913 / 2,359,200 | 20 / 5,912 | 2,908 |
+| 8 | 6,055 | 952 | 127,276 / 1,635,200 | 10 / 3,374 | 2,003 | 5,461 | 610,442 / 2,452,000 | 17 / 6,259 | 3,024 |
 
 The VM tests additionally freeze pushed bytes, hash iterations, and both data-NFT input projections.
 Peak figures combine the main and alternate stacks and sum resident item bytes at every debug-trace
@@ -242,9 +243,11 @@ flush()          -> one authenticated backend transition per dirty resource
 
 Scalar assignments, bytes/string replacement, mappings, arrays, balances, allowances, supply, and
 container operations execute in row order when their physical resource shape is eligible. V1 does
-not aggregate ERC-20 deltas. The implemented hidden route currently admits at most one shared
-parameter-keyed entry per collection; this is insufficient for an ERC-20 transfer which settles
-both sender and recipient entries, and therefore that handler is batch-ineligible.
+not aggregate ERC-20 deltas. In addition to the shared-entry route, the compiler implements one
+exact two-row resource route: the first observed key alternative for each collection is global and
+subsequent alternatives are row-local. For `transferFrom`, sender balance and nested allowance are
+loaded once and journaled across both rows, while each distinct recipient has one physical entry.
+The route advertises exactly two rows; it is not a general resource-table protocol.
 
 The journal representation is selected by the Release 1 benchmark. The default candidate is
 authenticated base values plus an append-only `(slot, value)` write log. Deep mutable stack-frame
@@ -326,11 +329,7 @@ Rejected in v1:
 - a batch requiring more than one existing split facet;
 - unresolved dynamic storage witnesses or over-limit batches.
 
-### 7.1 Mapping-backed ERC-20 graduation boundary
-
-The scalar corpus contracts prove repeated-callee topology, caller binding, row order, and one owner
-transition. They intentionally replace real token entries with scalar counters. They are not
-evidence that the current SCB1 physical route can settle an ERC-20 transfer.
+### 7.1 Mapping-backed ERC-20 resource route
 
 A real `transferFrom` requires one shared sender balance, one shared allowance (possibly nested), and
 one recipient balance per logical row. A prototype which placed the union of every possible entry
@@ -342,18 +341,28 @@ slot into one SCB1 route was rejected after VM construction exposed two structur
   locking-bytecode and preservation obligations, so unauthenticated dummy inputs cannot safely fill
   them.
 
-The next candidate MUST use resource-shaped hidden routes: each advertised route describes one exact
-physical resource layout, not the union of unrelated handlers or inactive rows. The compiler may
-share globally keyed entries once and allocate distinct per-row entries only where the canonical
-resource table proves they are distinct. The SDK may select only an exact advertised shape after
-concrete key/owner resolution. Aliases which cannot be represented by one settlement transition
-fail closed.
+The implemented replacement is resource-shaped: its capability describes only the exact global and
+per-row physical resources used by one eligible handler. The SDK resolves concrete keys, supplies
+one predecessor per advertised slot, and iteratively derives each authenticated entry output.
+The VM fixture proves shared sender and nested allowance read-your-writes, two distinct recipients,
+ordered debit/credit semantics, one token owner, and one output per dirty entry.
 
-This candidate is a new measured protocol surface. It requires compiler, SDK, and BCH VM tests for
-same-sender aliasing, repeated and distinct recipients, sender-equals-recipient, nested allowance
-keys, missing/cold entries, row omission/reordering, and one output per dirty entry. Until those
-tests and an independent implementation/covenant review pass, mapping-backed ERC-20 repeated calls
-are a blocker for default-enabling Release 5.
+The accepted v1 shape is deliberately narrower than ERC-20 in general:
+
+- both recipient entries must already exist;
+- the two recipient entries must be physically distinct;
+- neither recipient may alias the sender entry; and
+- the route has exactly two rows.
+
+Cold-entry predecessor creation and physical aliases fail before transaction construction. These
+are capability boundaries, not fallback semantics. Same-recipient and sender-equals-recipient
+could later be supported by separately advertised shapes which collapse the aliases into one live
+journal; cold inserts require authenticated predecessor planning. Neither may be inferred from the
+current route.
+
+The resource route is 9,775 bytes in the frozen fixture. Independent review remains required before
+default enablement, with particular attention to key classification, global/per-row witness
+binding, alias rejection, iterative output derivation, and the 225-byte size margin.
 
 ## 8. Split contracts
 

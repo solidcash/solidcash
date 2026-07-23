@@ -173,7 +173,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 const SCB1_SELECTOR_HEX = '53434231';
 const MAX_HIDDEN_BATCH_ROWS = 8;
-const MAX_HIDDEN_BATCH_BLOB_BYTES = 75;
+const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
  * but before symbol/type analysis. Only signature-free scalar public handlers
@@ -280,7 +280,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         require(rowCount >= 1 && rowCount <= ${MAX_HIDDEN_BATCH_ROWS});
         bigint cursor = 7;
         for (bigint row = 0; row < rowCount; row = row + 1) {
-          require(cursor + 13 <= batchBlob.length);
+          require(cursor + 12 <= batchBlob.length);
           bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
           cursor = cursor + 4;
           bigint callsite = int(bytes.concat(batchBlob.slice(cursor, cursor + 4), hex"00"));

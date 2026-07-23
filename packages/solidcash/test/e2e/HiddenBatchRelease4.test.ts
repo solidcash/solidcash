@@ -65,6 +65,12 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
     await contract.check(7n).send();
   });
 
+  it('executes the frozen eight-row maximum through a minimal PUSHDATA1 blob', async () => {
+    const contract = await deploy();
+    await contract.batch(Array.from({ length: 8 }, () => ({ function: 'clear' }))).send();
+    await contract.check(0n).send();
+  });
+
   it('rejects malformed limits and unknown handlers before construction', async () => {
     const contract = await deploy();
     expect(() => contract.batch([])).toThrow(/row count/);
@@ -75,9 +81,9 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
 
   it('enforces the frozen blob-byte limit in both the SDK and covenant', async () => {
     const contract = await deploy();
-    const oversizedArgument = new Uint8Array(63);
+    const oversizedArgument = new Uint8Array(211);
     expect(() => contract.batch([{ function: 'note', args: [oversizedArgument] }]))
-      .toThrow(/maximum is 75/);
+      .toThrow(/maximum is 223/);
 
     const selector = contract.inner.artifact.hiddenBatch!.handlers
       .find((handler) => handler.name === 'note')!.selector;
@@ -86,7 +92,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
       hexToBin('53434231'), Uint8Array.from([1, 0, 1]), hexToBin(selector),
       le(0, 4), le(0, 2), le(encodedArgument.length, 2), encodedArgument,
     );
-    expect(oversizedRaw.length).toBeGreaterThan(75);
+    expect(oversizedRaw.length).toBeGreaterThan(223);
     await expect(contract._batchRaw(oversizedRaw).send()).rejects.toThrow();
   });
 

@@ -17711,33 +17711,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(hexToBin('0453434231'), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData); // [idx, remainder]
 
-    // The initial Release 5 comparator deliberately caps the complete blob at
-    // 75 bytes, so its second push has the unique one-byte minimal encoding.
+    // Construct the exact minimal push encoding of the expected blob. Blobs
+    // through 75 bytes use a one-byte direct-push opcode; the remainder of the
+    // frozen 223-byte envelope uses OP_PUSHDATA1 followed by one length byte.
+    // Comparing the complete encoded push avoids divergent locator/parser
+    // rules and rejects non-minimal encodings without content scanning.
     this.emit(encodeInt(BigInt(this.getStackIndex(accumulator) + 2)), locationData);
     this.emit(Op.OP_PICK, locationData); // [idx, remainder, expected]
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(75n), locationData);
+    this.emit(encodeInt(223n), locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData); // [idx, remainder, expected, expectedLen]
 
-    // Split and verify the minimal second-push opcode equals expectedLen.
-    this.emit(Op.OP_ROT, locationData); // [idx, expected, expectedLen, remainder]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(75n), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
     this.emit(encodeInt(1n), locationData);
-    this.emit(Op.OP_SPLIT, locationData); // [idx, expected, expectedLen, opcode, payload]
-    this.emit(Op.OP_ROT, locationData); // [idx, expected, opcode, payload, expectedLen]
-    this.emit(Op.OP_ROT, locationData); // [idx, expected, payload, expectedLen, opcode]
-    this.emit(Op.OP_BIN2NUM, locationData);
-    this.emit(Op.OP_NUMEQUALVERIFY, locationData); // [idx, expected, payload]
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(hexToBin('4c'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ENDIF, locationData);
 
-    // Consume exactly expectedLen bytes from the positional payload and compare
-    // the complete blob directly. The remainder begins with B's redeem script.
-    this.emit(Op.OP_OVER, locationData); // [idx, expected, payload, expected]
+    // Consume exactly the encoded second push and compare it byte-for-byte.
+    // The remainder begins with B's compiler-declared wrapper/redeem pushes.
+    this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData); // [idx, expected, payload, len]
-    this.emit(Op.OP_SPLIT, locationData); // [idx, expected, actualBlob, remainder]
+    this.emit(Op.OP_NIP, locationData); // [idx, remainder, encodedExpectedPush, len]
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_SPLIT, locationData); // [idx, encodedExpectedPush, actualPush, remainder]
     this.emit(Op.OP_DROP, locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData); // [idx]
   }

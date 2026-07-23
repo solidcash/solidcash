@@ -7,6 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const INTERFACE = `
 interface ICounter {
   function add(int amount);
+  function clear();
   function multiply(int factor);
 }
 `;
@@ -22,6 +23,10 @@ contract Counter() is ICounter {
   }
   function check(int expected) public {
     require(this.counter == expected);
+  }
+  function clear() public {
+    this.counter = 0;
+    require(true);
   }
   function multiply(int factor) public {
     this.counter = this.counter * factor;
@@ -50,6 +55,18 @@ contract Caller(bytes counterAddress) {
     ICounter(counterAddress).multiply(factor);
     this.runs = this.runs + 1;
     require(first >= 0 && second >= 0 && factor >= 0);
+  }
+  function runEight() public {
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    ICounter(counterAddress).clear();
+    this.runs = this.runs + 1;
+    require(true);
   }
 }
 `;
@@ -111,6 +128,17 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     await caller.runTriple(2n, 3n, 4n).send();
     await caller.checkRuns(1n).send();
     await callee.check(20n).send();
+  });
+
+  it('binds and executes the eight-row maximum through a positional PUSHDATA1 blob', async () => {
+    const { caller, callee, calleeCategory } = await deploy();
+    const builder = await caller.runEight().build();
+    expect(builder.inputs.filter((input) =>
+      input.token?.category === calleeCategory && input.token.nft?.capability === 'minting')).toHaveLength(1);
+
+    await caller.runEight().send();
+    await caller.checkRuns(1n).send();
+    await callee.check(0n).send();
   });
 
   it('rejects substituting a different SCB1-capable contract for the pinned callee owner', async () => {

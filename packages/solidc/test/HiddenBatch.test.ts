@@ -19,7 +19,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       version: 1,
       selector: '53434231',
       maximumRows: 8,
-      maximumBlobBytes: 75,
+      maximumBlobBytes: 223,
     });
     expect(artifact.abi.some((fn) => fn.name === '__scb1')).toBe(false);
     expect(artifact.hiddenBatch?.route.selector).toBe('53434231');

@@ -18,7 +18,8 @@ Implementation snapshot (2026-07-23):
 - Release 5 is enabled only by `experimentalRepeatedExternalBatch`. It groups one straight-line
   repeated callee, builds rows from the arguments actually evaluated by A, requires a compatible
   Release 4 capability from B, compares the exact positional second push byte-for-byte, and uses
-  one physical B owner. The current comparator intentionally caps the complete blob at 75 bytes.
+  one physical B owner. The comparator accepts canonical direct pushes and `OP_PUSHDATA1`, and caps
+  the complete blob at 223 bytes so the frozen eight-row maximum is constructible.
 - Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
   omission, injection, argument reordering, target substitution, capability mismatch, and physical
   owner cardinality. Default enablement remains forbidden until the normative ship gates pass.

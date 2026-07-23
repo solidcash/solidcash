@@ -9397,7 +9397,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     functionArgs: FunctionArgument[],
     artifact: Artifact,
   ): FunctionArgument[] | undefined {
-    if (!argSources || argSources.length === 0) return undefined;
+    if (!argSources) return undefined;
+    if (argSources.length === 0) return [];
 
     const resolved: FunctionArgument[] = [];
     for (const source of argSources) {
@@ -9489,7 +9490,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         || handler.inputs.some((input, index) => input.type !== row.inputs[index].type)) {
         throw new Error(`External SCB1 selector ${row.selector} has incompatible caller/callee input types`);
       }
-      const args = this._resolveExternalArgs(row.argSources, functionArgs, this.inner.artifact);
+      const args = row.inputs.length === 0
+        ? []
+        : this._resolveExternalArgs(row.argSources, functionArgs, this.inner.artifact);
       if (!args || args.length !== row.inputs.length) {
         throw new Error(`Could not resolve every argument for external SCB1 row ${rowIndex}`);
       }
@@ -9511,10 +9514,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const blob = StatefulContract._concatBytes(
       hexToBin('53434231'), Uint8Array.from([1, 0, rows.length]), ...encodedRows,
     );
-    // Release 5's caller comparator deliberately requires a canonical direct
-    // push opcode, whose largest payload is 75 bytes.
-    if (blob.length > 75) {
-      throw new Error(`External SCB1 blob is ${blob.length} bytes; Release 5 maximum is 75`);
+    if (blob.length > capability.maximumBlobBytes) {
+      throw new Error(
+        `External SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
+      );
     }
     return {
       abiFunction: capability.route,

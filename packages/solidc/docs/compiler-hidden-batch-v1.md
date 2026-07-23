@@ -41,7 +41,7 @@ Implementation snapshot (2026-07-23):
   and its repeated external caller fails before transaction construction. Default enablement
   remains forbidden until that resource shape is supported and the normative independent reviews
   pass.
-- The final validation snapshot passes 2,296 compiler tests and 3,255 SDK tests; the SDK total
+- The final validation snapshot passes 2,297 compiler tests and 3,256 SDK tests; the SDK total
   excludes the repository's existing 24 skips and 9 todos.
 
 Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `ping()` fixture):

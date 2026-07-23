@@ -66,6 +66,7 @@ import {
   vmNumberToBigInt,
   utf8ToBin,
   binToUtf8,
+  lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
@@ -102,7 +103,8 @@ import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
-  addressToLockScript, findLastIndex, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode,
+  addressToLockScript, findLastIndex, generateLibauthSourceOutputs, getNetworkPrefix, scriptToAddress,
+  scriptToLockingBytecode,
 } from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -9204,7 +9206,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const structs = this.inner.artifact.stateLayout?.structs;
     if (outputs.length === 1) {
-      return attachDecodedAccessors(decodePushdataValue(blob, 0, outputs[0].type, structs).value);
+      const decoded = decodePushdataValue(blob, 0, outputs[0].type, structs).value;
+      const addressBytecode = decoded instanceof Uint8Array
+        ? decoded
+        : typeof decoded === 'string' && decoded.startsWith('0x') ? hexToBin(decoded.slice(2)) : undefined;
+      if (outputs[0].type === 'address' && addressBytecode) {
+        const cashaddr = lockingBytecodeToCashAddress({
+          bytecode: addressBytecode,
+          prefix: getNetworkPrefix(this.inner.provider.network),
+          tokenSupport: false,
+        });
+        if (typeof cashaddr !== 'string') return cashaddr.address;
+      }
+      return attachDecodedAccessors(decoded);
     }
     // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
     // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather

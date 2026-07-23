@@ -251,21 +251,25 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         this.owner = next;
         emit OwnershipTransferred(previous, next);
       }
+      function transferOwnership(address next) public virtual onlyOwner { _transferOwnership(next); }
     }
     contract InheritedOwnerImpl() is OwnableBase {
       function initialize() public initializer { this.owner = msg.sender; }
-      function transferOwnership(address next) public onlyOwner { _transferOwnership(next); }
+      function transferOwnership(address next) public override onlyOwner { super.transferOwnership(next); }
     }`;
 
   it('preserves msg.sender through an inherited owner modifier with an address argument', async () => {
     const signer = await fundedSigner();
     await signer.provider.addUtxo(signer.getAddress(), { txid: 'c4'.repeat(32), vout: 0, satoshis: 1_000_000n });
     const implArtifact = compileString(INHERITED_OWNER_IMPL, { solidityImportCompat: true });
+    expect(implArtifact.abi.find((entry) => entry.name === 'transferOwnership')?.emits).toEqual([
+      expect.objectContaining({ eventSignature: 'OwnershipTransferred(address,address)' }),
+    ]);
     const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
 
     expect((await (proxy.proxy as any).getState()).owner).toBeInstanceOf(Uint8Array);
     await (proxy as any).transferOwnership(signer.getAddress()).send();
-    expect(await (proxy as any).owner()).toMatch(/^0x[0-9a-f]+$/);
+    expect(await (proxy as any).owner()).toBe(signer.getAddress());
   });
 
   // Robustness of events-in-delegate: an indexed param, two emits in one call, and a no-arg event.

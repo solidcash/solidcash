@@ -152,6 +152,27 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         this.keepDefFns.add(fn.name);
       }
     }
+    // Modifier/base wrappers can become stateful only after their selected callees are inlined. Close over the
+    // actual inlining set (rather than only direct AST state access), so `override onlyOwner {
+    // super.transferOwnership(n); }` cannot leave a context-dependent preserved base body behind as OP_INVOKE.
+    let addedWrapper = true;
+    while (addedWrapper) {
+      addedWrapper = false;
+      for (const fn of node.functions) {
+        if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
+          || valueReferenced.has(fn.name)) continue;
+        let callsSelected = false;
+        this.walk(fn.body, (candidate) => {
+          if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
+            callsSelected = true;
+          }
+        });
+        if (!callsSelected) continue;
+        this.inlinedFns.add(fn.name);
+        if (!this.isInternalHelper(fn)) this.keepDefFns.add(fn.name);
+        addedWrapper = true;
+      }
+    }
     // The fallback is internally callable via the self low-level-call lowering; a state-touching one must
     // inline at those call sites (its definition always stays - it is a dispatched entry point).
     if (node.fallbackDef?.body && node.fallbackDef.returnTypes.length === 0

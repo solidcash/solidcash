@@ -1,4 +1,4 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
   Artifact, AbiFunction, attachDecodedAccessors, buildEventNftCovenantScript, computeEventNameHash,
 } from '@solidcash/utils';
@@ -9,7 +9,7 @@ import { StatefulContract, StatefulFunctionCall, ContractRunner } from './Statef
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { FunctionArgument } from '../Argument.js';
-import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
+import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
@@ -273,7 +273,12 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             }
             const getter = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
             if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array) {
-              return `0x${binToHex(value)}`;
+              const cashaddr = lockingBytecodeToCashAddress({
+                bytecode: value,
+                prefix: getNetworkPrefix(target.proxy.inner.provider.network),
+                tokenSupport: false,
+              });
+              return typeof cashaddr === 'string' ? `0x${binToHex(value)}` : cashaddr.address;
             }
             return value;
           };

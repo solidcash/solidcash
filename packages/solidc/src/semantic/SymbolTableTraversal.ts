@@ -1714,6 +1714,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             const group = repeated[0];
             const representative = group[0];
             representative.batchInvocations = group.map((slot, logicalIndex) => {
+              slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
               const iface = this.interfaceMap.get(slot.interfaceName);
               const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
                 .find((fn) => fn.name === slot.functionName);

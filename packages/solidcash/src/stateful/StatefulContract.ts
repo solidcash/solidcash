@@ -7450,6 +7450,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Resolve external category ID from the resolved external contract (address model: A's args
         // bake the callee address, so its category comes from the registered external instance).
         const externalCategoryId = callInfo.externalContract.categoryId;
+        const compilerRoute = this._buildRepeatedExternalBatch(
+          ec, args, callInfo.externalContract as StatefulContract,
+        );
 
         // Get B's on-chain state
         const bState = await callInfo.externalContract.getFullState();
@@ -7482,10 +7485,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         // Build B's full block inputs when B's function has entries/events/transfers
         const bSc = callInfo.externalContract as StatefulContract | null;
-        const bAbiFunc = bSc
+        const bAbiFunc = compilerRoute?.abiFunction ?? (bSc
           ? (bSc.inner.artifact.abi as readonly AbiFunction[])
             .find((f) => f.name === callInfo.functionName)
-          : undefined;
+          : undefined);
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
         // Cross-contract callee LOOP write metadata (docs/deferrals.md #1): populated after the block build below.
@@ -7809,6 +7812,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: callInfo.functionName,
           functionArgs: callInfo.args,
           externalContract: callInfo.externalContract,
+          ...(compilerRoute && { compilerRoute }),
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
@@ -8040,11 +8044,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Build hidden args by scanning the function's ABI inputs for hidden param names
         type AbiEntry = { name: string; inputs: readonly { name: string }[]; externalCalls?: readonly ExternalCallAbi[] };
         const bAbiAll = group.externalContract.inner.artifact.abi as readonly AbiEntry[];
-        const bAbiFunc = bAbiAll.find((f) => f.name === group.functionName);
+        const bAbiFunc = group.compilerRoute?.abiFunction
+          ?? bAbiAll.find((f) => f.name === group.functionName);
         const bAbiInputs = bAbiFunc?.inputs ?? [];
-        const userArgCount = group.functionArgs.length;
+        const routeArgs = group.compilerRoute ? [group.compilerRoute.blob] : group.functionArgs;
+        const userArgCount = routeArgs.length;
 
-        let bFinalArgs = [...group.functionArgs];
+        let bFinalArgs = [...routeArgs];
         let bReturningSlotIdx = 0;
 
         // Pre-compute child group indices for transitive param resolution
@@ -8111,9 +8117,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         // Create master unlocker
-        const bMasterUnlocker = (group.externalContract.inner.unlock as any)[group.functionName](
-          ...bFinalArgs,
-        );
+        const bMasterUnlocker = group.compilerRoute
+          ? group.externalContract.inner.createCompilerRouteUnlocker(
+            group.compilerRoute.abiFunction, group.compilerRoute.selector,
+          )(...bFinalArgs)
+          : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
         group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
 
         // Advance to next group
@@ -8138,19 +8146,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // A single-method callee has no witness selector param (its unlocking carries no selector); only groups
           // the compiler marked needsSelectorVerification get a filled selector. Absent (older artifacts) = fill.
           if ((groupMetas[i].ecSlot as { needsSelectorVerification?: boolean }).needsSelectorVerification === false) continue;
-          const bAbi = group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[];
-          const targetFunc = bAbi.find((f) => f.name === group.functionName);
-          if (!targetFunc) {
+          const targetSelector = group.compilerRoute
+            ? binToHex(group.compilerRoute.selector)
+            : (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+              .find((f) => f.name === group.functionName)?.selector;
+          if (!targetSelector) {
             throw new Error(
               `Function '${group.functionName}' not found in external contract ABI`,
             );
           }
-          if (!targetFunc.selector) {
-            throw new Error(
-              `Function '${group.functionName}' has no selector in external contract ABI`,
-            );
-          }
-          finalArgs = [...finalArgs, hexToBin(targetFunc.selector)];
+          finalArgs = [...finalArgs, hexToBin(targetSelector)];
         }
       }
 
@@ -9434,6 +9439,83 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
     return resolved;
+  }
+
+  /**
+   * Construct the exact positional SCB1 blob expected by a grouped external
+   * call. The callee capability is treated as untrusted artifact data: every
+   * logical selector must resolve to an advertised eligible handler with the
+   * same input types before any transaction is built.
+   */
+  private _buildRepeatedExternalBatch(
+    externalCall: ExternalCallAbi,
+    functionArgs: FunctionArgument[],
+    externalContract: StatefulContract,
+  ): { abiFunction: AbiFunction; selector: Uint8Array; blob: Uint8Array } | undefined {
+    const rows = externalCall.batchInvocations;
+    if (!rows) return undefined;
+    if (rows.length < 2) throw new Error('Repeated external SCB1 batch must contain at least two rows');
+
+    const capability = externalContract.inner.artifact.hiddenBatch;
+    if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
+      throw new Error(
+        `${externalCall.interfaceName} does not advertise the compatible compiler-hidden SCB1 route`,
+      );
+    }
+    if (rows.length > capability.maximumRows) {
+      throw new Error(
+        `Repeated external SCB1 batch has ${rows.length} rows, exceeding callee limit ${capability.maximumRows}`,
+      );
+    }
+
+    const structs = externalContract.inner.artifact.structs
+      ?? externalContract.inner.stateLayout?.structs;
+    const encodedRows = rows.map((row, rowIndex) => {
+      if (row.logicalIndex !== rowIndex) {
+        throw new Error('Repeated external SCB1 rows must use canonical contiguous callsite indices');
+      }
+      const handler = capability.handlers.find((candidate) => candidate.selector === row.selector);
+      if (!handler?.eligible) {
+        throw new Error(
+          `External SCB1 selector ${row.selector} is not advertised as an eligible callee handler`,
+        );
+      }
+      if (handler.inputs.length !== row.inputs.length
+        || handler.inputs.some((input, index) => input.type !== row.inputs[index].type)) {
+        throw new Error(`External SCB1 selector ${row.selector} has incompatible caller/callee input types`);
+      }
+      const args = this._resolveExternalArgs(row.argSources, functionArgs, this.inner.artifact);
+      if (!args || args.length !== row.inputs.length) {
+        throw new Error(`Could not resolve every argument for external SCB1 row ${rowIndex}`);
+      }
+      const encoded = args.map((arg, index) =>
+        encodeFunctionArgument(arg, row.inputs[index].type, structs));
+      if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
+        throw new Error('Signature-like arguments are not eligible for external SCB1 batching');
+      }
+      const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
+      if (argsBlob.length > 0xffff) throw new Error(`External SCB1 row ${rowIndex} exceeds 65535 bytes`);
+      return StatefulContract._concatBytes(
+        hexToBin(row.selector),
+        StatefulContract._uintLe(BigInt(row.logicalIndex), 4),
+        StatefulContract._uintLe(0n, 2),
+        StatefulContract._uintLe(BigInt(argsBlob.length), 2),
+        argsBlob,
+      );
+    });
+    const blob = StatefulContract._concatBytes(
+      hexToBin('53434231'), Uint8Array.from([1, 0, rows.length]), ...encodedRows,
+    );
+    // Release 5's caller comparator deliberately requires a canonical direct
+    // push opcode, whose largest payload is 75 bytes.
+    if (blob.length > 75) {
+      throw new Error(`External SCB1 blob is ${blob.length} bytes; Release 5 maximum is 75`);
+    }
+    return {
+      abiFunction: capability.route,
+      selector: hexToBin(capability.selector),
+      blob,
+    };
   }
 
   /**

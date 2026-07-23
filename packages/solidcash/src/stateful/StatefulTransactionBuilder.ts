@@ -10,6 +10,7 @@ import {
   EventDefinitionAbi,
   StateValue,
   FunctionBlockLayout,
+  AbiFunction,
   BlockSlotKind,
   attachDecodedAccessors,
 } from '@solidcash/utils';
@@ -90,6 +91,12 @@ export interface ExternalCallUtxoGroup {
   functionArgs: any[];
   externalContract: any; // StatefulContract - kept as any to avoid circular import
   callMode?: 'call' | 'staticcall' | 'delegatecall';
+  /** Compiler-owned hidden route used for a grouped logical invocation. */
+  compilerRoute?: {
+    abiFunction: AbiFunction;
+    selector: Uint8Array;
+    blob: Uint8Array;
+  };
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** B's function block layout (for full block ordering) */

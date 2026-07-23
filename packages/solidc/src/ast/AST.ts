@@ -1826,6 +1826,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** Ordered row identity within one compiler-hidden repeated-callee batch. */
+  externalBatchLogicalIndex?: number;
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;

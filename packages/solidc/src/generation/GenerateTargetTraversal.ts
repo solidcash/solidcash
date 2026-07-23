@@ -10797,7 +10797,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
-    const batchRow = physicalSlot?.batchInvocations?.find((row) => row.parameters === node.parameters);
+    const batchRow = node.externalBatchLogicalIndex === undefined
+      ? undefined
+      : physicalSlot?.batchInvocations?.find((row) => row.logicalIndex === node.externalBatchLogicalIndex);
     if (batchRow) this.appendExternalBatchRow(batchRow, node, locationData);
 
     // Inline loop-indexed dispatch: `targets[i].call/staticcall(data[i])` over a calldata/param address array
@@ -10895,6 +10897,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let i = 0; i < row.parameters.length; i++) {
         this.visit(row.parameters[i]);
         this.emitPushdataEncode(row.parameterTypes[i], locationData);
+        this.popFromStack();
+        this.pushToStack(i === 0 ? '(__batch_args)' : '(__batch_arg)');
         if (i > 0) {
           this.emit(Op.OP_CAT, locationData);
           this.popFromStack(2);
@@ -10906,6 +10910,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
+    this.pushToStack('(__batch_args_length)');
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_NUM2BIN, locationData);
     this.emit(Op.OP_SWAP, locationData);

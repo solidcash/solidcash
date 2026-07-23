@@ -16477,7 +16477,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, locationData);         // [idx]
 
       // 4. Verify B's function selector (REGULAR only, skip for call/staticcall)
-      if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {
+      const sharesTargetWithAnotherSlot = !!slot.addressParam
+        && this.externalCallSlots.some((candidate) => (
+          candidate !== slot && candidate.addressParam === slot.addressParam
+        ));
+      if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification
+        && !sharesTargetWithAnotherSlot) {
         // Selector-first: the selector is always the first push in B's unlocking bytecode.
         // MINIMALDATA guarantees a 4-byte selector uses a 0x04 prefix (1 byte).
         // Same code for P2S, P2SH32, and P2SH20 - no address-type branching needed.

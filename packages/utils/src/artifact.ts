@@ -351,6 +351,24 @@ export interface ArgSource {
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
+  expression?: ExternalCallExpression;
+}
+
+export interface ExternalCallExpression {
+  kind: string;
+  name?: string;
+  type?: string;
+  value?: string | boolean;
+  operator?: string;
+  source?: ArgSource;
+  expression?: ExternalCallExpression;
+  left?: ExternalCallExpression;
+  right?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  ifTrue?: ExternalCallExpression;
+  ifFalse?: ExternalCallExpression;
+  args?: readonly ExternalCallExpression[];
+  fields?: readonly string[];
 }
 
 export interface ExternalCallAbi {

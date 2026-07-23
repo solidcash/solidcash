@@ -3,6 +3,7 @@ import {
   ArtifactMap,
   AbiFunction,
   ArgSource,
+  ExternalCallExpression,
   ExternalCallAbi,
   buildInitialStateCommitments,
   buildTokenContainerCovenantScript,
@@ -454,8 +455,11 @@ function extractCommitmentsFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
   expectedCount: number,
   outputIndexRange?: { min: number; max: number },
+  scanFullTrace = false,
 ): string[] | undefined {
-  const commitmentsByOutputIndex = extractCommitmentMapFromTrace(fullTrace, outputIndexRange);
+  const commitmentsByOutputIndex = extractCommitmentMapFromTrace(
+    fullTrace, outputIndexRange, scanFullTrace,
+  );
   const commitments = Array.from(commitmentsByOutputIndex.entries())
     .sort(([a], [b]) => a - b)
     .map(([, hex]) => hex);
@@ -4999,7 +5003,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (ec.hasReturnValues) {
             const group = externalCallUtxoGroups[groupIdx];
             stb.setReturnEventOutput(
-              group.categoryId, new Uint8Array([0]), `external-call:${groupIdx}`,
+              group.categoryId,
+              group.precomputedReturnCommitment ?? new Uint8Array([0]),
+              `external-call:${groupIdx}`,
             );
           }
         }
@@ -5013,6 +5019,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (let groupIdx = externalCallUtxoGroups.length - 1; groupIdx >= 0; groupIdx--) {
           const group = externalCallUtxoGroups[groupIdx];
           const ec = externalCalls[groupIdx];
+          if (group.sharedGroupIndex !== undefined) continue;
+
+          if (group.plannedEntryInserts?.length
+            && !group.plannedEntryInsertHandles) {
+            group.plannedEntryInsertHandles = group.plannedEntryInserts.map(({ blockSlot }) => {
+              const input = group.blockInputs?.[blockSlot];
+              if (!input) throw new Error('Planned nested entry insert has no block input.');
+              return stb.addExternalCallEntryInsert(
+                group.categoryId,
+                input.unlocker.generateLockingBytecode(),
+                '00',
+              );
+            });
+          }
 
           // Build probe with current (possibly placeholder) state
           const probeBuilder = stb.build();
@@ -5091,9 +5111,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // at its block-slot output index (bOutputBase + si) and hand it to the STB, which mints it at that slot.
           if (group.blockLayout && group.blockInputs) {
             const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
-              { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
+              { min: bOutputBase, max: bOutputBase + group.blockInputs.length },
+              // A nested callee may execute through a delegate/sharded
+              // function-body phase and return to a shorter redeem script
+              // before performing its entry pins. Restricting extraction to
+              // the longest redeem phase misses those final commitments.
+              true);
             const bBlockSize = group.blockLayout.blockSize ?? group.blockInputs.length;
-            const insertHandles: Array<{ handle: number; newIdx: number }> = [];
+            const insertHandles: Array<{ handle: number; newIdx: number; planned: boolean }> = [];
             let insertCount = 0;
             for (let si = 0; si < group.blockLayout.slots.length; si++) {
               if (group.blockLayout.slots[si]?.kind !== 'entry') continue;
@@ -5108,10 +5133,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const inCommit = input?.token?.nft?.commitment;
               if (inCommit && inCommit.length >= 128 && commit.length >= 128
                 && inCommit.slice(64, 128) !== commit.slice(64, 128)) {
-                const handle = stb.addExternalCallEntryInsert(
-                  group.categoryId, input.unlocker.generateLockingBytecode(), commit,
-                );
-                insertHandles.push({ handle, newIdx: bMasterIdx + bBlockSize + insertCount });
+                const plannedIndex = group.plannedEntryInserts
+                  ?.findIndex((planned) => planned.blockSlot === si) ?? -1;
+                const handle = plannedIndex >= 0
+                  ? group.plannedEntryInsertHandles![plannedIndex]
+                  : stb.addExternalCallEntryInsert(
+                    group.categoryId, input.unlocker.generateLockingBytecode(), commit,
+                  );
+                insertHandles.push({
+                  handle,
+                  newIdx: bMasterIdx + bBlockSize + insertCount,
+                  planned: plannedIndex >= 0,
+                });
                 insertCount++;
               }
             }
@@ -5123,10 +5156,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 inputIndex: bMasterIdx, sourceOutputs: generateLibauthSourceOutputs(pb2.inputs),
                 transaction: pb2.buildLibauthTransaction(),
               }) as AuthenticationProgramStateCommon[]);
-              for (const { handle, newIdx } of insertHandles) {
+              for (const { handle, newIdx, planned } of insertHandles) {
                 const newCommit = map2.get(newIdx);
                 if (newCommit !== undefined) stb.setExternalCallEntryInsertCommitment(handle, newCommit);
-                else stb.removeExternalCallEntryInsert(handle);
+                else if (!planned) stb.removeExternalCallEntryInsert(handle);
               }
             }
           }
@@ -5140,7 +5173,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Re-run B's VM with any data NFT commitments now set so B's script reliably reaches that point.
           // The range covers all return events (chained A->B->C give each group a distinct index); B's script
           // verifies only its own, so exactly one matches.
-          if (ec.hasReturnValues) {
+          if (ec.hasReturnValues
+            && (group.fusedReturnGroupIndex !== undefined || !group.precomputedReturnCommitment)) {
             const probeBuilderRet = stb.build();
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
@@ -5153,14 +5187,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
             const returnEventOutputBase = stb.getReturnEventOutputBase();
             const totalReturnEvents = externalCalls.filter((e) => e.hasReturnValues).length;
-            const returnOutputRange = {
-              min: returnEventOutputBase,
-              max: returnEventOutputBase + totalReturnEvents,
-            };
-            const returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange);
+            const returnOutputRange = group.returnOutputIndex === undefined
+              ? {
+                min: returnEventOutputBase,
+                max: returnEventOutputBase + totalReturnEvents,
+              }
+              : { min: group.returnOutputIndex, max: group.returnOutputIndex + 1 };
+            const returnCommitments = extractCommitmentsFromTrace(
+              fullTraceRet, 1, returnOutputRange, true,
+            );
             if (returnCommitments && returnCommitments.length > 0) {
+              const returnGroupIndex = group.fusedReturnGroupIndex ?? groupIdx;
               stb.setReturnEventOutput(
-                group.categoryId, hexToBin(returnCommitments[0]), `external-call:${groupIdx}`,
+                group.categoryId,
+                hexToBin(returnCommitments[0]),
+                `external-call:${returnGroupIndex}`,
               );
             }
           }
@@ -5175,7 +5216,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const bAbiFunc = bArt?.abi?.find((f: any) => f.name === group.functionName);
             const bEmits: Array<{ eventSignature: string; emitIndex: number }> = bAbiFunc?.emits ?? [];
 
-            if (bEmits.length > 0 && bArt?.events) {
+            if (bEmits.length > 0) {
             // Find the event slot positions in B's block layout
               const eventSlots = group.blockLayout.slots.filter((s) => s.kind === 'event');
               if (eventSlots.length > 0) {
@@ -5193,7 +5234,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
                 const eventOutputStart = bOutputBase + eventSlots[0].offset;
                 const eventOutputRange = { min: eventOutputStart, max: eventOutputStart + eventSlots.length };
-                const eventCommits = extractCommitmentsFromTrace(fullTrace2, eventSlots.length, eventOutputRange);
+                const eventCommits = extractCommitmentsFromTrace(
+                  fullTrace2, eventSlots.length, eventOutputRange, true,
+                );
 
                 if (eventCommits && eventCommits.length > 0) {
                   const eventOutputs: Array<{
@@ -8407,6 +8450,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // per delegate group so its hidden witnesses can point at the real inputs/outputs.
     const delegateExternalGroupIndices = new Map<number, number[]>();
     const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
+    let nestedFunderIndex = 0;
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       const resolvedCalls = overrides?.calls ?? [];
@@ -8469,6 +8513,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
             const nestedIndices: number[] = [];
             for (const nested of delegateFn?.externalCalls ?? []) {
+              const nestedSources = nested.rawArgSources ?? nested.argSources;
+              const usesEmptyArrayElement = (value: unknown, seen = new Set<object>()): boolean => {
+                if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+                seen.add(value as object);
+                const source = value as Partial<ArgSource>;
+                if (source.kind === 'arrayElement' && source.paramIndex !== undefined
+                  && Array.isArray(callInfo.args[source.paramIndex])
+                  && (callInfo.args[source.paramIndex] as unknown[]).length === 0) {
+                  return true;
+                }
+                return Object.values(value).some((child) => (
+                  Array.isArray(child)
+                    ? child.some((item) => usesEmptyArrayElement(item, seen))
+                    : usesEmptyArrayElement(child, seen)
+                ));
+              };
+              const inactiveArrayIteration = nestedSources?.some((source) => usesEmptyArrayElement(source));
+              if (inactiveArrayIteration) continue;
               const resolvedAddress = nested.addressSource
                 ? this._resolveExternalArgs(
                   [nested.addressSource], callInfo.args, callInfo.contract.inner.artifact,
@@ -8522,13 +8584,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               }
               const nestedArgs = this._resolveExternalArgs(
-                nested.rawArgSources ?? nested.argSources,
+                nestedSources,
                 callInfo.args,
                 callInfo.contract.inner.artifact,
+                onChainState.state,
               );
               if (nestedArgs === undefined) {
                 throw new Error(
-                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} has arguments `
+                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} `
+                  + `(offset ${nested.computedOffset ?? 0}) has arguments `
                   + 'that cannot yet be resolved by the SDK.',
                 );
               }
@@ -8540,9 +8604,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               }
               const childLayout = callee.inner.stateLayout!;
-              const childRequired = nested.requiredDataNftIndices.length > 0
-                ? nested.requiredDataNftIndices
-                : Array.from({ length: childLayout.dataNftCount }, (_, idx) => idx);
+              // An explicitly empty requirement means the callee does not touch
+              // fixed state. Expanding it to every data NFT corrupts the callee's
+              // block offsets (notably ERC20 mapping-only functions).
+              const childRequired = nested.requiredDataNftIndices;
               const childData: UnlockableUtxo[] = childRequired.map((nftIndex) => {
                 const utxo = childState.dataNftUtxos[nftIndex];
                 if (!utxo) {
@@ -8560,6 +8625,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               let childFunctionName = nested.rawFunctionName ?? nested.functionName;
               let childFunctionArgs = nestedArgs;
               let delegateCallGroupIndex: number | undefined;
+              let childWritesState = false;
               if (proxyCallee) {
                 const targetFn = (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
                   .find((f) => f.name === nested.functionName);
@@ -8573,6 +8639,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // also satisfies the caller's selector pin.
                 childFunctionName = '__forward';
                 childFunctionArgs = [hexToBin(targetFn.selector)];
+                childWritesState = targetFn.writesState === true;
 
                 const implementationState = proxyCallee.implementation.inner.artifact.delegateOnly
                   ? await proxyCallee.implementation._getMasterOnlyState()
@@ -8582,20 +8649,186 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     `Proxy implementation master UTXO not found for ${nested.interfaceName}.`,
                   );
                 }
-                delegateCallGroupIndex = lowLevelCallUtxoGroups.length;
-                nestedDelegateProxyGroupByLowLevel.set(delegateCallGroupIndex, childExternalGroupIndex);
-                lowLevelCallUtxoGroups.push({
-                  categoryId: proxyCallee.implementation.categoryId,
-                  stateLayout: proxyCallee.implementation.inner.stateLayout!,
-                  masterUtxo: implementationState.masterUtxo,
-                  dataNftUtxos: [],
-                  requiredDataNftIndices: [],
-                  functionName: nested.functionName,
-                  functionArgs: nestedArgs,
-                  externalContract: proxyCallee.implementation,
-                  callMode: 'delegatecall',
-                });
-                groupProxyMasterIndices.push(0);
+                const existingDelegateIndex = lowLevelCallUtxoGroups.findIndex((group) => (
+                  group.callMode === 'delegatecall'
+                  && group.categoryId === proxyCallee.implementation.categoryId
+                ));
+                delegateCallGroupIndex = existingDelegateIndex >= 0
+                  ? existingDelegateIndex : lowLevelCallUtxoGroups.length;
+                if (existingDelegateIndex >= 0) {
+                  if (targetFn.writesState) {
+                    const primaryDelegate = lowLevelCallUtxoGroups[existingDelegateIndex];
+                    primaryDelegate.functionName = nested.functionName;
+                    primaryDelegate.functionArgs = nestedArgs;
+                  }
+                } else {
+                  nestedDelegateProxyGroupByLowLevel.set(delegateCallGroupIndex, childExternalGroupIndex);
+                  lowLevelCallUtxoGroups.push({
+                    categoryId: proxyCallee.implementation.categoryId,
+                    stateLayout: proxyCallee.implementation.inner.stateLayout!,
+                    masterUtxo: implementationState.masterUtxo,
+                    dataNftUtxos: [],
+                    requiredDataNftIndices: [],
+                    functionName: nested.functionName,
+                    functionArgs: nestedArgs,
+                    externalContract: proxyCallee.implementation,
+                    callMode: 'delegatecall',
+                  });
+                  groupProxyMasterIndices.push(0);
+                }
+              }
+              const sharedGroupIndex = externalCallUtxoGroups.findIndex(
+                (group) => group.categoryId === callee.categoryId,
+              );
+              const selectedFn = (callee.inner.artifact.abi as readonly AbiFunction[])
+                .find((fn) => fn.name === childFunctionName);
+              childWritesState ||= selectedFn?.writesState === true;
+              let precomputedReturnCommitment: Uint8Array | undefined;
+              if (nested.hasReturnValues && selectedFn && !selectedFn.writesState
+                && selectedFn.outputs?.length === 1) {
+                const value = await callee._deriveReturnValue(childFunctionName, childFunctionArgs);
+                precomputedReturnCommitment = encodePushdataValue(
+                  value as never, selectedFn.outputs![0].type,
+                );
+              }
+              if (sharedGroupIndex >= 0) {
+                if (childWritesState) {
+                  const primary = externalCallUtxoGroups[sharedGroupIndex];
+                  primary.functionName = childFunctionName;
+                  primary.functionArgs = childFunctionArgs;
+                  primary.callMode = nested.callMode;
+                }
+              }
+              let childBlockInputs: UnlockableUtxo[] | undefined;
+              const childPlannedEntryInserts: Array<{
+                blockSlot: number; outputBlockSlot: number;
+              }> = [];
+              const selectedLayout = selectedFn?.blockLayout;
+              if ((sharedGroupIndex < 0 || childWritesState)
+                && selectedLayout && selectedLayout.blockSize > 1) {
+                childBlockInputs = [];
+                let dataIndex = 0;
+                const takeFunder = async (): Promise<UnlockableUtxo> => {
+                  const funder = sharedFunderPool?.shift();
+                  if (funder) return funder;
+                  // MockNetworkProvider can materialize deterministic OP_TRUE
+                  // funding inputs. This keeps large composed tests focused on
+                  // covenant behavior without requiring users to pre-split an
+                  // arbitrary number of wallet UTXOs. Real providers continue
+                  // to fail closed and request additional funding.
+                  const provider = this.inner.provider;
+                  const mockProvider = provider as typeof provider & {
+                    addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<void>;
+                  };
+                  if (mockProvider.addUtxo) {
+                    const dummy: Utxo = {
+                      txid: (0xe000n + BigInt(nestedFunderIndex++)).toString(16).padStart(64, '0'),
+                      vout: 0,
+                      satoshis: 10000n,
+                    };
+                    await mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
+                    return {
+                      ...dummy,
+                      unlocker: {
+                        generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+                        generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+                      },
+                    };
+                  }
+                  throw new Error(
+                    `Insufficient funding UTXOs for nested call ${nested.interfaceName}.${nested.functionName}.`,
+                  );
+                };
+                for (const slot of selectedLayout.slots) {
+                  if (slot.kind === 'master') {
+                    childBlockInputs.push(childState.masterUtxo as UnlockableUtxo);
+                  } else if (slot.kind === 'dataNft') {
+                    const data = childData[dataIndex++];
+                    if (data) childBlockInputs.push(data);
+                  } else if (slot.kind === 'entry') {
+                    const access = selectedFn?.entryAccesses?.[slot.slotIndex ?? 0];
+                    const collection = childLayout.collections?.find(
+                      (candidate) => candidate.name === access?.collection
+                        || candidate.signature === access?.collection,
+                    );
+                    let entry: Utxo | undefined;
+                    if (access && collection?.sorted) {
+                      const keySources = access.keySources
+                        ?? access.keyParams.map((paramName) => ({ kind: 'param' as const, paramName }));
+                      const keys = keySources.map((source, keyIndex) => {
+                        if (source.kind === 'msgSender'
+                          || ('expressionLabel' in source && source.expressionLabel?.includes('msg.sender'))) {
+                          return hexToBin(
+                            this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode,
+                          );
+                        }
+                        const paramName = source.paramName ?? access.keyParams[keyIndex];
+                        const paramIndex = selectedFn.inputs.findIndex((input) => input.name === paramName);
+                        const value = paramIndex >= 0 ? nestedArgs[paramIndex] : undefined;
+                        return value instanceof Uint8Array ? value
+                          : typeof value === 'bigint' ? bigIntToVmNumber(value)
+                            : typeof value === 'boolean' ? bigIntToVmNumber(value ? 1n : 0n)
+                              : undefined;
+                      });
+                      if (keys?.every((key): key is Uint8Array => key !== undefined)) {
+                        // The entry covenant derives its locking bytecode from
+                        // the ABI collection identifier (the source name), not
+                        // the descriptive state-layout signature.
+                        const address = getEntryNftAddress(
+                          callee.inner, callee.categoryId, access.collection,
+                        );
+                        const list = SortedList.fromUtxos(
+                          (await this.inner.provider.getUtxos(address))
+                            .filter((utxo) => utxo.token?.category === callee.categoryId),
+                        );
+                        const keySlot = keyToSlotMulti(keys);
+                        try {
+                          const exists = list.has(keySlot);
+                          entry = (exists ? list.find(keySlot) : list.predecessorOf(keySlot))?.utxo;
+                          if (!exists) {
+                            childPlannedEntryInserts.push({
+                              blockSlot: childBlockInputs.length,
+                              outputBlockSlot: -1,
+                            });
+                          }
+                        } catch { entry = undefined; }
+                      }
+                    }
+                    childBlockInputs.push(entry ? {
+                      ...entry,
+                      unlocker: createEntryNftUnlocker(
+                        callee.inner, 0, callee.categoryId, access!.collection,
+                      ),
+                    } : await takeFunder());
+                  } else if (slot.kind === 'returnEvent') {
+                    // Preserve the compiler's fixed block position even though
+                    // the real return NFT is emitted by the shared return
+                    // section. The positional input/output keeps all following
+                    // delegate groups aligned.
+                    childBlockInputs.push(await takeFunder());
+                  } else if (slot.kind === 'lowLevelCall' || slot.kind === 'deploy') {
+                    // These slots are managed by their dedicated sections.
+                  } else {
+                    childBlockInputs.push(await takeFunder());
+                  }
+                }
+                for (const planned of childPlannedEntryInserts) {
+                  planned.outputBlockSlot = childBlockInputs.length;
+                  childBlockInputs.push(await takeFunder());
+                }
+              }
+              if (sharedGroupIndex >= 0 && childWritesState) {
+                const primary = externalCallUtxoGroups[sharedGroupIndex];
+                primary.stateLayout = childLayout;
+                primary.masterUtxo = childState.masterUtxo;
+                primary.dataNftUtxos = childData;
+                primary.requiredDataNftIndices = childRequired;
+                primary.blockInputs = childBlockInputs;
+                primary.blockLayout = selectedLayout;
+                primary.plannedEntryInserts = childPlannedEntryInserts;
+                if (nested.hasReturnValues) {
+                  primary.fusedReturnGroupIndex = childExternalGroupIndex;
+                }
               }
               externalCallUtxoGroups.push({
                 categoryId: callee.categoryId,
@@ -8608,6 +8841,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 externalContract: callee,
                 ...(delegateCallGroupIndex !== undefined && { delegateCallGroupIndex }),
                 ...(nested.callMode && { callMode: nested.callMode }),
+                ...(childBlockInputs && {
+                  blockInputs: childBlockInputs,
+                  blockLayout: selectedLayout,
+                }),
+                ...(childPlannedEntryInserts.length > 0 && {
+                  plannedEntryInserts: childPlannedEntryInserts,
+                }),
+                ...(sharedGroupIndex >= 0 && {
+                  sharedGroupIndex,
+                  blockInputs: [] as UnlockableUtxo[],
+                }),
+                ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
               });
               allGroupEcSlots = [...allGroupEcSlots, nested];
             }
@@ -8620,7 +8865,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Compute _callInputIndex values
       const externalCallInputCount = externalCallUtxoGroups.reduce(
-        (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
       );
 
       // Complete the nested callee unlockers now that every external group has a
@@ -8630,12 +8875,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const nestedMasterIndices: number[] = [];
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
         const child = externalCallUtxoGroups[groupIdx];
+        if (child.sharedGroupIndex !== undefined) {
+          nestedMasterIndices[groupIdx] = nestedMasterIndices[child.sharedGroupIndex];
+          continue;
+        }
         nestedMasterIndices[groupIdx] = nestedInputBase;
         child.dataNftUtxos = child.dataNftUtxos.map((utxo) => ({
           ...utxo,
           unlocker: createDataNftUnlocker(child.externalContract.inner, nestedInputBase, child.categoryId),
         }));
-        nestedInputBase += 1 + child.dataNftUtxos.length;
+        nestedInputBase += child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
       }
 
       // Delegate-mode return events are emitted immediately after all ordinary
@@ -8657,6 +8906,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       for (const groupIdx of new Set([...delegateExternalGroupIndices.values()].flat())) {
         const child = externalCallUtxoGroups[groupIdx];
+        child.returnOutputIndex = returnIndexForGroup.get(
+          child.fusedReturnGroupIndex ?? groupIdx,
+        );
         const childFn = (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((f) => f.name === child.functionName);
         if (!childFn) continue;
@@ -8664,9 +8916,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const encoded = childFn.inputs.map((input) => {
           if (!input.name.startsWith('__internal__')) return child.functionArgs[visible++];
           if (input.name === '__internal__returnOutputIdx') {
-            return BigInt(returnIndexForGroup.get(groupIdx) ?? -1);
+            return BigInt(returnIndexForGroup.get(
+              child.fusedReturnGroupIndex ?? groupIdx,
+            ) ?? -1);
           }
-          if (input.name === '__internal__msgSenderCategory') return hexToBin(this.categoryId);
+          if (input.name === '__internal__msgSenderCategory') {
+            // Token categories are exposed by introspection in transaction byte
+            // order. Match the established direct-call witness encoding so the
+            // callee can resolve msg.sender to the caller's locking bytecode.
+            return hexToBin(this.categoryId).reverse();
+          }
           if (input.name === '__internal__delegateInputIndex') {
             const delegateGroup = child.delegateCallGroupIndex;
             if (delegateGroup === undefined) return -1n;
@@ -8682,6 +8941,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...child.masterUtxo,
           unlocker: child.externalContract.inner.unlock[child.functionName]!(...encoded),
         } as UnlockableUtxo;
+        if (child.blockInputs) {
+          let childDataIndex = 0;
+          for (let slotIndex = 0; slotIndex < (child.blockLayout?.slots.length ?? 0); slotIndex++) {
+            const slot = child.blockLayout!.slots[slotIndex];
+            if (slot.kind === 'master') {
+              child.blockInputs[slotIndex] = child.masterUtxo as UnlockableUtxo;
+            } else if (slot.kind === 'dataNft') {
+              child.blockInputs[slotIndex] = child.dataNftUtxos[childDataIndex++];
+            }
+          }
+        }
       }
       // Reserve the delegatecall'd impl's EVENT slots in the proxy block (its covenant verifies them at
       // proxyMaster+offset). Only handled when the impl fn's block is master + dataNfts + events, so the slot
@@ -8719,7 +8989,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .find((slot) => slot.kind === 'lowLevelCall')?.offset
         ?? delegateEventSlots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
       lowLevelCallInputBase = hasDelegatecallGroup
-        ? explicitLowLevelCallOffset ?? Math.max(materializedBlockSize, denseCallInputBase)
+        // The compiler offset describes the root function's own block. Nested
+        // external-call groups are inserted before the delegated implementation,
+        // so their materialized inputs must shift the absolute witness index.
+        // Taking the explicit offset alone made a proxy pin input 3 even when
+        // its implementation had moved to input 8 behind those groups.
+        ? Math.max(
+          explicitLowLevelCallOffset ?? 0,
+          materializedBlockSize,
+          denseCallInputBase,
+        )
         : denseCallInputBase;
 
       // Fix data NFT unlockers with correct master input index
@@ -9688,6 +9967,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     argSources: readonly ArgSource[] | undefined,
     functionArgs: FunctionArgument[],
     artifact: Artifact,
+    state?: Record<string, unknown>,
   ): FunctionArgument[] | undefined {
     if (!argSources || argSources.length === 0) return undefined;
 
@@ -9753,12 +10033,204 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           break;
         }
         case 'expression':
+          if (source.expression) {
+            const value = this._evaluateExternalExpression(
+              source.expression, functionArgs, artifact, state,
+            );
+            if (value === undefined) return undefined;
+            resolved.push(value);
+            break;
+          }
+          return undefined;
         default:
           // Can't resolve complex expressions - user must provide via withExternalCall
           return undefined;
       }
     }
     return resolved;
+  }
+
+  private _evaluateExternalExpression(
+    expression: ExternalCallExpression,
+    functionArgs: FunctionArgument[],
+    artifact: Artifact,
+    state?: Record<string, unknown>,
+  ): FunctionArgument | undefined {
+    const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
+      this._evaluateExternalExpression(candidate, functionArgs, artifact, state)
+    );
+    const concat = (parts: Uint8Array[]): Uint8Array => {
+      const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+      let offset = 0;
+      for (const part of parts) {
+        result.set(part, offset);
+        offset += part.length;
+      }
+      return result;
+    };
+    const uintBe = (value: bigint, width: number): Uint8Array => {
+      const result = new Uint8Array(width);
+      const bits = BigInt(width * 8);
+      let normalized = ((value % (1n << bits)) + (1n << bits)) % (1n << bits);
+      for (let i = width - 1; i >= 0; i--) {
+        result[i] = Number(normalized & 0xffn);
+        normalized >>= 8n;
+      }
+      return result;
+    };
+    const asBytes = (value: FunctionArgument, typeHint = ''): Uint8Array | undefined => {
+      if (typeHint === 'bool' || typeof value === 'boolean') {
+        return new Uint8Array([value ? 1 : 0]);
+      }
+      if (typeof value === 'bigint' || typeof value === 'number') {
+        const widthMatch = typeHint.match(/^u?int(\d+)$/);
+        return uintBe(BigInt(value), widthMatch ? Number(widthMatch[1]) / 8 : 32);
+      }
+      if (typeof value === 'string') return utf8ToBin(value);
+      if (value instanceof Uint8Array) {
+        if (typeHint === 'uint160' || typeHint === 'address') return value.slice(-20);
+        return value;
+      }
+      return undefined;
+    };
+
+    if (expression.kind === 'source' && expression.source) {
+      return this._resolveExternalArgs([expression.source], functionArgs, artifact, state)?.[0];
+    }
+    if (expression.kind === 'literal') {
+      if (expression.type === 'bigint' && typeof expression.value === 'string') return BigInt(expression.value);
+      if (expression.type === 'bool' && typeof expression.value === 'boolean') return expression.value;
+      if (expression.type === 'string' && typeof expression.value === 'string') return expression.value;
+      if (typeof expression.value === 'string' && expression.type?.startsWith('bytes')) {
+        return hexToBin(expression.value);
+      }
+      return undefined;
+    }
+    if (expression.kind === 'state' && expression.name) {
+      return state?.[expression.name] as FunctionArgument | undefined;
+    }
+    if (expression.kind === 'stateAccess' && expression.name) {
+      let value = state?.[expression.name] as unknown;
+      for (const keyExpression of expression.args ?? []) {
+        const key = evaluate(keyExpression);
+        if (key === undefined) return undefined;
+        if (Array.isArray(value)) value = value[Number(key)];
+        else if (value && typeof value === 'object') value = (value as Record<string, unknown>)[String(key)];
+        else return undefined;
+      }
+      return value as FunctionArgument | undefined;
+    }
+    if (expression.kind === 'field' && expression.expression && expression.name) {
+      const base = evaluate(expression.expression);
+      if (base && typeof base === 'object' && !Array.isArray(base) && !(base instanceof Uint8Array)) {
+        const value = (base as unknown as Record<string, FunctionArgument>)[expression.name];
+        if (value !== undefined) return value;
+      }
+      if (expression.type === 'bool') return false;
+      if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) return 0n;
+      return undefined;
+    }
+    if (expression.kind === 'unary' && expression.expression) {
+      const value = evaluate(expression.expression);
+      if (value === undefined) return undefined;
+      if (expression.operator === '.length') {
+        if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
+          return BigInt(value.length) + BigInt(
+            typeof expression.value === 'string' ? expression.value : 0,
+          );
+        }
+      }
+      if (expression.operator === '!') return !value;
+      if (expression.operator === '-' && (typeof value === 'bigint' || typeof value === 'number')) {
+        return -BigInt(value);
+      }
+      return undefined;
+    }
+    if (expression.kind === 'binary' && expression.left && expression.right) {
+      const left = evaluate(expression.left);
+      const right = evaluate(expression.right);
+      if (left === undefined || right === undefined) return undefined;
+      if (expression.operator === '&&') return Boolean(left) && Boolean(right);
+      if (expression.operator === '||') return Boolean(left) || Boolean(right);
+      if (expression.operator === '==') return left === right;
+      if (expression.operator === '!=') return left !== right;
+      if ((typeof left === 'bigint' || typeof left === 'number')
+        && (typeof right === 'bigint' || typeof right === 'number')) {
+        const a = BigInt(left);
+        const b = BigInt(right);
+        if (expression.operator === '+') return a + b;
+        if (expression.operator === '-') return a - b;
+        if (expression.operator === '*') return a * b;
+        if (expression.operator === '/') return a / b;
+        if (expression.operator === '%') return a % b;
+        if (expression.operator === '<') return a < b;
+        if (expression.operator === '<=') return a <= b;
+        if (expression.operator === '>') return a > b;
+        if (expression.operator === '>=') return a >= b;
+      }
+      return undefined;
+    }
+    if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
+      return evaluate(expression.condition) ? evaluate(expression.ifTrue) : evaluate(expression.ifFalse);
+    }
+    if (expression.kind === 'cast' && expression.expression) {
+      const value = evaluate(expression.expression);
+      if (value === undefined) return undefined;
+      if (expression.type === 'bytes' && typeof value === 'string') return utf8ToBin(value);
+      if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) {
+        if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+        if (value instanceof Uint8Array) {
+          let result = 0n;
+          for (const byte of value.slice(expression.type === 'uint160' ? -20 : 0)) {
+            result = (result << 8n) | BigInt(byte);
+          }
+          return result;
+        }
+      }
+      return value;
+    }
+    if (expression.kind === 'array') {
+      const values = (expression.args ?? []).map(evaluate);
+      return values.every((value) => value !== undefined)
+        ? values as unknown as FunctionArgument
+        : undefined;
+    }
+    if (expression.kind === 'arrayAccess' && expression.left && expression.right) {
+      const array = evaluate(expression.left);
+      const index = evaluate(expression.right);
+      return Array.isArray(array) && (typeof index === 'bigint' || typeof index === 'number')
+        ? array[Number(index)] as FunctionArgument
+        : undefined;
+    }
+    if (expression.kind === 'bytesConcat' || expression.kind === 'abiEncodePacked') {
+      const values = (expression.args ?? []).map(evaluate);
+      if (values.some((value) => value === undefined)) return undefined;
+      const parts = values.map((value, index) => asBytes(
+        value as FunctionArgument, expression.fields?.[index] ?? '',
+      ));
+      return parts.every((part): part is Uint8Array => part !== undefined) ? concat(parts) : undefined;
+    }
+    if (expression.kind === 'call') {
+      const values = (expression.args ?? []).map(evaluate);
+      if (values.some((value) => value === undefined)) return undefined;
+      if (expression.name === 'encodeString' && typeof values[0] === 'string') {
+        const bytes = utf8ToBin(values[0]);
+        return concat([uintBe(BigInt(bytes.length), 1), bytes]);
+      }
+      if (expression.name === 'encodeStringArray' && Array.isArray(values[0])) {
+        const strings = values[0] as unknown[];
+        const encoded = strings.map((value) => {
+          const bytes = utf8ToBin(String(value));
+          return concat([uintBe(BigInt(bytes.length), 1), bytes]);
+        });
+        return concat([uintBe(BigInt(strings.length), 1), ...encoded]);
+      }
+      // Struct constructor: positional arrays are accepted by the ABI encoder.
+      if (expression.name && /^[A-Z]/.test(expression.name)) {
+        return values as unknown as FunctionArgument;
+      }
+    }
+    return undefined;
   }
 
   /**

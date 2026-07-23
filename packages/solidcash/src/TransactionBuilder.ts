@@ -105,10 +105,21 @@ export class TransactionBuilder {
 
     // Check for duplicate inputs (same txid:vout)
     const existingOutpoints = new Set(this.inputs.map((input) => `${input.txid.toLowerCase()}:${input.vout}`));
-    for (const utxo of utxos) {
+    for (let position = 0; position < utxos.length; position++) {
+      const utxo = utxos[position];
       const outpoint = `${utxo.txid.toLowerCase()}:${utxo.vout}`;
       if (existingOutpoints.has(outpoint)) {
-        throw new Error(`Duplicate input detected: ${outpoint} is already included in the transaction`);
+        const existingIndex = this.inputs.findIndex(
+          (input) => `${input.txid.toLowerCase()}:${input.vout}` === outpoint,
+        );
+        const earlierBatchIndex = utxos.findIndex(
+          (input, index) => index < position
+            && `${input.txid.toLowerCase()}:${input.vout}` === outpoint,
+        );
+        throw new Error(
+          `Duplicate input detected: ${outpoint} is already included at input `
+          + `${existingIndex >= 0 ? existingIndex : earlierBatchIndex} (duplicate position ${position})`,
+        );
       }
       existingOutpoints.add(outpoint);
     }

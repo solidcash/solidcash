@@ -1854,6 +1854,24 @@ export interface ExternalCallArgSource {
   paramName?: string;
   value?: string;
   type?: string;
+  expression?: ExternalCallExpression;
+}
+
+export interface ExternalCallExpression {
+  kind: string;
+  name?: string;
+  type?: string;
+  value?: string | boolean;
+  operator?: string;
+  source?: ExternalCallArgSource;
+  expression?: ExternalCallExpression;
+  left?: ExternalCallExpression;
+  right?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  ifTrue?: ExternalCallExpression;
+  ifFalse?: ExternalCallExpression;
+  args?: ExternalCallExpression[];
+  fields?: string[];
 }
 
 export interface ExternalCallSlot {

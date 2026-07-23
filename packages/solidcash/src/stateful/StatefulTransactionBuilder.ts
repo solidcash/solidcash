@@ -92,6 +92,14 @@ export interface ExternalCallUtxoGroup {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
   delegateCallGroupIndex?: number;
+  /** Reuses another group's single master/data input/output block for repeated calls to one UTXO contract. */
+  sharedGroupIndex?: number;
+  /** Honest SDK probe result for a read fused into another call sharing this master input. */
+  precomputedReturnCommitment?: Uint8Array;
+  /** Return slot owned by the state-writing call fused into this physical group. */
+  fusedReturnGroupIndex?: number;
+  /** Absolute output index verified by this physical call's return covenant. */
+  returnOutputIndex?: number;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** B's function block layout (for full block ordering) */
@@ -110,6 +118,11 @@ export interface ExternalCallUtxoGroup {
   entryLoopStart?: number;
   /** B's collection signature for the loop entries (for the derive-time master-index unlocker patch). */
   entryLoopCollection?: string;
+  /** Sorted entry slots known at planning time to be inserts. Placeholder NEW
+   * outputs let the first derivation pass reach and reveal both commitments. */
+  plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number }>;
+  /** Internal handles for the placeholders above. */
+  plannedEntryInsertHandles?: number[];
 }
 
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
@@ -329,7 +342,8 @@ export class StatefulTransactionBuilder {
     // Flatten external call inputs - use full block when available
     const externalCallInputs: UnlockableUtxo[] = [];
     for (const group of this.externalCallUtxoGroups) {
-      if (group.blockInputs && group.blockInputs.length > 0) {
+      if (group.sharedGroupIndex !== undefined) continue;
+      if (group.blockInputs) {
         // Full block: master + dataNfts + entries + SC + TCs + funders (all ordered by blockLayout)
         externalCallInputs.push(...group.blockInputs);
       } else {
@@ -569,7 +583,8 @@ export class StatefulTransactionBuilder {
     }
     const externalCallInputs: UnlockableUtxo[] = [];
     for (const g of this.externalCallUtxoGroups) {
-      if (g.blockInputs && g.blockInputs.length > 0) {
+      if (g.sharedGroupIndex !== undefined) continue;
+      if (g.blockInputs) {
         externalCallInputs.push(...g.blockInputs);
       } else {
         externalCallInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos);
@@ -1230,6 +1245,44 @@ export class StatefulTransactionBuilder {
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
     if (this.locktimeOverride !== undefined) builder.locktime = this.locktimeOverride;
+    const seenInputs = new Map<string, number>();
+    for (let index = 0; index < this.allInputs.length; index++) {
+      const input = this.allInputs[index];
+      const id = `${input.txid.toLowerCase()}:${input.vout}`;
+      const first = seenInputs.get(id);
+      if (first !== undefined) {
+        const roles = (candidate: UnlockableUtxo): string[] => {
+          const out: string[] = [];
+          const matches = (utxo: Utxo | undefined): boolean => !!utxo
+            && utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout;
+          if (matches(this.masterUtxo)) out.push('master');
+          this.dataNftUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`dataNft:${i}`); });
+          this.iterationEntryInputs.forEach((utxo, i) => {
+            if (matches(utxo)) out.push(`iterationEntry:${i}`);
+          });
+          this.externalCallUtxoGroups.forEach((group, groupIndex) => {
+            if (matches(group.masterUtxo)) out.push(`external:${groupIndex}:master`);
+            group.dataNftUtxos.forEach((utxo, nftIndex) => {
+              if (matches(utxo)) out.push(`external:${groupIndex}:dataNft:${nftIndex}`);
+            });
+          });
+          this.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
+            if (matches(group.masterUtxo)) out.push(`lowLevel:${groupIndex}:master`);
+            group.dataNftUtxos.forEach((utxo, nftIndex) => {
+              if (matches(utxo)) out.push(`lowLevel:${groupIndex}:dataNft:${nftIndex}`);
+            });
+          });
+          this.funderUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`funder:${i}`); });
+          this.entryNfts.forEach((entry, i) => { if (matches(entry.utxo)) out.push(`entry:${i}`); });
+          return out;
+        };
+        throw new Error(
+          `Duplicate stateful input ${id} at ${first}/${index}; roles `
+          + `${roles(this.allInputs[first]).join(',') || 'other'} / ${roles(input).join(',') || 'other'}`,
+        );
+      }
+      seenInputs.set(id, index);
+    }
     builder.addInputs(this.allInputs);
     // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
     // OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.
@@ -1405,6 +1458,7 @@ export class StatefulTransactionBuilder {
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
     for (const group of this.externalCallUtxoGroups) {
+      if (group.sharedGroupIndex !== undefined) continue;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;
       builder.addOutput({
@@ -1484,6 +1538,29 @@ export class StatefulTransactionBuilder {
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
+          const plannedInsertIndex = group.plannedEntryInserts
+            ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
+
+          if (plannedInsertIndex >= 0) {
+            const handle = group.plannedEntryInsertHandles?.[plannedInsertIndex];
+            const insert = handle === undefined ? undefined : this.externalCallEntryInserts[handle];
+            builder.addOutput(insert && insert.commitment !== ''
+              ? {
+                to: insert.to,
+                amount: 1000n,
+                token: {
+                  amount: 0n,
+                  category: group.categoryId,
+                  nft: { capability: 'mutable', commitment: insert.commitment },
+                },
+              }
+              : {
+                to: input.unlocker.generateLockingBytecode(),
+                amount: input.satoshis,
+                token: input.token,
+              });
+            continue;
+          }
 
           // Trailing cross-contract callee LOOP entry (no block-layout slot, si >= entryLoopStart): mint B's
           // SDK-computed updated commitment. B's covenant pins output[master+blockSize+counter] == coSlot|coNext|newVal,
@@ -1594,6 +1671,8 @@ export class StatefulTransactionBuilder {
       // NEW at masterInputIndex + blockSize, right after B's block. Placed here in group order (skip cleared handles).
       for (const ins of this.externalCallEntryInserts) {
         if (ins.categoryId !== group.categoryId || ins.commitment === '') continue;
+        const handle = this.externalCallEntryInserts.indexOf(ins);
+        if (group.plannedEntryInsertHandles?.includes(handle)) continue;
         builder.addOutput({
           to: ins.to,
           amount: 1000n,

@@ -72,6 +72,7 @@ import {
   ExternalFunctionCallNode,
   ExternalCallSlot,
   ExternalCallArgSource,
+  ExternalCallExpression,
   ExternalCallMode,
   ExternalOutputStateNode,
   ExternalOutputStateAccessNode,
@@ -4305,6 +4306,178 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return expression;
       };
+      const serializeExpression = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExternalCallExpression | undefined => {
+        if (seen.has(expression)) {
+          return {
+            kind: 'reference',
+            name: expression instanceof IdentifierNode ? expression.name : expression.constructor.name,
+          };
+        }
+        seen.add(expression);
+        const source = classifyArg(expression);
+        if (source && source.kind !== 'expression') return { kind: 'source', source };
+        const resolved = resolveInitializer(expression);
+        if (resolved !== expression) return serializeExpression(resolved, seen);
+        if (expression instanceof IntLiteralNode) {
+          return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
+        }
+        if (expression instanceof BoolLiteralNode) {
+          return { kind: 'literal', type: 'bool', value: expression.value };
+        }
+        if (expression instanceof StringLiteralNode) {
+          return { kind: 'literal', type: 'string', value: expression.value };
+        }
+        if (expression instanceof HexLiteralNode) {
+          return {
+            kind: 'literal',
+            type: `bytes${expression.value.byteLength}`,
+            value: [...expression.value].map((b) => b.toString(16).padStart(2, '0')).join(''),
+          };
+        }
+        if (expression instanceof StateAccessNode) {
+          return { kind: 'state', name: expression.name };
+        }
+        if (expression instanceof CastNode) {
+          const inner = serializeExpression(expression.expression, seen);
+          return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+        }
+        if (expression instanceof UnaryOpNode) {
+          const inner = serializeExpression(expression.expression, seen);
+          let stateLengthDelta = 0;
+          if (expression.operator === UnaryOperator.SIZE
+            && expression.expression instanceof StateAccessNode
+            && this.currentFunction?.body) {
+            const stateName = expression.expression.name;
+            const countPushes = (candidate: Node, visited = new Set<Node>()): number => {
+              if (visited.has(candidate)) return 0;
+              visited.add(candidate);
+              let count = candidate instanceof StateArrayPushNode
+                && candidate.name === stateName ? 1 : 0;
+              for (const value of Object.values(candidate)) {
+                if (value instanceof Node) count += countPushes(value, visited);
+                else if (Array.isArray(value)) {
+                  for (const item of value) if (item instanceof Node) count += countPushes(item, visited);
+                }
+              }
+              return count;
+            };
+            stateLengthDelta = countPushes(this.currentFunction.body);
+          }
+          return inner && {
+            kind: 'unary',
+            operator: expression.operator,
+            expression: inner,
+            ...(stateLengthDelta > 0 && { value: stateLengthDelta.toString() }),
+          };
+        }
+        if (expression instanceof BinaryOpNode) {
+          const left = serializeExpression(expression.left, seen);
+          const right = serializeExpression(expression.right, seen);
+          return left && right && {
+            kind: 'binary', operator: expression.operator, left, right,
+          };
+        }
+        if (expression instanceof TernaryOpNode) {
+          const condition = serializeExpression(expression.condition, seen);
+          const ifTrue = serializeExpression(expression.ifTrue, seen);
+          const ifFalse = serializeExpression(expression.ifFalse, seen);
+          return condition && ifTrue && ifFalse && {
+            kind: 'ternary', condition, ifTrue, ifFalse,
+          };
+        }
+        if (expression instanceof FieldAccessNode) {
+          const enumType = expression.enumType
+            ?? (expression.expression instanceof IdentifierNode
+              ? this.enumMap.get(expression.expression.name)
+              : undefined);
+          if (enumType) {
+            const member = enumType.members.find((candidate) => candidate.name === expression.name);
+            if (member) {
+              return { kind: 'literal', type: 'bigint', value: member.value.toString() };
+            }
+          }
+          const inner = serializeExpression(expression.expression, seen);
+          const fieldType = expression.type
+            ?? expression.structType?.fields.find((field) => field.name === expression.name)?.type
+            ?? (expression.expression.type instanceof StructType
+              ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
+              : undefined);
+          return inner && {
+            kind: 'field',
+            name: expression.name,
+            expression: inner,
+            ...(fieldType && { type: fieldType.toString() }),
+          };
+        }
+        if (expression instanceof MappingAccessNode) {
+          const keys = expression.keys.map((key) => serializeExpression(key, seen));
+          return keys.every((key): key is ExternalCallExpression => key !== undefined)
+            ? {
+              kind: 'stateAccess',
+              name: expression.name,
+              args: keys,
+              ...(expression.type && { type: expression.type.toString() }),
+            }
+            : undefined;
+        }
+        if (expression instanceof ArrayAccessNode) {
+          const array = serializeExpression(expression.array, seen);
+          const index = serializeExpression(expression.index, seen);
+          return array && index && { kind: 'arrayAccess', left: array, right: index };
+        }
+        if (expression instanceof ArrayNode) {
+          const elements = expression.elements.map((item) => serializeExpression(item, seen));
+          return elements.every((item): item is ExternalCallExpression => item !== undefined)
+            ? { kind: 'array', args: elements }
+            : undefined;
+        }
+        const serializeArgs = (parameters: ExpressionNode[]): ExternalCallExpression[] | undefined => {
+          const values = parameters.map((parameter) => serializeExpression(parameter, seen));
+          return values.every((value): value is ExternalCallExpression => value !== undefined)
+            ? values : undefined;
+        };
+        if (expression instanceof BytesConcatNode || expression instanceof StringConcatNode
+          || expression instanceof AbiEncodeNode || expression instanceof AbiEncodePackedNode) {
+          const values = serializeArgs(expression.parameters);
+          if (!values) return undefined;
+          return {
+            kind: expression instanceof BytesConcatNode ? 'bytesConcat'
+              : expression instanceof StringConcatNode ? 'stringConcat'
+                : expression instanceof AbiEncodePackedNode ? 'abiEncodePacked' : 'abiEncode',
+            args: values,
+            fields: expression.parameters.map((parameter) => parameter.type?.toString() ?? ''),
+          };
+        }
+        if (expression instanceof FunctionCallNode) {
+          const values = serializeArgs(expression.parameters);
+          return values && {
+            kind: 'call',
+            name: expression.identifier.name,
+            args: values,
+            ...(expression.fieldNames && { fields: expression.fieldNames }),
+            ...(expression.type && { type: expression.type.toString() }),
+          };
+        }
+        if (expression instanceof IdentifierNode) return { kind: 'identifier', name: expression.name };
+        return {
+          kind: 'unsupported',
+          name: expression.constructor.name,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      };
+      for (let i = 0; i < argSources.length; i++) {
+        if (argSources[i].kind !== 'expression') continue;
+        const expression = serializeExpression(node.parameters[i]);
+        argSources[i] = {
+          kind: 'expression',
+          expression: expression ?? {
+            kind: 'missing',
+            name: node.parameters[i]?.constructor.name ?? 'undefined',
+          },
+        };
+      }
       const rawPayload = node.opaqueReturn && node.parameters.length === 1
         ? resolveInitializer(node.parameters[0])
         : undefined;
@@ -4312,7 +4485,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? rawPayload.functionName
         : undefined;
       const rawArgSources = rawPayload instanceof AbiEncodeCallNode
-        ? rawPayload.parameters.map((parameter) => classifyArg(parameter) ?? { kind: 'expression' as const })
+        ? rawPayload.parameters.map((parameter) => {
+          const classified = classifyArg(parameter);
+          if (classified) return classified;
+          const expression = serializeExpression(parameter);
+          return expression ? { kind: 'expression' as const, expression } : { kind: 'expression' as const };
+        })
         : undefined;
 
       slots.push({

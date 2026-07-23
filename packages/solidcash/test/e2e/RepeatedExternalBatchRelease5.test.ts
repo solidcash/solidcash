@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeTransaction, hexToBin,
+  binToHex, createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
@@ -319,6 +319,17 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       [mutated[19], mutated[32]] = [mutated[32], mutated[19]];
       return mutated;
     }],
+    ['unchecked suffix', (blob: Uint8Array) => {
+      const mutated = new Uint8Array(blob.length + 1);
+      mutated.set(blob);
+      mutated[mutated.length - 1] = 0x51;
+      return mutated;
+    }],
+    ['row-count substitution', (blob: Uint8Array) => {
+      const mutated = blob.slice();
+      mutated[6] = 3;
+      return mutated;
+    }],
   ])('rejects a callee unlocking blob with %s even when the callee route accepts it', async (_name, mutate) => {
     const { caller, callee } = await deploy();
     const originalFactory = callee.inner.createCompilerRouteUnlocker.bind(callee.inner);
@@ -329,5 +340,33 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     }) as typeof callee.inner.createCompilerRouteUnlocker;
 
     await expect(caller.run(2n, 3n).send()).rejects.toThrow();
+  });
+
+  it('rejects a forged callee settlement while accepting the untouched transaction', async () => {
+    const {
+      provider, caller, calleeCategory,
+    } = await deploy();
+    const send = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(caller.run(2n, 3n).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = send;
+    }
+    expect(captured).not.toBe('');
+
+    const forged = decodeTransactionUnsafe(hexToBin(captured));
+    const calleeOutput = forged.outputs.find((output) =>
+      output.token?.nft?.capability === 'mutable'
+      && binToHex(output.token.category) === calleeCategory);
+    expect(calleeOutput).toBeDefined();
+    calleeOutput!.token!.nft!.commitment[0] ^= 1;
+
+    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

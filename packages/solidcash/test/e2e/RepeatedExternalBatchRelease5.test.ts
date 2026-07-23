@@ -66,12 +66,18 @@ async function deploy(options: { calleeBatch?: boolean } = {}) {
   const caller = StatefulContract.withCategory(callerInner, callerCategory, {
     externals: { ICounter: callee },
   });
-  return { caller, callee };
+  return {
+    provider, caller, callee, calleeCategory, callerCategory, callerInner, calleeArtifact,
+  };
 }
 
 describe('Release 5 repeated external callee batch SDK E2E', () => {
   it('co-spends one callee owner and applies both logical calls in order', async () => {
-    const { caller, callee } = await deploy();
+    const { caller, callee, calleeCategory } = await deploy();
+
+    const builder = await caller.run(2n, 3n).build();
+    expect(builder.inputs.filter((input) =>
+      input.token?.category === calleeCategory && input.token.nft?.capability === 'minting')).toHaveLength(1);
 
     await caller.run(2n, 3n).send();
 
@@ -82,6 +88,20 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
   it('fails closed before transaction construction when the callee lacks SCB1 capability', async () => {
     const { caller } = await deploy({ calleeBatch: false });
     await expect(caller.run(2n, 3n).send()).rejects.toThrow(/does not advertise.*SCB1/);
+  });
+
+  it('rejects substituting a different SCB1-capable contract for the pinned callee owner', async () => {
+    const { provider, callerInner, callerCategory, calleeArtifact } = await deploy();
+    const substituteInner = new Contract(calleeArtifact, [], { provider });
+    const { categoryId: substituteCategory } = await setupStatefulUtxos(
+      provider, substituteInner, calleeArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const substitute = StatefulContract.withCategory(substituteInner, substituteCategory);
+    const callerWithSubstitute = StatefulContract.withCategory(callerInner, callerCategory, {
+      externals: { ICounter: substitute },
+    });
+
+    await expect(callerWithSubstitute.run(2n, 3n).send()).rejects.toThrow();
   });
 
   it.each([

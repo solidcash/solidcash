@@ -299,6 +299,17 @@ class MsgDataUsageCollector extends AstTraversal {
   }
 }
 
+class MsgSigUsageCollector extends AstTraversal {
+  found = false;
+
+  visitNullaryOp(node: NullaryOpNode): Node {
+    if (node.operator === NullaryOperator.MSG_SIG) {
+      this.found = true;
+    }
+    return node;
+  }
+}
+
 class NftIndexCollector extends AstTraversal {
   indices = new Set<number>();
 
@@ -363,6 +374,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private constructorParameterCount: number;
   private contractUsesMsgData: boolean = false;
+  private contractUsesMsgSig: boolean = false;
   // Compiler-internal subroutine registry, keyed by 2-byte id. `defined` is inherited into
   // sub-traversals; `useCount` is propagated back up.
   private subroutineDefined = new Map<bigint, boolean>();
@@ -907,6 +919,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (msgDataCollector.found) break;
     }
     this.contractUsesMsgData = msgDataCollector.found;
+    const msgSigCollector = new MsgSigUsageCollector();
+    for (const f of allNodeFunctions) {
+      msgSigCollector.visit(f);
+      if (msgSigCollector.found) break;
+    }
+    this.contractUsesMsgSig = msgSigCollector.found;
 
     // Also set contractUsesMsgData if fallback has a bytes parameter
     if (node.fallbackDef && node.fallbackDef.parameters.length > 0) {
@@ -1657,6 +1675,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     subTraversal.compactHelperIds = this.compactHelperIds;
+    subTraversal.contractUsesMsgData = this.contractUsesMsgData;
+    subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
     // via visitParameter (pushToStack with pushToBottom=true)
@@ -1895,6 +1915,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     subTraversal.compactHelperIds = this.compactHelperIds;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
+    subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
 
     // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
     // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -2242,6 +2263,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (activeJournalSlots.length > 0) {
       if (this.isDefineSubTraversal) {
+        // Hidden invocation context follows declared parameters and precedes
+        // journal slots in the handler frame. It is supplied by every caller
+        // and discarded by the handler epilogue rather than returned.
+        if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
+        if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
         for (const sv of activeJournalSlots) {
           const key = `${sv.nftIndex}:${sv.fieldIndex}`;
           const stackName = `__internal__state_write_${sv.name}`;
@@ -5508,6 +5534,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       targetJournalNames[i] = stackName;
     }
 
+    let hiddenContextCount = 0;
+    if (targetJournalSlots.length > 0 && this.contractUsesMsgData) {
+      const contextLoc = { location: node.location, positionHint: PositionHint.START };
+      if (this.stack.includes('__internal__handlerMsgData')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else {
+        this.emitMsgData(contextLoc);
+      }
+      this.pushToStack(`(__handler_msg_data_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+    if (targetJournalSlots.length > 0 && this.contractUsesMsgSig) {
+      const contextLoc = { location: node.location, positionHint: PositionHint.START };
+      if (this.stack.includes('__internal__handlerMsgSig')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSig'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else {
+        this.emitMsgSig(contextLoc);
+      }
+      this.pushToStack(`(__handler_msg_sig_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+
     // The internal-call subroutine skips the synthetic `__internal__returnOutputIdx` param during setup (unused
     // for a raw return - see visitFunctionDefinition), and a function-pointer call never pushes it. Match that:
     // don't push the returnOutputIdx arg (TypeCheck forwarded it only to satisfy the arity check), so the
@@ -5529,7 +5579,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INVOKE, locationData);
 
     // Update stack tracking: pop the pushed arguments, push return values
-    this.popFromStack(pushedArgs);
+    this.popFromStack(pushedArgs + hiddenContextCount);
     // The callee returns the journal copies in canonical order. Replace each
     // caller-owned slot at its original depth, consuming the returned copy and
     // leaving the surrounding frame byte-for-byte in its pre-call order.
@@ -18894,6 +18944,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * This is a compile-time constant: zero runtime cost.
    */
   private emitMsgSig(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__handlerMsgSig')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSig'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     // An internal function has no selector, so msg.sig cannot be a compile-time constant here (in the EVM it
     // is the calling entry point's selector). Reject cleanly instead of emitting an undefined push.
     if (!this.currentFunction.functionSelector) {
@@ -18911,6 +18966,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., msgData]
    */
   private emitMsgData(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__handlerMsgData')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     // _redeemPushSize is computed once at contract level (where OP_ACTIVEBYTECODE still returns the full
     // script) and left on the entry-point stack. Inside an OP_DEFINE subroutine it is out of reach and
     // OP_ACTIVEBYTECODE would return the subroutine body, so msg.data cannot be reconstructed there.

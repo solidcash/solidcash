@@ -56,6 +56,22 @@ contract C() {
   }
 }`;
 
+const HANDLER_MESSAGE_CONTEXT = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  function touch() internal {
+    require(msg.sig == this.run.selector);
+    require(msg.data.length > 4);
+    this.x = this.x + 1;
+  }
+  function run(int marker) {
+    touch();
+    touch();
+    require(marker == 77);
+  }
+  function chk(int expected) { require(this.x == expected); }
+}`;
+
 describe('recursion in a stateful contract no longer crashes the compiler', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -106,5 +122,16 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.run(2n, 4n).send();
     await sc.chk(7n, 307n).send();
+  });
+
+  it('forwards the physical entry msg.sig and msg.data into extracted handlers', async () => {
+    const artifact = compileString(HANDLER_MESSAGE_CONTEXT, { forceStateful: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await sc.run(77n).send();
+    await sc.chk(2n).send();
   });
 });

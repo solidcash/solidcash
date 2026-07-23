@@ -55,10 +55,26 @@ No transaction silently translates between formats. An immutable artifact cannot
 if peers have no exact common version, construction fails. Compatibility is bounded because an
 artifact is never required to retain an unbounded set of historical routes.
 
+`MAX_BATCH_PROTOCOLS_PER_ARTIFACT` is 2. Every retained route's full byte/op cost is charged to the
+artifact which retains it and measured against the 10,000-byte limit. Retention is optional: an
+artifact may support only its current route and fail composition with older peers. Raising this cap
+requires a new measured specification; metadata alone cannot bypass it.
+
 ## 3. Local batch encoding
 
-The candidate v1 batch blob is carried as one canonical push in the batched owner's unlocking
-bytecode:
+The candidate v1 batch route has this exact logical push layout:
+
+```text
+push(bytes4("SCB1")) push(batchBlob) [compiler-declared wrapper pushes...] push(redeemScript)
+```
+
+The selector is the first push and `batchBlob` is the second push. Both use the shortest valid
+pushdata encoding. A and B MUST locate the blob as the second push after first verifying the first
+push is exactly the `SCB1` selector. They MUST NOT scan for magic bytes or select a push by content.
+The final push is the redeem script for P2SH forms; any intervening wrapper pushes are fixed by
+artifact metadata and are never parsed as application rows.
+
+The blob itself is:
 
 ```text
 magic[4]            // "SCB1"
@@ -67,6 +83,10 @@ flags:u8            // 0
 invocationCount:u8
 invocations...
 ```
+
+`invocationCount` MUST be in `1..MAX_BATCH_ROWS`, MUST equal the number of completely parsed rows,
+and MUST fit the measured byte/op budget. Release 0 freezes `MAX_BATCH_ROWS`; the initial target is
+8, not the wire type's theoretical limit of 255.
 
 Each invocation is:
 
@@ -120,18 +140,18 @@ same physical owner more than once:
 3. as A executes, it appends the canonical row bytes for every external callsite actually reached,
    including conditional and loop occurrences;
 4. at A's epilogue, A constructs the canonical header with the final reached-row count and MUST
-   assert exactly once that `hash256(expectedCompleteBlob) == hash256(actualCompleteBlob)`, where
-   `actualCompleteBlob` is the single canonical blob extracted from B's actual unlocking bytecode;
+   assert exactly once that `expectedCompleteBlob == actualCompleteBlob` using byte equality, where
+   `actualCompleteBlob` is the second minimally encoded push in B's actual unlocking bytecode;
    partial comparison, prefix equality, and unchecked trailing bytes are forbidden;
 5. B verifies its immediate caller from A's actual co-spent owner input using the existing
    `msg.sender`/target-pinning model;
 6. B executes the same rows and flushes once.
 
-The whole-blob equality is the exhaustiveness proof. Under the hash collision-resistance assumption,
-it makes omission, injection, reordering, argument substitution, count substitution, and trailing
-rows fail even when A is a legitimate co-spent caller. B independently requires canonical complete
-parsing and exact consumption. The protocol therefore reuses caller identity without mistaking that
-identity for authorization of arbitrary rows.
+The whole-blob byte equality is the exhaustiveness proof. It makes omission, injection, reordering,
+argument substitution, count substitution, decoy pushes, and trailing rows fail even when A is a
+legitimate co-spent caller. B independently applies the same positional extraction rule, then
+requires canonical complete parsing and exact consumption. The protocol therefore reuses caller
+identity without mistaking that identity for authorization of arbitrary rows.
 
 Grouping occurs before physical external-call layout allocation. All grouped callsites share one B
 owner input/output block; per-call return/event/effect slots remain distinct inside that block.
@@ -173,6 +193,39 @@ verifies each result/event/effect as its handler executes; A verifies every retu
 Self/local batches may return an ordered result vector to SDK `staticCall()`. A state-changing
 transaction materializes only source-requested return events, matching current behavior.
 
+### 6.1 Introspection in a batch
+
+| expression | batch meaning |
+|---|---|
+| `msg.sig` | logical source selector of the current row |
+| `msg.data` | canonical logical selector and arguments of the current row, not physical `SCB1` bytes |
+| `msg.sender` | existing authenticated origin for a local batch; actual co-spent A locking bytecode for Release 5 |
+| `tx.origin` | unchanged existing physical meaning |
+| `this.activeInputIndex` | B's one physical owner input for every B row |
+| `tx.*`, input/output introspection | the actual shared batch transaction |
+
+A handler whose behavior intentionally depends on physical direct-wrapper `msg.data`, selector
+position, input multiplicity, or per-invocation active input is batch-ineligible unless the compiler
+has a separately reviewed lowering which preserves its source semantics.
+
+### 6.2 Signature route binding
+
+BCH transaction signatures do not commit input unlocking bytecode, and the direct and `SCB1` routes
+use the same redeem script. Therefore merely reusing an ordinary `sig` argument does not prove that
+the signer authorized batch dispatch.
+
+Initially, a handler which consumes `sig`, calls `checkSig`, or transitively depends on such a
+modifier is batch-ineligible unless its authorization is independently bound to:
+
+- the `SCB1` protocol version;
+- the complete canonical batch blob;
+- the intended contract identity/category; and
+- the transaction being authorized.
+
+The binding may use a compiler-defined data-signature challenge or a transaction commitment proven
+equivalent in the Release 4 security review. Ordinary transaction signatures remain valid for their
+existing direct route; the compiler MUST NOT infer route authorization from them.
+
 ## 7. Eligibility
 
 Initially eligible:
@@ -180,7 +233,7 @@ Initially eligible:
 - fixed scalar/register state;
 - internal/private/public helper calls after journal lowering;
 - bounded loops and recursion within VM limits;
-- ordinary `require`, modifiers, signatures, events, and returns.
+- ordinary `require`, signature-free modifiers, events, and returns.
 
 Enabled only after their journal/backend gate:
 
@@ -192,7 +245,12 @@ Rejected in v1:
 
 - callbacks or any physical participant cycle;
 - more than one external caller owner contributing to one batch;
+- more than one repeated external callee in one Release 5 root invocation;
+- combining an R4 owner-local batch with an R5 repeated-callee batch;
+- a batched B handler making a stateful call to a further D participant;
 - `delegatecall`, lifecycle, `unsafe`, and arbitrary foreign failure catching;
+- signature-consuming handlers without the route binding in section 6.2;
+- handlers with unresolved direct-versus-batch introspection divergence;
 - a batch requiring more than one existing split facet;
 - unresolved dynamic storage witnesses or over-limit batches.
 
@@ -262,10 +320,10 @@ earlier release is independently useful:
 Detailed tasks and ship gates are normative in section 8 of
 `buffered-state-and-message-bus-research.md`. Additionally:
 
-1. Release 0 MUST separately measure B's hand-emitted parser/dispatcher and A's expected-blob
-   accumulator plus actual-blob extraction/whole-blob comparator under `BCH_2026_05` with 2, 3, 8,
-   and candidate-maximum rows. Measurements include controller bytes, operation cost, pushed bytes,
-   stack/memory, unlocking size, and complete transaction size.
+1. Release 0 MUST separately measure B's hand-emitted positional parser/dispatcher and A's
+   expected-blob accumulator plus positional extraction/direct whole-blob comparator under
+   `BCH_2026_05` with 2, 3, 8, and candidate-maximum rows. Measurements include controller bytes,
+   operation cost, pushed bytes, stack/memory, unlocking size, and complete transaction size.
 2. Release 4 MUST prove owner-local malformed-row rejection, ordering, results, and one flush before
    its artifact capability is enabled by default.
 3. Release 5 MUST prove caller/callee binding with TreasurySplit, Marketplace reward triple, and
@@ -283,8 +341,9 @@ not held back merely because a later batch or graph release is unfinished.
 2. Existing external target/category/self-pinning checks remain authoritative.
 3. One authenticated immediate caller; no caller identity supplied by the batch blob.
 4. Every row executes exactly once in order and is checked by its emitter and target.
-5. The caller commits once to the complete canonical blob; prefix-only comparison and unchecked
-   trailing rows are impossible.
+5. Caller and callee use the same positional second-push locator and compare complete canonical blob
+   bytes directly; content scanning, prefix-only comparison, and unchecked trailing rows are
+   impossible.
 6. Read-your-writes and one final backend transition per dirty resource.
 7. Artifacts which do not advertise batching remain byte-identical; the ordinary one-call wrapper
    and transaction semantics remain unchanged in batch-capable artifacts.

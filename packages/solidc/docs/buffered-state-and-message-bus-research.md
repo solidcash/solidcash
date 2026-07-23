@@ -543,9 +543,9 @@ bytecode failures. The extracted footprint service also removes duplicated split
   summaries.
 - Emit actionable diagnostics with the shortest call chain, repeated owner, conflicting resource,
   and required colocation closure.
-- Hand-measure journal primitives, B's small hidden-batch parser/dispatcher, A's canonical expected
-  blob accumulator, and A's actual-blob extraction/whole-blob comparison under `BCH_2026_05`; this
-  does not enable batch codegen.
+- Hand-measure journal primitives, B's positional second-push parser/dispatcher, A's canonical
+  expected blob accumulator, and A's positional actual-blob extraction/direct byte comparison under
+  `BCH_2026_05`; this does not enable batch codegen.
 
 **Ship gate:** existing artifacts remain byte-identical; diagnostics are deterministic; measured
 results and rejected examples are checked into tests. This release contains no new covenant surface.
@@ -603,9 +603,10 @@ single-entry transactions.
 
 Releases 0-3 change compiler analysis and lowering but add no transaction-visible authorization
 protocol. Releases 4-5 introduce immutable covenant surface: failure can mean accepting a hostile
-transaction rather than rejecting source. Before Release 4 begins, the frozen encoding, parser,
-whole-blob exhaustiveness check, version behavior, and byte/op budgets require a dedicated security
-review. Release 4 and Release 5 each require a separate adversarial review before default enablement.
+transaction rather than rejecting source. Before Release 4 begins, the frozen encoding, positional
+extraction rule, parser, direct whole-blob exhaustiveness check, signature route binding,
+introspection semantics, version behavior, and byte/op budgets require a dedicated security review.
+Release 4 and Release 5 each require a separate adversarial review before default enablement.
 
 ### Release 4 - owner-local hidden batch
 
@@ -634,15 +635,18 @@ without a general bus.
 
 - Group resolved external callsites by physical owner before allocating transaction layout.
 - Reuse existing target/category/self-pinning and immediate-caller authentication.
-- Make A accumulate the canonical rows actually reached and compare one commitment over the complete
-  expected blob with the complete blob extracted from B; make B require canonical complete
-  consumption and execute it once; retain distinct return/event/effect slots.
-- Reject multiple independent callers, callbacks, participant cycles, and unresolved aliases.
+- Make A accumulate the canonical rows actually reached and compare the complete expected blob by
+  direct byte equality with the positional second push extracted from B; make B apply the same
+  locator, require canonical complete consumption, and execute it once; retain distinct
+  return/event/effect slots.
+- Reject multiple independent callers, more than one repeated callee, R4+R5 composition, forwarding
+  from batched B to D, callbacks, participant cycles, and unresolved aliases.
 
 **Ship gate:** the three corpus cases pass with one callee transition; caller forgery, target
 substitution, omission, duplication, reordering, result substitution, and duplicate physical B
 inputs all fail. An independent adversarial review MUST cover conditional injection, unchecked
-suffixes, count substitution, hash-domain ambiguity, target aliasing, and output/effect substitution.
+suffixes, count substitution, blob extraction position/decoys, signature route confusion,
+introspection divergence, target aliasing, and output/effect substitution.
 This is the final approved synchronous scope.
 
 ### Release discipline
@@ -769,7 +773,8 @@ not an informal partition.
 | R4 | One batch has only one physical owner input and one settlement authority. |
 | R5 | The callee is pinned to its intended actual locking bytecode, category, and permitted lineage. |
 | R5 | The immediate caller is derived from an actual authenticated co-spent input, never a witness identity. |
-| R5 | A's one whole-blob commitment covers every row actually reached and all bytes B will execute. |
+| R5 | A and B locate the blob as the same positional second push; magic bytes are never a locator. |
+| R5 | Direct whole-blob byte equality covers every row actually reached and all bytes B will execute. |
 | R5 | Every A outbound invocation has exactly one B inbound row; no omitted or injected row affects state. |
 | R5 | Canonical order, occurrence, selector, arguments, results, events, and effects are verified in script. |
 | R5 | A repeated callee has exactly one physical owner input and settlement authority. |

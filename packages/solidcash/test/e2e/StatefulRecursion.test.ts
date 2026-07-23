@@ -37,6 +37,25 @@ contract C() {
   function chk(int e) { require(this.x == e); }
 }`;
 
+const RETURNING_WRITER = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  int observed;
+  function bump(int n) internal returns (int) {
+    this.x = this.x + n;
+    return this.x;
+  }
+  function run(int a, int b) {
+    int first = bump(a);
+    int second = bump(b);
+    this.observed = first * 100 + second;
+    require(a >= 0);
+  }
+  function chk(int expectedX, int expectedObserved) {
+    require(this.x == expectedX && this.observed == expectedObserved);
+  }
+}`;
+
 describe('recursion in a stateful contract no longer crashes the compiler', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -76,5 +95,16 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.run(2n, 3n).send();
     await sc.chk(5n).send();
+  });
+
+  it('keeps declared return values separate from the updated scalar journal', async () => {
+    const artifact = compileString(RETURNING_WRITER, { forceStateful: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { x: 1n, observed: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await sc.run(2n, 4n).send();
+    await sc.chk(7n, 307n).send();
   });
 });

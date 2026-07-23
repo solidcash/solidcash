@@ -5632,6 +5632,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    // A journalized returning handler has two logical results: its ordinary
+    // return tuple and the updated owner-local context. Preserve both while
+    // removing parameters/locals, then place the context above the ordinary
+    // results. visitUserFunctionCall consumes the context first and exposes
+    // only the declared return tuple to the source expression.
+    if (this.isDefineSubTraversal && this.activeJournalSlots.length > 0) {
+      const journalNames = this.activeJournalSlots
+        .map((sv) => `__internal__state_write_${sv.name}`);
+      const retained = new Set(journalNames);
+      for (let i = returnCount; i < this.stack.length;) {
+        if (retained.has(this.stack[i])) {
+          i += 1;
+          continue;
+        }
+        this.emit(encodeInt(BigInt(i)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(i);
+      }
+      // Roll from the last slot to the first so canonical slot 0 finishes on
+      // top, followed by slot 1..N and then the ordinary return values.
+      for (let i = journalNames.length - 1; i >= 0; i--) {
+        const index = this.getStackIndex(journalNames[i]);
+        this.emit(encodeInt(BigInt(index)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        const [name] = this.stack.splice(index, 1);
+        this.stack.unshift(name);
+      }
+      return node;
+    }
+
     const stackSize = this.stack.length;
     const localsToRemove = stackSize - returnCount;
 

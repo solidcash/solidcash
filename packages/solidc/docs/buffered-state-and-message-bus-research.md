@@ -1,6 +1,7 @@
 # Stateful callable handlers, batching, and cross-contract invocation transcripts
 
-Status: RESEARCH COMPLETE / IMPLEMENTATION READY UNDER THE V1 SPECIFICATION.
+Status: LAYERS 1-2 READY FOR IMPLEMENTATION SUBJECT TO THEIR MEASUREMENT GATES. THE GENERAL
+MULTI-PARTICIPANT TRANSCRIPT IS DEFERRED RESEARCH, NOT A RELEASE TARGET.
 
 Implementation baseline: branch `codex/state-bus-research`, forked from
 `codex/solidhat-init` at `d36116aa`. All implementation and further research must be performed
@@ -14,15 +15,19 @@ features which were previously discussed together:
 2. multiple callable handlers inside one physical contract evaluation;
 3. an auto-derived, transaction-local invocation transcript across physical participants.
 
-The first two deliver substantial value without a cross-contract bus. The third generalizes them to
-repeated callees and finite circular call graphs. Nothing here changes current compiler behaviour.
+The first two, together with a narrow repeated-callee protocol, deliver the first four corpus rungs
+without a general cross-contract bus. The third generalizes them to finite multi-participant and
+circular call graphs, but its covenant cost, versioning, and liveness case is not yet established.
+Nothing here changes current compiler behaviour.
 
 Related: `subroutine-extraction.md`, `sorted-mapping-c2.md`, `mapping-loop-writes.md`,
 `dynamic-storage.md`, `evm-storage-parity.md`, `delegatecall.md`, `auto-derivation.md`,
 `external-contract-calls.md`, `unified-linear-memory.md`, and `deferrals.md`.
 
-Normative protocol: `invocation-transcript-v1.md`. Where this research note is less precise or
-describes alternatives, the normative v1 specification controls.
+Immediate implementation protocol: `compiler-hidden-batch-v1.md`. The detailed
+`invocation-transcript-v1.md` is a deferred design candidate for a possible general graph protocol;
+it is not normative for the initial implementation and its wire format MUST NOT be frozen or
+deployed yet.
 
 Scope: this document covers ordinary stateful contracts, delegatecall, and cross-contract calls. The
 `solidcash-split-v1` root/facet implementation is treated as an existing compatibility constraint and
@@ -58,10 +63,14 @@ Merely co-spending several current facets is unsound and remains rejected.
 
 ### 0.1 Go/no-go result
 
-Implementation may start. `invocation-transcript-v1.md` fixes the handler contract, canonical
-carrier/wire format, projected callback execution, owner/executor identity, journal representation,
-artifact metadata, derivation/admissibility algorithm, protocol limits, diagnostics, and hostile
-transaction gates.
+The shared analysis, scalar journal, callable handlers, local batches, and narrow repeated-callee
+batch may start in the order specified by `compiler-hidden-batch-v1.md`. These features reuse the
+existing external-call identity and target-pinning model and do not require the general carrier.
+
+The detailed graph semantics remain useful research, but the general transcript is not ready to
+implement. It must first pass measured covenant-overhead, immutable-version interoperability,
+multi-UTXO contention, and demonstrated-demand gates. In particular, no five-table format, carrier
+controller, or general cycle route is frozen by this note.
 
 General multi-facet settlement is deliberately not part of v1. The resolved v1 behavior is compiler
 colocation into one settlement artifact when it fits and a measured compile error otherwise. This is
@@ -75,7 +84,7 @@ until state converges.
 
 ## 1. Decision summary
 
-The proposed architecture is:
+The long-term architecture under research is:
 
 ```text
 concrete call arguments + connected contracts
@@ -114,6 +123,11 @@ possible *asynchronous* protocol, separate from the synchronous transcript proto
 
 The discarded idea of representing strings/bytes as big integers also does not affect this design.
 It changes representation without resolving write conflicts, ordering, payload size, or persistence.
+
+The BCH 2026 increase to 128-byte NFT commitments improves ordinary state packing, but an input state
+commitment is pre-state and cannot carry the current transaction's transcript without a preparatory
+state transition. The initial hidden batch needs no carrier. A future graph-protocol spike may
+compare carrier and compact nulldata encodings, without implying either is selected.
 
 ---
 
@@ -162,9 +176,10 @@ normal assignment semantics; no reducer is required merely because a value is wr
 
 ### 3.1 Substrate
 
-`OP_INVOKE` shares the data and alternate stacks across frames. V1 uses a controller-owned
-lower-main-stack frame addressed through `OP_DEPTH`-derived indices, avoiding a permanently reserved
-alternate-stack item. It contains:
+`OP_INVOKE` shares the data and alternate stacks across frames. The normative journal is a
+read-your-writes vector; Phase 1 selects its measured VM representation. The default candidate uses
+authenticated base values plus an append-only `(slot, value)` write log, avoiding quadratic
+deep-frame replacement. Its context contains:
 
 ```text
 controllerMasterIndex
@@ -265,6 +280,10 @@ batching rather than asking the developer to invoke a magic function.
 The synchronous “bus” is best understood as a finite verified execution transcript, not a queue and
 not foreign storage writes.
 
+This section records possible layer 3 semantics, not an implementation commitment. Layers 1-2 use
+the smaller protocol in `compiler-hidden-batch-v1.md`. General callbacks and multi-participant
+cycles remain rejected until the release gates in section 8.2 are met.
+
 ### 5.1 Logical model
 
 The transcript contains a participant table and ordered invocation table. A baseline invocation is:
@@ -330,10 +349,9 @@ Every participant must parse the same versioned carrier transcript, verify its m
 - one execution per invocation ID and no duplicate row key;
 - one final output for every owned dirty state object.
 
-V1 uses the explicit canonical table and carrier defined in `invocation-transcript-v1.md`: the table
-is the first canonical push in a tiny signer-bound ephemeral carrier at transaction input 0.
-Participant blocks begin at input 1 and every participant introspects the same carrier field. Compact
-roots/range proofs are later protocol versions and must prove equivalent exhaustiveness.
+The deferred candidate uses the explicit canonical table and carrier described in
+`invocation-transcript-v1.md`. That encoding is intentionally unfrozen. A future decision must
+compare it with smaller encodings and prove equivalent exhaustiveness under measured BCH 2026 cost.
 
 ### 5.4 Ordered writes and conflicts
 
@@ -351,17 +369,17 @@ State operations therefore fall into three implementation classes:
 | class | examples | rule |
 |---|---|---|
 | ordered journal operation | assignment, bytes/string replacement, result-dependent update | execute the owning handler in transcript order |
-| reducible optimisation | numeric delta, token balance/supply delta, allowance spend | aggregate only when equivalent to ordered handler execution |
+| future reducible optimisation | numeric delta, token balance/supply delta, allowance spend | deferred beyond v1 |
 | conditional/exclusive write | compare-and-swap, independent replacement proposals | verify the expected pre-state or reject conflicting writers |
 
 Large bytes/string values remain ordinary byte payloads. A transcript record may carry a payload
 digest and an authenticated witness/chunk reference, but the owner must verify and materialise the
 actual bytes. The discarded bigint encoding is not part of the implementation.
 
-ERC-20-style participants are an important optimised case. A finite ordered batch may be reduced to
-`balanceDelta[account]`, `allowanceSpend[(owner, spender)]`, and a supply delta, provided the token
-verifies the immediate logical caller and produces the same result as sequential handler execution.
-Absolute `approve` mixed with spending remains ordered; it must not be silently folded as a delta.
+ERC-20-style participants remain an important proving case, but v1 executes transfers, allowance
+spends, approvals, minting, and burning in logical order. Delta aggregation is deferred beyond v1;
+at the initial two- and three-call corpus rungs it does not justify making a compiler equivalence
+proof part of deployed semantics. Absolute `approve` mixed with spending remains ordered.
 
 ### 5.5 Impossible-chain detection
 
@@ -446,16 +464,26 @@ These operations are **solvable**, subject to finite resource limits and partici
 all admit one pre-state and one post-state per owner, sometimes through ordered journal execution and
 sometimes through an aggregate ledger. The table names implementation gates, not blockers.
 
+The first three rows are not literally single-participant transactions: the application and token
+are distinct physical owners. They are nevertheless narrow one-caller/one-repeated-callee cases, so
+existing target pinning can authenticate them without the general participant graph.
+
 ### 6.1 Recommended proving ladder from the corpus
 
-1. **TreasurySplit**: smallest repeated same-token call; no loop, cycle, or result chain.
-2. **Marketplace reward triple**: three calls and repeated sender balance.
-3. **MasterChef double mint**: shared `totalSupply` plus recipient balances.
-4. **BentoBox local batch**: ordered read-your-writes and per-invocation results.
-5. **Kashi cook subset**: dynamic action list and results feeding later actions.
-6. **Unicrow release/claim**: first real `A -> B -> A` state cycle.
-7. **Uniswap flash swap**: multi-party cyclic settlement with final invariant.
-8. **Bounded claimMultiple/multi-hop**: scale, repeated mappings, and participant grouping.
+| rung | proving case | planning envelope before measurement |
+|---|---|---|
+| 1 | **TreasurySplit**: repeated same-token call | about 2 participants / 3 invocations / 3-5 resources |
+| 2 | **Marketplace reward triple** | about 2 participants / 4 invocations / 4-6 resources |
+| 3 | **MasterChef double mint** | about 2 participants / 3 invocations / 3-6 resources |
+| 4 | **BentoBox local batch** | 1 participant; bound actions to 8 initially |
+| 5 | **Kashi cook subset** | target 2-4 participants / 8-16 invocations / 12-24 resources |
+| 6 | **Unicrow release/claim** | target 3-5 participants / 8-16 invocations |
+| 7 | **Uniswap flash swap** | target 3-5 participants / 8-16 invocations / up to 24 resources |
+| 8 | **Bounded claimMultiple/multi-hop** | may exceed the candidate 8/24/24 envelope; cap or split explicitly |
+
+These are planning estimates, not protocol promises. Phase 0 records actual encoded bytes and VM
+cost for each rung before its implementation gate; a rung which exceeds the frozen envelope is
+bounded more tightly or split across transactions.
 
 This ladder is preferable to beginning with a generic N-to-N bus or persistent outboxes.
 
@@ -476,13 +504,19 @@ remaining hard boundaries are narrower:
 3. **No finite unique transcript.** Non-termination, cyclic result dependencies, inconsistent
    duplicate invocations, or an application conflict with no defined order has no canonical state
    to derive. Fixed-point execution is outside the initial protocol.
-4. **Consensus resource ceilings.** A finite batch can still exceed transaction, input bytecode,
-   script, operation, stack, or state-UTXO limits and must be split across transactions.
+4. **Consensus resource ceilings are the primary format constraint.** A finite batch can still
+   exceed transaction, input bytecode, script, operation, hashing, stack/memory, or state-UTXO
+   limits. The BCH 2026 cost model drives the streaming format and frozen maxima; an over-limit graph
+   must be bounded or split across transactions.
 5. **Mutually baked P2SH addresses.** The Unicrow/Claim constructor topology creates a hash fixed
    point if both peer addresses are baked into redeem scripts. Use late-bound state, a registry,
    proxy, factory identity, or one-way immutable reference.
 6. **Cross-transaction hot-state contention.** One transaction can batch many logical writes to a
    hot slot; two competing transactions still conflict on its current UTXO and one must retry.
+   For an N-owner graph, success requires every selected outpoint to remain current, so practical
+   success probability compounds across owners. The SDK must revalidate all outpoints immediately
+   before signing/broadcast and expose deterministic retry/re-derivation; this mitigates but cannot
+   eliminate contention.
 
 The bus must not claim that BCH literally acquires an EVM cross-input call stack. The supportable
 promise is stronger and more precise: a finite graph of authenticated logical invocations can be
@@ -492,11 +526,15 @@ atomically verified, with every physical state owner evaluated and flushed once.
 
 ## 8. Implementation plan
 
-Each phase is independently valuable and gated by VM tests. Do not begin the next protocol layer
-until the preceding state invariant is proven against hand-built hostile transactions.
+Phases 0-5 are the approved implementation track. Each is independently valuable and gated by VM
+tests. Phases 6-8 are deferred research milestones, not scheduled implementation work.
 
-### Phase 0 - measurement and IR boundary
+### Phase 0 - hidden-batch measurement and IR boundary
 
+- Hand-emit and VM-measure the small owner-local/repeated-callee batch parser and dispatcher under
+  `BCH_2026_05`.
+- Record fixed controller bytes, per-row bytes/cost, pushed bytes, instructions, stack/memory,
+  unlocking size, and complete transaction size for 2, 3, 8, and candidate-maximum rows.
 - Add focused regression sources for: recursive scalar writer, state helper in a loop, helper with
   two calls to the same B, and `A -> B -> A` touching one A slot.
 - Record current compile failure/byte size/duplicate-input failure as baselines.
@@ -510,11 +548,14 @@ until the preceding state invariant is proven against hand-built hostile transac
 - Define participant identity as a logical state owner plus authenticated physical execution
   components; test ordinary, proxy/delegate, and `solidcash-split-v1` identities explicitly.
 
-**Gate:** metadata is deterministic and existing compiler/SDK suites remain byte-identical.
+**Gate:** metadata is deterministic and existing compiler/SDK suites remain byte-identical; the
+hidden-batch route fits measured BCH 2026 budgets and `compiler-hidden-batch-v1.md` records its exact
+encoding and honest limits.
 
 ### Phase 1 - scalar storage context and journal
 
-- Implement a compact scalar storage context shared across `OP_INVOKE` frames.
+- Benchmark append-only and explicitly threaded scalar journal contexts shared across `OP_INVOKE`
+  frames; select the cheaper measured representation.
 - Prefetch scalar read sets at the physical wrapper.
 - Lower scalar state reads/writes in eligible handlers to journal operations.
 - Flush dirty scalars once through byte-identical existing commitment/covenant code.
@@ -558,7 +599,8 @@ rejection, caller-context correctness, and one physical state output.
   leak physical external-call block offsets into the handler.
 - When A calls B twice, automatically select B's compiler-generated batch route once and supply two
   authenticated rows.
-- Bind A's outbound rows to B's inbound rows and the common transcript digest.
+- Bind A's outbound rows exactly to B's inbound batch blob using the existing authenticated
+  caller/callee input relationship; do not introduce a global transcript digest.
 - Derive and verify a distinct result for every logical invocation.
 - Implement participant/callsite/occurrence canonicalisation and completeness checks.
 
@@ -583,7 +625,10 @@ result substitution all fail in VM tests.
 MasterChef pool loops and a bounded BentoBox deposit/transfer/withdraw batch match a sequential
 reference model.
 
-### Phase 6 - transitive auto-derived transcripts
+### Phase 6 - deferred research: transitive auto-derived transcripts
+
+This phase MUST NOT begin merely because phases 0-5 pass. It additionally requires every layer 3
+release gate in section 8.2.
 
 - Replace the current bounded tree/back-edge rejection with a finite invocation worklist which
   deduplicates physical participants without re-executing logical invocations.
@@ -599,7 +644,7 @@ reference model.
 **Gate:** a bounded Kashi `cook` subset with repeated BentoBox calls and result chaining derives
 automatically and matches a sequential oracle.
 
-### Phase 7 - circular participant graphs
+### Phase 7 - deferred research: circular participant graphs
 
 - Permit a back-edge to an existing participant as a new logical invocation rather than a new input.
 - Compute strongly connected participant components and require a finite unique transcript.
@@ -612,7 +657,7 @@ a Uniswap-style flash swap by final token deltas and `K` invariant. Attack missi
 fabricated repayment, circular result inconsistency, participant substitution, and transcript
 truncation.
 
-### Phase 8 - scaling, write policies, and cooperative failure
+### Phase 8 - deferred research: scaling, write policies, and cooperative failure
 
 - Exercise bounded `claimMultiple`, router multi-hop, and larger `cook`/batch inputs.
 - Add budget estimation and actionable multi-transaction diagnostics.
@@ -643,11 +688,37 @@ construction with a deterministic continuation boundary.
 expiry, and relayer-substitution attacks fail; synchronous contracts and their transcript format are
 unchanged.
 
+### Additional go/no-go gates for layer 3
+
+The general graph protocol remains rejected unless all of these hold:
+
+1. **Observed need:** shipped layers 1-2 encounter real, bounded `A -> B -> A` or multi-caller
+   workloads which cannot be expressed by the narrow batch.
+2. **Measured frozen cost:** a complete parser, validator, and transaction-binding implementation is
+   measured under `BCH_2026_05`. The target is at most roughly 800 bytes of fixed redeem-script
+   overhead per participant; any higher result requires an explicit security/utility review rather
+   than silently consuming 15-30% of the contract budget.
+3. **Real-corpus fit:** the overhead is measured on Effective Acceleration contracts and split
+   artifacts near the 10,000-byte wall. A protocol which makes the relevant artifacts undeployable
+   does not pass.
+4. **Version interoperability:** artifacts advertise supported protocol versions; construction uses
+   an exact common version; and the design explains how newer contracts retain old routes or how
+   incompatible immutable deployments fail predictably. A version byte alone is not a migration
+   strategy, and requiring every contract to carry unbounded legacy parsers is unacceptable.
+5. **Contention/liveness:** benchmarks measure stale-input and retry behavior as participant count
+   grows. Default participant limits are selected from those results, not only consensus capacity.
+6. **Security review:** participant binding, caller authentication, owner uniqueness, exhaustive
+   streaming validation, and cycle semantics pass an independent hostile-transaction review.
+
+Failure of a gate leaves layer 3 disabled. It does not block or weaken the journal and hidden batch.
+
 ---
 
 ## 9. Release invariants
 
-These must hold for raw hostile transactions, not only SDK-generated ones:
+The applicable subset must hold for raw hostile transactions, not only SDK-generated ones.
+Invariants 1-4 and 8-10 govern the initial hidden batch. Invariants 5-7 and 11-12 additionally govern
+a future general/asynchronous protocol if released:
 
 1. A category owner is the only physical author of its state outputs.
 2. Every physical participant appears at most once and is pinned to the intended address/category and
@@ -671,32 +742,28 @@ These must hold for raw hostile transactions, not only SDK-generated ones:
 
 ---
 
-## 10. Resolved v1 decisions and residual implementation risks
+## 10. Resolved initial decisions and residual research risks
 
-The normative v1 specification resolves the earlier design choices:
+The initial implementation resolves:
 
-- one canonical transcript in a signer-bound ephemeral carrier at input 0;
-- explicit bounded tables rather than Merkle proofs;
-- depth-first invocation order and per-owner projected callback execution;
-- lower-main-stack journal frame with `OP_DEPTH`-derived addressing;
-- authenticated physical owner/executor identity and physical `msg.sender` semantics;
-- invocation-row arguments, results, call mode, and logical value delta;
-- finite one-pass derivation with no fixed-point execution;
-- fixed protocol maxima plus final all-input VM probes;
-- split-handler colocation or fail-closed rejection, never implicit multi-facet settlement.
+- an abstract read-your-writes journal, with representation selected by measurement;
+- reusable stateful handlers and a compiler-hidden batch route;
+- one caller plus one repeated external callee using existing target/self pinning;
+- ordered rows without ERC-20 delta aggregation;
+- split-handler colocation or fail-closed rejection;
+- ordinary direct calls as the unchanged fast path.
 
-Residual risks are verification and engineering risks, not unspecified semantics:
+The general transcript retains design risks and is deliberately not implementation-ready:
 
-- parser, projection, and exhaustiveness byte/op cost may force lower policy limits;
-- the lower-stack journal primitives must be proven across nested `OP_INVOKE` and existing transient
-  altstack users;
-- progressive access discovery must stabilize within the fixed resource bound;
-- the direct single-call path must remain byte-identical;
-- participant cycles require an independent security review before default enablement.
+- fixed parser/projection/exhaustiveness overhead may be uneconomic or exceed real contract budgets;
+- immutable protocol-version interoperability has no accepted design;
+- multi-owner UTXO contention may make large atomic graphs impractical;
+- projected callbacks and participant cycles require independent security review;
+- the selected journal representation still must be proven across nested `OP_INVOKE` and existing
+  transient altstack users.
 
 Asynchronous intents remain a separately versioned future protocol. Their nonce, expiry,
-cancellation, relayer funding, and liveness policy do not affect synchronous v1 implementation
-readiness.
+cancellation, relayer funding, and liveness policy do not affect the initial batch.
 
 ---
 
@@ -708,9 +775,12 @@ route when a derived call graph needs several handlers on one participant. Auto-
 subsequently group repeated callees and build a finite cross-contract transcript, including circular
 graphs, without consuming any participant state twice.
 
-The surveyed contracts provide a practical progression from two token transfers to BentoBox/Kashi
-batching and finally Unicrow/flash-swap cycles. Most observed operations are solvable; the narrow
-irreducible boundaries are arbitrary catchable covenant failure, absence of a finite unique
-transcript, consensus resource ceilings, mutually baked deployment fixed points, and hot-state
-contention across competing transactions. Persistent asynchronous intents remain an optional,
-separately versioned protocol after synchronous settlement is proven.
+The surveyed contracts justify implementing through the first four proving rungs now: repeated token
+calls and owner-local BentoBox-style batching. Kashi, Unicrow, and flash-swap graphs remain evidence
+for layer 3 research, not justification for freezing it today. Most observed operations have sound
+abstract semantics; deployability and liveness remain empirical gates.
+
+The narrow irreducible boundaries are arbitrary catchable covenant failure, absence of a finite
+unique transcript, consensus resource ceilings, mutually baked deployment fixed points, and
+hot-state contention across competing transactions. Persistent asynchronous intents remain an
+optional, separately versioned protocol after synchronous settlement is proven.

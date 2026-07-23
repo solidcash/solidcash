@@ -1,15 +1,40 @@
-# Invocation transcript protocol v1
+# General invocation transcript design candidate
 
-Status: NORMATIVE IMPLEMENTATION SPECIFICATION.
+Status: DEFERRED RESEARCH. NOT AN IMPLEMENTATION OR DEPLOYMENT TARGET. NO WIRE BYTES, SELECTOR,
+CONTROLLER, LIMIT, OR VERSION ARE FROZEN.
 
 Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d36116aa`.
 
-This specification defines compiler-hidden batching, owner-local state journals, repeated external
-participants, and finite circular participant graphs. Terms in uppercase are normative.
+This document preserves a detailed candidate for a future general multi-participant and circular
+invocation protocol. Its uppercase requirements are requirements the candidate would need to meet,
+not claims that the format is selected. The immediate journal and narrow batching implementation is
+specified in `compiler-hidden-batch-v1.md`.
+
+Consensus target: `BCH_2026_05`. Transcript mode MUST NOT be constructed or relayed under an earlier
+VM target. It depends on the 2026 standard unlocking-bytecode limit of 10,000 bytes and 128-byte
+token commitments. `BCH_2025_05` retains a 1,650-byte standard unlocking limit and is not a supported
+deployment target for this protocol.
 
 `__batch` is not language grammar, source ABI, or a user-callable API. The compiler may emit a
 reserved physical route and artifact metadata; the SDK selects it when one state owner has more than
 one logical invocation in the transaction.
+
+### Research decision boundary
+
+This candidate MUST NOT be implemented after only a parser benchmark. A future adoption decision
+also requires:
+
+- demonstrated production demand for bounded multi-participant cycles after the narrow batch ships;
+- measured fixed covenant overhead, targeting roughly 800 bytes or less per participant and tested
+  on real contracts near the 10,000-byte limit;
+- an immutable-deployment compatibility strategy in which peers negotiate an exact common version
+  and newer artifacts may retain old routes without unbounded parser growth;
+- measured stale-outpoint/retry behavior as participant count rises;
+- an independent review of participant binding, caller authentication, owner uniqueness,
+  exhaustiveness, and cycles.
+
+Until all gates pass, unsupported graphs fail with diagnostics and no artifact advertises this
+protocol.
 
 ## 1. Security and semantic model
 
@@ -87,7 +112,7 @@ execution before settlement is rejected.
 The complete transcript is carried exactly once in a dedicated ephemeral carrier at transaction
 input 0:
 
-- the carrier is a signer-bound, token-free P2SH UTXO using the canonical v1 carrier covenant;
+- the carrier is a signer-bound, token-free P2SH32 UTXO using the canonical v1 carrier covenant;
 - the first item pushed by its unlocking bytecode MUST be the transcript blob;
 - the push MUST use the shortest valid pushdata encoding;
 - the remaining pushes are the carrier signature, public key, and redeem script;
@@ -104,11 +129,32 @@ The canonical carrier redeem script enforces, in equivalent Bitcoin Script:
 stack before redeem: transcript, signature, publicKey
 require(stack depth == 3)
 require(hash160(publicKey) == bakedSignerPkh)
-require(signature hash type == SIGHASH_ALL | SIGHASH_FORKID)
 checkSig(signature, publicKey)
 drop(transcript)
 true
 ```
+
+The redeem script is exactly 30 bytes:
+
+```text
+74 53 9d 76 a9 14 <bakedSignerPkh:20> 88 ad 75 51
+```
+
+That is `OP_DEPTH OP_3 OP_NUMEQUALVERIFY OP_DUP OP_HASH160 PUSHBYTES_20 <pkh>
+OP_EQUALVERIFY OP_CHECKSIGVERIFY OP_DROP OP_1`. No prefix, suffix, alternate opcode spelling, or
+trailing byte is accepted.
+
+The first transcript push parser accepts only minimal:
+
+- direct pushes for lengths 0 through 75;
+- `OP_PUSHDATA1` for lengths 76 through 255;
+- `OP_PUSHDATA2` for lengths 256 through the protocol transcript limit.
+
+`OP_PUSHDATA4`, non-minimal encodings, truncated payloads, and trailing carrier stack items are
+rejected. Every participant MUST verify the carrier signature's final hash-type byte is
+`SIGHASH_ALL | SIGHASH_FORKID`; the 30-byte carrier redeem itself performs the signature check.
+The carrier locking bytecode MUST be the canonical 35-byte P2SH32 locking bytecode committing to the
+exact redeem script.
 
 Participants MUST parse the final redeem-script push, verify the canonical carrier template, verify
 the carrier input locking bytecode commits to that redeem script, and verify the pushed public key
@@ -128,9 +174,10 @@ token: none
 locking bytecode: OP_RETURN push("SCBH") push(hash256(transcript))
 ```
 
-Every participant verifies the exact last-output form and digest. The carrier signature is restricted
-to `SIGHASH_ALL | SIGHASH_FORKID`, so the authenticated origin commits to this output and therefore
-to the exact transcript even though signature hashing does not directly include unlocking scripts.
+Every participant MUST independently compute `hash256(transcript)` and compare it with this exact
+last-output digest. This check provides transcript integrity. The carrier's
+`SIGHASH_ALL | SIGHASH_FORKID` signature commits the authenticated origin to that digest/output,
+providing origin consent even though signature hashing does not directly include unlocking scripts.
 No other output may use the `SCBH` protocol tag.
 
 ### 2.3 Physical unlocking routes
@@ -226,17 +273,14 @@ stateCategory:bytes      // empty only for a compiler-declared stateless partici
 executionKind:u8         // 0 owner, 1 delegate, 2 split-root-local
 executorInputIndex:u16   // 0xffff when executionKind == owner/split-root-local
 executorLockingBytecode:bytes
-artifactFingerprint:bytes32
 firstResource:u16
 resourceCount:u16
+settlementBoundary:u32   // exclusive logical position after all owner invocations complete
 ```
 
-`artifactFingerprint` is the existing constructor-bound bytecode fingerprint for the physical
-handler artifact, extended as specified in section 10. It prevents ABI-compatible but semantically
-different handler substitution.
-
 Participant 0 is fixed by the root invocation. Remaining participants are sorted by
-`(ownerLockingBytecode, stateCategory, artifactFingerprint)`. Participant blocks occupy the leading
+`(ownerLockingBytecode, stateCategory)` with unsigned lexicographic byte ordering. The key MUST be
+strictly increasing, so the same logical owner cannot appear twice. Participant blocks occupy the leading
 transaction inputs after the carrier and the leading outputs in participant-ID order:
 
 ```text
@@ -250,6 +294,11 @@ output is index 0. Kind-specific resource/effect rows
 authenticate every non-master position inside a block. Trailing inputs/outputs remain governed by
 the handlers which require them and by existing covenant rules; they cannot claim owner state
 authority.
+
+`settlementBoundary` MUST equal the maximum `subtreeEnd` of every invocation targeting this
+participant. This is stronger than the last target row: an earlier owner handler may be suspended
+around a callback and resume after that row. Streaming validation computes and checks the maximum
+without rescanning the invocation table.
 
 For a normal stateful contract, the owner input is its master. For proxy/delegate execution, the
 owner is the proxy master and the executor is the pinned delegate input. For a split contract, v1
@@ -295,8 +344,11 @@ spans MUST lie inside the owning participant's declared input/output block. C2 i
 dynamic values use their complete contiguous backend span rather than hiding additional physical
 outputs outside the resource row.
 
-Rows MUST be sorted by `(ownerParticipant, kind, logicalSlot)` and unique. Each participant's
-resource range MUST be contiguous and match its participant row.
+Rows MUST be sorted by `(ownerParticipant, kind, logicalSlot)` and unique. Transcript-mode physical
+resource spans are allocated in that same order, so non-empty `inputStart` and `outputStart` spans
+advance monotonically without overlap. Each participant's resource range MUST be contiguous and
+match its participant row. This lets one streaming pass prove both logical-slot and physical-span
+uniqueness.
 
 ### 3.5 Invocation row
 
@@ -361,6 +413,13 @@ events. Kinds 2 and 3 describe native CashToken container movement.
 `amount` MUST be non-negative; source/destination determine direction. Signed encoding is retained so
 the parser can share the checked money-range primitive and reject negative or out-of-range effects.
 
+Non-sentinel physical `outputIndex` values are strictly increasing in effect-row order.
+
+`outputIndex == 0xffff` is allowed only when source and destination are the same participant and the
+movement is folded into that owner's authenticated local container ledger. A cross-owner or external
+locking-bytecode movement MUST identify a physical output and both owners MUST reconcile the same
+effect row.
+
 ### 3.7 Event row
 
 ```text
@@ -378,6 +437,10 @@ unconsumed. Logical call results are carried in invocation rows; an externally r
 `emitReturn()` continues to use the existing authenticated return-event mechanism and is represented
 by a kind-5 resource/event row.
 
+Event `outputIndex` values are strictly increasing and greater than every effect-row physical output
+index. The SDK allocates effect outputs before event outputs, making cross-table output uniqueness an
+adjacent/range check rather than a pairwise scan.
+
 ## 4. Structural validation
 
 Every participant MUST perform or invoke shared generated validation which proves:
@@ -385,22 +448,43 @@ Every participant MUST perform or invoke shared generated validation which prove
 1. participant, resource, invocation, effect, and event IDs are contiguous;
 2. counts are within section 11 maxima;
 3. input and output indices are in range;
-4. mutable participant owner-input indices are unique;
+4. participant owner keys are strictly increasing after participant 0 and no owner key is duplicated;
 5. mutable state resource input indices are unique;
 6. every mutable resource belongs to exactly one owner;
 7. participant resource ranges partition the resource table;
 8. invocation 0 is the only root;
 9. every non-root parent ID is less than its ID;
 10. preorder and `subtreeEnd` form a properly nested tree;
-11. every invocation target exists;
+11. every invocation target exists and every declared participant is targeted at least once;
 12. `(parentInvocationId, callsiteId, occurrence)` is unique;
 13. effect/event rows reference existing invocations and physical outputs are unique;
-14. no undefined flags, trailing bytes, duplicate keys, or non-canonical encoding exist.
+14. no undefined flags, trailing bytes, duplicate keys, or non-canonical encoding exist;
+15. every participant row is bound to the actual transaction:
+    - `tx.inputs[ownerInputIndex].lockingBytecode == ownerLockingBytecode`;
+    - a non-empty `stateCategory` equals that input's category and it carries the required master
+      capability;
+    - its unlocking bytecode minimally selects `SCB1` and its redeem script contains the exact
+      compiler-reserved v1 controller prefix;
+    - delegate execution likewise binds `executorInputIndex`, `executorLockingBytecode`, its `SCB1`
+      route, and its exact v1 delegate-controller prefix;
+    - owner/executor input indices and participant blocks are disjoint except for relationships
+      explicitly allowed by the execution kind.
+
+Item 15 is the participation lemma: every identity which may become logical `msg.sender` names a
+real co-spent input whose v1 controller is forced to validate this same transcript. A legacy artifact,
+an input selecting a legacy route, or a redeem script lacking the reserved controller prefix cannot
+be a transcript participant.
+
+Validation MUST be one front-consuming streaming pass. Tables use their specified canonical sort
+orders; uniqueness is checked against the previous key or while the owning handler consumes its
+contiguous child/effect/event sequence. Validators MUST NOT randomly seek from the transcript head or
+perform pairwise uniqueness scans. In particular, direct child occurrence continuity is checked by
+the parent handler during projection, so item 12 does not require an all-pairs scan.
 
 The compiler SHOULD emit shared validation as `OP_DEFINE` routines. An optimization may divide
-validation work among participants only if every malformed transcript still makes at least one
-mandatory input fail and no participant can authorize an incorrect state transition. V1 begins with
-full validation by every mutable participant.
+validation work only if every malformed transcript still makes a mandatory input fail before any
+incorrect transition is authorized. V1 begins with full streaming validation by every mutable
+participant.
 
 ## 5. Participant and authority authentication
 
@@ -520,6 +604,11 @@ result-dependency order by construction.
 A result cannot be used to choose an ancestor, rewrite an earlier row, or create a child outside its
 parent's subtree. If deriving a row requires a future result, derivation rejects the graph.
 
+For `callMode == staticcall`, the target controller MUST snapshot its dirty bitmap/effect cursor on
+entry and verify on return that no resource became dirty, `valueDelta == 0`, no mutable effect was
+consumed, and every descendant handler is compiler-marked and runtime-verified static. Compiler
+metadata alone is not the enforcer.
+
 ### 6.4 Failure
 
 Any failed handler condition invalidates the complete transaction. `try/catch` may catch only:
@@ -553,27 +642,28 @@ sets `dirty`. Delete stores the language default plus the backend's deletion ope
 
 ### 7.2 VM representation
 
-V1 uses one controller-owned lower-stack frame; it does not reserve the alternate stack permanently.
-The frame contains:
+The normative journal semantics are section 7.1; Phase 1 chooses the measured representation. The
+default candidate is an append-only write log:
 
 ```text
-controller master index
-transcript blob
-participant row/range
-active invocation stack and cursors
-journal values
-dirty bitmap
-result/event cursors
+fixed controller header and authenticated base values
+append-only (logicalSlot, currentValue) writes in execution order
+active invocation/callsite/effect/event cursors
 ```
 
-Generated journal primitives address frame fields from the bottom using `OP_DEPTH`-derived indices,
-so nested `OP_INVOKE` argument depth does not change their identity. Every handler MUST restore its
-temporary main/alternate-stack usage on return. Existing transient alternate-stack operations remain
-legal only when balanced.
+`journalStore` appends and never inserts at depth. `journalLoad` searches newest-to-oldest for the
+slot, then falls back to its authenticated base value. Flush consumes/coalesces the log in order and
+emits one transition per resource. The compiler may replace a search with a constant stack access
+when dataflow proves the latest write.
 
-The compiler may specialize constant scalar accesses to direct frame indices. It MUST preserve the
-abstract behavior above. A future serialized or linear-memory representation is an optimization, not
-a protocol change.
+A mutable lower-stack frame with deep-slot replacement is not the v1 default: BCH has no
+insert-at-depth primitive, so rolling a large frame out and back can become quadratic. Phase 1 MUST
+benchmark append-only, explicit threaded-context, and any proposed frame specialization under the
+section 11 cost model before freezing codegen.
+
+Every handler MUST restore temporary main/alternate-stack usage on return. Existing transient
+alternate-stack operations remain legal only when balanced. Any chosen representation MUST preserve
+section 7.1 exactly and remain within the combined memory limits.
 
 ### 7.3 Scalar resources
 
@@ -599,8 +689,8 @@ resource set stabilizes. There is no on-chain unauthenticated cold lookup.
 Satoshi and token containers remain owner-interpreted resources. Transfers are recorded in canonical
 effect rows/resource descriptors and verified against physical outputs.
 
-ERC-20-style delta aggregation is permitted only as a compiler optimization after proving equivalence
-to sequential handler execution. The reference semantics remain ordered operations:
+ERC-20-style delta aggregation is deferred beyond protocol v1. V1 always executes the ordered
+operations:
 
 - `transfer`: debit then credit;
 - `transferFrom`: check/decrement the allowance of the authenticated logical caller, then transfer;
@@ -608,7 +698,8 @@ to sequential handler execution. The reference semantics remain ordered operatio
 - absolute `approve`: overwrite in order and never fold across allowance spending.
 
 Overflow, underflow, authorization, hooks, events, and per-call return values are evaluated in logical
-order. A token artifact without the equivalence proof uses ordinary journal execution.
+order. A future protocol may add aggregation only after an independently reviewed equivalence proof
+and differential VM suite.
 
 ### 7.6 Flush
 
@@ -639,7 +730,7 @@ After projected replay, the settlement controller:
 | `tx.origin` | authenticated carrier signer's P2PKH locking bytecode |
 | other `tx.*` | actual final transaction introspection |
 | state `outState` of self | current owner journal value |
-| foreign `outState` | allowed only after the target's last logical invocation; otherwise rejected |
+| foreign `outState` | allowed only after the target's settlement boundary; otherwise rejected |
 | events | canonical event rows plus existing event outputs |
 | returns | invocation result row; optional root return event remains supported |
 | `revert`/failed `require` | invalidates transaction |
@@ -654,10 +745,12 @@ After projected replay, the settlement controller:
 an imagined per-call transaction. This is the unavoidable BCH meaning and MUST be documented in the
 language compatibility diagnostics.
 
-A foreign ordinary state read always means authenticated transaction pre-state. A foreign
-`outState` read is admissible only when derivation proves that every invocation which can mutate that
-owner has already completed and no later invocation targets it. The target owner authenticates the
-final value. An earlier `outState` read would expose an unsettled intermediate journal and is rejected.
+A foreign ordinary state read always means authenticated transaction pre-state. For a foreign
+`outState` read, the reader MUST verify on-chain that its current logical position is not earlier
+than the target participant's authenticated `settlementBoundary`; the streaming validator proves
+that field is the maximum `subtreeEnd` of all invocations targeting the owner. The target owner
+authenticates the final value. An earlier read could observe a suspended owner handler which later
+resumes and is rejected on-chain, not merely by SDK derivation.
 
 ## 9. Compiler and SDK admissibility
 
@@ -810,9 +903,10 @@ The reserved selector is the fixed value `0x53434231` (`SCB1`). The compiler MUS
 selector collision. Fixing and reserving the selector avoids a recursive definition between dispatch
 bytecode and its artifact fingerprint.
 
-`artifactFingerprint` binds optimized handler bytecode, constructor-bound identity, state-layout
-fingerprint, transcript protocol version, handler table, and callsite IDs. Any of those changing
-changes the fingerprint.
+`artifactFingerprint` is SDK/compiler metadata only. It binds optimized handler bytecode,
+constructor-bound identity, state-layout fingerprint, transcript protocol version, handler table,
+and callsite IDs. It is not serialized in participant rows and is not treated as covenant-layer
+identity; the locking bytecode and state category provide that identity on-chain.
 
 Callsite IDs are assigned deterministically from canonical source identity plus enclosing handler and
 AST preorder. They are stable under unrelated artifact serialization order but may change after a
@@ -821,24 +915,51 @@ semantic source/compiler change, which also changes the artifact fingerprint.
 Older artifact readers ignore the additive metadata. A v1 SDK MUST reject an unknown protocol
 version or malformed/incomplete metadata.
 
-## 11. Protocol and resource limits
+## 11. BCH 2026 cost model and protocol limits
 
-V1 hard maxima:
+The governing standardness/VM constants for `BCH_2026_05` are:
+
+```text
+densityControlLength D              = 41 + own unlockingBytecode length
+maximumOperationCost                = 800 * D
+operationCost                       = 100 * evaluated instructions
+                                      + 26,000 * signature checks
+                                      + 192 * hash digest iterations
+                                      + arithmetic cost + stack-pushed bytes
+maximumHashDigestIterations         = floor(0.5 * D)
+maximum standard unlocking bytecode = 10,000 bytes
+maximum standard transaction size   = 100,000 bytes
+maximum stack item                  = 10,000 bytes
+maximum combined stack depth        = 1,000 items
+maximum control-stack depth         = 100
+maximum token commitment            = 128 bytes
+maximum aggregate nulldata          = 223 bytes
+```
+
+Instructions therefore cost roughly eight bytes of the evaluating input's own unlocking-bytecode
+budget. `OP_BEGIN`/`OP_UNTIL` reduce emitted bytecode but do not reduce per-iteration operation cost.
+`OP_SPLIT` charges for pushed bytes, so repeatedly splitting the full transcript is forbidden by the
+streaming rule in section 4.
+
+Wire-format candidate maxima:
 
 ```text
 transcript blob                 8,192 bytes
-participants                   32
-resources                      128
-logical invocations            128
-events                         128
-effects                        128
-logical call depth             32
-invocations per participant    64
-resources per participant      128
+participants                    8
+resources                      24
+logical invocations            24
+events                          4
+effects                         8
+logical call depth             16
+invocations per participant    24
+resources per participant      24
+journal writes per participant 32
 ```
 
-The compiler/SDK may enforce lower policy limits. They may not raise these without a protocol-version
-change because generated validation loops and resource assumptions are bounded by them.
+These maxima are simultaneous ceilings, not promises that maximum-sized variable payloads fit
+together. The encoded transcript length is always the final authority. Phase 0 MUST measure realistic
+row payload distributions and may lower these numbers before the wire format freezes. Raising frozen
+maxima requires a protocol-version change.
 
 The SDK MUST additionally enforce the active network/provider limits for:
 
@@ -848,7 +969,9 @@ The SDK MUST additionally enforce the active network/provider limits for:
 - transaction serialized size and input/output count;
 - stack item, combined stack, control/function memory, operation, and signature-check budgets;
 - NFT commitment and token amount bounds;
-- dust and standardness policy when broadcasting.
+- dust and standardness policy when broadcasting;
+- aggregate arbitrary-data output usage: `SCBH` plus every application/event `OP_RETURN` output MUST
+  remain within the 223-byte standard limit.
 
 Static estimates are advisory. Complete final VM evaluation of every input is mandatory. Exceeding a
 limit is a deterministic construction error naming the participant, invocation/resource count, and
@@ -877,13 +1000,26 @@ Cannot derive A.start -> B.process -> A.finish:
   Invocation transcript v1 does not permit future-result dependencies.
 ```
 
-## 13. Verification plan and release gates
+## 13. Research gates and possible verification plan
 
-Implementation proceeds only through these gates:
+This is not a scheduled implementation plan. A new adoption decision is required before gate 2;
+gates 0-1 are measurement and shared compiler work which do not freeze or deploy this format.
 
+0. **BCH 2026 format/cost spike:** before freezing section 3, hand-emit the carrier parser,
+   participant transaction-binding checks, streaming structural validator, and `SCBH` verification.
+   Measure realistic 2 KiB and maximum candidate transcripts from a roughly 5 KiB stateful
+   participant under `BCH_2026_05`. Record `operationCost`, `maximumOperationCost`,
+   `evaluatedInstructionCount`, `stackPushedBytes`, `hashDigestIterations`, stack/memory peaks,
+   unlocking sizes, and complete transaction size. Freeze the exact v1 controller-prefix bytes only
+   after this implementation exists. Also measure a compact no-carrier form which places the complete
+   transcript in the final nulldata output when the total transaction remains under the 223-byte
+   aggregate data-carrier policy; do not use application state NFT commitments as current-transaction
+   witnesses.
 1. **Shared analysis:** extract split footprints/call closures; artifact metadata is deterministic;
-   all existing direct artifacts remain byte-identical.
-2. **Scalar journal:** recursive/local-loop scalar writers match a sequential reference model;
+   all existing direct artifacts remain byte-identical. Do not finalize section 11 limits until the
+   full research decision boundary also passes.
+2. **Scalar journal:** benchmark append-only and explicitly threaded journal representations;
+   recursive/local-loop scalar writers must match a sequential reference model;
    hostile output substitution fails.
 3. **Local transcript route:** repeated handlers, callbacks, results, duplicate/missing rows, malformed
    tables, and stack cleanup are VM-proven.
@@ -901,16 +1037,22 @@ Implementation proceeds only through these gates:
    executor substitution, and limit bypass.
 10. **Independent security review:** required before enabling participant cycles by default.
 
-Feature flags MUST remain internal/compiler options until their gate passes. Direct-call behavior
-remains the production fallback only when its semantics are representable without repeated physical
-state consumption; otherwise construction fails rather than silently changing behavior.
+No feature flag may emit this protocol before all adoption gates and the relevant implementation
+gate pass. Direct-call and narrow-batch behavior remain the production paths when representable;
+otherwise construction fails rather than silently changing behavior.
+
+Gate 0 is necessary but insufficient. The journal and narrow batch may proceed independently, but
+general-transcript implementation MUST NOT begin until measured format/cost, real-corpus fit,
+version interoperability, contention/liveness, demonstrated demand, and independent review all pass
+and a subsequent decision promotes this document.
 
 ## 14. Final invariants
 
 A released implementation MUST maintain:
 
 1. one physical owner input and settlement authority per mutable logical owner;
-2. one common canonical transcript read from the signer-bound carrier at transaction input 0;
+2. one common canonical transcript source and origin-bound transcript commitment under the frozen
+   post-gate-0 format;
 3. one execution of every logical invocation;
 4. depth-first synchronous logical ordering with owner-local callback re-entry;
 5. no visibility of foreign unsettled storage;

@@ -1,0 +1,257 @@
+# Compiler-hidden batch protocol v1
+
+Status: IMPLEMENTATION TARGET AFTER THE SCALAR JOURNAL. WIRE BYTES FREEZE ONLY AFTER THE BCH 2026
+MEASUREMENT GATE.
+
+Shared analysis and journal work may begin immediately. Batch parser/controller codegen begins only
+after gate 0 fixes the encoding and measured limits below.
+
+Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d36116aa`.
+
+This is the first deployable composition protocol. It covers:
+
+- several local/public handlers executed by one state owner;
+- a loop or recursion over stateful owner-local handlers;
+- one caller invoking the same external state owner several times;
+- ordered arguments, returns, events, and read-your-writes state.
+
+It deliberately does not cover a general participant graph, callbacks, or `A -> B -> A`.
+
+## 1. Design rule
+
+Reuse existing covenant identity and call machinery. V1 does not introduce a participant table,
+carrier input, global transcript, resource table, or new logical-owner representation.
+
+For:
+
+```text
+A.root -> B.f(x)
+       -> B.g(y)
+       -> B.f(z)
+```
+
+the transaction contains one physical A owner input and one physical B owner input. A uses the
+existing external-call target pinning to verify B's actual locking bytecode, state category,
+self-pinned lineage, and input/output block. B executes three logical handlers against one local
+journal and flushes once.
+
+Only one logical external caller may contribute rows to a B batch in v1. Calls from two independent
+caller owners to the same B require the deferred graph protocol.
+
+## 2. Compiler-hidden route
+
+`__batch` is not source grammar or ABI. A transcript-capable artifact may expose the reserved physical
+selector `0x53434231` (`SCB1`) as compiler plumbing. The compiler rejects a source-selector collision.
+
+The artifact retains every ordinary source selector and direct wrapper. The SDK chooses:
+
+- direct wrapper for one logical invocation;
+- `SCB1` for two or more logical invocations of that owner.
+
+A later artifact may support several batch protocol versions. Artifact metadata lists supported
+versions and selectors. SDK construction selects the highest intersection understood by caller and
+callee; a newer artifact can remain composable with deployed v1 callers by retaining its v1 route.
+No transaction silently translates between formats. An immutable artifact cannot gain a version:
+if peers have no exact common version, construction fails. Compatibility is bounded because an
+artifact is never required to retain an unbounded set of historical routes.
+
+## 3. Local batch encoding
+
+The candidate v1 batch blob is carried as one canonical push in the batched owner's unlocking
+bytecode:
+
+```text
+magic[4]            // "SCB1"
+version:u8          // 1
+flags:u8            // 0
+invocationCount:u8
+invocations...
+```
+
+Each invocation is:
+
+```text
+selector:bytes4
+callsiteId:u32
+occurrence:u16
+argsLength:u16
+args:bytes
+```
+
+Rows are in execution order. For each callsite, occurrences begin at zero and are contiguous.
+Integers are little-endian, lengths are exact, pushes are minimal, and trailing bytes are rejected.
+
+Application arguments, including signatures, are decoded from rows. Physical layout/index arguments
+remain compiler-owned. The final byte order and maximum count are frozen only after Phase 0 measures
+the parser and realistic corpus batches under `BCH_2026_05`.
+
+## 4. Authentication
+
+### 4.1 Self/local batch
+
+For a user-requested local batch, the physical owner controller:
+
+- authenticates its ordinary state lineage and output block;
+- authenticates the transaction origin using the existing direct-call rules;
+- parses every row;
+- dispatches only source-public/external handlers marked batch-eligible;
+- executes every row exactly once;
+- proves complete blob consumption and one final flush.
+
+Internal/private helper invocations are normal handler/subroutine calls and are not independent batch
+rows.
+
+### 4.2 Repeated external callee
+
+The caller compiler groups external callsites by concrete target slot. If one target resolves to the
+same physical owner more than once:
+
+1. the SDK supplies one B owner block;
+2. A's existing external-call covenant verifies B's actual locking bytecode/category and that B's
+   unlocking bytecode selects `SCB1`;
+3. A incrementally reconstructs or streaming-compares the expected B batch rows at the original
+   callsites;
+4. B verifies its immediate caller from A's actual co-spent owner input using the existing
+   `msg.sender`/target-pinning model;
+5. B executes the same rows and flushes once.
+
+The batch blob is therefore checked by both its emitter A and target B without inventing a global
+participant identity model. A fabricated caller row is impossible because no caller identity is
+carried in the blob.
+
+Grouping occurs before physical external-call layout allocation. All grouped callsites share one B
+owner input/output block; per-call return/event/effect slots remain distinct inside that block.
+Merely changing the selector after allocating duplicate B inputs would remain invalid and is not the
+implementation.
+
+If the target remains unresolved or two target expressions might alias, the compiler emits an alias
+constraint and the SDK decides after resolving concrete locking bytecodes/categories.
+
+## 5. Ordering and journal semantics
+
+The owner-local journal supplies sequential semantics:
+
+```text
+load(slot)       -> newest write or authenticated pre-state
+store(slot, v)   -> append ordered write
+flush()          -> one authenticated backend transition per dirty resource
+```
+
+Scalar assignments, bytes/string replacement, mappings, arrays, balances, allowances, supply, and
+container operations execute in row order. V1 does not aggregate ERC-20 deltas.
+
+The journal representation is selected by the Phase 1 benchmark. The default candidate is
+authenticated base values plus an append-only `(slot, value)` write log. Deep mutable stack-frame
+replacement is not assumed.
+
+## 6. Returns, events, and value
+
+V1 reuses existing physical mechanisms:
+
+- each returning external call keeps its existing authenticated return-event/output slot;
+- each emitted event keeps its existing event-output covenant;
+- transfer/container effects keep existing authenticated output slots;
+- `msg.sender`, `tx.origin`, and transaction introspection keep current physical meanings.
+
+The compiler groups these slots under one B owner block but preserves their logical row order. B
+verifies each result/event/effect as its handler executes; A verifies every return it consumes.
+
+Self/local batches may return an ordered result vector to SDK `staticCall()`. A state-changing
+transaction materializes only source-requested return events, matching current behavior.
+
+## 7. Eligibility
+
+Initially eligible:
+
+- fixed scalar/register state;
+- internal/private/public helper calls after journal lowering;
+- bounded loops and recursion within VM limits;
+- ordinary `require`, modifiers, signatures, events, and returns.
+
+Enabled only after their journal/backend gate:
+
+- C2 mappings and sets;
+- dynamic chunks and collections;
+- satoshi/CashToken containers.
+
+Rejected in v1:
+
+- callbacks or any physical participant cycle;
+- more than one external caller owner contributing to one batch;
+- `delegatecall`, lifecycle, `unsafe`, and arbitrary foreign failure catching;
+- a batch requiring more than one existing split facet;
+- unresolved dynamic storage witnesses or over-limit batches.
+
+## 8. Split contracts
+
+The state-owning split root remains the logical owner. All handlers in one batch must execute in one
+physical settlement context:
+
+- root-local handlers may batch together;
+- moved handlers may batch only when the splitter colocates their complete batch closure in one
+  settlement facet;
+- root-local and moved handlers, or handlers in two facets, cannot share one v1 batch unless the
+  compiler emits a new single settlement artifact containing the whole closure.
+
+Failure to fit reports the measured closure and remains a compile error.
+
+## 9. Metadata
+
+Artifacts add:
+
+```ts
+interface HiddenBatchProtocolV1 {
+  version: 1;
+  selector: '53434231';
+  handlers: readonly {
+    handlerId: number;
+    selector: string;
+    eligible: boolean;
+    rejectionReason?: string;
+    reads: readonly AccessRegion[];
+    writes: readonly AccessRegion[];
+    effects: readonly string[];
+  }[];
+  callsites: readonly {
+    callsiteId: number;
+    callerHandlerId: number;
+    targetSource: string;
+    selector?: string;
+  }[];
+  constraints: readonly InvocationConstraint[];
+  measured?: {
+    parserBytes: number;
+    fixedControllerBytes: number;
+    maximumRows: number;
+    maximumBlobBytes: number;
+  };
+}
+```
+
+This metadata is additive and off-chain. On-chain identity continues to be the actual pinned locking
+bytecode and state category.
+
+## 10. Implementation gates
+
+0. Measure a hand-emitted batch parser/dispatcher under `BCH_2026_05` with 2, 3, 8, and candidate
+   maximum rows. Record controller bytecode, operation cost, pushed bytes, stack/memory, unlocking
+   size, and complete transaction size.
+1. Land scalar journal and callable state handlers while preserving direct artifact bytecode.
+2. Prove owner-local two/three-row batches, malformed-row rejection, ordering, results, and one flush.
+3. Prove one caller plus one repeated external token owner using existing target pinning:
+   TreasurySplit, Marketplace reward triple, and MasterChef double mint.
+4. Add mapping/collection backends and prove bounded BentoBox-style local batches.
+5. Measure deployed bytecode overhead on the Effective Acceleration split corpus.
+
+The feature remains internal/experimental until hostile transactions prove caller/callee binding,
+row completeness, output substitution resistance, and resource limits.
+
+## 11. Release invariants
+
+1. One physical owner input and one settlement authority per batched state owner.
+2. Existing external target/category/self-pinning checks remain authoritative.
+3. One authenticated immediate caller; no caller identity supplied by the batch blob.
+4. Every row executes exactly once in order and is checked by its emitter and target.
+5. Read-your-writes and one final backend transition per dirty resource.
+6. Direct one-call behavior remains byte-identical.
+7. Unsupported cycles, aliases, facets, effects, and limits fail closed.

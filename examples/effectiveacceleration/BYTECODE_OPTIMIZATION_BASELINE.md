@@ -157,10 +157,12 @@ accesses, but it was neutral on this MarketplaceV1 source.
 | Shared state reconstruction reads | 82804.5 | 3639.5 (4.2%) |
 | Shared data-NFT bytecode/category preservation | 82072.5 | 732 (0.9%) |
 | Shared read-only commitment preservation | 81906.5 | 166 (0.2%) |
-| **Current total** | **81906.5** | **92626.5 (53.1%)** |
+| Literal index-zero variable-width specialization | 81906.5 | 0 |
+| Shared written-NFT output commitment lookup | 81862.5 | 44 (0.1%) |
+| **Current total** | **81862.5** | **92670.5 (53.1%)** |
 
 Relative to the same-source 461310-byte measurement before the structural-sharing follow-ups, the current
-artifact is 379403.5 bytes smaller (82.2%).
+artifact is 379447.5 bytes smaller (82.3%).
 
 ## Final implementation summary
 
@@ -182,6 +184,8 @@ names, or its particular state schema.
 - Commitment reconstruction reuses the same physical state-read helpers for every unchanged field.
 - Per-data-NFT locking-bytecode, token-category, and read-only commitment preservation tails are shared by
   compact offset. Delegate paths remain inline for the same altstack reason.
+- Written-NFT output commitment lookup is shared by compact offset, and literal index zero on a variable-width
+  array bypasses the scan loop entirely.
 - Captured helpers record helper-to-helper dependencies, and dead-definition removal retains reachable
   dependencies.
 - Helper extraction compares actual encoded definition and invocation sizes against repeated inline emission.
@@ -195,7 +199,7 @@ source does not exercise them enough to change its total. These are identified a
 
 ## Validation
 
-The final 81906.5-byte measurement was produced after a clean `solidc` build. The complete monorepo test run
+The final 81862.5-byte measurement was produced after a clean `solidc` build. The complete monorepo test run
 passed:
 
 | Workspace | Result |

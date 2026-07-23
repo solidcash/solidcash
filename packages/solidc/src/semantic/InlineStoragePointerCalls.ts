@@ -27,6 +27,7 @@ import {
   ReturnNode,
   FunctionCallNode,
   ConsoleStatementNode,
+  EmitStatementNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
@@ -246,6 +247,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.walk(fn.body, (candidate) => {
       const maybeState = candidate as Node & { stateVariable?: { isDynamic?: boolean } };
       if (maybeState.stateVariable?.isDynamic) unsupported = true;
+      // This transform runs before emitInfos is populated. Inspect the source AST
+      // directly so event-producing helpers remain inlined and their event metadata
+      // is retained on every physical entry point that can execute the emit.
+      if (candidate instanceof EmitStatementNode) unsupported = true;
       if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
         || candidate instanceof MappingDeleteNode || candidate instanceof MappingFieldAssignNode
         || candidate instanceof ArrayAccessNode || candidate instanceof ArrayAssignNode

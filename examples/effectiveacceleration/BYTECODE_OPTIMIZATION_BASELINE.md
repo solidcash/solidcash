@@ -121,3 +121,40 @@ variable-width array element decoding. On the same current MarketplaceV1 source:
 | Shared variable-width scan loops | 223099 | 12320 (5.2%) |
 | Shared variable-width element extraction | 174533 | 48566 (21.8%) |
 | **Follow-up total** | **174533** | **286777 (62.2%)** |
+
+## Nested structural sharing and deep-stack follow-up
+
+The next pass remained contract-agnostic. Cumulative field-prefix helpers now invoke the nearest smaller prefix
+for the same struct shape, and captured helpers may invoke already-defined helpers without making dead-definition
+elimination discard their dependencies.
+
+Mapping-backed variable-width arrays were also routed through the same structural element-extraction helper as
+ordinary dynamic arrays. That removes a duplicate generator path and benefits contracts that repeat those
+accesses, but it was neutral on this MarketplaceV1 source.
+
+| Stage | Bytes | Incremental reduction |
+| --- | ---: | ---: |
+| Previous follow-up | 174533 | - |
+| Chained cumulative struct-field prefixes | 164082 | 10451 (6.0%) |
+| Captured-helper dependency reuse | 157203 | 6879 (4.2%) |
+| Shared mapping-array element extraction | 157203 | 0 |
+| Complete struct-field extraction sharing | 149109 | 8094 (5.1%) |
+| Encoding-layout helper canonicalization | 149109 | 0 |
+| Encoded-size-aware helper selection | 149109 | 0 |
+| Recursive encoding-layout canonicalization | 149109 | 0 |
+| Balanced deep-stack replacement loops | 146272 | 2837 (1.9%) |
+| Compact collision-free helper IDs | 143076 | 3196 (2.2%) |
+| Shared packed-array read extraction | 96428 | 46648 (32.6%) |
+| Encoded-cost selection for fixed helpers | 96428 | 0 |
+| Shared literal-index and delete extraction | 96428 | 0 |
+| Compact negative fixed-helper IDs | 89609 | 6819 (7.1%) |
+| **Current total** | **89609** | **84924 (48.7%)** |
+
+Relative to the same-source 461310-byte measurement before the structural-sharing follow-ups, the current
+artifact is 371701 bytes smaller (80.6%).
+
+Complete `array[i].field` fusion was prototyped but removed: the semantic lowering has already separated that
+shape before generation, and the independently shared array/field helpers are the reachable canonical form.
+Whole dynamic-state-read extraction was also rejected because its emitted loop depends on function-specific
+block layout, preceding collection/dynamic reads, and tracked stack depths; treating it as a context-free helper
+would be unsound.

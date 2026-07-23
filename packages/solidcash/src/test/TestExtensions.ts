@@ -50,7 +50,9 @@ interface Buildable {
   build(): string | Promise<any>;
 }
 
-async function debugTransaction(transaction: Debuggable | (Buildable & Partial<Debuggable>) | Promise<unknown>): Promise<void> {
+async function debugTransaction(
+  transaction: Debuggable | (Buildable & Partial<Debuggable>) | Promise<unknown>,
+): Promise<void> {
   if (transaction && typeof (transaction as Debuggable).debug === 'function') {
     (transaction as Debuggable).debug();
     return;
@@ -64,6 +66,10 @@ async function debugTransaction(transaction: Debuggable | (Buildable & Partial<D
 
 async function sendTransaction(transaction: unknown): Promise<void> {
   const resolved = await transaction as any;
+  // A TransactionBuilder can be evaluated without mutating the provider. This
+  // keeps matcher assertions repeatable when several expectations inspect the
+  // same transaction or UTXO.
+  if (resolved && typeof resolved.debug === 'function') { resolved.debug(); return; }
   if (resolved && typeof resolved.send === 'function') { await resolved.send(); return; }
   await resolved;
 }

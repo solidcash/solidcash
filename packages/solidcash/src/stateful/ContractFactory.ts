@@ -11,6 +11,7 @@ import {
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
+import { registerDeployment } from './deployment-registry.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -194,6 +195,12 @@ export class ContractFactory<T extends Artifact = Artifact> {
     // ethers v5 `.deployed()` alias (MistSwap uses it 38x): resolves to the deployed contract, like waitForDeployment.
     // `deployed` is not on DeployedContract<T>, so cast through unknown (TS2352) to attach the extra accessor.
     (contract as unknown as { deployed: () => Promise<DeployedContract<T>> }).deployed = awaitDeployed;
+    registerDeployment(provider, {
+      contractName: this.artifact.contractName,
+      address: contract.target,
+      lockingBytecode: contract.inner.lockingBytecode,
+      contract,
+    });
     return contract;
   }
 }

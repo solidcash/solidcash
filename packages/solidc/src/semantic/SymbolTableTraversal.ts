@@ -4177,22 +4177,60 @@ export default class SymbolTableTraversal extends AstTraversal {
       const userVisibleParams = this.currentFunction?.parameters.filter(
         (p) => !p.name.startsWith('__internal__'),
       ) ?? [];
-      for (const param of node.parameters) {
-        if (param instanceof IdentifierNode && param.definition) {
-          const defNode = param.definition.definition;
+      const classifyArg = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExternalCallArgSource | undefined => {
+        if (seen.has(expression)) return undefined;
+        seen.add(expression);
+        if (expression instanceof IdentifierNode && expression.definition) {
+          const defNode = expression.definition.definition;
           if (defNode instanceof ParameterNode) {
             const funcIdx = userVisibleParams.indexOf(defNode);
-            if (funcIdx >= 0) {
-              argSources.push({ kind: 'forward', paramIndex: funcIdx });
-              continue;
-            }
+            if (funcIdx >= 0) return { kind: 'forward', paramIndex: funcIdx };
             const ctorIdx = this.currentContract?.parameters.indexOf(defNode);
             if (ctorIdx !== undefined && ctorIdx >= 0) {
-              argSources.push({ kind: 'constructorArg', paramName: defNode.name });
-              continue;
+              return { kind: 'constructorArg', paramName: defNode.name };
             }
           }
+          // Inlined helpers bind their original parameters to synthesized locals.
+          // Follow that initializer back to the entry-point parameter/expression.
+          if (defNode instanceof VariableDefinitionNode && defNode.expression) {
+            return classifyArg(defNode.expression, seen);
+          }
         }
+        if (expression instanceof NullaryOpNode
+          && (expression.operator === NullaryOperator.MSG_SENDER
+            || expression.operator === NullaryOperator.TX_ORIGIN)) {
+          return { kind: 'msgSender' };
+        }
+        if (expression instanceof ArrayAccessNode) {
+          const arraySource = classifyArg(expression.array, seen);
+          if (arraySource?.kind === 'forward' && arraySource.paramIndex !== undefined) {
+            const indexSource = classifyArg(expression.index, seen);
+            if (indexSource?.kind === 'forward') {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexParamIndex: indexSource.paramIndex,
+              };
+            }
+            if (expression.index instanceof IntLiteralNode) {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexValue: Number(expression.index.value),
+              };
+            }
+            // A loop-local index cannot be supplied by the caller. The SDK expands
+            // these call sites in array order; index zero identifies the first group.
+            return { kind: 'arrayElement', paramIndex: arraySource.paramIndex, indexValue: 0 };
+          }
+        }
+        return undefined;
+      };
+      for (const param of node.parameters) {
+        const classified = classifyArg(param);
+        if (classified) { argSources.push(classified); continue; }
         if (param instanceof IntLiteralNode) {
           argSources.push({ kind: 'literal', value: param.value.toString(), type: 'bigint' });
           continue;

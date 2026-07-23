@@ -358,8 +358,6 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       getContractFactory(implArtifact, signer),
       [],
     );
-    (proxy.implementation as any)._externalRegistry.set('IValueSource', callee);
-
     const tx = await (proxy as any).run(callee.inner.lockingBytecode, 7n).send();
     expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).result).toBe(14n);
   });

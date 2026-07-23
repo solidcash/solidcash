@@ -344,8 +344,10 @@ export interface ExternalReadAbi {
 }
 
 export interface ArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'arrayElement' | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
+  indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
+  indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string

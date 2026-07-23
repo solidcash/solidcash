@@ -1847,8 +1847,10 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 }
 
 export interface ExternalCallArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'arrayElement' | 'expression';
   paramIndex?: number;
+  indexParamIndex?: number;
+  indexValue?: number;
   paramName?: string;
   value?: string;
   type?: string;

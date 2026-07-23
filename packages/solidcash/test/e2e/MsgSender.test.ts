@@ -1054,6 +1054,24 @@ contract TickCaller(bytes bAddr) {
       expect(call).toBeInstanceOf(StatefulFunctionCall);
     });
 
+    it('preserves msg.sender origins in external-call metadata', () => {
+      const artifact = compileString(`
+        pragma solidcash >=0.8.0;
+        interface ITarget { function accept(address who) external; }
+        contract OriginCaller(address target) {
+          int marker;
+          function run() {
+            ITarget(target).accept(msg.sender);
+            require(true);
+          }
+        }
+      `, { solidityImportCompat: true });
+      const run = artifact.abi.find((f) => f.name === 'run');
+      expect(run?.externalCalls?.[0].argSources).toEqual([
+        { kind: 'msgSender' },
+      ]);
+    });
+
     it('should send with connect-time binding for function with args', async () => {
       const abProvider = createTestProvider();
       const abArtB = compileString(CONTRACT_B);

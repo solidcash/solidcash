@@ -99,6 +99,9 @@ import {
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
 } from './covenant-helpers.js';
+import {
+  findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
+} from './deployment-registry.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
@@ -8462,20 +8465,52 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
             const nestedIndices: number[] = [];
             for (const nested of delegateFn?.externalCalls ?? []) {
+              const addressParamIndex = nested.addressParam
+                ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
+                : -1;
+              const addressValue = addressParamIndex >= 0 ? callInfo.args[addressParamIndex] : undefined;
+              let deploymentAtAddress: unknown;
+              if (typeof addressValue === 'string') {
+                deploymentAtAddress = (
+                  findDeploymentByAddress(this.inner.provider, addressValue)
+                  ?? findDeploymentByLockingBytecode(this.inner.provider, addressValue)
+                )?.contract;
+              } else if (addressValue instanceof Uint8Array) {
+                deploymentAtAddress = findDeploymentByLockingBytecode(
+                  this.inner.provider, binToHex(addressValue),
+                )?.contract;
+                try {
+                  const address = lockingBytecodeToCashAddress({
+                    bytecode: addressValue,
+                    prefix: getNetworkPrefix(this.inner.provider.network),
+                    tokenSupport: false,
+                  });
+                  if (typeof address !== 'string') {
+                    deploymentAtAddress = findDeploymentByAddress(this.inner.provider, address.address)?.contract;
+                  }
+                } catch { /* fall through to interface-name resolution */ }
+              }
               // Hardhat-style factories connect externals on the public proxy
               // instance. A manually assembled delegate may instead connect them
               // directly on the implementation; accept both, preferring the latter.
-              const callee = (
+              const registeredCallee = (
                 callInfo.contract._externalRegistry.get(nested.interfaceName)
                 ?? this._externalRegistry.get(nested.interfaceName)
-              ) as StatefulContract | undefined;
+                ?? deploymentAtAddress
+                ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract
+              ) as StatefulContract | {
+                proxy: StatefulContract; implementation: StatefulContract;
+                forward: (name: string, args: FunctionArgument[]) => StatefulFunctionCall;
+              } | undefined;
+              const callee = registeredCallee && 'proxy' in registeredCallee
+                ? registeredCallee.proxy : registeredCallee;
               if (!callee) {
                 throw new Error(
                   `Delegate external call to ${nested.interfaceName}.${nested.functionName} is not connected. `
                   + `Connect '${nested.interfaceName}' on the implementation before calling through the proxy.`,
                 );
               }
-              const nestedArgs = callInfo.contract._resolveExternalArgs(
+              const nestedArgs = this._resolveExternalArgs(
                 nested.argSources, callInfo.args, callInfo.contract.inner.artifact,
               );
               if (nestedArgs === undefined) {
@@ -9618,6 +9653,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // bytes types - hex string to Uint8Array
             resolved.push(hexToBin(source.value));
           }
+          break;
+        }
+        case 'msgSender': {
+          if (!this._signer) return undefined;
+          resolved.push(addressToLockScript(this._signer.getAddress()));
+          break;
+        }
+        case 'arrayElement': {
+          if (source.paramIndex === undefined || source.paramIndex >= functionArgs.length) return undefined;
+          const array = functionArgs[source.paramIndex];
+          if (!Array.isArray(array)) return undefined;
+          let index = source.indexValue ?? 0;
+          if (source.indexParamIndex !== undefined) {
+            const rawIndex = functionArgs[source.indexParamIndex];
+            if (typeof rawIndex !== 'bigint' && typeof rawIndex !== 'number') return undefined;
+            index = Number(rawIndex);
+          }
+          if (index < 0 || index >= array.length) return undefined;
+          resolved.push(array[index] as FunctionArgument);
           break;
         }
         case 'expression':

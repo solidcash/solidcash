@@ -403,6 +403,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }>();
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
+  private dataNftOutputCommitmentIds = new Map<number, bigint>();
   private compactHelperIds = {
     next: -12n,
     used: new Set<bigint>(),
@@ -1043,6 +1044,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
       spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
     }
+    for (const [offset, id] of this.dataNftOutputCommitmentIds) {
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitDataNftOutputCommitmentInline(offset, loc);
+      };
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
     // A struct's field-prefix helpers are cumulative: prefix N includes every skip in prefix M<N. Define them in
     // ascending field order and make each larger helper invoke the nearest smaller helper, then emit only its
     // incremental suffix. This avoids embedding the same potentially-large variable-width traversal in every
@@ -1288,6 +1296,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.stateReads = this.stateReads;
     sub.dataNftPreserveIds = this.dataNftPreserveIds;
     sub.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
+    sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
     this.subroutineDependencies.set(id, new Set(
@@ -1334,6 +1343,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.stateReads = this.stateReads;
     sub.dataNftPreserveIds = this.dataNftPreserveIds;
     sub.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
+    sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
     const body = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
@@ -1410,6 +1420,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.stateReads = new Map(probe.stateReads);
       this.dataNftPreserveIds = new Map(probe.dataNftPreserveIds);
       this.dataNftCommitPreserveIds = new Map(probe.dataNftCommitPreserveIds);
+      this.dataNftOutputCommitmentIds = new Map(probe.dataNftOutputCommitmentIds);
       this.compactHelperIds = probe.compactHelperIds;
       return probe.subroutineUseCount;
     } catch {
@@ -1567,6 +1578,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.stateReads = this.stateReads;
     subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
     subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
+    subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     subTraversal.compactHelperIds = this.compactHelperIds;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
@@ -1802,6 +1814,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.stateReads = this.stateReads;
     subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
     subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
+    subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     subTraversal.compactHelperIds = this.compactHelperIds;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
 
@@ -5691,9 +5704,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         this.emitDecodeElementPacked(elemType, locationData);
       } else {
-        // O(n) access: share the same scan-and-decode helper as dynamic-index array reads.
         this.pushToStack('(count)');
-        this.emitVariableArrayElementExtract(elemType, locationData);
+        if (node.index === 0) {
+          // The first element needs no scan. Discard the compile-time index and decode directly.
+          this.emit(Op.OP_DROP, locationData);
+          this.emitPushdataDecode(elemType, locationData);
+          this.emit(Op.OP_SWAP, locationData);
+          this.emit(Op.OP_NIP, locationData);
+        } else {
+          // O(n) access: share the same scan-and-decode helper as dynamic-index array reads.
+          this.emitVariableArrayElementExtract(elemType, locationData);
+        }
         this.popFromStack(2); // remove (elements) and (count)
         this.pushToStack('(value)');
       }
@@ -13147,10 +13168,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
 
         // Verify output commitment matches reconstructed commitment
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(compactOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+        this.emitDataNftOutputCommitment(compactOffset, locationData);
         this.pushToStack('(value)');
 
         this.emit(Op.OP_EQUALVERIFY, locationData);
@@ -15013,6 +15031,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emitIndex();
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  private emitDataNftOutputCommitment(offset: number, loc: SingleLocationData): void {
+    if (this.currentFunctionIsDelegate) {
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      return;
+    }
+    let id = this.dataNftOutputCommitmentIds.get(offset);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.dataNftOutputCommitmentIds.set(offset, id);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitDataNftOutputCommitmentInline(offset, loc);
+  }
+
+  private emitDataNftOutputCommitmentInline(offset: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(encodeInt(BigInt(offset)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
   }
 
   /** Decode one physical data-NFT field from a commitment already on top of the stack. */

@@ -82,7 +82,7 @@ Rows are in execution order. For each callsite, occurrences begin at zero and ar
 Integers are little-endian, lengths are exact, pushes are minimal, and trailing bytes are rejected.
 
 Application arguments, including signatures, are decoded from rows. Physical layout/index arguments
-remain compiler-owned. The final byte order and maximum count are frozen only after Phase 0 measures
+remain compiler-owned. The final byte order and maximum count are frozen only after Release 0 measures
 the parser and realistic corpus batches under `BCH_2026_05`.
 
 ## 4. Authentication
@@ -140,7 +140,7 @@ flush()          -> one authenticated backend transition per dirty resource
 Scalar assignments, bytes/string replacement, mappings, arrays, balances, allowances, supply, and
 container operations execute in row order. V1 does not aggregate ERC-20 deltas.
 
-The journal representation is selected by the Phase 1 benchmark. The default candidate is
+The journal representation is selected by the Release 1 benchmark. The default candidate is
 authenticated base values plus an append-only `(slot, value)` write log. Deep mutable stack-frame
 replacement is not assumed.
 
@@ -231,20 +231,35 @@ interface HiddenBatchProtocolV1 {
 This metadata is additive and off-chain. On-chain identity continues to be the actual pinned locking
 bytecode and state category.
 
-## 10. Implementation gates
+## 10. Incremental delivery gates
 
-0. Measure a hand-emitted batch parser/dispatcher under `BCH_2026_05` with 2, 3, 8, and candidate
-   maximum rows. Record controller bytecode, operation cost, pushed bytes, stack/memory, unlocking
-   size, and complete transaction size.
-1. Land scalar journal and callable state handlers while preserving direct artifact bytecode.
-2. Prove owner-local two/three-row batches, malformed-row rejection, ordering, results, and one flush.
-3. Prove one caller plus one repeated external token owner using existing target pinning:
-   TreasurySplit, Marketplace reward triple, and MasterChef double mint.
-4. Add mapping/collection backends and prove bounded BentoBox-style local batches.
-5. Measure deployed bytecode overhead on the Effective Acceleration split corpus.
+The batch is not one large feature flag. It is the last two releases in a sequence where every
+earlier release is independently useful:
 
-The feature remains internal/experimental until hostile transactions prove caller/callee binding,
-row completeness, output substitution resistance, and resource limits.
+| release | independently shippable benefit | batch dependency |
+|---|---|---|
+| 0 | early call-chain/contention diagnostics and shared split footprints | measure parser only |
+| 1 | de-inlined scalar state helpers in multiple sites and loops | none |
+| 2 | bounded recursive state handlers with full handler context | none |
+| 3 | mapping, bytes/string, array, and token-state helper journals | none |
+| 4 | several handlers on one owner in one transaction | local batch route |
+| 5 | one caller invokes one external owner repeatedly while consuming it once | repeated-callee route |
+
+Detailed tasks and ship gates are normative in section 8 of
+`buffered-state-and-message-bus-research.md`. Additionally:
+
+1. Release 0 MUST measure a hand-emitted parser/dispatcher under `BCH_2026_05` with 2, 3, 8, and
+   candidate-maximum rows, including controller bytes, operation cost, pushed bytes, stack/memory,
+   unlocking size, and complete transaction size.
+2. Release 4 MUST prove owner-local malformed-row rejection, ordering, results, and one flush before
+   its artifact capability is enabled by default.
+3. Release 5 MUST prove caller/callee binding with TreasurySplit, Marketplace reward triple, and
+   MasterChef double mint before its capability is enabled by default.
+4. Every release MUST measure deployed bytecode impact on relevant Effective Acceleration and split
+   corpus artifacts; a regression belongs to the release which introduces it.
+
+During hardening, each new capability remains internal/experimental. A completed earlier release is
+not held back merely because a later batch or graph release is unfinished.
 
 ## 11. Release invariants
 
@@ -253,5 +268,6 @@ row completeness, output substitution resistance, and resource limits.
 3. One authenticated immediate caller; no caller identity supplied by the batch blob.
 4. Every row executes exactly once in order and is checked by its emitter and target.
 5. Read-your-writes and one final backend transition per dirty resource.
-6. Direct one-call behavior remains byte-identical.
+6. Artifacts which do not advertise batching remain byte-identical; the ordinary one-call wrapper
+   and transaction semantics remain unchanged in batch-capable artifacts.
 7. Unsupported cycles, aliases, facets, effects, and limits fail closed.

@@ -642,7 +642,7 @@ sets `dirty`. Delete stores the language default plus the backend's deletion ope
 
 ### 7.2 VM representation
 
-The normative journal semantics are section 7.1; Phase 1 chooses the measured representation. The
+The normative journal semantics are section 7.1; journal Release 1 chooses the measured representation. The
 default candidate is an append-only write log:
 
 ```text
@@ -657,7 +657,7 @@ emits one transition per resource. The compiler may replace a search with a cons
 when dataflow proves the latest write.
 
 A mutable lower-stack frame with deep-slot replacement is not the v1 default: BCH has no
-insert-at-depth primitive, so rolling a large frame out and back can become quadratic. Phase 1 MUST
+insert-at-depth primitive, so rolling a large frame out and back can become quadratic. Release 1 MUST
 benchmark append-only, explicit threaded-context, and any proposed frame specialization under the
 section 11 cost model before freezing codegen.
 
@@ -957,7 +957,7 @@ journal writes per participant 32
 ```
 
 These maxima are simultaneous ceilings, not promises that maximum-sized variable payloads fit
-together. The encoded transcript length is always the final authority. Phase 0 MUST measure realistic
+together. The encoded transcript length is always the final authority. A future format spike MUST measure realistic
 row payload distributions and may lower these numbers before the wire format freezes. Raising frozen
 maxima requires a protocol-version change.
 

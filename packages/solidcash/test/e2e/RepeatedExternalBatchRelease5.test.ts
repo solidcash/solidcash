@@ -350,7 +350,7 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     await expect(caller.run(2n, 3n).send()).rejects.toThrow();
   });
 
-  it('rejects a forged callee settlement while accepting the untouched transaction', async () => {
+  it('rejects forged settlement and a duplicate physical callee input, then accepts the untouched transaction', async () => {
     const {
       provider, caller, calleeCategory,
     } = await deploy();
@@ -375,6 +375,20 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     calleeOutput!.token!.nft!.commitment[0] ^= 1;
 
     await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+
+    const duplicateInput = decodeTransactionUnsafe(hexToBin(captured));
+    const calleeInput = duplicateInput.inputs.find((input) => {
+      const first = decodeAuthenticationInstructions(input.unlockingBytecode)[0];
+      return 'data' in first && binToHex(first.data) === '53434231';
+    });
+    expect(calleeInput).toBeDefined();
+    duplicateInput.inputs.push({
+      ...calleeInput!,
+      outpointTransactionHash: calleeInput!.outpointTransactionHash.slice(),
+      unlockingBytecode: calleeInput!.unlockingBytecode.slice(),
+    });
+    await expect(send(binToHex(encodeTransaction(duplicateInput)))).rejects.toThrow();
+
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

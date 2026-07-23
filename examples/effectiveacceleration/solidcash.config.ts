@@ -29,12 +29,11 @@ export default defineConfig({
     // fixed packed values (for example OpenZeppelin storage gaps).
     commitmentLimit: 128,
     ecrecover: 'p2pkh',
-    // Most EACC mappings use the compact entry backend to keep the generated
-    // facets below BCH's script-size limit. These two mappings are updated for
-    // runtime-selected keys inside loops, so they selectively use the sorted
-    // (C2) backend, which can prove both existing and absent entries.
+    // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
+    // Mocknet's relaxed limits remove the former need to selectively switch
+    // large mappings to the C2 trailing-output protocol.
     sortedMappingsAll: false,
-    sortedMappings: ['_balances', 'whitelistWorkers'],
+    sortedMappings: ['EACCToken._balances', 'whitelistWorkers'],
   },
   typegen: {
     targets: [{

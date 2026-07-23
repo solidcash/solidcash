@@ -3,11 +3,27 @@
 import { ContractFactory, StatefulContract } from 'solidcash';
 import type { ContractRunner, DeployContractOptions, DeployedContract, SignatureTemplate } from 'solidcash';
 
-import UnicrowClaimArtifact from '../../../artifacts/solidcash/contracts-scash/UnicrowClaim.scash/UnicrowClaim.artifact.js';
+import UnicrowClaimArtifact from '../../../artifacts/solidcash/UnicrowClaim.artifact.js';
 
+export type CounterStruct = { _value: bigint; };
+export type CounterStructOutput = [_value: bigint] & { _value: bigint; };
+export type EscrowStruct = { buyer: Uint8Array | string; challengeExtension: bigint; seller: Uint8Array | string; challengePeriodStart: bigint; marketplace: Uint8Array | string; marketplaceFee: bigint; challengePeriodEnd: bigint; currency: Uint8Array | string; claimed: bigint; consensus: readonly bigint[]; split: readonly bigint[]; amount: bigint; paymentReference: string; };
+export type EscrowStructOutput = [buyer: Uint8Array | string, challengeExtension: bigint, seller: Uint8Array | string, challengePeriodStart: bigint, marketplace: Uint8Array | string, marketplaceFee: bigint, challengePeriodEnd: bigint, currency: Uint8Array | string, claimed: bigint, consensus: readonly bigint[], split: readonly bigint[], amount: bigint, paymentReference: string] & { buyer: Uint8Array | string; challengeExtension: bigint; seller: Uint8Array | string; challengePeriodStart: bigint; marketplace: Uint8Array | string; marketplaceFee: bigint; challengePeriodEnd: bigint; currency: Uint8Array | string; claimed: bigint; consensus: readonly bigint[]; split: readonly bigint[]; amount: bigint; paymentReference: string; };
+export type EscrowInputStruct = { buyer: Uint8Array | string; seller: Uint8Array | string; marketplace: Uint8Array | string; marketplaceFee: bigint; currency: Uint8Array | string; challengePeriod: bigint; challengeExtension: bigint; amount: bigint; paymentReference: string; };
+export type EscrowInputStructOutput = [buyer: Uint8Array | string, seller: Uint8Array | string, marketplace: Uint8Array | string, marketplaceFee: bigint, currency: Uint8Array | string, challengePeriod: bigint, challengeExtension: bigint, amount: bigint, paymentReference: string] & { buyer: Uint8Array | string; seller: Uint8Array | string; marketplace: Uint8Array | string; marketplaceFee: bigint; currency: Uint8Array | string; challengePeriod: bigint; challengeExtension: bigint; amount: bigint; paymentReference: string; };
+export type ArbitratorStruct = { arbitrator: Uint8Array | string; arbitratorFee: bigint; sellerConsensus: boolean; buyerConsensus: boolean; arbitrated: boolean; };
+export type ArbitratorStructOutput = [arbitrator: Uint8Array | string, arbitratorFee: bigint, sellerConsensus: boolean, buyerConsensus: boolean, arbitrated: boolean] & { arbitrator: Uint8Array | string; arbitratorFee: bigint; sellerConsensus: boolean; buyerConsensus: boolean; arbitrated: boolean; };
+export type SettlementStruct = { latestSettlementOfferBy: Uint8Array | string; latestSettlementOffer: readonly bigint[]; };
+export type SettlementStructOutput = [latestSettlementOfferBy: Uint8Array | string, latestSettlementOffer: readonly bigint[]] & { latestSettlementOfferBy: Uint8Array | string; latestSettlementOffer: readonly bigint[]; };
+export type TokenStruct = { address_: Uint8Array | string; decimals: bigint; symbol: string; };
+export type TokenStructOutput = [address_: Uint8Array | string, decimals: bigint, symbol: string] & { address_: Uint8Array | string; decimals: bigint; symbol: string; };
+export type DataStruct = { escrow: EscrowStruct; arbitrator: ArbitratorStruct; settlement: SettlementStruct; token: TokenStruct; };
+export type DataStructOutput = [escrow: EscrowStructOutput, arbitrator: ArbitratorStructOutput, settlement: SettlementStructOutput, token: TokenStructOutput] & { escrow: EscrowStruct; arbitrator: ArbitratorStruct; settlement: SettlementStruct; token: TokenStruct; };
+export type ClaimEventStruct = { escrowId: bigint; amount: readonly bigint[]; };
+export type ClaimEventStructOutput = [escrowId: bigint, amount: readonly bigint[]] & { escrowId: bigint; amount: readonly bigint[]; };
 
 export type UnicrowClaim = StatefulContract<typeof UnicrowClaimArtifact>;
-export type UnicrowClaimConstructorArgs = [unicrow: Uint8Array | string, arbitrator: Uint8Array | string, protocolFee: Uint8Array | string];
+export type UnicrowClaimConstructorArgs = [];
 
 export class UnicrowClaim__factory extends ContractFactory<typeof UnicrowClaimArtifact> {
   static readonly abi = UnicrowClaimArtifact.abi;

@@ -15,6 +15,8 @@ import {
   dynamicChunkSignature,
   parseChunkCommitment,
   buildValueChunkCommitment,
+  buildChunkCommitment,
+  splitValueIntoChunks,
   parseValueChunkCommitment,
   splitValueIntoValueChunks,
   joinChunks,
@@ -517,6 +519,8 @@ function evalComputedKey(
 ): Uint8Array | undefined {
   if (!label) return undefined;
   const evalNode = (s: string): Uint8Array | undefined => {
+    const literal = s.match(/^lit:(.*)$/s);
+    if (literal) return utf8ToBin(literal[1]);
     let m = s.match(/^id:(.+)$/);
     if (m) {
       const idx = inputs.findIndex((i) => i.name === m![1]);
@@ -675,6 +679,39 @@ function extractVerifiedValuesFromTrace(
     return sortedEntries.map(([_, v]) => v);
   }
   return valuesNoIndex;
+}
+
+/** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
+function evaluateProbeTrace(
+  provider: NetworkProvider,
+  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
+): AuthenticationProgramStateCommon[] {
+  if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) {
+    return createVirtualMachineBch2026ForProvider(provider).debug(program) as AuthenticationProgramStateCommon[];
+  }
+  const trace: AuthenticationProgramStateCommon[] = [];
+  const targets = new Set<number>([
+    Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
+    Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
+  ]);
+  let awaitingVerification = false;
+  const vm = createVirtualMachineBch2026ForProvider(provider, {
+    opcodes: targets,
+    beforeOperation: (unknownState) => {
+      const state = unknownState as AuthenticationProgramStateCommon;
+      const opcode = state.instructions[state.ip]?.opcode;
+      if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification) return;
+      trace.push({
+        ...state,
+        stack: state.stack.slice(),
+        alternateStack: state.alternateStack.slice(),
+        controlStack: state.controlStack.slice(),
+      });
+      awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
+    },
+  });
+  trace.push(vm.evaluate(program) as AuthenticationProgramStateCommon);
+  return trace;
 }
 
 /**
@@ -1353,6 +1390,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
 
+    // Dynamic constructor writes whose values are direct parameters can be materialized exactly. Their chunk NFTs
+    // follow the fixed constructor block and are required both by the derivation probe and the real genesis tx.
+    const visibleConstructorInputs = constructorAbi?.inputs.filter(
+      (input) => !input.name.startsWith('__internal__'),
+    ) ?? [];
+    const dynamicInitialChunks = (stateLayout.variables ?? []).flatMap((variable) => {
+      if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) return [];
+      const normalized = variable.name.replace(/^_+/, '');
+      const inputIndex = visibleConstructorInputs.findIndex(
+        (input) => input.name.replace(/^_+/, '').replace(/_+$/, '') === normalized,
+      );
+      const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
+      const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
+      if (value === undefined) return [];
+      return splitValueIntoChunks(value).map((chunkData, chunkIndex) => ({
+        name: variable.name, type: variable.type, chunkIndex, chunkData,
+        commitment: buildChunkCommitment(
+          chunkIndex, chunkData, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+        ),
+      }));
+    });
+
     // Determine counts for constructor features
     const entryAccesses = delegateOnly ? [] : (constructorAbi?.entryAccesses ?? []);
     const entryCount = entryAccesses.length;
@@ -1368,9 +1427,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalDataNft = delegateOnly ? 0n : dataNftAmount * BigInt(stateLayout.dataNftCount);
     const totalEntryNft = dataNftAmount * BigInt(entryCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
+    const totalDynamicNft = dataNftAmount * BigInt(dynamicInitialChunks.length);
     const identityAnchors = options.identityAnchors ?? [];
     const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
-    const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft
+    const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + totalDynamicNft
       + totalIdentity + initialBalance + estimatedFee;
     const changeAmount = options.fundingUtxo.satoshis - totalRequired;
 
@@ -1497,9 +1557,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const emitInfo = constructorAbi.emits[i];
         const eventDef = allEventDefs.find((e) => e.signature === emitInfo.eventSignature);
         const isAnonymous = eventDef?.anonymous === true;
-        const eventNftAddress = isAnonymous
-          ? getAnonymousEventNftAddress(contract, categoryId)
-          : getEventNftAddress(contract, categoryId, emitInfo.eventSignature);
+        const eventNftAddress = eventDef === undefined
+          ? scriptToLockingBytecode(
+            buildEventNftCovenantScript(
+              hexToBin(categoryId), computeEventNameHash(emitInfo.eventSignature),
+            ),
+            contract.addressType,
+          )
+          : isAnonymous
+            ? getAnonymousEventNftAddress(contract, categoryId)
+            : getEventNftAddress(contract, categoryId, emitInfo.eventSignature);
         builder.addOutput({
           to: eventNftAddress,
           amount: dataNftAmount,
@@ -1509,6 +1576,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           },
         });
       }
+    }
+
+    // Dynamic constructor values are stored in per-variable chunk NFTs immediately after the fixed block.
+    for (const chunk of dynamicInitialChunks) {
+      builder.addOutput({
+        to: getDynamicChunkAddress(contract, categoryId, chunk.name, chunk.type),
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: chunk.commitment },
+        },
+      });
     }
 
     // Satoshi container output (if initialBalance > 0)
@@ -2973,13 +3052,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Build synthetic initArgs with synthetic parameters appended
     const initArgs = [...(options.initArgs ?? [])];
+    if (constructorAbi?.usesMsgSender) initArgs.push(new Uint8Array(32));
 
 
 
     const requiredIndices = constructorAbi?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026ForProvider(options.provider);
+    const useSparseProbe = (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     const allEventDefs = artifact.events ?? [];
     // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
     // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
@@ -3032,14 +3112,43 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // check reads "empty" -> new entry (genesis has no pre-existing entries). Placed right after the data
       // NFTs to match the block layout (master, data NFTs, entries) for a constructor without external reads.
       for (let e = 0; e < entryCount; e++) {
+        const access = entryAccesses[e];
+        const collectionSig = stateLayout.collections?.find(
+          (collection) => collection.name === access.collection,
+        )?.signature ?? access.collection;
+        const entryLockingBytecode = scriptToLockingBytecode(
+          buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(collectionSig)),
+          contract.addressType,
+        );
         probeBuilder.addInput(
           { txid: `${'00'.repeat(31)}ee`, vout: e, satoshis: dataNftAmount },
           {
-            generateLockingBytecode: (): Uint8Array => DUMMY_FUNDER_LOCKING_BYTECODE,
+            generateLockingBytecode: (): Uint8Array => entryLockingBytecode,
             generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
           },
         );
       }
+
+      // Conditional event slots are output-bearing block positions too; materialize matching no-token inputs so
+      // input/output positional checks see the exact genesis layout.
+      for (const [eventIndex, emitInfo] of emitInfos.entries()) {
+        const eventDef = allEventDefs.find((event) => event.signature === emitInfo.eventSignature);
+        const eventScript = eventDef?.anonymous === true
+          ? buildAnonymousEventNftCovenantScript(hexToBin(categoryId))
+          : buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitInfo.eventSignature));
+        const eventLockingBytecode = scriptToLockingBytecode(eventScript, contract.addressType);
+        probeBuilder.addInput(
+          { txid: `${'00'.repeat(31)}ed`, vout: eventIndex, satoshis: dataNftAmount },
+          {
+            generateLockingBytecode: (): Uint8Array => eventLockingBytecode,
+            generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+          },
+        );
+      }
+
+      // Direct msg.sender resolves to tx.origin, the first native P2PKH source output. Keep the real funder after
+      // the fixed constructor block so it supplies identity without shifting any positional covenant slots.
+      probeBuilder.addInput(options.fundingUtxo, options.funder);
 
       // Output 0: master preserved
       probeBuilder.addOutput({
@@ -3114,9 +3223,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: {
             category: categoryId, amount: 0n,
-            nft: { capability: 'mutable' as const, commitment: eventCommits[eventIndex] },
+            nft: { capability: 'none' as const, commitment: eventCommits[eventIndex] },
           },
         });
+      }
+
+
+      // Dynamic constructor writes trail the fixed block. Direct parameter assignments (the Solidity-compatible
+      // pattern used by ERC20(name, symbol)) are known exactly, so use their real commitments in every probe.
+      const visibleInputs = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+      for (const variable of stateLayout.variables ?? []) {
+        if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) continue;
+        const normalized = variable.name.replace(/^_+/, '');
+        const inputIndex = visibleInputs.findIndex(
+          (input) => input.name.replace(/^_+/, '').replace(/_+$/, '') === normalized,
+        );
+        const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
+        const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
+        if (value === undefined) continue;
+        const lockingBytecode = addressToLockScript(getDynamicChunkAddress(
+          contract, categoryId, variable.name, variable.type,
+        ));
+        for (const [chunkIndex, chunkData] of splitValueIntoChunks(value).entries()) {
+          probeBuilder.addOutput({
+            to: lockingBytecode,
+            amount: dataNftAmount,
+            token: {
+              category: categoryId, amount: 0n,
+              nft: {
+                capability: 'mutable' as const,
+                commitment: buildChunkCommitment(
+                  chunkIndex, chunkData, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+                ),
+              },
+            },
+          });
+        }
       }
 
       // Run VM debug and extract commitments
@@ -3124,11 +3266,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const sourceOutputs = generateLibauthSourceOutputs(
         probeBuilder.inputs,
       );
-      const fullTrace = vm.debug({
-        inputIndex: 0,
-        sourceOutputs,
-        transaction,
-      }) as AuthenticationProgramStateCommon[];
+      const program = { inputIndex: 0, sourceOutputs, transaction };
+      let fullTrace: AuthenticationProgramStateCommon[];
+      if (useSparseProbe) {
+        // Large private-network contracts can execute millions of instructions. vm.debug() clones every state,
+        // including its stack, so probing a several-hundred-kilobyte initializer can consume many gigabytes.
+        // Commitment/transfer extraction only needs the inspected opcode and its adjacent EQUALVERIFY state.
+        const sparseTrace: AuthenticationProgramStateCommon[] = [];
+        const observedOpcodes = new Set<number>([
+          Op.OP_OUTPUTTOKENCOMMITMENT,
+          Op.OP_OUTPUTBYTECODE,
+          Op.OP_OUTPUTVALUE,
+          Op.OP_OUTPUTTOKENAMOUNT,
+          Op.OP_OUTPUTTOKENCATEGORY,
+          Op.OP_EQUALVERIFY,
+        ]);
+        let awaitingVerification = false;
+        const vm = createVirtualMachineBch2026ForProvider(options.provider, {
+          opcodes: observedOpcodes,
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            const opcode = state.instructions[state.ip]?.opcode;
+            if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification) return;
+            sparseTrace.push({
+              ...state,
+              stack: state.stack.slice(),
+              alternateStack: state.alternateStack.slice(),
+              controlStack: state.controlStack.slice(),
+            });
+            awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
+          },
+        });
+        const finalState = vm.evaluate(program) as AuthenticationProgramStateCommon;
+        fullTrace = [...sparseTrace, finalState];
+      } else {
+        fullTrace = createVirtualMachineBch2026ForProvider(options.provider).debug(
+          program,
+        ) as AuthenticationProgramStateCommon[];
+      }
 
       // Extract state commitments with output-index range filtering
       const stateOutputRange = {
@@ -4190,7 +4365,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // cleanly distinguishable from programming bugs or configuration errors.
       try {
         const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-        const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
 
         // Probe with optional data NFT output commitment overrides (default: current).
         const runProbe = (dataNftOutputCommitments?: string[]): AuthenticationProgramStateCommon[] => {
@@ -4265,7 +4439,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           const transaction = probeBuilder.buildLibauthTransaction();
           const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
-          return vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+          return evaluateProbeTrace(this.inner.provider, { inputIndex: 0, sourceOutputs, transaction });
         };
 
         // Pass 1: derive data NFT state. Placeholder outputs fail the data NFT verify, but
@@ -4771,12 +4945,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const transaction2 = probeBuilder2.buildLibauthTransaction();
           const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
 
-          const vm2 = createVirtualMachineBch2026ForProvider(this.inner.provider);
-          const fullTrace2 = vm2.debug({
+          const fullTrace2 = evaluateProbeTrace(this.inner.provider, {
             inputIndex: delegatecallInputIndex ?? 0,
             sourceOutputs: sourceOutputs2,
             transaction: transaction2,
-          }) as AuthenticationProgramStateCommon[];
+          });
           lastTrace = fullTrace2;
 
           // Extract commitments using output-index filtering to avoid capturing
@@ -5614,8 +5787,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // paramDerivation metadata, or fall back to placeholder.
             const entryKeyOverrides = overrides?.entryKeyOverrides;
             const override = entryKeyOverrides?.get(slotIndex);
+            const senderExpression = /^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(
+              keySource.expressionLabel ?? '',
+            );
+            const computed = senderExpression && this._signer
+              ? addressToLockScript(this._signer.getAddress())
+              : evalComputedKey(keySource.expressionLabel, entryArgs, entryAbiFunction!.inputs);
             if (override !== undefined) {
               keyValues.push(override);
+            } else if (computed !== undefined) {
+              keyValues.push(computed);
             } else {
               // Fallback: type-appropriate placeholder. Auto-derivation will capture
               // the correct commitment from the VM trace.
@@ -7412,7 +7593,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const bAbiFunc = bAbiFuncs.find((f) => f.name === group.functionName);
         let bFinalArgs = [...group.functionArgs];
         if (bAbiFunc?.usesMsgSender) {
-          bFinalArgs = [...bFinalArgs, hexToBin(this.categoryId)];
+          // EVM delegatecall preserves the original caller. A zero category selects tx.origin in emitMsgSender;
+          // passing the proxy category would incorrectly make onlyOwner compare against the proxy itself.
+          bFinalArgs = [...bFinalArgs, group.callMode === 'delegatecall'
+            ? new Uint8Array(32) : hexToBin(this.categoryId).reverse()];
         }
 
         // Create B's master unlocker
@@ -7450,6 +7634,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         if (callInfo.type === 'stateful') {
+          if (lowLevelCalls[i].callMode === 'delegatecall' && (callInfo.proxyMasterIndex ?? 0) !== 0) {
+            throw new Error('Delegatecall proxyMasterIndex must be 0; the proxy state block is placed first.');
+          }
           const bState = callInfo.contract.inner.artifact.delegateOnly
             ? await (callInfo.contract as StatefulContract)._getMasterOnlyState()
             : await callInfo.contract.getFullState();
@@ -7553,6 +7740,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (inp.name === '__internal__proxyMasterIndex') {
               return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
             }
+            if (inp.name === '__internal__externalCallInputBase') {
+              return BigInt(masterInputIndex + 1 + group.dataNftUtxos.length);
+            }
+            if (/^__internal__extcallMasterIdx\d+$/.test(inp.name)) {
+              return BigInt(masterInputIndex + 1 + group.dataNftUtxos.length);
+            }
+            const selectorWitness = inp.name.match(/^__internal__externalCallSelector(\d+)$/);
+            if (selectorWitness) {
+              const slot = Number(selectorWitness[1]);
+              const call = (bFunc as AbiFunction).externalCalls?.[slot];
+              const interfaces = (bArt.externalInterfaces ?? []) as readonly {
+                name: string;
+                abi: readonly { name: string; selector?: string }[];
+              }[];
+              const iface = interfaces.find((candidate) => candidate.name === call?.interfaceName);
+              const target = iface?.abi.find((candidate) => candidate.name === call?.functionName);
+              return target?.selector ? hexToBin(target.selector) : new Uint8Array(4);
+            }
+            if (/^__internal__externalReturnOutputIdx\d+$/.test(inp.name)) return -1n;
             const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
             if (witness) return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
             throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
@@ -7798,7 +8004,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Dynamic-storage vars (string / unbounded bytes) WRITTEN by this function: chunk NFTs at a per-var
     // entry covenant address. Only written vars (dynamicWrites) get old chunks consumed + new ones created;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
-    const dynamicWrites = abiFunction?.dynamicWrites ?? [];
+    const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
+    for (const g of lowLevelCallUtxoGroups) {
+      if (g.callMode !== 'delegatecall') continue;
+      const gFn = (g.externalContract.inner.artifact.abi as readonly {
+        name: string;
+        dynamicWrites?: readonly string[];
+      }[]).find((f) => f.name === g.functionName);
+      for (const name of gFn?.dynamicWrites ?? []) {
+        if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
+      }
+    }
     const dynamicVarInfos = (stateLayout.variables ?? [])
       .filter((v) => v.dynamic && dynamicWrites.includes(v.name));
     const dynamicChunkVars = dynamicVarInfos.map((v) => ({
@@ -7865,7 +8081,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
-      maximumFeeSatoshis: 50000n,
+      // A relaxed mock may intentionally execute very large scripts/transactions. At the normal 1 sat/byte
+      // relay floor, a valid call can therefore exceed the production-oriented 50k absolute cap. Bound the mock
+      // default by its configured maximum transaction size; the per-byte safety cap remains enforced below.
+      maximumFeeSatoshis: this.inner.provider.policy?.enforceDust === false
+        ? BigInt(this.inner.provider.consensusLimits?.maximumTransactionBytes ?? 10_000_000)
+        : 50000n,
       checkMinRelayFee: true,
       masterUtxo: unlockableMaster,
       dataNftUtxos: unlockableDataNfts,
@@ -8986,6 +9207,10 @@ export class StatefulFunctionCall {
 
   private extraOutputs: Output[] = [];
   private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
+  private detachedEvents: Array<{
+    name: string; args: StateValueType[]; definition?: EventDefinitionAbi; lockingBytecode?: Uint8Array;
+  }> = [];
+  private declaredRevertReasons: string[] = [];
 
   private maxFeeOverride?: bigint;
   private containerDepositAmount: bigint = 0n;
@@ -9096,6 +9321,35 @@ export class StatefulFunctionCall {
   emitEvent(name: string, ...args: StateValueType[]): this {
     this.manualEvents.push({ name, args });
     return this;
+  }
+
+  /** Compatibility event placed after composed delegate blocks, so it cannot shift positional covenant slots. */
+  emitDetachedEvent(name: string, ...args: StateValueType[]): this {
+    this.detachedEvents.push({ name, args });
+    return this;
+  }
+
+  emitDetachedEventWithDefinition(
+    definition: EventDefinitionAbi, lockingBytecode: Uint8Array, ...args: StateValueType[]
+  ): this {
+    this.detachedEvents.push({ name: definition.signature, args, definition, lockingBytecode });
+    return this;
+  }
+
+  getDetachedEvents(): readonly {
+    name: string; args: readonly StateValueType[]; definition?: EventDefinitionAbi;
+  }[] {
+    return this.detachedEvents;
+  }
+
+  withDeclaredRevertReasons(reasons: readonly string[]): this {
+    this.declaredRevertReasons = [...reasons];
+    return this;
+  }
+
+  declaresRevertReason(reason: string | RegExp): boolean {
+    return this.declaredRevertReasons.some((message) => typeof reason === 'string'
+      ? message === reason : reason.test(message));
   }
 
   /** Internal composition escape: the enclosing top-level SDK operation owns the nonce. */
@@ -9846,6 +10100,12 @@ export class StatefulFunctionCall {
       builder.addOutput(output);
     }
     for (const event of this.manualEvents) builder.emitEvent(event.name, ...event.args);
+    for (const event of this.detachedEvents) {
+      if (event.definition && event.lockingBytecode) {
+        builder.registerDetachedEvent(event.definition, event.lockingBytecode);
+      }
+      builder.emitDetachedEvent(event.name, ...event.args);
+    }
 
     return builder;
   }

@@ -62,6 +62,12 @@ async function debugTransaction(transaction: Debuggable | (Buildable & Partial<D
   await transaction;
 }
 
+async function sendTransaction(transaction: unknown): Promise<void> {
+  const resolved = await transaction as any;
+  if (resolved && typeof resolved.send === 'function') { await resolved.send(); return; }
+  await resolved;
+}
+
 type TestFramework = typeof vi;
 const testFramework: TestFramework = (globalThis as any).vi ?? (globalThis as any).jest;
 
@@ -152,7 +158,9 @@ expect.extend({
   // await expect(contractA.action(params)).toBeReverted()
   async toBeReverted(transaction: Debuggable | Promise<Debuggable>) {
     try {
-      await debugTransaction(transaction);
+      // A generic revert assertion only needs execution success/failure, never a source-level reason. Sending is
+      // bounded on relaxed mock networks; full debug traces for multi-hundred-kilobyte artifacts are not.
+      await sendTransaction(transaction);
       const message = (): string => 'Expected transaction to be reverted, but it succeeded.';
       return { message, pass: false };
     } catch (transactionError: any) {
@@ -286,6 +294,19 @@ expect.extend({
       if (parsed) {
         matchingEvents.push(parsed);
       }
+    }
+
+    // Compatibility shims may expose an inherited/internal Solidity event as receipt metadata when adding a
+    // physical output would change a precompiled delegate covenant's positional transaction layout.
+    const detached = (transaction as any).getDetachedEvents?.() as readonly {
+      name: string; args: readonly StateValue[]; definition?: { name: string; parameters: readonly { name: string }[] };
+    }[] | undefined;
+    for (const item of detached ?? []) {
+      const definition = item.definition;
+      if (definition?.name !== eventName) continue;
+      const named: Record<string, StateValue> = {};
+      definition.parameters.forEach((parameter, index) => { named[parameter.name] = item.args[index]; });
+      matchingEvents.push(named);
     }
 
     // Check if any matching events were found

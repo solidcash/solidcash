@@ -20,6 +20,8 @@ export interface NetworkConfig {
     maximumStackItemBytes: number;
     maximumTransactionBytes: number;
     maximumNftCommitmentBytes: number;
+    operationCostBudgetPerByte: number;
+    hashDigestIterationsPerByte: number;
   }>;
   policy?: Partial<{ enforceDust: boolean }>;
 }

@@ -10,6 +10,7 @@ import type NetworkProvider from './NetworkProvider.js';
 /** Build the SDK's probe VM with the active private-network limits, if any. */
 export function createVirtualMachineBch2026ForProvider(
   provider?: NetworkProvider,
+  observer?: { opcodes: ReadonlySet<number>; beforeOperation: (state: unknown) => void },
 ): ReturnType<typeof createVirtualMachineBch2026> {
   const limits = provider?.consensusLimits;
   if (limits === undefined) return createVirtualMachineBch2026();
@@ -22,6 +23,9 @@ export function createVirtualMachineBch2026ForProvider(
     maximumStandardLockingBytecodeLength: limits.maximumInputBytes,
     maximumStandardTransactionSize: limits.maximumTransactionBytes,
     maximumTokenCommitmentLength: limits.maximumNftCommitmentBytes,
+    operationCostBudgetPerByte: limits.operationCostBudgetPerByte,
+    hashDigestIterationsPerByteStandard: limits.hashDigestIterationsPerByte,
+    hashDigestIterationsPerByteNonstandard: limits.hashDigestIterationsPerByte,
   };
   const instructionSet = createInstructionSetBch2026(true, {
     consensus, ripemd160, secp256k1, sha1, sha256,
@@ -40,5 +44,14 @@ export function createVirtualMachineBch2026ForProvider(
   instructionSet.operations[OpcodesBch2026.OP_OUTPUTTOKENCOMMITMENT] = conditionallyEvaluate(
     (state: State) => useTransactionOutput(state, (nextState, [output]) => pushCommitment(nextState, output)),
   );
+  if (observer !== undefined) {
+    for (const opcode of observer.opcodes) {
+      const operation = instructionSet.operations[opcode];
+      instructionSet.operations[opcode] = (state: State) => {
+        observer.beforeOperation(state);
+        return operation(state);
+      };
+    }
+  }
   return createVirtualMachine(instructionSet);
 }

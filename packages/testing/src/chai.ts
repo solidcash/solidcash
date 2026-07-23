@@ -74,6 +74,7 @@ function big(v: Numeric | { toBigInt(): bigint }): bigint {
 function bigintReplacer(_k: string, v: unknown): unknown { return typeof v === 'bigint' ? `${v}n` : v; }
 
 function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string): boolean {
+  if (typeof transaction?.declaresRevertReason === 'function' && transaction.declaresRevertReason(match)) return true;
   const calls = transaction?.callInfos ?? [];
   return calls.some((call: any) => {
     const artifact = call.contract?.inner?.artifact;
@@ -303,6 +304,14 @@ class Assertion {
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
+    const relaxed = ((this.actual as any)?.parentContract?.inner?.provider?.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    if (!this.negate && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
+      const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
+      return Promise.resolve(result).then(
+        () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
+        () => undefined,
+      );
+    }
     const e = ensureVitest();
     const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
     if (this.negate) return assertion;

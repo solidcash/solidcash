@@ -3,11 +3,11 @@
 import { ContractFactory, StatefulContract } from 'solidcash';
 import type { ContractRunner, DeployContractOptions, DeployedContract, SignatureTemplate } from 'solidcash';
 
-import FakeTokenArtifact from '../../../artifacts/solidcash/contracts-scash/FakeToken.scash/FakeToken.artifact.js';
+import FakeTokenArtifact from '../../../artifacts/solidcash/FakeToken.artifact.js';
 
 
 export type FakeToken = StatefulContract<typeof FakeTokenArtifact>;
-export type FakeTokenConstructorArgs = [name: string, symbol: string];
+export type FakeTokenConstructorArgs = [];
 
 export class FakeToken__factory extends ContractFactory<typeof FakeTokenArtifact> {
   static readonly abi = FakeTokenArtifact.abi;

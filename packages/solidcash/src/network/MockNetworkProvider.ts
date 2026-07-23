@@ -33,6 +33,8 @@ export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
   maximumStackItemBytes: 1_000_000,
   maximumTransactionBytes: 10_000_000,
   maximumNftCommitmentBytes: 1_000_000,
+  operationCostBudgetPerByte: 10_000_000,
+  hashDigestIterationsPerByte: 10_000_000,
 };
 
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
@@ -83,9 +85,14 @@ export default class MockNetworkProvider implements NetworkProvider {
       maximumTransactionLengthBytes: this.consensusLimits.maximumTransactionBytes,
       maximumStandardTransactionSize: this.consensusLimits.maximumTransactionBytes,
       maximumTokenCommitmentLength: this.consensusLimits.maximumNftCommitmentBytes,
+      operationCostBudgetPerByte: this.consensusLimits.operationCostBudgetPerByte,
+      hashDigestIterationsPerByteNonstandard: this.consensusLimits.hashDigestIterationsPerByte,
     };
     const verifier = createTxVerifier({
-      vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
+      // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the
+      // consensus VM when dust is disabled; mem-cash still applies fee/value/finality validation and every
+      // configured consensus override. Opting back into dust also restores the full production policy VM.
+      vmVersion: this.vmTarget, standard: this.policy.enforceDust, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
       dustRelayFeePerKb: this.policy.enforceDust ? undefined : 0n,
       consensus: overrides,
     } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });

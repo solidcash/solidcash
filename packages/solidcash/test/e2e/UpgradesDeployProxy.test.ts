@@ -143,6 +143,57 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(() => failing.debug()).toThrow('AlreadyInitialized');
   });
 
+  it('auto-detects an OZ initializer in Solidity import-compat mode', async () => {
+    const signer = await fundedSigner();
+    const artifact = compileString(`pragma solidity ^0.8.24;
+      contract OzStyle {
+        int public count;
+        modifier initializer() { _; }
+        function initialize(int initial) public initializer { this.count = initial; }
+        function increment() public { this.count = this.count + 1; }
+      }`, { solidityImportCompat: true });
+    expect(artifact.abi.find((entry) => entry.name === 'initialize')?.modifiers).toContain('delegate');
+    expect(artifact.abi.find((entry) => entry.name === 'increment')?.modifiers).toContain('delegate');
+
+    const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), [5n]);
+    expect((await (proxy.proxy as any).getState()).count).toBe(5n);
+    await (proxy as any).increment().send();
+    expect((await (proxy.proxy as any).getState()).count).toBe(6n);
+  });
+
+  it('preserves pending state across nested OZ initializer helpers', async () => {
+    const signer = await fundedSigner();
+    const artifact = compileString(`pragma solidity ^0.8.24;
+      contract NestedOzStyle {
+        bool private initializing;
+        int public count;
+        modifier initializer() { initializing = true; _; initializing = false; }
+        modifier onlyInitializing() { require(initializing); _; }
+        function __Base_init(int initial) internal onlyInitializing { count = initial; }
+        function initialize(int initial) public initializer { __Base_init(initial); }
+      }`, { solidityImportCompat: true });
+
+    const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), [9n]);
+    expect((await (proxy.proxy as any).getState()).count).toBe(9n);
+  });
+
+  it('passes every proxy state NFT to a multi-NFT delegate initializer', async () => {
+    const signer = await fundedSigner();
+    const artifact = compileString(`pragma solidity ^0.8.24;
+      contract MultiNftOzStyle {
+        uint16 a;
+        uint16 b;
+        uint16 c;
+        uint16 d;
+        modifier initializer() { _; }
+        function initialize(uint16 value) public initializer { this.d = value; }
+      }`, { solidityImportCompat: true, commitmentLimit: 3 });
+    expect(artifact.stateLayout?.dataNftCount).toBeGreaterThan(1);
+
+    const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), [4n]);
+    expect((await (proxy.proxy as any).getState()).d).toBe(4n);
+  });
+
   it('initializer: false seeds state at genesis (SolidCash constructor style)', async () => {
     const signer = await fundedSigner();
     // Same contract, but skip the initializer: the positional args seed the state directly at genesis (one tx).

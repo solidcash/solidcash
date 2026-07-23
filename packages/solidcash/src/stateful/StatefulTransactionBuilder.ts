@@ -26,6 +26,7 @@ import {
 } from '../utils.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
+import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
@@ -194,6 +195,7 @@ export class StatefulTransactionBuilder {
   private eventNftLockingBytecodes: Map<string, Uint8Array>;
   private pendingTransfers: TransferData[] = [];
   private pendingEventEmits: EventEmitData[] = [];
+  private detachedEventReceipts: Array<{ eventSignature: string; commitment: string }> = [];
   private tokenContainers: TokenContainerInfo[];
   private tokenContainerLockingBytecodes: Map<string, Uint8Array>;
   private satoshiContainerUtxo?: UnlockableUtxo;
@@ -734,6 +736,36 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** Append a compatibility event after every covenant-positioned output (e.g. an inherited internal emit). */
+  emitDetachedEvent(eventNameOrSignature: string, ...args: EventEmitData['args']): this {
+    const eventSignature = this.resolveEventSignature(eventNameOrSignature);
+    const eventDef = this.eventDefinitions.find((e) => e.signature === eventSignature)!;
+    const encodedParts = eventDef.parameters.map((parameter, i) => {
+      let value = args[i];
+      if (typeof value === 'string') {
+        if (parameter.type === 'string') value = new TextEncoder().encode(value);
+        else if (parameter.type === 'address' && value.includes(':')) value = addressToLockScript(value);
+        else if (parameter.type === 'address' && /^0x[0-9a-fA-F]*$/.test(value)) value = hexToBin(value.slice(2));
+        else if (isHex(value)) value = hexToBin(value);
+        else throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
+      }
+      return encodePushdataValue(value, parameter.type, this.stateLayout.structs);
+    });
+    const commitment = new Uint8Array(encodedParts.reduce((sum, part) => sum + part.length, 0));
+    let cursor = 0;
+    for (const part of encodedParts) { commitment.set(part, cursor); cursor += part.length; }
+    this.detachedEventReceipts.push({ eventSignature, commitment: binToHex(commitment) });
+    return this;
+  }
+
+  registerDetachedEvent(definition: EventDefinitionAbi, lockingBytecode: Uint8Array): this {
+    if (!this.eventDefinitions.some((event) => event.signature === definition.signature)) {
+      this.eventDefinitions = [...this.eventDefinitions, definition];
+    }
+    this.eventNftLockingBytecodes.set(definition.signature, lockingBytecode);
+    return this;
+  }
+
   private resolveEventSignature(eventNameOrSignature: string): string {
     if (eventNameOrSignature.includes('(')) {
       const match = this.eventDefinitions.find((e) => e.signature === eventNameOrSignature);
@@ -895,7 +927,13 @@ export class StatefulTransactionBuilder {
     // runtime returnOutputIdx<0 adjustment in emitDynamicWriteVerification.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
     if (hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0) base -= 1;
-    return base + this.iterationEntryInputs.length;
+    // build() preserves low-level-call UTXOs before the trailing dynamic region.
+    // Delegate bytecode likewise anchors trailing storage after its own co-spent
+    // implementation block rather than overlapping that block's outputs.
+    const lowLevelCallOutputCount = this.lowLevelCallUtxoGroups.reduce(
+      (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+    ) + this.lowLevelCallRawInputs.length;
+    return base + lowLevelCallOutputCount + this.iterationEntryInputs.length;
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -1144,7 +1182,9 @@ export class StatefulTransactionBuilder {
       const nftIdx = this.requiredNftIndices[i];
       const nftUtxo = this.dataNftUtxos[i];
 
-      const commitment = buildPushdataCommitment(this.stateLayout, currentState, nftIdx);
+      const commitment = buildPushdataCommitment(
+        this.stateLayout, currentState, nftIdx, this.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
 
       builder.addOutput({
         to: nftUtxo.unlocker.generateLockingBytecode(),
@@ -1236,7 +1276,10 @@ export class StatefulTransactionBuilder {
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftIdx = group.requiredDataNftIndices[i];
         const nftUtxo = group.dataNftUtxos[i];
-        const commitment = buildPushdataCommitment(group.stateLayout, bCurrentState, nftIdx);
+        const commitment = buildPushdataCommitment(
+          group.stateLayout, bCurrentState, nftIdx,
+          this.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+        );
 
         builder.addOutput({
           to: nftUtxo.unlocker.generateLockingBytecode(),
@@ -1327,7 +1370,10 @@ export class StatefulTransactionBuilder {
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftIdx = group.requiredDataNftIndices[i];
         const nftUtxo = group.dataNftUtxos[i];
-        const commitment = buildPushdataCommitment(group.stateLayout, bCurrentState, nftIdx);
+        const commitment = buildPushdataCommitment(
+          group.stateLayout, bCurrentState, nftIdx,
+          this.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+        );
 
         builder.addOutput({
           to: nftUtxo.unlocker.generateLockingBytecode(),
@@ -1695,6 +1741,8 @@ export class StatefulTransactionBuilder {
             value = new TextEncoder().encode(value);
           } else if (type === 'address' && value.includes(':')) {
             value = addressToLockScript(value);
+          } else if (type === 'address' && /^0x[0-9a-fA-F]*$/.test(value)) {
+            value = hexToBin(value.slice(2));
           } else if (!isHex(value)) {
             throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
           } else {
@@ -1800,7 +1848,10 @@ export class StatefulTransactionBuilder {
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftIdx = group.requiredDataNftIndices[i];
         const nftUtxo = group.dataNftUtxos[i];
-        const commitment = buildPushdataCommitment(group.stateLayout, bCurrentState, nftIdx);
+        const commitment = buildPushdataCommitment(
+          group.stateLayout, bCurrentState, nftIdx,
+          this.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+        );
         builder.addOutput({
           to: nftUtxo.unlocker.generateLockingBytecode(),
           amount: nftUtxo.satoshis,
@@ -2243,9 +2294,45 @@ export class StatefulTransactionBuilder {
   private _logCovenantFailureTrace(builder: TransactionBuilder, reason: string): void {
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const vm = createVirtualMachineBch2026();
     const named = reason.match(/input(?: index)? (\d+)/);
     const candidates = named ? [Number(named[1])] : transaction.inputs.map((_u, i) => i);
+    const relaxedConsensus = (this.builderOptions.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    if (relaxedConsensus) {
+      for (const idx of candidates) {
+        const ring: Array<{ ip: number; opcode: number; depth: number; top: string[] }> = [];
+        const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider, {
+          opcodes: new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode)),
+          beforeOperation: (unknownState) => {
+            const state = unknownState as { ip: number; instructions: Array<{ opcode: number }>; stack: Uint8Array[] };
+            ring.push({
+              ip: state.ip,
+              opcode: state.instructions[state.ip]?.opcode ?? 0,
+              depth: state.stack.length,
+              top: state.stack.slice(-4).map((item) => {
+                const hex = binToHex(item);
+                return hex.length > 40 ? `${hex.slice(0, 40)}..` : hex;
+              }),
+            });
+            if (ring.length > 16) ring.shift();
+          },
+        });
+        const finalState = vm.evaluate({ inputIndex: idx, sourceOutputs, transaction }) as { error?: string };
+        if (!finalState.error) continue;
+        // eslint-disable-next-line no-console
+        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\n${ring.map((step) => (
+          `  ip=${step.ip} op=0x${step.opcode.toString(16).padStart(2, '0')} depth=${step.depth} top=[${step.top.join(' ')}]`
+        )).join('\n')}\ninputs=${sourceOutputs.map((input, inputIndex) => (
+          `${inputIndex}:${binToHex(input.lockingBytecode).slice(0, 80)}:${input.token?.nft?.capability ?? '-'}:`
+          + `${binToHex(input.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}`
+        )).join(',')}\noutputs=${transaction.outputs.map((output, outputIndex) => (
+          `${outputIndex}:${binToHex(output.lockingBytecode).slice(0, 80)}:${output.token?.nft?.capability ?? '-'}:`
+          + `${binToHex(output.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}`
+        )).join(',')}`);
+        return;
+      }
+      return;
+    }
+    const vm = createVirtualMachineBch2026();
     for (const idx of candidates) {
       if (idx < 0 || idx >= transaction.inputs.length) continue;
       const states = vm.debug({ inputIndex: idx, sourceOutputs, transaction }) as unknown as Array<{
@@ -2280,8 +2367,14 @@ export class StatefulTransactionBuilder {
 
     // -- Phase 1: build the covenant transaction (logic only, no fee) --
     const covenantBuilder = this.build();
-    try { covenantBuilder.debug(); } catch (_e) {
-      if (typeof _e === 'object' && _e) console.debug('STB debug() best-effort error:', (_e as Error).message);
+    // Production-sized covenants are cheap enough to debug eagerly, which provides useful source-mapped
+    // diagnostics before submission. A relaxed mock provider may intentionally admit scripts hundreds of
+    // kilobytes long; retaining every VM step for those scripts can take minutes and gigabytes of memory.
+    const relaxedConsensus = (provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    if (!relaxedConsensus) {
+      try { covenantBuilder.debug(); } catch (_e) {
+        if (typeof _e === 'object' && _e) console.debug('STB debug() best-effort error:', (_e as Error).message);
+      }
     }
 
     // -- Phase 2: measure shape -> compute fee -> fund --
@@ -2499,6 +2592,18 @@ export class StatefulTransactionBuilder {
         continue; // commitment did not match this event's ABI - skip (should not happen for a real event NFT)
       }
       events.push({ event: eventDef.name, eventSignature: eventDef.signature, args: buildReceiptEventArgs(eventDef, named) });
+    }
+    for (const detached of this.detachedEventReceipts) {
+      const eventDef = this.eventDefinitions.find((event) => event.signature === detached.eventSignature);
+      if (!eventDef) continue;
+      try {
+        const named = parseEventCommitment(detached.commitment, eventDef, structs);
+        events.push({
+          event: eventDef.name,
+          eventSignature: eventDef.signature,
+          args: buildReceiptEventArgs(eventDef, named),
+        });
+      } catch { /* malformed compatibility event - omit from receipt */ }
     }
     return events;
   }

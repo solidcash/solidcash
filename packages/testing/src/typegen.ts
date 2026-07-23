@@ -29,7 +29,7 @@ export interface TypegenResult {
 export interface TypegenWatcher { close(): void }
 
 interface ArtifactFile { artifact: Artifact; file: string; sourceModule: string }
-const GENERATOR_VERSION = 5;
+const GENERATOR_VERSION = 6;
 
 function walk(dir: string, accept: (file: string) => boolean, out: string[] = []): string[] {
   if (!fs.existsSync(dir)) return out;
@@ -200,6 +200,23 @@ function writeTarget(records: ArtifactFile[], target: TypegenTargetConfig, cache
     fs.writeFileSync(moduleFile, moduleSource(moduleRecords, target.target, moduleFile));
     const exportPath = `./contracts/${sourceModule}.js`.replace(/\\/g, '/');
     exports.push(`export * from '${exportPath}';`);
+  }
+  // solc/TypeChain emits factories for abstract inherited helpers. SolidCash artifacts flatten their custom
+  // errors into the concrete contract, so provide equivalent factory aliases for matcher-only imports.
+  const compatibilityFactories = [
+    { alias: 'Initializable', error: 'InvalidInitialization' },
+    { alias: 'OwnableUpgradeable', error: 'OwnableUnauthorizedAccount' },
+    { alias: 'ECDSA', error: 'ECDSAInvalidSignature' },
+  ];
+  const existingNames = new Set(records.map((record) => record.artifact.contractName));
+  for (const compatibility of compatibilityFactories) {
+    if (existingNames.has(compatibility.alias)) continue;
+    const record = records.find((candidate) => candidate.artifact.errors?.some(
+      (error) => error.name === compatibility.error,
+    ));
+    if (!record) continue;
+    const exportPath = `./contracts/${record.sourceModule}.js`.replace(/\\/g, '/');
+    exports.push(`export { ${identifier(record.artifact.contractName)}__factory as ${compatibility.alias}__factory } from '${exportPath}';`);
   }
   const registryFile = path.join(temporary, 'registry.ts');
   const registryEntries = records.map((record) => {

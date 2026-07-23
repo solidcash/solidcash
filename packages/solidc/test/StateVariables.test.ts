@@ -267,6 +267,17 @@ describe('public constant is baked, not stored as state', () => {
   });
 });
 
+describe('OpenZeppelin storage gaps', () => {
+  it('omits __gap EVM slot reservations from Solidity-compat BCH state', () => {
+    const artifact = compileString(
+      'contract C { uint16 value; uint256[50] private __gap; function set(uint16 x) public { value = x; } }',
+      { solidityImportCompat: true, commitmentLimit: 16 },
+    );
+    expect(artifact.stateLayout?.variables.map((variable) => variable.name)).toEqual(['value']);
+    expect(artifact.stateLayout?.dataNftCount).toBe(1);
+  });
+});
+
 // `delete x` on a BARE state variable (Solidity-import idiom) must route to a state delete, like a bare state
 // write. It used to build a local delete: silently defining a wrong local at top level, and crashing once nested
 // in a branch ("variable 'x' does not exist on the stack"). Now byte-identical to `delete this.x`.

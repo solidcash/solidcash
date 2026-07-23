@@ -8,6 +8,10 @@ export interface ConsensusLimits {
   /** Maximum serialized transaction size. */
   maximumTransactionBytes: number;
   maximumNftCommitmentBytes: number;
+  /** Operation-cost units allowed per density-control byte. */
+  operationCostBudgetPerByte: number;
+  /** Hash digest iterations allowed per density-control byte in the mock consensus VM. */
+  hashDigestIterationsPerByte: number;
 }
 
 export interface NetworkPolicy {

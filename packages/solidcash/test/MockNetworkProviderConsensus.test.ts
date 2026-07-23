@@ -10,6 +10,8 @@ describe('MockNetworkProvider consensus limits', () => {
       maximumStackItemBytes: 1_000_000,
       maximumTransactionBytes: 10_000_000,
       maximumNftCommitmentBytes: 1_000_000,
+      operationCostBudgetPerByte: 10_000_000,
+      hashDigestIterationsPerByte: 10_000_000,
     });
     expect(provider.consensusLimits).not.toBe(MOCK_CONSENSUS_LIMITS);
     expect(provider.policy).toEqual({ enforceDust: false });
@@ -23,6 +25,24 @@ describe('MockNetworkProvider consensus limits', () => {
       ...MOCK_CONSENSUS_LIMITS,
       maximumInputBytes: 20_000,
     });
+  });
+
+  it('accepts dust outputs when the mock relay policy disables dust', async () => {
+    const provider = new MockNetworkProvider();
+    const parentTxid = 'ab'.repeat(32);
+    const lockingBytecode = Uint8Array.of(0x61, 0x61, 0x61, 0x61, 0x51); // OP_NOP*4 OP_TRUE
+    await provider.addUtxo(binToHex(lockingBytecode), { txid: parentTxid, vout: 0, satoshis: 10_000n });
+    const raw = encodeTransactionBch({
+      version: 2,
+      inputs: [{
+        outpointTransactionHash: hexToBin(parentTxid), outpointIndex: 0,
+        sequenceNumber: 0xffffffff, unlockingBytecode: new Uint8Array(),
+      }],
+      outputs: [{ lockingBytecode, valueSatoshis: 1n }],
+      locktime: 0,
+    });
+
+    await expect(provider.sendRawTransaction(binToHex(raw))).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('evaluates unlocking bytecode above BCH\'s 10KB limit', async () => {

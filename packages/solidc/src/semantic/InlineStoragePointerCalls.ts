@@ -63,6 +63,7 @@ import { AmbiguousInlineOverloadError } from '../Errors.js';
 const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
+  constructor(private readonly inlineSolidityInitializers = false) { super(); }
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
   // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
@@ -141,7 +142,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
-            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))))) {
+            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name)
+              || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
         && !valueReferenced.has(fn.name)

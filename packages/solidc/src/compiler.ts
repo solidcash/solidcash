@@ -203,6 +203,14 @@ function compileResolvedAst(
   // Inheritance expansion (after import resolution, before modifier expansion)
   ast = expandInheritance(ast);
 
+  // OpenZeppelin upgradeable bases reserve future EVM storage slots with private fixed arrays named `__gap`.
+  // They carry no runtime value and are never read; materializing them in CashToken commitments can consume
+  // kilobytes (e.g. uint256[50]) while providing none of their EVM layout benefit. In Solidity-compat mode,
+  // preserve their intended meaning by omitting the reservation from BCH state altogether.
+  if (mergedCompilerOptions.solidityImportCompat) {
+    ast.contract.stateVariables = ast.contract.stateVariables.filter((variable) => variable.name !== '__gap');
+  }
+
   // Lower `transient` state vars to per-function locals - AFTER inheritance so a base's transient var is lowered
   // into the derived contract's functions too.
   ast = lowerTransientStateVars(ast);
@@ -232,7 +240,9 @@ function compileResolvedAst(
     }
   } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
     const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
-    for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;
+    for (const col of ast.contract.collections) {
+      if (sortedSet.has(col.name) || sortedSet.has(`${ast.contract.name}.${col.name}`)) col.sorted = true;
+    }
   }
 
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc
@@ -253,6 +263,26 @@ function compileResolvedAst(
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
   // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.
   ast = ast.accept(new SynthesizePublicGetters(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+
+  // Solidity has no `delegate` lifecycle keyword. An OZ-style upgradeable implementation identifies itself via
+  // an `initializer`/`reinitializer` modifier; every externally callable implementation function (including the
+  // synthesized public-state getters above) is intended to execute in the proxy's state context. Mark that surface
+  // before modifier expansion consumes the custom-modifier metadata. Native SolidCash sources remain explicit.
+  if (mergedCompilerOptions.solidityImportCompat && ast.contract.functions.some((fn) => fn.customModifiers.some(
+    (modifier) => modifier.name === 'initializer' || modifier.name === 'reinitializer',
+  ))) {
+    for (const fn of ast.contract.functions) {
+      const externallyCallable = fn.modifiers.includes(FunctionModifier.PUBLIC)
+        || fn.modifiers.includes(FunctionModifier.EXTERNAL);
+      if (externallyCallable && !fn.modifiers.includes(FunctionModifier.DELEGATE)) {
+        // Delegate execution is a state-covenant spend even for Solidity `view`/`pure` declarations; the proxy
+        // shim may still expose read ergonomics, but the implementation entry itself must use delegate layout.
+        fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW
+          && modifier !== FunctionModifier.PURE);
+        fn.modifiers.push(FunctionModifier.DELEGATE);
+      }
+    }
+  }
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
@@ -394,7 +424,7 @@ function compileResolvedAst(
 
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
-  ast = ast.accept(new InlineStoragePointerCalls()) as Ast;
+  ast = ast.accept(new InlineStoragePointerCalls(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
   // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call
   // sites - producing bare `mapping storage m = <mapping>` aliases the next pass handles.
@@ -1053,7 +1083,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
-    singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
+    singleAst = singleAst.accept(new InlineStoragePointerCalls(compilerOptions.solidityImportCompat ?? false)) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;

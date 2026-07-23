@@ -72,6 +72,41 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     expect(state).toMatchObject({ counter: 1n, fee: 100n, untouched: 0n });
   });
 
+  it('uses the full constructor NFT layout inside a sparse internal helper', async () => {
+    const artifact = compileString(`
+      contract C() {
+          int first;
+          int second;
+          int third;
+          constructor() { initializeThird(); }
+          function initializeThird() internal { this.third = 7; }
+          function read() view returns (int) { return this.third; }
+      }
+    `, { commitmentLimit: 4 });
+    expect(artifact.stateLayout!.dataNftCount).toBe(3);
+    const constructor = artifact.abi.find((entry) => entry.name === '__construct')!;
+    expect(constructor.requiredNftIndices).toEqual([0, 1, 2]);
+
+    const { result } = await deploy(artifact, [], 'd4e5', {});
+    expect(await result.contract.getState()).toMatchObject({ first: 0n, second: 0n, third: 7n });
+  });
+
+  it('derives constructor event commitments using immutable event outputs', async () => {
+    const artifact = compileString(`
+      contract C() {
+          int count;
+          event Initialized(int version);
+          constructor() {
+              this.count = 1;
+              emit Initialized(1);
+          }
+          function read() view returns (int) { return this.count; }
+      }
+    `);
+    const { result } = await deploy(artifact, [], 'f7a8', {});
+    expect(result.tx.outputs.some((output) => output.token?.nft?.capability === 'none')).toBe(true);
+  });
+
   it('deploys a constructor that reads an uninitialized mapping (read-before-write, returns default)', async () => {
     // The MultiSig uniqueness pattern: at genesis the mapping is empty, so require(!isOwner[owner]) passes.
     const artifact = compileString(`

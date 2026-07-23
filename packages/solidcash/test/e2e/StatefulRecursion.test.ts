@@ -72,6 +72,28 @@ contract C() {
   function chk(int expected) { require(this.x == expected); }
 }`;
 
+const MUTUAL_HANDLER_CONTEXT = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  modifier from(address expected) {
+    require(expected == expected);
+    _;
+  }
+  function even(int n, address expected) internal from(expected) {
+    this.x = this.x + 1;
+    if (n > 0) { odd(n - 1, expected); }
+  }
+  function odd(int n, address expected) internal from(expected) {
+    this.x = this.x + 1;
+    if (n > 0) { even(n - 1, expected); }
+  }
+  function run(int n, address expected) {
+    even(n, expected);
+    require(n >= 0);
+  }
+  function chk(int expected) { require(this.x == expected); }
+}`;
+
 describe('recursion in a stateful contract no longer crashes the compiler', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -133,5 +155,16 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.run(77n).send();
     await sc.chk(2n).send();
+  });
+
+  it('threads arguments, modifiers, and state through mutual recursion', async () => {
+    const artifact = compileString(MUTUAL_HANDLER_CONTEXT, { forceStateful: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await sc.run(3n, contract.address).send();
+    await sc.chk(4n).send();
   });
 });

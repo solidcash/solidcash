@@ -310,6 +310,17 @@ class MsgSigUsageCollector extends AstTraversal {
   }
 }
 
+class MsgSenderUsageCollector extends AstTraversal {
+  found = false;
+
+  visitNullaryOp(node: NullaryOpNode): Node {
+    if (node.operator === NullaryOperator.MSG_SENDER) {
+      this.found = true;
+    }
+    return node;
+  }
+}
+
 class NftIndexCollector extends AstTraversal {
   indices = new Set<number>();
 
@@ -375,6 +386,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private constructorParameterCount: number;
   private contractUsesMsgData: boolean = false;
   private contractUsesMsgSig: boolean = false;
+  private contractUsesMsgSender: boolean = false;
   // Compiler-internal subroutine registry, keyed by 2-byte id. `defined` is inherited into
   // sub-traversals; `useCount` is propagated back up.
   private subroutineDefined = new Map<bigint, boolean>();
@@ -925,6 +937,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (msgSigCollector.found) break;
     }
     this.contractUsesMsgSig = msgSigCollector.found;
+    const msgSenderCollector = new MsgSenderUsageCollector();
+    for (const f of allNodeFunctions) {
+      msgSenderCollector.visit(f);
+      if (msgSenderCollector.found) break;
+    }
+    this.contractUsesMsgSender = msgSenderCollector.found;
 
     // Also set contractUsesMsgData if fallback has a bytes parameter
     if (node.fallbackDef && node.fallbackDef.parameters.length > 0) {
@@ -1677,6 +1695,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.compactHelperIds = this.compactHelperIds;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
     subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
+    subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
     // via visitParameter (pushToStack with pushToBottom=true)
@@ -1916,6 +1935,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.compactHelperIds = this.compactHelperIds;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
     subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
+    subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
 
     // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
     // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -2266,6 +2286,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Hidden invocation context follows declared parameters and precedes
         // journal slots in the handler frame. It is supplied by every caller
         // and discarded by the handler epilogue rather than returned.
+        if (this.contractUsesMsgSender) this.pushToStack('__internal__handlerMsgSender', true);
         if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
         if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
         for (const sv of activeJournalSlots) {
@@ -5555,6 +5576,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitMsgSig(contextLoc);
       }
       this.pushToStack(`(__handler_msg_sig_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+    if (targetJournalSlots.length > 0 && this.contractUsesMsgSender) {
+      const contextLoc = { location: node.location, positionHint: PositionHint.START };
+      if (this.stack.includes('__internal__handlerMsgSender')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else {
+        this.emitMsgSender(contextLoc);
+      }
+      this.pushToStack(`(__handler_msg_sender_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
 
@@ -19055,6 +19087,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitMsgSender(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__handlerMsgSender')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     // Pick _msgSenderCategory from the stack
     const catIdx = this.getStackIndex('__internal__msgSenderCategory');
     this.emit(encodeInt(BigInt(catIdx)), locationData);

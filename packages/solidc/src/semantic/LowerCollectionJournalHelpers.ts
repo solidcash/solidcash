@@ -60,10 +60,18 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     const collections = new Map(node.collections.map((collection) => [collection.name, collection]));
+    const constructorCalls = new Set<string>();
+    this.walk(node.constructorDef?.body, (candidate) => {
+      if (candidate instanceof FunctionCallNode) constructorCalls.add(candidate.identifier.name);
+    });
+    const nameCounts = new Map<string, number>();
+    for (const fn of node.functions) nameCounts.set(fn.name, (nameCounts.get(fn.name) ?? 0) + 1);
     for (const fn of node.functions) {
       if (!fn.body || fn.returnTypes.length !== 0
         || !(fn.modifiers.includes(FunctionModifier.INTERNAL)
-          || fn.modifiers.includes(FunctionModifier.PRIVATE))) continue;
+          || fn.modifiers.includes(FunctionModifier.PRIVATE))
+        || fn.inheritedFrom || constructorCalls.has(fn.name)
+        || (nameCounts.get(fn.name) ?? 0) > 1) continue;
       const accesses: Array<{
         name: string;
         keys: ExpressionNode[];

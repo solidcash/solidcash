@@ -90,6 +90,8 @@ export interface ExternalCallUtxoGroup {
   functionArgs: any[];
   externalContract: any; // StatefulContract - kept as any to avoid circular import
   callMode?: 'call' | 'staticcall' | 'delegatecall';
+  /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
+  delegateCallGroupIndex?: number;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** B's function block layout (for full block ordering) */

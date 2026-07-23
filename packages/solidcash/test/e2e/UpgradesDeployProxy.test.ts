@@ -361,4 +361,34 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const tx = await (proxy as any).run(callee.inner.lockingBytecode, 7n).send();
     expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).result).toBe(14n);
   });
+
+  it('materializes a returning external call to another deployed proxy', async () => {
+    const signer = await fundedSigner();
+    await signer.provider.addUtxo(signer.getAddress(), {
+      txid: '19'.repeat(32), vout: 0, satoshis: 1_000_000n,
+    });
+    const valueArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract ProxyValueSource() {
+        int marker;
+        function initialize(int initial) delegate { this.marker = initial; }
+        function twice(int value) delegate returns (int) { return value * 2; }
+      }`);
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProxyValueSource { function twice(int value) external view returns (int); }
+      contract NestedProxyCaller() {
+        int result;
+        function initialize() delegate { this.result = 0; }
+        function run(address source, int value) delegate {
+          this.result = IProxyValueSource(source).twice(value);
+        }
+      }`, { solidityImportCompat: true });
+    const valueProxy = await upgrades.deployProxy(
+      getContractFactory(valueArtifact, signer), [1n],
+    );
+    const callerProxy = await upgrades.deployProxy(
+      getContractFactory(callerArtifact, signer), [],
+    );
+    const tx = await (callerProxy as any).run(valueProxy.proxy.inner.lockingBytecode, 9n).send();
+    expect(proxyState(tx, callerProxy.proxy.categoryId, callerArtifact.stateLayout).result).toBe(18n);
+  });
 });

@@ -2198,13 +2198,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // Stateful delegatecall composition places the proxy block first, so its
-      // master is input/output 0. The synthetic argument remains an explicit
-      // witness and is validated above, but must not be carried through large
-      // inlined bodies: covenant helpers use transient stack items which make
-      // a long-lived PICK depth unsafe.
-      this.emit(Op.OP_0, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      // The proxy may be nested as an external callee, so its master is not
+      // necessarily input zero. The witness is already authenticated above by
+      // minting capability, distinct-input, and proxy self-preservation checks.
+      this.emit(Op.OP_DROP, loc);
     }
 
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
@@ -17145,7 +17142,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);
     // Stack: [_returnOutputIdx, output_cat_stripped] (2 untracked)
-    this.emitMasterInputIndex(locationData);
+    if (this.currentFunctionIsDelegate) {
+      const proxyIdx = this.getStackIndex('__internal__proxyMasterIndex');
+      this.emit(encodeInt(BigInt(proxyIdx + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else {
+      this.emitMasterInputIndex(locationData);
+    }
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);

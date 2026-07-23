@@ -5018,7 +5018,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
           // Get B's master input index
-          const bMasterIdx = stb.getExternalCallMasterInputIndex(groupIdx);
+          const bMasterIdx = group.delegateCallGroupIndex === undefined
+            ? stb.getExternalCallMasterInputIndex(groupIdx)
+            : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
 
           // Patch B's C2 entry co-spend unlockers with B's REAL master input index (docs/deferrals.md #1). The entry
           // covenant's write path (flag=1) verifies a minting NFT at masterInputIndex = B's master, but block-build
@@ -8400,6 +8402,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // materialized in the ordinary external-call section. Keep the child group indices
     // per delegate group so its hidden witnesses can point at the real inputs/outputs.
     const delegateExternalGroupIndices = new Map<number, number[]>();
+    const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       const resolvedCalls = overrides?.calls ?? [];
@@ -8413,9 +8416,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         if (callInfo.type === 'stateful') {
-          if (lowLevelCalls[i].callMode === 'delegatecall' && (callInfo.proxyMasterIndex ?? 0) !== 0) {
-            throw new Error('Delegatecall proxyMasterIndex must be 0; the proxy state block is placed first.');
-          }
           const bState = callInfo.contract.inner.artifact.delegateOnly
             ? await (callInfo.contract as StatefulContract)._getMasterOnlyState()
             : await callInfo.contract.getFullState();
@@ -8502,8 +8502,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 proxy: StatefulContract; implementation: StatefulContract;
                 forward: (name: string, args: FunctionArgument[]) => StatefulFunctionCall;
               } | undefined;
-              const callee = registeredCallee && 'proxy' in registeredCallee
-                ? registeredCallee.proxy : registeredCallee;
+              const proxyCallee = registeredCallee && 'proxy' in registeredCallee
+                ? registeredCallee : undefined;
+              const callee = (proxyCallee?.proxy ?? registeredCallee) as StatefulContract | undefined;
               if (!callee) {
                 throw new Error(
                   `Delegate external call to ${nested.interfaceName}.${nested.functionName} is not connected. `
@@ -8542,16 +8543,58 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
                 };
               });
-              nestedIndices.push(externalCallUtxoGroups.length);
+              const childExternalGroupIndex = externalCallUtxoGroups.length;
+              nestedIndices.push(childExternalGroupIndex);
+              let childFunctionName = nested.functionName;
+              let childFunctionArgs = nestedArgs;
+              let delegateCallGroupIndex: number | undefined;
+              if (proxyCallee) {
+                const targetFn = (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
+                  .find((f) => f.name === nested.functionName);
+                if (!targetFn?.selector) {
+                  throw new Error(
+                    `Proxy implementation function '${nested.functionName}' has no selector.`,
+                  );
+                }
+                // The built-in single-function proxy has no dispatcher: its first
+                // unlocking push is the forwarded implementation selector, which
+                // also satisfies the caller's selector pin.
+                childFunctionName = '__forward';
+                childFunctionArgs = [hexToBin(targetFn.selector)];
+
+                const implementationState = proxyCallee.implementation.inner.artifact.delegateOnly
+                  ? await proxyCallee.implementation._getMasterOnlyState()
+                  : await proxyCallee.implementation.getFullState();
+                if (!implementationState.masterUtxo) {
+                  throw new Error(
+                    `Proxy implementation master UTXO not found for ${nested.interfaceName}.`,
+                  );
+                }
+                delegateCallGroupIndex = lowLevelCallUtxoGroups.length;
+                nestedDelegateProxyGroupByLowLevel.set(delegateCallGroupIndex, childExternalGroupIndex);
+                lowLevelCallUtxoGroups.push({
+                  categoryId: proxyCallee.implementation.categoryId,
+                  stateLayout: proxyCallee.implementation.inner.stateLayout!,
+                  masterUtxo: implementationState.masterUtxo,
+                  dataNftUtxos: [],
+                  requiredDataNftIndices: [],
+                  functionName: nested.functionName,
+                  functionArgs: nestedArgs,
+                  externalContract: proxyCallee.implementation,
+                  callMode: 'delegatecall',
+                });
+                groupProxyMasterIndices.push(0);
+              }
               externalCallUtxoGroups.push({
                 categoryId: callee.categoryId,
                 stateLayout: childLayout,
                 masterUtxo: childState.masterUtxo,
                 dataNftUtxos: childData,
                 requiredDataNftIndices: childRequired,
-                functionName: nested.functionName,
-                functionArgs: nestedArgs,
+                functionName: childFunctionName,
+                functionArgs: childFunctionArgs,
                 externalContract: callee,
+                ...(delegateCallGroupIndex !== undefined && { delegateCallGroupIndex }),
                 ...(nested.callMode && { callMode: nested.callMode }),
               });
               allGroupEcSlots = [...allGroupEcSlots, nested];
@@ -8612,6 +8655,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return BigInt(returnIndexForGroup.get(groupIdx) ?? -1);
           }
           if (input.name === '__internal__msgSenderCategory') return hexToBin(this.categoryId);
+          if (input.name === '__internal__delegateInputIndex') {
+            const delegateGroup = child.delegateCallGroupIndex;
+            if (delegateGroup === undefined) return -1n;
+            const preceding = lowLevelCallUtxoGroups.slice(0, delegateGroup)
+              .reduce((sum, candidate) => sum + 1 + candidate.dataNftUtxos.length, 0);
+            return BigInt(nestedInputBase + preceding);
+          }
           throw new Error(
             `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
           );
@@ -8684,10 +8734,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
           const encodedArgs: any[] = bFunc.inputs.map((inp) => {
             if (!inp.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
-            if (inp.name === '__internal__returnOutputIdx') return BigInt(returnEmitOutputIndex);
-            if (inp.name === '__internal__msgSenderCategory') return new Uint8Array(32);
+            if (inp.name === '__internal__returnOutputIdx') {
+              const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+              return BigInt(proxyExternalGroup === undefined
+                ? returnEmitOutputIndex
+                : returnIndexForGroup.get(proxyExternalGroup) ?? -1);
+            }
+            if (inp.name === '__internal__msgSenderCategory') {
+              return nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)
+                ? hexToBin(masterUtxo.token?.category ?? this.categoryId).reverse()
+                : new Uint8Array(32);
+            }
             if (inp.name === '__internal__proxyMasterIndex') {
-              return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
+              const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+              return BigInt(proxyExternalGroup === undefined
+                ? groupProxyMasterIndices[groupLocalIdx] ?? 0
+                : nestedMasterIndices[proxyExternalGroup]);
             }
             if (inp.name === '__internal__externalCallInputBase') {
               const firstNested = nestedGroups[0];

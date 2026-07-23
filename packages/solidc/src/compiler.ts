@@ -4,8 +4,8 @@ import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptio
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode,
-  FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode, LowLevelCallStatementNode, Node, ParameterNode,
-  RequireNode,
+  ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
+  LowLevelCallStatementNode, MethodCallNode, Node, ParameterNode, RequireNode,
   NullaryOpNode,
   SourceFileNode, TypeIntrospectionNode,
 } from './ast/AST.js';
@@ -204,13 +204,21 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
     let signatureCheck = false;
+    let statefulExternalCall = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         walkInvocationAst(candidate.body, (node) => {
           if (node instanceof NullaryOpNode && [
             NullaryOperator.INPUT_INDEX, NullaryOperator.BYTECODE,
+            NullaryOperator.MSG_SENDER, NullaryOperator.TX_ORIGIN,
             NullaryOperator.MSG_SIG, NullaryOperator.MSG_DATA, NullaryOperator.MSG_VALUE,
           ].includes(node.operator)) routeSensitive = true;
+          if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
+          // Method calls are resolved into external/internal/builtin forms only
+          // during the following semantic pass. The initial frozen route does
+          // not attempt to predict that resolution: reject them conservatively
+          // so no later synthetic callee parameters can invalidate this call.
+          if (node instanceof MethodCallNode) statefulExternalCall = true;
           if (node instanceof FunctionCallNode
             && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
         });
@@ -224,6 +232,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       reason = 'transaction-signature-route-binding-required';
     } else if (routeSensitive) {
       reason = 'direct-versus-batch-introspection-divergence';
+    } else if (statefulExternalCall) {
+      reason = 'batched-handler-forward-call-not-enabled';
     } else if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (footprint.unknown || footprint.effects.length > 0) reason = 'unresolved-or-effectful-handler';
@@ -725,7 +735,7 @@ function compileResolvedAst(
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,
         selector: fn.functionSelector ? binToHex(fn.functionSelector) : '',
-        inputs: fn.parameters.map((parameter) => ({
+        inputs: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => ({
           name: parameter.name,
           type: parameter.type.toString().replace(/address payable/g, 'address'),
         })),

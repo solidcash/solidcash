@@ -2294,7 +2294,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Hidden invocation context follows declared parameters and precedes
         // journal slots in the handler frame. It is supplied by every caller
         // and discarded by the handler epilogue rather than returned.
-        if (this.contractUsesMsgSender) this.pushToStack('__internal__handlerMsgSender', true);
+        if (node.usesMsgSender) this.pushToStack('__internal__handlerMsgSender', true);
         if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
         if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
         for (const sv of activeJournalSlots) {
@@ -5595,7 +5595,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_sig_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (targetJournalSlots.length > 0 && this.contractUsesMsgSender) {
+    if (targetJournalSlots.length > 0 && targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (this.stack.includes('__internal__handlerMsgSender')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);

@@ -42,16 +42,17 @@ unlocking sizes, and complete transaction sizes from constructed 2/3/8-row trans
 
 Constructed Release 5 transactions are pinned under `BCH_2026_05`:
 
-| rows | tx bytes | A instructions | A op cost / budget | A unlock | B instructions | B op cost / budget | B unlock |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | 5,600 | 1,076 | 135,926 / 1,629,600 | 1,996 | 2,573 | 274,873 / 2,093,600 | 2,576 |
-| 3 | 5,615 | 1,199 | 148,566 / 1,630,400 | 1,997 | 3,236 | 343,076 / 2,104,000 | 2,589 |
-| 8 | 5,669 | 949 | 124,692 / 1,628,000 | 1,994 | 5,183 | 550,124 / 2,150,400 | 2,647 |
+| rows | tx bytes | A instructions | A op cost / budget | A peak items/bytes | A unlock | B instructions | B op cost / budget | B peak items/bytes | B unlock |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 5,600 | 1,076 | 135,926 / 1,629,600 | 12 / 2,716 | 1,996 | 2,573 | 274,873 / 2,093,600 | 18 / 2,571 | 2,576 |
+| 3 | 5,615 | 1,199 | 148,566 / 1,630,400 | 13 / 2,769 | 1,997 | 3,236 | 343,076 / 2,104,000 | 18 / 2,584 | 2,589 |
+| 8 | 5,669 | 949 | 124,692 / 1,628,000 | 10 / 2,997 | 1,994 | 5,183 | 550,124 / 2,150,400 | 15 / 2,641 | 2,647 |
 
 The VM tests additionally freeze pushed bytes, hash iterations, and both data-NFT input projections.
+Peak figures combine the main and alternate stacks and sum resident item bytes at every debug-trace
+step; this closes the Release 0 stack/memory measurement requirement for the frozen fixtures.
 The caller cost is not monotonic because the eight-row zero-argument fixture is simpler than the
-two/three-row argument-bearing handlers. Explicit stack/memory peaks remain to close the complete
-Release 0 measurement matrix.
+two/three-row argument-bearing handlers.
 
 This is the first deployable composition protocol. It covers:
 

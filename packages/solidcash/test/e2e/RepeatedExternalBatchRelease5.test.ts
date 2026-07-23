@@ -110,19 +110,23 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       inputs: [
         {
           hashes: 33, instructions: 1076, maximumOperationCost: 1629600,
-          operationCost: 135926, pushedBytes: 21956, unlockingBytes: 1996,
+          operationCost: 135926, peakStackBytes: 2716, peakStackItems: 12,
+          pushedBytes: 21956, unlockingBytes: 1996,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
-          operationCost: 11835, pushedBytes: 683, unlockingBytes: 265,
+          operationCost: 11835, peakStackBytes: 261, peakStackItems: 4,
+          pushedBytes: 683, unlockingBytes: 265,
         },
         {
           hashes: 41, instructions: 2573, maximumOperationCost: 2093600,
-          operationCost: 274873, pushedBytes: 9638, unlockingBytes: 2576,
+          operationCost: 274873, peakStackBytes: 2571, peakStackItems: 18,
+          pushedBytes: 9638, unlockingBytes: 2576,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
-          operationCost: 11836, pushedBytes: 684, unlockingBytes: 265,
+          operationCost: 11836, peakStackBytes: 262, peakStackItems: 4,
+          pushedBytes: 684, unlockingBytes: 265,
         },
       ],
     }],
@@ -131,19 +135,23 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       inputs: [
         {
           hashes: 33, instructions: 1199, maximumOperationCost: 1630400,
-          operationCost: 148566, pushedBytes: 22295, unlockingBytes: 1997,
+          operationCost: 148566, peakStackBytes: 2769, peakStackItems: 13,
+          pushedBytes: 22295, unlockingBytes: 1997,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
-          operationCost: 11835, pushedBytes: 683, unlockingBytes: 265,
+          operationCost: 11835, peakStackBytes: 261, peakStackItems: 4,
+          pushedBytes: 683, unlockingBytes: 265,
         },
         {
           hashes: 41, instructions: 3236, maximumOperationCost: 2104000,
-          operationCost: 343076, pushedBytes: 11524, unlockingBytes: 2589,
+          operationCost: 343076, peakStackBytes: 2584, peakStackItems: 18,
+          pushedBytes: 11524, unlockingBytes: 2589,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
-          operationCost: 11836, pushedBytes: 684, unlockingBytes: 265,
+          operationCost: 11836, peakStackBytes: 262, peakStackItems: 4,
+          pushedBytes: 684, unlockingBytes: 265,
         },
       ],
     }],
@@ -163,6 +171,19 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
         pushedBytes: result.metrics.stackPushedBytes,
         hashes: result.metrics.hashDigestIterations,
         unlockingBytes: transaction.inputs[inputIndex].unlockingBytecode.length,
+        ...(() => {
+          const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as unknown as Array<{
+            stack: Uint8Array[];
+            alternateStack: Uint8Array[];
+          }>;
+          return {
+            peakStackItems: Math.max(...trace.map((state) =>
+              state.stack.length + state.alternateStack.length)),
+            peakStackBytes: Math.max(...trace.map((state) =>
+              [...state.stack, ...state.alternateStack]
+                .reduce((sum, item) => sum + item.length, 0))),
+          };
+        })(),
       };
     });
     expect({ transactionBytes: encodeTransaction(transaction).length, inputs }).toEqual(expected);
@@ -213,6 +234,19 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
         pushedBytes: result.metrics.stackPushedBytes,
         hashes: result.metrics.hashDigestIterations,
         unlockingBytes: transaction.inputs[inputIndex].unlockingBytecode.length,
+        ...(() => {
+          const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as unknown as Array<{
+            stack: Uint8Array[];
+            alternateStack: Uint8Array[];
+          }>;
+          return {
+            peakStackItems: Math.max(...trace.map((state) =>
+              state.stack.length + state.alternateStack.length)),
+            peakStackBytes: Math.max(...trace.map((state) =>
+              [...state.stack, ...state.alternateStack]
+                .reduce((sum, item) => sum + item.length, 0))),
+          };
+        })(),
       };
     });
     expect({
@@ -223,19 +257,23 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       inputs: [
         {
           hashes: 33, instructions: 949, maximumOperationCost: 1628000,
-          operationCost: 124692, pushedBytes: 23424, unlockingBytes: 1994,
+          operationCost: 124692, peakStackBytes: 2997, peakStackItems: 10,
+          pushedBytes: 23424, unlockingBytes: 1994,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
-          operationCost: 11835, pushedBytes: 683, unlockingBytes: 265,
+          operationCost: 11835, peakStackBytes: 261, peakStackItems: 4,
+          pushedBytes: 683, unlockingBytes: 265,
         },
         {
           hashes: 41, instructions: 5183, maximumOperationCost: 2150400,
-          operationCost: 550124, pushedBytes: 23818, unlockingBytes: 2647,
+          operationCost: 550124, peakStackBytes: 2641, peakStackItems: 15,
+          pushedBytes: 23818, unlockingBytes: 2647,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
-          operationCost: 11836, pushedBytes: 684, unlockingBytes: 265,
+          operationCost: 11836, peakStackBytes: 262, peakStackItems: 4,
+          pushedBytes: 684, unlockingBytes: 265,
         },
       ],
     });

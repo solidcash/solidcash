@@ -5207,7 +5207,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const commitments = bRequiredNftCount > 0
             ? extractCommitmentsFromTrace(fullTrace, bRequiredNftCount, bDataOutputRange)
             : undefined;
-          if (!commitments && bRequiredNftCount > 0 && !ec.hasReturnValues) continue; // nothing to do
+          if (!commitments && bRequiredNftCount > 0 && !ec.hasReturnValues
+            && !group.blockLayout?.slots.some((slot) => slot.kind === 'entry')) continue; // nothing to do
 
           // B's data NFT commitments
           if (commitments && commitments.length > 0) {
@@ -5222,14 +5223,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // mints an entry output B's covenant then verifies. Extract each written entry's commitment from B's trace
           // at its block-slot output index (bOutputBase + si) and hand it to the STB, which mints it at that slot.
           if (group.blockLayout && group.blockInputs) {
-            const bEntryMap = new Map<number, string>();
+            const bEntryMap = group.compilerRoute
+              ? new Map<number, string>()
+              : extractCommitmentMapFromTrace(fullTrace,
+                { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
             let entryTrace = fullTrace;
             const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
             // A covenant stops at the first mismatching entry output, so one
             // trace can reveal only the first pending commitment. Feed each
             // newly revealed commitment back into the probe and continue
             // until every reachable fixed entry slot has been materialized.
-            for (let pass = 0; pass <= entrySlotCount; pass++) {
+            for (let pass = 0; group.compilerRoute && pass <= entrySlotCount; pass++) {
               const revealed = extractCommitmentMapFromTrace(entryTrace,
                 { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
               let progressed = false;
@@ -7710,7 +7714,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const bList = SortedList.fromUtxos(
                         bEntryUtxos.filter((u) => u.token?.category === externalCategoryId),
                       );
-                      const encodedKeys = bEntryAccess.keyParams.map((name) => {
+                      const encodedKeys = bEntryAccess.keyParams.map((name, keyIndex) => {
+                        if (bEntryAccess.keySources?.[keyIndex]?.kind === 'msgSender') {
+                          return this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode;
+                        }
                         const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
                         const value = index >= 0 ? bRouteArgs[index] : undefined;
                         if (value instanceof Uint8Array) return value;
@@ -7718,11 +7725,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
                         throw new Error(`External SCB1 cannot resolve entry key '${name}'`);
                       });
-                      const bSlot = keyToSlotMulti(encodedKeys);
+                      const directKeyBin = effKeyValue instanceof Uint8Array ? effKeyValue
+                        : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
+                          : bigIntToVmNumber(effKeyValue ? 1n : 0n);
+                      const bSlot = compilerRoute ? keyToSlotMulti(encodedKeys) : keyToSlot(directKeyBin);
                       let unsupportedColdEntry = false;
                       try {
-                        const exact = bList.find(bSlot);
-                        matchUtxo = (exact ?? bList.predecessorOf(bSlot))?.utxo;
+                        const exact = compilerRoute ? bList.find(bSlot) : undefined;
+                        matchUtxo = compilerRoute
+                          ? (exact ?? bList.predecessorOf(bSlot))?.utxo
+                          : (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
                         if (compilerRoute && bAbiFunc?.sortedBatchInfo?.some((batch) =>
                           batch.slotIndices.includes(slot.slotIndex ?? 0))) {
                           if (!exact) {
@@ -8280,7 +8292,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )(...bFinalArgs)
           : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
         group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
-        if (group.blockInputs && group.blockLayout) {
+        if (group.compilerRoute && group.blockInputs && group.blockLayout) {
           const masterOffset = group.blockLayout.slots.find((slot) => slot.kind === 'master')?.offset;
           if (masterOffset !== undefined && group.blockInputs[masterOffset]) {
             group.blockInputs[masterOffset] = {

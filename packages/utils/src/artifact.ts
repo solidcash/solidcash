@@ -461,6 +461,32 @@ export interface ExternalLibraryAbi {
   // real need is the loop's runtime count, so provision extra side-cars
 }
 
+export interface InvocationAnalysisFunction {
+  id: number;
+  name: string;
+  arity: number;
+  entryPoint: boolean;
+  selector?: string;
+  calls: readonly number[];
+  closure: readonly number[];
+  component: number;
+  recursive: boolean;
+  reads: readonly string[];
+  writes: readonly string[];
+  effects: readonly string[];
+  unknown: boolean;
+}
+
+export interface InvocationAnalysisArtifact {
+  version: 1;
+  functions: readonly InvocationAnalysisFunction[];
+  components: readonly {
+    id: number;
+    functions: readonly number[];
+    recursive: boolean;
+  }[];
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -481,6 +507,10 @@ export interface Artifact {
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
+  /** Compiler-only call graph/resource summary shared by splitting, journal
+   * eligibility, diagnostics, and hidden-batch planning. No covenant capability
+   * is implied by its presence. */
+  invocationAnalysis?: InvocationAnalysisArtifact;
   compiler: {
     name: string;
     version: string;

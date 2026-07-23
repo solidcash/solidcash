@@ -79,7 +79,7 @@ import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
-  analyseFunctionFootprint, collectNamedFunctionClosure,
+  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure,
 } from './analysis/InvocationAnalysis.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
@@ -553,6 +553,31 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  const invocationAnalysis = analyseContractInvocations(ast.contract);
+  const selectorById = new Map(
+    [...ast.contract.functions, ast.contract.fallbackDef, ast.contract.receiveDef]
+      .filter((fn): fn is FunctionDefinitionNode => !!fn && fn.functionId !== undefined)
+      .map((fn) => [fn.functionId!, fn.functionSelector ? binToHex(fn.functionSelector) : undefined]),
+  );
+  artifact.invocationAnalysis = {
+    version: 1,
+    functions: invocationAnalysis.functions.map((summary) => ({
+      id: summary.id,
+      name: summary.name,
+      arity: summary.arity,
+      entryPoint: summary.entryPoint,
+      ...(selectorById.get(summary.id) && { selector: selectorById.get(summary.id) }),
+      calls: summary.calls,
+      closure: summary.closure,
+      component: summary.component,
+      recursive: summary.recursive,
+      reads: summary.footprint.reads,
+      writes: summary.footprint.writes,
+      effects: summary.footprint.effects,
+      unknown: summary.footprint.unknown,
+    })),
+    components: invocationAnalysis.components,
+  };
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   return artifact;

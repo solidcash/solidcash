@@ -456,6 +456,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftCount: number = 0;
   private pendingStateWrites: Map<string, string> = new Map(); // "nftIndex:fieldIndex" -> stack name
   private hasStateAccess: boolean = false;
+  private journalSlotsByFunctionId: Map<number, StateVariableNode[]> = new Map();
+  // Per-traversal settlement state. FunctionDefinitionNode instances are shared by the
+  // physical entrypoint and OP_DEFINE traversals, so mutable AST metadata cannot safely
+  // decide which epilogue must flush a journal.
+  private activeJournalSlots: StateVariableNode[] = [];
+  private journalSettlementActive = false;
   private compactOffsetMap: Map<number, number> = new Map(); // nftIndex -> compact position (1-based)
   // A shared internal function cannot assume any one caller's sparse NFT ordering. Compile it against the
   // canonical full layout, and require entry points which invoke internal functions to use that same layout.
@@ -1179,8 +1185,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return ids;
   }
 
+  private computeScalarJournalClosures(node: ContractNode): void {
+    const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
+    const slotsById = new Map<number, Map<string, StateVariableNode>>();
+    const callsById = new Map<number, Set<number>>();
+    const scan = (
+      root: Node, slots: Map<string, StateVariableNode>, calls: Set<number>, seen = new Set<Node>(),
+    ): void => {
+      if (seen.has(root)) return;
+      seen.add(root);
+      if ((root instanceof StateAccessNode || root instanceof StateAssignNode || root instanceof DeleteStateNode)
+        && (root.stateVariable ?? this.stateVariables.find((candidate) => candidate.name === root.name))
+        && !(root.stateVariable ?? this.stateVariables.find((candidate) => candidate.name === root.name))!.isDynamic) {
+        const sv = (root.stateVariable
+          ?? this.stateVariables.find((candidate) => candidate.name === root.name))!;
+        slots.set(`${sv.nftIndex}:${sv.fieldIndex}`, sv);
+      }
+      if (root instanceof FunctionCallNode && root.resolvedFunction?.functionId !== undefined) {
+        calls.add(root.resolvedFunction.functionId);
+      }
+      for (const [key, value] of Object.entries(root)) {
+        if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+          || key === 'collection' || key === 'stateVariable') continue;
+        if (value instanceof Node) scan(value, slots, calls, seen);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) scan(item, slots, calls, seen);
+        }
+      }
+    };
+    for (const fn of functions) {
+      if (fn.functionId === undefined || !fn.body) continue;
+      const slots = new Map<string, StateVariableNode>();
+      const calls = new Set<number>();
+      scan(fn.body, slots, calls);
+      slotsById.set(fn.functionId, slots);
+      callsById.set(fn.functionId, calls);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [id, slots] of slotsById) {
+        for (const calleeId of callsById.get(id) ?? []) {
+          for (const [key, sv] of slotsById.get(calleeId) ?? []) {
+            if (slots.has(key)) continue;
+            slots.set(key, sv);
+            changed = true;
+          }
+        }
+      }
+    }
+    this.journalSlotsByFunctionId = new Map([...slotsById]
+      .filter(([, slots]) => slots.size > 0)
+      .map(([id, slots]) => [id, [...slots.values()]
+        .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
+  }
+
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
+    this.computeScalarJournalClosures(node);
     // OP_DEFINE internal/private functions (subroutine-only) + entry points actually invoked internally (via
     // `this.f` / function pointers). An entry point never called internally compiles as an entry point only, so it
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
@@ -1552,6 +1614,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = true;
     subTraversal.forceFullStateLayout = true;
+    subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     // Compiled child bytecodes (for `type(C).creationCode` / `new C()` inside an extracted function body).
     subTraversal.compiledBytecodes = this.compiledBytecodes;
@@ -1791,6 +1854,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+    subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
@@ -1908,6 +1972,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    const candidateJournalSlots = node.functionId === undefined
+      ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
+    // A closure entry in journalSlotsByFunctionId means this function, directly or
+    // transitively, reads/writes those scalar slots. Give both its physical wrapper
+    // and internal definition the same explicit context.
+    const activeJournalSlots = candidateJournalSlots;
+    this.activeJournalSlots = activeJournalSlots;
+    this.journalSettlementActive = !this.isDefineSubTraversal && activeJournalSlots.length > 0;
+    // The AST node is shared by several codegen traversals. Preserve a positive result
+    // so ABI generation conservatively classifies an entrypoint that settles a journal
+    // as state-writing even if a later analysis-only traversal visits the same node.
+    node.scalarJournal = node.scalarJournal === true || activeJournalSlots.length > 0;
     this.functionHasReturnInLoop = node.body ? this.hasReturnInLoop(node.body, false) : false;
     // Rebuilt fresh each codegen pass (this node is revisited across derivation/subroutine sub-traversals);
     // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its per-call slot index).
@@ -1959,7 +2035,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     collector.visit(node.body);
     const accessedNftIndices = [...collector.indices].sort((a, b) => a - b);
 
-    this.hasStateAccess = accessedNftIndices.length > 0;
+    // A de-inlined helper's accesses live outside the physical wrapper AST, but
+    // its journal is settled by that wrapper. Treat the transitive journal
+    // footprint as state access so the ordinary category and data-NFT covenant
+    // epilogue cannot fall through to guarded preservation.
+    this.hasStateAccess = accessedNftIndices.length > 0 || activeJournalSlots.length > 0;
 
     // Store required NFT indices on the node for artifact generation.
     // For stateful contracts (dataNftCount > 0), always store (even as empty [])
@@ -2141,6 +2221,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
     }
 
+    if (activeJournalSlots.length > 0) {
+      if (this.isDefineSubTraversal) {
+        for (const sv of activeJournalSlots) {
+          const key = `${sv.nftIndex}:${sv.fieldIndex}`;
+          const stackName = `__internal__state_write_${sv.name}`;
+          this.pushToStack(stackName, true);
+          this.pendingStateWrites.set(key, stackName);
+          this.preAllocatedStateWrites.add(key);
+        }
+      } else {
+        const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+        for (const sv of activeJournalSlots) {
+          this.preAllocateStateWrite(`${sv.nftIndex}:${sv.fieldIndex}`, loc);
+        }
+      }
+    }
+
     if (this.compilerOptions.enforceFunctionParameterTypes) {
       this.enforceFunctionParameterTypes(node);
     }
@@ -2271,15 +2368,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // Void functions compiled for OP_DEFINE (via emitFunctionDefine) should leave
-    // 0 items on the stack - unlike entry-point functions which need exactly 1 item
-    // for P2SH validation. The require() statements use OP_VERIFY which already
-    // consumes the boolean, so we just need to drop any remaining parameters/locals.
+    // Void handlers drop ordinary locals/params but return hidden journal slots in canonical order.
     if (this.isDefineSubTraversal) {
-      const stackSize = this.stack.length;
-      for (let i = 0; i < stackSize; i++) {
+      const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
+      const journalNames = new Set(slots.map((sv) => `__internal__state_write_${sv.name}`));
+      for (let i = 0; i < this.stack.length;) {
+        if (journalNames.has(this.stack[i])) {
+          i += 1;
+          continue;
+        }
+        this.emit(encodeInt(BigInt(i)), { location: node.body.location, positionHint: PositionHint.END });
+        this.emit(Op.OP_ROLL, { location: node.body.location, positionHint: PositionHint.END });
         this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
-        this.popFromStack();
+        this.removeFromStack(i);
       }
       return node;
     }
@@ -5367,6 +5468,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   visitUserFunctionCall(node: FunctionCallNode, targetFunc: FunctionDefinitionNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    const targetJournalSlots = targetFunc.functionId === undefined
+      ? [] : (this.journalSlotsByFunctionId.get(targetFunc.functionId) ?? []);
+    const targetJournalNames: string[] = [];
+    // Pass copies of the context rather than moving the caller's slots. A moved
+    // slot returns at the top of the stack and changes its position relative to
+    // persistent loop variables, violating OP_BEGIN/OP_UNTIL's frame invariant.
+    // Returned copies are written back in place below.
+    for (let i = targetJournalSlots.length - 1; i >= 0; i--) {
+      const sv = targetJournalSlots[i];
+      const stackName = this.pendingStateWrites.get(`${sv.nftIndex}:${sv.fieldIndex}`);
+      if (!stackName) {
+        throw new Error(`Missing scalar journal slot '${sv.name}' while invoking '${targetFunc.name}'`);
+      }
+      const idx = this.getStackIndex(stackName);
+      this.emit(encodeInt(BigInt(idx)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      const contextName = `(__journal_arg_${targetFunc.functionId}_${i})`;
+      this.pushToStack(contextName);
+      targetJournalNames[i] = stackName;
+    }
 
     // The internal-call subroutine skips the synthetic `__internal__returnOutputIdx` param during setup (unused
     // for a raw return - see visitFunctionDefinition), and a function-pointer call never pushes it. Match that:
@@ -5390,6 +5511,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs);
+    // The callee returns the journal copies in canonical order. Replace each
+    // caller-owned slot at its original depth, consuming the returned copy and
+    // leaving the surrounding frame byte-for-byte in its pre-call order.
+    for (let i = 0; i < targetJournalSlots.length; i++) {
+      const originalName = targetJournalNames[i];
+      this.emitReplace(this.getStackIndex(originalName), node);
+      this.popFromStack();
+    }
     for (let i = 0; i < targetFunc.returnTypes.length; i++) {
       this.pushToStack('(value)');
     }
@@ -13110,6 +13239,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitAutoCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
+    // A physical wrapper which invoked journalized handlers must flush the returned context, never silently
+    // select the read-only preservation path.
+    for (const sv of this.journalSettlementActive ? this.activeJournalSlots : []) {
+      const key = `${sv.nftIndex}:${sv.fieldIndex}`;
+      if (!this.pendingStateWrites.has(key)) {
+        throw new Error(`Scalar journal slot '${sv.name}' was lost before '${node.name}' settlement`);
+      }
+    }
+
     // Group state variables by NFT index
     const nftFields = new Map<number, StateVariableNode[]>();
     for (const sv of this.stateVariables) {
@@ -15039,6 +15177,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      return;
+    }
+    // Keep journal settlement introspection adjacent to its equality. Besides being smaller for this one-use
+    // path, this gives SDK derivation one unambiguous `<expected> <idx> OUTPUTCOMMITMENT EQUALVERIFY` site rather
+    // than splitting the pair across an OP_INVOKE helper boundary.
+    if (this.journalSettlementActive) {
+      this.emitDataNftOutputCommitmentInline(offset, loc);
       return;
     }
     let id = this.dataNftOutputCommitmentIds.get(offset);

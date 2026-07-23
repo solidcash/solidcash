@@ -39,6 +39,7 @@ const STATE_WRITING_MODIFIERS = [
  * covenant-bypass modifier. Any doubt -> true, so a misclassified writer never gets the SDK's derivation skip.
  */
 function computeWritesState(func: FunctionDefinitionNode): boolean {
+  if (func.scalarJournal) return true;
   if (containsStatefulOperation(func.body?.statements)) return true;
   if ((func.externalCalls?.length ?? 0) > 0) return true;
   if ((func.deployTargets?.length ?? 0) > 0) return true;

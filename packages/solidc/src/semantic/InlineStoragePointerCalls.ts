@@ -139,15 +139,18 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
       // dispatchable), internal helpers are dropped below.
+      const scalarJournalEligible = this.isScalarJournalEligible(fn);
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
-            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name)
+            && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
+              || this.transitiveSortedWriters.has(fn.name)
               || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
         && !valueReferenced.has(fn.name)
-        && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))) {
+        && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
+          || this.transitiveSortedWriters.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -222,6 +225,26 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // which stay dispatchable.
     node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || this.keepDefFns.has(fn.name));
     return node;
+  }
+
+  private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length > 0 || this.hasStoragePointerParam(fn) || this.readsEntry(fn)
+      || this.transitiveSortedWriters.has(fn.name)) return false;
+    if ((fn.externalCalls?.length ?? 0) > 0 || (fn.externalReads?.length ?? 0) > 0
+      || (fn.externalOutStateReads?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0
+      || (fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
+      || (fn.tokenContainerAccesses?.length ?? 0) > 0 || (fn.deployTargets?.length ?? 0) > 0) return false;
+    let unsupported = false;
+    this.walk(fn.body, (candidate) => {
+      const maybeState = candidate as Node & { stateVariable?: { isDynamic?: boolean } };
+      if (maybeState.stateVariable?.isDynamic) unsupported = true;
+      if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
+        || candidate instanceof MappingDeleteNode || candidate instanceof MappingFieldAssignNode
+        || candidate instanceof ArrayAccessNode || candidate instanceof ArrayAssignNode
+        || candidate instanceof StateArrayAssignNode
+        || candidate.constructor.name.startsWith('StateArray')) unsupported = true;
+    });
+    return !unsupported && this.touchesScalarState(fn);
   }
 
   // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.

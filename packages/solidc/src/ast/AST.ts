@@ -320,6 +320,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
+  // Compiler-owned: this physical wrapper/subroutine participates in the scalar write-back journal.
+  scalarJournal?: boolean;
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   isFallback: boolean = false;

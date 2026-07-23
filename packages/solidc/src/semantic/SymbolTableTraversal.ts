@@ -4182,6 +4182,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       ): ExternalCallArgSource | undefined => {
         if (seen.has(expression)) return undefined;
         seen.add(expression);
+        if (expression instanceof CastNode) return classifyArg(expression.expression, seen);
+        if (expression instanceof IdentifierNode && expression.name === 'this') {
+          return { kind: 'selfAddress' };
+        }
+        if (expression instanceof UnaryOpNode
+          && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+          && expression.expression instanceof NullaryOpNode
+          && expression.expression.operator === NullaryOperator.INPUT_INDEX) {
+          return { kind: 'selfAddress' };
+        }
+        if (expression instanceof TypeIntrospectionNode
+          && (expression.property === 'min' || expression.property === 'max')
+          && expression.resolvedType instanceof IntType) {
+          return {
+            kind: 'literal',
+            value: (expression.property === 'min'
+              ? expression.resolvedType.minValue
+              : expression.resolvedType.maxValue).toString(),
+            type: 'bigint',
+          };
+        }
         if (expression instanceof IdentifierNode && expression.definition) {
           const defNode = expression.definition.definition;
           if (defNode instanceof ParameterNode) {
@@ -4197,6 +4218,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (defNode instanceof VariableDefinitionNode && defNode.expression) {
             return classifyArg(defNode.expression, seen);
           }
+        }
+        // Synthesized external-address locals are inserted before symbol binding
+        // and can therefore reach this metadata pass without a definition link.
+        // Recover their initializer from the function body so param-rooted
+        // low-level targets (e.g. SafeERC20's address(token).call(...)) retain
+        // their caller-supplied address origin in the artifact.
+        if (expression instanceof IdentifierNode && this.currentFunction?.body) {
+          const initializer = this.findLocalInit(this.currentFunction.body, expression.name);
+          if (initializer) return classifyArg(initializer, seen);
         }
         if (expression instanceof NullaryOpNode
           && (expression.operator === NullaryOperator.MSG_SENDER
@@ -4253,6 +4283,37 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         argSources.push({ kind: 'expression' });
       }
+      let addressSource = classifyArg(node.addressExpression);
+      if (!addressSource && addressStateVar?.startsWith('ll_')) {
+        const sourceName = addressStateVar.slice('ll_'.length);
+        const sourceIndex = userVisibleParams.findIndex((param) => param.name === sourceName);
+        if (sourceIndex >= 0) addressSource = { kind: 'forward', paramIndex: sourceIndex };
+      }
+      const resolveInitializer = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExpressionNode => {
+        if (seen.has(expression)) return expression;
+        seen.add(expression);
+        if (expression instanceof IdentifierNode) {
+          const definition = expression.definition?.definition;
+          const initializer = definition instanceof VariableDefinitionNode
+            ? definition.expression
+            : this.currentFunction?.body
+              ? this.findLocalInit(this.currentFunction.body, expression.name)
+              : undefined;
+          if (initializer) return resolveInitializer(initializer, seen);
+        }
+        return expression;
+      };
+      const rawPayload = node.opaqueReturn && node.parameters.length === 1
+        ? resolveInitializer(node.parameters[0])
+        : undefined;
+      const rawFunctionName = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.functionName
+        : undefined;
+      const rawArgSources = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.parameters.map((parameter) => classifyArg(parameter) ?? { kind: 'expression' as const })
+        : undefined;
 
       slots.push({
         interfaceName: node.callInfo.interfaceName,
@@ -4265,6 +4326,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(addressSource && { addressSource }),
+        ...(rawFunctionName && { rawFunctionName }),
+        ...(rawArgSources && { rawArgSources }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,

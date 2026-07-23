@@ -8469,10 +8469,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
             const nestedIndices: number[] = [];
             for (const nested of delegateFn?.externalCalls ?? []) {
+              const resolvedAddress = nested.addressSource
+                ? this._resolveExternalArgs(
+                  [nested.addressSource], callInfo.args, callInfo.contract.inner.artifact,
+                )?.[0]
+                : undefined;
               const addressParamIndex = nested.addressParam
                 ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
                 : -1;
-              const addressValue = addressParamIndex >= 0 ? callInfo.args[addressParamIndex] : undefined;
+              const addressValue = resolvedAddress
+                ?? (addressParamIndex >= 0 ? callInfo.args[addressParamIndex] : undefined);
               let deploymentAtAddress: unknown;
               if (typeof addressValue === 'string') {
                 deploymentAtAddress = (
@@ -8516,7 +8522,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               }
               const nestedArgs = this._resolveExternalArgs(
-                nested.argSources, callInfo.args, callInfo.contract.inner.artifact,
+                nested.rawArgSources ?? nested.argSources,
+                callInfo.args,
+                callInfo.contract.inner.artifact,
               );
               if (nestedArgs === undefined) {
                 throw new Error(
@@ -8549,7 +8557,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               });
               const childExternalGroupIndex = externalCallUtxoGroups.length;
               nestedIndices.push(childExternalGroupIndex);
-              let childFunctionName = nested.functionName;
+              let childFunctionName = nested.rawFunctionName ?? nested.functionName;
               let childFunctionArgs = nestedArgs;
               let delegateCallGroupIndex: number | undefined;
               if (proxyCallee) {
@@ -9724,6 +9732,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         case 'msgSender': {
           if (!this._signer) return undefined;
           resolved.push(addressToLockScript(this._signer.getAddress()));
+          break;
+        }
+        case 'selfAddress': {
+          resolved.push(addressToLockScript(this.target));
           break;
         }
         case 'arrayElement': {

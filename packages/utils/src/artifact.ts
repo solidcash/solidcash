@@ -344,7 +344,7 @@ export interface ExternalReadAbi {
 }
 
 export interface ArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'arrayElement' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
   indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
   indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
@@ -364,6 +364,7 @@ export interface ExternalCallAbi {
   // sel[i] from it (not a witness), so the SDK resolves each element's method from its selector + skips the witness.
   selectorArrayVar?: string;
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
+  addressSource?: ArgSource; // SDK-resolvable origin for computed/local target addresses
   // Foreign fn-ptr call: the SDK fills a per-call master-index witness.
   fnPtrCall?: boolean;
   // A regular direct call needs a selector witness unless the callee has only one method.
@@ -376,6 +377,8 @@ export interface ExternalCallAbi {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
+  rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
+  rawArgSources?: readonly ArgSource[];
 }
 
 export interface ExternalOutStateAbi {

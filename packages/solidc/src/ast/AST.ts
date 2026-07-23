@@ -1847,7 +1847,7 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 }
 
 export interface ExternalCallArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'arrayElement' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
   paramIndex?: number;
   indexParamIndex?: number;
   indexValue?: number;
@@ -1884,6 +1884,7 @@ export interface ExternalCallSlot {
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;
+  addressSource?: ExternalCallArgSource;
   slotIndex: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
@@ -1904,6 +1905,8 @@ export interface ExternalCallSlot {
   selectorArrayVar?: string;
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
+  rawFunctionName?: string;
+  rawArgSources?: ExternalCallArgSource[];
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
   // Set by visitExternalFunctionCall when a loop call over a calldata/param address array with an opaque return
   // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).

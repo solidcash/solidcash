@@ -2413,7 +2413,10 @@ describe('low-level .call target through inlined-local aliases traced to a self-
     + ' function _callBool(IEcho tok, bytes data) internal returns (bool) { bool ok, bytes r = address(tok).call(data); return ok; }'
     + ` function f(bytes data, address attacker, pubkey pk, sig s) { require(checkSig(s, pk)); ${mid}`
     + ' bool ok = _callBool(token, data); require(ok); this.calls = this.calls + 1; } }';
-  const extcallOf = (s: string): { addressStateVar?: string } | undefined => compileString(s, {}).abi
+  const extcallOf = (s: string): {
+    addressStateVar?: string;
+    addressSource?: { kind: string; paramIndex?: number };
+  } | undefined => compileString(s, {}).abi
     .find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn);
 
   it('sources a single-assignment user-local intermediary from the state chain (Marketplace token = IERC20(job.token))', () => {
@@ -2429,6 +2432,11 @@ describe('low-level .call target through inlined-local aliases traced to a self-
       + ' bool ok, bytes r = address(config.token).call(data); require(ok); this.d = sha256(data); } }';
     expect(compileString(direct, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn)
       ?.addressStateVar).toBe('ll_config_token');
+  });
+  it('retains the caller-parameter origin of a synthesized low-level target', () => {
+    const call = extcallOf(src('IEcho token = IEcho(attacker);'));
+    expect(call?.addressStateVar).toBe('ll_attacker');
+    expect(call?.addressSource).toEqual({ kind: 'forward', paramIndex: 1 });
   });
 });
 

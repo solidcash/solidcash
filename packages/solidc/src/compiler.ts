@@ -46,6 +46,7 @@ import HoistChainedContractCalls from './semantic/HoistChainedContractCalls.js';
 import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
+import LowerCollectionJournalHelpers from './semantic/LowerCollectionJournalHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
@@ -403,6 +404,10 @@ function compileResolvedAst(
   // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
   ast = ast.accept(new HoistChainedContractCalls()) as Ast;
+
+  // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
+  // entry-reading inline passes see them.
+  ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void
@@ -1030,6 +1035,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
+    singleAst = singleAst.accept(new LowerCollectionJournalHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(compilerOptions.solidityImportCompat ?? false)) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;

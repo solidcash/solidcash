@@ -236,6 +236,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   }
 
   private eligible(fn: FunctionDefinitionNode): boolean {
+    // Release 3 deliberately converted this function into a value-threaded
+    // collection handler; re-inlining it would undo the journal boundary.
+    if (fn.collectionJournal) return false;
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
@@ -476,6 +479,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // reads state via the pointer (`map.values[k]` -> the caller's `<arg>__values` collection), so like a plain
   // entry-reading helper it cannot be an OP_INVOKE subroutine and must inline at its expression call site.
   private eligibleStructPtr(fn: FunctionDefinitionNode): boolean {
+    if (fn.collectionJournal) return false;
     if (!fn.body || fn.returnTypes.length < 1) return false;
     if (!fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType)) return false;
     const stmts = fn.body.statements ?? [];

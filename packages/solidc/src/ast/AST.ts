@@ -325,6 +325,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;
+  // Release 3: helper was lowered to a value-threaded collection journal.
+  collectionJournal?: boolean;
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   isFallback: boolean = false;

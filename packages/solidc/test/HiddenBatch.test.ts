@@ -102,4 +102,54 @@ describe('Release 4 compiler-hidden local batch', () => {
     }`, { forceStateful: true, experimentalHiddenBatch: true });
     expect(artifact.hiddenBatch).toBeUndefined();
   });
+
+  it('allocates one ordered conditional event slot per possible row', () => {
+    const artifact = compileString(`contract EventBatch() {
+      bigint current;
+      event Changed(bigint next);
+      function set(bigint next) public {
+        this.current = next;
+        emit Changed(next);
+        require(next >= 0);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'set')?.eligible)
+      .toBe(true);
+    expect(artifact.hiddenBatch?.route.emits).toHaveLength(8);
+    expect(artifact.hiddenBatch?.route.blockLayout?.slots
+      .filter((slot) => slot.kind === 'event')).toHaveLength(8);
+    expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
+  });
+
+  it('aggregates one common return value per row into the route return event', () => {
+    const artifact = compileString(`contract ResultBatch() {
+      bigint total;
+      function add(bigint amount) public returns (bigint) {
+        this.total = this.total + amount;
+        require(amount >= 0);
+        return this.total;
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'add'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'bigint' }] });
+    expect(artifact.hiddenBatch?.route.outputs).toEqual([{ type: 'bytes' }]);
+    expect(artifact.hiddenBatch?.route.blockLayout?.slots
+      .filter((slot) => slot.kind === 'returnEvent')).toHaveLength(1);
+    expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
+  });
+
+  it('allocates one ordered conditional value-transfer slot per possible row', () => {
+    const artifact = compileString(`contract ValueBatch() {
+      function pay(bytes recipient, bigint amount) public {
+        this.transfer(recipient, amount);
+        require(amount >= 0);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'pay')?.eligible)
+      .toBe(true);
+    expect(artifact.hiddenBatch?.route.transferCount).toBe(8);
+    expect(artifact.hiddenBatch?.route.blockLayout?.slots
+      .filter((slot) => slot.kind === 'transfer')).toHaveLength(8);
+    expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
+  });
 });

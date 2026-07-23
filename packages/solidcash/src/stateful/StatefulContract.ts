@@ -1349,7 +1349,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
       );
     }
-    const routeWitnesses = capability.route.inputs.slice(1).map((input) => {
+    const routeWitnessInputs = capability.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const routeWitnesses = routeWitnessInputs.map((input) => {
       const witness = keyWitnessValues.get(input.name);
       if (!witness) throw new Error(`Missing SCB1 route witness '${input.name}'`);
       return witness.value;
@@ -1362,19 +1364,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   _batchRaw(blob: Uint8Array, routeWitnesses: readonly FunctionArgument[] = []): StatefulFunctionCall {
     const capability = this.inner.artifact.hiddenBatch;
     if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
-    if (routeWitnesses.length !== capability.route.inputs.length - 1) {
+    const expectedWitnesses = capability.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
+    if (routeWitnesses.length !== expectedWitnesses) {
       throw new Error(
-        `SCB1 route requires ${capability.route.inputs.length - 1} collection witnesses, `
+        `SCB1 route requires ${expectedWitnesses} collection witnesses, `
         + `got ${routeWitnesses.length}`,
       );
     }
     const routeArgs = [blob, ...routeWitnesses];
+    const rowCount = blob.length > 6 ? blob[6] : 0;
+    // Effect routes reserve eight conditional covenant slots, but the SDK
+    // materializes only the prefix reached by this canonical blob. The
+    // compiler route bytecode and block offsets remain unchanged; the sliced
+    // ABI metadata controls witness construction/derivation only.
+    const effectiveRoute: AbiFunction = {
+      ...capability.route,
+      ...(capability.route.transferCount !== undefined && {
+        transferCount: Math.min(capability.route.transferCount, rowCount),
+      }),
+      ...(capability.route.emits && {
+        emits: capability.route.emits.slice(0, rowCount),
+      }),
+    };
+    const routeSelector = hexToBin(capability.selector);
     return new StatefulFunctionCall(
       this._createBuilder('__scb1', routeArgs, {
-        abiFunction: capability.route,
-        compilerRouteSelector: hexToBin(capability.selector),
+        abiFunction: effectiveRoute,
+        compilerRouteSelector: routeSelector,
       }),
       this as unknown as StatefulContract, '__scb1', routeArgs,
+      { abiFunction: effectiveRoute, selector: routeSelector },
     );
   }
 
@@ -10155,6 +10175,7 @@ export class StatefulFunctionCall {
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
+  private compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array };
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -10177,6 +10198,7 @@ export class StatefulFunctionCall {
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
+    compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array },
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
     // (e.g. when withExternalCall() causes send() to rebuild from scratch)
@@ -10185,6 +10207,7 @@ export class StatefulFunctionCall {
     this.parentContract = parentContract;
     this.functionName = functionName;
     this.functionArgs = functionArgs;
+    this.compilerRoute = compilerRoute;
   }
 
   setState(name: string, value: StateValueType): this;
@@ -10867,6 +10890,10 @@ export class StatefulFunctionCall {
           entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
           emitReturn: this.emitReturnFlag || undefined,
+          ...(this.compilerRoute && {
+            abiFunction: this.compilerRoute.abiFunction,
+            compilerRouteSelector: this.compilerRoute.selector,
+          }),
         },
       );
       derived = (builder as any).__derivedState;
@@ -10945,6 +10972,10 @@ export class StatefulFunctionCall {
           entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
           drainSatoshiContainer: true,
+          ...(this.compilerRoute && {
+            abiFunction: this.compilerRoute.abiFunction,
+            compilerRouteSelector: this.compilerRoute.selector,
+          }),
         },
       );
       derived = (builder as any).__derivedState;
@@ -10973,6 +11004,10 @@ export class StatefulFunctionCall {
             externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
             drainSatoshiContainer: wasSatoshiDrained || undefined,
             drainTokenContainers: drainedTokenContainers,
+            ...(this.compilerRoute && {
+              abiFunction: this.compilerRoute.abiFunction,
+              compilerRouteSelector: this.compilerRoute.selector,
+            }),
           },
         );
         derived = (builder as any).__derivedState;

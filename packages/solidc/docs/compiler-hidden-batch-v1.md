@@ -19,9 +19,11 @@ Implementation snapshot (2026-07-23):
 - Release 4 is enabled only by `experimentalHiddenBatch`. It advertises `hiddenBatch.version == 1`,
   keeps `__scb1` out of the source ABI, and admits either signature-free route-stable scalar
   handlers or handlers sharing one parameter-keyed mapping entry. The latter binds every decoded
-  row key to hidden physical-route witnesses and rejects divergent aliases. Mixed scalar/collection
-  routes, dynamic state, returns, events/effects, caller-sensitive introspection, and forward calls
-  remain explicitly rejected in capability metadata.
+  row key to hidden physical-route witnesses and rejects divergent aliases. A separate bounded route
+  mode commits one common return type per row into an eight-slot result blob; event and satoshi-value
+  modes allocate one conditional effect slot per row and materialize only the reached prefix. Mixed
+  route modes, dynamic state, heterogeneous/multiple returns or effects, caller-sensitive
+  introspection, and forward calls remain explicitly rejected in capability metadata.
 - Release 5 is enabled only by `experimentalRepeatedExternalBatch`. It groups one straight-line
   repeated callee, builds rows from the arguments actually evaluated by A, requires a compatible
   Release 4 capability from B, compares the exact positional second push byte-for-byte, and uses

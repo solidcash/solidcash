@@ -658,7 +658,7 @@ The releases now deliver value independently as intended:
 | R1 | reusable scalar write-back handlers and one final authenticated flush | conservative fallback for ineligible closures |
 | R2 | bounded direct/mutual recursion, hidden invocation context, SDK VM preflight | concrete over-budget/signature cases fail closed |
 | R3 | parameter-keyed multi-entry mapping tuples (including repeated ERC-20 `transferFrom` and dependent MasterChef updates), fixed-array elements, dynamic bytes/string, chunk-backed dynamic-array value threading, and sequential CashToken-container helper effects | CashToken effects are intentionally inlined (not aggregated); dynamic cold keys and runtime-varying multi-resource aliases remain conservative |
-| R4 | opt-in hidden SCB1 scalar route plus one parameter-keyed mapping entry, with SDK `batch()` construction | default off; multi-entry aliases, mixed scalar/collection routes, returns/events/effects, signatures, and route-sensitive context rejected |
+| R4 | opt-in hidden SCB1 scalar/mapping route, ordered common-type results, and one event or value-transfer effect per row | default off; multi-entry aliases, mixed route modes, heterogeneous/multi-results, multi-effects, signatures, and route-sensitive context rejected |
 | R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, and one B settlement | default off; graph composition, callbacks, forwarding, and blobs over 223 bytes rejected |
 
 The compiler suite passes 2,280 tests. The SDK suite passes 3,229 tests (with the repository's

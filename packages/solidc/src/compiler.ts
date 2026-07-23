@@ -3,12 +3,13 @@ import { binToHex } from '@bitauth/libauth';
 import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
-  Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode,
+  Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, Node, ParameterNode, RequireNode,
   NullaryOpNode,
-  SourceFileNode, TypeIntrospectionNode,
+  SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -278,7 +279,6 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       }
     }
     if (!reason && fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
-    else if (!reason && fn.returnTypes.length > 0) reason = 'return-routing-not-enabled';
     else if (!reason && (
       signatureCheck || fn.parameters.some((parameter) =>
         ['sig', 'sig[]'].includes(parameter.type.toString()))
@@ -290,7 +290,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       reason = 'batched-handler-forward-call-not-enabled';
     } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
-    } else if (!reason && (footprint.unknown || footprint.effects.length > 0)) {
+    } else if (!reason && (footprint.unknown
+      || footprint.effects.some((effect) => effect === 'external-call'))) {
       reason = 'unresolved-or-effectful-handler';
     } else if (!reason && [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
@@ -311,16 +312,65 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
     eligible = eligible.filter((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0);
   }
+  const eligibleFootprint = (fn: FunctionDefinitionNode) => analyseFunctionFootprint(fn, byName);
+  const eventMode = eligible.some((fn) => eligibleFootprint(fn).effects.includes('events'));
+  const resultMode = eligible.some((fn) => fn.returnTypes.length > 0);
+  const valueEffectMode = eligible.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+  let resultType: Type | undefined;
+  if (resultMode) {
+    resultType = eligible.find((fn) => fn.returnTypes.length > 0)?.returnTypes[0];
+    for (const fn of eligible) {
+      if (eventMode || fn.returnTypes.length !== 1
+        || fn.returnTypes[0].toString() !== resultType?.toString()
+        || eligibleFootprint(fn).effects.length > 0) {
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = 'result-route-requires-one-common-effect-free-return';
+      }
+    }
+    eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
+  }
+  if (eventMode) {
+    for (const fn of eligible) {
+      let directEmits = 0;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof EmitStatementNode) directEmits += 1;
+      });
+      const effects = eligibleFootprint(fn).effects;
+      if (directEmits !== 1 || effects.length !== 1 || effects[0] !== 'events') {
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = 'event-route-requires-one-direct-event-per-handler';
+      }
+    }
+    eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
+  }
+  if (valueEffectMode) {
+    for (const fn of eligible) {
+      let directTransfers = 0;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof TransferStatementNode) directTransfers += 1;
+      });
+      const effects = eligibleFootprint(fn).effects;
+      if (eventMode || resultMode || directTransfers !== 1
+        || effects.length !== 1 || effects[0] !== 'value') {
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = 'value-route-requires-one-direct-transfer-per-handler';
+      }
+    }
+    eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
+  }
   if (eligible.length === 0) return;
 
   const selector = (fn: FunctionDefinitionNode): string => binToHex(computeFunctionSelector(
     computeFunctionSignature(fn.name, fn.parameters.map((parameter) =>
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
-  const decodeAndCall = eligible.map((fn, handlerIndex) => {
+  const buildDecodeAndCall = (resultIndex?: number): string => eligible.map((fn, handlerIndex) => {
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+    const invoke = (args: string): string => resultIndex === undefined
+      ? `${fn.name}(${args});`
+      : `__scb_result_${resultIndex} = ${fn.name}(${args});`;
     if (fn.parameters.length === 0) {
-      return `${condition} { require(rowArgs.length == 0); ${fn.name}(); }`;
+      return `${condition} { require(rowArgs.length == 0); ${invoke('')} }`;
     }
     const declarations = fn.parameters.map((parameter, i) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
@@ -334,7 +384,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const decode = declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
       : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
-    return `${condition} { ${decode} ${keyChecks} ${fn.name}(${callArgs}); }`;
+    return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
   }).join(' ');
   const usedRouteInputs = new Set(eligible.flatMap((fn) =>
     (fn.hiddenBatchKeyWitnesses ?? []).map((binding) => binding.routeInput)));
@@ -342,24 +392,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     .filter((witness) => usedRouteInputs.has(witness.name))
     .map((witness) => `${witness.type.toString()} ${witness.name}`);
   const routeParameters = ['bytes batchBlob', ...routeKeyParameters].join(', ');
-  const source = `pragma solidcash >=0.8.0;
-    contract __HiddenBatchHost() {
-      function __scb1(${routeParameters}) external {
-        require(batchBlob.length >= 7);
-        require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
-        require(batchBlob.slice(0, 4) == hex"53434231");
-        require(batchBlob.slice(4, 5) == hex"01");
-        require(batchBlob.slice(5, 6) == hex"00");
-        bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
-        require(rowCount >= 1 && rowCount <= ${MAX_HIDDEN_BATCH_ROWS});
-        bigint cursor = 7;
-        for (bigint row = 0; row < rowCount; row = row + 1) {
+  const parseOneRow = (rowExpression: string, resultIndex?: number): string => `
           require(cursor + 12 <= batchBlob.length);
           bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
           cursor = cursor + 4;
           bigint callsite = int(bytes.concat(batchBlob.slice(cursor, cursor + 4), hex"00"));
           cursor = cursor + 4;
-          require(callsite == row);
+          require(callsite == ${rowExpression});
           bigint occurrence = int(bytes.concat(batchBlob.slice(cursor, cursor + 2), hex"00"));
           cursor = cursor + 2;
           require(occurrence == 0);
@@ -368,10 +407,41 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           require(argsLength >= 0 && cursor + argsLength <= batchBlob.length);
           bytes rowArgs = batchBlob.slice(cursor, cursor + argsLength);
           cursor = cursor + argsLength;
-          ${decodeAndCall}
+          ${buildDecodeAndCall(resultIndex)}
           else { revert("unknown batch selector"); }
-        }
+  `;
+  const parser = eventMode || resultMode || valueEffectMode
+    ? Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
+      `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode ? row : undefined)} }`).join(' ')
+    : `for (bigint row = 0; row < rowCount; row = row + 1) {
+        ${parseOneRow('row')}
+      }`;
+  const resultDeclarations = resultMode
+    ? Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
+      `${resultType!.toString()} __scb_result_${row};`).join(' ')
+    : '';
+  const returnDeclaration = resultMode
+    ? ' returns (bytes)'
+    : '';
+  const returnStatement = resultMode
+    ? `return abi.encode(${Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
+      `__scb_result_${row}`).join(', ')});`
+    : '';
+  const source = `pragma solidcash >=0.8.0;
+    contract __HiddenBatchHost() {
+      function __scb1(${routeParameters}) external${returnDeclaration} {
+        require(batchBlob.length >= 7);
+        require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
+        require(batchBlob.slice(0, 4) == hex"53434231");
+        require(batchBlob.slice(4, 5) == hex"01");
+        require(batchBlob.slice(5, 6) == hex"00");
+        bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
+        require(rowCount >= 1 && rowCount <= ${MAX_HIDDEN_BATCH_ROWS});
+        bigint cursor = 7;
+        ${resultDeclarations}
+        ${parser}
         require(cursor == batchBlob.length);
+        ${returnStatement}
       }
     }`;
   const routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
@@ -501,7 +571,9 @@ function compileResolvedAst(
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
       return [...footprint.reads, ...footprint.writes]
-        .some((resource) => resource.startsWith('collection:'));
+        .some((resource) => resource.startsWith('collection:'))
+        || footprint.effects.length > 0
+        || fn.returnTypes.length > 0;
     });
   if (synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
 
@@ -841,6 +913,11 @@ function compileResolvedAst(
           name: parameter.name,
           type: parameter.type.toString().replace(/address payable/g, 'address'),
         })),
+        ...(fn.returnTypes.length > 0 && {
+          outputs: fn.returnTypes.map((type) => ({
+            type: type.toString().replace(/address payable/g, 'address'),
+          })),
+        }),
         eligible: fn.hiddenBatchEligible === true,
         ...(fn.hiddenBatchRejectionReason && { rejectionReason: fn.hiddenBatchRejectionReason }),
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),

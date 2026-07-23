@@ -532,6 +532,7 @@ export interface Artifact {
       name: string;
       selector: string;
       inputs: AbiInput[];
+      outputs?: AbiOutput[];
       eligible: boolean;
       rejectionReason?: string;
       batchKeyWitnesses?: {

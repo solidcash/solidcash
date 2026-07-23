@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
-import { scriptToBytecode } from '@solidcash/utils';
+import { decodePushdataValue, scriptToBytecode } from '@solidcash/utils';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract HiddenBatchRelease4() {
@@ -163,5 +163,113 @@ describe('Release 4 mapping-backed owner-local batch SDK E2E', () => {
       le(0, 4), le(0, 2), le(rowArgs.length, 2), rowArgs,
     );
     await expect(contract._batchRaw(blob, [8n]).send()).rejects.toThrow();
+  });
+});
+
+describe('Release 4 ordered event batch SDK E2E', () => {
+  it('emits one authenticated event per reached row and omits inactive suffix slots', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract EventBatchRelease4() {
+        bigint current;
+        event Changed(bigint next);
+        function set(bigint next) public {
+          this.current = next;
+          emit Changed(next);
+          require(next >= 0);
+        }
+        function check(bigint expected) public { require(this.current == expected); }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { current: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const transaction = await contract.batch([
+      { function: 'set', args: [2n] },
+      { function: 'set', args: [3n] },
+      { function: 'set', args: [5n] },
+    ]).send();
+    await contract.check(5n).send();
+
+    const events = getTxOutputs(transaction).filter((output) =>
+      output.token?.category === categoryId && output.token.nft?.capability === 'none');
+    expect(events.map((event) => event.token!.nft!.commitment))
+      .toEqual(['52', '53', '55']);
+  });
+});
+
+describe('Release 4 ordered result batch SDK E2E', () => {
+  it('commits reached row results in order and zeroes inactive suffix slots', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ResultBatchRelease4() {
+        bigint total;
+        function add(bigint amount) public returns (bigint) {
+          this.total = this.total + amount;
+          require(amount >= 0);
+          return this.total;
+        }
+        function check(bigint expected) public { require(this.total == expected); }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const transaction = await contract.batch([
+      { function: 'add', args: [2n] },
+      { function: 'add', args: [3n] },
+      { function: 'add', args: [5n] },
+    ]).emitReturn().send();
+    await contract.check(10n).send();
+
+    const returnOutput = getTxOutputs(transaction).find((output) =>
+      output.token?.category === categoryId && output.token.nft?.capability === 'none');
+    expect(returnOutput).toBeDefined();
+    const packed = decodePushdataValue(
+      hexToBin(returnOutput!.token!.nft!.commitment), 0, 'bytes',
+    ).value as Uint8Array;
+    const values: bigint[] = [];
+    let offset = 0;
+    for (let index = 0; index < 8; index++) {
+      const decoded = decodePushdataValue(
+        packed, offset, 'bigint',
+      );
+      values.push(decoded.value as bigint);
+      offset += decoded.bytesConsumed;
+    }
+    expect(values).toEqual([2n, 5n, 10n, 0n, 0n, 0n, 0n, 0n]);
+  });
+});
+
+describe('Release 4 ordered value-effect batch SDK E2E', () => {
+  it('executes reached transfers in order and leaves inactive slots empty', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ValueBatchRelease4() {
+        function pay(bytes recipient, bigint amount) public {
+          this.transfer(recipient, amount);
+          require(amount >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await provider.addUtxo(contract.getSatoshiContainerAddress(), {
+      txid: '74'.repeat(32), vout: 0, satoshis: 5000n,
+    });
+    const transaction = await contract.batch([
+      { function: 'pay', args: [Uint8Array.of(0x51), 100n] },
+      { function: 'pay', args: [Uint8Array.of(0x52), 200n] },
+      { function: 'pay', args: [Uint8Array.of(0x53), 300n] },
+    ]).send();
+    const amounts = getTxOutputs(transaction).map((output) => output.amount);
+    expect(amounts).toEqual(expect.arrayContaining([100n, 200n, 300n, 4400n]));
   });
 });

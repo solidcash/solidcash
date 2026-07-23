@@ -9,8 +9,10 @@ Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d361
 
 Implementation snapshot (2026-07-23):
 
-- Releases 1-3 are compiler/SDK fast paths with scalar, one-entry mapping, and dynamic bytes/string
-  journal tests. Unsupported aliases and dynamic cold keys retain the conservative legacy path.
+- Releases 1-3 are compiler/SDK fast paths with scalar, one-entry mapping, fixed-array element,
+  dynamic bytes/string, and chunk-backed dynamic-array journal tests. A dynamic-array handler
+  value-threads both its encoded length field and tight element blob, then the physical wrapper
+  flushes its chunks once. Unsupported aliases and dynamic cold keys retain the conservative path.
 - Release 4 is enabled only by `experimentalHiddenBatch`. It advertises `hiddenBatch.version == 1`,
   keeps `__scb1` out of the source ABI, and currently admits signature-free, route-stable scalar
   handlers. Collections, dynamic state, returns, events/effects, caller-sensitive introspection,

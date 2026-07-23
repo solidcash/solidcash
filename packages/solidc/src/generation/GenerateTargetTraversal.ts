@@ -1235,16 +1235,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       seen.add(root);
       const ownedStateVariable = root instanceof StateAccessNode
         || root instanceof StateAssignNode || root instanceof DeleteStateNode
+        || root instanceof StateArrayPushNode || root instanceof StateArrayPopNode
+        || root instanceof StateArrayAssignNode || root instanceof StateArrayDeleteNode
         ? this.stateVariables.find((candidate) =>
           candidate === root.stateVariable || candidate.name === root.name)
         : undefined;
       // Deploy-folded child initializers and other embedded foreign ASTs carry
       // StateVariableNode references which are not owned by this contract.
       // Never add those physical slots to the caller's journal.
-      if (ownedStateVariable && !ownedStateVariable.isDynamic) {
+      if (ownedStateVariable) {
         const sv = ownedStateVariable;
         slots.set(`${sv.nftIndex}:${sv.fieldIndex}`, sv);
-        if (root instanceof StateAssignNode || root instanceof DeleteStateNode) writes.value = true;
+        if (root instanceof StateAssignNode || root instanceof DeleteStateNode
+          || root instanceof StateArrayPushNode || root instanceof StateArrayPopNode
+          || root instanceof StateArrayAssignNode || root instanceof StateArrayDeleteNode) writes.value = true;
       }
       if (root instanceof FunctionCallNode && root.resolvedFunction?.functionId !== undefined) {
         calls.add(root.resolvedFunction.functionId);
@@ -1296,6 +1300,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter(([id, slots]) => writerIds.has(id) && slots.size > 0)
       .map(([id, slots]) => [id, [...slots.values()]
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
+  }
+
+  private journalContextNames(sv: StateVariableNode): string[] {
+    const stateName = `__internal__state_write_${sv.name}`;
+    return sv.isDynamic
+      ? [stateName, `__internal__dynwrite_value_${sv.name}`]
+      : [stateName];
   }
 
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
@@ -2046,6 +2057,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // changing bytecode for unrelated direct writers.
     const activeJournalSlots = this.isDefineSubTraversal || invokesJournalHandler
       ? candidateJournalSlots : [];
+    if (this.isDefineSubTraversal && activeJournalSlots.length > 0) {
+      node.journalContextArity = Math.max(
+        node.journalContextArity ?? 0,
+        activeJournalSlots.reduce((sum, sv) => sum + this.journalContextNames(sv).length, 0),
+      );
+    }
     this.activeJournalSlots = activeJournalSlots;
     this.journalSettlementActive = !this.isDefineSubTraversal && activeJournalSlots.length > 0;
     // The AST node is shared by several codegen traversals. Preserve a positive result
@@ -2303,6 +2320,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.pushToStack(stackName, true);
           this.pendingStateWrites.set(key, stackName);
           this.preAllocatedStateWrites.add(key);
+          if (sv.isDynamic) {
+            const valueStackName = `__internal__dynwrite_value_${sv.name}`;
+            this.pushToStack(valueStackName, true);
+            this.pendingDynamicWrites.set(sv.name, { valueStackName, sv });
+            this.preAllocatedDynamicWrites.add(sv.name);
+            const writes = (node.dynamicWrites ??= []);
+            if (!writes.includes(sv.name)) writes.push(sv.name);
+          }
         }
       } else {
         const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
@@ -2454,7 +2479,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Void handlers drop ordinary locals/params but return hidden journal slots in canonical order.
     if (this.isDefineSubTraversal) {
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
-      const journalNames = new Set(slots.map((sv) => `__internal__state_write_${sv.name}`));
+      const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
       for (let i = 0; i < this.stack.length;) {
         if (journalNames.has(this.stack[i])) {
           i += 1;
@@ -5553,23 +5578,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.END };
     const targetJournalSlots = targetFunc.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(targetFunc.functionId) ?? []);
-    const targetJournalNames: string[] = [];
+    const targetJournalContextNames = targetJournalSlots.flatMap((sv) => this.journalContextNames(sv));
     // Pass copies of the context rather than moving the caller's slots. A moved
     // slot returns at the top of the stack and changes its position relative to
     // persistent loop variables, violating OP_BEGIN/OP_UNTIL's frame invariant.
     // Returned copies are written back in place below.
-    for (let i = targetJournalSlots.length - 1; i >= 0; i--) {
-      const sv = targetJournalSlots[i];
-      const stackName = this.pendingStateWrites.get(`${sv.nftIndex}:${sv.fieldIndex}`);
-      if (!stackName) {
-        throw new Error(`Missing scalar journal slot '${sv.name}' while invoking '${targetFunc.name}'`);
+    for (let i = targetJournalContextNames.length - 1; i >= 0; i--) {
+      const stackName = targetJournalContextNames[i];
+      if (!this.stack.includes(stackName)) {
+        throw new Error(`Missing journal context '${stackName}' while invoking '${targetFunc.name}'`);
       }
       const idx = this.getStackIndex(stackName);
       this.emit(encodeInt(BigInt(idx)), locationData);
       this.emit(Op.OP_PICK, locationData);
       const contextName = `(__journal_arg_${targetFunc.functionId}_${i})`;
       this.pushToStack(contextName);
-      targetJournalNames[i] = stackName;
     }
 
     let hiddenContextCount = 0;
@@ -5632,8 +5655,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The callee returns the journal copies in canonical order. Replace each
     // caller-owned slot at its original depth, consuming the returned copy and
     // leaving the surrounding frame byte-for-byte in its pre-call order.
-    for (let i = 0; i < targetJournalSlots.length; i++) {
-      const originalName = targetJournalNames[i];
+    for (let i = 0; i < targetJournalContextNames.length; i++) {
+      const originalName = targetJournalContextNames[i];
       this.emitReplace(this.getStackIndex(originalName), node);
       this.popFromStack();
     }
@@ -5738,7 +5761,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // only the declared return tuple to the source expression.
     if (this.isDefineSubTraversal && this.activeJournalSlots.length > 0) {
       const journalNames = this.activeJournalSlots
-        .map((sv) => `__internal__state_write_${sv.name}`);
+        .flatMap((sv) => this.journalContextNames(sv));
       const retained = new Set(journalNames);
       for (let i = returnCount; i < this.stack.length;) {
         if (retained.has(this.stack[i])) {

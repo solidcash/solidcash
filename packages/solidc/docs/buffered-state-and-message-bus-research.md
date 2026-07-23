@@ -657,7 +657,7 @@ The releases now deliver value independently as intended:
 |---|---|---|
 | R1 | reusable scalar write-back handlers and one final authenticated flush | conservative fallback for ineligible closures |
 | R2 | bounded direct/mutual recursion, hidden invocation context, SDK VM preflight | concrete over-budget/signature cases fail closed |
-| R3 | one-entry mapping value threading plus dynamic bytes/string replacement, append, and delete | dynamic cold keys and multi-resource aliases remain conservative |
+| R3 | one-entry mapping, fixed-array element, dynamic bytes/string, and chunk-backed dynamic-array value threading | dynamic cold keys and multi-resource aliases remain conservative |
 | R4 | opt-in hidden SCB1 scalar route and SDK `batch()` construction | default off; collections, returns/events/effects, signatures, and route-sensitive context rejected |
 | R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, and one B settlement | default off; graph composition, callbacks, forwarding, and blobs over 223 bytes rejected |
 

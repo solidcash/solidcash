@@ -8,6 +8,7 @@ const SOURCE = `pragma solidcash >=0.8.0;
 contract CollectionJournalRelease3() {
   mapping(bytes20 => bigint) balances;
   bigint[3] fixedScores;
+  bigint[] dynamicScores;
   bytes data;
 
   function credit(bytes20 who, bigint amount) internal {
@@ -33,6 +34,22 @@ contract CollectionJournalRelease3() {
 
   function addFixed(int index, bigint amount) internal {
     this.fixedScores[index] = this.fixedScores[index] + amount;
+  }
+
+  function pushDynamic(bigint value) internal {
+    this.dynamicScores.push(value);
+  }
+
+  function setDynamic(int index, bigint value) internal {
+    this.dynamicScores[index] = value;
+  }
+
+  function popDynamic() internal {
+    this.dynamicScores.pop();
+  }
+
+  function deleteDynamic(int index) internal {
+    delete dynamicScores[index];
   }
 
   function creditThree(bytes20 who, bigint a, bigint b, bigint c) {
@@ -78,6 +95,29 @@ contract CollectionJournalRelease3() {
 
   function checkFixed(int index, bigint expected) {
     require(this.fixedScores[index] == expected);
+  }
+
+  function pushDynamicThree(bigint a, bigint b, bigint c) {
+    pushDynamic(a);
+    pushDynamic(b);
+    pushDynamic(c);
+    require(a >= 0);
+  }
+
+  function checkDynamic(int index, bigint expected) {
+    require(this.dynamicScores[index] == expected);
+  }
+
+  function reviseDynamic() {
+    setDynamic(1, 7);
+    popDynamic();
+    pushDynamic(11);
+    require(true);
+  }
+
+  function deleteDynamicAt(int index) {
+    deleteDynamic(index);
+    require(index >= 0);
   }
 
   function checkData(bytes expected) {
@@ -148,5 +188,22 @@ describe('Release 3 collection journal SDK E2E', () => {
     await contract.checkFixed(1n, 10n).send();
     await contract.checkFixed(0n, 0n).send();
     await contract.checkFixed(2n, 0n).send();
+  });
+
+  it('threads ordered dynamic-array appends through reusable helper calls', async () => {
+    const contract = await deploy();
+    await contract.pushDynamicThree(2n, 3n, 5n).send();
+    await contract.checkDynamic(0n, 2n).send();
+    await contract.checkDynamic(1n, 3n).send();
+    await contract.checkDynamic(2n, 5n).send();
+
+    await contract.reviseDynamic().send();
+    await contract.checkDynamic(0n, 2n).send();
+    await contract.checkDynamic(1n, 7n).send();
+    await contract.checkDynamic(2n, 11n).send();
+
+    await contract.deleteDynamicAt(0n).send();
+    await contract.checkDynamic(0n, 11n).send();
+    await contract.checkDynamic(1n, 7n).send();
   });
 });

@@ -322,6 +322,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
   // Compiler-owned: this physical wrapper/subroutine participates in the scalar write-back journal.
   scalarJournal?: boolean;
+  /** Number of compiler-owned value-threaded state context items accepted
+   * and returned by this reusable handler. Excluded from the source ABI. */
+  journalContextArity?: number;
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;

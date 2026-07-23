@@ -703,6 +703,11 @@ function compileResolvedAst(
   const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
   if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
   const invocationAnalysis = analyseContractInvocations(ast.contract);
+  const invocationFunctionById = new Map(
+    [...ast.contract.functions, ast.contract.fallbackDef, ast.contract.receiveDef]
+      .filter((fn): fn is FunctionDefinitionNode => !!fn && fn.functionId !== undefined)
+      .map((fn) => [fn.functionId!, fn]),
+  );
   const selectorById = new Map(
     [...ast.contract.functions, ast.contract.fallbackDef, ast.contract.receiveDef]
       .filter((fn): fn is FunctionDefinitionNode => !!fn && fn.functionId !== undefined)
@@ -713,7 +718,7 @@ function compileResolvedAst(
     functions: invocationAnalysis.functions.map((summary) => ({
       id: summary.id,
       name: summary.name,
-      arity: summary.arity,
+      arity: summary.arity + (invocationFunctionById.get(summary.id)?.journalContextArity ?? 0),
       entryPoint: summary.entryPoint,
       ...(selectorById.get(summary.id) && { selector: selectorById.get(summary.id) }),
       calls: summary.calls,

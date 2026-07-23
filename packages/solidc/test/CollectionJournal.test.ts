@@ -88,4 +88,21 @@ describe('Release 3 collection journal lowering', () => {
     expect(apply?.calls).toEqual(expect.arrayContaining([append!.id, clear!.id]));
     expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
   });
+
+  it('threads a chunk-backed dynamic array as length plus tight element blob', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract DynamicArrayJournal() {
+        bigint[] scores;
+        function append(bigint value) internal { this.scores.push(value); }
+        function apply(bigint a, bigint b, bigint c) {
+          append(a); append(b); append(c); require(a >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const append = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'append');
+    expect(append?.arity).toBe(3); // source value + hidden A$len + hidden tight blob
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'apply')?.calls)
+      .toContain(append?.id);
+    expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
+  });
 });

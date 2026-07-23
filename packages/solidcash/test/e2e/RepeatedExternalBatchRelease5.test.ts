@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import {
+  createVirtualMachineBch2026, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { generateLibauthSourceOutputs } from '../../src/utils.js';
 
 const INTERFACE = `
 interface ICounter {
@@ -133,6 +136,45 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
   it('binds and executes the eight-row maximum through a positional PUSHDATA1 blob', async () => {
     const { caller, callee, calleeCategory } = await deploy();
     const builder = await caller.runEight().build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026();
+    const measured = builder.inputs.map((_input, inputIndex) => {
+      const result = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+      if (!('metrics' in result)) throw new Error(String(result));
+      return {
+        instructions: result.metrics.evaluatedInstructionCount,
+        operationCost: result.metrics.operationCost,
+        maximumOperationCost: result.metrics.maximumOperationCost,
+        pushedBytes: result.metrics.stackPushedBytes,
+        hashes: result.metrics.hashDigestIterations,
+        unlockingBytes: transaction.inputs[inputIndex].unlockingBytecode.length,
+      };
+    });
+    expect({
+      transactionBytes: encodeTransaction(transaction).length,
+      inputs: measured,
+    }).toEqual({
+      transactionBytes: 5669,
+      inputs: [
+        {
+          hashes: 33, instructions: 949, maximumOperationCost: 1628000,
+          operationCost: 124692, pushedBytes: 23424, unlockingBytes: 1994,
+        },
+        {
+          hashes: 6, instructions: 100, maximumOperationCost: 244800,
+          operationCost: 11835, pushedBytes: 683, unlockingBytes: 265,
+        },
+        {
+          hashes: 41, instructions: 5183, maximumOperationCost: 2150400,
+          operationCost: 550124, pushedBytes: 23818, unlockingBytes: 2647,
+        },
+        {
+          hashes: 6, instructions: 100, maximumOperationCost: 244800,
+          operationCost: 11836, pushedBytes: 684, unlockingBytes: 265,
+        },
+      ],
+    });
     expect(builder.inputs.filter((input) =>
       input.token?.category === calleeCategory && input.token.nft?.capability === 'minting')).toHaveLength(1);
 

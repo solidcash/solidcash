@@ -5,12 +5,13 @@ import {
   Contract, MockNetworkProvider, RegtestNetworkProvider,
   StatefulContract, SignatureTemplate,
   getDataNftAddress, getEntryNftAddress,
+  encodeEntryCommitment, decodeEntryCommitment, keyToSlot,
   type ConnectedStatefulContract,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
-  buildEntryCommitment,
-  parseEntryCommitment,
+  encodePushdataValue,
+  decodePushdataValue,
   type StateLayout,
 } from '@solidcash/utils';
 import {
@@ -35,6 +36,9 @@ async function setupWithEntries(
   initialState: Record<string, any>, entries: EntrySpec[],
 ): Promise<{ categoryId: string }> {
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
+  const zeroSlot = new Uint8Array(32);
+  const firstSlot = entries.length === 0
+    ? zeroSlot : decodeEntryCommitment(hexToBin(entries[0].commitment)).slot;
   const { categoryId } = await provider.addTokenUtxosDynamic((cat) => {
     const salted = contract.withCategory(hexToBin(cat));
     return [
@@ -48,6 +52,16 @@ async function setupWithEntries(
         address: getEntryNftAddress(salted, cat, e.collection), satoshis: 10000n,
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: e.commitment } },
       })),
+      ...((stateLayout.collections ?? []).filter((c) => c.sorted).map((collection) => ({
+        address: getEntryNftAddress(salted, cat, collection.name), satoshis: 10000n,
+        token: {
+          amount: 0n,
+          nft: {
+            capability: 'mutable' as const,
+            commitment: Buffer.from(encodeEntryCommitment(zeroSlot, firstSlot, new Uint8Array())).toString('hex'),
+          },
+        },
+      }))),
     ];
   });
   return { categoryId };
@@ -146,9 +160,24 @@ describe('Partial Struct Update', () => {
     const userBalance = 1000n;
 
     // Build the existing entry NFT commitment for alicePkh (shared by the update tests).
-    const existingEntryCommitment = (): string => buildEntryCommitment(
-      alicePkh, 'bytes20', { addr: userAddr, name: userNameBytes, balance: userBalance }, 'User', structs,
-    );
+    const frameValue = (value: Uint8Array): Uint8Array => {
+      const length = new Uint8Array(4);
+      new DataView(length.buffer).setUint32(0, value.length, true);
+      return new Uint8Array([...length, ...value]);
+    };
+    const existingEntryCommitment = (): string => Buffer.from(encodeEntryCommitment(
+      keyToSlot(alicePkh), new Uint8Array(32), frameValue(
+        encodePushdataValue({ addr: userAddr, name: userNameBytes, balance: userBalance }, 'User', structs),
+      ),
+    )).toString('hex');
+    const parseUserEntry = (commitment: string): { slot: Uint8Array; value: Record<string, unknown> } => {
+      const parsed = decodeEntryCommitment(hexToBin(commitment));
+      const length = new DataView(parsed.value.buffer, parsed.value.byteOffset, 4).getUint32(0, true);
+      return {
+        slot: parsed.slot,
+        value: decodePushdataValue(parsed.value.slice(4, 4 + length), 0, 'User', structs).value as Record<string, unknown>,
+      };
+    };
 
     it('should add a user entry via addUser', async () => {
       // No pre-seeded entry: addUser creates the entry NFT from scratch.
@@ -178,10 +207,8 @@ describe('Partial Struct Update', () => {
 
       // Verify entry commitment contains correct struct data
       if (entryOutput?.token?.nft?.commitment) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token.nft.commitment, 'bytes20', 'User', structs,
-        );
-        expect(parsed.key).toEqual(alicePkh);
+        const parsed = parseUserEntry(entryOutput.token.nft.commitment);
+        expect(parsed.slot).toEqual(keyToSlot(alicePkh));
         const val = parsed.value as Record<string, unknown>;
         expect(val.addr).toEqual(userAddr);
         expect(val.name).toEqual(userNameStr);
@@ -215,9 +242,7 @@ describe('Partial Struct Update', () => {
       expect(entryOutput).toBeDefined();
 
       if (entryOutput?.token?.nft?.commitment) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token.nft.commitment, 'bytes20', 'User', structs,
-        );
+        const parsed = parseUserEntry(entryOutput.token.nft.commitment);
         const val = parsed.value as Record<string, unknown>;
         expect(val.addr).toEqual(userAddr); // unchanged
         expect(val.name).toEqual(newNameStr); // updated
@@ -249,9 +274,7 @@ describe('Partial Struct Update', () => {
       expect(entryOutput).toBeDefined();
 
       if (entryOutput?.token?.nft?.commitment) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token.nft.commitment, 'bytes20', 'User', structs,
-        );
+        const parsed = parseUserEntry(entryOutput.token.nft.commitment);
         const val = parsed.value as Record<string, unknown>;
         expect(val.addr).toEqual(userAddr); // unchanged
         expect(val.name).toEqual(userNameStr); // unchanged
@@ -283,9 +306,7 @@ describe('Partial Struct Update', () => {
       expect(entryOutput).toBeDefined();
 
       if (entryOutput?.token?.nft?.commitment) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token.nft.commitment, 'bytes20', 'User', structs,
-        );
+        const parsed = parseUserEntry(entryOutput.token.nft.commitment);
         const val = parsed.value as Record<string, unknown>;
         expect(val.addr).toEqual(newAddr); // updated
         expect(val.name).toEqual(userNameStr); // unchanged
@@ -319,9 +340,7 @@ describe('Partial Struct Update', () => {
       expect(entryOutput).toBeDefined();
 
       if (entryOutput?.token?.nft?.commitment) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token.nft.commitment, 'bytes20', 'User', structs,
-        );
+        const parsed = parseUserEntry(entryOutput.token.nft.commitment);
         const val = parsed.value as Record<string, unknown>;
         expect(val.addr).toEqual(userAddr); // unchanged
         expect(val.name).toEqual(newNameStr); // updated
@@ -356,9 +375,7 @@ describe('Partial Struct Update', () => {
       expect(entryOutput).toBeDefined();
 
       if (entryOutput?.token?.nft?.commitment) {
-        const parsed = parseEntryCommitment(
-          entryOutput.token.nft.commitment, 'bytes20', 'User', structs,
-        );
+        const parsed = parseUserEntry(entryOutput.token.nft.commitment);
         const val = parsed.value as Record<string, unknown>;
         expect(val.addr).toEqual(newAddr); // updated
         expect(val.name).toEqual(newNameStr); // updated

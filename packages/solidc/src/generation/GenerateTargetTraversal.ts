@@ -8402,7 +8402,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); // [.., rest, value]
     this.emitEvmEncodeValue(elemType, loc); // value -> enc: [N, headAcc, tailAcc, rest, enc]
     // offset = 32*N + size(tailAcc)
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy N (depth 4)
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); // copy N (depth 4)
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc);
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy tailAcc (depth 3)
     this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
@@ -10968,7 +10968,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const id = GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID;
     this.bumpSubroutineUse(id);
-    if (this.subroutineDefined.get(id)) {
+    // Delegate functions keep the proxy master index on the altstack. OP_INVOKE temporarily places its return
+    // address above that value, so this helper's category check would read the return address as the proxy index.
+    // Keep the delegate-sensitive verifier inline; ordinary functions still share the helper.
+    if (!this.currentFunctionIsDelegate && this.subroutineDefined.get(id)) {
       // Copy the arbitrarily-positioned fields into the helper's canonical frame. Each copy increases the depth of
       // the still-original fields by one. The original output index is copied last, then dropped after the helper
       // consumes the five-item copied frame.

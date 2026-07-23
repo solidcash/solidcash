@@ -204,7 +204,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
   // A delegate that WRITES A MAPPING (users[msg.sender]=v): the entry NFT (mutable, proxy category) is minted in
   // the proxy block. Needs the msg.sender-key funder + the default proxy's relaxed mutable-conservation (out >= in).
-  // Non-sorted mapping (single entry output); C2-sorted has an extra trailing-new-node slot not yet handled.
+  // C2 mapping insertion emits the rewritten HEAD in the proxy block and its NEW node immediately after it.
   const MAP_IMPL = `pragma solidcash >=0.8.0;
     contract MapImpl() {
       int count;
@@ -213,7 +213,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       function register(int v) delegate { users[msg.sender] = v; this.count = this.count + 1; }
     }`;
 
-  it('writes a msg.sender-keyed mapping from inside a delegate (non-sorted), minting the entry NFT in the proxy block', async () => {
+  it('writes a msg.sender-keyed C2 mapping from inside a delegate, minting its entry NFTs in the proxy block', async () => {
     const signer = await fundedSigner();
     // The entry NFT + its signer-P2PKH funder input beyond the two deploy coins.
     await signer.provider.addUtxo(signer.getAddress(), { txid: 'f6'.repeat(32), vout: 0, satoshis: 1_000_000n });

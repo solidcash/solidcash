@@ -16,13 +16,13 @@ describe('sorted mapping opt-in (C2)', () => {
     expect(art.stateLayout?.mappings?.find((c) => c.name === 'claimed')?.sorted).toBe(true);
   });
 
-  it('only marks the mappings named in sortedMappings', () => {
+  it('marks every mapping sorted under the mandatory C2 model', () => {
     const art = compileString(
       'contract C() { mapping(int => bool) a; mapping(int => bool) b; function f() { require(true); } }',
       { sortedMappings: ['a'], forceStateful: true },
     );
     expect(art.stateLayout?.collections?.find((c) => c.name === 'a')?.sorted).toBe(true);
-    expect(art.stateLayout?.collections?.find((c) => c.name === 'b')?.sorted).toBeUndefined();
+    expect(art.stateLayout?.collections?.find((c) => c.name === 'b')?.sorted).toBe(true);
   });
 
   it('compiles a source-level read of a sorted mapping (emits the C2 read covenant)', () => {

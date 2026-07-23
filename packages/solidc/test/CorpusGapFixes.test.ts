@@ -2396,7 +2396,7 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
   });
   it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
     expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))
-      .toThrow(/SortedMappingCodegenPending|sorted/i);
+      .toThrow(/C2 linked-list transition generator/);
   });
 });
 
@@ -3283,7 +3283,7 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
     expect(() => compileString('contract C { mapping(address => bool) w;'
       + ' function f() public { address[] memory a = new address[](0); a.push(address(0));'
       + ' for (uint256 i = 0; i < a.length; i++) { w[a[i]] = true; } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/not yet supported/);
+    { solidityImportCompat: true })).toThrow(/C2 linked-list transition generator/);
   });
 });
 

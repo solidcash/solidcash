@@ -49,6 +49,8 @@ import {
   ripemd160 as ripemd160Sync,
   hash160 as hash160Sync,
   hash256 as hash256Sync,
+  parseArrayTypeString,
+  decodePackedEventArray,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
@@ -3813,6 +3815,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         let value: StateValue;
         if (collection.chunkableValue && type === 'bytes') value = raw;
         else if (collection.chunkableValue && type === 'string') value = binToUtf8(raw);
+        else if (collection.chunkableValue) {
+          const arrInfo = parseArrayTypeString(type);
+          if (arrInfo) {
+            value = raw.length === 0 ? []
+              : attachDecodedAccessors(decodePackedEventArray(raw, 0, type, structs).value) as StateValue;
+          } else {
+            value = raw.length === 0 ? []
+              : attachDecodedAccessors(decodePushdataValue(raw, 0, type, structs).value) as StateValue;
+          }
+        }
         else if (type === 'bool') value = vmNumberToBigInt(raw) !== 0n;
         else if (/^(u?int|bigint|[u]?fixed|enum)/.test(type)) value = vmNumberToBigInt(raw);
         else {
@@ -4949,7 +4961,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A native C2 node always contains slot32||next32. Ignore shorter OTC observations: they belong to
               // unrelated empty/default comparisons at the same output index and otherwise oscillate a valid
               // derived target back to the legacy empty commitment.
-              if (slot !== undefined && commit.length >= 128 && !stb.isEntrySlotPinned(slot)) {
+              const slotCollection = slot === undefined ? undefined
+                : stateLayout.collections?.find((c) => c.name === entryAccesses?.[slot]?.collection);
+              const structurallyValid = slotCollection?.sorted ? commit.length >= 128 : true;
+              if (slot !== undefined && structurallyValid && !stb.isEntrySlotPinned(slot)) {
                 stb.setEntryRawCommitment(slot, commit); orderedCommits.push(commit);
               }
             }
@@ -5520,17 +5535,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const batchPredCommitments = new Map<string, string[]>();
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
-      const entryNftUtxos = onChainState.entryNftUtxos;
       // Entries of DIFFERENT collections share the master's category and are indistinguishable by commitment
       // when they carry the same key (a[k] and b[k] both parse under either collection's types). onChainState.
-      // entryNftUtxos mixes all collections, so matching by key alone can pick the wrong collection's entry.
-      // When the contract has >1 collection, fetch each accessed collection's entries by its own entry-NFT
-      // address (the covenant differs per collection) and match within that set. Single-collection: the mixed
-      // list already is that collection's entries - unchanged, no extra fetch.
-      const multiCollection = stateLayout.collections.length > 1;
+      // entryNftUtxos also mixes in dynamic-storage chunks, so matching within that category-wide list can pick
+      // the wrong collection even when the contract declares only one mapping. Always fetch through the exact
+      // collection covenant address; the address commits to the collection signature.
       const collEntryCache = new Map<string, Utxo[]>();
       const collectionEntriesFor = async (sig: string): Promise<Utxo[]> => {
-        if (!multiCollection) return entryNftUtxos;
         const hit = collEntryCache.get(sig);
         if (hit) return hit;
         const addr = getEntryNftAddress(this.inner, this.categoryId, sig);
@@ -5812,11 +5823,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             keyValues.push(addressToLockScript(this._signer.getAddress()));
           } else {
-            // Expression: look in user-provided entryKeyOverrides, or compute from
-            // paramDerivation metadata, or fall back to placeholder.
+            // Expression: evaluate the compiler's canonical label first (including fixed-array literal indices),
+            // then consult an explicit override, and only then use a probe placeholder.
             const entryKeyOverrides = overrides?.entryKeyOverrides;
             const override = entryKeyOverrides?.get(slotIndex);
-            if (override !== undefined) {
+            const evaluated = evalComputedKey(keySource.expressionLabel, args, abiFunction!.inputs);
+            if (evaluated !== undefined) {
+              const keyType = effectiveKeyTypes[ki];
+              keyValues.push(/^(u?int|bigint|enum)/.test(keyType) ? decodeScriptNumber(evaluated) : evaluated);
+            } else if (override !== undefined) {
               keyValues.push(override);
             } else {
               // Fallback: type-appropriate placeholder. Auto-derivation will capture

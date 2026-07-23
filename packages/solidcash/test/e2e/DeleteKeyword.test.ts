@@ -495,7 +495,7 @@ describe('Delete Keyword', () => {
 
   // --- delete mapping entry output structure (e2e) --------------------------
 
-  describe('delete mapping entry removes UTXO from outputs', () => {
+  describe('delete mapping entry resets its C2 value', () => {
     const MAPPING_DELETE_CONTRACT = `
       pragma solidcash >=0.8.0;
 
@@ -565,33 +565,30 @@ describe('Delete Keyword', () => {
       expect(tx.txid).toBeDefined();
 
       const txOutputs = getTxOutputs(tx);
-      // Should have: master, data NFT, entry NFT (new)
+      // C2 keeps a structural HEAD sentinel alongside the logical entry.
       const entryOutputs = txOutputs.filter(
         (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
       );
-      // data NFT + entry NFT = 2 mutable NFTs
-      expect(entryOutputs.length).toBe(2);
+      // data NFT + HEAD + entry NFT = 3 mutable NFTs
+      expect(entryOutputs.length).toBe(3);
     });
 
     it('should remove the entry NFT from outputs when deleting', async () => {
       // Now delete the entry
       const tx = await deployedContract.call
         .removeBalance(alicePkh)
-        .deleteEntry(0)
         .send();
 
       expect(tx.txid).toBeDefined();
 
       const txOutputs = getTxOutputs(tx);
 
-      // After deletion, there should be no entry NFT in outputs
-      // Only master (minting) and data NFT (mutable) should remain
+      // C2 removes the logical node and preserves the structural HEAD sentinel.
       const mutableNfts = txOutputs.filter(
         (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
       );
-      // Only 1 mutable NFT: the data NFT (entry was deleted)
-      expect(mutableNfts.length).toBe(1);
-
+      // data NFT + HEAD sentinel
+      expect(mutableNfts.length).toBe(2);
       // Master should still exist
       const masterOutput = txOutputs.find(
         (o) => o.token?.nft?.capability === 'minting' && o.token?.category === categoryId,

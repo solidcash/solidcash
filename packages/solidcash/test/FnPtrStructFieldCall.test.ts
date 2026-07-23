@@ -88,29 +88,35 @@ describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (
     struct S { function() internal returns (uint) x; }
     mapping(uint => S) m;
     function h() internal returns (uint) { return 7; }
-    function f() public { m[0].x = h; require(m[0].x() == ${expected}); }
+    function set() public { m[0].x = h; require(true); }
+    function f() public { require(m[0].x() == ${expected}); }
   }`;
   const MAP_ARGS = (expected: string): string => `contract C {
     struct S { function(uint) internal returns (uint) x; }
     mapping(uint => S) m;
     function h(uint a) internal returns (uint) { return a + 1; }
-    function f() public { m[0].x = h; require(m[0].x(3) == ${expected}); }
+    function set() public { m[0].x = h; require(true); }
+    function f() public { require(m[0].x(3) == ${expected}); }
   }`;
 
   it('m[k].x() reads the entry pointer and dispatches (== 7)', async () => {
     const sc = await deploy(MAP('7'));
+    await sc.set().send();
     await expect(sc.f().send()).resolves.toBeDefined();
   });
   it('m[k].x() wrong value rejects (== 8)', async () => {
     const sc = await deploy(MAP('8'));
+    await sc.set().send();
     await expect(sc.f().send()).rejects.toThrow();
   });
   it('m[k].x(3) passes the arg through the entry pointer (== 4)', async () => {
     const sc = await deploy(MAP_ARGS('4'));
+    await sc.set().send();
     await expect(sc.f().send()).resolves.toBeDefined();
   });
   it('m[k].x(3) wrong value rejects (== 9)', async () => {
     const sc = await deploy(MAP_ARGS('9'));
+    await sc.set().send();
     await expect(sc.f().send()).rejects.toThrow();
   });
 });

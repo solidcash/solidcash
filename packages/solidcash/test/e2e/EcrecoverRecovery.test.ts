@@ -275,7 +275,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     expect(vfn?.ecrecoverArgParams).toEqual([['h[]', 'v[]', 'r[]', 's[]']]);
     const provider = new MockNetworkProvider();
     const w = ethers.Wallet.createRandom();
-    const g0 = await recovery('loop-0', w), g1 = await recovery('loop-1', w);  // same signer, two messages
+    const g0 = await goodRecovery('loop-0', w), g1 = await goodRecovery('loop-1', w);  // same signer, two messages
     const contract = new Contract(artifact, [g0.owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 2);   // one A+B pair per iteration
@@ -301,7 +301,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(LOOP_N);
     const provider = new MockNetworkProvider();
     const w = ethers.Wallet.createRandom();
-    const g = await Promise.all([0, 1, 2].map((k) => recovery('loopn-' + k, w)));  // same signer, 3 messages
+    const g = await Promise.all([0, 1, 2].map((k) => goodRecovery('loopn-' + k, w)));  // same signer, 3 messages
     const contract = new Contract(artifact, [g[0].owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 3);   // one A+B pair per iteration
@@ -413,7 +413,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(LOOP);
     const provider = new MockNetworkProvider();
     const w = ethers.Wallet.createRandom(), other = ethers.Wallet.createRandom();
-    const g0 = await recovery('loop-a', w), g1 = await recovery('loop-b', other);  // g1 is a DIFFERENT signer
+    const g0 = await goodRecovery('loop-a', w), g1 = await goodRecovery('loop-b', other);  // g1 is a DIFFERENT signer
     const contract = new Contract(artifact, [g0.owner], { provider });  // owner = w, so g1 must fail
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 2);

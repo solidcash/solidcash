@@ -430,6 +430,13 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // by name (every non-internal method is a root), so nothing live is dropped.
   ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
 
+  // Storage-lowering passes can synthesize mappings after the source collections were normalized above
+  // (notably assembly sstore/sload and ERC-7201 storage pointers). Keep the backend invariant global: every
+  // mapping, including compiler-generated mappings, uses authenticated C2 storage.
+  for (const col of ast.contract.collections) {
+    if (col.type instanceof MappingType) col.sorted = true;
+  }
+
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
   ast = ast.accept(new TypeCheckTraversal()) as Ast;
@@ -634,6 +641,9 @@ function compileReferencedContracts(
     // sound; codegen skips their standalone bodies (only the child contract is emitted).
     (singleAst as SourceFileNode).freeFunctions = ast.freeFunctions;
     (singleAst as SourceFileNode).constantDefinitions = ast.constantDefinitions; // library constants those fns read
+    for (const col of singleAst.contract.collections) {
+      if (col.type instanceof MappingType) col.sorted = true;
+    }
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal()) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;

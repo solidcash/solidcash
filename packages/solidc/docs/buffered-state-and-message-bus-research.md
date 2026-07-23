@@ -659,7 +659,7 @@ The releases now deliver value independently as intended:
 | R2 | bounded direct/mutual recursion, hidden invocation context, SDK VM preflight | concrete over-budget/signature cases fail closed |
 | R3 | parameter-keyed multi-entry mapping tuples (including repeated ERC-20 `transferFrom` and dependent MasterChef updates), fixed-array elements, dynamic bytes/string, chunk-backed dynamic-array value threading, and sequential CashToken-container helper effects | CashToken effects are intentionally inlined (not aggregated); dynamic cold keys and runtime-varying multi-resource aliases remain conservative |
 | R4 | opt-in hidden SCB1 scalar/mapping route, ordered common-type results, and one event or value-transfer effect per row | default off; multi-entry aliases, mixed route modes, heterogeneous/multi-results, multi-effects, signatures, and route-sensitive context rejected |
-| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, one B settlement, scalar TreasurySplit/Marketplace/MasterChef slices, and an exact two-row existing-entry ERC-20 `transferFrom` resource route | default off; cold entries and physical entry aliases fail closed; multiple repeated owners and unresolvable chains fail compilation; graph composition, callbacks, forwarding, and blobs over 223 bytes are rejected |
+| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, one B settlement, scalar TreasurySplit/Marketplace/MasterChef slices, and an exact two-row existing-entry parameter-authorized transfer resource route | default off; `msg.sender`-bound ERC-20 allowance authorization remains ineligible; cold entries and physical entry aliases fail closed; multiple repeated owners and unresolvable chains fail compilation; graph composition, callbacks, forwarding, and blobs over 223 bytes are rejected |
 
 The compiler suite passes 2,297 tests. The SDK suite passes 3,256 tests (with the repository's
 existing 24 skips and 9 todos) after using the documented `getFunction(name)` escape hatch for a
@@ -672,7 +672,7 @@ normative.
 The rejected union-route spike was replaced with one exact resource-shaped route. Its capability
 classifies shared sender/allowance keys as global and distinct recipients as per-row, so the
 physical layout contains no inactive or duplicate slots. Compiler, SDK, and BCH VM tests execute
-two ordered `transferFrom` rows against one owner and verify final sender, recipient, and nested
+two ordered parameter-authorized transfer rows against one owner and verify final sender, recipient, and nested
 allowance state.
 
 This is not generic dynamic resource planning. Existing-entry distinct-recipient calls are
@@ -681,6 +681,10 @@ construction. Supporting aliases requires a separately advertised shape which co
 one journal, while cold insertion requires authenticated predecessor planning. The compiled
 fixture is 9,775 bytes, leaving 225 bytes below the covenant limit; that narrow margin and the
 resource classification remain explicit independent-review targets.
+
+This graduates the multi-entry journal/resource layout, not standard ERC-20 authorization. The
+fixture supplies `spender` as row data; a standard allowance keyed by authenticated `msg.sender`
+remains route-sensitive and batch-ineligible.
 
 ### Release discipline
 

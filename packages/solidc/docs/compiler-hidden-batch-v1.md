@@ -12,7 +12,7 @@ Implementation snapshot (2026-07-23):
 
 - Releases 1-3 are compiler/SDK fast paths with scalar, parameter-keyed multi-entry mapping,
   fixed-array element, dynamic bytes/string, and chunk-backed dynamic-array journal tests.
-  Repeated ERC-20 `transferFrom` threads sender balance, recipient balance, and nested allowance
+  A repeated parameter-authorized, ERC-20-shaped transfer threads sender balance, recipient balance, and nested allowance
   through one tuple; MasterChef-style dependent accumulators use the same reduction. A dynamic-array handler
   value-threads both its encoded length field and tight element blob, then the physical wrapper
   flushes its chunks once. Runtime-varying aliases and dynamic cold keys retain the conservative path.
@@ -36,8 +36,8 @@ Implementation snapshot (2026-07-23):
   omission, injection, argument reordering, unchecked suffixes, count substitution, the positional
   blob locator, target and output substitution, capability mismatch, duplicate physical inputs,
   atomic rollback, and physical owner cardinality. Executable topology slices cover TreasurySplit,
-  Marketplace reward distribution, MasterChef double mint, and a mapping-backed ERC-20
-  `transferFrom` pair. The ERC-20 fixture shares sender balance and nested allowance across rows,
+  Marketplace reward distribution, MasterChef double mint, and a mapping-backed
+  `transferFrom(from,to,spender,amount)` pair. This fixture shares sender balance and allowance across rows,
   uses distinct existing recipient entries, and settles through one token owner. Repeated physical
   entry aliases and cold recipient insertion fail before construction in v1.
 - Final full-suite totals are recorded in the review handoff after validation.
@@ -50,10 +50,10 @@ Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `pi
 | A, 2 rows | 407 | 518 | +111 |
 | A, 3 rows | 426 | 542 | +116 |
 | A, 8 rows | 518 | 662 | +144 |
-| ERC-20 `transferFrom`, exact 2-row route | 3,047 | 9,775 | +6,728 |
+| parameter-authorized `transferFrom`, exact 2-row route | 3,047 | 9,775 | +6,728 |
 
 `BatchCostRegression.test.ts` freezes these deployed-byte measurements, the 1,020-byte scalar
-hidden route body, and the 6,532-byte ERC-20 route body. The ERC-20 artifact has only 225 bytes of
+hidden route body, and the 6,532-byte multi-entry route body. The fixture has only 225 bytes of
 headroom below the 10,000-byte P2SH limit, so any growth is release-significant. These are compiler
 footprint evidence, not a substitute for transaction-specific VM metrics:
 the final Release 0 gate still records evaluated instruction cost, pushed bytes, stack/memory peaks,
@@ -329,9 +329,10 @@ Rejected in v1:
 - a batch requiring more than one existing split facet;
 - unresolved dynamic storage witnesses or over-limit batches.
 
-### 7.1 Mapping-backed ERC-20 resource route
+### 7.1 Mapping-backed transfer resource route
 
-A real `transferFrom` requires one shared sender balance, one shared allowance (possibly nested), and
+The implemented proving fixture takes `spender` as an explicit argument. It demonstrates one shared
+sender balance, one shared nested allowance, and
 one recipient balance per logical row. A prototype which placed the union of every possible entry
 slot into one SCB1 route was rejected after VM construction exposed two structural problems:
 
@@ -347,7 +348,10 @@ one predecessor per advertised slot, and iteratively derives each authenticated 
 The VM fixture proves shared sender and nested allowance read-your-writes, two distinct recipients,
 ordered debit/credit semantics, one token owner, and one output per dirty entry.
 
-The accepted v1 shape is deliberately narrower than ERC-20 in general:
+It does not demonstrate standard ERC-20 authorization: a genuine `transferFrom` keys allowance by
+the authenticated `msg.sender`, and `msg.sender`-sensitive handlers remain batch-ineligible because
+their direct and SCB1 contexts diverge. The accepted v1 shape is therefore deliberately described
+as a parameter-authorized multi-entry transfer:
 
 - both recipient entries must already exist;
 - the two recipient entries must be physically distinct;
@@ -360,7 +364,9 @@ could later be supported by separately advertised shapes which collapse the alia
 journal; cold inserts require authenticated predecessor planning. Neither may be inferred from the
 current route.
 
-The resource route is 9,775 bytes in the frozen fixture. Independent review remains required before
+The stripped resource-route fixture is 9,775 bytes; the corpus token with mint, approve, and check
+helpers is 10,600 bytes and is not deployable without reduction or splitting. The library compiler
+emits a `contract-size-limit` error diagnostic for artifacts above 10,000 bytes. Independent review remains required before
 default enablement, with particular attention to key classification, global/per-row witness
 binding, alias rejection, iterative output derivation, and the 225-byte size margin.
 
@@ -437,7 +443,7 @@ Detailed tasks and ship gates are normative in section 8 of
 2. Release 4 MUST prove owner-local malformed-row rejection, ordering, results, and one flush before
    its artifact capability is enabled by default.
 3. Release 5 MUST prove caller/callee binding with TreasurySplit, Marketplace reward triple, and
-   MasterChef double mint, then prove a mapping-backed ERC-20 transfer resource shape as specified
+   MasterChef double mint, then prove a mapping-backed parameter-authorized transfer resource shape as specified
    in section 7.1, before its capability is enabled by default.
 4. Every release MUST measure deployed bytecode impact on relevant Effective Acceleration and split
    corpus artifacts; a regression belongs to the release which introduces it.

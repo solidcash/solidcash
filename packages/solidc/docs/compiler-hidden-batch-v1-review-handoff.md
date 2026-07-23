@@ -18,16 +18,17 @@ The implemented target is deliberately narrow:
 - R4: one owner-local SCB1 batch with at most eight rows and a 223-byte canonical blob;
 - R5: one straight-line caller invoking one compatible external owner repeatedly, with one physical
   callee owner input, exact whole-blob equality between caller and callee, and an exact two-row
-  existing-entry ERC-20 `transferFrom` resource route;
+  existing-entry parameter-authorized transfer resource route;
 - protocol version 1 only; unknown or missing capabilities fail before construction.
 
 TreasurySplit, Marketplace reward distribution, and MasterChef double mint cover scalar topology.
 A separate VM fixture proves shared sender balance, shared nested allowance, distinct recipient
-balances, and one token-owner settlement for two ordered mapping-backed `transferFrom` rows.
+balances, and one token-owner settlement for two ordered
+`transferFrom(from,to,spender,amount)` rows. It does not prove standard `msg.sender` authorization.
 
 ## 2. Explicit resource-route boundary
 
-The accepted ERC-20 route is exact, not generic. It supports exactly two rows when both recipient
+The accepted resource route is exact, not generic. It supports exactly two rows when both recipient
 entries already exist and sender, first recipient, and second recipient resolve to distinct
 physical entry UTXOs. Compiler and SDK tests require:
 
@@ -36,10 +37,12 @@ physical entry UTXOs. Compiler and SDK tests require:
 3. repeated-recipient and sender-equals-recipient aliases fail before construction; and
 4. missing/cold recipient entries fail before construction.
 
-Alias-collapsed and cold-insert routes require new capabilities and are not implied by this one.
-The fixture compiles to 9,775 bytes, leaving only 225 bytes below the covenant limit. Default
-enablement remains outside this handoff: the independent review must first accept this narrow
-surface and its size margin.
+Standard ERC-20 `transferFrom`, whose allowance is keyed by authenticated `msg.sender`, remains
+batch-ineligible. Alias-collapsed and cold-insert routes require new capabilities and are not implied by this one.
+The stripped route-cost fixture compiles to 9,775 bytes, leaving only 225 bytes below the covenant
+limit. The executable corpus token with mint, approve, and check helpers is 10,600 bytes and carries
+a library-visible `contract-size-limit` error diagnostic; it is test evidence, not a deployable
+token artifact. Default enablement remains outside this handoff.
 
 ## 3. Rejected implementation spike and replacement
 
@@ -79,7 +82,7 @@ Confirm from compiler output, SDK construction, and BCH 2026 VM execution:
 - only exact version 1 capability matching is accepted, with no translation or inferred fallback;
 - frozen scalar 2/3/8-row byte, operation, stack, unlocking, and transaction measurements reproduce
   under `BCH_2026_05`;
-- the ERC-20 direct/batch size regression reproduces at 3,047/9,775 bytes.
+- the parameter-authorized transfer direct/batch size regression reproduces at 3,047/9,775 bytes.
 
 ## 5. Required review disposition
 
@@ -92,7 +95,7 @@ Report findings against one of three decisions:
    considered stable.
 
 The review must not silently broaden the accepted scope. Any request to support cold or
-alias-collapsed ERC-20 shapes, additional repeated owners, forwarding, callbacks, cycles, or a new
+alias-collapsed or `msg.sender`-authorized token shapes, additional repeated owners, forwarding, callbacks, cycles, or a new
 protocol version returns to design and measurement before implementation.
 
 ## 6. Validation baseline

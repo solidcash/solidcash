@@ -22,6 +22,8 @@ Implementation snapshot (2026-07-23):
 - Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
   omission, injection, argument reordering, target substitution, capability mismatch, and physical
   owner cardinality. Default enablement remains forbidden until the normative ship gates pass.
+- The final validation snapshot passes 2,280 compiler tests and 3,229 SDK tests; the SDK total
+  excludes the repository's existing 24 skips and 9 todos.
 
 This is the first deployable composition protocol. It covers:
 

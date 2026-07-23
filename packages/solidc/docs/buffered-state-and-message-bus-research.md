@@ -661,8 +661,9 @@ The releases now deliver value independently as intended:
 | R4 | opt-in hidden SCB1 scalar route and SDK `batch()` construction | default off; collections, returns/events/effects, signatures, and route-sensitive context rejected |
 | R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, and one B settlement | default off; graph composition, callbacks, forwarding, and blobs over 75 bytes rejected |
 
-The compiler suite passes 2,280 tests. The SDK suite passes after using the documented
-`getFunction(name)` escape hatch for a source contract whose own ABI function is named `batch`.
+The compiler suite passes 2,280 tests. The SDK suite passes 3,229 tests (with the repository's
+existing 24 skips and 9 todos) after using the documented `getFunction(name)` escape hatch for a
+source contract whose own ABI function is named `batch`.
 The repository-wide lint target still reports the pre-existing branch-wide backlog, so lint is not
 a release gate claimed by this checkpoint. Neither experimental covenant option may be enabled by
 default merely from this implementation checkpoint; the independent adversarial reviews remain

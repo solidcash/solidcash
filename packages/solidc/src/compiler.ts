@@ -173,6 +173,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 const SCB1_SELECTOR_HEX = '53434231';
 const MAX_HIDDEN_BATCH_ROWS = 8;
+const MAX_HIDDEN_BATCH_BLOB_BYTES = 75;
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
  * but before symbol/type analysis. Only signature-free scalar public handlers
@@ -271,6 +272,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     contract __HiddenBatchHost() {
       function __scb1(bytes batchBlob) external {
         require(batchBlob.length >= 7);
+        require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
         require(batchBlob.slice(0, 4) == hex"53434231");
         require(batchBlob.slice(4, 5) == hex"01");
         require(batchBlob.slice(5, 6) == hex"00");
@@ -731,6 +733,7 @@ function compileResolvedAst(
       version: 1,
       selector: SCB1_SELECTOR_HEX,
       maximumRows: MAX_HIDDEN_BATCH_ROWS,
+      maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,

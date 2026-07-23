@@ -526,6 +526,7 @@ export interface Artifact {
     version: 1;
     selector: '53434231';
     maximumRows: number;
+    maximumBlobBytes: number;
     route: AbiFunction;
     handlers: {
       name: string;

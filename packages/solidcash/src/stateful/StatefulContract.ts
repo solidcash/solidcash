@@ -1329,6 +1329,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       Uint8Array.from([1, 0, invocations.length]),
       ...rows,
     );
+    if (blob.length > capability.maximumBlobBytes) {
+      throw new Error(
+        `SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
+      );
+    }
     return this._batchRaw(blob);
   }
 

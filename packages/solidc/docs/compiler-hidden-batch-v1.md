@@ -28,11 +28,16 @@ Implementation snapshot (2026-07-23):
   repeated callee, builds rows from the arguments actually evaluated by A, requires a compatible
   Release 4 capability from B, compares the exact positional second push byte-for-byte, and uses
   one physical B owner. The comparator accepts canonical direct pushes and `OP_PUSHDATA1`, and caps
-  the complete blob at 223 bytes so the frozen eight-row maximum is constructible.
+  the complete blob at 223 bytes so the frozen eight-row maximum is constructible. Multiple
+  repeated owners and repeated chains which are conditional or otherwise not exhaustively
+  resolvable fail during compilation rather than falling back to contending physical call slots.
 - Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
-  omission, injection, argument reordering, target substitution, capability mismatch, and physical
-  owner cardinality. Default enablement remains forbidden until the normative ship gates pass.
-- The final validation snapshot passes 2,280 compiler tests and 3,229 SDK tests; the SDK total
+  omission, injection, argument reordering, unchecked suffixes, count substitution, the positional
+  blob locator, target and output substitution, capability mismatch, duplicate physical inputs,
+  atomic rollback, and physical owner cardinality. Executable corpus slices cover TreasurySplit,
+  Marketplace reward distribution, and MasterChef double mint. Default enablement remains
+  forbidden until the normative independent reviews pass.
+- The final validation snapshot passes 2,296 compiler tests and 3,255 SDK tests; the SDK total
   excludes the repository's existing 24 skips and 9 todos.
 
 Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `ping()` fixture):

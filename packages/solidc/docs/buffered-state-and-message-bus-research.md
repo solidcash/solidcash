@@ -655,13 +655,13 @@ The releases now deliver value independently as intended:
 
 | release | implemented increment | current boundary |
 |---|---|---|
-| R1 | reusable scalar write-back handlers and one final authenticated flush | conservative fallback for ineligible closures |
+| R1 | reusable scalar write-back handlers, one final authenticated flush, and raw-transaction output-substitution rejection | conservative fallback for ineligible closures |
 | R2 | bounded direct/mutual recursion, hidden invocation context, SDK VM preflight | concrete over-budget/signature cases fail closed |
 | R3 | parameter-keyed multi-entry mapping tuples (including repeated ERC-20 `transferFrom` and dependent MasterChef updates), fixed-array elements, dynamic bytes/string, chunk-backed dynamic-array value threading, and sequential CashToken-container helper effects | CashToken effects are intentionally inlined (not aggregated); dynamic cold keys and runtime-varying multi-resource aliases remain conservative |
 | R4 | opt-in hidden SCB1 scalar/mapping route, ordered common-type results, and one event or value-transfer effect per row | default off; multi-entry aliases, mixed route modes, heterogeneous/multi-results, multi-effects, signatures, and route-sensitive context rejected |
-| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, and one B settlement | default off; graph composition, callbacks, forwarding, and blobs over 223 bytes rejected |
+| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, one B settlement, and executable TreasurySplit/Marketplace/MasterChef topology slices | default off; multiple repeated owners and unresolvable chains fail compilation; graph composition, callbacks, forwarding, and blobs over 223 bytes are rejected |
 
-The compiler suite passes 2,280 tests. The SDK suite passes 3,229 tests (with the repository's
+The compiler suite passes 2,296 tests. The SDK suite passes 3,255 tests (with the repository's
 existing 24 skips and 9 todos) after using the documented `getFunction(name)` escape hatch for a
 source contract whose own ABI function is named `batch`.
 The repository-wide lint target still reports the pre-existing branch-wide backlog, so lint is not

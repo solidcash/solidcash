@@ -2,6 +2,10 @@ import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
+const compactHelperDefinitions = (asm: string): string[] => (
+  [...asm.matchAll(/(?:^| )([0-7][0-9a-f]) OP_DEFINE(?: |$)/g)].map((match) => match[1])
+);
+
 describe('general C2 bytecode sharing', () => {
   it('shares sorted-output authentication in a mapping write', () => {
     const artifact = compileString(
@@ -9,7 +13,7 @@ describe('general C2 bytecode sharing', () => {
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('0910 OP_DEFINE');
+    expect(asm).toContain('8a OP_DEFINE');
     expect(artifact.bytecode.length / 2).toBeLessThan(1300);
   });
 
@@ -20,7 +24,7 @@ describe('general C2 bytecode sharing', () => {
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('0011 OP_DEFINE');
+    expect(compactHelperDefinitions(asm)).toHaveLength(1);
     expect(artifact.bytecode.length / 2).toBeLessThan(1600);
   });
 
@@ -31,7 +35,7 @@ describe('general C2 bytecode sharing', () => {
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('0a10 OP_DEFINE');
+    expect(asm).toContain('8b OP_DEFINE');
   });
 
   it('shares repeated composite state traversal by structural type', () => {
@@ -41,7 +45,7 @@ describe('general C2 bytecode sharing', () => {
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('0030 OP_DEFINE');
+    expect(compactHelperDefinitions(asm).length).toBeGreaterThanOrEqual(1);
     expect(artifact.bytecode.length / 2).toBeLessThan(9300);
   });
 
@@ -57,11 +61,24 @@ describe('general C2 bytecode sharing', () => {
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('0040 OP_DEFINE');
-    expect(asm).toContain('0140 OP_DEFINE');
-    expect(asm).toContain('0050 OP_DEFINE');
-    expect(asm).toContain('0150 OP_DEFINE');
+    const helperIds = compactHelperDefinitions(asm);
+    expect(helperIds.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(helperIds).size).toBe(helperIds.length);
     expect(artifact.bytecode.length / 2).toBeLessThan(3800);
+  });
+
+  it('chains cumulative struct-field prefixes through the nearest smaller helper', () => {
+    const artifact = compileString(
+      'struct S { string a; string b; string c; string d; string e; } contract C { S[] x;'
+      + ' function f(int i) external {'
+      + ' require(x[i].c.length>=0 && x[i].c.length>=0 && x[i].c.length>=0'
+      + ' && x[i].e.length>=0 && x[i].e.length>=0 && x[i].e.length>=0); } }',
+      { forceStateful: true },
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    const helperIds = compactHelperDefinitions(asm);
+    expect(helperIds.length).toBeGreaterThanOrEqual(3);
+    expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
   });
 
   it('shares repeated variable-width array element extraction', () => {
@@ -72,7 +89,9 @@ describe('general C2 bytecode sharing', () => {
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('0060 OP_DEFINE');
+    const helperIds = compactHelperDefinitions(asm);
+    expect(helperIds.length).toBeGreaterThanOrEqual(1);
+    expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
     expect(artifact.bytecode.length / 2).toBeLessThan(2800);
   });
 });

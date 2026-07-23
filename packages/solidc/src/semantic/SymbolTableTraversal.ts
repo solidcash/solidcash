@@ -1818,7 +1818,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // so bake its selector as a constant the covenant checks against - a spender must not be able to point
           // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
           // selector (bound to `cond`).
-          if (!slot.runtimeSelector) {
+          if (!slot.runtimeSelector && !slot.batchInvocations) {
             const iface = this.interfaceMap.get(slot.interfaceName);
             const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
             if (ifaceFunc) {

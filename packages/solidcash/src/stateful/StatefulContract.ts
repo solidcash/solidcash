@@ -8006,8 +8006,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const satoshiContainerOutputCount = transferCount > 0 ? 1 : 0;
         const tokenContainerTransferCount = abiFunction?.tokenContainerAccesses
           ? abiFunction.tokenContainerAccesses.reduce((count, a) => {
-            const transferOps = a.operations.filter((op) => op === 'transfer' || op === 'transferNft');
-            return count + transferOps.length;
+            const ftCount = a.transferCount ?? (a.operations.includes('transfer') ? 1 : 0);
+            const nftCount = a.transferNftCount ?? (a.operations.includes('transferNft') ? 1 : 0);
+            return count + ftCount + nftCount;
           }, 0)
           : 0;
         const emitCount = abiFunction?.emits?.length ?? 0;
@@ -9164,7 +9165,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && (abiFunction?.entryAccesses?.length ?? 0) === 0
       && (abiFunction?.entryLoopWrites?.length ?? 0) === 0
       && emitInfos.length === 0
-      && derivTransferCount === 0;
+      && derivTransferCount === 0
+      && (derivTokenOps?.length ?? 0) === 0;
 
     // A provably read-only getter (compiler writesState=false) produces output state == input state, so the
     // builder reproduces the input commitments (empty stateUpdates) and the multi-pass derivation probe is pure

@@ -4,6 +4,35 @@ import { compileString } from '../src/index.js';
 const PREFIX = 'pragma solidcash >=0.8.0; contract Ledger() { mapping(bytes20 => int) balances;';
 
 describe('Release 3 collection journal lowering', () => {
+  it('keeps repeated token-container effects sequential and visible on the physical entry point', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract TokenEffectJournal() {
+        function send(bytes32 category, bytes recipient, bigint amount) internal {
+          this.tokens[category].transfer(recipient, amount);
+        }
+        function sendTwice(
+          bytes32 category, bytes firstRecipient, bigint firstAmount,
+          bytes secondRecipient, bigint secondAmount
+        ) {
+          send(category, firstRecipient, firstAmount);
+          send(category, secondRecipient, secondAmount);
+          require(firstAmount >= 0);
+        }
+      }
+    `, { forceStateful: true });
+
+    const wrapper = artifact.abi.find((entry) => entry.name === 'sendTwice');
+    expect(wrapper?.tokenContainerAccesses).toHaveLength(1);
+    expect(wrapper?.tokenContainerAccesses?.[0]).toMatchObject({
+      keyParam: 'category',
+      operations: expect.arrayContaining(['transfer']),
+    });
+    expect(wrapper?.blockLayout?.slots?.filter((slot) => slot.kind === 'tcTransfer')).toHaveLength(2);
+    // Effectful helpers are deliberately inlined until a frozen effect
+    // journal exists; otherwise their transfer slots would be invisible.
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'send')).toBeUndefined();
+  });
+
   it('threads one authenticated mapping entry through a reusable value handler', () => {
     const artifact = compileString(`${PREFIX}
       function add(bytes20 who, int amount) internal {

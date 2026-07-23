@@ -29,6 +29,7 @@ import {
   TupleAssignmentNode,
   ConsoleStatementNode,
   EmitStatementNode,
+  TokenContainerMethodStatementNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
@@ -150,10 +151,18 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // to it). Inline all state-touching void callees; entry points keep their definition (still
       // dispatchable), internal helpers are dropped below.
       const scalarJournalEligible = this.isScalarJournalEligible(fn);
+      // CashToken-container transfers are transaction effects rather than
+      // value-like state: their authenticated input/output slots and transfer
+      // occurrence indices belong to the physical entry point. Until an
+      // independently verified effect journal exists, inline these helpers so
+      // every operation remains visible to the ordinary sequential covenant
+      // pre-scan. This is Release 3's sound, non-aggregating token path.
+      const hasTokenContainerEffects = this.hasTokenContainerEffects(fn);
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
             && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
+              || hasTokenContainerEffects
               || this.transitiveSortedWriters.has(fn.name)
               || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
@@ -442,6 +451,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
+  private hasTokenContainerEffects(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof TokenContainerMethodStatementNode) found = true;
+    });
+    return found;
+  }
+
   // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
   // state-touching helper becomes state-touching after that helper is inlined, so selecting only direct readers
   // leaves wrapper chains such as OZ ERC20 `_transfer -> _update -> _balances[...]` as layout-less subroutines.
@@ -457,6 +474,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     };
     const result = new Set<string>(fns.filter((f) => (
       this.readsEntry(f) || this.touchesScalarState(f) || this.directlyWritesSortedEntry(f)
+      || this.hasTokenContainerEffects(f)
     )).map((f) => f.name));
     let changed = true;
     while (changed) {

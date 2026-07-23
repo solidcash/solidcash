@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
+import { hexToBin } from '@bitauth/libauth';
 import { alicePkh, bobPkh, carolPkh } from '../fixture/vars.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract CollectionJournalRelease3() {
@@ -322,5 +323,48 @@ describe('Release 3 collection journal SDK E2E', () => {
     const chef = StatefulContract.withCategory(inner, categoryId);
     await chef.updateTwice(7n, 2n, 3n).send();
     await chef.check(7n, 5n, 7n).send();
+  });
+
+  it('executes token-container helper effects twice in source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract SequentialTokenEffects() {
+        function send(bytes32 category, bytes recipient, bigint amount) internal {
+          this.tokens[category].transfer(recipient, amount);
+        }
+        function sendTwice(
+          bytes32 category, bytes firstRecipient, bigint firstAmount,
+          bytes secondRecipient, bigint secondAmount
+        ) {
+          send(category, firstRecipient, firstAmount);
+          send(category, secondRecipient, secondAmount);
+          require(firstAmount >= 0 && secondAmount >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sendTwice')
+      ?.tokenContainerAccesses).toHaveLength(1);
+    expect(artifact.abi.find((entry) => entry.name === 'sendTwice')
+      ?.tokenContainerAccesses?.[0]?.operations).toContain('transfer');
+    expect(artifact.abi.find((entry) => entry.name === 'sendTwice')
+      ?.blockLayout?.slots.filter((slot) => slot.kind === 'tcTransfer')).toHaveLength(2);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const { categoryId: tokenCategory } = await provider.addTokenUtxosDynamic((category) => [{
+      address: contract.getTokenContainerAddress(category),
+      satoshis: 1200n,
+      token: { amount: 1000n },
+    }]);
+
+    const tx = await contract.sendTwice(
+      hexToBin(tokenCategory), Uint8Array.of(0x51), 125n, Uint8Array.of(0x52), 275n,
+    ).send();
+    const outputs = getTxOutputs(tx);
+    expect(outputs.filter((output) => output.token?.category === tokenCategory)
+      .map((output) => output.token!.amount).sort((a, b) => Number(a - b)))
+      .toEqual([125n, 275n, 600n]);
   });
 });

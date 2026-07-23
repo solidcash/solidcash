@@ -364,7 +364,7 @@ earlier release is independently useful:
 | 0 | early call-chain/contention diagnostics and shared split footprints | measure parser only |
 | 1 | de-inlined scalar state helpers in multiple sites and loops | none |
 | 2 | bounded recursive state handlers with full handler context | none |
-| 3 | mapping, bytes/string, array, and token-state helper journals | none |
+| 3 | mapping, bytes/string, and array journals; sequential token-effect helpers | none |
 | 4 | several handlers on one owner in one transaction | local batch route |
 | 5 | one caller invokes one external owner repeatedly while consuming it once | repeated-callee route |
 

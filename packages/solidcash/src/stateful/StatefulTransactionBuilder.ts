@@ -1022,10 +1022,7 @@ export class StatefulTransactionBuilder {
     if (!/^([0-9a-f]{2})*$/i.test(commitment)) {
       throw new Error(`Invalid hex string for event raw commitment at emit index ${emitIndex}`);
     }
-    const previous = this.eventRawCommitments.get(emitIndex);
-    if (previous === undefined || commitment.length >= previous.length) {
-      this.eventRawCommitments.set(emitIndex, commitment);
-    }
+    this.eventRawCommitments.set(emitIndex, commitment);
     return this;
   }
 
@@ -2414,8 +2411,9 @@ export class StatefulTransactionBuilder {
         const finalState = vm.evaluate({ inputIndex: idx, sourceOutputs, transaction }) as { error?: string };
         if (!finalState.error) continue;
         // eslint-disable-next-line no-console
-        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\n${ring.map((step) => (
+        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\n${ring.map((step, stepIndex) => (
           `  ip=${step.ip} op=0x${step.opcode.toString(16).padStart(2, '0')} depth=${step.depth} top=[${step.top.join(' ')}]`
+          + (stepIndex === ring.length - 1 ? '  <-- FAILS HERE' : '')
         )).join('\n')}\ninputs=${sourceOutputs.map((input, inputIndex) => (
           `${inputIndex}:${binToHex(input.lockingBytecode).slice(0, 80)}:${input.token?.nft?.capability ?? '-'}:`
           + `${binToHex(input.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}`

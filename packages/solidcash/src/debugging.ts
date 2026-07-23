@@ -55,6 +55,8 @@ export const debugTemplate = (
   // root variants plus uniquely named branded facets. Facet script IDs remain unambiguous, so retain legacy
   // collision rejection for ordinary transactions but allow the compiler-authenticated split topology.
   const isSplitTransaction = artifacts.some((artifact) => artifact.brandedLibrary && artifact.delegateOnly);
+  const inspectAllInputs = isSplitTransaction
+    || relevantArtifacts.some((artifact) => artifact.contractName === 'SolidCashProxy');
   // A Hardhat whole-project artifact registry commonly contains inherited dependencies with the same Solidity
   // contract name but different bytecode. Keep evaluating the transaction-specific script IDs; the first matching
   // artifact is sufficient for execution, while source attribution remains best-effort for ambiguous names.
@@ -82,7 +84,7 @@ export const debugTemplate = (
         // A composed transaction can fail at both a wrapper/proxy input and its delegated implementation input.
         // Inspect every input so a source-level require from the implementation is not masked by the proxy's
         // generic `delegatecall(...)` OP_VERIFY failure.
-        if (!isSplitTransaction) throw error;
+        if (!inspectAllInputs) throw error;
         evaluationErrors.push(error);
       }
     }

@@ -424,13 +424,9 @@ function extractCommitmentMapFromTrace(
         // stack[-2] is expected commitment, stack[-1] is actual (from OP_OUTPUTTOKENCOMMITMENT)
         const expectedBytes = stack[stack.length - 2];
         const hex = binToHex(expectedBytes);
-        // Loop iterations overwrite values of the same shape, while nested proxy/delegate checks can later
-        // inspect a shorter component of an already-verified event commitment. Preserve the complete commitment;
-        // for equal-size candidates the latest iteration still wins.
-        const previous = commitmentsByOutputIndex.get(targetOutputIndex);
-        if (previous === undefined || hex.length >= previous.length) {
-          commitmentsByOutputIndex.set(targetOutputIndex, hex);
-        }
+        // Last write to a given output index wins, so loop iterations
+        // correctly overwrite prior values for the same output.
+        commitmentsByOutputIndex.set(targetOutputIndex, hex);
       }
     }
   }
@@ -5368,7 +5364,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           // Event commitments: output indices [eventBase, eventBase + eventCount)
           if (eventCount > 0) {
-            const physicalEventIndices = probeBuilder2.outputs
+            const physicalEventIndices = delegatecallInputIndex === undefined ? [] : probeBuilder2.outputs
               .map((output, index) => output.token?.category === this.categoryId
                 && output.token.nft?.capability === 'none' ? index : -1)
               .filter((index) => index >= 0);

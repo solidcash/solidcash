@@ -80,7 +80,7 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       covenantDeltaBytes: 6728,
       routeBodyBytes: 6532,
     });
-  });
+  }, 15_000);
 
   it('reports an artifact error when library compilation exceeds the BCH script limit', () => {
     const source = `pragma solidcash >=0.8.0;

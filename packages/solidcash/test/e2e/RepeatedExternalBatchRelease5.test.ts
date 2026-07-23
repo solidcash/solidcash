@@ -7,6 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const INTERFACE = `
 interface ICounter {
   function add(int amount);
+  function multiply(int factor);
 }
 `;
 
@@ -21,6 +22,10 @@ contract Counter() is ICounter {
   }
   function check(int expected) public {
     require(this.counter == expected);
+  }
+  function multiply(int factor) public {
+    this.counter = this.counter * factor;
+    require(factor >= 0);
   }
 }
 `;
@@ -38,6 +43,13 @@ contract Caller(bytes counterAddress) {
   }
   function checkRuns(int expected) public {
     require(this.runs == expected);
+  }
+  function runTriple(int first, int second, int factor) public {
+    ICounter(counterAddress).add(first);
+    ICounter(counterAddress).add(second);
+    ICounter(counterAddress).multiply(factor);
+    this.runs = this.runs + 1;
+    require(first >= 0 && second >= 0 && factor >= 0);
   }
 }
 `;
@@ -88,6 +100,17 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
   it('fails closed before transaction construction when the callee lacks SCB1 capability', async () => {
     const { caller } = await deploy({ calleeBatch: false });
     await expect(caller.run(2n, 3n).send()).rejects.toThrow(/does not advertise.*SCB1/);
+  });
+
+  it('executes a three-row mixed-handler corpus shape through one callee transition', async () => {
+    const { caller, callee, calleeCategory } = await deploy();
+    const builder = await caller.runTriple(2n, 3n, 4n).build();
+    expect(builder.inputs.filter((input) =>
+      input.token?.category === calleeCategory && input.token.nft?.capability === 'minting')).toHaveLength(1);
+
+    await caller.runTriple(2n, 3n, 4n).send();
+    await caller.checkRuns(1n).send();
+    await callee.check(20n).send();
   });
 
   it('rejects substituting a different SCB1-capable contract for the pinned callee owner', async () => {

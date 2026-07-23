@@ -140,6 +140,48 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
     const artifact = compileString(SOURCE);
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(2);
   });
+
+  it('rejects two repeated callee owners instead of constructing two contended transitions', () => {
+    expect(() => compileString(`
+      interface ICounter { function add(int amount) external; }
+      contract Caller(address firstCounter, address secondCounter) {
+        function run(int amount) public {
+          ICounter(firstCounter).add(amount);
+          ICounter(firstCounter).add(amount);
+          ICounter(secondCounter).add(amount);
+          ICounter(secondCounter).add(amount);
+          require(amount >= 0);
+        }
+      }
+    `, { experimentalRepeatedExternalBatch: true })).toThrow(
+      /repeats 2 external state owners.*exactly one repeated callee owner/,
+    );
+  });
+
+  it('rejects a conditional repeated-owner chain that cannot be exhaustively accumulated', () => {
+    expect(() => compileString(`
+      interface ICounter { function add(int amount) external; }
+      contract Caller(address counter) {
+        function run(bool includeFirst, int amount) public {
+          if (includeFirst) ICounter(counter).add(amount);
+          ICounter(counter).add(amount);
+          require(amount >= 0);
+        }
+      }
+    `, { experimentalRepeatedExternalBatch: true })).toThrow(
+      /unresolvable repeated external call chain.*requires straight-line/,
+    );
+  });
+
+  it('keeps a Release 5 root callable while excluding it from a Release 4 local route', () => {
+    const artifact = compileString(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalRepeatedExternalBatch: true,
+    });
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
+    expect(artifact.hiddenBatch).toBeUndefined();
+  });
 });
 
 // A value-returning internal/library helper whose body performs a low-level call injects a synthetic

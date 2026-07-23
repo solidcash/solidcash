@@ -1679,6 +1679,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               && statement.expression instanceof ExternalFunctionCallNode) directCalls.add(statement.expression);
           }
           const byTarget = new Map<string, ExternalCallSlot[]>();
+          const allByTarget = new Map<string, ExternalCallSlot[]>();
           for (const slot of logicalCallSlots) {
             // Single-method interfaces normally omit selector verification, so
             // their slots have no baked selector yet. SCB1 rows always carry
@@ -1697,6 +1698,12 @@ export default class SymbolTableTraversal extends AstTraversal {
             const identity = slot.addressParam ? `param:${slot.addressParam}`
               : slot.addressStateVar ? `state:${slot.addressStateVar}`
                 : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+            if (identity !== '') {
+              const ownerKey = `${identity}|${slot.interfaceName}`;
+              const allGroup = allByTarget.get(ownerKey) ?? [];
+              allGroup.push(slot);
+              allByTarget.set(ownerKey, allGroup);
+            }
             const eligible = identity !== '' && directCalls.has(slot.sourceCallNode!)
               && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
@@ -1709,6 +1716,22 @@ export default class SymbolTableTraversal extends AstTraversal {
             byTarget.set(key, group);
           }
           const repeated = [...byTarget.values()].filter((group) => group.length > 1);
+          const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
+          if (knownRepeated.length > 1) {
+            throw new Error(
+              `Function '${node.name}' repeats ${knownRepeated.length} external state owners; `
+              + 'Release 5 supports exactly one repeated callee owner per root invocation',
+            );
+          }
+          if (knownRepeated.length === 1 && repeated.length === 0) {
+            const chain = knownRepeated[0].map((slot) =>
+              `${slot.interfaceName}.${slot.functionName}`).join(' -> ');
+            throw new Error(
+              `Function '${node.name}' has an unresolvable repeated external call chain `
+              + `'${chain}'; Release 5 requires straight-line, argument-resolvable, `
+              + 'non-returning calls to one pinned owner',
+            );
+          }
           // V1 permits exactly one repeated callee group in a root invocation.
           if (repeated.length === 1) {
             const group = repeated[0];

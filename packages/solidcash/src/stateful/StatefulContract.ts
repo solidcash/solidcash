@@ -7489,7 +7489,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
                     // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
                     const effKeyValue = bEntryAccess.keySources?.[0]?.kind === 'msgSender'
-                      ? addressToLockScript(this.address)
+                      ? this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {

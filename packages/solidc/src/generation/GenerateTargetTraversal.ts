@@ -404,8 +404,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private compactHelperIds = {
-    next: 127n,
-    fallback: 0x2000n,
+    next: -12n,
     used: new Set<bigint>(),
   };
 
@@ -437,7 +436,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ];
 
   private allocateCompactHelperId(): bigint {
-    while (this.compactHelperIds.next >= -127n) {
+    while (true) {
       const id = this.compactHelperIds.next;
       this.compactHelperIds.next -= 1n;
       if (id !== 0n && !this.compactHelperIds.used.has(id)) {
@@ -445,13 +444,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return id;
       }
     }
-    while (this.compactHelperIds.used.has(this.compactHelperIds.fallback)) {
-      this.compactHelperIds.fallback += 1n;
-    }
-    const id = this.compactHelperIds.fallback;
-    this.compactHelperIds.fallback += 1n;
-    this.compactHelperIds.used.add(id);
-    return id;
   }
 
   // State-related tracking
@@ -866,7 +858,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(node.fallbackDef ? [node.fallbackDef] : []),
       ...(node.receiveDef ? [node.receiveDef] : []),
     ];
-    this.compactHelperIds = { next: 127n, fallback: 0x2000n, used: new Set() };
+    this.compactHelperIds = { next: -12n, used: new Set() };
     for (const id of GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS) {
       this.compactHelperIds.used.add(id);
     }
@@ -987,18 +979,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.capturedSubroutineIsProfitable(TOKLBC, count(TOKLBC), emitToklbc)) {
       spans.push({ id: TOKLBC, span: this.defineCapturedSubroutine(TOKLBC, emitToklbc, loc) });
     }
-    const SORTOUT = GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID;
-    // The canonical helper consumes [entryAddr, slot, next, value, outputIndex]. Call sites copy their fields into
-    // that layout, so one definition works for every surrounding stack shape and every sorted collection.
-    const emitSortout = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitVerifySortedValueOutputInline(loc, 4, 3, 2, 1, true);
-    };
-    if (this.capturedSubroutineIsProfitable(SORTOUT, count(SORTOUT), emitSortout)) {
-      spans.push({
-        id: SORTOUT,
-        span: this.defineCapturedSubroutine(SORTOUT, emitSortout, loc),
-      });
-    }
+    // The verifier's field depths are relative to function-specific untracked working areas. Copying those values
+    // into a canonical OP_INVOKE frame is not sound for every inherited/nested-mapping call shape (for example an
+    // OZ ERC20 allowance write can copy the native signer script in place of the entry address). Keep it inline
+    // until its interface carries explicit tracked values rather than inferred raw depths.
     const SORTABS = GenerateTargetTraversalWithLocation.SORTED_ABSENCE_SUBROUTINE_ID;
     const emitSortabs = (t: GenerateTargetTraversalWithLocation): void => t.emitSortedAbsenceBracketInline(loc, true);
     if (this.capturedSubroutineIsProfitable(SORTABS, count(SORTABS), emitSortabs)) {
@@ -2790,7 +2774,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_ROT, locationData); // [..., remaining..., originalCount, counter, new]
+      this.emit(Op.OP_ROT, locationData);
       this.emit(Op.OP_BEGIN, locationData);
       this.emit(Op.OP_OVER, locationData);
       this.emit(Op.OP_0NOTEQUAL, locationData);
@@ -2807,8 +2791,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, locationData);
       this.emit(Op.OP_UNTIL, locationData);
       this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_DROP, locationData); // [..., originalCount, new]
-      this.emit(Op.OP_SWAP, locationData); // [..., new, restoreCounter]
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_BEGIN, locationData);
       this.emit(Op.OP_DUP, locationData);
       this.emit(Op.OP_0NOTEQUAL, locationData);
@@ -11643,9 +11627,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);                                        // [.., coValue]
     this.emitEntryOutputIndex(slotIndex, loc, 6);                       // P' outIdx -> [.., coValue, poutIdx]
     this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1);                  // P' = coSlot32 d3 || Hk32 d5 || coValue d1
+    // Dynamic-output accounting can leave transient untracked values above this working area. Recompute the
+    // collection address next to the NEW output index rather than recovering the older copy by a fragile raw depth.
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(__new_entry_category)');
+    this.emitSortedEntryAddress(collectionHash, loc);
     this.emitTrailingBlockBase(blockSize, loc); // NEW outIdx
+    const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some(
+      (slot) => slot.kind === 'returnEvent',
+    ) ?? false;
+    if (hasReturnEventSlot) {
+      const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+      if (returnOutputIdx >= 0) {
+        // Five raw C2 working fields (H, original address, predecessor slot/next/value) sit above the tracked
+        // function stack, plus the running output index itself.
+        this.emit(encodeInt(BigInt(returnOutputIdx + 6)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_SUB, loc);
+      }
+    }
     if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
-    this.emitVerifySortedValueOutput(loc, 4, 5, 2, 6);                  // NEW = Hk32 || coNext32 || v
+    this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7);                  // NEW = Hk32 || coNext32 || v
+    this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
     this.emit(Op.OP_ENDIF, loc);
 
     // drop coValue, coNext, coSlot, entryAddr, Hk32 (untracked), then v (tracked)
@@ -14334,6 +14338,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. Verify output commitments for WRITTEN (non-deleted) entries
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
+      if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
       if (this.isAliasCondWrite(slotIdx)) continue; // gated separately below
 
@@ -14365,6 +14370,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Verify output token category base matches master for written (non-deleted) entry outputs
     for (const [slotIdx] of this.pendingEntryWrites) {
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
+      if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
       if (this.isAliasCondWrite(slotIdx)) continue;
 
@@ -14387,6 +14393,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Construct the expected P2SH32 locking bytecode at runtime (same pattern as event verification)
     for (const [slotIdx] of this.pendingEntryWrites) {
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
+      if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
       if (this.isAliasCondWrite(slotIdx)) continue;
 

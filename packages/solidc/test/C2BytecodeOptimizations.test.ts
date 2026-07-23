@@ -3,18 +3,19 @@ import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
 const compactHelperDefinitions = (asm: string): string[] => (
-  [...asm.matchAll(/(?:^| )([0-7][0-9a-f]) OP_DEFINE(?: |$)/g)].map((match) => match[1])
+  [...asm.matchAll(/(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})) OP_DEFINE(?: |$)/g)]
+    .map((match) => match[1])
 );
 
 describe('general C2 bytecode sharing', () => {
-  it('shares sorted-output authentication in a mapping write', () => {
+  it('keeps depth-sensitive sorted-output authentication inline', () => {
     const artifact = compileString(
       'contract C { mapping(int=>bool) m; function f(int k) external { m[k]=true; require(true); } }',
       { forceStateful: true },
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('8a OP_DEFINE');
-    expect(artifact.bytecode.length / 2).toBeLessThan(1300);
+    expect(asm).not.toContain('8a OP_DEFINE');
+    expect(artifact.bytecode.length / 2).toBeLessThan(1500);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -25,7 +26,7 @@ describe('general C2 bytecode sharing', () => {
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(compactHelperDefinitions(asm)).toHaveLength(1);
-    expect(artifact.bytecode.length / 2).toBeLessThan(1600);
+    expect(artifact.bytecode.length / 2).toBeLessThan(1800);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {

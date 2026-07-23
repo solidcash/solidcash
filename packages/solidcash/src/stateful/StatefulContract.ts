@@ -3713,6 +3713,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
 
+    // Conditional constructor writes reserve fixed entry outputs even when their branch is not taken. The batch
+    // probe plans against every potential target, so a materialized node can initially point through an empty
+    // (nonexistent) output. Genesis is funder-authorized rather than covenant-spent: rebuild each C2 collection's
+    // links over only the entries the trace actually materialized, preserving their computed values.
+    for (const [collectionIndex, collectionName] of usesC2BatchWitnesses ? sortedCollections.entries() : []) {
+      const materialized = entryAccesses
+        .map((access, index) => ({ access, index, commitment: entryCommits[index] }))
+        .filter(({ access, commitment }) => access.collection === collectionName && commitment.length >= 128)
+        .map(({ index, commitment }) => ({ index, ...decodeEntryCommitment(hexToBin(commitment)) }))
+        .sort((a, b) => {
+          const av = bytesToSlotValue(a.slot);
+          const bv = bytesToSlotValue(b.slot);
+          return av < bv ? -1 : av > bv ? 1 : 0;
+        });
+      for (let i = 0; i < materialized.length; i++) {
+        const entry = materialized[i];
+        entryCommits[entry.index] = binToHex(encodeEntryCommitment(
+          entry.slot, materialized[i + 1]?.slot ?? new Uint8Array(32), entry.value,
+        ));
+      }
+      trailingEntryCommits[collectionIndex] = binToHex(encodeEntryCommitment(
+        new Uint8Array(32), materialized[0]?.slot ?? new Uint8Array(32),
+      ));
+    }
+
     return {
       // `stateCommitments` contains only constructor-required indices. Return the complete converged state so
       // untouched, explicitly seeded NFTs are materialized rather than becoming undefined genesis commitments.

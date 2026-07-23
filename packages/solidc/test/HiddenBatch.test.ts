@@ -66,4 +66,40 @@ describe('Release 4 compiler-hidden local batch', () => {
       inputs: [],
     });
   });
+
+  it('binds one parameter-keyed mapping entry into the physical SCB1 route', () => {
+    const artifact = compileString(`contract MappingBatch() {
+      mapping(bigint => bigint) values;
+      function add(bigint key, bigint amount) public {
+        this.values[key] = this.values[key] + amount;
+        require(amount >= 0);
+      }
+      function check(bigint key, bigint expected) public {
+        require(this.values[key] == expected);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+
+    expect(artifact.hiddenBatch?.route.inputs).toEqual([
+      { name: 'batchBlob', type: 'bytes' },
+      { name: '__scb_key_values_0', type: 'bigint' },
+    ]);
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(1);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'add'))
+      .toMatchObject({
+        eligible: true,
+        batchKeyWitnesses: [{ routeInput: '__scb_key_values_0', inputIndex: 0 }],
+      });
+  });
+
+  it('rejects collection aliases that cannot identify one physical entry', () => {
+    const artifact = compileString(`contract MappingAliasBatch() {
+      mapping(bigint => bigint) values;
+      function move(bigint from, bigint to, bigint amount) public {
+        this.values[from] = this.values[from] - amount;
+        this.values[to] = this.values[to] + amount;
+        require(amount >= 0);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch).toBeUndefined();
+  });
 });

@@ -335,6 +335,13 @@ export class FunctionDefinitionNode extends Node implements Named {
   hiddenBatchRoute?: boolean;
   hiddenBatchEligible?: boolean;
   hiddenBatchRejectionReason?: string;
+  // Release 4 collection rows bind source argument positions to hidden
+  // physical-route key witnesses. The SDK derives these from canonical rows;
+  // the route compares decoded row arguments before any handler executes.
+  hiddenBatchKeyWitnesses?: {
+    routeInput: string;
+    inputIndex: number;
+  }[];
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   isFallback: boolean = false;

@@ -5,7 +5,8 @@ import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifa
 import {
   Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
-  LowLevelCallStatementNode, MethodCallNode, Node, ParameterNode, RequireNode,
+  LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
+  MethodCallNode, Node, ParameterNode, RequireNode,
   NullaryOpNode,
   SourceFileNode, TypeIntrospectionNode,
 } from './ast/AST.js';
@@ -200,7 +201,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
     FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
   ]);
-  const eligible: FunctionDefinitionNode[] = [];
+  let eligible: FunctionDefinitionNode[] = [];
+  const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
+  const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
@@ -226,27 +229,87 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       }
     }
     let reason: string | undefined;
-    if (fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
-    else if (fn.returnTypes.length > 0) reason = 'return-routing-not-enabled';
-    else if (signatureCheck || fn.parameters.some((parameter) =>
-      ['sig', 'sig[]'].includes(parameter.type.toString()))) {
+    const keyWitnesses: { routeInput: string; inputIndex: number }[] = [];
+    if ([...footprint.reads, ...footprint.writes].some((resource) =>
+      resource.startsWith('collection:'))) {
+      const directKeys = new Map<string, number[][]>();
+      walkInvocationAst(fn.body, (node) => {
+        if (!(node instanceof MappingAccessNode || node instanceof MappingAssignNode
+          || node instanceof MappingDeleteNode)) return;
+        const collection = collectionByName.get(node.name);
+        if (!collection) return;
+        const indices = node.keys.map((key) => key instanceof IdentifierNode
+          ? fn.parameters.findIndex((parameter) => parameter.name === key.name) : -1);
+        const group = directKeys.get(node.name) ?? [];
+        if (!group.some((prior) => prior.length === indices.length
+          && prior.every((value, index) => value === indices[index]))) group.push(indices);
+        directKeys.set(node.name, group);
+      });
+      const closure = collectNamedFunctionClosure(fn, byName);
+      if (directKeys.size === 0 || [...closure].some((name) => name !== fn.name
+        && [...(byName.get(name) ?? [])].some((candidate) => {
+          let touches = false;
+          walkInvocationAst(candidate.body, (node) => {
+            if (node instanceof MappingAccessNode || node instanceof MappingAssignNode
+              || node instanceof MappingDeleteNode) touches = true;
+          });
+          return touches;
+        }))) {
+        reason = 'collection-helper-route-not-enabled';
+      } else {
+        for (const [collectionName, alternatives] of directKeys) {
+          const collection = collectionByName.get(collectionName)!;
+          if (alternatives.length !== 1 || alternatives[0].some((index) => index < 0)
+            || alternatives[0].length !== collection.allKeyTypes.length) {
+            reason = 'collection-route-requires-one-parameter-keyed-entry-per-collection';
+            break;
+          }
+          const prior = routeKeyWitnesses.get(collectionName);
+          const witnesses = prior ?? collection.allKeyTypes.map((type, keyIndex) => ({
+            name: `__scb_key_${collectionName.replace(/[^A-Za-z0-9_]/g, '_')}_${keyIndex}`,
+            type,
+          }));
+          routeKeyWitnesses.set(collectionName, witnesses);
+          alternatives[0].forEach((inputIndex, keyIndex) => keyWitnesses.push({
+            routeInput: witnesses[keyIndex].name,
+            inputIndex,
+          }));
+        }
+      }
+    }
+    if (!reason && fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
+    else if (!reason && fn.returnTypes.length > 0) reason = 'return-routing-not-enabled';
+    else if (!reason && (
+      signatureCheck || fn.parameters.some((parameter) =>
+        ['sig', 'sig[]'].includes(parameter.type.toString()))
+    )) {
       reason = 'transaction-signature-route-binding-required';
-    } else if (routeSensitive) {
+    } else if (!reason && routeSensitive) {
       reason = 'direct-versus-batch-introspection-divergence';
-    } else if (statefulExternalCall) {
+    } else if (!reason && statefulExternalCall) {
       reason = 'batched-handler-forward-call-not-enabled';
-    } else if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
+    } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
-    } else if (footprint.unknown || footprint.effects.length > 0) reason = 'unresolved-or-effectful-handler';
-    else if ([...footprint.reads, ...footprint.writes].some((resource) =>
-      resource.startsWith('collection:'))) reason = 'collection-batch-journal-not-enabled';
-    else if ([...footprint.reads, ...footprint.writes].some((resource) =>
+    } else if (!reason && (footprint.unknown || footprint.effects.length > 0)) {
+      reason = 'unresolved-or-effectful-handler';
+    } else if (!reason && [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
       reason = 'dynamic-state-batch-journal-not-enabled';
     }
     fn.hiddenBatchEligible = reason === undefined;
     fn.hiddenBatchRejectionReason = reason;
+    fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
+      ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
+  }
+  if (eligible.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
+    for (const fn of eligible) {
+      if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = 'mixed-scalar-and-collection-route-not-enabled';
+      }
+    }
+    eligible = eligible.filter((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0);
   }
   if (eligible.length === 0) return;
 
@@ -262,15 +325,26 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const declarations = fn.parameters.map((parameter, i) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
     const schema = fn.parameters.map((parameter) => parameter.type.toString()).join(', ');
-    const callArgs = fn.parameters.map((_parameter, i) => `__scb_arg_${handlerIndex}_${i}`).join(', ');
+    const witnessByInput = new Map((fn.hiddenBatchKeyWitnesses ?? [])
+      .map((binding) => [binding.inputIndex, binding.routeInput]));
+    const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
+      `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${binding.routeInput});`).join(' ');
+    const callArgs = fn.parameters.map((_parameter, i) =>
+      witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`).join(', ');
     const decode = declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
       : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
-    return `${condition} { ${decode} ${fn.name}(${callArgs}); }`;
+    return `${condition} { ${decode} ${keyChecks} ${fn.name}(${callArgs}); }`;
   }).join(' ');
+  const usedRouteInputs = new Set(eligible.flatMap((fn) =>
+    (fn.hiddenBatchKeyWitnesses ?? []).map((binding) => binding.routeInput)));
+  const routeKeyParameters = [...routeKeyWitnesses.values()].flat()
+    .filter((witness) => usedRouteInputs.has(witness.name))
+    .map((witness) => `${witness.type.toString()} ${witness.name}`);
+  const routeParameters = ['bytes batchBlob', ...routeKeyParameters].join(', ');
   const source = `pragma solidcash >=0.8.0;
     contract __HiddenBatchHost() {
-      function __scb1(bytes batchBlob) external {
+      function __scb1(${routeParameters}) external {
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
         require(batchBlob.slice(0, 4) == hex"53434231");
@@ -410,6 +484,26 @@ function compileResolvedAst(
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
+
+  // The compiler-owned route must participate in the same helper/state
+  // lowerings as source entry points. In particular, collection-bearing
+  // handlers need their authenticated entry operations inlined into this
+  // physical wrapper before block-layout analysis. Synthesizing it only at the
+  // final semantic boundary works for scalar state but makes collection
+  // effects invisible to the route.
+  const hiddenBatchFunctionsByName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of ast.contract.functions) {
+    const group = hiddenBatchFunctionsByName.get(fn.name) ?? [];
+    group.push(fn);
+    hiddenBatchFunctionsByName.set(fn.name, group);
+  }
+  const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.experimentalHiddenBatch
+    && ast.contract.functions.some((fn) => {
+      const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
+      return [...footprint.reads, ...footprint.writes]
+        .some((resource) => resource.startsWith('collection:'));
+    });
+  if (synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
 
   // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
   // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
@@ -630,7 +724,7 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
-  synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
+  if (!synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -749,6 +843,7 @@ function compileResolvedAst(
         })),
         eligible: fn.hiddenBatchEligible === true,
         ...(fn.hiddenBatchRejectionReason && { rejectionReason: fn.hiddenBatchRejectionReason }),
+        ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
       })),
     };
   }

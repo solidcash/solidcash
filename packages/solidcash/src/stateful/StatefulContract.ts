@@ -1297,6 +1297,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error(`SCB1 batch row count must be between 1 and ${capability.maximumRows}`);
     }
     const structs = this.inner.artifact.structs ?? this.inner.stateLayout?.structs;
+    const keyWitnessValues = new Map<string, {
+      value: FunctionArgument;
+      encoded: Uint8Array;
+    }>();
     const rows = invocations.map((invocation, rowIndex) => {
       const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
       if (!handler) throw new Error(`Unknown SCB1 handler '${invocation.function}'`);
@@ -1313,6 +1317,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         encodeFunctionArgument(arg, handler.inputs[i].type, structs));
       if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
         throw new Error(`Handler '${handler.name}' contains a signature-like argument and cannot use SCB1`);
+      }
+      for (const binding of handler.batchKeyWitnesses ?? []) {
+        const value = args[binding.inputIndex];
+        const encodedValue = encoded[binding.inputIndex] as Uint8Array;
+        const prior = keyWitnessValues.get(binding.routeInput);
+        if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
+          throw new Error(
+            `SCB1 collection witness '${binding.routeInput}' must identify one physical entry across all rows`,
+          );
+        }
+        if (!prior) keyWitnessValues.set(binding.routeInput, { value, encoded: encodedValue });
       }
       const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
       if (argsBlob.length > 0xffff) throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
@@ -1334,20 +1349,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
       );
     }
-    return this._batchRaw(blob);
+    const routeWitnesses = capability.route.inputs.slice(1).map((input) => {
+      const witness = keyWitnessValues.get(input.name);
+      if (!witness) throw new Error(`Missing SCB1 route witness '${input.name}'`);
+      return witness.value;
+    });
+    return this._batchRaw(blob, routeWitnesses);
   }
 
   /** @internal Adversarial-test hook: execute an exact candidate blob through
    * the positional SCB1 route without canonical SDK construction. */
-  _batchRaw(blob: Uint8Array): StatefulFunctionCall {
+  _batchRaw(blob: Uint8Array, routeWitnesses: readonly FunctionArgument[] = []): StatefulFunctionCall {
     const capability = this.inner.artifact.hiddenBatch;
     if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+    if (routeWitnesses.length !== capability.route.inputs.length - 1) {
+      throw new Error(
+        `SCB1 route requires ${capability.route.inputs.length - 1} collection witnesses, `
+        + `got ${routeWitnesses.length}`,
+      );
+    }
+    const routeArgs = [blob, ...routeWitnesses];
     return new StatefulFunctionCall(
-      this._createBuilder('__scb1', [blob], {
+      this._createBuilder('__scb1', routeArgs, {
         abiFunction: capability.route,
         compilerRouteSelector: hexToBin(capability.selector),
       }),
-      this as unknown as StatefulContract, '__scb1', [blob],
+      this as unknown as StatefulContract, '__scb1', routeArgs,
     );
   }
 

@@ -26,6 +26,20 @@ Implementation snapshot (2026-07-23):
 - The final validation snapshot passes 2,280 compiler tests and 3,229 SDK tests; the SDK total
   excludes the repository's existing 24 skips and 9 todos.
 
+Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `ping()` fixture):
+
+| covenant | direct bytes | batch bytes | batch delta |
+|---|---:|---:|---:|
+| B parser/dispatcher | 369 | 1,217 | +848 |
+| A, 2 rows | 407 | 515 | +108 |
+| A, 3 rows | 426 | 539 | +113 |
+| A, 8 rows | 518 | 659 | +141 |
+
+`BatchCostRegression.test.ts` freezes these deployed-byte measurements and the 760-byte hidden route
+body. They are compiler footprint evidence, not a substitute for transaction-specific VM metrics:
+the final Release 0 gate still records evaluated instruction cost, pushed bytes, stack/memory peaks,
+unlocking sizes, and complete transaction sizes from constructed 2/3/8-row transactions.
+
 This is the first deployable composition protocol. It covers:
 
 - several local/public handlers executed by one state owner;

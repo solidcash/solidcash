@@ -376,6 +376,19 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
 
     await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow();
 
+    const decoySecondPush = decodeTransactionUnsafe(hexToBin(captured));
+    const decoyInput = decoySecondPush.inputs.find((input) => {
+      const first = decodeAuthenticationInstructions(input.unlockingBytecode)[0];
+      return 'data' in first && binToHex(first.data) === '53434231';
+    });
+    expect(decoyInput).toBeDefined();
+    const shiftedUnlock = new Uint8Array(decoyInput!.unlockingBytecode.length + 1);
+    shiftedUnlock.set(decoyInput!.unlockingBytecode.slice(0, 5));
+    shiftedUnlock[5] = 0; // canonical empty decoy becomes the positional second push
+    shiftedUnlock.set(decoyInput!.unlockingBytecode.slice(5), 6);
+    decoyInput!.unlockingBytecode = shiftedUnlock;
+    await expect(send(binToHex(encodeTransaction(decoySecondPush)))).rejects.toThrow();
+
     const duplicateInput = decodeTransactionUnsafe(hexToBin(captured));
     const calleeInput = duplicateInput.inputs.find((input) => {
       const first = decodeAuthenticationInstructions(input.unlockingBytecode)[0];

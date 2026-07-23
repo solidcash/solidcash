@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { alicePkh, bobPkh, carolPkh } from '../fixture/vars.js';
@@ -117,6 +119,10 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
         }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(tokenArtifact.diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'error',
+      code: 'contract-size-limit',
+    }));
     expect(tokenArtifact.hiddenBatch).toMatchObject({
       minimumRows: 2,
       maximumRows: 2,
@@ -184,6 +190,50 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
     await token.getFunction('checkBalance')(bobPkh, 20n).send();
     await token.getFunction('checkBalance')(carolPkh, 40n).send();
     await token.getFunction('checkAllowance')(alicePkh, carolPkh, 20n).send();
+
+    // Bypass the SDK's physical-alias gate after construction. Replacing the
+    // second recipient predecessor with the first creates a duplicate input
+    // outpoint; BCH consensus rejects it, while the untouched transaction is
+    // accepted. This locks the on-chain/consensus half of the alias argument.
+    const aliasProbe = caller.getFunction('route')(
+      alicePkh, bobPkh, carolPkh, carolPkh, 1n, 1n,
+    );
+    const aliasBuilder = await aliasProbe.build();
+    const sendRaw = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(aliasProbe.send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = sendRaw;
+    }
+    const aliased = decodeTransactionUnsafe(hexToBin(captured));
+    const entryInputIndices = aliasBuilder.inputs
+      .map((input, index) => ({ input, index }))
+      .filter(({ input }) => input.token?.category === tokenCategory
+        && input.token.nft?.capability === 'mutable')
+      .map(({ index }) => index);
+    expect(entryInputIndices.length).toBeGreaterThanOrEqual(4);
+    const firstRecipient = entryInputIndices.at(-2)!;
+    const secondRecipient = entryInputIndices.at(-1)!;
+    aliased.inputs[secondRecipient].outpointTransactionHash =
+      aliased.inputs[firstRecipient].outpointTransactionHash.slice();
+    aliased.inputs[secondRecipient].outpointIndex =
+      aliased.inputs[firstRecipient].outpointIndex;
+    await expect(sendRaw(binToHex(encodeTransaction(aliased)))).rejects.toThrow();
+
+    const forgedLateEntry = decodeTransactionUnsafe(hexToBin(captured));
+    const mutableOutputs = forgedLateEntry.outputs.filter((output) =>
+      output.token?.nft?.capability === 'mutable'
+      && binToHex(output.token.category) === tokenCategory);
+    expect(mutableOutputs.length).toBeGreaterThanOrEqual(4);
+    mutableOutputs.at(-1)!.token!.nft!.commitment[0] ^= 1;
+    await expect(sendRaw(binToHex(encodeTransaction(forgedLateEntry)))).rejects.toThrow();
+
+    await expect(sendRaw(captured)).resolves.toBeTypeOf('string');
 
     await expect(caller.getFunction('route')(
       alicePkh, bobPkh, bobPkh, carolPkh, 1n, 1n,

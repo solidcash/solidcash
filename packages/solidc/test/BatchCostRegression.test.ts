@@ -82,6 +82,23 @@ describe('Release 0 SCB1 compiler cost regression', () => {
     });
   });
 
+  it('reports an artifact error when library compilation exceeds the BCH script limit', () => {
+    const source = `pragma solidcash >=0.8.0;
+      contract Oversized() {
+        function run() public {
+          assembly { ${Array.from({ length: 10_050 }, () => 'OP_NOP').join(' ')} }
+          require(true);
+        }
+      }`;
+    const artifact = compileString(source);
+    expect(byteLength(artifact)).toBeGreaterThan(10_000);
+    expect(artifact.diagnostics).toContainEqual({
+      severity: 'error',
+      code: 'contract-size-limit',
+      message: expect.stringMatching(/exceeding the BCH 10000-byte input-script limit/),
+    });
+  });
+
   it.each([
     [2, 407, 518, 111, 431],
     [3, 426, 542, 116, 444],

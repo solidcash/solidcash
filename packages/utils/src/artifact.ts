@@ -543,6 +543,11 @@ export interface Artifact {
       }[];
     }[];
   };
+  diagnostics?: readonly {
+    severity: 'warning' | 'error';
+    code: string;
+    message: string;
+  }[];
   compiler: {
     name: string;
     version: string;

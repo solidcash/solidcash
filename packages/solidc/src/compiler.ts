@@ -956,6 +956,15 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  const artifactBytes = debug.bytecode.length / 2;
+  if (artifactBytes > MAX_INPUT_BYTESIZE) {
+    artifact.diagnostics = [{
+      severity: 'error',
+      code: 'contract-size-limit',
+      message: `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the BCH `
+        + `${MAX_INPUT_BYTESIZE}-byte input-script limit; it cannot be deployed without splitting or reduction.`,
+    }];
+  }
   const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
   if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
   const invocationAnalysis = analyseContractInvocations(ast.contract);

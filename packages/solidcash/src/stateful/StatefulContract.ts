@@ -7703,7 +7703,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
                     // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
                     const effKeyValue = bEntryAccess.keySources?.[0]?.kind === 'msgSender'
-                      ? this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode
+                      ? hexToBin(this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode)
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -7716,7 +7716,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       );
                       const encodedKeys = bEntryAccess.keyParams.map((name, keyIndex) => {
                         if (bEntryAccess.keySources?.[keyIndex]?.kind === 'msgSender') {
-                          return this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode;
+                          return hexToBin(
+                            this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode,
+                          );
                         }
                         const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
                         const value = index >= 0 ? bRouteArgs[index] : undefined;
@@ -7732,14 +7734,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       let unsupportedColdEntry = false;
                       try {
                         const exact = compilerRoute ? bList.find(bSlot) : undefined;
+                        if (compilerRoute && !exact) unsupportedColdEntry = true;
                         matchUtxo = compilerRoute
                           ? (exact ?? bList.predecessorOf(bSlot))?.utxo
                           : (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
                         if (compilerRoute && bAbiFunc?.sortedBatchInfo?.some((batch) =>
                           batch.slotIndices.includes(slot.slotIndex ?? 0))) {
-                          if (!exact) {
-                            unsupportedColdEntry = true;
-                          } else {
+                          if (exact) {
                             const routeSlot = slot.slotIndex ?? 0;
                             const blockOffset = bBlockLayout.slots.find((candidate) =>
                               candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;

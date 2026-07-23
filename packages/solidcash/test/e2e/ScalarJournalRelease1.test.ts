@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
+import {
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -103,5 +106,35 @@ describe('Release 1 scalar journal SDK E2E', () => {
 
     // Rejection must leave the consumed owner state untouched.
     await contract.check(0n, 0n).send();
+  });
+
+  it('rejects a forged final journal flush while accepting the untouched transaction', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE, { forceStateful: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { x: 0n, y: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const send = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.repeated(2n, 3n, 5n).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = send;
+    }
+    expect(captured).not.toBe('');
+
+    const forged = decodeTransactionUnsafe(hexToBin(captured));
+    const stateOutput = forged.outputs.find((output) => output.token?.nft?.capability === 'mutable');
+    expect(stateOutput).toBeDefined();
+    stateOutput!.token!.nft!.commitment[0] ^= 1;
+
+    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

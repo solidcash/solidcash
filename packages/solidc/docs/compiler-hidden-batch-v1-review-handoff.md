@@ -97,6 +97,22 @@ protocol version returns to design and measurement before implementation.
 
 ## 6. Validation baseline
 
-To be filled only after the final clean compiler and SDK runs. The review target is the commit which
-adds the completed totals here; reviewers should reject a dirty worktree or a different artifact
-measurement baseline.
+Implementation baseline: `cbb360fc` (`fix(batch): preserve direct msg.sender entry calls`), plus
+this documentation-only validation commit.
+
+Validated on 2026-07-23:
+
+- `yarn build`: all six non-example monorepo packages pass;
+- `packages/solidc: yarn test`: 51 files, 2,298 tests pass;
+- `packages/solidcash: yarn test`: 368 files, 3,256 tests pass, with the repository's existing
+  24 skips and 9 todos;
+- the SDK full run includes the mapping-backed ERC-20 corpus, R4/R5 hostile suites, and the two
+  pre-existing cross-contract `msg.sender` C2 fixtures which guard direct-route compatibility.
+
+The first SDK validation attempt exposed a direct-call regression: final SCB1 unlocker replacement
+had also replaced an ordinary callee's already-complete `msg.sender` unlocker. `cbb360fc` scopes
+that replacement, multi-key lookup, and iterative derivation to compiler routes; the focused
+compatibility fixtures and the subsequent full suite pass.
+
+Reviewers should reject a dirty worktree or artifact measurements which differ from the frozen
+values in the specification.

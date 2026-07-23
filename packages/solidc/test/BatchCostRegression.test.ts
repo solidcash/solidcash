@@ -25,6 +25,19 @@ contract A(bytes target) {
   }
 }`;
 
+const ERC20_CALLEE = `pragma solidcash >=0.8.0;
+contract Token() {
+  mapping(bytes20 => bigint) balances;
+  mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+  function transferFrom(bytes20 from, bytes20 to, bytes20 spender, bigint amount) public {
+    require(this.allowances[from][spender] >= amount);
+    require(this.balances[from] >= amount);
+    this.allowances[from][spender] = this.allowances[from][spender] - amount;
+    this.balances[from] = this.balances[from] - amount;
+    this.balances[to] = this.balances[to] + amount;
+  }
+}`;
+
 describe('Release 0 SCB1 compiler cost regression', () => {
   it('pins the B parser/dispatcher covenant footprint', () => {
     const direct = compileString(CALLEE, { forceStateful: true });
@@ -41,17 +54,38 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
     }).toEqual({
       directBytes: 369,
-      batchBytes: 1217,
-      covenantDeltaBytes: 848,
+      batchBytes: 1477,
+      covenantDeltaBytes: 1108,
       expandedOpcodes: 18,
-      routeBodyBytes: 760,
+      routeBodyBytes: 1020,
+    });
+  });
+
+  it('pins the exact two-row ERC20 resource route footprint', () => {
+    const direct = compileString(ERC20_CALLEE, { forceStateful: true });
+    const batch = compileString(ERC20_CALLEE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+
+    expect(batch.hiddenBatch).toMatchObject({ minimumRows: 2, maximumRows: 2 });
+    expect({
+      directBytes: byteLength(direct),
+      batchBytes: byteLength(batch),
+      covenantDeltaBytes: byteLength(batch) - byteLength(direct),
+      routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
+    }).toEqual({
+      directBytes: 3047,
+      batchBytes: 9775,
+      covenantDeltaBytes: 6728,
+      routeBodyBytes: 6532,
     });
   });
 
   it.each([
-    [2, 407, 515, 108, 428],
-    [3, 426, 539, 113, 441],
-    [8, 518, 659, 141, 506],
+    [2, 407, 518, 111, 431],
+    [3, 426, 542, 116, 444],
+    [8, 518, 662, 144, 509],
   ])(
     'pins A comparator growth for %i zero-argument rows',
     (rows, directBytes, batchBytes, covenantDeltaBytes, expandedOpcodes) => {

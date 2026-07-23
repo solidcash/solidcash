@@ -8799,7 +8799,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && { delegateEntriesAfterLowLevel: true }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
         && { lowLevelCallInputBase }),
-      ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),
+      // Every C2 INSERT mints its NEW entry at the beginning of the trailing region. Dynamic-storage
+      // verification adds the runtime C2 trailing count before locating its chunks, so the SDK must emit
+      // both scalar inserts and fixed-batch inserts before those chunks.
+      ...((sortedInserts.length > 0 || batchPredCommitments.size > 0)
+        && { batchEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),

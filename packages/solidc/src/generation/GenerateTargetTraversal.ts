@@ -479,6 +479,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
   private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
+  private delegateC2DynamicPrefixActive = false;
 
   // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
   // must KEEP on the stack (not drop) because a later array-external-call co-spend reads the array from it
@@ -1920,6 +1921,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryDeletes = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
+    this.delegateC2DynamicPrefixActive = false;
     this.coSpendPreservedDynValues = new Set();
     this.pendingTransfers = [];
     this.transferInfos = node.transferInfos ?? [];
@@ -2385,6 +2387,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
       if (!this.functionHasDelegatecall && this.pendingDynamicWrites.size > 0) {
         this.emitDynamicWriteVerification(node);
+      } else {
+        if (this.delegateC2DynamicPrefixActive) {
+          this.emit(Op.OP_FROMALTSTACK, { location: node.body.location, positionHint: PositionHint.END });
+          this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
+          this.delegateC2DynamicPrefixActive = false;
+        }
       }
       if (!this.functionHasDelegatecall && (node.sortedBatchInfo?.length ?? 0) > 0) {
         this.emitGuardedSortedBatchTransitionVerification(node);
@@ -11344,6 +11352,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const VC = VALUE_CHUNK_SIZE;
     const chunkHash = computeCollectionHash(valueChunkSignature(collectionName));
     const vName = this.stack[0]; // v, tracked on top
+    if (this.currentFunctionIsDelegate) {
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    }
 
     // Guard: only chunk when size(v) > 60 (inline values <= 60 need no chunks; matches emitChunkableValueTail).
     this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
@@ -11396,6 +11408,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
     this.emitTrailingBlockBase(blockSize, loc);
+    // Dynamic-storage outputs occupy the first trailing slots for every call mode, including delegate calls.
+    // A long C2 value's chunks follow both those outputs and the optional NEW node.
+    // Delegate builders emit NEW nodes and value chunks before the dynamic family, which is tail-anchored
+    // independently below. Only non-delegate layouts place dynamic outputs before C2 value chunks.
+    if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
     if (hasReturnEventSlot) {
       const roiIdx = this.getStackIndex('__internal__returnOutputIdx', true);
       if (roiIdx >= 0) {
@@ -11404,7 +11421,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, loc); // base -= (returnOutputIdx < 0 ? 1 : 0)
       }
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_isinsert)') + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_isinsert)') + 1)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ADD, loc); // base += isInsert
     this.pushToStack('(vc_base)');
 
@@ -11471,7 +11488,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // loop result
 
     // Orphan-bound: exactly nNew outputs carry the chunk address (no extra chunk outputs to confuse a read).
-    this.emitVerifyChunkUtxoCount('(vc_nnew)', true, loc, '(vc_chunkaddr)');
+    // Delegate derivation carries raw event/proxy accumulators outside the tracked stack, so its orphan-count
+    // lookup is not stable across placeholder rounds. The loop above still pins every required chunk exactly.
+    if (!this.currentFunctionIsDelegate) {
+      this.emitVerifyChunkUtxoCount('(vc_nnew)', true, loc, '(vc_chunkaddr)');
+    } else {
+      // Replace the short-value default on the altstack with the exact loop count already computed above.
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)'))), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    }
 
     // cleanup loop-invariant temps back to the outer snapshot (top-down keeps indices valid)
     while (this.stack.length > outerDepth) { this.emit(Op.OP_DROP, loc); this.popFromStack(); }
@@ -11594,6 +11620,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
       if (aliasOwner !== undefined) this.emit(Op.OP_ENDIF, loc);
       return node;
+    }
+
+    if (this.currentFunctionIsDelegate) {
+      // Preserve the number of C2-family outputs that precede delegate dynamic chunks. Compute it while both
+      // H(k) and the transformed value are available, stash it below balanced nested altstack use, and restore
+      // it after the branch-heavy upsert has returned to its tracked stack shape.
+      this.emitEntryInputIndex(slotIndex, loc, 0);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); // H(k), above [v,H,coSlot]
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); // isInsert
+      if (this.isChunkableValue(collection.innermostValueType)) {
+        this.emit(Op.OP_FROMALTSTACK, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emit(Op.OP_TOALTSTACK, loc);
+      if (this.delegateC2DynamicPrefixActive) {
+        this.emit(Op.OP_FROMALTSTACK, loc);
+        this.emit(Op.OP_FROMALTSTACK, loc);
+        this.emit(Op.OP_ADD, loc);
+        this.emit(Op.OP_TOALTSTACK, loc);
+      }
+      this.delegateC2DynamicPrefixActive = true;
     }
 
     // 3. entry address -> [v, Hk32, entryAddr]
@@ -14637,6 +14686,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const CHUNK = 120;
+    const hasDelegatePrefix = this.delegateC2DynamicPrefixActive;
     // The trailing chunk output index is blockSize+i, but blockSize COUNTS the returnEvent slot, which a plain
     // send does NOT materialize (only .emitReturn(), i.e. __internal__returnOutputIdx >= 0, creates it). An
     // unmaterialized returnEvent shifts the trailing chunks down by 1, so subtract 1 at runtime when
@@ -14767,17 +14817,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
       // outIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(foreign-read counts)
       //          + sum(prior written-var counts) + i
-      this.emitTrailingBlockBase(blockSize, loc);
-      this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
-      const batchCountIdx = this.getStackIndex('__internal__c2BatchTrailingCount', true);
-      if (batchCountIdx >= 0) {
-        this.emit(encodeInt(BigInt(batchCountIdx + 1)), loc);
-        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+      if (this.currentFunctionIsDelegate) {
+        // Delegate dynamic chunks are emitted last. Anchor the family from the transaction tail, independent of
+        // the runtime-sized C2/value prefix that precedes it. The SDK's exact-fee funder contributes one final
+        // P2PKH remainder output after covenant-managed outputs.
+        this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+        this.emit(Op.OP_1SUB, loc);
+        for (const [, write] of writesInDeclOrder) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(write.valueStackName) + 1)), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+          this.emit(encodeInt(BigInt(CHUNK - 1)), loc); this.emit(Op.OP_ADD, loc);
+          this.emit(encodeInt(BigInt(CHUNK)), loc); this.emit(Op.OP_DIV, loc);
+          this.emit(Op.OP_SUB, loc);
+        }
+      } else {
+        this.emitTrailingBlockBase(blockSize, loc);
+        this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
+        const batchCountIdx = this.getStackIndex('__internal__c2BatchTrailingCount', true);
+        if (batchCountIdx >= 0) {
+          this.emit(encodeInt(BigInt(batchCountIdx + 1)), loc);
+          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+        }
       }
       // Subtract 1 when the reserved returnEvent slot is NOT materialized (returnOutputIdx < 0) - it does not
       // occupy an output, so the trailing chunks sit one lower. One untracked value (the running outIdx-partial)
       // is above the tracked stack here, hence the +1 pick offset.
-      const roiIdx = hasReturnEventSlot ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
+      const roiIdx = !this.currentFunctionIsDelegate && hasReturnEventSlot
+        ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
       if (roiIdx >= 0) {
         this.emit(encodeInt(BigInt(roiIdx + 1)), loc);
         this.emit(Op.OP_PICK, loc);          // [..., outIdxPartial, returnOutputIdx]
@@ -14785,7 +14852,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_LESSTHAN, loc);       // [..., outIdxPartial, (returnOutputIdx < 0 ? 1 : 0)]
         this.emit(Op.OP_SUB, loc);            // [..., outIdxPartial - unmaterialized-returnEvent]
       }
-      for (const ft of fReadTempNames) {
+      for (const ft of (this.currentFunctionIsDelegate ? [] : fReadTempNames)) {
         this.emit(encodeInt(BigInt(this.getStackIndex(ft) + 1)), loc); // +1: running outIdx-partial untracked
         this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_ADD, loc);
@@ -14874,6 +14941,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROLL, loc);
       this.emit(Op.OP_DROP, loc);
       this.removeFromStack(idx);
+    }
+    if (hasDelegatePrefix) {
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.delegateC2DynamicPrefixActive = false;
     }
   }
 
@@ -15155,7 +15227,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * old-chunk consumption. Scans all inputs/outputs (mirrors emitMintingNftUniqueness).
    */
   private emitVerifyChunkUtxoCount(
-    expectedCountName: string, isOutput: boolean, loc: SingleLocationData, addrName: string = '(dyn_chunkaddr)',
+    expectedCountName: string, isOutput: boolean, loc: SingleLocationData,
+    addrName: string = '(dyn_chunkaddr)', rawExpectedOffset = 0,
   ): void {
     const countOp = isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT;
     const bytecodeOp = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
@@ -15194,7 +15267,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(encodeInt(BigInt(this.getStackIndex('(chunk_scan_count)'))), loc);
     this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1)), loc); // +1: count copy
+    this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1 + rawExpectedOffset)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
 

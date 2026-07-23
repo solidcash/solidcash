@@ -883,6 +883,9 @@ export class StatefulTransactionBuilder {
 
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
   getValueChunkOutputBase(): number {
+    if (this.delegateEntriesAfterLowLevel) {
+      return this.getLoopEntryOutputBase() + this._loopEntryOutputCount();
+    }
     let base = this.getChunkOutputBase();
     for (const dv of this.dynamicChunkVars) base += (this.chunkRawCommitments.get(dv.name) ?? []).length;
     if (!this.batchEntriesBeforeDynamicChunks) {
@@ -976,14 +979,23 @@ export class StatefulTransactionBuilder {
       : this.lowLevelCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       ) + this.lowLevelCallRawInputs.length;
-    return base + lowLevelCallOutputCount + this.iterationEntryInputs.length
-      + (this.batchEntriesBeforeDynamicChunks ? this._loopEntryOutputCount() : 0);
+    const trailingBase = base + lowLevelCallOutputCount + this.iterationEntryInputs.length;
+    if (this.delegateEntriesAfterLowLevel) {
+      return trailingBase + this._loopEntryOutputCount() + this._valueChunkOutputCount()
+        + this.pendingOutputs.length;
+    }
+    return trailingBase + (this.batchEntriesBeforeDynamicChunks ? this._loopEntryOutputCount() : 0);
   }
 
   private _dynamicChunkOutputCount(): number {
     let n = 0;
     for (const dv of this.dynamicChunkVars) n += (this.chunkRawCommitments.get(dv.name) ?? []).length;
     return n;
+  }
+
+  private _valueChunkOutputCount(): number {
+    return this.valueChunkOutputs.length
+      + [...this.valueChunkRawCommitments.values()].reduce((sum, commitments) => sum + commitments.length, 0);
   }
 
   getLoopEntryVars(): Array<{ collection: string; lockingBytecode: Uint8Array }> {
@@ -999,12 +1011,15 @@ export class StatefulTransactionBuilder {
    * determines how many trailing entry NFT outputs are created (the runtime iteration count N).
    */
   setLoopEntryCommitments(collection: string, commitments: string[]): this {
-    this.loopEntryCommitments.set(collection, commitments);
+    const required = this.requiredLoopEntryCounts.get(collection);
+    this.loopEntryCommitments.set(collection, required === undefined ? commitments : commitments.slice(0, required));
     return this;
   }
 
   requireLoopEntryCount(collection: string, count: number): this {
     this.requiredLoopEntryCounts.set(collection, count);
+    const existing = this.loopEntryCommitments.get(collection);
+    if (existing && existing.length > count) this.loopEntryCommitments.set(collection, existing.slice(0, count));
     return this;
   }
 
@@ -1024,6 +1039,10 @@ export class StatefulTransactionBuilder {
    */
   getLoopEntryOutputBase(): number {
     if (this.batchEntriesBeforeDynamicChunks) return this.getChunkOutputBase() - this._loopEntryOutputCount();
+    if (this.delegateEntriesAfterLowLevel) {
+      return this.getChunkOutputBase() - this.pendingOutputs.length
+        - this._valueChunkOutputCount() - this._loopEntryOutputCount();
+    }
     return this.getChunkOutputBase() + this._dynamicChunkOutputCount();
   }
 
@@ -1985,7 +2004,7 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    if (this.batchEntriesBeforeDynamicChunks) {
+    if (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
       for (const lv of this.loopEntryVars) {
         for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
           const entryOutput = {
@@ -1999,29 +2018,50 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // Dynamic-storage chunk outputs (trailing, after the preserved iteration-entry outputs). One mutable NFT
-    // per chunk of each dynamic var; commitments come from auto-derivation (the covenant builds them on-chain).
-    for (const dv of this.dynamicChunkVars) {
-      const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
-      for (const commitment of commitments) {
-        const chunkOutput = {
-          to: dv.lockingBytecode,
-          amount: 1200n,
-          token: {
-            amount: 0n,
-            category: this.categoryId,
-            nft: { capability: 'mutable' as const, commitment },
-          },
-        };
-        // Larger chunk commitments need more than the 1200-sat floor to clear the dust threshold.
+    const appendValueChunks = (): void => {
+      for (const vco of this.valueChunkOutputs) {
+        const chunkOutput = { ...vco };
         chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
         builder.addOutput(chunkOutput);
       }
-    }
+      for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
+        for (const commitment of this.valueChunkRawCommitments.get(collection) ?? []) {
+          const chunkOutput = {
+            to: lockingBytecode, amount: 1200n,
+            token: { amount: 0n, category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment } },
+          };
+          chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+          builder.addOutput(chunkOutput);
+        }
+      }
+    };
+    if (this.delegateEntriesAfterLowLevel) appendValueChunks();
+
+    const appendDynamicChunks = (): void => {
+      for (const dv of this.dynamicChunkVars) {
+        const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
+        for (const commitment of commitments) {
+          const chunkOutput = {
+            to: dv.lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n,
+              category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment },
+            },
+          };
+          chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+          builder.addOutput(chunkOutput);
+        }
+      }
+    };
+    if (!this.delegateEntriesAfterLowLevel) appendDynamicChunks();
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
     // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
-    for (const lv of (this.batchEntriesBeforeDynamicChunks ? [] : this.loopEntryVars)) {
+    for (const lv of (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel
+      ? [] : this.loopEntryVars)) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {
@@ -2041,26 +2081,13 @@ export class StatefulTransactionBuilder {
     // P5b value chunks (Design D), placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
     // NEW nodes), matching the covenant's base masterInput+blockSize+isInsert. DIRECT values are injected exactly
     // (valueChunkOutputs); COMPUTED values are trace-derived (valueChunkVars, commitments filled by auto-derivation).
-    for (const vco of this.valueChunkOutputs) {
-      const chunkOutput = { ...vco };
-      chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-      builder.addOutput(chunkOutput);
-    }
-    for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
-      for (const commitment of this.valueChunkRawCommitments.get(collection) ?? []) {
-        const chunkOutput = {
-          to: lockingBytecode, amount: 1200n,
-          token: { amount: 0n, category: this.categoryId, nft: { capability: 'mutable' as const, commitment } },
-        };
-        chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-        builder.addOutput(chunkOutput);
-      }
-    }
+    if (!this.delegateEntriesAfterLowLevel) appendValueChunks();
 
     // Append any extra outputs buffered via addOutput()
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
     }
+    if (this.delegateEntriesAfterLowLevel) appendDynamicChunks();
 
     // No change output - adding outputs past the block range changes
     // OP_TXOUTPUTCOUNT, which the covenant's bounds checks rely on.

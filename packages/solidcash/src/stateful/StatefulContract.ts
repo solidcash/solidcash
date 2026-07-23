@@ -20,6 +20,7 @@ import {
   parseValueChunkCommitment,
   splitValueIntoValueChunks,
   VALUE_HEAD_SIZE,
+  VALUE_CHUNK_SIZE,
   joinChunks,
   joinValueChunks,
   DYNAMIC_CHUNK_SIZE,
@@ -373,10 +374,14 @@ const LOOP_ENTRY_MAX_ITERATIONS = 256;
 function extractCommitmentMapFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
   outputIndexRange?: { min: number; max: number },
+  scanFullTrace = false,
 ): Map<number, string> {
   // Slice to the redeem (locking) script phase, subroutine-aware (see findRedeemScriptStart).
   const p2shStart = findRedeemScriptStart(fullTrace);
-  const lockingScriptTrace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
+  // Delegate calls can return from the longest redeem-script instruction array and perform their
+  // output pins in a later invocation phase. In that case, scan the complete trace; the output-index
+  // range and tightly-coupled OTC/EQUALVERIFY pattern still prevent unrelated matches.
+  const lockingScriptTrace = scanFullTrace || p2shStart < 0 ? fullTrace : fullTrace.slice(p2shStart);
 
   // Use a Map keyed by output index to keep the LAST match for each output.
   // For loops that write the same state variable multiple times, intermediate
@@ -393,7 +398,7 @@ function extractCommitmentMapFromTrace(
     // instructions too (enclosing OP_IF/OP_NOTIF false => controlStack contains a `false`). A
     // dynamic-write loop's exit iteration skips its inline OP_OUTPUTTOKENCOMMITMENT verify, leaving a
     // phantom step whose frozen stack would otherwise be misread as a commitment.
-    if (step.controlStack.some((c) => c === false)) continue;
+    if (!scanFullTrace && step.controlStack.some((c) => c === false)) continue;
 
     if (instruction.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
       sawOutputTokenCommitment = true;
@@ -5335,6 +5340,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Loop mapping writes derive one entry commitment per probe (the VM halts at the first mismatch), so a
         // loop of N iterations needs ~N+2 probes. Give the convergence loop headroom past the default.
         const maxIterations = stb.getLoopEntryVars().length > 0
+          || stb.getValueChunkVars().length > 0
+          || stb.getDynamicChunkVars().length > 0
           ? Math.max(this.maxDerivationIterations, 64)
           : this.maxDerivationIterations;
         let lastTrace: AuthenticationProgramStateCommon[] | undefined;
@@ -5345,6 +5352,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         for (let iter = 0; iter < maxIterations; iter++) {
           const probeBuilder2 = stb.build();
+          // Delegate dynamic outputs are anchored from the transaction tail, immediately before the
+          // fee-funder remainder. Derivation probes do not run STB.send()'s funding phase, so add an
+          // equivalent sentinel remainder to keep their output geometry identical to the submitted tx.
+          if (delegatecallInputIndex !== undefined) {
+            probeBuilder2.addOutput({ to: dummyLbc, amount: 1000n });
+          }
           const transaction2 = probeBuilder2.buildLibauthTransaction();
           const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
 
@@ -5424,7 +5437,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               if (nNew > 0) {
                 const range = { min: chunkOffset, max: chunkOffset + nNew };
-                const chunkCommits = extractCommitmentsFromTrace(fullTrace2, nNew, range) ?? [];
+                const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
+                const chunkCommits = Array.from({ length: nNew }, (_, i) => commitMap.get(chunkOffset + i))
+                  .filter((commit): commit is string => commit !== undefined);
                 if (chunkCommits.length > 0) {
                   const cur = stb.getChunkRawCommitments(dv.name);
                   stb.setChunkRawCommitments(dv.name,
@@ -5433,6 +5448,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               }
               chunkOffset += nNew;
+            }
+          } else if (chunkVars.length > 0) {
+            // Delegate probes can reveal the exact expected chunk commitment before their rewritten data-NFT
+            // state has converged. Preserve that progress instead of leaving the seeded `00` placeholder.
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const range = { min: chunkOffset, max: chunkOffset + existing.length };
+              const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                commitmentProgress += next.length;
+              }
+              chunkOffset += existing.length;
+            }
+          }
+          if (chunkVars.length > 0) {
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const commitMap = extractCommitmentMapFromTrace(
+                fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length },
+                true,
+              );
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                commitmentProgress += next.length;
+              }
+              chunkOffset += existing.length;
             }
           }
 
@@ -5466,7 +5512,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A sorted VALUE upsert mints at most ONE trailing NEW node (insert), so cap its range to a single
               // output - otherwise a chunkable-value insert's value-chunk pin (which emits OP_OUTPUTTOKENCOMMITMENT
               // at loopOffset+1..) would be misread here as extra NEW nodes.
-              const loopMax = isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
+              const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
+              const loopMax = requiredCount > 0
+                ? loopOffset + requiredCount
+                : isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
               const range = { min: loopOffset, max: loopMax };
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
@@ -5483,7 +5532,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // chunks converge the NEW OTC never runs and derivedCount is 0. Do NOT drop the seeded loop entry to 0
               // (that would shift vcBase and misalign the chunk derivation) - keep the count of 1 until NEW derives.
               const hasValueChunks = stb.getValueChunkVars().some((v) => v.collection === lv.collection);
-              const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
               if (isSortedValueMint && derivedCount === 0 && existing.length > 0
                 && (hasValueChunks || requiredCount > 0)) {
                 loopOffset += existing.length;
@@ -5492,7 +5540,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const stillLearning = !isSortedValueMint && derivedCount > 0
                 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
-              for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
+              const acceptedCount = requiredCount > 0 ? Math.min(derivedCount, requiredCount) : derivedCount;
+              for (let i = 0; i < acceptedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
               if (stillLearning) next.push('00');
               while (next.length < requiredCount) next.push(existing[next.length] ?? '00');
               stb.setLoopEntryCommitments(lv.collection, next);
@@ -5523,7 +5572,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
-              for (const [outIdx, commit] of commitMap) derived[outIdx - vcOffset] = commit;
+              for (const [outIdx, commit] of commitMap) {
+                const outputChunkIndex = outIdx - vcOffset;
+                try {
+                  const parsed = parseValueChunkCommitment(commit);
+                  // The next trailing output may belong to another covenant family (for example dynamic
+                  // storage). Accept only the canonical continuation whose encoded index matches its
+                  // position in this value's chunk run.
+                  if (parsed.chunkIndex === outputChunkIndex) derived[outputChunkIndex] = commit;
+                } catch {
+                  // A different output family can have a commitment that is not a C2 continuation at all.
+                }
+              }
               const derivedCount = derived.filter((c) => c !== undefined).length;
               const stillLearning = derivedCount > 0 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
@@ -5532,6 +5592,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               stb.setValueChunkRawCommitments(vcv.collection, next);
               commitmentProgress += derivedCount;
               vcOffset += next.length;
+            }
+          }
+
+          // Value-chunk discovery can shift the delegate dynamic-output base during this probe. Re-scan
+          // dynamic commitments after value chunks have converged so the output-index range reflects the
+          // builder's updated layout (NEW nodes, value chunks, pending outputs, then dynamic chunks).
+          if (chunkVars.length > 0) {
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const commitMap = extractCommitmentMapFromTrace(
+                fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length }, true,
+              );
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                commitmentProgress += next.length;
+              }
+              chunkOffset += existing.length;
             }
           }
 
@@ -5694,6 +5773,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const commits = stb.getValueChunkRawCommitments(vcv.collection).filter((c) => c !== '00');
           if (commits.length !== stb.getValueChunkRawCommitments(vcv.collection).length) {
             stb.setValueChunkRawCommitments(vcv.collection, commits);
+          }
+        }
+
+        // The speculative value-chunk placeholder above can be the first failing output pin in every
+        // primary probe. Once it is removed, delegate execution can finally reach later dynamic-storage
+        // pins. Derive those commitments from the cleaned layout before constructing the final transaction.
+        if (stb.getDynamicChunkVars().length > 0) {
+          for (let iter = 0; iter < 64; iter++) {
+            const cleanedProbe = stb.build();
+            if (delegatecallInputIndex !== undefined) {
+              cleanedProbe.addOutput({ to: dummyLbc, amount: 1000n });
+            }
+            const cleanedTrace = evaluateProbeTrace(this.inner.provider, {
+              inputIndex: delegatecallInputIndex ?? 0,
+              sourceOutputs: generateLibauthSourceOutputs(cleanedProbe.inputs),
+              transaction: cleanedProbe.buildLibauthTransaction(),
+            });
+            lastTrace = cleanedTrace;
+            let changed = false;
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of stb.getDynamicChunkVars()) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const commitMap = extractCommitmentMapFromTrace(
+                cleanedTrace, { min: chunkOffset, max: chunkOffset + existing.length }, true,
+              );
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                changed = true;
+              }
+              chunkOffset += existing.length;
+            }
+            if (!changed || !cleanedTrace.some((s: any) => s.error)) break;
           }
         }
 
@@ -5916,8 +6028,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
     // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
     let returnEmitOutputIndex = -1;
-    if (overrides?.emitReturn && (abiFunction?.outputs?.length ?? 0) > 0) {
-      const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+    const delegatedReturnFunction = overrides?.calls
+      ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
+      .map((call) => call.contract.inner.artifact.abi.find((fn) => fn.name === call.functionName))
+      .find((fn) => (fn?.outputs?.length ?? 0) > 0);
+    const returnAbiFunction = (abiFunction?.outputs?.length ?? 0) > 0 ? abiFunction : delegatedReturnFunction;
+    if (overrides?.emitReturn && (returnAbiFunction?.outputs?.length ?? 0) > 0) {
+      const slot = returnAbiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
       if (!slot) {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
@@ -6086,6 +6203,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return typeof v === 'bigint' ? bigIntToVmNumber(v)
               : v instanceof Uint8Array ? v
                 : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                  : keyType === 'string' ? utf8ToBin(v)
+                    : /^bytes(?:\d+)?$/.test(keyType) && v.startsWith('0x') ? hexToBin(v.slice(2))
                   : bigIntToVmNumber(BigInt(v as unknown as string));
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
@@ -6113,9 +6232,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const isSoftDelete = entryAbiFunction?.blockLayout?.slots.some(
             (s) => s.kind === 'entry' && s.slotIndex === slotIndex && s.softDelete,
           ) ?? false;
+          const encodedKv = typeof kv === 'string'
+            ? (collection.keyType === 'string' ? utf8ToBin(kv)
+              : /^bytes(?:\d+)?$/.test(collection.keyType) && kv.startsWith('0x') ? hexToBin(kv.slice(2))
+                : kv)
+            : kv;
           const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
-            keyValue: kv as bigint | boolean | Uint8Array, exists: true,
+            keyValue: encodedKv as bigint | boolean | Uint8Array, exists: true,
           };
           if (isWrite) {
             // Upsert. Present -> UPDATE: co-spend the exact entry; the covenant pins the entry output k' = link||v,
@@ -6176,11 +6300,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const root = tail.slice(4, 36);
                   const headData = tail.slice(36, 64);
                   const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, access.collection, slot, root);
-                  const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+                  const expectedChunkCount = Math.ceil((len - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+                  const chunksByIndex = new Map<number, { chunkIndex: number; chunkData: Uint8Array }>();
+                  for (const chunk of (await this.inner.provider.getUtxos(chunkAddr))
                     .filter((u) => u.token?.category === this.categoryId
                       && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
-                    .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
-                    .sort((a, b) => a.chunkIndex - b.chunkIndex);
+                    .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))) {
+                    // Only canonical continuation indices for this authenticated value belong to the
+                    // reconstruction. Other covenant families can coexist under provider/indexer queries
+                    // and their commitments must not inflate this value's strict chunk count.
+                    if (chunk.chunkIndex < expectedChunkCount) chunksByIndex.set(chunk.chunkIndex, chunk);
+                  }
+                  const chunks = [...chunksByIndex.values()].sort((a, b) => a.chunkIndex - b.chunkIndex);
                   witness = joinValueChunks(headData, chunks, len);
                   if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
                     throw new Error(`C2 value chunks do not match the authenticated root`);
@@ -8750,7 +8881,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const ins of sortedInserts) addLoopCollection(ins.collection);
     const loopEntryVars = orderedLoopCollections.map((name) => ({
       collection: name,
-      lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, name),
+      // Prefer the locking bytecode resolved from the effective (possibly delegate-grafted) state layout above.
+      // `this.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
+      // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
+      lockingBytecode: entryNftLockingBytecodes.get(name)
+        ?? getEntryNftLockingBytecode(this.inner, this.categoryId, name),
     }));
 
     // Extend the block layout with the event/transfer slots of any delegatecall'd impl. A delegate fn's event is
@@ -9186,11 +9321,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     functionName: string, args: FunctionArgument[], calls?: CallInfo[],
   ): Promise<StateValue> {
     const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
-    const outputs = abiFunction?.outputs ?? [];
+    const delegatedReturn = calls
+      ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
+      .map((call) => ({
+        artifact: call.contract.inner.artifact,
+        fn: call.contract.inner.artifact.abi.find((candidate) => candidate.name === call.functionName),
+      }))
+      .find(({ fn }) => (fn?.outputs?.length ?? 0) > 0);
+    const resultFunction = (abiFunction?.outputs?.length ?? 0) > 0 ? abiFunction : delegatedReturn?.fn;
+    const outputs = resultFunction?.outputs ?? [];
     if (outputs.length === 0) {
       throw new Error(`staticCall: '${functionName}' has no return value to read.`);
     }
-    const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+    const slot = resultFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
     if (!slot) {
       throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
     }
@@ -9204,7 +9347,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'Functions that write state and return a value are not yet supported as reads.',
       );
     }
-    const structs = this.inner.artifact.stateLayout?.structs;
+    const structs = delegatedReturn?.artifact.stateLayout?.structs ?? this.inner.artifact.stateLayout?.structs;
     if (outputs.length === 1) {
       const decoded = decodePushdataValue(blob, 0, outputs[0].type, structs).value;
       const addressBytecode = decoded instanceof Uint8Array
@@ -10341,7 +10484,7 @@ export class StatefulFunctionCall {
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0
       && this.entryDeleteSlots.length === 0 && this.extraOutputs.length === 0
       && this.tokenContainerTransfers.length === 0 && this.tokenContainerTransferNfts.length === 0
-      && this.externalCallInfos.length === 0 && this.callInfos.length === 0
+      && this.externalCallInfos.length === 0
       && this.registryExternalStateOverrides.size === 0
       && this.containerDepositAmount === 0n && !this.splitFundingConfig && !this.mergeConfig;
   }
@@ -10356,6 +10499,7 @@ export class StatefulFunctionCall {
     if (this._isPureRead()) {
       return this.parentContract!._deriveReturnValue(
         this.functionName!, (this.functionArgs ?? []) as FunctionArgument[],
+        this.callInfos.length > 0 ? this.callInfos : undefined,
       ).then(onfulfilled as (value: unknown) => TResult1 | PromiseLike<TResult1>, onrejected);
     }
     return this.send().then(onfulfilled, onrejected);

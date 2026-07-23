@@ -141,11 +141,7 @@ class EmitAssertion implements PromiseLike<void> {
   private assert(args?: Record<string, any>): Promise<void> {
     const e = ensureVitest();
     const base = this.negate ? e(this.actual).not : e(this.actual);
-    return Promise.resolve(base.toEmit(this.contract, this.event, args)).then(async () => {
-      // A SolidCash function call is lazy, unlike an ethers ContractTransactionResponse. Hardhat's matcher
-      // observes an already-submitted transaction, so submit the successfully inspected call here as well.
-      if (this.actual && typeof this.actual.send === 'function') await this.actual.send();
-    });
+    return Promise.resolve(base.toEmit(this.contract, this.event, args));
   }
 
   /** Assert emitted args. Accepts an object (field-keyed) or positional values mapped via the event ABI order. */

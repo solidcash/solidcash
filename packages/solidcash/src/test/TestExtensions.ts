@@ -258,18 +258,25 @@ expect.extend({
       return { message, pass: false };
     }
 
-    // Build the transaction to get raw hex.
+    // Build/send the transaction to get raw hex. StatefulFunctionCall is lazy and its final send phase can
+    // derive delegate event commitments that are not present in an earlier inspection build, so inspect the
+    // submitted transaction exactly once when a send method is available.
     // Handle both sync (TransactionBuilder.build() -> string)
     // and async (StatefulFunctionCall.build() -> Promise<TransactionBuilder>) cases.
     let rawTxHex: string;
     try {
-      const buildResult = transaction.build();
-      if (typeof buildResult === 'string') {
-        rawTxHex = buildResult;
+      if (typeof (transaction as any).send === 'function') {
+        const sent = await (transaction as any).send();
+        rawTxHex = sent.hex;
       } else {
-        // Async: StatefulFunctionCall.build() -> TransactionBuilder
-        const innerBuilder = await buildResult;
-        rawTxHex = (innerBuilder as any).build();
+        const buildResult = transaction.build();
+        if (typeof buildResult === 'string') {
+          rawTxHex = buildResult;
+        } else {
+          // Async: StatefulFunctionCall.build() -> TransactionBuilder
+          const innerBuilder = await buildResult;
+          rawTxHex = (innerBuilder as any).build();
+        }
       }
     } catch (buildError: any) {
       const message = (): string => `${matcherHint}\n\nFailed to build transaction: ${buildError?.message ?? buildError}`;

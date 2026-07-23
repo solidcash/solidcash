@@ -233,7 +233,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         const paged = prop.match(/^get([A-Z].*)$/)?.[1];
         if (paged) {
           const collectionName = paged[0].toLowerCase() + paged.slice(1);
-          if (stateVars.has(collectionName) && !implAbi.has(prop)) {
+          if (stateVars.has(collectionName)) {
             return async (indexValue: bigint | number, limitValue: bigint | number) => {
               const entries = await target.proxy.getEntries(collectionName);
               const index = Number(indexValue);
@@ -287,15 +287,6 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         // forwarding the getter would build and send a delegate transaction instead of returning its value.
         if (implAbi.has(prop)) return (...args: FunctionArgument[]) => {
           const fn = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
-          const readStem = /^read(.+)$/.exec(prop)?.[1];
-          if (readStem) {
-            const candidate = `${readStem[0].toLowerCase()}${readStem.slice(1)}`;
-            const collectionName = stateVars.has(candidate) ? candidate : (stateVars.has(`${candidate}s`) ? `${candidate}s` : undefined);
-            if (collectionName) {
-              const connected = target.runner instanceof Signer ? target.proxy.connect(target.runner) : target.proxy;
-              return (connected.state as any)[collectionName](...args);
-            }
-          }
           const call = target.forward(prop, args);
           const selector = fn?.selector;
           const requirements = selector
@@ -306,9 +297,21 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             ...requirements.flatMap((requirement) => requirement.message ? [requirement.message] : []),
             ...sourceReasons,
           ]);
-          if (fn?.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
-            || ((fn?.outputs?.length ?? 0) > 0 && /^(?:read|get|is|has)[A-Z_]/.test(prop))) {
-            return call.staticCall();
+          if ((fn?.outputs?.length ?? 0) > 0
+            && (fn?.writesState === false
+              || fn?.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
+              || /^(?:read|get|is|has)[A-Z_]/.test(prop))) {
+            const result = call.staticCall();
+            const declared = requirements
+              .flatMap((requirement) => requirement.message ? [requirement.message] : []);
+            if (declared.length === 1) {
+              return result.catch((error: unknown) => {
+                const message = error instanceof Error ? error.message : String(error);
+                if (/could not derive the return value/i.test(message)) throw new Error(declared[0]);
+                throw error;
+              });
+            }
+            return result;
           }
           if (prop === 'transferOwnership' && target.runner instanceof Signer && args[0] !== undefined
             && implArtifact.events?.some((event) => event.signature === 'OwnershipTransferred(address,address)')) {

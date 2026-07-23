@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+  binToHex, createVirtualMachineBch2026, decodeAuthenticationInstructions,
+  decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
@@ -195,6 +196,13 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     const builder = await caller.run(2n, 3n).build();
     expect(builder.inputs.filter((input) =>
       input.token?.category === calleeCategory && input.token.nft?.capability === 'minting')).toHaveLength(1);
+    const calleeInputIndex = builder.inputs.findIndex((input) =>
+      input.token?.category === calleeCategory && input.token.nft?.capability === 'minting');
+    const instructions = decodeAuthenticationInstructions(
+      builder.buildLibauthTransaction().inputs[calleeInputIndex].unlockingBytecode,
+    );
+    expect('data' in instructions[0] && binToHex(instructions[0].data)).toBe('53434231');
+    expect('data' in instructions[1] && binToHex(instructions[1].data).startsWith('53434231')).toBe(true);
 
     await caller.run(2n, 3n).send();
 

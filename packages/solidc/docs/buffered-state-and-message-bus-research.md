@@ -649,6 +649,25 @@ suffixes, count substitution, blob extraction position/decoys, signature route c
 introspection divergence, target aliasing, and output/effect substitution.
 This is the final approved synchronous scope.
 
+### Implementation checkpoint (2026-07-23)
+
+The releases now deliver value independently as intended:
+
+| release | implemented increment | current boundary |
+|---|---|---|
+| R1 | reusable scalar write-back handlers and one final authenticated flush | conservative fallback for ineligible closures |
+| R2 | bounded direct/mutual recursion, hidden invocation context, SDK VM preflight | concrete over-budget/signature cases fail closed |
+| R3 | one-entry mapping value threading plus dynamic bytes/string replacement, append, and delete | dynamic cold keys and multi-resource aliases remain conservative |
+| R4 | opt-in hidden SCB1 scalar route and SDK `batch()` construction | default off; collections, returns/events/effects, signatures, and route-sensitive context rejected |
+| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, and one B settlement | default off; graph composition, callbacks, forwarding, and blobs over 75 bytes rejected |
+
+The compiler suite passes 2,280 tests. The SDK suite passes after using the documented
+`getFunction(name)` escape hatch for a source contract whose own ABI function is named `batch`.
+The repository-wide lint target still reports the pre-existing branch-wide backlog, so lint is not
+a release gate claimed by this checkpoint. Neither experimental covenant option may be enabled by
+default merely from this implementation checkpoint; the independent adversarial reviews remain
+normative.
+
 ### Release discipline
 
 Each release has its own artifact capability bit/version, compiler option during hardening, hostile

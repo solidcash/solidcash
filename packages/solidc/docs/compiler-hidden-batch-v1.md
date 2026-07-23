@@ -1,12 +1,27 @@
 # Compiler-hidden batch protocol v1
 
-Status: IMPLEMENTATION TARGET AFTER THE SCALAR JOURNAL. WIRE BYTES FREEZE ONLY AFTER THE BCH 2026
-MEASUREMENT GATE.
-
-Shared analysis and journal work may begin immediately. Batch parser/controller codegen begins only
-after gate 0 fixes the encoding and measured limits below.
+Status: EXPERIMENTAL IMPLEMENTATION, DEFAULT OFF. The scalar journal, hidden owner-local route, and
+one-repeated-callee vertical slice are implemented and VM-tested against BCH 2026. The wire format
+remains versioned experimental covenant surface until the independent Release 4 and Release 5
+reviews and the remaining expansion gates below are complete.
 
 Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d36116aa`.
+
+Implementation snapshot (2026-07-23):
+
+- Releases 1-3 are compiler/SDK fast paths with scalar, one-entry mapping, and dynamic bytes/string
+  journal tests. Unsupported aliases and dynamic cold keys retain the conservative legacy path.
+- Release 4 is enabled only by `experimentalHiddenBatch`. It advertises `hiddenBatch.version == 1`,
+  keeps `__scb1` out of the source ABI, and currently admits signature-free, route-stable scalar
+  handlers. Collections, dynamic state, returns, events/effects, caller-sensitive introspection,
+  and forward calls are explicitly rejected in capability metadata.
+- Release 5 is enabled only by `experimentalRepeatedExternalBatch`. It groups one straight-line
+  repeated callee, builds rows from the arguments actually evaluated by A, requires a compatible
+  Release 4 capability from B, compares the exact positional second push byte-for-byte, and uses
+  one physical B owner. The current comparator intentionally caps the complete blob at 75 bytes.
+- Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
+  omission, injection, argument reordering, target substitution, capability mismatch, and physical
+  owner cardinality. Default enablement remains forbidden until the normative ship gates pass.
 
 This is the first deployable composition protocol. It covers:
 

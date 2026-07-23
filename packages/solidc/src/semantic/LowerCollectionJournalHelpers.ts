@@ -12,10 +12,12 @@ import {
   FunctionDefinitionNode,
   FunctionModifier,
   IdentifierNode,
+  LiteralNode,
   MappingAccessNode,
   MappingAssignNode,
   MappingDeleteNode,
   Node,
+  NullaryOpNode,
   ParameterNode,
   RequireNode,
   ReturnNode,
@@ -55,6 +57,7 @@ interface ActiveMultiCache {
     entry: JournalEntry;
     name: string;
     keys: ExpressionNode[];
+    keyIdentity: string[];
   }>;
   calls: WeakMap<FunctionCallNode, Array<{
     entry: JournalEntry;
@@ -107,7 +110,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const accesses: Array<{
         name: string;
         keys: ExpressionNode[];
-        node: MappingAccessNode | MappingAssignNode | MappingDeleteNode | ArrayAccessNode | ArrayAssignNode | ArrayDeleteNode;
+        node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
+        | ArrayAccessNode | ArrayAssignNode | ArrayDeleteNode;
       }> = [];
       let unsupported = false;
       this.walk(fn.body, (candidate) => {
@@ -172,12 +176,42 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
     }
 
+    // A wrapper-level cache is flushed at the normal function exit. Until
+    // write-back sinking handles every control-flow exit, reject an early
+    // return rather than producing an artifact whose authenticated entries
+    // can settle their default cache values.
+    for (const candidate of this.multiCandidates.values()) {
+      for (const wrapper of node.functions) {
+        if (!wrapper.body) continue;
+        let callsCandidate = false;
+        this.walk(wrapper.body, (child) => {
+          if (child instanceof FunctionCallNode
+            && child.identifier.name === candidate.fn.name
+            && child.parameters.length === candidate.fn.parameters.length) {
+            callsCandidate = true;
+          }
+        });
+        if (callsCandidate) {
+          this.walk(wrapper.body, (child) => {
+            if (child instanceof ReturnNode) {
+              throw new Error(
+                `Collection journal helper '${candidate.fn.name}' cannot be used by `
+                + `'${wrapper.name}' because the wrapper contains an early return`,
+              );
+            }
+          });
+        }
+      }
+    }
+
     // Rewrite call sites before changing arities.
     for (const fn of node.functions) {
       if (!fn.body) continue;
       this.current = this.candidates.get(`${fn.name}/${fn.parameters.length}`);
       this.currentMulti = this.multiCandidates.get(`${fn.name}/${fn.parameters.length}`);
-      this.activeMultiCaches = this.currentMulti ? new Map() : this.prepareMultiCaches(fn.body);
+      this.activeMultiCaches = this.currentMulti
+        ? new Map()
+        : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
       fn.body = this.rewriteBlock(fn.body);
       if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
     }
@@ -474,7 +508,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     return [capture];
   }
 
-  private prepareMultiCaches(body: BlockNode): Map<string, ActiveMultiCache> {
+  private prepareMultiCaches(
+    body: BlockNode,
+    wrapperParameters: Set<string>,
+  ): Map<string, ActiveMultiCache> {
     const caches = new Map<string, ActiveMultiCache>();
     const calls: FunctionCallStatementNode[] = [];
     this.walk(body, (node) => {
@@ -482,32 +519,43 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     });
     for (const statement of calls) {
       if (!(statement instanceof FunctionCallStatementNode)) continue;
-      const key = `${statement.call.identifier.name}/${statement.call.parameters.length}`;
-      const target = this.multiCandidates.get(key);
+      const candidateKey = `${statement.call.identifier.name}/${statement.call.parameters.length}`;
+      const target = this.multiCandidates.get(candidateKey);
       if (!target) continue;
       const keysFor = (entry: JournalEntry): ExpressionNode[] => entry.keyParameters.map((name) => {
         const parameterIndex = target.fn.parameters.findIndex((parameter) => parameter.name === name);
         return cloneNode(statement.call.parameters[parameterIndex]) as ExpressionNode;
       });
-      const cache = caches.get(key) ?? {
+      const identitiesFor = (keys: ExpressionNode[]): string[] => keys.map((key) => {
+        const identity = this.canonicalCacheKey(key, wrapperParameters);
+        if (identity === undefined) {
+          throw new Error(
+            `Collection journal helper '${target.fn.name}' requires a stable key expression; `
+            + 'use a wrapper parameter, literal, or transaction global',
+          );
+        }
+        return identity;
+      });
+      const cache = caches.get(candidateKey) ?? {
         target,
         locals: [],
         calls: new WeakMap(),
       };
-      if (!caches.has(key)) caches.set(key, cache);
+      if (!caches.has(candidateKey)) caches.set(candidateKey, cache);
       const callLocals = target.entries.map((entry) => {
         const keys = keysFor(entry);
+        const keyIdentity = identitiesFor(keys);
         const prior = cache.locals.find((local) =>
           local.entry.collection === entry.collection
-          && local.keys.length === keys.length
-          && local.keys.every((candidate, keyIndex) =>
-            candidate instanceof IdentifierNode && keys[keyIndex] instanceof IdentifierNode
-            && candidate.name === (keys[keyIndex] as IdentifierNode).name));
+          && local.keyIdentity.length === keyIdentity.length
+          && local.keyIdentity.every((candidate, keyIndex) =>
+            candidate === keyIdentity[keyIndex]));
         if (prior) return prior;
         const local = {
           entry,
           name: `__cj_cache_${target.fn.name}_${cache.locals.length}`,
           keys,
+          keyIdentity,
         };
         cache.locals.push(local);
         return local;
@@ -515,6 +563,27 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       cache.calls.set(statement.call, callLocals);
     }
     return caches;
+  }
+
+  /**
+   * Match the storage layer's identity for the call-site forms Release 3
+   * supports. Wrapper parameters remain symbolic; literals use their parsed
+   * value; nullary transaction/message globals use their operator. More
+   * complex expressions are rejected instead of being assigned a weaker
+   * identity which could create two stale locals for one physical entry.
+   */
+  private canonicalCacheKey(
+    key: ExpressionNode,
+    wrapperParameters: Set<string>,
+  ): string | undefined {
+    if (key instanceof IdentifierNode && wrapperParameters.has(key.name)) {
+      return `parameter:${key.name}`;
+    }
+    if (key instanceof LiteralNode) {
+      return `literal:${key.constructor.name}:${key.toString()}`;
+    }
+    if (key instanceof NullaryOpNode) return `nullary:${key.operator}`;
+    return undefined;
   }
 
   private installMultiCaches(body: BlockNode): void {

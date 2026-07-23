@@ -295,6 +295,73 @@ describe('Release 3 collection journal SDK E2E', () => {
     await token.checkAllowance(alicePkh, carolPkh, 30n).send();
   });
 
+  it('does not stale-read a shared literal-key debit across two multi-entry helper calls', async () => {
+    const provider = createTestProvider();
+    const sourceKey = new Uint8Array(20).fill(0x11);
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract LiteralKeyJournal() {
+        mapping(bytes20 => bigint) balances;
+        function mint(bytes20 to, bigint amount) {
+          this.balances[to] = this.balances[to] + amount;
+          require(amount >= 0);
+        }
+        function move(bytes20 from, bytes20 to, bigint amount) internal {
+          require(this.balances[from] >= amount);
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+        function drainTwice(bytes20 first, bytes20 second, bigint a, bigint b) {
+          move(0x1111111111111111111111111111111111111111, first, a);
+          move(0x1111111111111111111111111111111111111111, second, b);
+          require(a >= 0 && b >= 0);
+        }
+        function check(bytes20 owner, bigint expected) {
+          require(this.balances[owner] == expected);
+        }
+      }
+    `, { forceStateful: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const token = StatefulContract.withCategory(inner, categoryId);
+    await token.mint(sourceKey, 100n).send();
+    await token.mint(bobPkh, 0n).send();
+    await token.mint(carolPkh, 0n).send();
+
+    await token.drainTwice(bobPkh, carolPkh, 30n, 30n).send();
+    await token.check(sourceKey, 40n).send();
+    await token.check(bobPkh, 30n).send();
+    await token.check(carolPkh, 30n).send();
+  });
+
+  it('rejects a multi-entry journal wrapper with an early return', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract EarlyReturnJournal() {
+        mapping(bytes20 => bigint) balances;
+        function mint(bytes20 to, bigint amount) {
+          this.balances[to] = this.balances[to] + amount;
+          require(amount >= 0);
+        }
+        function move(bytes20 from, bytes20 to, bigint amount) internal {
+          require(this.balances[from] >= amount);
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+        function payOnce(bytes20 from, bytes20 to, bigint amount, bigint skip) {
+          move(from, to, amount);
+          if (skip == 1) { return; }
+          require(amount >= 0);
+        }
+        function check(bytes20 owner, bigint expected) {
+          require(this.balances[owner] == expected);
+        }
+      }
+    `, { forceStateful: true })).toThrow(
+      /Collection journal helper 'move'.*wrapper contains an early return/,
+    );
+  });
+
   it('preserves dependent MasterChef-style updates across two mapping entries', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;

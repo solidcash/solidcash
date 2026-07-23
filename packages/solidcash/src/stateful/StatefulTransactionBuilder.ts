@@ -244,7 +244,9 @@ export class StatefulTransactionBuilder {
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
   private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
 
-  private pendingReturnEventOutputs: Array<{ categoryId: string; commitment: Uint8Array }> = [];
+  private pendingReturnEventOutputs: Array<{
+    categoryId: string; commitment: Uint8Array; identity: string;
+  }> = [];
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
   private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];
@@ -902,14 +904,14 @@ export class StatefulTransactionBuilder {
   /**
    * Set a return event output for a cross-contract call.
    */
-  setReturnEventOutput(categoryId: string, commitment: Uint8Array): this {
-    // Upsert: replace existing entry for this categoryId, or append.
-    // For multiple return events with the same categoryId (rare), this replaces the first match.
-    const existing = this.pendingReturnEventOutputs.findIndex((r) => r.categoryId === categoryId);
+  setReturnEventOutput(categoryId: string, commitment: Uint8Array, identity = categoryId): this {
+    // A contract may be called more than once in one composed transaction.
+    // Category identifies the token; identity identifies the call/return slot.
+    const existing = this.pendingReturnEventOutputs.findIndex((r) => r.identity === identity);
     if (existing >= 0) {
-      this.pendingReturnEventOutputs[existing] = { categoryId, commitment };
+      this.pendingReturnEventOutputs[existing] = { categoryId, commitment, identity };
     } else {
-      this.pendingReturnEventOutputs.push({ categoryId, commitment });
+      this.pendingReturnEventOutputs.push({ categoryId, commitment, identity });
     }
     return this;
   }

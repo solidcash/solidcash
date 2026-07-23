@@ -4998,7 +4998,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const ec = externalCalls[groupIdx];
           if (ec.hasReturnValues) {
             const group = externalCallUtxoGroups[groupIdx];
-            stb.setReturnEventOutput(group.categoryId, new Uint8Array([0]));
+            stb.setReturnEventOutput(
+              group.categoryId, new Uint8Array([0]), `external-call:${groupIdx}`,
+            );
           }
         }
 
@@ -5157,7 +5159,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             };
             const returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange);
             if (returnCommitments && returnCommitments.length > 0) {
-              stb.setReturnEventOutput(group.categoryId, hexToBin(returnCommitments[0]));
+              stb.setReturnEventOutput(
+                group.categoryId, hexToBin(returnCommitments[0]), `external-call:${groupIdx}`,
+              );
             }
           }
 

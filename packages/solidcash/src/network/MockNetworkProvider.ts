@@ -377,8 +377,11 @@ export default class MockNetworkProvider implements NetworkProvider {
       const signer = signers[index];
       const key = this.signerKey(mnemonic, opts.path, index);
       if (this.fundedSignerKeys.has(key)) continue;
+      // Model prefunding as a fan-out transaction. Only vout 0 is a CashTokens genesis candidate; sibling
+      // outputs are category-neutral and can safely fill C2/output-only block slots.
+      const fundingTxid = this.nextFundingTxid();
       for (let i = 0; i < fundingUtxos; i++) {
-        await this.addUtxo(signer.getAddress(), { txid: this.nextFundingTxid(), vout: 0, satoshis });
+        await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
       }
       this.fundedSignerKeys.add(key);
     }

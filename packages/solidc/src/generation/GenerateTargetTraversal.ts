@@ -661,7 +661,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // must be excluded from an input-relative offset - otherwise the funding input is read one-too-high per
     // preceding output-only slot (e.g. a value-RETURNING deploy function has a returnEvent output before it).
     if (kind === 'deploy') offset -= this.countOutputOnlySlotsBefore(offset);
-    this.emitMasterInputIndex(locationData);
+    // Delegate state lives in the proxy block, but its output-only slots belong to the co-spent implementation
+    // block. Basing events/transfers on proxy index 0 can overlap proxy data or grafted entry outputs whenever
+    // the implementation follows the proxy at a non-zero input index.
+    const delegateOutputOnly = this.currentFunctionIsDelegate
+      && new Set<BlockSlotKind>(['transfer', 'tcTransfer', 'event', 'returnEvent']).has(kind);
+    if (delegateOutputOnly) this.emit(Op.OP_INPUTINDEX, locationData);
+    else this.emitMasterInputIndex(locationData);
     if (offset > 0) {
       this.emit(encodeInt(BigInt(offset)), locationData);
       this.emit(Op.OP_ADD, locationData);
@@ -736,7 +742,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     kind: BlockSlotKind, slotIndex: number, locationData: SingleLocationData,
   ): void {
     this.emitBlockSlotIndex(kind, slotIndex, locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    // Token-free genesis-capable inputs can expose a potential category through introspection. Entry NFTs always
+    // carry a non-empty slot commitment, so commitment presence distinguishes an entry from a plain slot funder.
+    this.emit(kind === 'entry' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_UTXOTOKENCATEGORY, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.emit(encodeInt(0n), locationData);
@@ -16975,16 +16983,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Push the first trailing input/output index after all fixed covenant blocks. */
   private emitTrailingBlockBase(blockSize: number, locationData: SingleLocationData): void {
     if (this.currentFunctionIsDelegate || this.currentFunction.modifiers.includes(FunctionModifier.DELEGATE)) {
-      // The proxy block starts at 0, followed by output-only proxy slots, then
-      // the co-spent implementation block at OP_INPUTINDEX. Trailing dynamic
-      // storage must follow the implementation's preserved master + data NFTs
-      // and fixed C2 predecessor slots. Delegate event slots live in the proxy
-      // block before the implementation and therefore are intentionally excluded.
-      const fixedEntrySlots = this.currentFunction.blockLayout?.slots.filter(
-        (slot) => slot.kind === 'entry',
-      ).length ?? 0;
+      // Delegate trailing storage follows the complete co-spent implementation block. Output-only slots such
+      // as events are implementation-relative too, so using only master/data/entry slots overlaps their outputs.
       this.emit(Op.OP_INPUTINDEX, locationData);
-      this.emit(encodeInt(BigInt(1 + this.dataNftCount + fixedEntrySlots)), locationData);
+      this.emit(encodeInt(BigInt(blockSize)), locationData);
     } else {
       this.emitMasterInputIndex(locationData);
       this.emit(encodeInt(BigInt(blockSize)), locationData);

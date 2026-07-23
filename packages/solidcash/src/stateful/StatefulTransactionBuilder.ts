@@ -144,6 +144,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   lowLevelCallRawInputs?: UnlockableUtxo[];
   /** Delegate implementation master/data outputs precede grafted proxy-state entry slots. */
   delegateEntriesAfterLowLevel?: boolean;
+  /** Absolute input offset selected by the caller's encoded low-level-call index. */
+  lowLevelCallInputBase?: number;
   batchEntriesBeforeDynamicChunks?: boolean;
   iterationEntryInputs?: UnlockableUtxo[];
   // C2 diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
@@ -218,6 +220,7 @@ export class StatefulTransactionBuilder {
   private lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallRawInputs: UnlockableUtxo[];
   private delegateEntriesAfterLowLevel: boolean;
+  private lowLevelCallInputBase?: number;
   private batchEntriesBeforeDynamicChunks: boolean;
   private iterationEntryInputs: UnlockableUtxo[];
   private insertLoopPredecessorInputs: UnlockableUtxo[];
@@ -284,6 +287,7 @@ export class StatefulTransactionBuilder {
     this.lowLevelCallUtxoGroups = options.lowLevelCallUtxoGroups ?? [];
     this.lowLevelCallRawInputs = options.lowLevelCallRawInputs ?? [];
     this.delegateEntriesAfterLowLevel = options.delegateEntriesAfterLowLevel ?? false;
+    this.lowLevelCallInputBase = options.lowLevelCallInputBase;
     this.batchEntriesBeforeDynamicChunks = options.batchEntriesBeforeDynamicChunks ?? false;
     this.entryNfts = options.entryNfts ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
@@ -417,6 +421,9 @@ export class StatefulTransactionBuilder {
             }
             break;
           case 'entry': {
+            // Delegate implementation inputs may intentionally occupy the same physical input offsets as grafted
+            // proxy-state output slots. The implementation is the input; the entry NFT is produced only on output.
+            if (positioned[slot.offset]) break;
             const entryInput = slot.slotIndex !== undefined ? entryInputBySlot.get(slot.slotIndex) : undefined;
             if (entryInput) positioned[slot.offset] = entryInput;
             else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
@@ -433,11 +440,19 @@ export class StatefulTransactionBuilder {
             // Place the actual low-level call input (target master) at its block layout
             // position so the compiler's emitBlockSlotIndex reads the correct INPUTBYTECODE.
             if (llcIdx < lowLevelCallInputs.length) {
-              positioned[slot.offset] = lowLevelCallInputs[llcIdx++];
+              const callOffset = this.lowLevelCallInputBase ?? slot.offset;
+              if (callOffset !== slot.offset) {
+                for (let offset = slot.offset; offset < callOffset; offset++) {
+                  if (positioned[offset]) continue;
+                  const placeholder = funderPool.shift();
+                  if (placeholder) positioned[offset] = placeholder;
+                }
+              }
+              positioned[callOffset] = lowLevelCallInputs[llcIdx++];
               if (this.delegateEntriesAfterLowLevel) {
                 // A delegate's own data NFTs immediately follow its master; grafted entry slots begin after this
                 // implementation block, so keep their absolute offsets instead of compacting the gap away.
-                let off = slot.offset + 1;
+                let off = callOffset + 1;
                 while (llcIdx < lowLevelCallInputs.length && positioned[off] === undefined) {
                   positioned[off++] = lowLevelCallInputs[llcIdx++];
                 }
@@ -1117,6 +1132,13 @@ export class StatefulTransactionBuilder {
   }
 
   getLowLevelCallMasterInputIndex(groupIdx: number): number {
+    if (this.lowLevelCallInputBase !== undefined) {
+      let positionedBase = this.lowLevelCallInputBase;
+      for (let i = 0; i < groupIdx; i++) {
+        positionedBase += 1 + this.lowLevelCallUtxoGroups[i].dataNftUtxos.length;
+      }
+      return positionedBase;
+    }
     let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState inputs
@@ -1557,7 +1579,20 @@ export class StatefulTransactionBuilder {
       }
     }
 
+    // A delegate facet is preserved at its absolute input index. Materialize the proxy's return channel first,
+    // inside the proxy block, so it does not shift behind (and collide with) the facet preservation output.
     if (this.delegateEntriesAfterLowLevel) {
+      for (const re of this.pendingReturnEventOutputs) {
+        builder.addOutput({
+          to: new Uint8Array([0x51]),
+          amount: 800n,
+          token: {
+            amount: 0n,
+            category: re.categoryId,
+            nft: { capability: 'none', commitment: binToHex(re.commitment) },
+          },
+        });
+      }
       for (const group of this.lowLevelCallUtxoGroups.filter((g) => g.callMode === 'delegatecall')) {
         const bMaster = group.masterUtxo as UnlockableUtxo;
         builder.addOutput({
@@ -1642,28 +1677,6 @@ export class StatefulTransactionBuilder {
           },
         },
       });
-    }
-
-    // A delegate implementation evaluates with OP_INPUTINDEX pointing at its own master. Its C2 trailing region
-    // therefore begins immediately after [implementation master, data NFTs, grafted entry slots]. Proxy-only
-    // preservation outputs (notably the caller input used to establish msg.sender) must not split that region.
-    if (this.delegateEntriesAfterLowLevel) {
-      for (const lv of this.loopEntryVars) {
-        const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
-        for (const commitment of commitments) {
-          const entryOutput = {
-            to: lv.lockingBytecode,
-            amount: 1200n,
-            token: {
-              amount: 0n,
-              category: this.categoryId,
-              nft: { capability: 'mutable' as const, commitment },
-            },
-          };
-          entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
-          builder.addOutput(entryOutput);
-        }
-      }
     }
 
     // Create satoshi container preservation output (after entries, before transfers)
@@ -1872,7 +1885,7 @@ export class StatefulTransactionBuilder {
     }
 
     // Create return event outputs (from cross-contract calls with return values)
-    for (const re of this.pendingReturnEventOutputs) {
+    for (const re of (this.delegateEntriesAfterLowLevel ? [] : this.pendingReturnEventOutputs)) {
       builder.addOutput({
         to: new Uint8Array([0x51]), // OP_TRUE
         amount: 800n,
@@ -2008,8 +2021,7 @@ export class StatefulTransactionBuilder {
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
     // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
-    for (const lv of (this.delegateEntriesAfterLowLevel || this.batchEntriesBeforeDynamicChunks
-      ? [] : this.loopEntryVars)) {
+    for (const lv of (this.batchEntriesBeforeDynamicChunks ? [] : this.loopEntryVars)) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {
@@ -2562,10 +2574,17 @@ export class StatefulTransactionBuilder {
       // default change to the funder's own script so over-sized funders don't bloat the fee.
       const changeTo = this.funderChangeAddress
         ?? this.funderUtxos[0].unlocker.generateLockingBytecode();
-      const funderTotal = this.funderUtxos.reduce((sum, f) => sum + f.satoshis, 0n);
+      const funderOutpoints = new Set(this.funderUtxos.map((f) => `${f.txid}:${f.vout}`));
+      const actualFunderInputs = this.allInputs.filter((input) => (
+        funderOutpoints.has(`${input.txid}:${input.vout}`)
+      ));
+      // A configured block-layout funder can be displaced by a covenant input at the same physical offset.
+      // Only inputs that are actually serialized may contribute to change; counting the configured pool would
+      // create value whenever a slot is occupied by a delegate/data input.
+      const funderTotal = actualFunderInputs.reduce((sum, input) => sum + input.satoshis, 0n);
       const covenantInputTotal = this.allInputs
-        .filter((inp) => !this.funderUtxos.some((f) => f.txid === inp.txid && f.vout === inp.vout))
-        .reduce((sum, inp) => sum + inp.satoshis, 0n);
+        .filter((input) => !funderOutpoints.has(`${input.txid}:${input.vout}`))
+        .reduce((sum, input) => sum + input.satoshis, 0n);
       const covenantOutputTotal = finalBuilder.outputs.reduce((sum, o) => sum + o.amount, 0n);
       const available = funderTotal - (covenantOutputTotal - covenantInputTotal);
       const changeAmount = available - neededFee;

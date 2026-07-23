@@ -6,6 +6,7 @@ import {
   Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode,
   FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode, LowLevelCallStatementNode, Node, ParameterNode,
   RequireNode,
+  NullaryOpNode,
   SourceFileNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -81,8 +82,9 @@ import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
-  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure,
+  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
+import { NullaryOperator } from './ast/Operator.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -200,11 +202,28 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const eligible: FunctionDefinitionNode[] = [];
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
+    let routeSensitive = false;
+    let signatureCheck = false;
+    for (const name of collectNamedFunctionClosure(fn, byName)) {
+      for (const candidate of byName.get(name) ?? []) {
+        walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof NullaryOpNode && [
+            NullaryOperator.INPUT_INDEX, NullaryOperator.BYTECODE,
+            NullaryOperator.MSG_SIG, NullaryOperator.MSG_DATA, NullaryOperator.MSG_VALUE,
+          ].includes(node.operator)) routeSensitive = true;
+          if (node instanceof FunctionCallNode
+            && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
+        });
+      }
+    }
     let reason: string | undefined;
     if (fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
     else if (fn.returnTypes.length > 0) reason = 'return-routing-not-enabled';
-    else if (fn.parameters.some((parameter) => parameter.type.toString() === 'sig')) {
+    else if (signatureCheck || fn.parameters.some((parameter) =>
+      ['sig', 'sig[]'].includes(parameter.type.toString()))) {
       reason = 'transaction-signature-route-binding-required';
+    } else if (routeSensitive) {
+      reason = 'direct-versus-batch-introspection-divergence';
     } else if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (footprint.unknown || footprint.effects.length > 0) reason = 'unresolved-or-effectful-handler';

@@ -659,7 +659,7 @@ The releases now deliver value independently as intended:
 | R2 | bounded direct/mutual recursion, hidden invocation context, SDK VM preflight | concrete over-budget/signature cases fail closed |
 | R3 | parameter-keyed multi-entry mapping tuples (including repeated ERC-20 `transferFrom` and dependent MasterChef updates), fixed-array elements, dynamic bytes/string, chunk-backed dynamic-array value threading, and sequential CashToken-container helper effects | CashToken effects are intentionally inlined (not aggregated); dynamic cold keys and runtime-varying multi-resource aliases remain conservative |
 | R4 | opt-in hidden SCB1 scalar/mapping route, ordered common-type results, and one event or value-transfer effect per row | default off; multi-entry aliases, mixed route modes, heterogeneous/multi-results, multi-effects, signatures, and route-sensitive context rejected |
-| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, one B settlement, and executable TreasurySplit/Marketplace/MasterChef topology slices | default off; multiple repeated owners and unresolvable chains fail compilation; graph composition, callbacks, forwarding, and blobs over 223 bytes are rejected |
+| R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, one B settlement, and executable scalar TreasurySplit/Marketplace/MasterChef topology slices | default off; mapping-backed ERC-20 multi-entry settlement is an explicit graduation blocker; multiple repeated owners and unresolvable chains fail compilation; graph composition, callbacks, forwarding, and blobs over 223 bytes are rejected |
 
 The compiler suite passes 2,296 tests. The SDK suite passes 3,255 tests (with the repository's
 existing 24 skips and 9 todos) after using the documented `getFunction(name)` escape hatch for a
@@ -668,6 +668,21 @@ The repository-wide lint target still reports the pre-existing branch-wide backl
 a release gate claimed by this checkpoint. Neither experimental covenant option may be enabled by
 default merely from this implementation checkpoint; the independent adversarial reviews remain
 normative.
+
+The scalar corpus rungs prove the repeated-owner topology but not token storage settlement. A real
+ERC-20 `transferFrom` fixture touches a shared sender balance, a shared nested allowance, and a
+recipient balance which may differ by row. The current R4 route correctly rejects that shape and
+adds no hidden-route bytecode; the R5 SDK consequently rejects its repeated caller before building a
+transaction.
+
+An implementation spike tested a union route containing every global and per-row entry slot. It was
+discarded rather than committed: VM construction showed that shared sender/allowance entries must
+alias one live journal and one predecessor, while inactive branch slots still impose physical
+entry-covenant obligations. Filling them with dummy inputs or duplicating predecessors would violate
+the one-settlement-authority invariant. The next design review should evaluate resource-shaped
+hidden routes, where each capability advertises one exact physical resource layout and the SDK
+selects it only after resolving concrete keys. This is a Release 5 expansion gate, not a reason to
+weaken or delay Releases 1-3.
 
 ### Release discipline
 

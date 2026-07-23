@@ -34,9 +34,13 @@ Implementation snapshot (2026-07-23):
 - Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
   omission, injection, argument reordering, unchecked suffixes, count substitution, the positional
   blob locator, target and output substitution, capability mismatch, duplicate physical inputs,
-  atomic rollback, and physical owner cardinality. Executable corpus slices cover TreasurySplit,
-  Marketplace reward distribution, and MasterChef double mint. Default enablement remains
-  forbidden until the normative independent reviews pass.
+  atomic rollback, and physical owner cardinality. Executable scalar topology slices cover
+  TreasurySplit, Marketplace reward distribution, and MasterChef double mint. They do not model
+  mapping-backed ERC-20 settlement. A real `transferFrom` graduation fixture touching sender
+  balance, recipient balance, and allowance is rejected without hidden-route bytecode overhead,
+  and its repeated external caller fails before transaction construction. Default enablement
+  remains forbidden until that resource shape is supported and the normative independent reviews
+  pass.
 - The final validation snapshot passes 2,296 compiler tests and 3,255 SDK tests; the SDK total
   excludes the repository's existing 24 skips and 9 todos.
 
@@ -119,6 +123,11 @@ artifact is never required to retain an unbounded set of historical routes.
 artifact which retains it and measured against the 10,000-byte limit. Retention is optional: an
 artifact may support only its current route and fail composition with older peers. Raising this cap
 requires a new measured specification; metadata alone cannot bypass it.
+
+The current implementation advertises exactly version 1 and retains no legacy route. Unknown
+versions, selectors, or missing exact capabilities fail before transaction construction. The cap of
+two is a compatibility ceiling for a future artifact, not permission for the current SDK to infer,
+translate, or emulate another version.
 
 ## 3. Local batch encoding
 
@@ -232,7 +241,10 @@ flush()          -> one authenticated backend transition per dirty resource
 ```
 
 Scalar assignments, bytes/string replacement, mappings, arrays, balances, allowances, supply, and
-container operations execute in row order. V1 does not aggregate ERC-20 deltas.
+container operations execute in row order when their physical resource shape is eligible. V1 does
+not aggregate ERC-20 deltas. The implemented hidden route currently admits at most one shared
+parameter-keyed entry per collection; this is insufficient for an ERC-20 transfer which settles
+both sender and recipient entries, and therefore that handler is batch-ineligible.
 
 The journal representation is selected by the Release 1 benchmark. The default candidate is
 authenticated base values plus an append-only `(slot, value)` write log. Deep mutable stack-frame
@@ -314,6 +326,35 @@ Rejected in v1:
 - a batch requiring more than one existing split facet;
 - unresolved dynamic storage witnesses or over-limit batches.
 
+### 7.1 Mapping-backed ERC-20 graduation boundary
+
+The scalar corpus contracts prove repeated-callee topology, caller binding, row order, and one owner
+transition. They intentionally replace real token entries with scalar counters. They are not
+evidence that the current SCB1 physical route can settle an ERC-20 transfer.
+
+A real `transferFrom` requires one shared sender balance, one shared allowance (possibly nested), and
+one recipient balance per logical row. A prototype which placed the union of every possible entry
+slot into one SCB1 route was rejected after VM construction exposed two structural problems:
+
+- repeated sender/allowance aliases need one live journal over one physical predecessor, rather than
+  duplicate entry transitions; and
+- entry slots belonging to inactive handler/row branches still carry physical covenant
+  locking-bytecode and preservation obligations, so unauthenticated dummy inputs cannot safely fill
+  them.
+
+The next candidate MUST use resource-shaped hidden routes: each advertised route describes one exact
+physical resource layout, not the union of unrelated handlers or inactive rows. The compiler may
+share globally keyed entries once and allocate distinct per-row entries only where the canonical
+resource table proves they are distinct. The SDK may select only an exact advertised shape after
+concrete key/owner resolution. Aliases which cannot be represented by one settlement transition
+fail closed.
+
+This candidate is a new measured protocol surface. It requires compiler, SDK, and BCH VM tests for
+same-sender aliasing, repeated and distinct recipients, sender-equals-recipient, nested allowance
+keys, missing/cold entries, row omission/reordering, and one output per dirty entry. Until those
+tests and an independent implementation/covenant review pass, mapping-backed ERC-20 repeated calls
+are a blocker for default-enabling Release 5.
+
 ## 8. Split contracts
 
 The state-owning split root remains the logical owner. All handlers in one batch must execute in one
@@ -387,7 +428,8 @@ Detailed tasks and ship gates are normative in section 8 of
 2. Release 4 MUST prove owner-local malformed-row rejection, ordering, results, and one flush before
    its artifact capability is enabled by default.
 3. Release 5 MUST prove caller/callee binding with TreasurySplit, Marketplace reward triple, and
-   MasterChef double mint before its capability is enabled by default.
+   MasterChef double mint, then prove a mapping-backed ERC-20 transfer resource shape as specified
+   in section 7.1, before its capability is enabled by default.
 4. Every release MUST measure deployed bytecode impact on relevant Effective Acceleration and split
    corpus artifacts; a regression belongs to the release which introduces it.
 5. Releases 4 and 5 each require an independent adversarial review before default enablement.

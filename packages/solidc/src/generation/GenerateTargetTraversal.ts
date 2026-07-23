@@ -1189,17 +1189,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
     const slotsById = new Map<number, Map<string, StateVariableNode>>();
     const callsById = new Map<number, Set<number>>();
+    const writerIds = new Set<number>();
     const scan = (
-      root: Node, slots: Map<string, StateVariableNode>, calls: Set<number>, seen = new Set<Node>(),
+      root: Node, slots: Map<string, StateVariableNode>, calls: Set<number>,
+      writes: { value: boolean }, seen = new Set<Node>(),
     ): void => {
       if (seen.has(root)) return;
       seen.add(root);
-      if ((root instanceof StateAccessNode || root instanceof StateAssignNode || root instanceof DeleteStateNode)
-        && (root.stateVariable ?? this.stateVariables.find((candidate) => candidate.name === root.name))
-        && !(root.stateVariable ?? this.stateVariables.find((candidate) => candidate.name === root.name))!.isDynamic) {
-        const sv = (root.stateVariable
-          ?? this.stateVariables.find((candidate) => candidate.name === root.name))!;
+      const ownedStateVariable = root instanceof StateAccessNode
+        || root instanceof StateAssignNode || root instanceof DeleteStateNode
+        ? this.stateVariables.find((candidate) =>
+          candidate === root.stateVariable || candidate.name === root.name)
+        : undefined;
+      // Deploy-folded child initializers and other embedded foreign ASTs carry
+      // StateVariableNode references which are not owned by this contract.
+      // Never add those physical slots to the caller's journal.
+      if (ownedStateVariable && !ownedStateVariable.isDynamic) {
+        const sv = ownedStateVariable;
         slots.set(`${sv.nftIndex}:${sv.fieldIndex}`, sv);
+        if (root instanceof StateAssignNode || root instanceof DeleteStateNode) writes.value = true;
       }
       if (root instanceof FunctionCallNode && root.resolvedFunction?.functionId !== undefined) {
         calls.add(root.resolvedFunction.functionId);
@@ -1207,9 +1215,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const [key, value] of Object.entries(root)) {
         if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
           || key === 'collection' || key === 'stateVariable') continue;
-        if (value instanceof Node) scan(value, slots, calls, seen);
+        if (value instanceof Node) scan(value, slots, calls, writes, seen);
         else if (Array.isArray(value)) {
-          for (const item of value) if (item instanceof Node) scan(item, slots, calls, seen);
+          for (const item of value) if (item instanceof Node) scan(item, slots, calls, writes, seen);
         }
       }
     };
@@ -1217,15 +1225,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (fn.functionId === undefined || !fn.body) continue;
       const slots = new Map<string, StateVariableNode>();
       const calls = new Set<number>();
-      scan(fn.body, slots, calls);
+      const writes = { value: false };
+      scan(fn.body, slots, calls, writes);
       slotsById.set(fn.functionId, slots);
       callsById.set(fn.functionId, calls);
+      if (writes.value) writerIds.add(fn.functionId);
     }
     let changed = true;
     while (changed) {
       changed = false;
       for (const [id, slots] of slotsById) {
         for (const calleeId of callsById.get(id) ?? []) {
+          if (writerIds.has(calleeId) && !writerIds.has(id)) {
+            writerIds.add(id);
+            changed = true;
+          }
           for (const [key, sv] of slotsById.get(calleeId) ?? []) {
             if (slots.has(key)) continue;
             slots.set(key, sv);
@@ -1235,7 +1249,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.journalSlotsByFunctionId = new Map([...slotsById]
-      .filter(([, slots]) => slots.size > 0)
+      .filter(([id, slots]) => writerIds.has(id) && slots.size > 0)
       .map(([id, slots]) => [id, [...slots.values()]
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
   }
@@ -1974,10 +1988,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentFunction = node;
     const candidateJournalSlots = node.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
-    // A closure entry in journalSlotsByFunctionId means this function, directly or
-    // transitively, reads/writes those scalar slots. Give both its physical wrapper
-    // and internal definition the same explicit context.
-    const activeJournalSlots = candidateJournalSlots;
+    const invokesJournalHandler = node.body
+      ? [...this.collectInvokedFunctionIds(node.body)].some((id) => this.journalSlotsByFunctionId.has(id))
+      : false;
+    // Direct scalar writes retain the established lowering. A hidden context is
+    // needed only by an emitted handler definition or a physical wrapper which
+    // invokes one; this avoids adding pre-state reads to constructors and avoids
+    // changing bytecode for unrelated direct writers.
+    const activeJournalSlots = this.isDefineSubTraversal || invokesJournalHandler
+      ? candidateJournalSlots : [];
     this.activeJournalSlots = activeJournalSlots;
     this.journalSettlementActive = !this.isDefineSubTraversal && activeJournalSlots.length > 0;
     // The AST node is shared by several codegen traversals. Preserve a positive result

@@ -18,6 +18,7 @@ import {
   AssignNode,
   StateAssignNode,
   StateAccessNode,
+  DeleteStateNode,
   MappingAssignNode,
   MappingDeleteNode,
   ArrayAssignNode,
@@ -78,6 +79,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private transitiveSortedWriters: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
+  private constructorCalledFns: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
@@ -128,6 +130,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const allFns = [...node.functions, ...(node.fallbackDef ? [node.fallbackDef] : [])];
     this.transitiveSortedWriters = this.computeTransitiveSortedWriters(allFns);
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
+    this.constructorCalledFns = new Set();
+    if (node.constructorDef?.body) {
+      this.walk(node.constructorDef.body, (candidate) => {
+        if (candidate instanceof FunctionCallNode) this.constructorCalledFns.add(candidate.identifier.name);
+      });
+    }
 
     this.inlinedFns = new Set();
     this.keepDefFns = new Set();
@@ -229,7 +237,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length > 0 || this.hasStoragePointerParam(fn) || this.readsEntry(fn)
-      || this.transitiveSortedWriters.has(fn.name)) return false;
+      || this.transitiveSortedWriters.has(fn.name) || this.constructorCalledFns.has(fn.name)) return false;
     if ((fn.externalCalls?.length ?? 0) > 0 || (fn.externalReads?.length ?? 0) > 0
       || (fn.externalOutStateReads?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0
       || (fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
@@ -244,7 +252,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         || candidate instanceof StateArrayAssignNode
         || candidate.constructor.name.startsWith('StateArray')) unsupported = true;
     });
-    return !unsupported && this.touchesScalarState(fn);
+    return !unsupported && this.writesScalarState(fn);
+  }
+
+  private writesScalarState(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body!, (candidate) => {
+      if ((candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode)
+        && this.stateVarNames.has(candidate.name)) found = true;
+    });
+    return found;
   }
 
   // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.

@@ -114,7 +114,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     }
     if (this.arrayMappings.size === 0 && this.scalarMappings.size === 0 && this.structMappings.size === 0) return node;
     for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
-      if (fn?.body) this.transformFunction(fn);
+      // Collection-journal handlers are deliberately storage-free value
+      // functions. Their original semantic metadata may still reference the
+      // pre-lowered body until the next symbol pass; never synthesize physical
+      // entry caching inside that handler.
+      if (fn?.body && !fn.collectionJournal) this.transformFunction(fn);
     }
     return node;
   }
@@ -224,7 +228,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       const nowLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
       for (const key of Object.keys(n)) {
-        if (key === 'location') continue;
+        // Semantic metadata contains back-references into function definitions,
+        // symbol tables, and collection declarations. Those are not executable
+        // children of this function body; following them can attribute a
+        // callee's or an earlier pre-lowered body's storage operations to the
+        // current function and synthesize phantom cache reads/writes.
+        if (['location', 'resolvedFunction', 'functionReference', 'definition',
+          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) scan(v, nowLoop);
         else if (Array.isArray(v)) for (const el of v) if (el instanceof Node) scan(el, nowLoop);
@@ -298,7 +308,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode && n.identifier.name === name) found = true;
       if (n instanceof VariableDefinitionNode && n.name === name) found = true;
       for (const key of Object.keys(n)) {
-        if (key === 'location' || found) continue;
+        if (found || ['location', 'resolvedFunction', 'functionReference', 'definition',
+          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) scan(v);
         else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) scan(e);

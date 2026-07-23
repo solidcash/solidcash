@@ -130,7 +130,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
     // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry.
     for (const fn of node.functions) {
-      if (!this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
+      if (!fn.collectionJournal
+        && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {

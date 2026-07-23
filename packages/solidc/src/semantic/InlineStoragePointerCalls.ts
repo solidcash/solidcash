@@ -26,6 +26,7 @@ import {
   MappingFieldAssignNode,
   ReturnNode,
   FunctionCallNode,
+  TupleAssignmentNode,
   ConsoleStatementNode,
   EmitStatementNode,
 } from '../ast/AST.js';
@@ -639,6 +640,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
+      } else if (n instanceof TupleAssignmentNode) {
+        // Tuple lvalues are plain element descriptors rather than
+        // IdentifierNodes. Keep an existing-variable capture aligned with
+        // the alpha-renamed declaration when a journal-bearing wrapper is
+        // itself inlined into an entry point.
+        n.elements = n.elements.map((element) => (
+          element.name ? { ...element, name: rn(element.name) } : element
+        ));
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

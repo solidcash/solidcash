@@ -105,4 +105,63 @@ describe('Release 3 collection journal lowering', () => {
       .toContain(append?.id);
     expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
   });
+
+  it('threads an ERC-20 transferFrom tuple across balances and allowance entries', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Token() {
+        mapping(bytes20 => bigint) balances;
+        mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+        function transferFrom(
+          bytes20 from, bytes20 to, bytes20 spender, bigint amount
+        ) internal {
+          require(this.allowances[from][spender] >= amount);
+          require(this.balances[from] >= amount);
+          this.allowances[from][spender] = this.allowances[from][spender] - amount;
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+        function transferFromTwice(
+          bytes20 from, bytes20 to, bytes20 spender, bigint a, bigint b
+        ) {
+          transferFrom(from, to, spender, a);
+          transferFrom(from, to, spender, b);
+          require(a >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const helper = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'transferFrom');
+    const wrapper = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'transferFromTwice');
+    expect(helper).toMatchObject({
+      arity: 7, reads: [], writes: [],
+    });
+    expect(wrapper?.calls).toContain(helper?.id);
+    expect(artifact.abi.find((entry) => entry.name === 'transferFromTwice')?.entryAccesses)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'balances', keyParams: ['from'] }),
+        expect.objectContaining({ collection: 'balances', keyParams: ['to'] }),
+        expect.objectContaining({ collection: 'allowances', keyParams: ['from', 'spender'] }),
+      ]));
+  });
+
+  it('threads MasterChef-style dependent pool accumulators as one tuple journal', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Chef() {
+        mapping(bigint => bigint) accumulated;
+        mapping(bigint => bigint) rewards;
+        function update(bigint pool, bigint amount) internal {
+          this.accumulated[pool] = this.accumulated[pool] + amount;
+          this.rewards[pool] = this.rewards[pool] + this.accumulated[pool];
+        }
+        function updateTwice(bigint pool, bigint a, bigint b) {
+          update(pool, a);
+          update(pool, b);
+          require(a >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const helper = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'update');
+    expect(helper).toMatchObject({ arity: 4, reads: [], writes: [] });
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'updateTwice')?.calls)
+      .toContain(helper?.id);
+  });
 });

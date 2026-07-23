@@ -1,6 +1,7 @@
 # Compiler-hidden batch protocol v1
 
-Status: EXPERIMENTAL IMPLEMENTATION, DEFAULT OFF. The scalar journal, hidden owner-local route, and
+Status: EXPERIMENTAL IMPLEMENTATION, DEFAULT OFF. The scalar and parameter-keyed multi-entry
+journals, hidden owner-local route, and
 one-repeated-callee vertical slice are implemented and VM-tested against BCH 2026. The wire format
 remains versioned experimental covenant surface until the independent Release 4 and Release 5
 reviews and the remaining expansion gates below are complete.
@@ -9,10 +10,12 @@ Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d361
 
 Implementation snapshot (2026-07-23):
 
-- Releases 1-3 are compiler/SDK fast paths with scalar, one-entry mapping, fixed-array element,
-  dynamic bytes/string, and chunk-backed dynamic-array journal tests. A dynamic-array handler
+- Releases 1-3 are compiler/SDK fast paths with scalar, parameter-keyed multi-entry mapping,
+  fixed-array element, dynamic bytes/string, and chunk-backed dynamic-array journal tests.
+  Repeated ERC-20 `transferFrom` threads sender balance, recipient balance, and nested allowance
+  through one tuple; MasterChef-style dependent accumulators use the same reduction. A dynamic-array handler
   value-threads both its encoded length field and tight element blob, then the physical wrapper
-  flushes its chunks once. Unsupported aliases and dynamic cold keys retain the conservative path.
+  flushes its chunks once. Runtime-varying aliases and dynamic cold keys retain the conservative path.
 - Release 4 is enabled only by `experimentalHiddenBatch`. It advertises `hiddenBatch.version == 1`,
   keeps `__scb1` out of the source ABI, and currently admits signature-free, route-stable scalar
   handlers. Collections, dynamic state, returns, events/effects, caller-sensitive introspection,

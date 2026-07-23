@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
-import { alicePkh } from '../fixture/vars.js';
+import { alicePkh, bobPkh, carolPkh } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -143,6 +143,32 @@ async function balance(contract: StatefulContract): Promise<bigint | undefined> 
 }
 
 describe('Release 3 collection journal SDK E2E', () => {
+  it('preserves three-value OP_INVOKE tuple ordering', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract Tuple3() {
+      bigint result;
+      function step(bigint a, bigint b, bigint c) internal returns (bigint, bigint, bigint) {
+        return (a + 1, b + 10, c + 100);
+      }
+      function run() {
+        bigint a = 1;
+        bigint b = 2;
+        bigint c = 3;
+        (a, b, c) = step(a, b, c);
+        this.result = a * 10000 + b * 100 + c;
+        require(true);
+      }
+      function check() { require(this.result == 21303); }
+    }`, { forceStateful: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const tuple = StatefulContract.withCategory(inner, categoryId);
+    await tuple.run().send();
+    await tuple.check().send();
+  });
+
   it('auto-derives one entry settlement for three ordered helper calls', async () => {
     const contract = await deploy();
     await contract.creditThree(alicePkh, 2n, 3n, 5n).send();
@@ -205,5 +231,96 @@ describe('Release 3 collection journal SDK E2E', () => {
     await contract.deleteDynamicAt(0n).send();
     await contract.checkDynamic(0n, 11n).send();
     await contract.checkDynamic(1n, 7n).send();
+  });
+
+  it('executes repeated ERC-20 transferFrom against one three-entry journal', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract JournalToken() {
+        mapping(bytes20 => bigint) balances;
+        mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+
+        function mint(bytes20 to, bigint amount) {
+          this.balances[to] = this.balances[to] + amount;
+          require(amount >= 0);
+        }
+        function approve(bytes20 owner, bytes20 spender, bigint amount) {
+          this.allowances[owner][spender] = amount;
+          require(amount >= 0);
+        }
+        function transferFrom(
+          bytes20 from, bytes20 to, bytes20 spender, bigint amount
+        ) internal {
+          require(this.allowances[from][spender] >= amount);
+          require(this.balances[from] >= amount);
+          this.allowances[from][spender] = this.allowances[from][spender] - amount;
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+        function transferFromTwice(
+          bytes20 from, bytes20 to, bytes20 spender, bigint a, bigint b
+        ) {
+          transferFrom(from, to, spender, a);
+          transferFrom(from, to, spender, b);
+          require(a >= 0);
+        }
+        function checkBalance(bytes20 owner, bigint expected) {
+          require(this.balances[owner] == expected);
+        }
+        function checkAllowance(bytes20 owner, bytes20 spender, bigint expected) {
+          require(this.allowances[owner][spender] == expected);
+        }
+      }
+    `, { forceStateful: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const token = StatefulContract.withCategory(inner, categoryId);
+    await token.mint(alicePkh, 100n).send();
+    await token.mint(bobPkh, 10n).send();
+    await token.approve(alicePkh, carolPkh, 80n).send();
+
+    await token.transferFromTwice(alicePkh, bobPkh, carolPkh, 30n, 20n).send();
+    await token.checkBalance(alicePkh, 50n).send();
+    await token.checkBalance(bobPkh, 60n).send();
+    await token.checkAllowance(alicePkh, carolPkh, 30n).send();
+
+    await expect(
+      token.transferFromTwice(alicePkh, bobPkh, carolPkh, 20n, 20n).send(),
+    ).rejects.toThrow();
+    await token.checkBalance(alicePkh, 50n).send();
+    await token.checkBalance(bobPkh, 60n).send();
+    await token.checkAllowance(alicePkh, carolPkh, 30n).send();
+  });
+
+  it('preserves dependent MasterChef-style updates across two mapping entries', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract JournalChef() {
+        mapping(bigint => bigint) accumulated;
+        mapping(bigint => bigint) rewards;
+        function update(bigint pool, bigint amount) internal {
+          this.accumulated[pool] = this.accumulated[pool] + amount;
+          this.rewards[pool] = this.rewards[pool] + this.accumulated[pool];
+        }
+        function updateTwice(bigint pool, bigint a, bigint b) {
+          update(pool, a);
+          update(pool, b);
+          require(a >= 0);
+        }
+        function check(bigint pool, bigint expectedAcc, bigint expectedReward) {
+          require(this.accumulated[pool] == expectedAcc);
+          require(this.rewards[pool] == expectedReward);
+        }
+      }
+    `, { forceStateful: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const chef = StatefulContract.withCategory(inner, categoryId);
+    await chef.updateTwice(7n, 2n, 3n).send();
+    await chef.check(7n, 5n, 7n).send();
   });
 });

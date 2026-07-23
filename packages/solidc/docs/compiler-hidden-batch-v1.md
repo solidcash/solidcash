@@ -40,12 +40,18 @@ body. They are compiler footprint evidence, not a substitute for transaction-spe
 the final Release 0 gate still records evaluated instruction cost, pushed bytes, stack/memory peaks,
 unlocking sizes, and complete transaction sizes from constructed 2/3/8-row transactions.
 
-The constructed eight-row Release 5 maximum is also pinned under `BCH_2026_05`: the transaction is
-5,669 bytes; A's master input evaluates 949 instructions at operation cost 124,692/1,628,000 with a
-1,994-byte unlocking script; B's master/parser input evaluates 5,183 instructions at operation cost
-550,124/2,150,400 with a 2,647-byte unlocking script. The test additionally freezes pushed bytes,
-hash iterations, and both data-NFT input projections. Two- and three-row transaction projections and
-explicit stack/memory peaks remain to close the complete Release 0 measurement matrix.
+Constructed Release 5 transactions are pinned under `BCH_2026_05`:
+
+| rows | tx bytes | A instructions | A op cost / budget | A unlock | B instructions | B op cost / budget | B unlock |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 5,600 | 1,076 | 135,926 / 1,629,600 | 1,996 | 2,573 | 274,873 / 2,093,600 | 2,576 |
+| 3 | 5,615 | 1,199 | 148,566 / 1,630,400 | 1,997 | 3,236 | 343,076 / 2,104,000 | 2,589 |
+| 8 | 5,669 | 949 | 124,692 / 1,628,000 | 1,994 | 5,183 | 550,124 / 2,150,400 | 2,647 |
+
+The VM tests additionally freeze pushed bytes, hash iterations, and both data-NFT input projections.
+The caller cost is not monotonic because the eight-row zero-argument fixture is simpler than the
+two/three-row argument-bearing handlers. Explicit stack/memory peaks remain to close the complete
+Release 0 measurement matrix.
 
 This is the first deployable composition protocol. It covers:
 

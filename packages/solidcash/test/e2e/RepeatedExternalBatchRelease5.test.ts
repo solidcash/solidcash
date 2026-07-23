@@ -104,6 +104,70 @@ async function deploy(options: { calleeBatch?: boolean } = {}) {
 }
 
 describe('Release 5 repeated external callee batch SDK E2E', () => {
+  it.each([
+    [2, 'run', [2n, 3n], {
+      transactionBytes: 5600,
+      inputs: [
+        {
+          hashes: 33, instructions: 1076, maximumOperationCost: 1629600,
+          operationCost: 135926, pushedBytes: 21956, unlockingBytes: 1996,
+        },
+        {
+          hashes: 6, instructions: 100, maximumOperationCost: 244800,
+          operationCost: 11835, pushedBytes: 683, unlockingBytes: 265,
+        },
+        {
+          hashes: 41, instructions: 2573, maximumOperationCost: 2093600,
+          operationCost: 274873, pushedBytes: 9638, unlockingBytes: 2576,
+        },
+        {
+          hashes: 6, instructions: 100, maximumOperationCost: 244800,
+          operationCost: 11836, pushedBytes: 684, unlockingBytes: 265,
+        },
+      ],
+    }],
+    [3, 'runTriple', [2n, 3n, 4n], {
+      transactionBytes: 5615,
+      inputs: [
+        {
+          hashes: 33, instructions: 1199, maximumOperationCost: 1630400,
+          operationCost: 148566, pushedBytes: 22295, unlockingBytes: 1997,
+        },
+        {
+          hashes: 6, instructions: 100, maximumOperationCost: 244800,
+          operationCost: 11835, pushedBytes: 683, unlockingBytes: 265,
+        },
+        {
+          hashes: 41, instructions: 3236, maximumOperationCost: 2104000,
+          operationCost: 343076, pushedBytes: 11524, unlockingBytes: 2589,
+        },
+        {
+          hashes: 6, instructions: 100, maximumOperationCost: 244800,
+          operationCost: 11836, pushedBytes: 684, unlockingBytes: 265,
+        },
+      ],
+    }],
+  ] as const)('pins BCH 2026 resource usage for the %i-row transaction', async (_rows, name, args, expected) => {
+    const { caller } = await deploy();
+    const builder = await caller.getFunction(name)(...args).build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026();
+    const inputs = builder.inputs.map((_input, inputIndex) => {
+      const result = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+      if (!('metrics' in result)) throw new Error(String(result));
+      return {
+        instructions: result.metrics.evaluatedInstructionCount,
+        operationCost: result.metrics.operationCost,
+        maximumOperationCost: result.metrics.maximumOperationCost,
+        pushedBytes: result.metrics.stackPushedBytes,
+        hashes: result.metrics.hashDigestIterations,
+        unlockingBytes: transaction.inputs[inputIndex].unlockingBytecode.length,
+      };
+    });
+    expect({ transactionBytes: encodeTransaction(transaction).length, inputs }).toEqual(expected);
+  });
+
   it('co-spends one callee owner and applies both logical calls in order', async () => {
     const { caller, callee, calleeCategory } = await deploy();
 

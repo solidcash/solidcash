@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
-import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import {
+  bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { decodePushdataValue, scriptToBytecode } from '@solidcash/utils';
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -63,6 +65,15 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
       { function: 'add', args: [7n] },
     ]).send();
     await contract.check(7n).send();
+  });
+
+  it('rolls back every prior row when a later row fails', async () => {
+    const contract = await deploy();
+    await expect(contract.batch([
+      { function: 'add', args: [7n] },
+      { function: 'add', args: [-1n] },
+    ]).send()).rejects.toThrow();
+    await contract.check(0n).send();
   });
 
   it('executes the frozen eight-row maximum through a minimal PUSHDATA1 blob', async () => {
@@ -271,5 +282,48 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
     ]).send();
     const amounts = getTxOutputs(transaction).map((output) => output.amount);
     expect(amounts).toEqual(expect.arrayContaining([100n, 200n, 300n, 4400n]));
+  });
+});
+
+describe('Release 4 output-substitution adversarial gate', () => {
+  it('rejects a forged ordered-result commitment while accepting the untouched transaction', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ResultSubstitutionRelease4() {
+        bigint total;
+        function add(bigint amount) public returns (bigint) {
+          this.total = this.total + amount;
+          require(amount >= 0);
+          return this.total;
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.batch([
+        { function: 'add', args: [2n] },
+        { function: 'add', args: [3n] },
+      ]).emitReturn().send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+    expect(captured).not.toBe('');
+
+    const forged = decodeTransactionUnsafe(hexToBin(captured));
+    const result = forged.outputs.find((output) => output.token?.nft?.capability === 'none');
+    expect(result).toBeDefined();
+    result!.token!.nft!.commitment[0] ^= 1;
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(captured)).resolves.toBeTypeOf('string');
   });
 });

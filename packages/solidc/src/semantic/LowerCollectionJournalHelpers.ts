@@ -56,6 +56,11 @@ interface ActiveMultiCache {
     name: string;
     keys: ExpressionNode[];
   }>;
+  calls: WeakMap<FunctionCallNode, Array<{
+    entry: JournalEntry;
+    name: string;
+    keys: ExpressionNode[];
+  }>>;
 }
 
 /**
@@ -337,11 +342,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
     const multiTarget = this.multiCandidates.get(`${node.call.identifier.name}/${node.call.parameters.length}`);
     if (multiTarget) {
-      // Expression visitors cannot splice statements into their parent. All
-      // supported collection handlers are void call statements, so this path
-      // is reached only by generic traversal of a shape already rewritten by
-      // rewriteBlock.
-      return node;
+      // A multi-journal invocation lowers to one tuple-capture statement, so
+      // generic traversal through nested loop/switch wrappers can replace it
+      // directly even when rewriteBlock did not own the immediate statement
+      // list.
+      return this.rewriteMultiCall(node.call, multiTarget)[0];
     }
     const target = this.candidates.get(`${node.call.identifier.name}/${node.call.parameters.length}`);
     return target ? this.rewriteCall(node.call, target) : super.visitFunctionCallStatement(node);
@@ -449,16 +454,18 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     if (!cache) {
       throw new Error(`Missing function-scoped collection journal for '${target.fn.name}'`);
     }
+    const callLocals = cache.calls.get(call);
+    if (!callLocals) throw new Error(`Missing call-scoped collection journal for '${target.fn.name}'`);
     const originalArgs = call.parameters.map((argument) => cloneNode(argument) as ExpressionNode);
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call),
       [
-        ...cache.locals.map(({ name }) => this.at(new IdentifierNode(name), call)),
+        ...callLocals.map(({ name }) => this.at(new IdentifierNode(name), call)),
         ...originalArgs,
       ],
     ), call);
     const capture = this.at(new TupleAssignmentNode(
-      cache.locals.map(({ entry, name }) => ({
+      callLocals.map(({ entry, name }) => ({
         name, type: entry.valueType, existing: true,
       })),
       invoked,
@@ -478,31 +485,34 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const key = `${statement.call.identifier.name}/${statement.call.parameters.length}`;
       const target = this.multiCandidates.get(key);
       if (!target) continue;
-      const existing = caches.get(key);
       const keysFor = (entry: JournalEntry): ExpressionNode[] => entry.keyParameters.map((name) => {
         const parameterIndex = target.fn.parameters.findIndex((parameter) => parameter.name === name);
         return cloneNode(statement.call.parameters[parameterIndex]) as ExpressionNode;
       });
-      if (existing) {
-        const nextKeys = target.entries.map(keysFor);
-        if (!existing.locals.every((local, entryIndex) =>
-          local.keys.every((prior, keyIndex) =>
-            prior instanceof IdentifierNode && nextKeys[entryIndex][keyIndex] instanceof IdentifierNode
-            && prior.name === (nextKeys[entryIndex][keyIndex] as IdentifierNode).name))) {
-          throw new Error(
-            `Collection journal '${target.fn.name}' is called with different entry keys in one wrapper`,
-          );
-        }
-        continue;
-      }
-      caches.set(key, {
+      const cache = caches.get(key) ?? {
         target,
-        locals: target.entries.map((entry, index) => ({
+        locals: [],
+        calls: new WeakMap(),
+      };
+      if (!caches.has(key)) caches.set(key, cache);
+      const callLocals = target.entries.map((entry) => {
+        const keys = keysFor(entry);
+        const prior = cache.locals.find((local) =>
+          local.entry.collection === entry.collection
+          && local.keys.length === keys.length
+          && local.keys.every((candidate, keyIndex) =>
+            candidate instanceof IdentifierNode && keys[keyIndex] instanceof IdentifierNode
+            && candidate.name === (keys[keyIndex] as IdentifierNode).name));
+        if (prior) return prior;
+        const local = {
           entry,
-          name: `__cj_cache_${target.fn.name}_${index}`,
-          keys: keysFor(entry),
-        })),
+          name: `__cj_cache_${target.fn.name}_${cache.locals.length}`,
+          keys,
+        };
+        cache.locals.push(local);
+        return local;
       });
+      cache.calls.set(statement.call, callLocals);
     }
     return caches;
   }

@@ -1293,8 +1293,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): StatefulFunctionCall {
     const capability = this.inner.artifact.hiddenBatch;
     if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
-    if (invocations.length < 1 || invocations.length > capability.maximumRows) {
-      throw new Error(`SCB1 batch row count must be between 1 and ${capability.maximumRows}`);
+    const minimumRows = capability.minimumRows ?? 1;
+    if (invocations.length < minimumRows || invocations.length > capability.maximumRows) {
+      throw new Error(
+        `SCB1 batch row count must be between ${minimumRows} and ${capability.maximumRows}`,
+      );
     }
     const structs = this.inner.artifact.structs ?? this.inner.stateLayout?.structs;
     const keyWitnessValues = new Map<string, {
@@ -1321,13 +1324,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const binding of handler.batchKeyWitnesses ?? []) {
         const value = args[binding.inputIndex];
         const encodedValue = encoded[binding.inputIndex] as Uint8Array;
-        const prior = keyWitnessValues.get(binding.routeInput);
+        const routeInput = binding.perRow
+          ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+        const prior = keyWitnessValues.get(routeInput);
         if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
           throw new Error(
-            `SCB1 collection witness '${binding.routeInput}' must identify one physical entry across all rows`,
+            `SCB1 collection witness '${routeInput}' must identify one physical entry`,
           );
         }
-        if (!prior) keyWitnessValues.set(binding.routeInput, { value, encoded: encodedValue });
+        if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
       }
       const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
       if (argsBlob.length > 0xffff) throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
@@ -5157,9 +5162,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // so the placeholder does not affect the entry-commitment extraction below; the final build uses this patch.
           if (group.blockLayout && group.blockInputs) {
             const bScPatch = group.externalContract as StatefulContract | null;
-            const bAbiPatch = bScPatch?.inner.artifact.abi?.find(
-              (f: { name: string }) => f.name === group.functionName,
-            ) as AbiFunction | undefined;
+            const bAbiPatch = group.compilerRoute?.abiFunction
+              ?? bScPatch?.inner.artifact.abi?.find(
+                (f: { name: string }) => f.name === group.functionName,
+              ) as AbiFunction | undefined;
             for (let si = 0; si < group.blockLayout.slots.length; si++) {
               const s = group.blockLayout.slots[si];
               const input = group.blockInputs[si];
@@ -5216,8 +5222,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // mints an entry output B's covenant then verifies. Extract each written entry's commitment from B's trace
           // at its block-slot output index (bOutputBase + si) and hand it to the STB, which mints it at that slot.
           if (group.blockLayout && group.blockInputs) {
-            const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
-              { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
+            const bEntryMap = new Map<number, string>();
+            let entryTrace = fullTrace;
+            const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
+            // A covenant stops at the first mismatching entry output, so one
+            // trace can reveal only the first pending commitment. Feed each
+            // newly revealed commitment back into the probe and continue
+            // until every reachable fixed entry slot has been materialized.
+            for (let pass = 0; pass <= entrySlotCount; pass++) {
+              const revealed = extractCommitmentMapFromTrace(entryTrace,
+                { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
+              let progressed = false;
+              for (const [outputIndex, commitment] of revealed) {
+                if (bEntryMap.has(outputIndex)) continue;
+                bEntryMap.set(outputIndex, commitment);
+                const blockSlot = outputIndex - bOutputBase;
+                if (group.blockLayout.slots[blockSlot]?.kind === 'entry') {
+                  stb.setExternalCallEntryOutput(group.categoryId, blockSlot, commitment);
+                  progressed = true;
+                }
+              }
+              if (!progressed || pass === entrySlotCount) break;
+              const nextProbe = stb.build();
+              entryTrace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
+                inputIndex: bMasterIdx,
+                sourceOutputs: generateLibauthSourceOutputs(nextProbe.inputs),
+                transaction: nextProbe.buildLibauthTransaction(),
+              }) as AuthenticationProgramStateCommon[];
+            }
             const bBlockSize = group.blockLayout.blockSize ?? group.blockInputs.length;
             const insertHandles: Array<{ handle: number; newIdx: number }> = [];
             let insertCount = 0;
@@ -7543,6 +7575,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : undefined);
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
+        const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
         // Cross-contract callee LOOP write metadata (docs/deferrals.md #1): populated after the block build below.
         let bEntryLoopCommitments: string[] | undefined;
         let bEntryLoopStart: number | undefined;
@@ -7571,13 +7604,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // Create proper unlocker for B's master (not just a type cast). If B's function reads msg.sender, append
             // OUR category (docs/deferrals.md #1): B is called BY us, so B's msg.sender = this contract - B's covenant
             // resolves it (emitMsgSenderMintingVerification) from OUR co-spent minting master at that category.
-            const bBlockAbiFn = (callInfo.externalContract.inner.artifact.abi as readonly
-              { name: string; usesMsgSender?: boolean }[]).find((f) => f.name === callInfo.functionName);
+            const bBlockAbiFn = compilerRoute?.abiFunction
+              ?? (callInfo.externalContract.inner.artifact.abi as readonly
+                { name: string; usesMsgSender?: boolean }[]).find((f) => f.name === callInfo.functionName);
+            const bRouteArgs = compilerRoute?.args ?? (callInfo.args ?? []);
             const bBlockArgs = bBlockAbiFn?.usesMsgSender
-              ? [...(callInfo.args ?? []), hexToBin(this.categoryId).reverse()] : (callInfo.args ?? []);
-            const bMasterUnlocker = (callInfo.externalContract.inner.unlock as any)[callInfo.functionName]
-              ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...bBlockArgs)
-              : undefined;
+              ? [...bRouteArgs, hexToBin(this.categoryId).reverse()] : bRouteArgs;
+            const bMasterUnlocker = compilerRoute
+              ? callInfo.externalContract.inner.createCompilerRouteUnlocker(
+                compilerRoute.abiFunction, compilerRoute.selector,
+              )(...bBlockArgs)
+              : ((callInfo.externalContract.inner.unlock as any)[callInfo.functionName]
+                ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...bBlockArgs)
+                : undefined);
             const bMasterUnlockable: UnlockableUtxo = {
               ...bState.masterUtxo!,
               ...(bMasterUnlocker && { unlocker: bMasterUnlocker }),
@@ -7652,7 +7691,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // Find entry matching the key from B's function args
                     const keyParam = bEntryAccess.keyParams[0];
                     const keyParamIdx = bAbiFunc!.inputs.findIndex((inp) => inp.name === keyParam);
-                    const rawKeyValue = keyParamIdx >= 0 ? callInfo.args[keyParamIdx] : undefined;
+                    const rawKeyValue = keyParamIdx >= 0 ? bRouteArgs[keyParamIdx] : undefined;
                     // Convert FunctionArgument to primitive for key matching
                     const keyValue = rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                       || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined;
@@ -7671,13 +7710,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const bList = SortedList.fromUtxos(
                         bEntryUtxos.filter((u) => u.token?.category === externalCategoryId),
                       );
-                      const keyBin = effKeyValue instanceof Uint8Array ? effKeyValue
-                        : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
-                          : bigIntToVmNumber(effKeyValue ? 1n : 0n);
-                      const bSlot = keyToSlot(keyBin);
+                      const encodedKeys = bEntryAccess.keyParams.map((name) => {
+                        const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
+                        const value = index >= 0 ? bRouteArgs[index] : undefined;
+                        if (value instanceof Uint8Array) return value;
+                        if (typeof value === 'bigint') return bigIntToVmNumber(value);
+                        if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
+                        throw new Error(`External SCB1 cannot resolve entry key '${name}'`);
+                      });
+                      const bSlot = keyToSlotMulti(encodedKeys);
+                      let unsupportedColdEntry = false;
                       try {
-                        matchUtxo = (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
+                        const exact = bList.find(bSlot);
+                        matchUtxo = (exact ?? bList.predecessorOf(bSlot))?.utxo;
+                        if (compilerRoute && bAbiFunc?.sortedBatchInfo?.some((batch) =>
+                          batch.slotIndices.includes(slot.slotIndex ?? 0))) {
+                          if (!exact) {
+                            unsupportedColdEntry = true;
+                          } else {
+                            const routeSlot = slot.slotIndex ?? 0;
+                            const blockOffset = bBlockLayout.slots.find((candidate) =>
+                              candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
+                            if (blockOffset === undefined) {
+                              throw new Error(`External SCB1 entry slot ${routeSlot} has no block offset`);
+                            }
+                            const commitment = exact.utxo.token?.nft?.commitment;
+                            if (!commitment) throw new Error(`External SCB1 entry slot ${routeSlot} has no commitment`);
+                            bCompilerInternalArgs[`__internal__c2BatchSlot_${routeSlot}`] = bSlot;
+                            bCompilerInternalArgs[`__internal__c2BatchProof_${routeSlot}`] = BigInt(blockOffset);
+                            bCompilerInternalArgs[`__internal__c2BatchNext_${routeSlot}`] =
+                              decodeEntryCommitment(hexToBin(commitment)).nextKey;
+                            bCompilerInternalArgs[`__internal__c2BatchPredOut_${routeSlot}`] = -1n;
+                          }
+                        }
                       } catch { matchUtxo = undefined; }
+                      if (unsupportedColdEntry) {
+                        throw new Error(
+                          `External SCB1 resource-shaped route requires an existing `
+                          + `${bEntryAccess.collection} entry for slot ${slot.slotIndex}; `
+                          + 'cold-entry predecessor planning is not yet supported',
+                        );
+                      }
                     } else if (keyValue !== undefined && bCollection) {
                       for (const u of bEntryUtxos) {
                         if (u.token?.category !== externalCategoryId) continue;
@@ -7731,10 +7804,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const bTcAccess = bTcAccesses?.[slot.slotIndex ?? 0];
                   if (bTcAccess && bSc) {
                     // The TC categoryId comes from B's function args
-                    const bTcKeyIdx = callInfo.args.findIndex(
+                    const bTcKeyIdx = bRouteArgs.findIndex(
                       (_: unknown, i: number) => bAbiFunc?.inputs[i]?.name === bTcAccess.keyParam,
                     );
-                    const bTcCatValue = bTcKeyIdx >= 0 ? callInfo.args[bTcKeyIdx] : undefined;
+                    const bTcCatValue = bTcKeyIdx >= 0 ? bRouteArgs[bTcKeyIdx] : undefined;
                     const bTcCatId = bTcCatValue instanceof Uint8Array
                       ? binToHex(bTcCatValue) : (bTcCatValue ? String(bTcCatValue) : '');
                     if (bTcCatId) {
@@ -7864,7 +7937,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: callInfo.functionName,
           functionArgs: callInfo.args,
           externalContract: callInfo.externalContract,
-          ...(compilerRoute && { compilerRoute }),
+          ...(compilerRoute && {
+            compilerRoute: {
+              ...compilerRoute,
+              ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
+                internalArgs: {
+                  ...bCompilerInternalArgs,
+                  __internal__c2BatchTrailingCount: 0n,
+                },
+              }),
+            },
+          }),
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
@@ -8100,7 +8183,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const bAbiFunc = group.compilerRoute?.abiFunction
           ?? bAbiAll.find((f) => f.name === group.functionName);
         const bAbiInputs = bAbiFunc?.inputs ?? [];
-        const routeArgs = group.compilerRoute ? [group.compilerRoute.blob] : group.functionArgs;
+        const routeArgs = group.compilerRoute ? group.compilerRoute.args : group.functionArgs;
         const userArgCount = routeArgs.length;
 
         let bFinalArgs = [...routeArgs];
@@ -8123,7 +8206,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (let i = userArgCount; i < bAbiInputs.length; i++) {
           const paramName = bAbiInputs[i].name;
 
-          if (paramName === '__internal__externalCallInputBase') {
+          if (group.compilerRoute?.internalArgs
+            && Object.prototype.hasOwnProperty.call(group.compilerRoute.internalArgs, paramName)) {
+            bFinalArgs.push(group.compilerRoute.internalArgs[paramName]);
+          } else if (paramName === '__internal__externalCallInputBase') {
             // Where this function's external call groups start in the input sequence
             const thisGroupEnd = currentInputBase + 1 + group.dataNftUtxos.length;
             bFinalArgs.push(BigInt(thisGroupEnd));
@@ -8176,6 +8262,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )(...bFinalArgs)
           : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
         group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
+        if (group.blockInputs && group.blockLayout) {
+          const masterOffset = group.blockLayout.slots.find((slot) => slot.kind === 'master')?.offset;
+          if (masterOffset !== undefined && group.blockInputs[masterOffset]) {
+            group.blockInputs[masterOffset] = {
+              ...group.blockInputs[masterOffset],
+              unlocker: bMasterUnlocker,
+            };
+          }
+        }
 
         // Advance to next group
         currentInputBase += 1 + group.dataNftUtxos.length;
@@ -9506,7 +9601,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     externalCall: ExternalCallAbi,
     functionArgs: FunctionArgument[],
     externalContract: StatefulContract,
-  ): { abiFunction: AbiFunction; selector: Uint8Array; blob: Uint8Array } | undefined {
+  ): {
+      abiFunction: AbiFunction;
+      selector: Uint8Array;
+      blob: Uint8Array;
+      args: FunctionArgument[];
+    } | undefined {
     const rows = externalCall.batchInvocations;
     if (!rows) return undefined;
     if (rows.length < 2) throw new Error('Repeated external SCB1 batch must contain at least two rows');
@@ -9517,14 +9617,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `${externalCall.interfaceName} does not advertise the compatible compiler-hidden SCB1 route`,
       );
     }
-    if (rows.length > capability.maximumRows) {
+    const minimumRows = capability.minimumRows ?? 1;
+    if (rows.length < minimumRows || rows.length > capability.maximumRows) {
       throw new Error(
-        `Repeated external SCB1 batch has ${rows.length} rows, exceeding callee limit ${capability.maximumRows}`,
+        `Repeated external SCB1 batch has ${rows.length} rows; callee requires `
+        + `${minimumRows}..${capability.maximumRows}`,
       );
     }
 
     const structs = externalContract.inner.artifact.structs
       ?? externalContract.inner.stateLayout?.structs;
+    const keyWitnessValues = new Map<string, {
+      value: FunctionArgument;
+      encoded: Uint8Array;
+    }>();
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
         throw new Error('Repeated external SCB1 rows must use canonical contiguous callsite indices');
@@ -9550,6 +9656,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
         throw new Error('Signature-like arguments are not eligible for external SCB1 batching');
       }
+      for (const binding of handler.batchKeyWitnesses ?? []) {
+        const routeInput = binding.perRow
+          ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+        const value = args[binding.inputIndex];
+        const encodedValue = encoded[binding.inputIndex] as Uint8Array;
+        const prior = keyWitnessValues.get(routeInput);
+        if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
+          throw new Error(`External SCB1 collection witness '${routeInput}' is ambiguous`);
+        }
+        if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
+      }
       const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
       if (argsBlob.length > 0xffff) throw new Error(`External SCB1 row ${rowIndex} exceeds 65535 bytes`);
       return StatefulContract._concatBytes(
@@ -9568,10 +9685,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `External SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
       );
     }
+    const routeWitnessInputs = capability.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const routeWitnesses = routeWitnessInputs.map((input) => {
+      const witness = keyWitnessValues.get(input.name);
+      if (!witness) throw new Error(`Missing external SCB1 route witness '${input.name}'`);
+      return witness.value;
+    });
     return {
       abiFunction: capability.route,
       selector: hexToBin(capability.selector),
       blob,
+      args: [blob, ...routeWitnesses],
     };
   }
 

@@ -333,6 +333,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-only SCB1 physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   hiddenBatchRoute?: boolean;
+  hiddenBatchMaximumRows?: number;
   hiddenBatchEligible?: boolean;
   hiddenBatchRejectionReason?: string;
   // Release 4 collection rows bind source argument positions to hidden
@@ -341,6 +342,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   hiddenBatchKeyWitnesses?: {
     routeInput: string;
     inputIndex: number;
+    perRow?: boolean;
   }[];
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl

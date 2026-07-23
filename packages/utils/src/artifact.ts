@@ -525,6 +525,7 @@ export interface Artifact {
   hiddenBatch?: {
     version: 1;
     selector: '53434231';
+    minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
     route: AbiFunction;
@@ -538,6 +539,7 @@ export interface Artifact {
       batchKeyWitnesses?: {
         routeInput: string;
         inputIndex: number;
+        perRow?: boolean;
       }[];
     }[];
   };

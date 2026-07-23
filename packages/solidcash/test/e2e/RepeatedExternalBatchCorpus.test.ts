@@ -79,7 +79,7 @@ async function deployCorpus(callerSource: string, functionName: string, args: un
 }
 
 describe('Release 5 surveyed repeated-callee corpus', () => {
-  it('fails closed before construction for a mapping-backed ERC-20 transfer shape', async () => {
+  it('settles two mapping-backed ERC-20 transferFrom rows through one token owner', async () => {
     const provider = createTestProvider();
     const interfaceSource = `
       interface IMappingToken {
@@ -92,6 +92,14 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
         mapping(bytes20 => bigint) balances;
         mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
 
+        function mint(bytes20 to, bigint amount) public {
+          this.balances[to] = this.balances[to] + amount;
+          require(amount >= 0);
+        }
+        function approve(bytes20 owner, bytes20 spender, bigint amount) public {
+          this.allowances[owner][spender] = amount;
+          require(amount >= 0);
+        }
         function transferFrom(
           bytes20 from, bytes20 to, bytes20 spender, bigint amount
         ) public {
@@ -101,15 +109,43 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
           this.balances[from] = this.balances[from] - amount;
           this.balances[to] = this.balances[to] + amount;
         }
+        function checkBalance(bytes20 owner, bigint expected) public {
+          require(this.balances[owner] == expected);
+        }
+        function checkAllowance(bytes20 owner, bytes20 spender, bigint expected) public {
+          require(this.allowances[owner][spender] == expected);
+        }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
-    expect(tokenArtifact.hiddenBatch).toBeUndefined();
+    expect(tokenArtifact.hiddenBatch).toMatchObject({
+      minimumRows: 2,
+      maximumRows: 2,
+    });
+    expect(tokenArtifact.hiddenBatch?.handlers.find((handler) =>
+      handler.name === 'transferFrom')).toMatchObject({
+      eligible: true,
+      batchKeyWitnesses: [
+        { routeInput: '__scb_key_transferFrom_from_global', inputIndex: 0 },
+        { routeInput: '__scb_key_transferFrom_to_row', inputIndex: 1, perRow: true },
+        { routeInput: '__scb_key_transferFrom_spender_global', inputIndex: 2 },
+      ],
+    });
 
     const tokenInner = new Contract(tokenArtifact, [], { provider });
     const { categoryId: tokenCategory } = await setupStatefulUtxos(
       provider, tokenInner, tokenArtifact.stateLayout!, {}, { saltContract: true },
     );
     const token = StatefulContract.withCategory(tokenInner, tokenCategory);
+    await token.getFunction('mint')(alicePkh, 100n).send();
+    await token.getFunction('mint')(bobPkh, 0n).send();
+    await token.getFunction('mint')(carolPkh, 0n).send();
+    await token.getFunction('approve')(alicePkh, carolPkh, 50n).send();
+    await token.batch([
+      { function: 'transferFrom', args: [alicePkh, bobPkh, carolPkh, 10n] },
+      { function: 'transferFrom', args: [alicePkh, carolPkh, carolPkh, 20n] },
+    ]).send();
+    await token.getFunction('mint')(alicePkh, 30n).send();
+    await token.getFunction('approve')(alicePkh, carolPkh, 50n).send();
 
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
       ${interfaceSource}
@@ -135,9 +171,19 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
       externals: { IMappingToken: token },
     });
 
-    await expect(caller.getFunction('route')(
+    const call = caller.getFunction('route')(
       alicePkh, bobPkh, carolPkh, carolPkh, 10n, 20n,
-    ).build()).rejects.toThrow(/does not advertise.*SCB1/);
+    );
+    const builder = await call.build();
+    expect(builder.inputs.filter((input) =>
+      input.token?.category === tokenCategory && input.token.nft?.capability === 'minting'))
+      .toHaveLength(1);
+    await call.send();
+
+    await token.getFunction('checkBalance')(alicePkh, 70n).send();
+    await token.getFunction('checkBalance')(bobPkh, 20n).send();
+    await token.getFunction('checkBalance')(carolPkh, 40n).send();
+    await token.getFunction('checkAllowance')(alicePkh, carolPkh, 20n).send();
   });
 
   it('constructs TreasurySplit.split with two token transfers and one token owner', async () => {

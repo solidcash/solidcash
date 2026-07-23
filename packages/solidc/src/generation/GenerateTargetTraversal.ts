@@ -2401,6 +2401,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
 
+    // SCB1 unlocking bytecode carries an authenticated positional copy of the
+    // blob below the ordinary ABI argument stack. It exists so foreign callers
+    // can bind the exact second push. Remove that untracked bottom item before
+    // executing the route; the route separately proves it equals batchBlob.
+    if (node.hiddenBatchRoute) {
+      const loc = { location: node.location, positionHint: PositionHint.START };
+      this.emit(Op.OP_DEPTH, loc);
+      this.emit(Op.OP_1SUB, loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
+
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
     // libraries push their blob from the contract bytecode; the rest load it from the co-spent side-car.
     for (const libName of node.usedLibraries ?? []) {
@@ -17758,8 +17770,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
     this.emit(Op.OP_ELSE, locationData);
-    this.emit(encodeInt(1n), locationData);
+    // VM numbers >= 128 require a sign byte. Encode to two bytes and
+    // truncate to the unsigned one-byte PUSHDATA1 length.
+    this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
     this.emit(hexToBin('4c'), locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);

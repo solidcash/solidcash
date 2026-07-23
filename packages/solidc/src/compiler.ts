@@ -87,6 +87,7 @@ import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { NullaryOperator } from './ast/Operator.js';
+import { cloneNode } from './ast/clone.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -175,6 +176,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 const SCB1_SELECTOR_HEX = '53434231';
 const MAX_HIDDEN_BATCH_ROWS = 8;
+const RESOURCE_SHAPED_BATCH_ROWS = 2;
 const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
@@ -203,6 +205,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
   ]);
   let eligible: FunctionDefinitionNode[] = [];
+  let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
   for (const fn of functions) {
@@ -230,7 +233,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       }
     }
     let reason: string | undefined;
-    const keyWitnesses: { routeInput: string; inputIndex: number }[] = [];
+    const keyWitnesses: { routeInput: string; inputIndex: number; perRow?: boolean }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
       const directKeys = new Map<string, number[][]>();
@@ -257,6 +260,41 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           return touches;
         }))) {
         reason = 'collection-helper-route-not-enabled';
+      } else if ([...directKeys.values()].some((alternatives) => alternatives.length > 1)) {
+        // A resource-shaped route has one exact physical layout: the first key
+        // alternative per collection is shared by all rows, while later
+        // alternatives are row-local. The initial measured shape is exactly
+        // two rows and one handler, so no inactive physical entry slots exist.
+        const globalInputs = new Set<number>();
+        const perRowInputs = new Set<number>();
+        for (const [collectionName, alternatives] of directKeys) {
+          const collection = collectionByName.get(collectionName)!;
+          if (alternatives.some((indices) => indices.some((index) => index < 0)
+            || indices.length !== collection.allKeyTypes.length)) {
+            reason = 'collection-route-requires-parameter-keyed-resource-shape';
+            break;
+          }
+          alternatives[0].forEach((index) => globalInputs.add(index));
+          alternatives.slice(1).flat().forEach((index) => perRowInputs.add(index));
+        }
+        if (!reason && [...perRowInputs].some((index) => globalInputs.has(index))) {
+          reason = 'collection-route-has-ambiguous-global-and-row-key';
+        }
+        if (!reason && resourceShapedHandler && resourceShapedHandler !== fn) {
+          reason = 'resource-shaped-route-requires-one-handler';
+        }
+        if (!reason) {
+          resourceShapedHandler = fn;
+          const keyInputs = [...new Set([...globalInputs, ...perRowInputs])].sort((a, b) => a - b);
+          for (const inputIndex of keyInputs) {
+            const parameter = fn.parameters[inputIndex];
+            const perRow = perRowInputs.has(inputIndex);
+            const routeInput = `__scb_key_${fn.name.replace(/[^A-Za-z0-9_]/g, '_')}`
+              + `_${parameter.name.replace(/[^A-Za-z0-9_]/g, '_')}_${perRow ? 'row' : 'global'}`;
+            keyWitnesses.push({ routeInput, inputIndex, ...(perRow && { perRow: true }) });
+            routeKeyWitnesses.set(routeInput, [{ name: routeInput, type: parameter.type }]);
+          }
+        }
       } else {
         for (const [collectionName, alternatives] of directKeys) {
           const collection = collectionByName.get(collectionName)!;
@@ -302,6 +340,14 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
+  }
+  if (resourceShapedHandler?.hiddenBatchEligible) {
+    for (const fn of eligible) {
+      if (fn === resourceShapedHandler) continue;
+      fn.hiddenBatchEligible = false;
+      fn.hiddenBatchRejectionReason = 'resource-shaped-route-requires-one-handler';
+    }
+    eligible = [resourceShapedHandler];
   }
   if (eligible.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
     for (const fn of eligible) {
@@ -364,35 +410,60 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     computeFunctionSignature(fn.name, fn.parameters.map((parameter) =>
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
-  const buildDecodeAndCall = (resultIndex?: number): string => eligible.map((fn, handlerIndex) => {
+  const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  let resourceHandlerInvokeName: string | undefined;
+  if (resourceShapedHandler) {
+    const handler = cloneNode(resourceShapedHandler);
+    handler.name = `__scb_resource_${resourceShapedHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    resourceHandlerInvokeName = handler.name;
+    contract.functions.push(handler);
+  }
+  const buildDecodeAndCall = (resultIndex?: number, rowIndex?: number): string =>
+    eligible.map((fn, handlerIndex) => {
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+    const invokeName = fn === resourceShapedHandler ? resourceHandlerInvokeName! : fn.name;
     const invoke = (args: string): string => resultIndex === undefined
-      ? `${fn.name}(${args});`
-      : `__scb_result_${resultIndex} = ${fn.name}(${args});`;
+      ? `${invokeName}(${args});`
+      : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
     if (fn.parameters.length === 0) {
       return `${condition} { require(rowArgs.length == 0); ${invoke('')} }`;
     }
     const declarations = fn.parameters.map((parameter, i) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
     const schema = fn.parameters.map((parameter) => parameter.type.toString()).join(', ');
+    const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
+      binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
     const witnessByInput = new Map((fn.hiddenBatchKeyWitnesses ?? [])
-      .map((binding) => [binding.inputIndex, binding.routeInput]));
+      .map((binding) => [binding.inputIndex, witnessName(binding)]));
     const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
-      `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${binding.routeInput});`).join(' ');
+      `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
     const callArgs = fn.parameters.map((_parameter, i) =>
       witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`).join(', ');
     const decode = declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
       : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
     return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
-  }).join(' ');
+    }).join(' ');
   const usedRouteInputs = new Set(eligible.flatMap((fn) =>
     (fn.hiddenBatchKeyWitnesses ?? []).map((binding) => binding.routeInput)));
   const routeKeyParameters = [...routeKeyWitnesses.values()].flat()
     .filter((witness) => usedRouteInputs.has(witness.name))
-    .map((witness) => `${witness.type.toString()} ${witness.name}`);
+    .flatMap((witness) => {
+      const perRow = eligible.some((fn) => fn.hiddenBatchKeyWitnesses?.some((binding) =>
+        binding.routeInput === witness.name && binding.perRow));
+      return perRow
+        ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
+          `${witness.type.toString()} ${witness.name}_r${row}`)
+        : [`${witness.type.toString()} ${witness.name}`];
+    });
   const routeParameters = ['bytes batchBlob', ...routeKeyParameters].join(', ');
-  const parseOneRow = (rowExpression: string, resultIndex?: number): string => `
+  const parseOneRow = (rowExpression: string, resultIndex?: number, rowIndex?: number): string => `
           require(cursor + 12 <= batchBlob.length);
           bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
           cursor = cursor + 4;
@@ -407,12 +478,15 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           require(argsLength >= 0 && cursor + argsLength <= batchBlob.length);
           bytes rowArgs = batchBlob.slice(cursor, cursor + argsLength);
           cursor = cursor + argsLength;
-          ${buildDecodeAndCall(resultIndex)}
+          ${buildDecodeAndCall(resultIndex, rowIndex)}
           else { revert("unknown batch selector"); }
   `;
-  const parser = eventMode || resultMode || valueEffectMode
-    ? Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
-      `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode ? row : undefined)} }`).join(' ')
+  const parser = resourceShapedHandler
+    ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
+      `{ ${parseOneRow(String(row), undefined, row)} }`).join(' ')
+    : eventMode || resultMode || valueEffectMode
+      ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
+        `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode ? row : undefined, row)} }`).join(' ')
     : `for (bigint row = 0; row < rowCount; row = row + 1) {
         ${parseOneRow('row')}
       }`;
@@ -432,11 +506,26 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       function __scb1(${routeParameters}) external${returnDeclaration} {
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
+        bytes __scb_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
+        require(__scb_unlock.length >= 7);
+        require(__scb_unlock.slice(0, 5) == hex"0453434231");
+        bigint __scb_pushOpcode = int(bytes.concat(__scb_unlock.slice(5, 6), hex"00"));
+        if (batchBlob.length <= 75) {
+          require(__scb_pushOpcode == batchBlob.length);
+          require(__scb_unlock.slice(6, 6 + batchBlob.length) == batchBlob);
+        } else {
+          require(__scb_pushOpcode == 76);
+          bigint __scb_pushLength = int(bytes.concat(__scb_unlock.slice(6, 7), hex"00"));
+          require(__scb_pushLength == batchBlob.length);
+          require(__scb_unlock.slice(7, 7 + batchBlob.length) == batchBlob);
+        }
         require(batchBlob.slice(0, 4) == hex"53434231");
         require(batchBlob.slice(4, 5) == hex"01");
         require(batchBlob.slice(5, 6) == hex"00");
         bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
-        require(rowCount >= 1 && rowCount <= ${MAX_HIDDEN_BATCH_ROWS});
+        require(${resourceShapedHandler
+    ? `rowCount == ${routeMaximumRows}`
+    : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
         bigint cursor = 7;
         ${resultDeclarations}
         ${parser}
@@ -447,6 +536,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
   const route = routeAst.contract.functions[0];
   route.hiddenBatchRoute = true;
+  route.hiddenBatchMaximumRows = routeMaximumRows;
   route.location = contract.location;
   contract.functions.push(route);
 }
@@ -900,10 +990,14 @@ function compileResolvedAst(
   };
   if (mergedCompilerOptions.experimentalHiddenBatch
     && ast.contract.functions.some((fn) => fn.hiddenBatchRoute)) {
+    const hiddenBatchMaximumRows = ast.contract.functions.find((fn) =>
+      fn.hiddenBatchRoute)?.hiddenBatchMaximumRows ?? MAX_HIDDEN_BATCH_ROWS;
     artifact.hiddenBatch = {
       version: 1,
       selector: SCB1_SELECTOR_HEX,
-      maximumRows: MAX_HIDDEN_BATCH_ROWS,
+      ...(hiddenBatchMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
+        && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
+      maximumRows: hiddenBatchMaximumRows,
       maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({

@@ -96,6 +96,8 @@ export interface ExternalCallUtxoGroup {
     abiFunction: AbiFunction;
     selector: Uint8Array;
     blob: Uint8Array;
+    args: any[];
+    internalArgs?: Record<string, any>;
   };
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];

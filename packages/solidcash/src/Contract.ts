@@ -425,7 +425,29 @@ export class Contract<
   createCompilerRouteUnlocker(
     abiFunction: AbiFunction, selector: Uint8Array,
   ): ContractFunctionUnlocker {
-    return this.createUnlocker(abiFunction, selector);
+    const base = this.createUnlocker(abiFunction, selector);
+    const batchBlobIndex = abiFunction.inputs.findIndex((input) => input.name === 'batchBlob');
+    if (binToHex(selector) !== '53434231' || batchBlobIndex < 0) return base;
+    return (...args: FunctionArgument[]) => {
+      const unlocker = base(...args);
+      const blob = args[batchBlobIndex];
+      if (!(blob instanceof Uint8Array)) throw new Error('SCB1 batchBlob must encode as bytes');
+      const positionalPush = scriptToBytecode([blob]);
+      const generateUnlockingBytecode = (
+        options: GenerateUnlockingBytecodeOptions,
+      ): Uint8Array => {
+        const ordinary = unlocker.generateUnlockingBytecode(options);
+        // The selector is always the minimal push4 frame (5 bytes). Duplicate
+        // the executable blob here as the canonical positional second push;
+        // the SCB1 covenant proves this copy equals its decoded batchBlob arg.
+        return new Uint8Array([
+          ...ordinary.slice(0, 5),
+          ...positionalPush,
+          ...ordinary.slice(5),
+        ]);
+      };
+      return { ...unlocker, generateUnlockingBytecode };
+    };
   }
 
   // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so a reader is

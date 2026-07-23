@@ -91,7 +91,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       });
   });
 
-  it('rejects collection aliases that cannot identify one physical entry', () => {
+  it('allocates one exact two-row resource shape for shared and row-local mapping keys', () => {
     const artifact = compileString(`contract MappingAliasBatch() {
       mapping(bigint => bigint) values;
       function move(bigint from, bigint to, bigint amount) public {
@@ -100,10 +100,22 @@ describe('Release 4 compiler-hidden local batch', () => {
         require(amount >= 0);
       }
     }`, { forceStateful: true, experimentalHiddenBatch: true });
-    expect(artifact.hiddenBatch).toBeUndefined();
+    expect(artifact.hiddenBatch).toMatchObject({
+      minimumRows: 2,
+      maximumRows: 2,
+    });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'move'))
+      .toMatchObject({
+        eligible: true,
+        batchKeyWitnesses: [
+          { routeInput: '__scb_key_move_from_global', inputIndex: 0 },
+          { routeInput: '__scb_key_move_to_row', inputIndex: 1, perRow: true },
+        ],
+      });
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(3);
   });
 
-  it('fails closed without bytecode overhead for ERC-20 transferFrom resource shapes', () => {
+  it('advertises the exact ERC-20 transferFrom resource shape', () => {
     const source = `contract MappingToken() {
       mapping(bytes20 => bigint) balances;
       mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
@@ -118,14 +130,26 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.balances[to] = this.balances[to] + amount;
       }
     }`;
-    const baseline = compileString(source, { forceStateful: true });
-    const attempted = compileString(source, {
+    const artifact = compileString(source, {
       forceStateful: true,
       experimentalHiddenBatch: true,
     });
 
-    expect(attempted.hiddenBatch).toBeUndefined();
-    expect(attempted.bytecode).toBe(baseline.bytecode);
+    expect(artifact.hiddenBatch).toMatchObject({
+      minimumRows: 2,
+      maximumRows: 2,
+    });
+    expect(artifact.hiddenBatch?.handlers[0]).toMatchObject({
+      name: 'transferFrom',
+      eligible: true,
+      batchKeyWitnesses: [
+        { routeInput: '__scb_key_transferFrom_from_global', inputIndex: 0 },
+        { routeInput: '__scb_key_transferFrom_to_row', inputIndex: 1, perRow: true },
+        { routeInput: '__scb_key_transferFrom_spender_global', inputIndex: 2 },
+      ],
+    });
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(4);
+    expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
   });
 
   it('allocates one ordered conditional event slot per possible row', () => {

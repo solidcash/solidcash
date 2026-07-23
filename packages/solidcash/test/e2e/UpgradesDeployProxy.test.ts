@@ -309,6 +309,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       mapping(address => int) users;
       function initialize() delegate { this.count = 0; }
       function register(int v) delegate { users[msg.sender] = v; this.count = this.count + 1; }
+      function clear() delegate { delete users[msg.sender]; this.count = this.count - 1; }
     }`;
 
   it('writes a msg.sender-keyed C2 mapping from inside a delegate, minting its entry NFTs in the proxy block', async () => {
@@ -329,5 +330,11 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(entryOut).toBeDefined();
     expect(await (proxy as any).users(signer.getAddress())).toBe(5n);
     expect(await (proxy as any).getUsers(0, 0)).toEqual([5n]);
+
+    const clearTx = await (proxy as any).clear().send();
+    expect(proxyState(clearTx, proxy.proxy.categoryId, implArtifact.stateLayout).count).toBe(0n);
+    expect(await (proxy as any).users(signer.getAddress())).toBe(0n);
+    // Solidity mapping delete assigns the value-type default; sorted mappings retain the keyed node.
+    expect(await (proxy as any).getUsers(0, 0)).toEqual([0n]);
   });
 });

@@ -2353,11 +2353,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitMasterSelfPreservation(node);
         this.emitMintingNftUniqueness(node);
         this.emitValuePreservation(node, hasTokenContainerAccess);
-        // C1 full-state authority: the co-spent delegate only pins the proxy data NFTs it accesses, so an
-        // un-touched proxy data NFT would otherwise be destroyable via flag=2 on this path. Conserve the count
-        // of the proxy's OWN-category mutable (0x01) NFTs input==output; the delegate's writes preserve the
-        // count, so this only rejects destruction/count-tampering of the proxy's state.
-        this.emitOwnCategoryMutableNftConservation(node);
+        // Delegate topology can legitimately change the mutable-NFT count (e.g. mapping insert/delete). The
+        // delegated implementation authenticates those transitions; the fixed-count C3 guard is only sound for
+        // ordinary entry-free functions and is deliberately excluded from delegate topology below.
       } else if (hasAnyStatefulAccess) {
         // Full covenant checks
         this.emitTokenCategoryVerification(node);

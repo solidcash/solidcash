@@ -1669,6 +1669,70 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectExternalCalls(node.body, externalCallSlots);
 
       if (externalCallSlots.length > 0) {
+        const logicalCallSlots = [...externalCallSlots];
+        if (this.compilerOptions.experimentalRepeatedExternalBatch) {
+          const directCalls = new Set<ExternalFunctionCallNode>();
+          for (const statement of node.body.statements ?? []) {
+            if (statement instanceof FunctionCallStatementNode
+              && statement.call instanceof ExternalFunctionCallNode) directCalls.add(statement.call);
+            if (statement instanceof MethodCallStatementNode
+              && statement.expression instanceof ExternalFunctionCallNode) directCalls.add(statement.expression);
+          }
+          const byTarget = new Map<string, ExternalCallSlot[]>();
+          for (const slot of logicalCallSlots) {
+            // Single-method interfaces normally omit selector verification, so
+            // their slots have no baked selector yet. SCB1 rows always carry
+            // the original direct selector; derive it here for both shapes.
+            if (!slot.compileTimeSelector) {
+              const iface = this.interfaceMap.get(slot.interfaceName);
+              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
+                .find((fn) => fn.name === slot.functionName);
+              if (ifaceFunc) {
+                const signature = computeFunctionSignature(
+                  slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
+                );
+                slot.compileTimeSelector = computeFunctionSelector(signature);
+              }
+            }
+            const identity = slot.addressParam ? `param:${slot.addressParam}`
+              : slot.addressStateVar ? `state:${slot.addressStateVar}`
+                : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+            const eligible = identity !== '' && directCalls.has(slot.sourceCallNode!)
+              && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
+              && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
+              && !!slot.compileTimeSelector
+              && !(slot.argSources ?? []).some((source) => source.kind === 'expression');
+            if (!eligible) continue;
+            const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
+            const group = byTarget.get(key) ?? [];
+            group.push(slot);
+            byTarget.set(key, group);
+          }
+          const repeated = [...byTarget.values()].filter((group) => group.length > 1);
+          // V1 permits exactly one repeated callee group in a root invocation.
+          if (repeated.length === 1) {
+            const group = repeated[0];
+            const representative = group[0];
+            representative.batchInvocations = group.map((slot, logicalIndex) => {
+              const iface = this.interfaceMap.get(slot.interfaceName);
+              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
+                .find((fn) => fn.name === slot.functionName);
+              return {
+                selector: slot.compileTimeSelector!,
+                parameters: slot.sourceCallNode!.parameters,
+                parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
+                  ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
+                logicalIndex,
+                argSources: slot.argSources,
+              };
+            });
+            representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);
+            representative.needsSelectorVerification = true;
+            const grouped = new Set(group.slice(1));
+            externalCallSlots.splice(0, externalCallSlots.length,
+              ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
+          }
+        }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
         let slotIndex = 0;
         let runningOffset = 0;
@@ -1682,6 +1746,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           // Next slot starts after this slot's master (1) + its data NFTs
           runningOffset += 1 + slot.requiredDataNftIndices.length;
         }
+        // Logical calls removed from the physical layout point at their
+        // representative's one physical slot.
+        for (const slot of logicalCallSlots) {
+          if (externalCallSlots.includes(slot)) continue;
+          const representative = externalCallSlots.find((candidate) =>
+            candidate.batchInvocations?.some((row) => row.parameters === slot.sourceCallNode?.parameters));
+          if (representative) slot.slotIndex = representative.slotIndex;
+        }
         node.externalCalls = externalCallSlots;
 
         // External-call address locals must survive to the epilogue: emitExternalCallVerification reads
@@ -1691,10 +1763,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (slot.addressParam && !slot.addressIsMsgSender) {
             node.opRolls.delete(slot.addressParam);
           }
+          for (const row of slot.batchInvocations ?? []) {
+            for (const parameter of row.parameters) {
+              if (parameter instanceof IdentifierNode) node.opRolls.delete(parameter.name);
+            }
+          }
         }
 
         // Propagate slot indices to individual external call nodes
-        this.assignExternalCallSlotIndices(node.body, externalCallSlots, { idx: 0 });
+        this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
         // B's external call target may be at a position BEFORE B's master.
@@ -4245,6 +4322,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           returnEventSignature: node.callInfo.returnEventSignature,
         }),
         ...(argSources.length > 0 && { argSources }),
+        sourceCallNode: node,
       });
       return;
     }

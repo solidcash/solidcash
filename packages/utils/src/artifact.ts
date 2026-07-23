@@ -54,6 +54,8 @@ export interface CompilerOptions {
   // Experimental Release 4 compiler-hidden owner-local batch route. The
   // covenant surface remains opt-in until its adversarial review is complete.
   experimentalHiddenBatch?: boolean;
+  // Experimental Release 5 grouping of one repeated external callee.
+  experimentalRepeatedExternalBatch?: boolean;
 }
 
 export interface AbiInput {
@@ -380,6 +382,12 @@ export interface ExternalCallAbi {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
+  batchInvocations?: readonly {
+    selector: string;
+    logicalIndex: number;
+    inputs: readonly AbiInput[];
+    argSources?: readonly ArgSource[];
+  }[];
 }
 
 export interface ExternalOutStateAbi {

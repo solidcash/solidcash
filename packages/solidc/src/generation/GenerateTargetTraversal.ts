@@ -2396,6 +2396,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.inlineDeployActive = true;
     }
 
+    const repeatedBatchSlot = this.externalCallSlots.find((slot) => (slot.batchInvocations?.length ?? 0) > 1);
+    if (repeatedBatchSlot) {
+      const header = Uint8Array.from([
+        0x53, 0x43, 0x42, 0x31, 0x01, 0x00, repeatedBatchSlot.batchInvocations!.length,
+      ]);
+      this.emit(header, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack('__internal__external_batch_blob');
+    }
+
     this.sortedCompositeWritesRemaining.clear();
     this.sortedCompositeValueCache.clear();
     if ((node.sortedBatchInfo?.length ?? 0) > 0) {
@@ -10786,6 +10795,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    const physicalSlot = node.callInfo
+      ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
+    const batchRow = physicalSlot?.batchInvocations?.find((row) => row.parameters === node.parameters);
+    if (batchRow) this.appendExternalBatchRow(batchRow, node, locationData);
+
     // Inline loop-indexed dispatch: `targets[i].call/staticcall(data[i])` over a calldata/param address array
     // whose per-element return is consumed in the loop body (MultiCall). The source for-loop is a runtime loop,
     // so this runs once per iteration with the live index. Marks the slot so both epilogues skip it.
@@ -10857,6 +10871,61 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     return node;
+  }
+
+  private appendExternalBatchRow(
+    row: NonNullable<ExternalCallSlot['batchInvocations']>[number],
+    node: ExternalFunctionCallNode,
+    locationData: SingleLocationData,
+  ): void {
+    const prefix = new Uint8Array(10);
+    prefix.set(row.selector, 0);
+    prefix[4] = row.logicalIndex & 0xff;
+    prefix[5] = (row.logicalIndex >>> 8) & 0xff;
+    prefix[6] = (row.logicalIndex >>> 16) & 0xff;
+    prefix[7] = (row.logicalIndex >>> 24) & 0xff;
+    // occurrence:u16 remains zero for straight-line v1 callsites.
+    this.emit(prefix, locationData);
+    this.pushToStack('(__batch_row_prefix)');
+
+    if (row.parameters.length === 0) {
+      this.emit(new Uint8Array(), locationData);
+      this.pushToStack('(__batch_args)');
+    } else {
+      for (let i = 0; i < row.parameters.length; i++) {
+        this.visit(row.parameters[i]);
+        this.emitPushdataEncode(row.parameterTypes[i], locationData);
+        if (i > 0) {
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(__batch_args)');
+        }
+      }
+    }
+    // prefix ++ argsLength:u16le ++ args
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_len_args)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_row)');
+
+    const accumulator = '__internal__external_batch_blob';
+    this.emit(encodeInt(BigInt(this.getStackIndex(accumulator))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__batch_old)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_new)');
+    this.emitReplace(this.getStackIndex(accumulator), node);
+    this.popFromStack();
   }
 
   visitExternalOutputState(_node: ExternalOutputStateNode): Node {
@@ -16759,6 +16828,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Stack: [idx] (1 untracked)
       }
 
+      if (slot.batchInvocations) this.emitExternalBatchBlobVerification(locationData);
+
       // 5. Commitment preservation (STATICCALL only)
       // Verify all NFT commitments are unchanged (input == output)
       if (callMode === ExternalCallMode.STATICCALL) {
@@ -17622,6 +17693,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Drop the remaining idx from the stack
       this.emit(Op.OP_DROP, locationData);
     }
+  }
+
+  private emitExternalBatchBlobVerification(locationData: SingleLocationData): void {
+    const accumulator = '__internal__external_batch_blob';
+    // [idx] -> verify first push is exactly minimal push4("SCB1"), retain remainder.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_INPUTBYTECODE, locationData);
+    this.emit(encodeInt(5n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(hexToBin('0453434231'), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // [idx, remainder]
+
+    // The initial Release 5 comparator deliberately caps the complete blob at
+    // 75 bytes, so its second push has the unique one-byte minimal encoding.
+    this.emit(encodeInt(BigInt(this.getStackIndex(accumulator) + 2)), locationData);
+    this.emit(Op.OP_PICK, locationData); // [idx, remainder, expected]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(75n), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData); // [idx, remainder, expected, expectedLen]
+
+    // Split and verify the minimal second-push opcode equals expectedLen.
+    this.emit(Op.OP_ROT, locationData); // [idx, expected, expectedLen, remainder]
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData); // [idx, expected, expectedLen, opcode, payload]
+    this.emit(Op.OP_ROT, locationData); // [idx, expected, opcode, payload, expectedLen]
+    this.emit(Op.OP_ROT, locationData); // [idx, expected, payload, expectedLen, opcode]
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData); // [idx, expected, payload]
+
+    // Consume exactly expectedLen bytes from the positional payload and compare
+    // the complete blob directly. The remainder begins with B's redeem script.
+    this.emit(Op.OP_OVER, locationData); // [idx, expected, payload, expected]
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData); // [idx, expected, payload, len]
+    this.emit(Op.OP_SPLIT, locationData); // [idx, expected, actualBlob, remainder]
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // [idx]
   }
 
   private emitMasterSelfPreservation(node: FunctionDefinitionNode): void {

@@ -133,6 +133,16 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
         ...(ec.opaqueReturn && { opaqueReturn: true }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
+        ...(ec.batchInvocations && {
+          batchInvocations: ec.batchInvocations.map((row) => ({
+            selector: binToHex(row.selector),
+            logicalIndex: row.logicalIndex,
+            inputs: row.parameterTypes.map((type, index) => ({
+              name: `arg${index}`, type: abiTypeString(type),
+            })),
+            ...(row.argSources && { argSources: row.argSources }),
+          })),
+        }),
       })),
     }),
     ...(func.externalOutStateReads && func.externalOutStateReads.length > 0 && {

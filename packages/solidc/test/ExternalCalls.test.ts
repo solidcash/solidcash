@@ -99,6 +99,49 @@ describe('SBE-13: void external-call helpers are inlined at internal call sites 
   });
 });
 
+describe('Release 5: compiler-hidden repeated external callee batching', () => {
+  const SOURCE = `
+    interface ICounter { function add(int amount) external; }
+    contract Caller(address counter) {
+      function run(int first, int second) public {
+        ICounter(counter).add(first);
+        ICounter(counter).add(second);
+        require(first >= 0 && second >= 0);
+      }
+    }
+  `;
+
+  it('collapses two straight-line calls to the same owner into one physical SCB1 slot', () => {
+    const artifact = compileString(SOURCE, { experimentalRepeatedExternalBatch: true });
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+
+    expect(run?.externalCalls).toHaveLength(1);
+    expect(run?.externalCalls?.[0]).toMatchObject({
+      interfaceName: 'ICounter',
+      functionName: 'add',
+      needsSelectorVerification: true,
+      batchInvocations: [
+        {
+          logicalIndex: 0,
+          inputs: [{ name: 'arg0', type: 'int256' }],
+          argSources: [{ kind: 'forward', paramIndex: 0 }],
+        },
+        {
+          logicalIndex: 1,
+          inputs: [{ name: 'arg0', type: 'int256' }],
+          argSources: [{ kind: 'forward', paramIndex: 1 }],
+        },
+      ],
+    });
+    expect(run?.externalCalls?.[0].batchInvocations?.every((row) => row.selector.length === 8)).toBe(true);
+  });
+
+  it('preserves the two physical call slots unless explicitly enabled', () => {
+    const artifact = compileString(SOURCE);
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(2);
+  });
+});
+
 // A value-returning internal/library helper whose body performs a low-level call injects a synthetic
 // __internal__callInputIndex covenant param (supplied only at the top-level entry), so calling it as a
 // subroutine used to fail with a phantom arg-count mismatch. It is now inlined at direct call sites.

@@ -34,6 +34,13 @@ contract CollectionJournalRelease3() {
     require(a >= 0);
   }
 
+  function creditLoop(bytes20 who, int count, bigint amount) {
+    for (int i = 0; i < count; i = i + 1) {
+      credit(who, amount);
+    }
+    require(count >= 0);
+  }
+
   function clearThenCredit(bytes20 who, bigint amount) {
     clear(who);
     credit(who, amount);
@@ -80,5 +87,11 @@ describe('Release 3 collection journal SDK E2E', () => {
     await contract.creditThree(alicePkh, 10n, 20n, 30n).send();
     await contract.clearThenCredit(alicePkh, 9n).send();
     expect(await balance(contract)).toBe(9n);
+  });
+
+  it('threads one pending mapping value through a runtime helper loop', async () => {
+    const contract = await deploy();
+    await contract.creditLoop(alicePkh, 5n, 7n).send();
+    expect(await balance(contract)).toBe(35n);
   });
 });

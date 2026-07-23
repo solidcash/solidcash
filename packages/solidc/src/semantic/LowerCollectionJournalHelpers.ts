@@ -198,6 +198,51 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     return super.visitArrayAccess(node);
   }
 
+  visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    const target = this.candidates.get(`${node.call.identifier.name}/${node.call.parameters.length}`);
+    return target ? this.rewriteCall(node.call, target) : super.visitFunctionCallStatement(node);
+  }
+
+  visitMappingAssign(node: MappingAssignNode): Node {
+    if (this.current && node.name === this.current.collection) {
+      return this.at(new AssignNode(
+        this.at(new IdentifierNode(this.current.journalName), node),
+        this.rewriteExpression(node.expression),
+      ), node);
+    }
+    return super.visitMappingAssign(node);
+  }
+
+  visitArrayAssign(node: ArrayAssignNode): Node {
+    if (this.current && node.name === this.current.collection) {
+      return this.at(new AssignNode(
+        this.at(new IdentifierNode(this.current.journalName), node),
+        this.rewriteExpression(node.value),
+      ), node);
+    }
+    return super.visitArrayAssign(node);
+  }
+
+  visitMappingDelete(node: MappingDeleteNode): Node {
+    if (this.current && node.name === this.current.collection) {
+      return this.at(new AssignNode(
+        this.at(new IdentifierNode(this.current.journalName), node),
+        createDefaultValueExpression(this.current.valueType, node.location),
+      ), node);
+    }
+    return super.visitMappingDelete(node);
+  }
+
+  visitArrayDelete(node: ArrayDeleteNode): Node {
+    if (this.current && node.name === this.current.collection) {
+      return this.at(new AssignNode(
+        this.at(new IdentifierNode(this.current.journalName), node),
+        createDefaultValueExpression(this.current.valueType, node.location),
+      ), node);
+    }
+    return super.visitArrayDelete(node);
+  }
+
   private rewriteExpression(expression: ExpressionNode): ExpressionNode {
     return this.visit(expression) as ExpressionNode;
   }

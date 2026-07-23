@@ -378,14 +378,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private scanLoopTypes = new Map<string, Type>();
   private arrayElementIds = new Map<string, bigint>();
   private arrayElementTypes = new Map<string, Type>();
+  private arraySplitIds = new Map<string, bigint>();
+  private arraySplitTypes = new Map<string, Type>();
+  private stateDecodeIds = new Map<string, bigint>();
+  private stateDecodes = new Map<string, {
+    nftIndex: number;
+    precedingTypes: Type[];
+    targetType: Type;
+    isLast: boolean;
+    tagged: boolean;
+  }>();
+  private stateReadIds = new Map<string, bigint>();
+  private stateReads = new Map<string, {
+    offset: number;
+    decode: {
+      nftIndex: number;
+      precedingTypes: Type[];
+      targetType: Type;
+      isLast: boolean;
+      tagged: boolean;
+    };
+  }>();
   private compactHelperIds = {
     next: 127n,
     fallback: 0x2000n,
     used: new Set<bigint>(),
   };
 
-  // 2-byte subroutine IDs from 0x1000: disjoint by length from user function IDs (small ints)
-  // and 4-byte selectors, so the dispatcher's 4-byte selector check keeps them unreachable.
   // Function IDs are allocated monotonically from zero, so reserve compact negative script numbers for
   // compiler helpers. This saves one byte at nearly every fixed-helper definition and invocation.
   private static readonly INT_DECODE_SUBROUTINE_ID = -1n;
@@ -399,8 +418,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly TOKEN_LBC_SUBROUTINE_ID = -9n;
   private static readonly SORTED_VALUE_OUTPUT_SUBROUTINE_ID = -10n;
   private static readonly SORTED_ABSENCE_SUBROUTINE_ID = -11n;
-  private static readonly ALL_SUBROUTINE_IDS =
-    [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n, 0x1005n, 0x1006n, 0x1007n, 0x1008n, 0x1009n, 0x100an];
+  private static readonly ALL_SUBROUTINE_IDS = [
+    GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.MINT_UNIQUENESS_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.SORTED_ABSENCE_SUBROUTINE_ID,
+  ];
 
   private allocateCompactHelperId(): bigint {
     while (this.compactHelperIds.next >= -127n) {
@@ -822,6 +852,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(node.receiveDef ? [node.receiveDef] : []),
     ];
     this.compactHelperIds = { next: 127n, fallback: 0x2000n, used: new Set() };
+    for (const id of GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS) {
+      this.compactHelperIds.used.add(id);
+    }
     for (const fn of contractFunctionsForIds) {
       if (fn.functionId !== undefined) this.compactHelperIds.used.add(BigInt(fn.functionId));
     }
@@ -981,6 +1014,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         span: this.defineCapturedSubroutine(id, emitBody, loc),
       });
     }
+    for (const [key, id] of this.stateDecodeIds) {
+      const decode = this.stateDecodes.get(key)!;
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitStateFieldDecodeInline(decode, loc);
+      };
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
+    for (const [key, id] of this.stateReadIds) {
+      const read = this.stateReads.get(key)!;
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitStateFieldReadInline(read, loc);
+      };
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
     // A struct's field-prefix helpers are cumulative: prefix N includes every skip in prefix M<N. Define them in
     // ascending field order and make each larger helper invoke the nearest smaller helper, then emit only its
     // incremental suffix. This avoids embedding the same potentially-large variable-width traversal in every
@@ -1015,6 +1064,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const [key, id] of this.scanLoopIds) {
       const type = this.scanLoopTypes.get(key)!;
       const emitBody = (t: GenerateTargetTraversalWithLocation): void => t.emitScanLoopInline(type, loc);
+      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    }
+    for (const [key, id] of this.arraySplitIds) {
+      const type = this.arraySplitTypes.get(key)!;
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        t.emitVariableArraySplitInline(type, loc);
+      };
       if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
       spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
     }
@@ -1200,6 +1257,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.scanLoopTypes = this.scanLoopTypes;
     sub.arrayElementIds = this.arrayElementIds;
     sub.arrayElementTypes = this.arrayElementTypes;
+    sub.arraySplitIds = this.arraySplitIds;
+    sub.arraySplitTypes = this.arraySplitTypes;
+    sub.stateDecodeIds = this.stateDecodeIds;
+    sub.stateDecodes = this.stateDecodes;
+    sub.stateReadIds = this.stateReadIds;
+    sub.stateReads = this.stateReads;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
     this.subroutineDependencies.set(id, new Set(
@@ -1236,6 +1299,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.scanLoopTypes = this.scanLoopTypes;
     sub.arrayElementIds = this.arrayElementIds;
     sub.arrayElementTypes = this.arrayElementTypes;
+    sub.arraySplitIds = this.arraySplitIds;
+    sub.arraySplitTypes = this.arraySplitTypes;
+    sub.stateDecodeIds = this.stateDecodeIds;
+    sub.stateDecodes = this.stateDecodes;
+    sub.stateReadIds = this.stateReadIds;
+    sub.stateReads = this.stateReads;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
     const body = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
@@ -1302,6 +1371,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.scanLoopTypes = new Map(probe.scanLoopTypes);
       this.arrayElementIds = new Map(probe.arrayElementIds);
       this.arrayElementTypes = new Map(probe.arrayElementTypes);
+      this.arraySplitIds = new Map(probe.arraySplitIds);
+      this.arraySplitTypes = new Map(probe.arraySplitTypes);
+      this.stateDecodeIds = new Map(probe.stateDecodeIds);
+      this.stateDecodes = new Map(probe.stateDecodes);
+      this.stateReadIds = new Map(probe.stateReadIds);
+      this.stateReads = new Map(probe.stateReads);
       this.compactHelperIds = probe.compactHelperIds;
       return probe.subroutineUseCount;
     } catch {
@@ -1448,6 +1523,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.scanLoopTypes = this.scanLoopTypes;
     subTraversal.arrayElementIds = this.arrayElementIds;
     subTraversal.arrayElementTypes = this.arrayElementTypes;
+    subTraversal.arraySplitIds = this.arraySplitIds;
+    subTraversal.arraySplitTypes = this.arraySplitTypes;
+    subTraversal.stateDecodeIds = this.stateDecodeIds;
+    subTraversal.stateDecodes = this.stateDecodes;
+    subTraversal.stateReadIds = this.stateReadIds;
+    subTraversal.stateReads = this.stateReads;
     subTraversal.compactHelperIds = this.compactHelperIds;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
@@ -1673,6 +1754,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.scanLoopTypes = this.scanLoopTypes;
     subTraversal.arrayElementIds = this.arrayElementIds;
     subTraversal.arrayElementTypes = this.arrayElementTypes;
+    subTraversal.arraySplitIds = this.arraySplitIds;
+    subTraversal.arraySplitTypes = this.arraySplitTypes;
+    subTraversal.stateDecodeIds = this.stateDecodeIds;
+    subTraversal.stateDecodes = this.stateDecodes;
+    subTraversal.stateReadIds = this.stateReadIds;
+    subTraversal.stateReads = this.stateReads;
     subTraversal.compactHelperIds = this.compactHelperIds;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
 
@@ -3175,33 +3262,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((v) => v.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
-    // Get NFT commitment
-    this.emitMasterInputIndex(locationData);
-    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), locationData);
-    this.emit(Op.OP_ADD, locationData);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-
     // Track the commitment value on the stack tracker. This is needed because
     // emitPushdataEncode modifies the tracker (popFromStack + pushToStack).
     // Without this entry, it would pop a real variable (e.g. function parameters).
     this.pushToStack('__temp_state_read');
-
-    // Verify the leading nftIndex tag == this field's NFT index (multi-data-NFT anti-substitution, H1)
-    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, locationData);
-
-    // Skip preceding fields
-    for (let i = 0; i < sv.fieldIndex; i++) {
-      this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), locationData);
-    }
-
-    // Decode this field
-    const isLast = sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex;
-    if (isLast) {
-      this.emitPushdataDecodeLastField(sv.type, locationData);
-    } else {
-      this.emitPushdataDecode(sv.type, locationData);
-      this.emit(Op.OP_DROP, locationData); // drop remainder
-    }
+    this.emitStateFieldRead(sv, sv.type, fieldsInNft, locationData);
 
     // Re-encode to pushdata format
     // emitPushdataEncode replaces the top tracker entry with '(value)'
@@ -6402,6 +6467,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, locationData);
   }
 
+  /** Split [elements_blob, index] into [encoded_prefix, element_and_suffix]. */
+  private emitVariableArraySplit(elemType: Type, locationData: SingleLocationData): void {
+    const key = `array-split:${this.structuralTypeKey(elemType)}`;
+    let id = this.arraySplitIds.get(key);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.arraySplitIds.set(key, id);
+      this.arraySplitTypes.set(key, elemType);
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), locationData);
+      this.emit(Op.OP_INVOKE, locationData);
+      return;
+    }
+    this.emitVariableArraySplitInline(elemType, locationData);
+  }
+
+  private emitVariableArraySplitInline(elemType: Type, locationData: SingleLocationData): void {
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emitScanLoop(elemType, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+  }
+
   // Index into an array VALUE already on the stack (`pushdata(count) ++ elems`): visits `indexNode`, leaves the
   // element value. Shared by visitArrayAccess and the extra-key drill of a fixed-inner packed state array
   // (`a[i][j]`: after reading the row, index into it).
@@ -6658,23 +6756,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(elements)');
     } else {
       // Variable-width: scan to element, replace, reassemble
-      // [..., elements_blob, index]
-      // Duplicate elements_blob for size tracking
-      this.emit(Op.OP_SWAP, locationData); // [..., index, elements_blob]
-      this.emit(Op.OP_DUP, locationData); // [..., index, elements_blob, elements_copy]
-      this.emit(Op.OP_ROT, locationData); // [..., elements_blob, elements_copy, index]
-      // Scan copy to skip index elements
-      this.emitScanLoop(elemType, locationData);
-      // [..., elements_blob, remaining_of_copy]
-      // remaining starts at element[index]. Get byte offset by measuring.
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., elements_blob, remaining_size]
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., elements_blob, rem_size, total_size]
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_SUB, locationData); // [..., elements_blob, offset_to_elem]
-      this.emit(Op.OP_SPLIT, locationData); // [..., left, elem_and_rest]
+      this.emitVariableArraySplit(elemType, locationData);
       this.popFromStack(2);
       this.pushToStack('(left)');
       this.pushToStack('(elem_and_rest)');
@@ -6981,27 +7063,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter((v) => v.nftIndex === sv.nftIndex)
         .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-
-      // Verify the leading nftIndex tag == this field's NFT index (multi-data-NFT anti-substitution, H1)
-      if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, locationData);
-
-      // Skip preceding fields
-      for (let i = 0; i < sv.fieldIndex; i++) {
-        this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), locationData);
-      }
-
-      // Decode this field - for ArrayType as last field, this is a no-op
-      const isLast = sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex;
-      if (isLast) {
-        this.emitPushdataDecodeLastField(sv.type, locationData);
-      } else {
-        this.emitPushdataDecode(sv.type, locationData);
-        this.emit(Op.OP_DROP, locationData); // drop remainder
-      }
+      this.emitStateFieldRead(sv, sv.type, fieldsInNft, locationData);
 
       this.pushToStack(stackLabel);
     }
@@ -7330,19 +7392,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(elements)');
     } else {
       // Variable-width: scan to element, replace, reassemble
-      this.emit(Op.OP_SWAP, locationData); // [..., index, elements_blob]
-      this.emit(Op.OP_DUP, locationData); // [..., index, elements_blob, elements_copy]
-      this.emit(Op.OP_ROT, locationData); // [..., elements_blob, elements_copy, index]
-      this.emitScanLoop(elemType, locationData);
-      // [..., elements_blob, remaining_of_copy]
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_SUB, locationData); // [..., elements_blob, offset_to_elem]
-      this.emit(Op.OP_SPLIT, locationData); // [..., left, elem_and_rest]
+      this.emitVariableArraySplit(elemType, locationData);
       this.popFromStack(2);
       this.pushToStack('(left)');
       this.pushToStack('(elem_and_rest)');
@@ -7486,18 +7536,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Replace element[index] with last_elem, then trim last
       this.emit(Op.OP_ROT, locationData); // [..., elements_blob, last_elem, index]
       this.emit(Op.OP_ROT, locationData); // [..., last_elem, index, elements_blob]
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_ROT, locationData); // [..., last_elem, elements_blob, elements_copy, index]
-      this.emitScanLoop(elemType, locationData);
-      // [..., last_elem, elements_blob, remaining_at_index]
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_SUB, locationData); // [..., last_elem, elements_blob, offset]
-      this.emit(Op.OP_SPLIT, locationData); // [..., last_elem, left, elem_and_rest]
+      this.emit(Op.OP_SWAP, locationData); // [..., last_elem, elements_blob, index]
+      this.emitVariableArraySplit(elemType, locationData);
       this.emitPushdataSkip(elemType, locationData); // [..., last_elem, left, rest_after_elem]
       this.emit(Op.OP_ROT, locationData); // [..., left, rest_after_elem, last_elem]
       this.emitPushdataEncode(elemType, locationData);
@@ -10250,29 +10290,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((v) => v.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
-    // 1. Get NFT commitment: masterInputIndex + <compactOffset> + OP_ADD + OP_UTXOTOKENCOMMITMENT
-    this.emitMasterInputIndex(locationData);
-    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), locationData);
-    this.emit(Op.OP_ADD, locationData);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-
-    // 1b. Verify the leading nftIndex tag == this field's NFT index (multi-data-NFT anti-substitution, H1)
-    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, locationData);
-
-    // 2. Skip preceding fields
-    for (let i = 0; i < sv.fieldIndex; i++) {
-      this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), locationData);
-    }
-
-    // 3. Decode this field
-    const isLast = sv.fieldIndex === fieldsInNft.length - 1;
-    if (isLast) {
-      this.emitPushdataDecodeLastField(sv.type, locationData);
-    } else {
-      this.emitPushdataDecode(sv.type, locationData);
-      // Drop the remainder (top of stack); decoded_value is below it
-      this.emit(Op.OP_DROP, locationData);
-    }
+    this.emitStateFieldRead(sv, sv.type, fieldsInNft, locationData);
 
     this.pushToStack('(value)');
     return node;
@@ -14851,6 +14869,130 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return field.isDynamic ? new IntType(false, 32) : field.type;
   }
 
+  /** Decode one physical data-NFT field from a commitment already on top of the stack. */
+  private emitStateFieldRead(
+    sv: StateVariableNode,
+    targetType: Type,
+    fieldsInNft: StateVariableNode[],
+    loc: SingleLocationData,
+  ): void {
+    if (this.currentFunctionIsDelegate) {
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emitStateFieldDecode(sv, targetType, fieldsInNft, loc);
+      return;
+    }
+    const decode = {
+      nftIndex: sv.nftIndex,
+      precedingTypes: fieldsInNft.slice(0, sv.fieldIndex).map((field) => this.physicalFieldType(field)),
+      targetType,
+      isLast: sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex,
+      tagged: this.isMultiDataNft(),
+    };
+    const offset = this.compactOffsetMap.get(sv.nftIndex)!;
+    const key = [
+      'state-read',
+      offset,
+      decode.tagged ? sv.nftIndex : 'untagged',
+      decode.precedingTypes.map((type) => this.structuralTypeKey(type)).join(','),
+      this.structuralTypeKey(targetType),
+      decode.isLast ? 'last' : 'framed',
+    ].join(':');
+    let id = this.stateReadIds.get(key);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.stateReadIds.set(key, id);
+      this.stateReads.set(key, { offset, decode });
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitStateFieldReadInline(this.stateReads.get(key)!, loc);
+  }
+
+  private emitStateFieldReadInline(
+    read: {
+      offset: number;
+      decode: {
+        nftIndex: number;
+        precedingTypes: Type[];
+        targetType: Type;
+        isLast: boolean;
+        tagged: boolean;
+      };
+    },
+    loc: SingleLocationData,
+  ): void {
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(encodeInt(BigInt(read.offset)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emitStateFieldDecodeInline(read.decode, loc);
+  }
+
+  /** Decode one physical data-NFT field from a commitment already on top of the stack. */
+  private emitStateFieldDecode(
+    sv: StateVariableNode,
+    targetType: Type,
+    fieldsInNft: StateVariableNode[],
+    loc: SingleLocationData,
+  ): void {
+    const isLast = sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex;
+    const tagged = this.isMultiDataNft();
+    const precedingTypes = fieldsInNft.slice(0, sv.fieldIndex).map((field) => this.physicalFieldType(field));
+    const key = [
+      'state-decode',
+      tagged ? sv.nftIndex : 'untagged',
+      precedingTypes.map((type) => this.structuralTypeKey(type)).join(','),
+      this.structuralTypeKey(targetType),
+      isLast ? 'last' : 'framed',
+    ].join(':');
+    let id = this.stateDecodeIds.get(key);
+    if (id === undefined) {
+      id = this.allocateCompactHelperId();
+      this.stateDecodeIds.set(key, id);
+      this.stateDecodes.set(key, {
+        nftIndex: sv.nftIndex,
+        precedingTypes,
+        targetType,
+        isLast,
+        tagged,
+      });
+    }
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitStateFieldDecodeInline(this.stateDecodes.get(key)!, loc);
+  }
+
+  private emitStateFieldDecodeInline(
+    decode: {
+      nftIndex: number;
+      precedingTypes: Type[];
+      targetType: Type;
+      isLast: boolean;
+      tagged: boolean;
+    },
+    loc: SingleLocationData,
+  ): void {
+    if (decode.tagged) this.emitNftIndexTagVerify(decode.nftIndex, loc);
+    for (const type of decode.precedingTypes) this.emitPushdataSkip(type, loc);
+    if (decode.isLast) {
+      this.emitPushdataDecodeLastField(decode.targetType, loc);
+    } else {
+      this.emitPushdataDecode(decode.targetType, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
+  }
+
   /**
    * Push a dynamic var's current VALUE (tight bytes, no array count prefix) as '(value)'. Read-after-write
    * returns the new value still on the stack (e.g. `this.s = v; require(this.s == v)`); otherwise co-spends
@@ -14876,18 +15018,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fieldsInNft = this.stateVariables
       .filter((v) => v.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
-    this.emitMasterInputIndex(loc);
-    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, loc); // H1 anti-substitution
-    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), loc);
-    if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
-      this.emitPushdataDecodeLastField(new IntType(false, 32), loc);
-    } else {
-      this.emitPushdataDecode(new IntType(false, 32), loc);
-      this.emit(Op.OP_DROP, loc);
-    }
+    this.emitStateFieldRead(sv, new IntType(false, 32), fieldsInNft, loc);
     this.pushToStack(trackName);
   }
 
@@ -15035,18 +15166,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
     // --- A$len (uint32 field) -> '(dyn_rlen)' ---
-    this.emitMasterInputIndex(loc);
-    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, loc); // H1 anti-substitution
-    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), loc);
-    if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
-      this.emitPushdataDecodeLastField(lenType, loc);
-    } else {
-      this.emitPushdataDecode(lenType, loc);
-      this.emit(Op.OP_DROP, loc);
-    }
+    this.emitStateFieldRead(sv, lenType, fieldsInNft, loc);
     this.pushToStack('(dyn_rlen)');
 
     // --- chunk address '(dyn_rchunkaddr)' ---

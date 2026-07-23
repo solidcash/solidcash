@@ -1,5 +1,7 @@
 # EffectiveAcceleration bytecode optimization baseline
 
+Last updated: 2026-07-23.
+
 Recorded from the generated artifacts in `artifacts-real/` before the general C2 and structural-codec optimization work. Sizes are `artifact.bytecode.length / 2`; half-byte values expose pre-existing odd-length artifact strings and are intentionally preserved rather than rounded.
 
 | Contract | Baseline bytes |
@@ -148,13 +150,83 @@ accesses, but it was neutral on this MarketplaceV1 source.
 | Encoded-cost selection for fixed helpers | 96428 | 0 |
 | Shared literal-index and delete extraction | 96428 | 0 |
 | Compact negative fixed-helper IDs | 89609 | 6819 (7.1%) |
-| **Current total** | **89609** | **84924 (48.7%)** |
+| Shared variable-width mutation split | 89035 | 574 (0.6%) |
+| Shared physical state-field decoding | 86789 | 2246 (2.5%) |
+| Shared non-delegate state fetch and decode | 86444 | 345 (0.4%) |
+| **Current total** | **86444** | **88089 (50.5%)** |
 
 Relative to the same-source 461310-byte measurement before the structural-sharing follow-ups, the current
-artifact is 371701 bytes smaller (80.6%).
+artifact is 374866 bytes smaller (81.3%).
+
+## Final implementation summary
+
+All retained transformations are general compiler optimizations. None recognizes MarketplaceV1, its function
+names, or its particular state schema.
+
+- Structural helper registries are shared across the whole contract rather than copied per entry point.
+- Struct helpers use recursive encoding-layout keys, allowing equivalent layouts to share code without
+  conflating layouts that encode differently.
+- Cumulative struct-field-prefix helpers invoke the closest already-defined prefix.
+- Complete field extraction, variable-width scan loops, and scan-plus-decode element extraction are shared.
+- Ordinary packed state arrays, mapping-backed arrays, literal-index reads, and compatible delete paths use the
+  same canonical variable-width element extraction.
+- Variable-width local/state assignment and swap-delete paths share their scan-and-split mutation primitive.
+- Physical data-NFT field reads share tag verification, preceding-field traversal, and target decoding. Normal
+  state reads may also share the commitment-fetch prefix; delegate reads keep it inline because their proxy
+  master index occupies the altstack beneath the `OP_INVOKE` return address.
+- Captured helpers record helper-to-helper dependencies, and dead-definition removal retains reachable
+  dependencies.
+- Helper extraction compares actual encoded definition and invocation sizes against repeated inline emission.
+- Dynamic compiler helpers receive collision-free compact IDs after reserving every user function ID.
+- Fixed compiler helpers use compact negative IDs. User and library function IDs are allocated monotonically
+  from zero, so the two ID domains cannot collide.
+- Deep stack replacement uses two balanced counted loops once repeated `OP_ROLL` emission becomes larger.
+
+Neutral transformations remain valuable as general code-generation cleanup even though this MarketplaceV1
+source does not exercise them enough to change its total. These are identified as zero-byte stages in the table.
+
+## Validation
+
+The final 86444-byte measurement was produced after a clean `solidc` build. The complete monorepo test run
+passed:
+
+| Workspace | Result |
+| --- | ---: |
+| solidc | 2250 passed |
+| solidcash, including VM/e2e tests | 3178 passed, 23 skipped, 9 todo |
+| utils | 288 passed, 1 todo |
+| testing | 10 passed |
+| Focused C2, array, and struct/mapping set | 114 passed |
+
+The skipped tests remain existing tracked follow-up work and were not silently enabled or removed by this
+optimization series. `yarn lint` is not currently a clean repository gate: it reports 240 existing errors across
+the wider tree. The changed compiler builds successfully, all tests above pass, and `git diff --check` is clean.
+
+The 89609-byte checkpoint is recorded by commit `ac264683`; the later rows extend that same general optimization
+series.
+
+## Rejected and deferred candidates
 
 Complete `array[i].field` fusion was prototyped but removed: the semantic lowering has already separated that
 shape before generation, and the independently shared array/field helpers are the reachable canonical form.
 Whole dynamic-state-read extraction was also rejected because its emitted loop depends on function-specific
 block layout, preceding collection/dynamic reads, and tracked stack depths; treating it as a context-free helper
 would be unsound.
+
+Arbitrary repeated bytecode-block or tail extraction was also rejected. Raw post-generation blocks do not carry
+the stack signature, branch ownership, source-map relocation, or nested helper dependencies needed to prove that
+an `OP_DEFINE` replacement is equivalent.
+
+Function-wide dynamic-state read caching remains deferred. Hoisting a conditional read can require chunk inputs
+on transaction paths that previously did not access the value, while caching through writes requires precise
+branch, loop, return, and invalidation handling. The existing loop-specific semantic cache remains the safe form;
+a broader cache should be implemented only with path-sensitive analysis and dedicated transaction-level tests.
+
+Frequency-based ID assignment was reconsidered after compact fixed and dynamic IDs landed. The only remaining
+special one-byte Script Number encodings are already occupied by user functions or the most common fixed helper;
+further remapping would change function IDs and require coordinated artifact/SDK migration for negligible
+expected savings.
+
+Straight-line fixed-state CSE is currently dominated by shared state-read helpers: a repeated read is a compact
+ID plus `OP_INVOKE`, while retaining a cached value requires duplication, indexed retrieval, lifetime tracking,
+and cleanup. Dynamic reads can still justify caching, but only with the path-sensitive constraints above.

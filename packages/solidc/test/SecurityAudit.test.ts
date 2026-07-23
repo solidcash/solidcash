@@ -172,11 +172,15 @@ describe('C2: negative mapping-guard diagnostic', () => {
 // signature: 3 is not a token capability value (0x00/0x01/0x02), so it only appears from the tag verification.
 describe('H1: multi-data-NFT self-reads verify the nftIndex tag', () => {
   it('emits a tag-index verify (OP_3 OP_EQUALVERIFY) when self-reading the 4th data NFT', () => {
-    const bc = compileString(
+    const artifact = compileString(
       'contract Q { bytes100 a; bytes100 b; bytes100 c; bytes100 d;'
       + ' function f() external { require(this.d == this.d); require(true); } }',
-    ).bytecode;
-    expect(bc).toContain('OP_3 OP_EQUALVERIFY');
+    );
+    // Repeated reads may move this check into an opaque pushed OP_DEFINE body. Assert either the top-level ASM
+    // spelling or its raw OP_3 (0x53), OP_EQUALVERIFY (0x88) byte sequence inside the compiled helper body.
+    expect(
+      artifact.bytecode.includes('OP_3 OP_EQUALVERIFY') || artifact.debug.bytecode.includes('5388'),
+    ).toBe(true);
   });
 
   it('single-data-NFT contracts carry no nftIndex tag verify', () => {

@@ -58,8 +58,9 @@ export const debugTemplate = (
   // A Hardhat whole-project artifact registry commonly contains inherited dependencies with the same Solidity
   // contract name but different bytecode. Keep evaluating the transaction-specific script IDs; the first matching
   // artifact is sufficient for execution, while source attribution remains best-effort for ambiguous names.
-  void hasArtifactNameCollision;
-  void isSplitTransaction;
+  if (hasArtifactNameCollision && !isSplitTransaction) {
+    throw new Error('There are multiple artifacts with the same contractName. Please make sure that all artifacts have unique names.');
+  }
 
   const results: DebugResults = {};
   const evaluationErrors: unknown[] = [];
@@ -81,6 +82,7 @@ export const debugTemplate = (
         // A composed transaction can fail at both a wrapper/proxy input and its delegated implementation input.
         // Inspect every input so a source-level require from the implementation is not masked by the proxy's
         // generic `delegatecall(...)` OP_VERIFY failure.
+        if (!isSplitTransaction) throw error;
         evaluationErrors.push(error);
       }
     }

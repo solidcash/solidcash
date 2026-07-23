@@ -100,13 +100,13 @@ protocol version returns to design and measurement before implementation.
 
 ## 6. Validation baseline
 
-Implementation baseline: `cbb360fc` (`fix(batch): preserve direct msg.sender entry calls`), plus
-this documentation-only validation commit.
+Implementation baseline: `df3fab7e` (`fix(batch): resolve audit resource-boundary findings`), with
+the audit/specification correction commits which follow it.
 
 Validated on 2026-07-23:
 
 - `yarn build`: all six non-example monorepo packages pass;
-- `packages/solidc: yarn test`: 51 files, 2,298 tests pass;
+- `packages/solidc: yarn test`: 51 files, 2,299 tests pass;
 - `packages/solidcash: yarn test`: 368 files, 3,256 tests pass, with the repository's existing
   24 skips and 9 todos;
 - the SDK full run includes the mapping-backed ERC-20 corpus, R4/R5 hostile suites, and the two

@@ -661,7 +661,7 @@ The releases now deliver value independently as intended:
 | R4 | opt-in hidden SCB1 scalar/mapping route, ordered common-type results, and one event or value-transfer effect per row | default off; multi-entry aliases, mixed route modes, heterogeneous/multi-results, multi-effects, signatures, and route-sensitive context rejected |
 | R5 | opt-in one-owner repeated external grouping, exact caller/callee blob binding, one B settlement, scalar TreasurySplit/Marketplace/MasterChef slices, and an exact two-row existing-entry parameter-authorized transfer resource route | default off; `msg.sender`-bound ERC-20 allowance authorization remains ineligible; cold entries and physical entry aliases fail closed; multiple repeated owners and unresolvable chains fail compilation; graph composition, callbacks, forwarding, and blobs over 223 bytes are rejected |
 
-The compiler suite passes 2,297 tests. The SDK suite passes 3,256 tests (with the repository's
+The compiler suite passes 2,299 tests. The SDK suite passes 3,256 tests (with the repository's
 existing 24 skips and 9 todos) after using the documented `getFunction(name)` escape hatch for a
 source contract whose own ABI function is named `batch`.
 The repository-wide lint target still reports the pre-existing branch-wide backlog, so lint is not

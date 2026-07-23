@@ -214,3 +214,6 @@ Post-audit corrections (2026-07-23):
 These corrections do not request default enablement. They narrow the claim, make cold handling
 structural, expose the deployability ceiling, and strengthen the audit evidence for the existing
 experimental boundary.
+
+Post-remediation validation passes the six-package monorepo build, 2,299 compiler tests, and 3,256
+SDK tests (24 skipped, 9 todo).

@@ -184,6 +184,19 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
     await token.getFunction('checkBalance')(bobPkh, 20n).send();
     await token.getFunction('checkBalance')(carolPkh, 40n).send();
     await token.getFunction('checkAllowance')(alicePkh, carolPkh, 20n).send();
+
+    await expect(caller.getFunction('route')(
+      alicePkh, bobPkh, bobPkh, carolPkh, 1n, 1n,
+    ).build()).rejects.toThrow(/resource shape aliases entry slots/);
+    await expect(caller.getFunction('route')(
+      alicePkh, alicePkh, bobPkh, carolPkh, 1n, 1n,
+    ).build()).rejects.toThrow(/resource shape aliases entry slots/);
+
+    const coldFirst = new Uint8Array(20).fill(0x44);
+    const coldSecond = new Uint8Array(20).fill(0x55);
+    await expect(caller.getFunction('route')(
+      alicePkh, coldFirst, coldSecond, carolPkh, 1n, 1n,
+    ).build()).rejects.toThrow(/cold-entry predecessor planning is not yet supported/);
   });
 
   it('constructs TreasurySplit.split with two token transfers and one token owner', async () => {

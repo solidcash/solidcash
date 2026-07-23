@@ -7928,6 +7928,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (bLoopCommitments.length > 0) { bEntryLoopCommitments = bLoopCommitments; bEntryLoopStart = bCore; }
         }
 
+        if (compilerRoute && bBlockInputs && bBlockLayout) {
+          const seenEntries = new Map<string, number>();
+          for (const slot of bBlockLayout.slots) {
+            if (slot.kind !== 'entry') continue;
+            const input = bBlockInputs[slot.offset];
+            if (!input?.token?.nft) continue;
+            const outpoint = `${input.txid}:${input.vout}`;
+            const owner = seenEntries.get(outpoint);
+            if (owner !== undefined) {
+              throw new Error(
+                `External SCB1 resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
+                + 'this physical alias is not supported by the advertised route',
+              );
+            }
+            seenEntries.set(outpoint, slot.slotIndex ?? 0);
+          }
+        }
+
         externalCallUtxoGroups.push({
           categoryId: externalCategoryId,
           stateLayout: bStatelayout,

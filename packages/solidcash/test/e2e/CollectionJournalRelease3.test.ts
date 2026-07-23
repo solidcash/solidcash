@@ -7,6 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const SOURCE = `pragma solidcash >=0.8.0;
 contract CollectionJournalRelease3() {
   mapping(bytes20 => bigint) balances;
+  bytes data;
 
   function credit(bytes20 who, bigint amount) internal {
     this.balances[who] = this.balances[who] + amount;
@@ -19,6 +20,14 @@ contract CollectionJournalRelease3() {
 
   function clear(bytes20 who) internal {
     delete this.balances[who];
+  }
+
+  function append(bytes part) internal {
+    this.data = bytes.concat(this.data, part);
+  }
+
+  function clearData() internal {
+    delete this.data;
   }
 
   function creditThree(bytes20 who, bigint a, bigint b, bigint c) {
@@ -45,6 +54,18 @@ contract CollectionJournalRelease3() {
     clear(who);
     credit(who, amount);
     require(amount >= 0);
+  }
+
+  function replaceThenAppend(bytes discarded, bytes kept, bytes tail) {
+    append(discarded);
+    clearData();
+    append(kept);
+    append(tail);
+    require(discarded.length >= 0);
+  }
+
+  function checkData(bytes expected) {
+    require(this.data == expected);
   }
 }`;
 
@@ -93,5 +114,15 @@ describe('Release 3 collection journal SDK E2E', () => {
     const contract = await deploy();
     await contract.creditLoop(alicePkh, 5n, 7n).send();
     expect(await balance(contract)).toBe(35n);
+  });
+
+  it('flushes ordered dynamic bytes replacement, delete, and append once', async () => {
+    const contract = await deploy();
+    await contract.replaceThenAppend(
+      Uint8Array.from([0xde, 0xad]),
+      Uint8Array.from([0xca, 0xfe]),
+      Uint8Array.from([0xba, 0xbe]),
+    ).send();
+    await contract.checkData(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe])).send();
   });
 });

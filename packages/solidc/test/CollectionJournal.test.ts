@@ -68,4 +68,24 @@ describe('Release 3 collection journal lowering', () => {
       .toEqual(expect.arrayContaining(['read', 'write']));
     expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'clear')?.arity).toBe(2);
   });
+
+  it('threads ordered bytes replacement, append, and delete through a value handler', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract DynamicJournal() {
+        bytes data;
+        function append(bytes part) internal { this.data = bytes.concat(this.data, part); }
+        function clear() internal { delete this.data; }
+        function apply(bytes a, bytes b) {
+          append(a); clear(); append(b); require(a.length >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const apply = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'apply');
+    const append = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'append');
+    const clear = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'clear');
+    expect(append?.arity).toBe(2);
+    expect(clear?.arity).toBe(1);
+    expect(apply?.calls).toEqual(expect.arrayContaining([append!.id, clear!.id]));
+    expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
+  });
 });

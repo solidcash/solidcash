@@ -410,18 +410,29 @@ transcript. Consequences:
 - **Ceiling lifted.** The transcript shrinks from ~72 bytes/participant (35B lbc + 33B category + fields)
   to ~2. N=2, 4, and 8 all bind and broadcast; the full-identity form (8.4) capped at ~2 rows.
 - **Cost stays bounded AND is lower than the lean handler.** Fully-checked (identity-by-reference +
-  pairwise distinctness + controller-prefix self-parse), worst-input op-cost/budget: n2=13.9%, n4=16.1%,
-  n8=18.7% (instr 1949/2888/4850). Lower than 8.4's leaner handler (15.0/17.5/20.8) because the larger
-  covenant grants proportionally more budget while the index-only blob is cheap to parse.
+  O(N) canonical order (8.7) + controller-brand cross-check on every participant), worst-input
+  op-cost/budget: n2=12.1%, n4=13.6%, n8=16.2% (instr 2077/3159/5323). Comparable to 8.4's leaner
+  handler despite doing far more, because the larger covenant grants proportionally more budget while
+  the index-only blob is cheap to parse. (Canonical order alone measured 11.8/12.6/13.9; the
+  cross-check adds the small remainder.)
 
-Enforced + VM-proven negatives: tampered owner output category (output preservation), a participant
-input not selecting SCB1, an unbranded participant (no controller prefix), and a mismatched owner
-output index (output block points at the wrong participant) - each with a same-UTXO positive control.
+Enforced + VM-proven negatives (7/7): tampered owner output category (output preservation), a
+participant input not selecting SCB1, an unbranded participant (no controller prefix), a mismatched
+owner output index, a non-canonical (reversed) participant order, and a branded participant's
+cross-check rejecting a non-branded peer (VM-eval of the branded input alone confirms the rejection is
+not self-only) - each with a same-UTXO positive control.
 
-KNOWN BOUND: the compact self-prefix parse assumes both blob pushes are single-byte direct pushes
-(blob < 76 bytes), which holds through the low tens of participants; beyond that the blob crosses into
-PUSHDATA1 and the parse needs the three-way (direct/PD1/PD2) push-length decode. This is the recommended
-binding form for the general N-participant transcript.
+CROSS-CHECK FIX: an earlier draft only self-checked the active input's brand, so a non-branded input
+could be named as a participant and never enforce its own binding. Each participant now reads every
+co-spent unlocking once and verifies EVERY named participant's redeem begins with the controller brand;
+because all participants share the same blob, one redeem offset (computed from u0) locates every input's
+redeem regardless of which is active.
+
+KNOWN BOUND: the redeem-offset parse assumes both blob pushes are single-byte direct pushes (blob < 76
+bytes). With index-only rows that holds through ~25 participants (blob ~= 19 + 2N bytes) - past the ~8
+candidate scale; beyond it the blob crosses into PUSHDATA1 and the parse needs the three-way
+(direct/PD1/PD2) push-length decode. This is the recommended binding form for the general
+N-participant transcript.
 
 ### 8.7 Canonical strict order RESOLVED (root cause: the int-type range guard)
 

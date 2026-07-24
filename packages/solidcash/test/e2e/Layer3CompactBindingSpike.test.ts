@@ -32,12 +32,13 @@ function makeCompact(n: number): string {
   const body: string[] = [];
   for (let i = 0; i < n; i += 1) {
     params.push(`bigint input${i}, bigint output${i}`);
+    body.push(`bytes u${i} = tx.inputs[input${i}].unlockingBytecode;`); // read each unlocking once
+    body.push(`require(u${i}.slice(0, 5) == hex"0453434231");`); // minimally selects SCB1
     body.push(`bytes lbc${i} = tx.inputs[input${i}].lockingBytecode;`);
     body.push(`bytes cat${i} = tx.inputs[input${i}].tokenCategory;`);
     body.push(`require(cat${i}.slice(32, 33) == hex"02");`);
     body.push(`require(tx.outputs[output${i}].lockingBytecode == lbc${i});`);
     body.push(`require(tx.outputs[output${i}].tokenCategory == cat${i});`);
-    body.push(`require(tx.inputs[input${i}].unlockingBytecode.slice(0, 5) == hex"0453434231");`);
   }
   // Canonical strict byte-lexicographic owner order over the 32-byte P2SH32 hash (bytes 2..33 of the
   // locking bytecode; the aa20 prefix / 87 suffix are identical for all P2SH32). Compare in two 16-byte
@@ -50,22 +51,27 @@ function makeCompact(n: number): string {
   for (let i = 0; i + 1 < n; i += 1) {
     body.push(`require(hi${i} < hi${i + 1} || (hi${i} == hi${i + 1} && lo${i} < lo${i + 1}));`);
   }
-  // Front-parse the active input's own unlocking: selector(5) + direct-push positional blob + direct-push
-  // batchBlob + PUSHDATA2 redeem. Read both direct-push lengths (opcode == length for <76-byte pushes).
-  body.push('bytes us = tx.inputs[this.activeInputIndex].unlockingBytecode;');
-  body.push('bigint l0 = int(bytes.concat(us.slice(5, 6), hex"00"));');
+  // Locate the redeem-script push from the SHARED blob structure: selector(5) + direct-push positional
+  // blob + direct-push batchBlob + PUSHDATA2 redeem (direct pushes hold while the index-only blob stays
+  // < 76 bytes, i.e. through ~25 participants). All participants run the same covenant with the same
+  // blob, so one offset (computed from u0) locates every input's redeem.
+  body.push('bigint l0 = int(bytes.concat(u0.slice(5, 6), hex"00"));');
   body.push('bigint a = 6 + l0;');
-  body.push('bigint l1 = int(bytes.concat(us.slice(a, a + 1), hex"00"));');
+  body.push('bigint l1 = int(bytes.concat(u0.slice(a, a + 1), hex"00"));');
   body.push('bigint rp = a + 1 + l1;');
-  body.push('require(us.slice(rp, rp + 1) == hex"4d");');
-  body.push(`require(us.slice(rp + 3, rp + 13) == hex"${PREFIX10}");`);
+  body.push('require(u0.slice(rp, rp + 1) == hex"4d");');
+  // Cross-check EVERY named participant's redeem begins with the controller brand - not just the active
+  // input - so a non-branded input cannot be named as a participant.
+  for (let i = 0; i < n; i += 1) {
+    body.push(`require(u${i}.slice(rp + 3, rp + 13) == hex"${PREFIX10}");`);
+  }
   const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
   body.push(`require(${members.join(' || ')});`);
   return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 
-async function setup(n: number, branded = true): Promise<any> {
+async function setup(n: number, branded: boolean | boolean[] = true): Promise<any> {
   const provider = createTestProvider();
   const artifact = compileString(makeCompact(n), {
     forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
@@ -73,12 +79,12 @@ async function setup(n: number, branded = true): Promise<any> {
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);
   const handler = artifact.hiddenBatch!.handlers.find((h: any) => h.name === '__layer3_bind')!;
-  const opts = branded ? { provider, salt: brand } : { provider };
-  const parts: { setup: any; contract: Contract }[] = [];
+  const parts: { setup: any; contract: Contract; branded: boolean }[] = [];
   for (let i = 0; i < n; i += 1) {
-    const inner = new Contract(artifact, [], opts);
+    const isBranded = Array.isArray(branded) ? branded[i] : branded;
+    const inner = new Contract(artifact, [], isBranded ? { provider, salt: brand } : { provider });
     const s = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {});
-    parts.push({ setup: s, contract: inner.withCategory(hexToBin(s.categoryId)) });
+    parts.push({ setup: s, contract: inner.withCategory(hexToBin(s.categoryId)), branded: isBranded });
   }
   // Order participants by canonical big-endian locking bytecode so input i < input i+1 holds on-chain.
   parts.sort((x, y) => (BigInt(`0x${x.contract.lockingBytecode}`) < BigInt(`0x${y.contract.lockingBytecode}`) ? -1 : 1));
@@ -139,14 +145,14 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
       metrics.push({ n, ...measureBuilder(b, n) });
       await expect(s.provider.sendRawTransaction(rawOf(b))).resolves.toBeTypeOf('string');
     }
-    // Fully-checked compact binding (identity-by-reference + O(N) canonical order + controller prefix).
-    // Every input stays well under budget; the index-only blob fits far past the full-identity ~2 cap.
-    // Canonical order is cheaper than the earlier O(N^2) distinctness at scale (n8: 13.9% vs 18.7%).
+    // Fully-checked compact binding: identity-by-reference + O(N) canonical order + controller-brand
+    // cross-check on every participant. Every input stays well under budget; the index-only blob fits
+    // far past the full-identity ~2 cap.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { n: 2, instr: 2058, ratioPct: 11.8 },
-      { n: 4, instr: 3102, ratioPct: 12.6 },
-      { n: 8, instr: 5190, ratioPct: 13.9 },
+      { n: 2, instr: 2077, ratioPct: 12.1 },
+      { n: 4, instr: 3159, ratioPct: 13.6 },
+      { n: 8, instr: 5323, ratioPct: 16.2 },
     ]);
   });
 
@@ -189,5 +195,19 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
     const reversed = { ...s, parts: [...s.parts].reverse() }; // input0 now the larger owner key
     await expect(s.provider.sendRawTransaction(rawOf(await build(reversed)))).rejects.toThrow();
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
+  });
+
+  it('HOSTILE: a branded participant cross-check rejects a non-branded peer', async () => {
+    const s = await setup(2, [true, false]); // one branded, one not
+    const brandedIdx = s.parts.findIndex((p: any) => p.branded);
+    expect(brandedIdx).toBeGreaterThanOrEqual(0);
+    const b = await build(s);
+    const transaction = b.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(b.inputs);
+    // The branded input's OWN prefix is valid, so its rejection can only come from cross-checking the
+    // non-branded peer - proving the check is not self-only.
+    const r = createVirtualMachineBch2026().evaluate({ inputIndex: brandedIdx, sourceOutputs, transaction });
+    expect((r as { error?: string }).error).toBeDefined();
+    await expect(s.provider.sendRawTransaction(rawOf(b))).rejects.toThrow();
   });
 });

@@ -199,6 +199,31 @@ export function controllerBindingParams(n: number): string[] {
 }
 
 /**
+ * A minimal category-agnostic controller covenant (R7). The deployer sets the transcript root once via
+ * `setRoot` (their signature); the transcript spend uses `attest`, which preserves everything (locking
+ * bytecode, category, value, commitment). Category-agnostic so its p2sh32 address depends only on
+ * `deployerPkh` and is stable/known before genesis - participants bake THIS address for exact controller
+ * identity. Genesis it MINT-ONCE: one mutable NFT and NO minting NFT, so the CashToken category is
+ * fixed-supply and can never be duplicated (the uniqueness proof R7 requires).
+ */
+export function generateControllerCovenant(): string {
+  const preserve = (extra: string): string => `
+    require(tx.outputs[this.activeInputIndex].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+    require(tx.outputs[this.activeInputIndex].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+    require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value);
+    ${extra}`;
+  return `pragma solidcash >=0.8.0;
+contract Layer3Controller(bytes deployerPkh) {
+  function setRoot(bytes newRoot, pubkey pk, sig s) {
+    require(hash160(pk) == deployerPkh);
+    require(checkSig(s, pk));${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == newRoot);')}
+  }
+  function attest() {${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);')}
+  }
+}`;
+}
+
+/**
  * Controller-attested participant-SET binding (membership only - NOT a canonical execution transcript; see
  * layer3-production-reaudit.md R2). Homogeneous clone participants are bound to ONE attested address SET by a
  * co-spent CONTROLLER NFT (category `controllerCategory` baked in) whose commitment is
@@ -214,9 +239,14 @@ export function controllerBindingParams(n: number): string[] {
  * uniqueness proof here). It is an experimental building block toward a canonical execution transcript, not a
  * complete heterogeneous cyclic message bus.
  */
-export function bindingFrameworkBodyControllerBound(n: number, controllerCategory: string): string[] {
+export function bindingFrameworkBodyControllerBound(
+  n: number, controllerCategory: string, controllerLbc?: string,
+): string[] {
   if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
+  if (controllerLbc !== undefined && !/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) {
+    throw new Error('layer3: controllerLbc must be hex bytes');
+  }
   const body: string[] = [];
   for (let i = 0; i < n; i += 1) {
     body.push(`bytes u${i} = tx.inputs[input${i}].unlockingBytecode;`);
@@ -248,6 +278,12 @@ export function bindingFrameworkBodyControllerBound(n: number, controllerCategor
   // display-order controllerCategory to compare against it.
   const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
   body.push(`require(tx.inputs[controllerIdx].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
+  // R7 exact controller identity: the co-spent controller must be at the expected controller covenant address,
+  // not merely carry the category. Combined with mint-once genesis (one NFT of that category, no minting NFT),
+  // this uniquely identifies the genuine controller.
+  if (controllerLbc !== undefined) {
+    body.push(`require(tx.inputs[controllerIdx].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
+  }
   let rootExpr = 'lbc0';
   for (let i = 1; i < n; i += 1) rootExpr = `bytes.concat(${rootExpr}, lbc${i})`;
   body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${rootExpr}));`);
@@ -262,8 +298,8 @@ export function bindingFrameworkBodyControllerBound(n: number, controllerCategor
  * Generate the controller-attested participant-SET binding covenant for `n` homogeneous participants
  * (membership only - not an execution transcript; see `bindingFrameworkBodyControllerBound`).
  */
-export function generateControllerBoundCovenant(n: number, controllerCategory: string): string {
-  const body = bindingFrameworkBodyControllerBound(n, controllerCategory);
+export function generateControllerBoundCovenant(n: number, controllerCategory: string, controllerLbc?: string): string {
+  const body = bindingFrameworkBodyControllerBound(n, controllerCategory, controllerLbc);
   return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${controllerBindingParams(n).join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }

@@ -605,3 +605,28 @@ VM-proven: POSITIVE accepts; a forged dependency (consume a value B never quoted
 rejects; an inv2 settlement that does not reflect the consumed result rejects. Both endpoints 2826
 instructions, 13.1% of budget. So a two-step transcript with an internal result edge holds on-chain at
 the same ~13% cost - the multi-invocation shape does not blow the budget.
+
+## 14. Three-owner authenticated result graph (the direct section-5 claim)
+
+`Layer3GraphSpike.test.ts` (3/3, real BCH-2026 VM). Section 5 states R1-R5 "have no covenant format that
+authenticates this three-owner result graph." This spike is that graph, on-chain, in one covenant.
+
+Three co-spent owners (Kashi-shaped): a producer (Bento) computes `shareOut = amount * rate` over its
+committed state; a consumer (Kashi) credits `shareOut` into its collateral settlement; the third owner
+(token) settles the `amount` transfer. `producerIdx` / `consumerIdx` map roles onto the
+canonically-ordered participants. All three participant covenants validate the entire graph - identity
+binding + canonical order + brand + commitment preservation for all three, plus the shareOut production,
+consumption, and token settlement.
+
+VM-proven: POSITIVE accepts; a forged `shareOut` (not `amount * rate`) rejects; a consumer settlement that
+does not reflect `shareOut` rejects. All three endpoints 3409 instructions, 13.8% of budget - three owners
+with a full result graph still leave ~86% headroom.
+
+IMPLEMENTATION NOTE. The parametric N-participant generator must keep parameter order aligned with the
+transcript arg order; reversing the (input_i, output_i) params (e.g. via unshift) silently inverts the
+canonical-order comparison and fails. The proven `makeCompact` uses push; graph generators must too.
+
+This closes the spike's acceptance shape: the exact three-owner result graph section 5 named as the
+R1-R5 gap is buildable and sound at ~14% of budget. What remains for the general product (five-table
+transcript codec, SDK graph derivation, and the full Kashi Rebase math against the section-4 oracle) is
+productization over this proven mechanism, not a further soundness question.

@@ -396,3 +396,30 @@ REMAINING (not blocking the no-dup/binding soundness, documented for completion)
 - Remaining hostile rows (non-minimal push, field-boundary truncation) are covered by the existing
   SCB1 parser's minimal-push + exact-exhaustion checks (R4/R5 suites); executor/non-direct-kind and
   block-overlap are N/A for the single-input-per-owner direct-only spike.
+
+### 8.6 Compact identity-by-reference binding (lifts the participant ceiling)
+
+`Layer3CompactBindingSpike.test.ts` (5/5, real BCH-2026 VM via MockNetworkProvider). The model that
+8.4 pointed at: the SCB1 row carries ONLY (input,output) index pairs per participant; each identity
+(locking bytecode + base category) is READ from the actual co-spent input rather than claimed in the
+transcript. Consequences:
+
+- **No claimed identity to forge.** The rev1 participant-forgery concern dissolves structurally - a row
+  cannot assert an identity that differs from the co-spent input, because it asserts no identity at all,
+  only which input/output positions belong to the participant.
+- **Ceiling lifted.** The transcript shrinks from ~72 bytes/participant (35B lbc + 33B category + fields)
+  to ~2. N=2, 4, and 8 all bind and broadcast; the full-identity form (8.4) capped at ~2 rows.
+- **Cost stays bounded AND is lower than the lean handler.** Fully-checked (identity-by-reference +
+  pairwise distinctness + controller-prefix self-parse), worst-input op-cost/budget: n2=13.9%, n4=16.1%,
+  n8=18.7% (instr 1949/2888/4850). Lower than 8.4's leaner handler (15.0/17.5/20.8) because the larger
+  covenant grants proportionally more budget while the index-only blob is cheap to parse.
+
+Enforced + VM-proven negatives: tampered owner output category (output preservation), a participant
+input not selecting SCB1, an unbranded participant (no controller prefix), and a mismatched owner
+output index (output block points at the wrong participant) - each with a same-UTXO positive control.
+
+KNOWN BOUND: the compact self-prefix parse assumes both blob pushes are single-byte direct pushes
+(blob < 76 bytes), which holds through the low tens of participants; beyond that the blob crosses into
+PUSHDATA1 and the parse needs the three-way (direct/PD1/PD2) push-length decode. Pairwise distinctness
+is O(N^2) (cheap 35-byte reads); strict canonical order (8.1, still int()-blocked) would reduce it to
+O(N) adjacent checks. This is the recommended binding form for the general N-participant transcript.

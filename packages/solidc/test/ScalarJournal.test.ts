@@ -53,4 +53,42 @@ describe('Release 1 scalar journal lowering', () => {
     expect(mutual.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
     expect(mutual.abi.find((entry) => entry.name === 'flat')?.recursiveStateHandler).toBeUndefined();
   });
+
+  it('keeps an external-call scalar helper on the established inline path', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ICounter { function increment(); }
+      contract ExternalScalar(bytes32 target) {
+        int x;
+        function update() internal {
+          ICounter(target).increment.call();
+          this.x = this.x + 1;
+        }
+        function run() { update(); require(this.x > 0); }
+      }
+    `, { forceStateful: true });
+
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'update')).toBeUndefined();
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toHaveLength(1);
+  });
+
+  it('rejects an event-bearing returning state helper that cannot be inlined', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract EventReturn() {
+        int x;
+        event Changed(int value);
+        function update(int n) internal returns (int) {
+          this.x = this.x + n;
+          emit Changed(this.x);
+          if (n > 0) { return this.x; }
+          return 0;
+        }
+        function run(int n) {
+          int result = update(n);
+          require(result >= 0);
+        }
+      }
+    `, { forceStateful: true })).toThrow(
+      /Returning state helper 'update' with an event must be inlined/,
+    );
+  });
 });

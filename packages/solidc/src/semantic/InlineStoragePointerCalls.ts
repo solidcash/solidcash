@@ -31,6 +31,9 @@ import {
   EmitStatementNode,
   TokenContainerMethodStatementNode,
   TransferStatementNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
+  MethodCallNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
@@ -265,6 +268,17 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // directly so event-producing helpers remain inlined and their event metadata
       // is retained on every physical entry point that can execute the emit.
       if (candidate instanceof EmitStatementNode) unsupported = true;
+      // The semantic effect metadata is populated after this lowering pass.
+      // Inspect pre-semantic call shapes directly so external/low-level calls
+      // never enter an OP_INVOKE handler which lacks their covenant context.
+      if (candidate instanceof LowLevelCallNode
+        || candidate instanceof LowLevelCallStatementNode
+        || candidate instanceof MethodCallNode) unsupported = true;
+      if (candidate instanceof FunctionCallNode) {
+        const name = candidate.identifier.name;
+        const dot = name.lastIndexOf('.');
+        if (dot > 0 && !name.startsWith('super.') && !this.funcByName.has(name)) unsupported = true;
+      }
       if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
         || candidate instanceof MappingDeleteNode || candidate instanceof MappingFieldAssignNode
         || candidate instanceof ArrayAccessNode || candidate instanceof ArrayAssignNode

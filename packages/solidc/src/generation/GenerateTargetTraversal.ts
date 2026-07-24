@@ -1224,6 +1224,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private computeScalarJournalClosures(node: ContractNode): void {
     const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
+    const internallyInvoked = this.collectInvokedFunctionIds(node);
     const slotsById = new Map<number, Map<string, StateVariableNode>>();
     const callsById = new Map<number, Set<number>>();
     const writerIds = new Set<number>();
@@ -1268,6 +1269,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const calls = new Set<number>();
       const writes = { value: false };
       scan(fn.body, slots, calls, writes);
+      if (writes.value && fn.returnTypes.length > 0 && internallyInvoked.has(fn.functionId)) {
+        let emits = false;
+        const detectEmit = (current: Node, seen = new Set<Node>()): void => {
+          if (seen.has(current) || emits) return;
+          seen.add(current);
+          if (current instanceof EmitStatementNode) {
+            emits = true;
+            return;
+          }
+          for (const [key, value] of Object.entries(current)) {
+            if (['resolvedFunction', 'functionReference', 'definition', 'collection',
+              'stateVariable', 'symbolTable'].includes(key)) continue;
+            if (value instanceof Node) detectEmit(value, seen);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) detectEmit(item, seen);
+            }
+          }
+        };
+        detectEmit(fn.body);
+        if (emits) {
+          throw new Error(
+            `Returning state helper '${fn.name}' with an event must be inlined before code generation`,
+          );
+        }
+      }
       slotsById.set(fn.functionId, slots);
       callsById.set(fn.functionId, calls);
       if (writes.value) writerIds.add(fn.functionId);

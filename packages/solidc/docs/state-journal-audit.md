@@ -26,6 +26,35 @@ Headline: **the covenant authenticates whatever the lowered bytecode computes.**
 covenant surface, so a lowering that computes the wrong state transition yields state that is
 "correctly wrong" and settles on-chain. That is exactly what J1 and J2 do.
 
+## Remediation status
+
+Post-audit corrections (2026-07-23):
+
+- **J1 corrected and VM-locked:** multi-entry caches now use explicit structural identities for
+  wrapper parameters, parsed literals, and transaction/message globals. Repeated literal keys share
+  one pending value; unsupported complex expressions are rejected rather than assigned an identity
+  weaker than physical storage canonicalization. The original inflation transaction now settles
+  `100 -> 40 + 30 + 30` on the BCH-2026 VM.
+- **J2 corrected by a sound boundary:** a wrapper containing an early return cannot use a
+  multi-entry journal helper. Compilation fails with a specific diagnostic before an artifact is
+  emitted. General exit-aware write-back sinking remains a future feature, not a soundness
+  dependency.
+- **J3 corrected:** scalar-journal eligibility now inspects pre-semantic `MethodCall`,
+  low-level-call, and dotted external-call AST shapes. Such helpers remain on the established inline
+  path, where their external-call covenant slots are owned by the physical entry point.
+- **J4 corrected and VM-locked:** returning helpers that push, pop, assign, or delete a state array
+  are recognized as state-touching and inlined. The former rejected `append(5); append(7)` shape now
+  settles and reads back `[5, 7]` on the BCH-2026 VM.
+- **J5 fails closed explicitly:** an event-bearing returning state helper which survives to
+  subroutine journal code generation is rejected with a specific compiler error. It can no longer
+  silently discard the event.
+- **J6 regression-locked:** invocation SCC analysis is journal-kind-independent. Mutually recursive
+  collection and dynamic-state closures now have tests proving their physical entry ABI carries
+  `recursiveStateHandler`, activating the existing concrete BCH VM preflight in the SDK.
+
+With these corrections, no covenant-accepted wrong-state finding in this audit remains open.
+The original finding descriptions below are retained as the independent review record.
+
 ---
 
 ## J1 - CRITICAL: multi-entry journal key-dedup mismatch mints tokens from nothing

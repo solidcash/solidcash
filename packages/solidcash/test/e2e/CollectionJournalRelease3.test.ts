@@ -392,6 +392,36 @@ describe('Release 3 collection journal SDK E2E', () => {
     await chef.check(7n, 5n, 7n).send();
   });
 
+  it('executes a returning chunk-array writer through the inlined path', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ReturningArrayJournal() {
+        bigint[] scores;
+        function append(bigint value) internal returns (bigint) {
+          this.scores.push(value);
+          return this.scores.length;
+        }
+        function apply(bigint a, bigint b) {
+          bigint first = append(a);
+          bigint second = append(b);
+          require(first == 1 && second == 2);
+        }
+        function check(bigint a, bigint b) {
+          require(this.scores.length == 2 && this.scores[0] == a && this.scores[1] == b);
+        }
+      }
+    `, { forceStateful: true });
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'append')).toBeUndefined();
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    await contract.apply(5n, 7n).send();
+    await contract.check(5n, 7n).send();
+  });
+
   it('executes token-container helper effects twice in source order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;

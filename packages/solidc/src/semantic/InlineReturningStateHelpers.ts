@@ -20,6 +20,9 @@ import {
   StateAssignNode,
   MappingAssignNode,
   StateArrayAssignNode,
+  StateArrayPushNode,
+  StateArrayPopNode,
+  StateArrayDeleteNode,
   MappingFieldAssignNode,
   WhileNode,
   DoWhileNode,
@@ -465,6 +468,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.walk(fn.body, (n) => {
       if (found) return;
       if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)) {
+        found = true;
+      } else if ((n instanceof StateArrayPushNode || n instanceof StateArrayPopNode
+        || n instanceof StateArrayAssignNode || n instanceof StateArrayDeleteNode)
+        && this.stateVarNames.has(n.name)) {
         found = true;
       } else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name) && !shadowed.has(n.name)) {
         found = true;

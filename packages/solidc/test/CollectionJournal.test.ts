@@ -135,6 +135,57 @@ describe('Release 3 collection journal lowering', () => {
     expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
   });
 
+  it('inlines a returning chunk-array writer and preserves its result', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ReturningArrayJournal() {
+        bigint[] scores;
+        function append(bigint value) internal returns (bigint) {
+          this.scores.push(value);
+          return this.scores.length;
+        }
+        function apply(bigint a, bigint b) {
+          bigint first = append(a);
+          bigint second = append(b);
+          require(first == 1 && second == 2);
+        }
+      }
+    `, { forceStateful: true });
+
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'append')).toBeUndefined();
+    expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
+  });
+
+  it('marks mutually recursive collection and dynamic journal closures for SDK preflight', () => {
+    const collection = compileString(`${PREFIX}
+      function a(bytes20 who, int n) internal {
+        balances[who] = balances[who] + 1;
+        if (n > 0) { b(who, n - 1); }
+      }
+      function b(bytes20 who, int n) internal {
+        balances[who] = balances[who] + 1;
+        if (n > 0) { a(who, n - 1); }
+      }
+      function run(bytes20 who, int n) { a(who, n); require(n >= 0); }
+    }`, { forceStateful: true });
+    expect(collection.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+
+    const dynamic = compileString(`pragma solidcash >=0.8.0;
+      contract DynamicCycle() {
+        bytes data;
+        function a(bytes value, int n) internal {
+          this.data = bytes.concat(this.data, value);
+          if (n > 0) { b(value, n - 1); }
+        }
+        function b(bytes value, int n) internal {
+          this.data = bytes.concat(this.data, value);
+          if (n > 0) { a(value, n - 1); }
+        }
+        function run(bytes value, int n) { a(value, n); require(n >= 0); }
+      }
+    `, { forceStateful: true });
+    expect(dynamic.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+  });
+
   it('threads an ERC-20 transferFrom tuple across balances and allowance entries', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract Token() {

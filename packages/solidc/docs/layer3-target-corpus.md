@@ -330,3 +330,35 @@ proven for N=8.
 - Check 2 (canonical strict order) needs an unsigned byte-lexicographic helper (see 8.1). Note it is
   also COSTLY (a 32-byte per-byte unsigned comparison), so it trades against the budget above; a
   production implementation should weigh a compact order key against the operation budget.
+
+### 8.4 N-participant scaling measurement (2026-07-24)
+
+Test: `packages/solidcash/test/e2e/Layer3ScalingSpike.test.ts`. Two findings.
+
+**Finding A - the hard ceiling is the SCB1 blob cap, not the op budget.** Carrying full identity
+(35-byte owner locking bytecode + 33-byte category) per participant in the SCB1 row makes the blob
+exceed the 223-byte `MAX_HIDDEN_BATCH_BLOB_BYTES` cap at n>=3, so only ~2 full-identity participants
+fit one row. A production layer-3 covenant must either (a) carry only indices in the transcript and
+read each participant's identity from its actual co-spent input (the compact form measured below), or
+(b) use a larger carrier - which is exactly the sidecar/carrier question (rev1 noted a separate
+carrier grants budget to the wrong input; that tension must be resolved).
+
+**Finding B - op-cost ratio grows sub-linearly with N (compact fixture).** Reading identity from the
+inputs (blob carries only index pairs) lets N=2/4/8 fit; each input still does the O(N) introspection
+(per participant: output preservation + one ~4 KB unlocking read for the SCB1-selector cross-check).
+Worst-input operation cost / budget under `BCH_2026_05`:
+
+| N | ratio | instructions/input | total tx bytes |
+|---:|---:|---:|---:|
+| 2 | 15.0% | 1,814 | 3,955 |
+| 4 | 17.5% | 2,666 | 9,589 |
+| 8 | 20.8% | 4,370 | 26,613 |
+
+The ratio climbs (15% -> 20.8%) rather than staying flat because each input cross-reads all N
+unlockings and each unlocking is itself O(N) (the unrolled contract grows with N), an ~O(N^2) charged
+component against an O(N) budget. It stays comfortably under budget at the ~8-participant candidate
+maximum, but the O(N^2) cross-verification is the growth driver and the strongest argument for
+offloading it to a dedicated sidecar/verifier input rather than paying it in every master's budget.
+
+Net: the operation budget is not the binding constraint at candidate scale; the 223-byte transcript
+capacity is. Both point at the same design lever (compact identity-by-reference and/or a carrier).

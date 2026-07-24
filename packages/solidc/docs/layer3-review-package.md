@@ -63,18 +63,20 @@ root = sha256( EXEC_DOMAIN(4c33455845433100)
 - R3 heterogeneous participants: CLOSED (two different compiled contracts mutually authenticate).
 - R8 N-party live-node lifecycle: CLOSED for consensus-node acceptance on regtest. Mainnet STANDARD policy
   (acceptnonstdtxn=0) NOT yet measured.
-- R5 full: PARTIAL. Selectors + call graph are bound; the ACTUAL runtime args/results of native
-  `IContract(addr).method()` calls are not yet wired into the transcript edges (a compiler-integration feature).
-- R4 exhaustiveness: PARTIAL. Participant substitution/permutation is closed by the position-bound root; full
-  emitter/callee exhaustiveness + unique state ownership + resource-transition authority need resources/events
-  in the root (R2 extension) + R6.
-- R6 typed transition: OPEN. The earlier scaffold still exposes raw `appBody`/`valueExpr`; a typed,
-  unconditionally-generated transition operation is not built. (The execution model has no resources yet, so
-  it does not expose the unsafe boundary.)
-- R5 cycles (A->B->A, repeated one-callee settlement): OPEN. On UTXO each input executes once, so EVM-style
-  reentrancy has no direct analogue; the achievable form is mutual co-verification under the execution root
-  (which the heterogeneous binding demonstrates for the acyclic edge) plus, for a genuine cycle, two physical
-  instances or a callback via `msg.sender`. Not implemented; needs dedicated design.
+- R5: CLOSED for soundness. Runtime args/results are bound into the edge and the callee AUTHENTICATES the
+  result against its state (`Layer3RuntimeArgs.test.ts`: amount*rate; wrong result rejected). REMAINING: the
+  ergonomic auto-wiring of a native `IContract(addr).method()` call to the edge (compiler integration).
+- R6 typed transition: CLOSED for the common case. `TypedTransition {offset,width,total,delta}` generates the
+  fail-closed output-commitment binding unconditionally and the module computes it (`Layer3TypedTransition`);
+  raw `transition:true`/`appBody` remains a documented escape hatch for complex math.
+- R5 cycles (A->B->A, repeated one-callee): CLOSED. Investigated the mechanism (structural, not reentrant): a
+  cycle is the edge list [A->B, B->A] in the execution root, each participant runs once and verifies its
+  edges; repeated 1-callee is [A->B.f, A->B.g] (`Layer3Cycles.test.ts`, missing return edge rejected).
+  REMAINING: ordering ENFORCEMENT between edges (that B->A observes A->B's effect).
+- R4 exhaustiveness: PARTIAL. Transcript completeness (missing/extra edge changes the root -> rejected) and
+  participant substitution (position-bound root) are closed; unique state ownership + transition authority are
+  the scaffold's F1 (resource category == owner). REMAINING: native-call exhaustiveness (that no app-logic
+  IContract call escapes the transcript) - the same compiler integration as R5's auto-wiring.
 - Gate 5 independent review: this package is the deliverable; the external review itself is outstanding.
 
 ## What a reviewer should attack first

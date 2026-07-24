@@ -2,14 +2,41 @@
 // shape, derive the transaction: canonical ordering, index assignment, blob encoding, participant inputs
 // (compiler route unlockers), and owner-preserving recreation outputs. The application adds its effects
 // (settlements, records, resource-state transitions) to the returned builder.
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import { hash160 } from '@solidcash/utils';
 import type { Utxo } from './../interfaces.js';
 import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
-import { type InvocationSpec, type TranscriptSpec, opReturnPrefix, transcriptLayout } from './covenant.js';
+import {
+  EXEC_DOMAIN, type ExecutionInvocation, type InvocationSpec, type TranscriptSpec, opReturnPrefix, transcriptLayout,
+} from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
+
+const concatBin = (parts: Uint8Array[]): Uint8Array => {
+  const buf = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+  let c = 0;
+  for (const p of parts) { buf.set(p, c); c += p.length; }
+  return buf;
+};
+
+/** The participant-SET root (membership only): sha256(ordered participant locking bytecodes). */
+export function participantSetRoot(orderedLbcs: string[]): string {
+  return binToHex(sha256.hash(concatBin(orderedLbcs.map((l) => hexToBin(l)))));
+}
+
+/**
+ * The canonical EXECUTION root (R2): sha256(domain || participant lbcs || ordered (caller_lbc, callee_lbc,
+ * selector) edges). The deployer sets the controller commitment to this so the controller attests the call
+ * graph, matching what every participant recomputes on-chain.
+ */
+export function executionRoot(orderedLbcs: string[], invocations: ExecutionInvocation[]): string {
+  const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), ...orderedLbcs.map((l) => hexToBin(l))];
+  for (const inv of invocations) {
+    parts.push(hexToBin(orderedLbcs[inv.caller]), hexToBin(orderedLbcs[inv.callee]), hexToBin(inv.selectorHex));
+  }
+  return binToHex(sha256.hash(concatBin(parts)));
+}
 
 export interface TranscriptParticipant {
   /** The participant contract (branded with the controller salt and sharing the transcript artifact). */

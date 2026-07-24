@@ -13,6 +13,10 @@ export const CONTROLLER_SALT_HEX = '4c3342314354524c';
 
 /** An authenticated invocation: caller -> callee, msg.sender delivered to the layout's sender OP_RETURN. */
 export interface InvocationSpec { caller: number; callee: number }
+/** An execution-transcript edge: caller -> callee.selector, in list order. Committed by the execution root (R2). */
+export interface ExecutionInvocation { caller: number; callee: number; selectorHex: string }
+/** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
+export const EXEC_DOMAIN = '4c33455845433100';
 /**
  * A resource: an owner-branded state NFT co-spent and preserved (locking bytecode, category, value, and -
  * unless `transition` - commitment). Set `transition: true` to opt OUT of commitment preservation, in which
@@ -240,13 +244,19 @@ contract Layer3Controller(bytes deployerPkh) {
  * complete heterogeneous cyclic message bus.
  */
 export function bindingFrameworkBodyControllerBound(
-  n: number, controllerCategory: string, controllerLbc?: string,
+  n: number, controllerCategory: string, controllerLbc?: string, invocations?: ExecutionInvocation[],
 ): string[] {
   if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
   if (controllerLbc !== undefined && !/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) {
     throw new Error('layer3: controllerLbc must be hex bytes');
   }
+  (invocations ?? []).forEach((inv) => {
+    if (inv.caller < 0 || inv.caller >= n || inv.callee < 0 || inv.callee >= n) {
+      throw new Error('layer3: execution invocation endpoint out of range');
+    }
+    if (!/^([0-9a-fA-F]{2})+$/.test(inv.selectorHex)) throw new Error('layer3: selectorHex must be hex bytes');
+  });
   const body: string[] = [];
   for (let i = 0; i < n; i += 1) {
     body.push(`bytes u${i} = tx.inputs[input${i}].unlockingBytecode;`);
@@ -284,9 +294,20 @@ export function bindingFrameworkBodyControllerBound(
   if (controllerLbc !== undefined) {
     body.push(`require(tx.inputs[controllerIdx].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
   }
-  let rootExpr = 'lbc0';
-  for (let i = 1; i < n; i += 1) rootExpr = `bytes.concat(${rootExpr}, lbc${i})`;
-  body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${rootExpr}));`);
+  let lbcConcat = 'lbc0';
+  for (let i = 1; i < n; i += 1) lbcConcat = `bytes.concat(${lbcConcat}, lbc${i})`;
+  if (invocations && invocations.length) {
+    // R2 EXECUTION root: domain || participant lbcs || ordered (caller_lbc, callee_lbc, selector) edges. This
+    // commits the call GRAPH + selectors + order (read from the co-spent participants), not just addresses.
+    let payload = `bytes.concat(hex"${EXEC_DOMAIN}", ${lbcConcat})`;
+    for (const inv of invocations) {
+      const edge = `bytes.concat(bytes.concat(lbc${inv.caller}, lbc${inv.callee}), hex"${inv.selectorHex.toLowerCase()}")`;
+      payload = `bytes.concat(${payload}, ${edge})`;
+    }
+    body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${payload}));`);
+  } else {
+    body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${lbcConcat}));`); // participant-set root
+  }
   body.push('require(tx.outputs[controllerIdx].lockingBytecode == tx.inputs[controllerIdx].lockingBytecode);');
   body.push('require(tx.outputs[controllerIdx].tokenCategory == tx.inputs[controllerIdx].tokenCategory);');
   body.push('require(tx.outputs[controllerIdx].nftCommitment == tx.inputs[controllerIdx].nftCommitment);');
@@ -300,6 +321,20 @@ export function bindingFrameworkBodyControllerBound(
  */
 export function generateControllerBoundCovenant(n: number, controllerCategory: string, controllerLbc?: string): string {
   const body = bindingFrameworkBodyControllerBound(n, controllerCategory, controllerLbc);
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
+    + `  function __layer3_bind(${controllerBindingParams(n).join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
+}
+
+/**
+ * Generate the EXECUTION-bound N-party covenant (R2): the controller commitment is a domain-separated root
+ * over the participant set AND the ordered invocation edges (caller -> callee.selector), so the controller
+ * attests the canonical call GRAPH, not just membership. Every participant recomputes the execution root from
+ * the co-spent participants + the baked edges and requires it == the controller's attestation.
+ */
+export function generateExecutionBoundCovenant(
+  n: number, invocations: ExecutionInvocation[], controllerCategory: string, controllerLbc?: string,
+): string {
+  const body = bindingFrameworkBodyControllerBound(n, controllerCategory, controllerLbc, invocations);
   return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${controllerBindingParams(n).join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }

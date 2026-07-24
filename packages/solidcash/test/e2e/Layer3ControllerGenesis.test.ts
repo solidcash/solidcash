@@ -95,7 +95,11 @@ describe('R7: real mint-once controller genesis + exact identity', () => {
     await expect(s.provider.sendRawTransaction(raw(b))).resolves.toBeTypeOf('string');
   });
 
-  it('HOSTILE: a forged controller at a WRONG address (right category) is rejected by the exact-lbc check', async () => {
+  // Mock-only: fabricating a second NFT of the controller's category is IMPOSSIBLE on a real node (mint-once
+  // genesis, no minting NFT), which is a STRONGER guarantee than the covenant's exact-lbc rejection. On the
+  // mock we fabricate it via addUtxo purely to exercise that covenant defense; on regtest the attack can't be
+  // constructed at all, so skip.
+  it.skipIf(process.env.TESTS_USE_REGTEST)('HOSTILE: a forged controller at a WRONG address (right category) is rejected by the exact-lbc check', async () => {
     const s = await setupRealController(2);
     // Fabricate a same-category NFT at a P2PKH address (impossible on a real node - category is mint-once -
     // but the mock allows it, exercising the covenant's exact-lbc defense).

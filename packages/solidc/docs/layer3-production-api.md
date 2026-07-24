@@ -72,7 +72,9 @@ then, per the spec (all at module-computed layout indices):
   participants (N2), and preserves its locking bytecode + category (the commitment transition is appBody);
 - `appBody` statements (the application's resource transitions) run;
 - each effect binds a settlement output's RECIPIENT to the consumer participant (F2) and its value to the
-  application's value expression.
+  application's value expression;
+- each event binds an authenticated OP_RETURN log to the EMITTER participant's identity + a fixed topic
+  (an EVM indexed-log analogue: provenance cannot be forged, the topic cannot be altered).
 
 ## Codec (`codec.ts`) and deriver (`transcript.ts`)
 
@@ -83,16 +85,30 @@ recreation outputs. The application adds the fee and its effects.
 
 ## Status and scope
 
-Built, `tsc`-clean, lint-clean, and covered by `Layer3Production.test.ts` (3/3): an invocation transcript
-built end to end from a spec is accepted + under budget; a forged msg.sender is rejected; a COMPLETE
-Kashi-shaped transcript (invocation + resource transition + settlement) is assembled from one
-`buildTranscriptTransaction` call and accepted. This is the production SDK layer over the audited covenants
-(`layer3-spike-audit-findings.md`) - end to end from spec to transaction: participant binding, authenticated
-invocations, owner-bound resources, and consumer-bound settlements. Bounded to `MAX_PARTICIPANTS = 8` per
-generated covenant (blob < 76 bytes).
+Built, `tsc`-clean, lint-clean, and covered by two suites:
 
-Remaining product surface, NOT built here: a compiler-side `transcript` LANGUAGE CONSTRUCT (so a developer
-writes SolidCash rather than a spec object + appBody strings) - the SDK path above is the complete
-alternative; event-log records (a trivial OP_RETURN-record extension of the invocation-record mechanism);
-and a loop-parsed variable-N covenant (only the unrolled-per-shape generator is wired). The resource state
-TRANSITION remains application business logic (appBody) by design, exactly as a contract function body is.
+- `Layer3Production.test.ts` (6/6, real consensus VM): an invocation transcript built end to end from a spec
+  is accepted + under budget; a forged msg.sender is rejected; a COMPLETE Kashi-shaped transcript (invocation
+  + resource transition + settlement) is assembled from one `buildTranscriptTransaction` call and accepted; a
+  3-participant / two-invocation transcript is built from a spec; an authenticated event log is bound; a
+  forged event topic is rejected.
+- `Layer3Module.test.ts` (11/11, pure logic): pins the module-owned layout indices, the SCB1 blob envelope,
+  the OP_RETURN push encoding, every generated binding string, and the fail-closed validation guards.
+
+This is the production SDK layer over the audited covenants (`layer3-spike-audit-findings.md`) - end to end
+from spec to transaction: participant binding, authenticated invocations, owner-bound resources,
+consumer-bound settlements, and provenance-bound event logs. Bounded to `MAX_PARTICIPANTS = 8` per generated
+covenant (blob < 76 bytes).
+
+Architectural note: a transcript is a MULTI-participant, multi-output TRANSACTION SHAPE, not a single
+covenant, so the SDK transaction layer is its natural home (a `contract` compiles to one covenant; a
+transcript spans several plus their records/settlements). The covenant generation still runs through the
+compiler - `generateTranscriptCovenant` emits SolidCash that `solidc` compiles - so the compiler is on the
+path; what the SDK owns is the cross-participant transaction assembly the language has no single-covenant
+form for.
+
+Remaining product surface, NOT built here: a compiler-side `transcript` LANGUAGE CONSTRUCT (sugar so a
+developer writes a `transcript { }` block instead of a spec object + appBody strings) - a convenience over
+the complete SDK path above, not a missing capability; and a loop-parsed variable-N covenant (only the
+unrolled-per-shape generator is wired; it is general for any concrete shape). The resource state TRANSITION
+remains application business logic (appBody) by design, exactly as a contract function body is.

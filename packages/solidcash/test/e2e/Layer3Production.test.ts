@@ -32,7 +32,8 @@ async function compileAndSetup(spec: layer3.TranscriptSpec, provider: any): Prom
   for (let i = 0; i < spec.participants; i += 1) {
     const inner = new Contract(artifact, [], { provider, salt });
     const s = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {});
-    participants.push({ contract: inner.withCategory(hexToBin(s.categoryId)), master: s.masterUtxo, categoryId: s.categoryId });
+    const contract = inner.withCategory(hexToBin(s.categoryId));
+    participants.push({ contract, master: s.masterUtxo, categoryId: s.categoryId });
   }
   return { route, sel, handler, participants };
 }
@@ -119,5 +120,55 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
     const r = createVirtualMachineBch2026().evaluate({ inputIndex: 0, sourceOutputs, transaction });
     expect('metrics' in r && !(r as any).error).toBe(true);
     expect((r as any).metrics.operationCost / (r as any).metrics.maximumOperationCost).toBeLessThan(0.4);
+  });
+
+  it('generality: a 3-participant transcript with two invocations (0->1, 1->2) is built from a spec', async () => {
+    const provider = createTestProvider();
+    const invocations = [{ caller: 0, callee: 1 }, { caller: 1, callee: 2 }];
+    const spec: layer3.TranscriptSpec = { participants: 3, invocations };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
+    const fee = await createFeeFunder(provider, 40000n);
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: participants[0].contract.address, satoshis: 15000n },
+    });
+    await expect(provider.sendRawTransaction(rawOf(builder))).resolves.toBeTypeOf('string');
+  });
+
+  const TOPIC = 'a1b2c3d4e5f6070809101112131415161718192021222324252627282930313f';
+
+  it('emits an authenticated event log (emitter identity + fixed topic) that the covenant binds', async () => {
+    const provider = createTestProvider();
+    const spec: layer3.TranscriptSpec = {
+      participants: 2, invocations: [{ caller: 0, callee: 1 }], events: [{ emitter: 1, topicHex: TOPIC }],
+    };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
+    const fee = await createFeeFunder(provider, 30000n);
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: participants[0].contract.address, satoshis: 12000n },
+    });
+    await expect(provider.sendRawTransaction(rawOf(builder))).resolves.toBeTypeOf('string');
+  });
+
+  it('HOSTILE: a forged event topic is rejected', async () => {
+    const provider = createTestProvider();
+    const spec: layer3.TranscriptSpec = {
+      participants: 2, invocations: [{ caller: 0, callee: 1 }], events: [{ emitter: 1, topicHex: TOPIC }],
+    };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
+    const fee = await createFeeFunder(provider, 30000n);
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: participants[0].contract.address, satoshis: 12000n },
+    });
+    // The event record is the last output before change (n + I = 3); flip its final topic byte.
+    const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
+    const evOut = layer3.transcriptLayout(spec).eventOutput(0);
+    forged.outputs[evOut].lockingBytecode[forged.outputs[evOut].lockingBytecode.length - 1] ^= 0xff;
+    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
   });
 });

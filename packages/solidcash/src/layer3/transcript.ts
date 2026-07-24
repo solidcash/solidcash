@@ -6,7 +6,7 @@ import { hexToBin } from '@bitauth/libauth';
 import type { Utxo } from './../interfaces.js';
 import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
-import { type InvocationSpec, type TranscriptSpec, transcriptLayout } from './covenant.js';
+import { type InvocationSpec, type TranscriptSpec, opReturnPrefix, transcriptLayout } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
 export interface TranscriptParticipant {
@@ -136,6 +136,16 @@ export function buildTranscriptTransaction(opts: BuildTranscriptOptions): Derive
   });
   effects.forEach((value, m) => { // effect settlements, recipient = consumer participant
     builder.addOutput({ to: ordered[opts.spec.effects![m].consumer].contract.address, amount: value });
+  });
+  (opts.spec.events ?? []).forEach((ev) => { // authenticated event logs, provenance = emitter participant
+    const emitter = hexToBin(ordered[ev.emitter].contract.lockingBytecode);
+    const topic = hexToBin(ev.topicHex);
+    const prefix = hexToBin(opReturnPrefix(emitter.length + topic.length));
+    const opReturn = new Uint8Array(prefix.length + emitter.length + topic.length);
+    opReturn.set(prefix, 0);
+    opReturn.set(emitter, prefix.length);
+    opReturn.set(topic, prefix.length + emitter.length);
+    builder.addOutput({ to: opReturn, amount: 0n });
   });
   if (opts.change) builder.addOutput({ to: opts.change.address, amount: opts.change.satoshis });
   return { builder, ordered, blob };

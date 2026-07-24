@@ -17,6 +17,8 @@ export interface InvocationSpec { caller: number; callee: number }
 export interface ResourceSpec { owner: number }
 /** An effect: a settlement output bound to a consumer participant with an app-computed value expression. */
 export interface EffectSpec { consumer: number; valueExpr: string }
+/** An event: an authenticated OP_RETURN log bound to the emitter's identity + a fixed topic (EVM indexed log). */
+export interface EventSpec { emitter: number; topicHex: string }
 
 export interface TranscriptSpec {
   /** Number of co-spent participant owners. */
@@ -24,6 +26,7 @@ export interface TranscriptSpec {
   invocations?: InvocationSpec[];
   resources?: ResourceSpec[];
   effects?: EffectSpec[];
+  events?: EventSpec[];
   /** Application-specific covenant statements (resource state transitions), appended before effect binding. */
   appBody?: string[];
   /** Controller brand prefix (10-byte hex). Defaults to CONTROLLER_BRAND_PREFIX. */
@@ -36,6 +39,7 @@ export interface TranscriptLayout {
   invocations: number;
   resources: number;
   effects: number;
+  events: number;
   /** Input index of the resource state NFT for resource k (participants ... then resources). */
   stateInput: (k: number) => number;
   /** Fee input index (after participants + resources). */
@@ -46,6 +50,8 @@ export interface TranscriptLayout {
   stateOutput: (k: number) => number;
   /** Output index of the settlement for effect m. */
   effectOutput: (m: number) => number;
+  /** Output index of the event log OP_RETURN for event v. */
+  eventOutput: (v: number) => number;
   /** Total output count before the change output. */
   outputCount: number;
 }
@@ -56,15 +62,27 @@ export function transcriptLayout(spec: TranscriptSpec): TranscriptLayout {
   const I = spec.invocations?.length ?? 0;
   const R = spec.resources?.length ?? 0;
   const E = spec.effects?.length ?? 0;
+  const V = spec.events?.length ?? 0;
   return {
-    participants: n, invocations: I, resources: R, effects: E,
+    participants: n, invocations: I, resources: R, effects: E, events: V,
     stateInput: (k) => n + k,
     feeInput: n + R,
     senderOutput: (j) => n + j,
     stateOutput: (k) => n + I + k,
     effectOutput: (m) => n + I + R + m,
-    outputCount: n + I + R + E,
+    eventOutput: (v) => n + I + R + E + v,
+    outputCount: n + I + R + E + V,
   };
+}
+
+/** The p2sh32 locking-bytecode length an authenticated record carries as its identity prefix (aa20<32>87). */
+const IDENTITY_LEN = 35;
+
+/** OP_RETURN prologue hex (`6a` + a minimal push opcode) carrying `dataLen` bytes of pushed data. */
+export function opReturnPrefix(dataLen: number): string {
+  if (dataLen < 0 || dataLen > 255) throw new Error('layer3: event payload out of range');
+  const len = dataLen.toString(16).padStart(2, '0');
+  return dataLen <= 75 ? `6a${len}` : `6a4c${len}`;
 }
 
 /** Participant-binding parameters (`input_i, output_i` pairs). */
@@ -136,6 +154,15 @@ export function generateTranscriptCovenant(spec: TranscriptSpec): string {
     // F2: bind the settlement RECIPIENT to the consumer and its value to the app expression.
     body.push(`require(tx.outputs[${eo}].lockingBytecode == tx.inputs[input${e.consumer}].lockingBytecode);`);
     body.push(`require(tx.outputs[${eo}].value == ${e.valueExpr});`);
+  });
+
+  (spec.events ?? []).forEach((ev, v) => {
+    if (ev.emitter < 0 || ev.emitter >= n) throw new Error('layer3: event emitter out of range');
+    if (!/^([0-9a-fA-F]{2})+$/.test(ev.topicHex)) throw new Error('layer3: event topic must be non-empty hex bytes');
+    const vo = layout.eventOutput(v);
+    const prefix = opReturnPrefix(IDENTITY_LEN + ev.topicHex.length / 2);
+    // Authenticated event log: OP_RETURN <emitter identity><topic>, provenance bound to the emitter participant.
+    body.push(`require(tx.outputs[${vo}].lockingBytecode == bytes.concat(hex"${prefix}", tx.inputs[input${ev.emitter}].lockingBytecode, hex"${ev.topicHex.toLowerCase()}"));`);
   });
 
   return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'

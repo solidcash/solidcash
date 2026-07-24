@@ -705,3 +705,18 @@ the remaining corpus-4 resource fields (token X/Y/L and Bento C/K, each the iden
 and the one-shot-nonce / method-args intent-granularity follow-ups. The spike's verdict is delivered:
 the journaled message bus is sound and buildable on BCH-2026, and a full three-owner Kashi deposit fits in
 ~14% of a single input's operation budget.
+
+## 19. General transcript codec: variable-length table parsed in a loop
+
+`Layer3CodecSpike.test.ts` (2/2, real BCH-2026 VM). The earlier spikes decode a FIXED positional arg list;
+the general product needs the covenant to parse a VARIABLE-length transcript table. This proves it: the
+handler takes one `bytes table` (`count(1) + count x (inputIdx(1), outputIdx(1))`) and a bounded loop
+(`for step < 8` with an `if (i < n)` guard - the standard BCH pattern for a runtime-count loop) reads the
+count and validates each participant's binding. The SAME covenant loop-parses a 2-participant and a
+3-participant table; N is dynamic.
+
+VM-proven: POSITIVE for n=2 and n=3 on one covenant. Cost at n=3: 2777 instructions, 18.7% of budget -
+higher than the unrolled fixed-N handlers (the bounded loop runs its full 8 iterations regardless of n),
+the generality-vs-cost trade-off, still comfortably under budget. This is the parsing basis of the
+five-table codec; the invocation/resource/effect/event tables are additional loop-parsed sections over the
+same mechanism.

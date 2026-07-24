@@ -203,10 +203,11 @@ Post-audit corrections (2026-07-23):
   `contract-size-limit` error diagnostic above 10,000 bytes. The stripped route fixture remains
   9,775 bytes, while the corpus token with mint/approve/check helpers is measured at 10,600 bytes
   and explicitly documented as non-deployable.
-- **F5 strengthened:** R5 now includes a positional-second-push decoy transaction, a late/second
-  entry-output corruption, the raw duplicate-resource transaction, and untouched positive controls.
-  Event/value and caller-input negative coverage remain future hardening and do not change the
-  default-off disposition.
+- **F5 completed:** R5 includes a positional-second-push decoy transaction, a late/second
+  entry-output corruption, the raw duplicate-resource transaction, removal of the physical caller
+  input, and untouched positive controls. R4 separately mutates an authenticated event output and
+  mutates a value-transfer output while compensating the satoshi-container output (so rejection
+  cannot be explained by value non-conservation); both then accept the untouched transaction.
 - **F6 regression-locked:** the direct `bal[msg.sender]` cross-contract fixture now asserts that
   enabling repeated-external analysis on a single-call caller leaves bytecode identical and emits
   no batch metadata, then executes the direct insertion in the VM.
@@ -214,6 +215,10 @@ Post-audit corrections (2026-07-23):
 These corrections do not request default enablement. They narrow the claim, make cold handling
 structural, expose the deployability ceiling, and strengthen the audit evidence for the existing
 experimental boundary.
+
+All required F1-F6 corrections and assurance gaps identified by this review are now closed. The
+default-off disposition remains a product/protocol graduation boundary, not an unresolved audit
+finding.
 
 Post-remediation validation passes the six-package monorepo build, 2,299 compiler tests, and 3,256
 SDK tests (24 skipped, 9 todo).

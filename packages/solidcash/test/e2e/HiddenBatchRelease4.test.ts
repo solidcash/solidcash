@@ -326,4 +326,93 @@ describe('Release 4 output-substitution adversarial gate', () => {
     await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
   });
+
+  it('rejects event-output substitution while accepting the untouched transaction', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract EventSubstitutionRelease4() {
+        bigint current;
+        event Changed(bigint value);
+        function set(bigint value) public {
+          this.current = value;
+          emit Changed(value);
+          require(value >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { current: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.batch([
+        { function: 'set', args: [2n] },
+        { function: 'set', args: [3n] },
+      ]).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+
+    const forged = decodeTransactionUnsafe(hexToBin(captured));
+    const event = forged.outputs.find((output) =>
+      output.token?.nft?.capability === 'none'
+      && binToHex(output.token.category) === categoryId);
+    expect(event).toBeDefined();
+    event!.token!.nft!.commitment[0] ^= 1;
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(captured)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects value-output substitution while accepting the untouched transaction', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ValueSubstitutionRelease4() {
+        function pay(bytes recipient, bigint amount) public {
+          this.transfer(recipient, amount);
+          require(amount >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await provider.addUtxo(contract.getSatoshiContainerAddress(), {
+      txid: '75'.repeat(32), vout: 0, satoshis: 5000n,
+    });
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.batch([
+        { function: 'pay', args: [Uint8Array.of(0x51), 100n] },
+        { function: 'pay', args: [Uint8Array.of(0x52), 200n] },
+      ]).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+
+    const forged = decodeTransactionUnsafe(hexToBin(captured));
+    const recipient = forged.outputs.find((output) =>
+      output.valueSatoshis === 100n && output.lockingBytecode.length === 1
+      && output.lockingBytecode[0] === 0x51);
+    const container = forged.outputs.find((output) => output.valueSatoshis === 4700n);
+    expect(recipient).toBeDefined();
+    expect(container).toBeDefined();
+    recipient!.valueSatoshis += 1n;
+    container!.valueSatoshis -= 1n;
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(captured)).resolves.toBeTypeOf('string');
+  });
 });

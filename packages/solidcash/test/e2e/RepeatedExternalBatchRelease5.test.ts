@@ -402,6 +402,15 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     });
     await expect(send(binToHex(encodeTransaction(duplicateInput)))).rejects.toThrow();
 
+    const missingCaller = decodeTransactionUnsafe(hexToBin(captured));
+    const callerInputIndex = missingCaller.inputs.findIndex((input) => {
+      const first = decodeAuthenticationInstructions(input.unlockingBytecode)[0];
+      return 'data' in first && first.data.length === 4 && binToHex(first.data) !== '53434231';
+    });
+    expect(callerInputIndex).toBeGreaterThanOrEqual(0);
+    missingCaller.inputs.splice(callerInputIndex, 1);
+    await expect(send(binToHex(encodeTransaction(missingCaller)))).rejects.toThrow();
+
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

@@ -650,3 +650,21 @@ use. That data-NFT integration - plus the full multi-resource oracle and the gen
 transcript codec + SDK graph derivation - is the productization boundary. Every soundness and cost
 question the spike existed to answer is now answered across sections 8-15; what remains is building the
 general product over this proven, ~13-14%-of-budget mechanism.
+
+## 16. Persistent state write (the corpus-4 oracle update)
+
+`Layer3StateWriteSpike.test.ts` (2/2, real BCH-2026 VM). Sections 11/15 read committed state; this writes
+it. Bento's `(elastic E, base B)` lives in a co-spent MUTABLE state NFT; the transcript covenant reads it,
+computes `S = floor(M*B/E)`, and REWRITES the state NFT commitment to `(E+M, B+S)` - exactly the corpus-4
+Bento update `E := E + M, B := B + S`. The state NFT is preserved (same locking bytecode + category, so it
+cannot be redirected) and mutated in place; a mutable NFT's commitment may transition on spend without a
+minting input.
+
+VM-proven: POSITIVE `E=10,B=8,M=6 -> S=4`, post-state `(16, 12)` accepts; a forged post-state (base 13 not
+12) rejects. Both endpoints 3104 instructions, 13.3% of budget.
+
+The state NFT uses a foreign category (so it does not trip the participant self-pin, section 10) and is
+key-guarded here as a stand-in; a production owner would brand its state NFT to itself, but the
+state-transition binding the transcript covenant performs - read committed pre-state, compute, write the
+committed post-state, all atomic - is identical. This closes the last mechanism the corpus-4 oracle needs:
+every field it updates is a committed value transitioned exactly like this.

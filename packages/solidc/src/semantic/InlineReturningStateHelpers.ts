@@ -21,6 +21,7 @@ import {
   MappingAssignNode,
   StateArrayAssignNode,
   MappingFieldAssignNode,
+  BranchNode,
   WhileNode,
   DoWhileNode,
   UncheckedNode,
@@ -78,6 +79,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stillCalled: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private freeFnRefs: Set<string> = new Set(); // names called from within another free-function body
+  private rawSlotFreeFns: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
   private counter = 0;
   private hoists: StatementNode[] = [];
@@ -93,7 +95,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // is still referenced from another free-function body (freeFnRefs, qualified+bare) - a low-level-call helper in
     // an un-inlined chain (functionCall -> functionCallWithValue) must stay a subroutine there, not dangle.
     node.freeFunctions = (node.freeFunctions ?? [])
-      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name) || this.freeFnRefs.has(f.name));
+      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name)
+        || (this.freeFnRefs.has(f.name) && !this.rawSlotFreeFns.has(f.name)));
     return node;
   }
 
@@ -108,12 +111,22 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       (this.overloadsByKey.get(key) ?? this.overloadsByKey.set(key, []).get(key)!).push(fn);
     }
     this.qualifySiblingCalls();
+    // Canonicalize the common single early-return tail before testing inline eligibility:
+    // `if (c) return a; return b;` -> `return c ? a : b;`. This is evaluation-equivalent and lets a helper that
+    // transitively performs a low-level/external call inline into its entry point instead of becoming an
+    // OP_INVOKE subroutine with covenant parameters that no call site can supply (benchmark verifier shape).
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
+        this.normalizeSimpleEarlyReturn(fn);
+      }
+    }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
     this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
 
     this.inlinedFns = new Set();
+    this.rawSlotFreeFns = new Set();
     this.keepDefFns = new Set();
     // A function used as a VALUE (function pointer) must keep a real definition; exclude such names from
     // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
@@ -167,6 +180,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // their own (delegate) machinery.
     for (const fn of this.freeFns) {
       if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+      else if (this.eligibleShape(fn) && this.transitivelyTouchesRawEvmStorage(fn)) {
+        // A file-level assembly helper lowered to __evm_storage has the same block-layout constraint as any
+        // returning mapping helper. Inline the complete wrapper chain into the entry point; definitions in that
+        // chain can then be dropped even when they reference one another.
+        this.inlinedFns.add(fn.name);
+        this.rawSlotFreeFns.add(fn.name);
+      }
       // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
@@ -215,6 +235,23 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private effectiveStmts(stmts: StatementNode[]): StatementNode[] {
     if (stmts.length === 1 && stmts[0] instanceof UncheckedNode) return (stmts[0] as UncheckedNode).block.statements ?? [];
     return stmts;
+  }
+
+  private normalizeSimpleEarlyReturn(fn: FunctionDefinitionNode): void {
+    if (!fn.body || fn.returnTypes.length !== 1) return;
+    const stmts = fn.body.statements ?? [];
+    if (stmts.length < 2) return;
+    const branch = stmts[stmts.length - 2];
+    const tail = stmts[stmts.length - 1];
+    if (!(branch instanceof BranchNode) || branch.elseBlock || !(tail instanceof ReturnNode)
+      || tail.expressions.length !== 1) return;
+    const arm = branch.ifBlock.statements ?? [];
+    if (arm.length !== 1 || !(arm[0] instanceof ReturnNode) || arm[0].expressions.length !== 1) return;
+    const conditional = new TernaryOpNode(branch.condition, arm[0].expressions[0], tail.expressions[0]);
+    conditional.location = branch.location;
+    const ret = new ReturnNode([conditional]);
+    ret.location = tail.location;
+    fn.body.statements = [...stmts.slice(0, -2), ret];
   }
 
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).
@@ -356,6 +393,25 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
         && this.transitivelyContainsExternalCall(callee, seen)) found = true;
+    });
+    return found;
+  }
+
+  private transitivelyTouchesRawEvmStorage(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    let direct = false;
+    this.walk(fn.body, (n) => {
+      if (n instanceof MappingAccessNode && n.name === '__evm_storage') direct = true;
+    });
+    if (direct) return true;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found || !(n instanceof FunctionCallNode)) return;
+      const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
+      if (callee && callee !== fn && this.eligibleShape(callee)
+        && this.transitivelyTouchesRawEvmStorage(callee, seen)) found = true;
     });
     return found;
   }

@@ -1013,3 +1013,710 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   variable genesis outputs), getter-in-loop / array-alias+chained (deep per-iteration dispatch), 2 one-offs.
   Clean-slice veins EXHAUSTED - remaining 992 = ParseError-diverse / Yul / type-fundamental / fn-pointers /
   deep-struct-memory (value-copy model). solidc 1922 + CorpusGapFixes green.
+
+## Session 2026-07-23 (fresh baseline 4002 -> 4004 CONFIRMED, +2, NEG-ACCEPTED flat 892)
+
+- **Bare array member references are no-op statements (+2)**: Solidity accepts `data.pop;` without calling the
+  member function; evaluating and discarding that function reference has no side effect. The expression-statement
+  grammar now accepts bare `.push`, `.pop`, and `.delete` tails and AstBuilder lowers them to an empty block.
+  Bytecode-equivalence tests cover both `uint256[]` and `bytes`; the full 7,343-file corpus run moved exactly the
+  two expected fixtures (`array_pop_isolated.sol`, `byte_array_pop_isolated.sol`) from FAIL to OK with no increase
+  in negative-test over-acceptance. `CorpusGapFixes.test.ts`: 412 green.
+- **Current failure shape (872 files)**: grammar/explicit parse rejection remains the largest category; the leading
+  semantic walls are unsupported Yul combinations (38 under the top normalized reason), type assignment failures,
+  undefined collections, computed external-call targets (20), deploy-then-call (16), and invalid data locations.
+  Nine `RangeError: Maximum call stack size exceeded` results remain compiler-robustness bugs rather than ordinary
+  parity diagnostics and should be triaged separately.
+
+### Continued bench/fix loop: 4004 -> 4013 (+9, NEG-ACCEPTED flat 892)
+
+- **Bare ABI builtin references (+2, 4004 -> 4006)**: `abi.encode;`, `abi.encodePacked;`,
+  `abi.encodeWithSelector;`, `abi.encodeWithSignature;`, and `abi.decode;` are Solidity function-value references
+  whose discarded result has no effect. A dedicated statement rule lowers them to an empty block, byte-identical
+  to omission. Unblocks the semantic and syntax variants of `abi_functions_member_access.sol`.
+- **Cycle-safe metadata walkers (+6, 4006 -> 4012; all 9 internal crashes eliminated)**: resolved function/type
+  graphs can contain identity cycles that are not covered by the walkers' fixed back-reference-key skip lists.
+  Added `WeakSet` guards to ecrecover call counting, keccak-in-loop detection, return-in-loop detection, genesis
+  input scanning, conditional-entry scanning, and loop-entry scanning. Six formerly crashing fixtures now compile;
+  the other three reach specific normal diagnostics. The `RangeError: Maximum call stack size exceeded` corpus
+  bucket is now zero. A newly exposed negative `delete f;` (function declaration, not lvalue) is explicitly rejected
+  as `InvalidSymbolTypeError`, keeping NEG-ACCEPTED flat.
+- **Bare `assert` reference (+1, 4012 -> 4013)**: `assert;` references and discards the builtin function and is a
+  Solidity warning/no-op. It now follows the builtin-reference empty-block path while `assert(condition)` retains
+  the existing assertion path. Final scorecard: **4013/4876**, 863 failed, 892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4013 -> 4026 (+13, NEG-ACCEPTED flat 892)
+
+- **Event argument literal coercion (+6, 4013 -> 4019)**: emit arguments now reuse the established Solidity
+  call/assignment coercion path. This covers string/hex literals widened to `bytesN` and hex literals interpreted
+  as integers for integer event parameters. The emitted bytecode for `"abc"` as `bytes3` is identical to
+  `hex"616263"`. Four bytes/string event fixtures and two anonymous-event signature-collision fixtures compile.
+- **Legacy `error` struct type/member (+2, 4019 -> 4021)**: Solidity historically permits
+  `struct error { ... }`, `error value;`, and `value.error` with a future-keyword warning. The already-soft token is
+  now accepted narrowly in type and member positions, including assignment-lvalue reconstruction; custom-error
+  declarations retain their existing grammar. Both `struct_named_error.sol` and `error_struct.sol` compile.
+- **Discarded type/struct-constructor expressions (+5, 4021 -> 4026)**: registered struct types and the exact bare
+  `uint` alias may appear as no-effect expressions (`S;`, `S[7];`, `uint;`, `uint[7];`); true primitive tokens use
+  a restricted statement rule. Struct constructors used as statements now route through the existing value path
+  and discard the result. This unblocks both `no_effect_statements` fixtures plus three nested-calldata struct
+  constructor fixtures. A first broad `typeName;` attempt was rejected after it over-accepted 26 negatives; the
+  final semantic/narrow-token version keeps NEG-ACCEPTED flat. Oversized type-array bounds are explicitly checked
+  against uint256, restoring rejection of `struct_array_noninteger_index.sol`.
+
+### Continued bench/fix loop: 4026 -> 4032 (+6, NEG-ACCEPTED flat 892)
+
+- **Named arguments participate in overload resolution (+4, 4026 -> 4030)**: named calls now first filter
+  overloads by their user-parameter name set, then type-check each candidate with arguments mapped according to
+  that candidate's declaration order. This supports both differing arities and same-name signatures distinguished
+  by types. Candidate-specific mapping is important: a temporary positional implementation compiled the four
+  positive fixtures but over-accepted two ambiguous negatives; the final implementation rejects both with
+  `AmbiguousOverloadError`. Full scorecard retained the 892 NEG-ACCEPTED baseline.
+- **`_` as a function name (+2, 4030 -> 4032)**: Solidity permits declaring/calling `_()` and treats bare `_;`
+  in an ordinary function body as a discarded no-op, while `_` remains reserved for variables. The grammar uses a
+  narrow `functionName` rule rather than widening `anyIdentifier`; an initial broad version over-accepted three
+  reserved-local negatives and was narrowed. Modifier-body placeholders still expand normally. Final scorecard:
+  **4032/4876**, 844 failed, 892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4032 -> 4034 (+2, NEG-ACCEPTED flat 892)
+
+- **Bare call-option function references (+2)**: applying `{value: ...}` or `{gas: ...}` to a function value
+  without the final call produces a function reference, so statement-position forms such as
+  `a.call{value: 42};` and `this.f{gas: 42};` are side-effect-free no-ops. A statement-only grammar rule lowers
+  these references to omission, with bytecode-equivalence coverage. The first implementation exposed three
+  negative fixtures by discarding malformed option lists; the final path validates unknown and duplicate options
+  before dropping the reference, restoring all three rejections. Final scorecard: **4034/4876**, 842 failed,
+  892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4034 -> 4042 (+8, NEG-ACCEPTED flat 892)
+
+- **Named function-type parameters and future soft keywords (+8)**: Solidity accepts deprecated parameter names
+  in function types (`function(uint x) external`) and still permits the future keyword `transient` in those and
+  custom-error parameter positions. Function-type grammar now retains the optional name while the type parser
+  recovers the longest valid type prefix from ANTLR's whitespace-free text (`uinttransient` -> `uint`) before
+  discarding the name. This keeps the real callable signature rather than inventing an address-placeholder type.
+  The three targeted transient fixtures plus five other named-function-type fixtures moved to OK. Full scorecard:
+  **4042/4876**, 834 failed, 892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4042 -> 4044 (+2, NEG-ACCEPTED 892 -> 893)
+
+- **`block.coinbase` is `address payable` (+2)**: both the direct nullary expression and its synthesized block
+  oracle witness now carry Solidity's payable address type. Payable-to-plain-address widening remains valid, and
+  the underlying BCH locking-bytecode representation is unchanged. One old-version negative
+  (`magic_block.sol`, constrained by its harness trailer to pre-Istanbul EVM where `chainid` is unavailable) now
+  also compiles; this is an EVM-version diagnostic unrelated to address mutability, and SolidCash has no EVM
+  version mode. Final scorecard: **4044/4876**, 832 failed, 893 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4044 -> 4045 (+1, NEG-ACCEPTED flat 893)
+
+- **Payable address copies in inline assembly (+1)**: Yul lowering normalized every non-word variable read through
+  `uint256` before casting to the assignment target. For `address payable r; assembly { r := z }`, that created
+  an illegal `uint256 -> address payable` cast even though source and target already had the identical payable
+  address representation. Exact address-to-address assignments with matching mutability now bypass the word
+  round-trip; cross-mutability and genuine word reinterpretations retain the existing checks. This unblocks
+  `cleanup_address_types_shortening.sol`. Final scorecard: **4045/4876**, 831 failed, 893 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4045 -> 4048 (+3, NEG-ACCEPTED 893 -> 894)
+
+- **`address.codehash` is fixed `bytes32` (+3)**: the type checker now exposes Solidity's fixed-width result
+  instead of unbounded bytes. Codegen keeps a P2SH32 hash unchanged and right-pads a P2SH20 hash with twelve zero
+  bytes, matching normal `bytes20 -> bytes32` widening and the repository's documented 32-byte codehash API.
+  Existing assignments to unbounded `bytes` remain valid. The three current-version codehash fixtures compile.
+  The one newly accepted negative is explicitly constrained by its harness trailer to pre-Constantinople EVM,
+  where `.codehash` did not yet exist; SolidCash has no EVM-version mode. Final scorecard: **4048/4876**,
+  828 failed, 894 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4048 -> 4065 (+17, NEG-ACCEPTED 894 -> 893)
+
+- **Composite internal function types and named mappings (+17)**: function-type parameters/returns now admit
+  mapping and array types, including mapping storage pointers legal on internal function types. Mapping key/value
+  names use the same soft-identifier grammar as other declaration names, including names attached to nested
+  mapping and array values. The whitespace-free type parser recovers both the component type and its optional
+  name, preserving nested `MappingType` structure rather than degrading it to address placeholders.
+- **Mapping-name conflict validation**: Solidity requires all key/value component names in one nested mapping
+  chain to be unique. Both structured AST construction and raw function-type parsing now enforce that invariant.
+  A first syntax-only implementation gained the same 17 positives but exposed 10 conflict negatives; the final
+  version rejects all 10 and closes one pre-existing over-acceptance. The authoritative run uses a worktree-local
+  `@solidcash/utils` resolution (the earlier temporary root dependency symlink resolved runtime utilities to the
+  original checkout). Final scorecard: **4065/4876**, 811 failed, 893 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4065 -> 4069 (+4, NEG-ACCEPTED flat 893)
+
+- **Modifiers declared in libraries (+4)**: library modifier definitions are collected under their library
+  namespace and imported alongside library functions. Modifier expansion now applies them to both namespaced
+  calls (`L.f(s)`) and using-for calls (`s.f()`), including storage-pointer parameters, without accidentally
+  binding a same-named modifier declared by the consuming contract.
+- **Solidity rejection parity**: library modifiers declared `virtual` or without an implementation remain
+  rejected, as do modifier invocations on file-level free functions. The initial broad grammar change exposed
+  those three negative fixtures; the final AST checks restore the NEG-ACCEPTED baseline. Final scorecard:
+  **4069/4876**, 807 failed, 893 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4069 -> 4082 (+13, NEG-ACCEPTED flat 893)
+
+- **Library ABI data-location rules (+13)**: functions declared inside libraries are now marked explicitly in
+  the AST, including the lowered primary-library contract form. Public/external library functions may therefore
+  use Solidity's library-only storage-reference parameters and returns (arrays, structs, and mappings), while
+  ordinary contract functions retain the stricter external ABI rule.
+- **Free-function distinction**: file-level functions are no longer treated as library functions merely because
+  both initially share the free-function AST path. Invalid public/external/private, payable, virtual, and
+  override modifiers on file-level functions are rejected, while pure/view and the existing SolidCash-compatible
+  explicit `internal` spelling remain available. The corpus gain keeps NEG-ACCEPTED flat and leaves
+  local/calldata-return aliases as a separate lowering gap. Final scorecard: **4082/4876**, 794 failed,
+  893 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4082 -> 4086 (+4, NEG-ACCEPTED flat 893)
+
+- **Underscores in hexadecimal number literals (+4)**: `0x` number literals now accept Solidity digit
+  separators between hexadecimal digits and remove them before byte conversion, so forms such as
+  `0x8765_4321` are byte-identical to `0x87654321`. The lexer rule requires digits on both sides of every
+  separator, preserving rejection of leading, trailing, and repeated underscores. Final scorecard:
+  **4086/4876**, 790 failed, 893 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4086 -> 4095 (+9, NEG-ACCEPTED 893 -> 892)
+
+- **Arrays containing mappings (+9)**: array types may now use a mapping as their element type, including
+  dynamic, fixed, and nested forms such as `mapping(K => V)[] storage`. AST construction preserves the nested
+  `ArrayType<MappingType>` shape, enabling valid internal/private and library storage-pointer declarations.
+- **Recursive data-location validation**: the mapping-only storage restriction now walks through array element
+  types, so mapping-containing arrays in memory/calldata and externally callable contract storage parameters
+  remain rejected. Uninitialized mapping-containing storage-pointer locals are also rejected rather than
+  acquiring a fictitious runtime value. The final check closes the newly exposed negative plus one pre-existing
+  uninitialized direct-mapping-pointer acceptance. Final scorecard: **4095/4876**, 781 failed,
+  892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4095 -> 4097 (+2, NEG-ACCEPTED flat 892)
+
+- **Interspersed file-level pragmas (+2)**: pragma directives may now appear after file-level declarations, as
+  Solidity permits (for example, a version pragma between a user-defined value type and a contract). All pragma
+  nodes still pass through the existing value/version validation.
+- **Experimental ordering parity**: `pragma experimental solidity` is the exception and must remain at the
+  beginning of the source unit. The initial grammar-only change exposed the two out-of-order negative fixtures;
+  an AST ordering check restores both rejections while retaining the two positive UDVT fixtures. Final
+  scorecard: **4097/4876**, 779 failed, 892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4097 -> 4100 (+3, NEG-ACCEPTED flat 892)
+
+- **Metatype expressions (+3)**: `type(T)` is now accepted as a discarded no-effect expression, and metatype
+  member access can use a parenthesized base (`(type(uint8)).max`). Both paths reuse the existing type
+  introspection lowering for contracts, interfaces, enums, and numeric types.
+- **Invalid metatype arguments**: a discarded `type(S)` where `S` is a struct remains invalid. The initial
+  syntax-only version exposed that negative fixture; explicit argument validation restores rejection without
+  losing the new expressions. Final scorecard: **4100/4876**, 776 failed, 892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4100 -> 4104 (+4, NEG-ACCEPTED flat 892)
+
+- **Discarded multidimensional type expressions (+4)**: primitive array types can now appear as no-effect
+  expressions with dynamic, fixed, and multiple dimensions, including parenthesized forms such as
+  `(int[][][])`. They lower to the same empty block as existing discarded scalar/fixed type references.
+- **Dimension validation**: discarded types still validate every explicit dimension as a positive compile-time
+  integer fitting uint256. Invalid, zero, non-constant, and oversized dimensions therefore cannot bypass type
+  checks merely because the expression has no runtime effect. Final scorecard: **4104/4876**, 772 failed,
+  892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4104 -> 4108 (+4, NEG-ACCEPTED 892 -> 891)
+
+- **`abi.encodeCall` tuple-expression semantics (+4)**: the second operand is now parsed as Solidity's single
+  tuple-valued expression rather than as an ordinary function-call argument list. Scalar literals, conditionals,
+  function-call results, and assignment expressions form a unitary tuple; comma expressions flatten into
+  multiple components; `()` remains the empty tuple.
+- **Shared semantic validation**: every resulting component still flows through existing target resolution,
+  argument-count, and parameter-type checks. Besides compiling all four targeted positive files, the normalized
+  path closes one pre-existing over-accepted negative. Final scorecard: **4108/4876**, 768 failed,
+  891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4108 -> 4112 (+4, NEG-ACCEPTED flat 891)
+
+- **Qualified base modifiers (+4)**: invocations such as `A.m` now select the modifier implementation declared
+  by the named base rather than a same-name override in the most-derived contract. Inheritance retains qualified
+  aliases for each modifier implementation while unqualified lookup still follows the existing most-derived
+  override behavior.
+- **Declaring-chain validation**: allowed qualifiers are captured on each function before inheritance flattening,
+  preventing a sibling base added later from making `Sibling.m` visible. Library modifiers remain usable inside
+  their library functions but cannot be attached to contract functions via `L.m`, matching Solidity.
+- **Abstract versus implemented modifiers**: unimplemented `modifier m virtual;` declarations are tracked
+  separately from implemented bodies. Abstract aliases may survive until overridden without triggering a false
+  placeholder failure; implemented bodies still require `_`, and directly invoking an unimplemented modifier
+  remains invalid. Final scorecard: **4112/4876**, 764 failed, 891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4112 -> 4116 (+4, NEG-ACCEPTED flat 891)
+
+- **Complete Solidity version-range syntax (+3)**: compatibility-mode pragmas now parse disjunctions, hyphen
+  ranges, ordinary comparator conjunctions, and bare integer bounds, including
+  `0.8.17 || 0.4.1 - 0.9.0`, `>=0.4.0 <0.9.0`, and `<142857`.
+- **Range diagnostics preserved**: a hyphen range is a complete disjunction branch, so adjoining another range
+  without `||` remains invalid. Malformed caret conjunctions and integer components exceeding Solidity's
+  uint32 limit are rejected. Native `pragma solidcash` continues to require a dotted semantic version and does
+  not inherit Solidity-only disjunction or hyphen syntax.
+- **Callable `.length()` using-for method (+1)**: `.length` is normally a single property token, but the grammar
+  now distinguishes a following argument list and routes `using D for string; s.length()` through the normal
+  library-method resolution path. Plain `s.length` remains the built-in size operation. Final scorecard:
+  **4116/4876**, 760 failed, 891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4116 -> 4120 (+4, NEG-ACCEPTED flat 891)
+
+- **Nested public getters (+3)**: synthesized getters now consume every required array index for nested public
+  arrays and for the proven mapping-to-array storage shapes. For example, `uint[][] public a` exposes
+  `a(uint256,uint256)`, while `mapping(uint => uint[][]) public m` exposes
+  `m(uint,uint256,uint256)`.
+- **Self-getter reads are inlined**: `this.m(k,i)` is lowered back to the ordinary `m[k][i]` state-read tree
+  before entry-access analysis. This ensures mapping value witnesses and NFT entry slots are collected on the
+  actual caller rather than hidden behind an internal synthetic getter subroutine. External callers still see
+  the real generated ABI entry point.
+- **Enum public getters (+1)**: enum placeholders are resolved from the declaring contract's enum definitions
+  before getter synthesis, producing a correctly typed enum return and ABI output. Unsupported array-of-mapping
+  layouts and deeper mixed paths remain unsynthesized and fail closed under their existing state-layout checks.
+  Final scorecard: **4120/4876**, 756 failed, 891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4120 -> 4129 (+9, NEG-ACCEPTED flat 891)
+
+- **Public/external calldata returns (+9)**: reference-type return values may retain `calldata` on public and
+  external functions, matching Solidity's accepted declarations and conversions for bytes, strings, and arrays.
+  Storage returns remain limited to internal/private functions except for library storage-pointer APIs.
+- **Override data-location parity**: parameters and returns must keep identical data locations when overriding a
+  non-external base function. An external declaration may still be implemented by a public function using
+  memory because data location is not part of its external ABI signature. The associated invalid override
+  fixture therefore remains rejected. Final scorecard: **4129/4876**, 747 failed, 891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4129 -> 4132 (+3, NEG-ACCEPTED flat 891)
+
+- **Abstract-constructor storage pointers (+3)**: constructors on abstract contracts may accept `storage`
+  reference parameters. Such constructors are only invoked through a derived contract and can therefore receive
+  an existing state array or mapping; concrete deployable constructors remain prohibited from exposing storage
+  parameters.
+- **Deeper pointer gaps remain visible**: mapping storage parameters, unnamed mapping-array declarations, and
+  simple array pointers now pass validation. Mutation through a mapping-array pointer and member access through
+  a struct-with-mapping pointer advance to their existing lowering diagnostics instead of being mislabeled as
+  invalid data locations. Final scorecard: **4132/4876**, 744 failed, 891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4132 -> 4135 (+3, NEG-ACCEPTED 891 -> 890)
+
+- **Local calldata references (+3)**: local arrays, bytes, strings, and structs may retain `calldata` when bound
+  from calldata-derived expressions. This covers declaration followed by rebinding, tuple rebinding, indexed
+  calldata references, and explicit string/bytes calldata conversions while preserving read-only element and
+  field semantics.
+- **Binding and control-flow validation**: direct memory-to-calldata initialization/rebinding remains invalid.
+  Definite-initialization tracking intersects the initialized set across `if`/`else` branches, so a calldata
+  pointer assigned on only one path cannot be read afterward. That closes the corresponding previously
+  over-accepted negative fixture. Final scorecard: **4135/4876**, 741 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4135 -> 4136 (+1, NEG-ACCEPTED flat 890)
+
+- **Struct reference returned by `push()` (+1)**: `rows.push().field = value` now appends the final struct value
+  directly, preserving Solidity's zero-initialization of every other field. Direct construction is also sound
+  for mapping-entry arrays, where a push followed by a separate read-modify-write would otherwise observe stale
+  input state.
+- **Mapping-entry struct-array field updates**: `rows[key][index].field = value` rebuilds only the selected
+  struct element and uses the existing indexed mapping-array assignment path. Bytecode-equivalence tests cover
+  both transformations, and the full `mapping_array_struct.sol` fixture now compiles. Final scorecard:
+  **4136/4876**, 740 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4136 -> 4138 (+2, NEG-ACCEPTED flat 890)
+
+- **Contextual `require` identifier (+2)**: Solidity permits a parameter or named return value to be called
+  `require`, with a shadowing warning. The grammar now treats it as a soft keyword in identifier positions, so
+  those bindings can be read and assigned normally.
+- **Statement syntax remains unambiguous**: `require(condition);` still routes through the dedicated validation
+  statement path. Regression coverage exercises parameter assignment, named-return assignment, and an ordinary
+  require statement together. Final scorecard: **4138/4876**, 738 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4138 -> 4140 (+2, NEG-ACCEPTED flat 890)
+
+- **General `for`-update expressions (+2)**: the third clause of a Solidity `for` loop now accepts any
+  expression, including no-effect literals and calls, rather than only assignments and increment/decrement
+  forms.
+- **Side effects and `continue` semantics preserved**: call-shaped updates lower through the normal call
+  statement path, while pure expressions remain ordinary discarded-expression statements. Both are appended
+  as the loop's tracked update statement, so the existing `continue` rewrite still executes them. Final
+  scorecard: **4140/4876**, 736 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4140 -> 4141 (+1, NEG-ACCEPTED flat 890)
+
+- **Legacy public function names (+1)**: Solidity retains an exception allowing externally callable functions
+  named `this`, `super`, and `_`. `this` is now accepted in the function-name grammar alongside the already
+  supported `super` identifier and underscore exception, and all three produce normal ABI entries.
+- **Visibility-sensitive reservation**: the same names remain illegal for internal/private functions. A semantic
+  check preserves that negative fixture, preventing the positive grammar expansion from increasing
+  over-acceptance. Final scorecard: **4141/4876**, 735 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4141 -> 4143 (+2, NEG-ACCEPTED flat 890)
+
+- **Malformed type-looking identifiers (+2)**: Solidity lexes spellings such as `uint7`, `uint300`, `bytes01`,
+  and `fixed1x01` as ordinary identifiers rather than elementary types. Predicate-gated identifier alternatives
+  now recover that behavior while retaining the existing broad lexer tokens used for type diagnostics.
+- **Canonical types remain reserved**: valid bounded forms (`uint8` through `uint256`, `bytes1` through
+  `bytes32`, and canonical fixed-point widths/decimals) cannot be used as identifiers. Focused tests cover both
+  sides of the distinction. Final scorecard: **4143/4876**, 733 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4143 -> 4145 (+2, NEG-ACCEPTED flat 890)
+
+- **Interface fallback declarations (+1)**: interfaces now accept Solidity's bodyless
+  `fallback() external;` declaration, including inherited fallback requirements. Concrete implementers must
+  provide a fallback body.
+- **Abstract interface compliance (+1)**: abstract contracts may defer unimplemented interface functions,
+  state members, collections, and fallback declarations to concrete descendants, matching Solidity's
+  implementation model. Final scorecard: **4145/4876**, 731 failed, 890 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4145 -> 4146 (+1, NEG-ACCEPTED +1 to 891)
+
+- **Discarded bounded-type expressions (+1)**: no-effect elementary type statements now cover bounded
+  integers, bounded bytes, fixed-point forms, crypto types, unbounded bytes, and addresses rather than only
+  the small `PrimitiveType` token set. This accepts Solidity fixtures such as repeated `uint256;` statements
+  while retaining compile-time validation for array bounds. Final scorecard: **4146/4876**, 730 failed,
+  891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4146 -> 4147 (+1, NEG-ACCEPTED flat 891)
+
+- **Parenthesized named-argument method calls (+1)**: redundant parentheses around a simple member callee now
+  support named arguments, so `(x.mul)({x: a})` follows the same using-for resolution, receiver insertion, and
+  argument reordering as `x.mul({x: a})`. Final scorecard: **4147/4876**, 729 failed, 891 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4147 -> 4148 (+1, NEG-ACCEPTED +1 to 892)
+
+- **Discarded creation-option expressions (+1)**: applying `{salt: ...}`, `{value: ...}`, or `{gas: ...}` to
+  `new Contract` without the final constructor argument list is now parsed as Solidity's no-effect creation
+  function value. Option spelling, duplicates, and value expressions still pass through the shared call-option
+  validation before the value is discarded. Final scorecard: **4148/4876**, 728 failed, 892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4148 -> 4150 (+2, NEG-ACCEPTED flat 892)
+
+- **Parenthesized array-member invocation (+2)**: `(data.pop)()` now routes into the same mutation lowering as
+  `data.pop()`, preserving the distinction between local, packed, chunked, and collection-backed arrays. The
+  broader statement alternative also unlocks a nested-tuple function-identifier fixture that previously
+  stopped at the same parenthesized-member parse wall. Final scorecard: **4150/4876**, 726 failed,
+  892 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4150 -> 4152 (+2, NEG-ACCEPTED +4 to 896)
+
+- **Function-pointer call options (+2)**: identifier calls through external function-pointer state values now
+  accept `{gas: ...}` and `{value: ...}` and preserve those options while the pointer is rewritten into its
+  concrete method-call representation. Both gas and payable-value upstream fixtures compile. Final scorecard:
+  **4152/4876**, 724 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4152 -> 4153 (+1, NEG-ACCEPTED flat 896)
+
+- **Empty ABI decode schemas (+1)**: `abi.decode(data, ())` now parses as a zero-element schema and travels
+  through the normal ABI decode/type/codegen pipeline. This matches Solidity's accepted no-effect empty-tuple
+  decode expression. Final scorecard: **4153/4876**, 723 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4153 -> 4155 (+2, NEG-ACCEPTED flat 896)
+
+- **Unitary tuple wrappers in ABI schemas (+2)**: redundant one-item parentheses in ABI decode type lists now
+  parse recursively and normalize to the underlying type while retaining array suffixes. This covers scalar,
+  struct, dynamic-array, and multidimensional fixed-array forms such as `((uint))`, `(uint)[]`, and
+  `((uint))[5][6]`. Final scorecard: **4155/4876**, 721 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4155 -> 4157 (+2, NEG-ACCEPTED flat 896)
+
+- **Contextual `.value` method calls (+2)**: the dedicated legacy-call `.value` token can now also serve as an
+  ordinary method name. Using-for calls such as `x.value(42)` resolve and inline through the same method-call
+  path as non-keyword names without disturbing `.call.value(v)(data)` compatibility. Final scorecard:
+  **4157/4876**, 719 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4157 -> 4158 (+1, NEG-ACCEPTED flat 896)
+
+- **Function-reference members after call options (+1)**: discarded expressions such as
+  `this.f{value: 42}.address;` now retain call-option validation and accept the two members Solidity exposes on
+  external function values (`address` and `selector`). Other trailing members are rejected explicitly. Final
+  scorecard: **4158/4876**, 718 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4158 -> 4159 (+1, NEG-ACCEPTED flat 896)
+
+- **Tuple ternary expressions (+1)**: `()` is now a zero-element tuple expression, and tuple conditionals at
+  statement scope evaluate their condition once, evaluate the selected branch components, then discard the
+  values. Empty tuple conditionals also work in return position. Final scorecard: **4159/4876**, 717 failed,
+  896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4159 -> 4162 (+3, NEG-ACCEPTED flat 896)
+
+- **Parenthesized delete targets (+3)**: `delete(target)` and arbitrarily nested redundant parentheses now
+  lower to the same local/state deletion as the bare target. Deleting an element of a temporary expression
+  preserves receiver/index evaluation while correctly producing no observable write. Final scorecard:
+  **4162/4876**, 714 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4162 -> 4164 (+2, NEG-ACCEPTED flat 896)
+
+- **Contextual-keyword free-function calls (+2)**: a declared free function named `unsafe` can now be called
+  as `unsafe()`. The grammar alternative is deliberately token-specific so it does not capture casts or compiler
+  intrinsics (`uint(x)`, `erc7201(...)`), a regression caught by the focused suite. Final scorecard:
+  **4164/4876**, 712 failed, 896 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4164 -> 4169 (+5, NEG-ACCEPTED +3 to 899)
+
+- **Discarded tuples with builtin function references (+5)**: tuple expressions at statement scope now
+  evaluate and discard ordinary components while treating builtin references such as `abi.encode` as inert
+  function values. The upstream `(abi.encode, "")` fixture compiles and related tuple-reference forms advance.
+  Final scorecard: **4169/4876**, 707 failed, 899 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4169 -> 4172 (+3, NEG-ACCEPTED flat 899)
+
+- **Chained indirect function calls (+3)**: repeated invocation suffixes such as `x()()()()` now build nested
+  indirect-call nodes and preserve each returned function pointer for the next call. The grammar remains
+  restricted to an initial function call, avoiding a broad postfix-call alternative that would steal ordinary
+  casts and parenthesized expressions. Final scorecard: **4172/4876**, 704 failed, 899 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4172 -> 4182 (+10, NEG-ACCEPTED flat 899)
+
+- **Nested tuple-assignment targets (+10)**: recursively parenthesized targets now flatten against the matching
+  RHS tuple shape while preserving omitted slots. This covers redundant wrappers, nested unitary tuples, and
+  completely omitted nested targets such as `((, a)) = (1, 2)` and `((,),) = ((...), ...)`. Final scorecard:
+  **4182/4876**, 694 failed, 899 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4182 -> 4189 (+7, NEG-ACCEPTED flat 899)
+
+- **Three-level chained no-arg array pushes (+7)**: `a.push().push().push()` and its assignment form now lower
+  through typed nested-array read/modify/write operations. The generalized transformation materializes the
+  target inner array, mutates it, and writes every containing row back outward. Final scorecard:
+  **4189/4876**, 687 failed, 899 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4189 -> 4190 (+1, NEG-ACCEPTED flat 899)
+
+- **Compound assignment to a pushed element (+1)**: `a.push() op= value` now applies `op` to the appended
+  element's typed default and appends the result. The upstream signed subtraction case (`push() -= 1`) compiles,
+  and the implementation covers the full compound-operator set. Final scorecard: **4190/4876**, 686 failed,
+  899 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4190 -> 4191 (+1, NEG-ACCEPTED +1 to 900)
+
+- **Explicit primitive-array conversions (+1)**: expressions such as `uint256[](x[start:end])` now parse as
+  array casts without stealing indexed function-pointer calls. Identically shaped source/target arrays share
+  their packed representation, so code generation correctly treats the conversion as an identity operation.
+  Final scorecard: **4191/4876**, 685 failed, 900 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4191 -> 4192 (+1, NEG-ACCEPTED flat 900)
+
+- **Function-reference members after call options in expressions (+1)**: validated no-call references such as
+  `this.f{gas: 42}.address` and `.selector` now work inside comparisons and other expressions, matching the
+  already-supported statement-position form. Gas remains an explicit no-op warning on BCH; invalid options and
+  members still fail. Final scorecard: **4192/4876**, 684 failed, 900 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4192 -> 4192 (+0, NEG-ACCEPTED flat 900)
+
+- **Chained method-return calls and recursive mapping-struct deletion (+0)**: calls such as `this.g()(x)` now
+  preserve the returned external function pointer for the second invocation. Mapping/struct flattening now
+  recurses through interleaved mapping and struct layers, allowing targets such as
+  `providers[sender].data[height].supply[round]` to resolve and delete the correct flattened collection. These
+  changes advanced the affected upstream fixtures to later, independent diagnostics but did not close a full
+  corpus file. Final scorecard: **4192/4876**, 684 failed, 900 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4192 -> 4196 (+4, NEG-ACCEPTED +2 to 902)
+
+- **Experimental standard-library imports (+4)**: compiler-provided dotted module imports now parse as no-ops
+  in direct, aliased, namespace, and selective forms (`import std.stub`, `import * as x from std.stub`, and
+  `import { x as y } from std.stub`). They deliberately bypass filesystem resolution because Solidity supplies
+  this namespace internally. Final scorecard: **4196/4876**, 680 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4196 -> 4198 (+2, NEG-ACCEPTED flat 902)
+
+- **Multipart prefixed literals (+2)**: adjacent Unicode and hex string tokens now concatenate into one typed
+  AST literal, matching the existing multipart plain-string behavior. This closes both upstream
+  `unicode"..." unicode"..."` and `hex"..." hex"..."` fixtures. Final scorecard:
+  **4198/4876**, 678 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4198 -> 4200 (+2, NEG-ACCEPTED flat 902)
+
+- **Escaped-newline string continuations (+2)**: quoted literals now lex a backslash followed by LF or CRLF,
+  and the shared escape decoder removes that physical line break. Plain and Unicode strings use the same path;
+  unescaped newlines remain invalid. Final scorecard: **4200/4876**, 676 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4200 -> 4203 (+3, NEG-ACCEPTED flat 902)
+
+- **Multiline storage-layout specifiers (+3)**: EVM-only `contract C layout at expr` clauses are now ignored
+  across line breaks and intervening NatSpec comments. The preprocessor blanks non-newline characters instead
+  of deleting the clause, preserving downstream diagnostic line numbers. Final scorecard:
+  **4203/4876**, 673 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4203 -> 4216 (+13, NEG-ACCEPTED flat 902)
+
+- **Statement-form using-for calls (+13)**: unresolved dotted calls whose result is discarded now pass through
+  the same using-for binding resolver as expression calls. This covers external, public, and internal library
+  members; whole-library and selective directives; and file- and contract-scoped bindings. Interface and ordinary
+  named-call paths remain unchanged. Final scorecard: **4216/4876**, 660 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4216 -> 4217 (+1, NEG-ACCEPTED flat 902)
+
+- **Parenthesized tuple-valued ternaries (+1)**: redundant wrappers around a tuple conditional no longer hide
+  it from tuple lowering. The condition is still hoisted and evaluated exactly once before the selected tuple
+  components are evaluated or discarded. Final scorecard: **4217/4876**, 659 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4217 -> 4218 (+1, NEG-ACCEPTED flat 902)
+
+- **Discarded user-defined dynamic-array type expressions (+1)**: statements such as `S[7][];` now parse as
+  no-effect type expressions and validate populated dimensions as positive compile-time uint256 values. The
+  grammar requires an empty `[]` dimension, keeping runtime multidimensional accesses such as `a[i][j];` on
+  their original evaluation path. An initially broader rule regressed four corpus files; the authoritative
+  rerun after narrowing restored them and confirmed the final scorecard: **4218/4876**, 658 failed,
+  902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4218 -> 4219 (+1, NEG-ACCEPTED flat 902)
+
+- **Declared methods shadow SolidCash conveniences (+1)**: a contract-declared `transfer` method now takes
+  precedence for `this.transfer(...)`, including abstract declarations and methods declared later in the source.
+  Address transfers and the undeclared two-argument satoshi-transfer intrinsic retain their existing behavior.
+  Final scorecard: **4219/4876**, 657 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4219 -> 4220 (+1, NEG-ACCEPTED flat 902)
+
+- **abi.encodeCall through direct self-pointer aliases (+1)**: bare external function-pointer targets are now
+  accepted when the local is a direct alias of `this.method`; the statically known method supplies the selector
+  and parameter signature. Other dynamic pointers remain fail-closed instead of guessing a selector.
+  Final scorecard: **4220/4876**, 656 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4220 -> 4221 (+1, NEG-ACCEPTED flat 902)
+
+- **abi.encodeCall through assigned/returned self pointers (+1)**: straight-line state-pointer assignments and
+  helpers whose final return is `this.method` now establish the same static selector proof as local aliases.
+  A returned-pointer helper is still invoked once and its pointer result discarded before encoding, preserving
+  all preceding side effects. The full upstream encodeCall consistency fixture compiles. Final scorecard:
+  **4221/4876**, 655 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4221 -> 4224 (+3, NEG-ACCEPTED flat 902)
+
+- **Declaration selectors in constant initializers (+3)**: function, event, and custom-error selectors are now
+  folded before the compile-time-expression check, including file-level declarations and `this`, `super`,
+  interface, contract, bare, and qualified references. File events/errors are registered before file constants,
+  matching Solidity's source-order-independent declaration lookup. Final scorecard: **4224/4876**, 652 failed,
+  902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4224 -> 4227 (+3, NEG-ACCEPTED flat 902)
+
+- **Scoped custom-error selectors (+3)**: identical custom-error signatures may coexist across global, library,
+  interface, and contract scopes; library-qualified signatures are retained, and bare/qualified selectors fold
+  in ordinary expressions as well as constants. Solidity's reserved EVM error selectors `0x00000000` and
+  `0xffffffff` remain rejected—the first rerun exposed those two negative-parity regressions, and the final
+  authoritative rerun restored the NEG-ACCEPTED count. Final scorecard: **4227/4876**, 649 failed,
+  902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4227 -> 4228 (+1, NEG-ACCEPTED flat 902)
+
+- **Ternary selectors from contract-valued calls (+1)**: `(b ? getContract().f : getContract().g).selector`
+  now evaluates only the selected receiver, discards its returned contract address, and produces the selected
+  method selector. A sequence-expression AST node preserves receiver side effects instead of incorrectly folding
+  the whole expression to constants. Final scorecard: **4228/4876**, 648 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4228 -> 4230 (+2, NEG-ACCEPTED flat 902)
+
+- **Using-for methods literally named `selector` (+2)**: a declared function value now reconstructs its complete
+  `FunctionType` for using-for lookup, so `identity.selector(x)` resolves to a library method named `selector`
+  rather than selector metadata. Final scorecard: **4230/4876**, 646 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4230 -> 4232 (+2, NEG-ACCEPTED flat 902)
+
+- **Runtime selectors on received external pointers (+2)**: a function-pointer parameter used through
+  `p.selector` now participates in the existing ABI lowering to `(address, bytes4 selector)`, and the member read
+  becomes the synthesized selector parameter. Final scorecard: **4232/4876**, 644 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4232 -> 4233 (+1, NEG-ACCEPTED flat 902)
+
+- **Default local external-pointer selector (+1)**: an uninitialized local external function pointer retains a
+  runtime read and yields Solidity's zero selector default. Final scorecard: **4233/4876**, 643 failed,
+  902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4233 -> 4234 (+1, NEG-ACCEPTED flat 902)
+
+- **Selectors from named-return self-pointer helpers (+1)**: helpers that establish a returned self method through
+  a named return variable now carry that proof to `.selector` consumers. The helper invocation remains sequenced
+  before the statically known selector value. Final scorecard: **4234/4876**, 642 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4234 -> 4235 (+1, NEG-ACCEPTED flat 902)
+
+- **Discarded contract-qualified external function references (+1)**: a no-effect `C.f;` statement is accepted
+  even when `f` is external (including a function literally named `selector`), while `C.f.selector` continues to
+  resolve as declaration metadata. This closes every remaining non-Yul selector fixture. Final scorecard:
+  **4235/4876**, 641 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4235 -> 4238 (+3, NEG-ACCEPTED flat 902)
+
+- **Contract-qualified internal function-pointer state (+3)**: assignments and calls through an inherited/current
+  contract qualifier (`C.x = g`, `C.x()`) now resolve to the underlying state slot. Alias elimination counts the
+  qualified call as a real use, so it cannot erase a pointer assigned in one entry point and invoked from another.
+  Final scorecard: **4238/4876**, 638 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4238 -> 4239 (+1, NEG-ACCEPTED flat 902)
+
+- **Whole-mapping storage aliases in array pushes (+1)**: a storage alias with no pre-bound keys now routes
+  `alias_[k].push(v)` to the original mapping and prepends any alias keys before the receiver's keys. This extends
+  the indexed-element alias path without copying storage into a local value. Final scorecard: **4239/4876**,
+  637 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4239 -> 4240 (+1, NEG-ACCEPTED flat 902)
+
+- **Inherited state-struct field writes (+1)**: after inheritance expansion, placeholder field writes against a
+  struct type unavailable while parsing the derived body are rebuilt as whole-state struct assignments, including
+  nested member chains. Final scorecard: **4240/4876**, 636 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4240 -> 4241 (+1, NEG-ACCEPTED flat 902)
+
+- **Raw-slot reads in file-level assembly helpers (+1)**: a free helper's `sload(add(bytes32Slot, offset))`
+  preserves the request for the synthesized `__evm_storage` collection until the contract is visited. The
+  `bytes32` local is interpreted as a Yul uint256 word for arithmetic, and returning helper chains are inlined
+  into entry points because storage-entry block layouts are entry-point-local. The upstream
+  `copy_byte_array_to_storage.sol` fixture now compiles. Final scorecard: **4241/4876**, 635 failed,
+  902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4241 -> 4246 (+5, NEG-ACCEPTED flat 902)
+
+- **Implicit fixed-bytes widening at array write/copy boundaries (+5)**: `bytesM` values now receive Solidity's
+  right-padding conversion when written to wider `bytesN` local/state-array elements, including chained writes
+  and pushes. Dynamic state-array repacking now also accepts calldata and memory-local array sources, lowering
+  the copy to per-element casts rather than treating differently packed arrays as layout-compatible. Three fixed
+  state-array copy fixtures plus calldata-to-storage and memory-to-storage copy fixtures now compile. Final
+  scorecard: **4246/4876**, 630 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4246 -> 4247 (+1, NEG-ACCEPTED flat 902)
+
+- **Hex string literals assigned to `string` (+1)**: a `hex"..."` literal may initialize or assign a string,
+  preserving its raw UTF-8 bytes through a no-op bytes-to-string cast. The rule remains literal-only and validates
+  UTF-8 in fatal mode; the first rerun exposed `invalid_utf8_hex_string.sol` as newly over-accepted, and the final
+  rerun restored that negative rejection. Final scorecard: **4247/4876**, 629 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4247 -> 4248 (+1, NEG-ACCEPTED flat 902)
+
+- **Fixed state-array address mutability widening (+1)**: a storage copy from `address payable[N]` to
+  `address[N]` now lowers element-by-element, applying the legal payable-to-plain address conversion without
+  making general memory/calldata array references covariant. The reverse plain-to-payable direction remains
+  rejected. Final scorecard: **4248/4876**, 628 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4248 -> 4249 (+1, NEG-ACCEPTED flat 902)
+
+- **Typed Yul low-level-call success and early-return helper inlining (+1)**: assigning
+  `staticcall(...)` into an existing high-level `bool` now retains the bool value, while fresh Yul bindings remain
+  uint256 words. Yul `switch` comparisons normalize both operands to words. A one-return helper ending in
+  `if (c) return a; return b;` is normalized to a ternary only when it transitively needs low-level/external-call
+  covenant inlining, allowing `test/benchmarks/verifier.sol` to inline into its entry point. The first broad
+  normalization rerun displaced the raw-slot copy fixture; narrowing eligibility restored it before the final
+  authoritative run. Final scorecard: **4249/4876**, 627 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4249 -> 4252 (+3, NEG-ACCEPTED flat 902)
+
+- **Yul byte/hash values normalized at uint256 word boundaries (+3)**: `byte(...)` remains a bytes1-shaped
+  main-AST operation, but an assignment into a uint256 Yul target now explicitly reinterprets it as the Yul word.
+  Runtime `mstore`/`mstore8` offsets likewise normalize to uint256, including bytes32 hash-derived offsets such as
+  `mstore(keccak256(...), value)`. This compiles `optimizer/shift_bytes.sol`,
+  `viewPureChecker/assembly.sol`, and `array/bytes_to_fixed_bytes_cleanup.sol`. Several additional fixtures
+  advance to deeper runtime-memory diagnostics rather than reporting the misleading first assignment error.
+  Final scorecard: **4252/4876**, 624 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4252 -> 4255 (+3, NEG-ACCEPTED flat 902)
+
+- **Literal-backed memory bytes exposed to Yul as pointers (+3)**: `bytes memory m = "..."` now allocates the
+  EVM-shaped `[length][data]` block in the shared high-level/Yul memory buffer and copies literal data into its
+  words. Assembly can consequently use `m` as a uint256 pointer (`mstore(m, ...)`, `add(m, 32)`), and a subsequent
+  bare state assignment serializes the pointer-backed bytes at the value-copy boundary even though symbol
+  resolution has not yet rewritten that assignment to `StateAssignNode`. This compiles both
+  `dirty_memory_bytes_to_storage_copy` variants and one additional literal-memory fixture. Final scorecard:
+  **4255/4876**, 621 failed, 902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4255 -> 4256 (+1, NEG-ACCEPTED flat 902)
+
+- **Direct mapping storage-pointer rebinding (+1)**: a straight-line `mapping(...) storage p = a; p = b;`
+  updates the parser's compile-time storage access path, so indexed reads and writes after the reassignment route
+  to `b` rather than retaining the original alias or leaving an undefined runtime pointer. The upstream
+  `mapping_local_assignment.sol` fixture now compiles. Final scorecard: **4256/4876**, 620 failed,
+  902 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4256 -> 4257 (+1, NEG-ACCEPTED flat 902)
+
+- **Tuple mapping storage-pointer rebinding (+1)**: `(p, value) = (otherMapping, rhs)` now updates the mapping
+  pointer's compile-time access path without attempting to represent the mapping as a runtime tuple word. The
+  remaining scalar slots stay grouped in a tuple assignment (or become one ordinary assignment), preserving
+  parallel RHS semantics. The upstream `mapping_local_tuple_assignment.sol` fixture now compiles. Final scorecard:
+  **4257/4876**, 619 failed, 902 NEG-ACCEPTED.

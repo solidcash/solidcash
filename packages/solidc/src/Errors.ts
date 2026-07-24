@@ -732,6 +732,12 @@ export class ErrorRedefinitionError extends RedefinitionError {
   }
 }
 
+export class ReservedErrorSelectorError extends SolidCashError {
+  constructor(node: ErrorDefinitionNode, selectorHex: string) {
+    super(node, `Error '${node.name}' uses reserved selector 0x${selectorHex}`);
+  }
+}
+
 export class UndefinedErrorError extends SolidCashError {
   constructor(node: RevertNode | RequireNode) {
     super(node, `Undefined error '${node.errorName}'`);

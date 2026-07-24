@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -181,6 +181,8 @@ import type {
   FunctionModifierContext,
   ReturnStatementContext,
   ExpressionStatementContext,
+  BareAbiFunctionReferenceStatementContext,
+  PrimitiveTypeReferenceStatementContext,
   PrefixIncDecStatementContext,
   ConstantDefinitionContext,
   FreeFunctionDefinitionContext,
@@ -284,10 +286,12 @@ function warnFixedPointOnce(): void {
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
   implements SolidCashVisitor<Node> {
+  private parsingModifierBody = false;
   private structMap: Map<string, StructType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
+  private parsingLibraryFunction = false;
 
   // Contract + interface names, so a contract/interface-namespaced TYPE access `C.T.unwrap` / `I.Enum.Member`
   // strips the `C.`/`I.` to the bare (globally-registered) type, like the library case.
@@ -312,6 +316,15 @@ export default class AstBuilder
   // Contract-level param names (`contract C(int x)`), so a constructor with a parent invocation drops only the
   // params that MIRROR contract params (native pattern), keeping its own declared params (Solidity pattern).
   private contractParamNames: Set<string> = new Set();
+  // Method names declared by the contract currently being built. Solidity members shadow same-spelled
+  // SolidCash conveniences (`this.transfer(...)`), while the convenience remains available when no method exists.
+  private currentContractFunctionNames: Set<string> = new Set();
+  private currentContractName?: string;
+  // Straight-line aliases from external function-pointer variables to a declared self method. Used by
+  // abi.encodeCall(pointer, tuple), whose selector is statically known for these direct Solidity assignments.
+  private selfExternalFunctionAliases: Map<string, string> = new Map();
+  // External-pointer helpers whose exact body returns a declared self method.
+  private selfExternalFunctionReturnAliases: Map<string, string> = new Map();
   // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for access path
   // `container[k]`; reads/writes of `x` are rewritten to that path. Per-function (cleared at each entry).
   private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
@@ -386,6 +399,20 @@ export default class AstBuilder
   }
 
   visitSourceFile(ctx: SourceFileContext): SourceFileNode {
+    let seenNonPragma = false;
+    const pragmaChildren = new Set(ctx.pragmaDirective_list());
+    for (const child of ctx.children ?? []) {
+      if (pragmaChildren.has(child as PragmaDirectiveContext)) {
+        if (seenNonPragma && child.getText() === 'pragmaexperimentalsolidity;') {
+          throw new ParseError(
+            'Experimental pragma "solidity" can only be set at the beginning of the source unit',
+            Location.fromCtx(child as PragmaDirectiveContext),
+          );
+        }
+      } else if (child.getText() !== '<EOF>') {
+        seenNonPragma = true;
+      }
+    }
     ctx.pragmaDirective_list().forEach((pragma) => {
       this.processPragma(pragma);
     });
@@ -446,6 +473,9 @@ export default class AstBuilder
     const declaredLibraryNames: string[] = [];
     const libraryFunctionSignatures: Map<string, string[]> = new Map();
     const libraryEventSignatures: Map<string, string[]> = new Map();
+    const libraryErrorSignatures: Map<string, string[]> = new Map();
+    const libraryErrorDefinitions: Set<ErrorDefinitionNode> = new Set();
+    const libraryModifierDefinitions: ModifierDefinitionNode[] = [];
     for (const libCtx of allLibDefs) {
       const libName = libCtx.Identifier().getText();
       this.libraryNames.add(libName);
@@ -474,7 +504,13 @@ export default class AstBuilder
 
       // Library error definitions (accumulated to file level)
       for (const erCtx of libCtx.errorDefinition_list()) {
-        errorDefinitions.push(this.visitErrorDefinition(erCtx));
+        const error = this.visitErrorDefinition(erCtx);
+        libraryErrorSignatures.set(
+          `${libName}.${error.name}`,
+          error.parameters.map((parameter) => parameter.type.toString()),
+        );
+        libraryErrorDefinitions.add(error);
+        errorDefinitions.push(error);
       }
 
       // Library-level `using L for T` directives (e.g. OZ SafeERC20's `using Address for address`) govern the
@@ -485,6 +521,21 @@ export default class AstBuilder
       }
 
       declaredLibraryNames.push(libName);
+
+      const localModifierNames = new Set<string>();
+      for (const modCtx of libCtx.modifierDefinition_list()) {
+        if (modCtx.getText().includes('virtual')) {
+          throw new ParseError('Modifiers in a library cannot be virtual', Location.fromCtx(modCtx));
+        }
+        if (modCtx.getText().endsWith(';')) {
+          throw new ParseError('A library modifier must have an implementation', Location.fromCtx(modCtx));
+        }
+        const mod = this.visitModifierDefinition(modCtx);
+        localModifierNames.add(mod.name);
+        mod.name = `${libName}.${mod.name}`;
+        mod.inheritedFrom = libName;
+        libraryModifierDefinitions.push(mod);
+      }
 
       // Library constants get namespaced names (e.g. SafeMath.MAX_VALUE)
       const libConstants = libCtx.constantDefinition_list().map(
@@ -520,8 +571,18 @@ export default class AstBuilder
       }
       const libFunctions = libCtx.freeFunctionDefinition_list().map(
         (f) => {
-          const func = this.visitFreeFunctionDefinition(f);
+          this.parsingLibraryFunction = true;
+          let func: FunctionDefinitionNode;
+          try {
+            func = this.visitFreeFunctionDefinition(f);
+          } finally {
+            this.parsingLibraryFunction = false;
+          }
+          func.isLibraryFunction = true;
           func.name = `${libName}.${func.name}`;
+          for (const invocation of func.customModifiers) {
+            if (localModifierNames.has(invocation.name)) invocation.name = `${libName}.${invocation.name}`;
+          }
           if (libHasState) {
             const deployed = func.modifiers.includes(FunctionModifier.PUBLIC)
               || func.modifiers.includes(FunctionModifier.EXTERNAL);
@@ -569,6 +630,9 @@ export default class AstBuilder
       node.declaredLibraryNames = declaredLibraryNames;
       node.libraryFunctionSignatures = libraryFunctionSignatures;
       node.libraryEventSignatures = libraryEventSignatures;
+      node.libraryErrorSignatures = libraryErrorSignatures;
+      node.libraryErrorDefinitions = libraryErrorDefinitions;
+      node.libraryModifierDefinitions = libraryModifierDefinitions;
       node.location = Location.fromCtx(ctx);
 
       // Lower the primary library to a stateless contract when it has explicitly public/external functions, so
@@ -590,8 +654,19 @@ export default class AstBuilder
         const libCollections = libDecls.filter((d): d is CollectionNode => d instanceof CollectionNode);
         const hasSharedState = libStateVars.length > 0 || libCollections.length > 0;
         const libFns = lastLib.freeFunctionDefinition_list().map((f) => {
-          const fn = this.visitFreeFunctionDefinition(f);
+          this.parsingLibraryFunction = true;
+          let fn: FunctionDefinitionNode;
+          try {
+            fn = this.visitFreeFunctionDefinition(f);
+          } finally {
+            this.parsingLibraryFunction = false;
+          }
+          fn.isLibraryFunction = true;
           fn.isFreeFunction = false;
+          const localNames = new Set(lastLib.modifierDefinition_list().map((m) => m.Identifier().getText()));
+          for (const invocation of fn.customModifiers) {
+            if (localNames.has(invocation.name)) invocation.name = `${libName}.${invocation.name}`;
+          }
           const deployed = fn.modifiers.includes(FunctionModifier.PUBLIC)
             || fn.modifiers.includes(FunctionModifier.EXTERNAL);
           if (!deployed && !fn.modifiers.includes(FunctionModifier.INTERNAL)
@@ -631,6 +706,9 @@ export default class AstBuilder
     sourceFileNode.declaredLibraryNames = declaredLibraryNames;
     sourceFileNode.libraryFunctionSignatures = libraryFunctionSignatures;
     sourceFileNode.libraryEventSignatures = libraryEventSignatures;
+    sourceFileNode.libraryErrorSignatures = libraryErrorSignatures;
+    sourceFileNode.libraryErrorDefinitions = libraryErrorDefinitions;
+    sourceFileNode.libraryModifierDefinitions = libraryModifierDefinitions;
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }
@@ -675,6 +753,31 @@ export default class AstBuilder
   }
 
   processPragma(ctx: PragmaDirectiveContext): void {
+    const alternatives = ctx.pragmaValue()?.versionAlternative_list() ?? [];
+    const constraints = alternatives.flatMap((alternative) => alternative.versionConstraint_list());
+
+    // solc permits bare decimal integers as version components, but stores each component in a uint32.
+    // Preserve that syntax check even though compatibility mode otherwise ignores Solidity's requested range.
+    if (ctx.pragmaName()?.getText() === 'solidity') {
+      for (const constraint of constraints) {
+        const integer = constraint.NumberLiteral()?.getText().replaceAll('_', '');
+        if (integer !== undefined && BigInt(integer) > 0xffff_ffffn) {
+          throw new ParseError('Invalid Solidity version pragma: integer component exceeds uint32', Location.fromCtx(ctx));
+        }
+      }
+      // Adjacent constraints form an intersection only for comparison operators. A second caret/tilde/exact
+      // range (e.g. `^0^1`) is malformed rather than a conjunction.
+      for (const alternative of alternatives) {
+        const terms = alternative.versionConstraint_list();
+        if (!alternative.getText().includes('-') && terms.length > 1 && terms.some((term) => {
+          const op = term.versionOperator()?.getText();
+          return op === undefined || op === '^' || op === '~' || op === '=';
+        })) {
+          throw new ParseError('Invalid Solidity version pragma conjunction', Location.fromCtx(ctx));
+        }
+      }
+    }
+
     // solidityImportCompat: accept `pragma solidity <any>` and skip the version check (Solidity sources
     // pin old versions like =0.5.17 that the live compiler can't satisfy).
     if (this.solidityImportCompat) return;
@@ -699,11 +802,23 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    if (ctx.pragmaValue().getText().includes('||') || ctx.pragmaValue().getText().includes('-')) {
+      throw new ParseError(
+        'SolidCash version pragmas do not support disjunctions or hyphen ranges',
+        Location.fromCtx(ctx),
+      );
+    }
+    if (constraints.some((constraint) => constraint.NumberLiteral() !== null)) {
+      throw new ParseError(
+        'SolidCash version pragmas require a dotted semantic version',
+        Location.fromCtx(ctx),
+      );
+    }
 
     // Strip any -beta tags
     const actualVersion = version.replace(/-.*/g, '');
 
-    ctx.pragmaValue().versionConstraint_list().forEach((constraint) => {
+    constraints.forEach((constraint) => {
       const op = getVersionOpFromCtx(constraint.versionOperator());
       // The version may be a full X.Y.Z (VersionLiteral) or a 2-part (DecimalLiteral, e.g. 0.0).
       const versionToken = constraint.VersionLiteral() ?? constraint.DecimalLiteral();
@@ -725,6 +840,12 @@ export default class AstBuilder
 
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
     const name = ctx.anyIdentifier().getText();
+    this.currentContractName = name;
+    this.currentContractFunctionNames = new Set([
+      ...ctx.functionDefinition_list().map((f) => f.functionName().getText()),
+      ...ctx.abstractFunctionDefinition_list().map((f) => f.functionName().getText()),
+    ]);
+    this.selfExternalFunctionReturnAliases = new Map();
     // Resolve integer-literal constants up front so a const can be used as an array dimension `T[N]` anywhere
     // in the contract body (state vars, params, locals, struct fields), regardless of declaration order.
     this.scanConstantDimensions(ctx.constantDefinition_list());
@@ -843,15 +964,28 @@ export default class AstBuilder
     // nested state mapping `providers__data[k][k2]`.
     this.mappingStructValueVars = new Map();
     const expandedCollections: CollectionNode[] = [];
-    for (const col of collections) {
-      const valStruct = col.type instanceof MappingType ? this.structFromType(col.type.valueType) : undefined;
+    const innermostMappingStruct = (type: MappingType): StructType | undefined => {
+      let value: Type = type.valueType;
+      while (value instanceof MappingType) value = value.valueType;
+      return this.structFromType(value);
+    };
+    const replaceInnermostMappingValue = (type: MappingType, value: Type): MappingType => new MappingType(
+      type.keyType,
+      type.valueType instanceof MappingType ? replaceInnermostMappingValue(type.valueType, value) : value,
+      type.keyName,
+      type.valueName,
+    );
+    const pendingCollections = [...collections];
+    while (pendingCollections.length > 0) {
+      const col = pendingCollections.shift()!;
+      const valStruct = col.type instanceof MappingType ? innermostMappingStruct(col.type) : undefined;
       if (col.type instanceof MappingType && valStruct && this.structNeedsFieldFlattening(valStruct)) {
         this.mappingStructValueVars.set(col.name, valStruct);
         for (const field of valStruct.fields) {
-          const flatType = new MappingType(col.type.keyType, field.type, col.type.keyName);
+          const flatType = replaceInnermostMappingValue(col.type, field.type);
           const flat = new CollectionNode(flatType, `${col.name}__${field.name}`);
           flat.location = col.location;
-          expandedCollections.push(flat);
+          pendingCollections.push(flat);
         }
       } else {
         expandedCollections.push(col);
@@ -1071,7 +1205,7 @@ export default class AstBuilder
     if (customModCtxs && customModCtxs.length > 0) {
       node.customModifiers = customModCtxs.map(
         (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
-          name: m.Identifier().getText(),
+          name: this.customModifierName(m),
           args: m.expressionList()
             ? this.buildCallArguments(m.expressionList()!)
             : [],
@@ -1101,13 +1235,14 @@ export default class AstBuilder
   }
 
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
+    this.selfExternalFunctionAliases = new Map();
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
     this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
-    const name = ctx.anyIdentifier().getText();
+    const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring,
     // so `d.x = v` in a library/helper body rebuilds the struct as for a local.
@@ -1142,7 +1277,7 @@ export default class AstBuilder
         .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
         .map(
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
-            name: m.Identifier().getText(),
+            name: this.customModifierName(m),
             args: m.expressionList()
               ? this.buildCallArguments(m.expressionList()!)
               : [],
@@ -1155,6 +1290,25 @@ export default class AstBuilder
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
+    }
+    if (functionDefinition.returnTypes.length === 1
+      && functionDefinition.returnTypes[0] instanceof FunctionType
+      && functionDefinition.returnTypes[0].isExternal
+      && (functionDefinition.body.statements?.length ?? 0) > 0) {
+      const statement = functionDefinition.body.statements![functionDefinition.body.statements!.length - 1];
+      const returned = statement instanceof ReturnNode && statement.expressions.length === 1
+        ? statement.expressions[0] : undefined;
+      if (returned instanceof StateAccessNode && this.currentContractFunctionNames.has(returned.name)) {
+        this.selfExternalFunctionReturnAliases.set(name, returned.name);
+        functionDefinition.returnedSelfFunctionName = returned.name;
+      } else if (statement instanceof AssignNode
+        && functionDefinition.returnNames?.includes(statement.identifier.name)
+        && statement.expression instanceof StateAccessNode
+        && this.currentContractFunctionNames.has(statement.expression.name)) {
+        // Named-return form: `returns (function() external p) { p = this.f; }`.
+        this.selfExternalFunctionReturnAliases.set(name, statement.expression.name);
+        functionDefinition.returnedSelfFunctionName = statement.expression.name;
+      }
     }
     // Record a struct-returning function (for inline storage-pointer writes `Lib.f(slot).value = v`).
     if (functionDefinition.returnTypes?.length === 1 && functionDefinition.returnTypes[0] instanceof StructType) {
@@ -1173,7 +1327,7 @@ export default class AstBuilder
   }
 
   visitAbstractFunctionDefinition(ctx: AbstractFunctionDefinitionContext): FunctionDefinitionNode {
-    const name = ctx.anyIdentifier().getText();
+    const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
 
     // Abstract functions have no body - create an empty block
@@ -1197,7 +1351,7 @@ export default class AstBuilder
         .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
         .map(
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
-            name: m.Identifier().getText(),
+            name: this.customModifierName(m),
             args: m.expressionList()
               ? this.buildCallArguments(m.expressionList()!)
               : [],
@@ -1233,13 +1387,14 @@ export default class AstBuilder
   }
 
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
+    this.selfExternalFunctionAliases = new Map();
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
     this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
-    const name = ctx.anyIdentifier().getText();
+    const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
     for (const p of parameters) {
@@ -1267,6 +1422,29 @@ export default class AstBuilder
     const modifierContexts = ctx.functionModifier_list();
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
+      if (!this.parsingLibraryFunction) {
+        const forbidden = functionDefinition.modifiers.find((m) => [
+          FunctionModifier.PUBLIC, FunctionModifier.EXTERNAL, FunctionModifier.PRIVATE,
+          FunctionModifier.PAYABLE, FunctionModifier.VIRTUAL, FunctionModifier.OVERRIDE,
+        ].includes(m));
+        if (forbidden) {
+          throw new ParseError(`Free functions cannot have '${forbidden}'`, Location.fromCtx(modifierContexts[0]));
+        }
+      }
+    }
+
+    const customModCtxs = ctx.customModifierInvocation_list();
+    if (customModCtxs && customModCtxs.length > 0) {
+      if (!this.parsingLibraryFunction) {
+        throw new ParseError('Custom modifiers are not allowed on free functions', Location.fromCtx(customModCtxs[0]));
+      }
+      functionDefinition.customModifiers = customModCtxs
+        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .map((m): CustomModifierInvocation => ({
+          name: this.customModifierName(m),
+          args: m.expressionList() ? this.buildCallArguments(m.expressionList()!) : [],
+          location: Location.fromCtx(m),
+        }));
     }
 
     // Parse return types
@@ -1293,15 +1471,29 @@ export default class AstBuilder
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
       : [];
+    for (const p of parameters) {
+      if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      this.recordUsingForReceiver(p.name, p.type);
+    }
+    const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = ctx.modifierStatement_list().map((s) => {
       if (s.placeholderStatement()) {
         const placeholder = new PlaceholderStatementNode();
         placeholder.location = Location.fromCtx(s.placeholderStatement()!);
         return placeholder;
       }
-      return this.visit(s.statement()!) as StatementNode;
+      this.parsingModifierBody = true;
+      try {
+        return this.visit(s.statement()!) as StatementNode;
+      } finally {
+        this.parsingModifierBody = false;
+      }
     });
+    for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const node = new ModifierDefinitionNode(name, parameters, statements);
+    node.isAbstract = ctx.getText().endsWith(';');
+    node.isVirtual = (ctx.children ?? []).some((c) => c.getText() === 'virtual');
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -1338,7 +1530,7 @@ export default class AstBuilder
     ctx: CustomModifierInvocationContext,
     functionDefinition: FunctionDefinitionNode,
   ): boolean {
-    const name = ctx.Identifier().getText();
+    const name = this.customModifierName(ctx);
     if (name !== 'split' && name !== 'merge') return false;
 
     const exprList = ctx.expressionList();
@@ -1357,6 +1549,10 @@ export default class AstBuilder
       functionDefinition.mergeCountParam = argText;
     }
     return true;
+  }
+
+  private customModifierName(ctx: CustomModifierInvocationContext): string {
+    return ctx.Identifier_list().map((id) => id.getText()).join('.');
   }
 
   visitParameter(ctx: ParameterContext): ParameterNode {
@@ -1390,9 +1586,43 @@ export default class AstBuilder
   // The modifier placeholder `_;` - allowed anywhere a statement is (e.g. inside an if/else branch, as in a
   // proxy's `ifAdmin` modifier); modifier expansion still rejects it outside a modifier body.
   visitPlaceholderStatement(ctx: PlaceholderStatementContext): StatementNode {
+    if (!this.parsingModifierBody) {
+      const noOp = new BlockNode([]);
+      noOp.location = Location.fromCtx(ctx);
+      return noOp;
+    }
     const placeholder = new PlaceholderStatementNode();
     placeholder.location = Location.fromCtx(ctx);
     return placeholder;
+  }
+
+  visitBareCallOptionsStatement(ctx: any): StatementNode {
+    // Although applying options without calling is a no-op, Solidity still validates option spelling and
+    // duplicates. Parse them before discarding the resulting function reference.
+    this.parseCallOptions(ctx.callOptions());
+    const trailingMember = ctx.callOptionsFunctionMember?.()?.getText();
+    if (trailingMember && trailingMember !== '.address' && trailingMember !== '.selector') {
+      throw new ParseError(
+        `Function value after call options has no member '${trailingMember.slice(1)}'`,
+        Location.fromCtx(ctx.callOptionsFunctionMember()),
+      );
+    }
+    const noOp = new BlockNode([]);
+    noOp.location = Location.fromCtx(ctx);
+    return noOp;
+  }
+
+  visitBareNewWithOptionsStatement(ctx: any): StatementNode {
+    this.parseCallOptions(ctx.callOptions());
+    const noOp = new BlockNode([]);
+    noOp.location = Location.fromCtx(ctx);
+    return noOp;
+  }
+
+  visitParenthesizedArrayPopStatement(ctx: any): StatementNode {
+    const name = ctx.Identifier().getText();
+    const isThis = ctx.getText().startsWith('(this.');
+    return this.buildArrayPop(name, isThis, [], undefined, ctx);
   }
 
   visitVariableDefinition(ctx: VariableDefinitionContext): StatementNode {
@@ -1450,6 +1680,18 @@ export default class AstBuilder
 
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
+    if (type instanceof FunctionType && type.isExternal && expression instanceof StateAccessNode
+      && this.currentContractFunctionNames.has(expression.name)) {
+      this.selfExternalFunctionAliases.set(name, expression.name);
+    }
+    const containsMapping = (t: Type): boolean => t instanceof MappingType
+      || (t instanceof ArrayType && containsMapping(t.elementType));
+    if (!expression && modifiers.includes(Modifier.STORAGE) && containsMapping(type)) {
+      throw new ParseError(
+        `Storage pointer '${name}' containing a mapping must be initialized`,
+        Location.fromCtx(ctx),
+      );
+    }
 
     // `T storage x = arr.push();`: Solidity's no-arg push returns a reference to the freshly-appended element.
     // Desugar to capturing the pre-push length (the new element's index), pushing a default element, and
@@ -1614,11 +1856,17 @@ export default class AstBuilder
     );
   }
 
-  // Is `ctx` a `cond ? (..) : (..)` whose branches are both tuple expressions?
-  private isTupleTernary(ctx: ExpressionContext | undefined): boolean {
-    return ctx instanceof TernaryOpContext
-      && ctx._ifTrue instanceof TupleExpressionContext
-      && ctx._ifFalse instanceof TupleExpressionContext;
+  // Return the tuple-valued ternary under any redundant parenthesis wrappers. Solidity permits
+  // `((effect() ? (a, b) : (c, d)));`; treating only a directly exposed TernaryOpContext made its tuple
+  // branches fall through to the generic "tuple expression is invalid here" diagnostic.
+  private tupleTernary(ctx: ExpressionContext | undefined): TernaryOpContext | undefined {
+    let current = ctx;
+    while (current instanceof ParenthesisedContext) current = current.expression();
+    return current instanceof TernaryOpContext
+      && current._ifTrue instanceof TupleExpressionContext
+      && current._ifFalse instanceof TupleExpressionContext
+      ? current
+      : undefined;
   }
 
   // Desugar `cond ? (A0, A1, ..) : (B0, B1, ..)`: hoist `cond` into a bool temp (evaluated exactly once, per
@@ -1821,6 +2069,69 @@ export default class AstBuilder
       return def;
     }
     const slots = ctx.tupleSlot_list();
+    const tupleExprs = ctx.expression_list();
+    // A whole-mapping storage pointer has no runtime tuple value. Rebind any such existing targets at parse time
+    // and emit the remaining scalar tuple assignments. Solidity evaluates all RHS expressions first; a bare
+    // state-mapping identifier is side-effect-free, while the retained scalar RHS values remain in one tuple
+    // assignment (or a single ordinary assignment) and therefore keep their parallel-assignment semantics.
+    if (slots.length > 0 && tupleExprs.length === slots.length) {
+      const rebound = new Set<number>();
+      for (let i = 0; i < slots.length; i += 1) {
+        const slot = slots[i];
+        if (this.isComplexTupleSlot(slot) || slot.typeName() || slot.arrayType()) continue;
+        const target = slot.anyIdentifier(0)?.getText();
+        const rhsName = tupleExprs[i].getText();
+        const alias = target ? this.storageAliases.get(target) : undefined;
+        if (target && alias?.keys.length === 0 && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(rhsName)
+          && this.mappingStateVarTypes.has(rhsName)) {
+          const rhs = new IdentifierNode(rhsName);
+          rhs.location = Location.fromCtx(tupleExprs[i]);
+          this.storageAliases.set(target, { container: rhsName, keys: [], access: rhs });
+          rebound.add(i);
+        }
+      }
+      if (rebound.size > 0) {
+        const remaining = slots.map((_slot, i) => i).filter((i) => !rebound.has(i));
+        const loc = Location.fromCtx(ctx);
+        if (remaining.length === 0) {
+          const dropped = new BlockNode([]);
+          dropped.location = loc;
+          return dropped;
+        }
+        if (remaining.length === 1) {
+          const i = remaining[0];
+          const slot = slots[i];
+          const id = slot.anyIdentifier(0);
+          if (id && !slot.typeName() && !slot.arrayType() && !this.isComplexTupleSlot(slot)) {
+            return this.buildLvalueAssign(
+              id.getText(), false, Location.fromCtx(id), [], '=', tupleExprs[i], loc,
+            );
+          }
+        }
+        const keptElements = remaining.map((i) => {
+          const slot = slots[i];
+          const tn = slot.typeName();
+          const at = slot.arrayType();
+          if (tn || at) {
+            return {
+              name: slot.anyIdentifier(0)!.getText(),
+              type: at ? this.buildArrayType(at)
+                : (this.resolveType(tn!.getText()) ?? new AddressType(false, tn!.getText())),
+            };
+          }
+          const id = slot.anyIdentifier(0);
+          return id ? { name: id.getText(), existing: true } : { skip: true };
+        });
+        const kept = new TupleAssignmentNode(
+          keptElements,
+          undefined as unknown as ExpressionNode,
+          true,
+          remaining.map((i) => this.visit(tupleExprs[i]) as ExpressionNode),
+        );
+        kept.location = loc;
+        return kept;
+      }
+    }
     // Complex-lvalue targets `(x[0], s.e) = (a, b)` (an index/member chain in a slot): desugar to per-slot
     // writes. Only the per-slot parenthesised RHS form, and only when alias-safe, is handled here.
     if (slots.length > 0 && slots.some((s) => this.isComplexTupleSlot(s))) {
@@ -1858,11 +2169,12 @@ export default class AstBuilder
     }
     const parenthesised = ctx.getText().startsWith('(');
     // `(a, b) = (e1, e2)` parses N RHS expressions; the other forms parse one tuple-valued expression.
-    const exprs = ctx.expression_list();
+    const exprs = tupleExprs;
     // Tuple ternary RHS `(a, b) = cond ? (..) : (..)`: hoist cond, then an N-value assignment of per-element
     // ternaries. Returned as a block so flattenStatements splices the temp + assignment at the same scope.
-    if (exprs.length === 1 && this.isTupleTernary(exprs[0])) {
-      const { tempDecl, values } = this.desugarTupleTernary(exprs[0] as TernaryOpContext);
+    const tupleTernary = exprs.length === 1 ? this.tupleTernary(exprs[0]) : undefined;
+    if (tupleTernary) {
+      const { tempDecl, values } = this.desugarTupleTernary(tupleTernary);
       const tupleAssign = new TupleAssignmentNode(
         elements, undefined as unknown as ExpressionNode, parenthesised, values,
       );
@@ -1891,6 +2203,63 @@ export default class AstBuilder
       : new TupleAssignmentNode(elements, this.visit(exprs[0]) as ExpressionNode, parenthesised);
     tupleAssignment.location = Location.fromCtx(ctx);
     return tupleAssignment;
+  }
+
+  visitNestedTupleAssignment(ctx: any): Node {
+    type Pattern = { name: string } | Pattern[] | undefined;
+    const parsePattern = (patternCtx: any): Pattern[] => {
+      const slots: Pattern[] = [undefined];
+      let index = 0;
+      for (const child of patternCtx.children ?? []) {
+        const text = child.getText?.();
+        if (text === '(' || text === ')') continue;
+        if (text === ',') { index += 1; slots[index] = undefined; continue; }
+        if (child.constructor?.name === 'NestedTuplePatternItemContext') {
+          const nested = child.nestedTuplePattern?.();
+          if (nested) slots[index] = parsePattern(nested);
+          else {
+            const name = child.anyIdentifier?.(0)?.getText();
+            if (!name) throw new ParseError('Unsupported nested tuple assignment target', Location.fromCtx(child));
+            slots[index] = { name };
+          }
+        }
+      }
+      return slots;
+    };
+    const rhsParts = (expr: ExpressionContext): ExpressionContext[] | undefined => {
+      let current = expr;
+      while (current instanceof ParenthesisedContext) current = current.expression();
+      return current instanceof TupleExpressionContext ? current.expression_list() : undefined;
+    };
+    const elements: { name?: string; existing?: boolean; skip?: boolean }[] = [];
+    const values: ExpressionNode[] = [];
+    const walk = (pattern: Pattern, value: ExpressionContext): void => {
+      if (pattern === undefined) return;
+      if (!Array.isArray(pattern)) {
+        elements.push({ name: pattern.name, existing: true });
+        values.push(this.visit(value) as ExpressionNode);
+        return;
+      }
+      // A one-item parenthesized pattern is a redundant wrapper, not an ABI/value tuple layer.
+      if (pattern.length === 1) {
+        if (pattern[0] !== undefined) walk(pattern[0], value);
+        return;
+      }
+      const parts = rhsParts(value);
+      if (!parts || parts.length < pattern.length) {
+        throw new ParseError('Nested tuple assignment shape does not match its value', Location.fromCtx(value));
+      }
+      pattern.forEach((slot, i) => {
+        if (slot !== undefined) walk(slot, parts[i]);
+      });
+    };
+    const pattern = parsePattern(ctx.nestedTuplePattern());
+    walk(pattern, ctx.expression());
+    const node = new TupleAssignmentNode(
+      elements, undefined as unknown as ExpressionNode, true, values,
+    );
+    node.location = Location.fromCtx(ctx);
+    return node;
   }
 
   // `(x op= rhs)` as an expression: build the desugared assignment, wrap it so codegen yields x's new value.
@@ -2206,13 +2575,24 @@ export default class AstBuilder
     if (updateCtx && updateCtx.tupleSlot_list().length > 0) {
       updateNode = this.buildForTupleAssign(updateCtx.tupleSlot_list(), updateCtx.expression_list(), Location.fromCtx(updateCtx));
     } else if (updateCtx) {
-      updateNode = this.buildCompoundAssign(
-        updateCtx.Identifier().getText(),
-        Location.fromToken(updateCtx.Identifier().symbol),
-        updateCtx._op.text,
-        updateCtx.expression(0),
-        Location.fromCtx(updateCtx),
-      );
+      if (updateCtx._op) {
+        updateNode = this.buildCompoundAssign(
+          updateCtx.Identifier().getText(),
+          Location.fromToken(updateCtx.Identifier().symbol),
+          updateCtx._op.text,
+          updateCtx.expression(0),
+          Location.fromCtx(updateCtx),
+        );
+      } else if (updateCtx.expression(0)) {
+        const expressionCtx = updateCtx.expression(0);
+        if (expressionCtx instanceof FunctionCallExpressionContext || expressionCtx instanceof MethodCallContext
+          || expressionCtx instanceof MethodCallNamedContext) {
+          updateNode = this.buildCallStatement(expressionCtx);
+        } else {
+          updateNode = new ExpressionStatementNode(this.visit(expressionCtx) as ExpressionNode);
+          updateNode.location = Location.fromCtx(updateCtx);
+        }
+      }
     }
 
     // Build condition. An omitted condition (`for (init; ; update)`) is an implicit `true` (Solidity infinite
@@ -2369,6 +2749,16 @@ export default class AstBuilder
   }
 
   visitCast(ctx: CastContext): CastNode {
+    const arrayTypeCtx = (ctx as any).arrayCastType?.();
+    if (arrayTypeCtx) {
+      const cast = new CastNode(
+        parseType(arrayTypeCtx.getText()),
+        this.visit(ctx._castable),
+        false,
+      );
+      cast.location = Location.fromCtx(ctx);
+      return cast;
+    }
     const rawType = ctx.typeCast().getText();
 
     // Handle payable() cast - produces AddressType(payable=true) or ConnectedAddressType(payable=true)
@@ -2419,6 +2809,24 @@ export default class AstBuilder
     return node;
   }
 
+  visitCallOptionsMember(ctx: any): ExpressionNode {
+    this.parseCallOptions(ctx.callOptions());
+    const member = ctx.memberName().getText().slice(1);
+    if (member !== 'address' && member !== 'selector') {
+      throw new ParseError(`Function values have no member '${member}'`, Location.fromCtx(ctx.memberName()));
+    }
+    const receiver = ctx.expression().getText() === 'this'
+      ? new StateAccessNode(ctx.Identifier().getText())
+      : new FieldAccessNode(
+        this.visit(ctx.expression()) as ExpressionNode,
+        ctx.Identifier().getText(),
+      );
+    receiver.location = Location.fromCtx(ctx);
+    const node = new FieldAccessNode(receiver, member);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   // `(<callee>)(args)`: call the value of a parenthesised non-simple callee (a ternary picking a function pointer,
   // etc.). Same indirect dispatch as an indexed callee.
   visitParenthesizedFunctionCall(ctx: any): ExpressionNode {
@@ -2427,6 +2835,34 @@ export default class AstBuilder
     const node = new IndirectCallNode(callee, args);
     node.location = Location.fromCtx(ctx);
     return node;
+  }
+
+  visitChainedFunctionCall(ctx: any): ExpressionNode {
+    let callee = this.visit(ctx.functionCall()) as ExpressionNode;
+    for (const argsCtx of ctx.expressionList_list()) {
+      const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
+      node.location = Location.fromCtx(ctx);
+      callee = node;
+    }
+    return callee;
+  }
+
+  visitChainedMethodCall(ctx: any): ExpressionNode {
+    const lists = ctx.expressionList_list();
+    let callee = this.buildMethodCall(
+      ctx,
+      this.visit(ctx.expression()) as ExpressionNode,
+      ctx.Identifier().getText(),
+      this.buildCallArguments(lists[0]),
+      this.parseCallOptions(ctx.callOptions()),
+      ctx.expression().getText() === 'this',
+    );
+    for (const argsCtx of lists.slice(1)) {
+      const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
+      node.location = Location.fromCtx(ctx);
+      callee = node;
+    }
+    return callee;
   }
 
   visitFunctionCall(ctx: FunctionCallContext): ExpressionNode {
@@ -2453,9 +2889,9 @@ export default class AstBuilder
 
     const name = identifiers.length > 1
       ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
-      : identifiers[0].getText();
+      : identifiers[0]?.getText() ?? ctx.start.text;
     const identifier = new IdentifierNode(name);
-    identifier.location = Location.fromToken(identifiers[0].symbol);
+    identifier.location = Location.fromToken(identifiers[0]?.symbol ?? ctx.start);
     const parameters = this.buildCallArguments(ctx.expressionList()!);
 
     // using-for: `recv.method(args)` where recv is a struct var bound to a library -> `Library.method(recv, args)`.
@@ -2481,18 +2917,39 @@ export default class AstBuilder
 
     // `erc7201(id)` (ERC-7201 / EIP-7201 namespaced storage slot): fold to the SPEC-CONFORMANT slot,
     // keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff)), as a uint256 - byte-identical to
-    // Ethereum. The namespace id is always a compile-time string literal (as in Solidity), so it folds at parse time.
+    // Ethereum. Literal ids fold at parse time; runtime string/bytes expressions lower to the specification's
+    // hash/arithmetic expression (Solidity accepts calldata, memory, storage, concat, ternary, and pure-call ids).
     if (identifiers.length === 1 && name === 'erc7201' && parameters.length === 1) {
       const arg = parameters[0];
-      if (!(arg instanceof StringLiteralNode)) {
-        throw new ParseError('erc7201(...) requires a compile-time string literal namespace id', Location.fromCtx(ctx));
+      if (arg instanceof StringLiteralNode) {
+        const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.value));
+        lit.location = Location.fromCtx(ctx);
+        // Type it as the uint256 slot number (arithmetic/comparison/slot contexts the spec uses).
+        const cast = new CastNode(parseType('uint256'), lit, false);
+        cast.location = Location.fromCtx(ctx);
+        return cast;
       }
-      const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.value));
-      lit.location = Location.fromCtx(ctx);
-      // Type it as the uint256 slot number (arithmetic/comparison/slot contexts the spec uses).
-      const cast = new CastNode(parseType('uint256'), lit, false);
-      cast.location = Location.fromCtx(ctx);
-      return cast;
+      const loc = Location.fromCtx(ctx);
+      const at = <T extends Node>(node: T): T => { node.location = loc; return node; };
+      const uint256 = parseType('uint256');
+      const bytes32 = new BytesType(32);
+      const callKeccak = (value: ExpressionNode): FunctionCallNode =>
+        at(new FunctionCallNode(at(new IdentifierNode('keccak256')), [value]));
+      const innerHash = callKeccak(at(new CastNode(new BytesType(), arg, false)));
+      const innerNumber = at(new CastNode(uint256, innerHash, false));
+      const decremented = at(new BinaryOpNode(innerNumber, BinaryOperator.MINUS, at(new IntLiteralNode(1n))));
+      const encodedWord = at(new CastNode(bytes32, decremented, false));
+      const encoded = at(new BytesConcatNode([encodedWord]));
+      const outerHash = callKeccak(encoded);
+      const lowByteMask = at(new UnaryOpNode(
+        UnaryOperator.INVERT,
+        at(new CastNode(bytes32, at(new CastNode(uint256, at(new IntLiteralNode(0xffn)), false)), false)),
+      ));
+      return at(new CastNode(
+        uint256,
+        at(new BinaryOpNode(outerHash, BinaryOperator.BIT_AND, lowByteMask)),
+        false,
+      ));
     }
 
     // `Color(i)` where Color is an enum is an int -> enum cast, not a function call. Also `L.Color(i)` /
@@ -2539,6 +2996,7 @@ export default class AstBuilder
     }
 
     const functionCall = new FunctionCallNode(identifier, parameters);
+    functionCall.callOptions = this.parseCallOptions(ctx.callOptions());
     functionCall.location = Location.fromCtx(ctx);
     return functionCall;
   }
@@ -2789,11 +3247,11 @@ export default class AstBuilder
       return this.createStringLiteral(ctx);
     }
 
-    if (ctx.UnicodeLiteral()) {
+    if (ctx.UnicodeLiteral_list().length > 0) {
       return this.createUnicodeLiteral(ctx);
     }
 
-    if (ctx.HexStringLiteral()) {
+    if (ctx.HexStringLiteral_list().length > 0) {
       return this.createHexStringLiteral(ctx);
     }
 
@@ -2895,20 +3353,25 @@ export default class AstBuilder
   }
 
   createUnicodeLiteral(ctx: LiteralContext): StringLiteralNode {
-    const rawText = ctx.UnicodeLiteral().getText();
-    // rawText is like: unicode"..." or unicode'...'
-    const quoteChar = rawText.charAt(7); // char after "unicode"
-    const inner = rawText.substring(8, rawText.length - 1);
-    const stringValue = this.processEscapes(inner, Location.fromCtx(ctx));
+    const location = Location.fromCtx(ctx);
+    let quoteChar = '"';
+    const stringValue = ctx.UnicodeLiteral_list().map((token) => {
+      const rawText = token.getText();
+      // rawText is like: unicode"..." or unicode'...'
+      quoteChar = rawText.charAt(7); // char after "unicode"
+      return this.processEscapes(rawText.substring(8, rawText.length - 1), location);
+    }).join('');
     const stringLiteral = new StringLiteralNode(stringValue, quoteChar);
-    stringLiteral.location = Location.fromCtx(ctx);
+    stringLiteral.location = location;
     return stringLiteral;
   }
 
   createHexStringLiteral(ctx: LiteralContext): HexLiteralNode {
-    const raw = ctx.HexStringLiteral().getText();
-    // raw is like: hex"deadbeef" or hex'deadbeef'
-    const hexContent = raw.substring(4, raw.length - 1).replace(/_/g, '');
+    const hexContent = ctx.HexStringLiteral_list().map((token) => {
+      const raw = token.getText();
+      // raw is like: hex"deadbeef" or hex'deadbeef'
+      return raw.substring(4, raw.length - 1).replace(/_/g, '');
+    }).join('');
     if (hexContent.length % 2 !== 0) {
       throw new ParseError('Hex string must have even number of hex digits', Location.fromCtx(ctx));
     }
@@ -2923,6 +3386,10 @@ export default class AstBuilder
       if (raw[i] === '\\' && i + 1 < raw.length) {
         const next = raw[i + 1];
         switch (next) {
+          case '\n': i++; break;
+          case '\r':
+            i += raw[i + 2] === '\n' ? 2 : 1;
+            break;
           case 'n': result += '\n'; i++; break;
           case 'r': result += '\r'; i++; break;
           case 't': result += '\t'; i++; break;
@@ -2982,7 +3449,7 @@ export default class AstBuilder
 
   createHexLiteral(ctx: LiteralContext): HexLiteralNode {
     const hexString = ctx.HexLiteral().getText();
-    const hexContent = hexString.substring(2);
+    const hexContent = hexString.substring(2).replaceAll('_', '');
     if (hexContent.length % 2 !== 0) {
       const loc = Location.fromCtx(ctx);
       const line = loc.start ? ` at line ${loc.start.line}` : '';
@@ -3193,6 +3660,13 @@ export default class AstBuilder
     rawName: string, isThis: boolean, nameLoc: Location, segs: LvSeg[],
     op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): StatementNode {
+    // Solidity permits the current contract type as a qualifier for a state variable (`C.x = value`). Strip the
+    // qualifier before lvalue classification; otherwise the generic member fallback mistakes `C` for a mapping.
+    if (!isThis && rawName === this.currentContractName && segs[0]?.member
+      && this.stateVarNames.has(segs[0].member)) {
+      rawName = segs[0].member;
+      segs = segs.slice(1);
+    }
     // Recursively-flattened struct state: collapse leading members that descend through flattened struct
     // fields into the name (`str.nstr.nestedValue` -> rawName `str__nstr`, member `nestedValue`), so the
     // one-level flattened-write paths below apply unchanged at any depth.
@@ -3204,6 +3678,20 @@ export default class AstBuilder
         segs = segs.slice(1);
       }
     }
+    // Rebinding a whole-mapping storage pointer changes the compile-time access path for following statements;
+    // the pointer itself has no runtime representation. Do this before substituting indexed uses so
+    // `mapping(...) storage p = a; p = b; p[k] = v` routes the final write to b.
+    if (!isThis && segs.length === 0 && op === '=' && this.storageAliases.has(rawName) && valueCtx) {
+      const alias = this.storageAliases.get(rawName)!;
+      const rhs = valueNode ?? this.visit(valueCtx) as ExpressionNode;
+      if (alias.keys.length === 0 && rhs instanceof IdentifierNode && this.mappingStateVarTypes.has(rhs.name)) {
+        this.storageAliases.set(rawName, { container: rhs.name, keys: [], access: rhs });
+        const dropped = new BlockNode([]);
+        dropped.location = loc;
+        return dropped;
+      }
+    }
+
     // Whole-var storage alias to a NON-flattened struct STATE var (`S storage sL = s; sL.f = v` / `sL = ..`):
     // substitute the container so the write routes through s's own state paths - matching the direct bare form,
     // NOT a local copy that would silently drop the write. A FLATTENED struct alias uses a different write
@@ -3641,6 +4129,55 @@ export default class AstBuilder
       return f;
     };
 
+    // Struct-field write through an array-valued mapping entry: `m[k][i].field op= v`. MappingAssign already
+    // supports an `arrayIndex`; rebuild the selected struct element and write it back at that index. Keeping the
+    // mapping keys separate from the array index also lets the entry-operation coalescer combine this with an
+    // immediately preceding `m[k].push(...)` (as in `m[k].push().a = v` followed by another field write).
+    let mappingValue: Type | undefined = this.mappingStateVarTypes.get(name);
+    let mappingKeyCount = 0;
+    while (mappingValue instanceof MappingType) {
+      mappingKeyCount += 1;
+      mappingValue = mappingValue.valueType;
+    }
+    const mappingArrayStruct = mappingValue instanceof ArrayType && mappingValue.elementType instanceof StructType
+      ? mappingValue.elementType : undefined;
+    if (hasMember && mappingArrayStruct && keys.length === mappingKeyCount + 1
+      && mappingArrayStruct.fields.some((field) => field.name === fieldName)) {
+      const mapKeys = buildKeys().slice(0, mappingKeyCount);
+      const arrayIndex = buildKeys()[mappingKeyCount];
+      const elementRead = (): MappingAccessNode => {
+        const read = new MappingAccessNode(name, buildKeys().slice(0, mappingKeyCount));
+        read.arrayIndex = buildKeys()[mappingKeyCount];
+        read.location = nameLoc;
+        return read;
+      };
+      const fieldRead = (field: string): ExpressionNode => {
+        const read = new FieldAccessNode(elementRead(), field);
+        read.location = loc;
+        return read;
+      };
+      const rawValue = op === '='
+        ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
+        : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
+      const headStruct = members.length > 1 ? this.resolveFieldStruct(mappingArrayStruct, fieldName!) : undefined;
+      const fieldValue = headStruct
+        ? this.rebuildStructWithChain(
+          fieldRead(fieldName!), headStruct, members.slice(1), rawValue, nameLoc, loc,
+        )
+        : rawValue;
+      const ctorId = new IdentifierNode(mappingArrayStruct.name);
+      ctorId.location = nameLoc;
+      const ctor = new FunctionCallNode(
+        ctorId,
+        mappingArrayStruct.fields.map((field) => field.name === fieldName ? fieldValue : fieldRead(field.name)),
+      );
+      ctor.location = loc;
+      const assign = new MappingAssignNode(name, mapKeys, ctor);
+      assign.arrayIndex = arrayIndex;
+      assign.location = loc;
+      return assign;
+    }
+
     const value = op === '='
       ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
       : this.compoundRhs(buildRead(), op, valueCtx, loc);
@@ -3747,6 +4284,29 @@ export default class AstBuilder
     identifier.location = Location.fromToken(ctx.Identifier().symbol);
     const node = new DeleteLocalNode(identifier);
     node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitDeleteParenthesized(ctx: any): StatementNode {
+    const loc = Location.fromCtx(ctx);
+    let target = ctx.expression() as ExpressionContext;
+    while (target instanceof ParenthesisedContext) target = target.expression();
+    if (target instanceof IdentifierContext) {
+      const identifier = new IdentifierNode(target.anyIdentifier().getText());
+      identifier.location = Location.fromCtx(target);
+      const node = new DeleteLocalNode(identifier);
+      node.location = loc;
+      return node;
+    }
+    if (target instanceof StateAccessContext) {
+      const node = new DeleteStateNode(target.Identifier().getText());
+      node.location = loc;
+      return node;
+    }
+    // Deleting an element of a freshly-created expression (e.g. `delete ([""][0])`) has no observable write,
+    // but Solidity still evaluates the receiver/index. Preserve that evaluation as a discarded expression.
+    const node = new ExpressionStatementNode(this.visit(target) as ExpressionNode);
+    node.location = loc;
     return node;
   }
 
@@ -3893,6 +4453,14 @@ export default class AstBuilder
     return node;
   }
 
+  visitDeleteDeepMemberEntry(ctx: any): MappingDeleteNode {
+    const name = ctx.Identifier_list().map((id: any) => id.getText()).join('__');
+    const keys = ctx.expression_list().map((e: any) => this.visit(e)) as ExpressionNode[];
+    const node = new MappingDeleteNode(name, keys);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   // Bare indexed delete `delete m[k];` / `delete arr[i];` (no `this.`); resolved to state in semantics.
   visitDeleteIndexed(ctx: DeleteIndexedContext): StatementNode {
     const name = ctx.Identifier().getText();
@@ -3932,19 +4500,24 @@ export default class AstBuilder
     // defaults to an address handle, matching function params. parseType alone left these undefined -> crash.
     const keyText = ctx.typeName(0).getText();
     const keyType = this.resolveType(keyText) ?? new AddressType(false, keyText);
-    const identifiers = ctx.Identifier_list();
+    const identifiers = ctx.anyIdentifier_list();
 
     const nestedMappingCtx = ctx.mappingType();
     if (nestedMappingCtx) {
       const valueType = this.buildMappingType(nestedMappingCtx);
       const keyName = identifiers.length > 0 ? identifiers[0].getText() : undefined;
-      return new MappingType(keyType, valueType, keyName);
+      const valueName = identifiers.length > 1 ? identifiers[1].getText() : undefined;
+      const mapping = new MappingType(keyType, valueType, keyName, valueName);
+      this.validateMappingNames(mapping, ctx);
+      return mapping;
     }
     const arrayTypeCtx = ctx.arrayType();
     if (arrayTypeCtx) {
       const keyName = identifiers.length > 0 ? identifiers[0].getText() : undefined;
       const valueName = identifiers.length > 1 ? identifiers[1].getText() : undefined;
-      return new MappingType(keyType, this.buildArrayType(arrayTypeCtx), keyName, valueName);
+      const mapping = new MappingType(keyType, this.buildArrayType(arrayTypeCtx), keyName, valueName);
+      this.validateMappingNames(mapping, ctx);
+      return mapping;
     }
     // An unknown value-type name that is a contract/interface defaults to an address handle rather than
     // resolving to `undefined` (which trips UnsupportedMappingValueTypeError) - `mapping(K => IFoo)` stores an
@@ -3955,13 +4528,32 @@ export default class AstBuilder
       ?? (this.libraryNames.has(valueText) ? undefined : new AddressType(false, valueText));
     const keyName = identifiers.length > 0 ? identifiers[0].getText() : undefined;
     const valueName = identifiers.length > 1 ? identifiers[1].getText() : undefined;
-    return new MappingType(keyType, valueType, keyName, valueName);
+    const mapping = new MappingType(keyType, valueType, keyName, valueName);
+    this.validateMappingNames(mapping, ctx);
+    return mapping;
+  }
+
+  private validateMappingNames(mapping: MappingType, ctx: MappingTypeContext): void {
+    const seen = new Set<string>();
+    const walk = (m: MappingType): void => {
+      for (const name of [m.keyName, m.valueName]) {
+        if (!name) continue;
+        if (seen.has(name)) {
+          throw new ParseError(`Conflicting parameter name '${name}' in mapping`, Location.fromCtx(ctx));
+        }
+        seen.add(name);
+      }
+      if (m.valueType instanceof MappingType) walk(m.valueType);
+    };
+    walk(mapping);
   }
 
   private buildArrayType(ctx: ArrayTypeContext): ArrayType {
     let elementType: Type;
     if (ctx.arrayType()) {
       elementType = this.buildArrayType(ctx.arrayType());
+    } else if (ctx.mappingType()) {
+      elementType = this.buildMappingType(ctx.mappingType());
     } else {
       // Mirror the scalar path (visitStateVariableDeclaration): an unresolved name (e.g. an imported struct
       // not yet merged, or an interface) becomes a named AddressType placeholder rather than `undefined`, so
@@ -4258,6 +4850,7 @@ export default class AstBuilder
       name, stateVariables, collections, functions, structDefs, enumDefs, typeDefs, eventDefs, errorDefs,
     );
     node.parents = parentNames;
+    node.hasFallback = ctx.interfaceFallbackDefinition_list().length > 0;
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -4290,7 +4883,7 @@ export default class AstBuilder
   }
 
   visitInterfaceFunction(ctx: InterfaceFunctionContext): InterfaceFunctionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
 
     let returnTypes: Type[] = [];
@@ -4356,9 +4949,22 @@ export default class AstBuilder
   }
 
   visitTypeIntrospection(ctx: TypeIntrospectionContext): TypeIntrospectionNode {
-    const typeText = ctx.typeName().getText();
+    const typeText = ctx.typeIntrospectionBase().typeName().getText();
     const property = ctx.Identifier().getText();
     const node = new TypeIntrospectionNode(typeText, property);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitBareTypeExpressionStatement(ctx: any): BlockNode {
+    const typeText = ctx.typeName().getText();
+    if (this.structMap.has(typeText)) {
+      throw new ParseError(
+        `Invalid struct type '${typeText}' for type() introspection`,
+        Location.fromCtx(ctx),
+      );
+    }
+    const node = new BlockNode([]);
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -4366,8 +4972,13 @@ export default class AstBuilder
   private parseCallOptions(ctx: CallOptionsContext | undefined): CallOptions | undefined {
     if (!ctx) return undefined;
     const options: CallOptions = {};
+    const seen = new Set<string>();
     for (const opt of ctx.callOption_list()) {
       const name = opt.Identifier().getText();
+      if (seen.has(name)) {
+        throw new ParseError(`Duplicate call option '${name}'`, Location.fromCtx(opt));
+      }
+      seen.add(name);
       const expr = this.visit(opt.expression()) as ExpressionNode;
       if (name === 'value') {
         options.value = expr;
@@ -4423,10 +5034,23 @@ export default class AstBuilder
 
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {
     const object = this.visit(ctx.expression());
-    const methodName = ctx.Identifier().getText();
+    const methodName = ctx.Identifier()?.getText()
+      ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const callOpts = this.parseCallOptions(ctx.callOptions());
+    return this.buildMethodCall(
+      ctx, object, methodName, parameters, callOpts, ctx.expression().getText() === 'this',
+    );
+  }
 
+  private buildMethodCall(
+    ctx: ParserRuleContext,
+    object: ExpressionNode,
+    methodName: string,
+    parameters: ExpressionNode[],
+    callOpts: CallOptions | undefined,
+    isThisReceiver: boolean,
+  ): ExpressionNode {
     // UDVT wrap/unwrap reached as a method call: `C.T.unwrap(x)` strips (visitFieldAccess) to object = bare `T`,
     // an IdentifierNode naming a UDVT, so it arrives here instead of the 2-identifier FunctionCall form. Emit
     // the same identity cast (unwrap -> underlying; wrap -> underlying then the UDVT). typeDefMap distinguishes it.
@@ -4460,7 +5084,7 @@ export default class AstBuilder
     // `this.f(args)`: an external self-call to the contract's OWN function `f`. On BCH the covenant IS the
     // contract, so resolve it to a direct call to `f` (a subroutine). Solidity's external-self-call semantics
     // (fresh calldata, `msg.sender` = the contract) do not apply here.
-    if (ctx.expression().getText() === 'this') {
+    if (isThisReceiver) {
       const line = `:${Location.fromCtx(ctx).start.line}`;
       // `{value:..}` / `{gas:..}` call options are EVM message-call semantics; a self-call is a direct subroutine
       // on BCH, so they are inert and dropped (like the other EVM shims).
@@ -4690,11 +5314,47 @@ export default class AstBuilder
 
   visitAbiEncodeCall(ctx: AbiEncodeCallContext): AbiEncodeCallNode {
     const ids = ctx.Identifier_list();
-    // `this.method` -> only one Identifier (`this` is a keyword token); interfaceName sentinel 'this'
-    // resolves to a function of the current contract in SymbolTableTraversal.
-    const interfaceName = ids.length === 1 ? 'this' : ids[0].getText();
-    const functionName = ids.length === 1 ? ids[0].getText() : ids[1].getText();
-    const params = this.buildCallArguments(ctx.expressionList());
+    const targetText = ctx.getText().slice('abi.encodeCall('.length).split(',')[0];
+    let interfaceName: string;
+    let functionName: string;
+    if (targetText.includes('.')) {
+      [interfaceName, functionName] = targetText.split('.');
+    } else {
+      const helperName = targetText.endsWith('()') ? targetText.slice(0, -2) : undefined;
+      const aliasedMethod = helperName
+        ? this.selfExternalFunctionReturnAliases.get(helperName)
+        : this.selfExternalFunctionAliases.get(targetText);
+      if (!aliasedMethod) {
+        throw new ParseError(
+          `abi.encodeCall function pointer '${targetText}' must resolve directly to this.<method>`,
+          Location.fromCtx(ctx),
+        );
+      }
+      interfaceName = 'this';
+      functionName = aliasedMethod;
+    }
+    const argsCtx = ctx.abiEncodeCallArguments();
+    const argExpression = argsCtx.expression();
+    let params: ExpressionNode[];
+    if (argsCtx._aop) {
+      const target = argsCtx._target;
+      const assign = this.buildCompoundAssign(
+        target.text,
+        Location.fromToken(target),
+        argsCtx._aop.text,
+        argExpression!,
+        Location.fromCtx(argsCtx),
+      );
+      const assignment = new AssignmentExpressionNode(assign);
+      assignment.location = Location.fromCtx(argsCtx);
+      params = [assignment];
+    } else {
+      params = !argExpression
+        ? []
+        : argExpression instanceof TupleExpressionContext
+          ? argExpression.expression_list().map((e) => this.visit(e) as ExpressionNode)
+          : [this.visit(argExpression) as ExpressionNode];
+    }
     const node = new AbiEncodeCallNode(interfaceName, functionName, params);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -4719,6 +5379,19 @@ export default class AstBuilder
   // undefined array element with a named AddressType placeholder - a contract handle is an address on BCH, so
   // `C[]` decodes as address[], matching a `C[]` return/variable type.
   private resolveAbiDecodeType(text: string): Type {
+    // Solidity accepts redundant *unitary tuple* parentheses in ABI type lists (`((uint))`, `(uint)[2]`).
+    // They do not add an ABI tuple layer: peel each balanced one-item wrapper while retaining array suffixes.
+    for (;;) {
+      if (!text.startsWith('(')) break;
+      let depth = 0;
+      let close = -1;
+      for (let i = 0; i < text.length; i += 1) {
+        if (text[i] === '(') depth += 1;
+        else if (text[i] === ')' && --depth === 0) { close = i; break; }
+      }
+      if (close < 0 || !/^(?:\[[^\]]*\])*$/.test(text.slice(close + 1))) break;
+      text = text.slice(1, close) + text.slice(close + 1);
+    }
     const ty = parseType(text) ?? this.resolveType(text);
     // An interface/contract-typed decode item (`abi.decode(data, (IERC20))`, BentoBox/Kashi) has no primitive or
     // struct type - a contract/interface handle is an address on BCH, so decode it as an address (matching the `C[]`
@@ -4790,7 +5463,7 @@ export default class AstBuilder
     const errorName = ctx.anyIdentifier().getText();
     const parameters = ctx.errorParameter_list().map((paramCtx, i) => ({
       // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
-      name: paramCtx.Identifier() ? paramCtx.Identifier().getText() : `__unnamed${i}`,
+      name: paramCtx.anyIdentifier() ? paramCtx.anyIdentifier()!.getText() : `__unnamed${i}`,
       type: paramCtx.typeName()
         ? this.resolveType(paramCtx.typeName().getText())
         : this.buildArrayType(paramCtx.arrayType()!),
@@ -4894,8 +5567,9 @@ export default class AstBuilder
     }
     const exprCtxs = ctx.expression_list();
     // Tuple ternary return `return cond ? (..) : (..)`: hoist cond, then a tuple return of per-element ternaries.
-    if (exprCtxs.length === 1 && this.isTupleTernary(exprCtxs[0])) {
-      const { tempDecl, values } = this.desugarTupleTernary(exprCtxs[0] as TernaryOpContext);
+    const tupleTernary = exprCtxs.length === 1 ? this.tupleTernary(exprCtxs[0]) : undefined;
+    if (tupleTernary) {
+      const { tempDecl, values } = this.desugarTupleTernary(tupleTernary);
       const returnNode = new ReturnNode(values);
       returnNode.location = Location.fromCtx(ctx);
       const block = new BlockNode([tempDecl, returnNode]);
@@ -4913,6 +5587,28 @@ export default class AstBuilder
     const expressions = exprCtxs.map(
       (e) => this.maybeAssembleFlattenedRead(e, Location.fromCtx(ctx)) ?? this.visit(e) as ExpressionNode,
     );
+    // `abi.encodeCall(helper(), args)` where helper deterministically returns `this.method`: execute helper once
+    // for its side effects, discard its pointer value, then encode with the statically established method
+    // selector. This preserves helpers such as `getPointer()` that update state before returning the pointer.
+    const encodeCallText = exprCtxs.length === 1 && exprCtxs[0].getText().startsWith('abi.encodeCall(')
+      ? exprCtxs[0].getText() : undefined;
+    const pointerHelper = encodeCallText
+      ? /^abi\.encodeCall\(([A-Za-z_$][A-Za-z0-9_$]*)\(\),/.exec(encodeCallText)?.[1]
+      : undefined;
+    if (pointerHelper && this.selfExternalFunctionReturnAliases.has(pointerHelper)) {
+      const loc = Location.fromCtx(ctx);
+      const identifier = new IdentifierNode(pointerHelper);
+      identifier.location = loc;
+      const call = new FunctionCallNode(identifier, []);
+      call.location = loc;
+      const callStatement = new FunctionCallStatementNode(call);
+      callStatement.location = loc;
+      const returnNode = new ReturnNode(expressions);
+      returnNode.location = loc;
+      const block = new BlockNode([callStatement, returnNode]);
+      block.location = loc;
+      return block;
+    }
     // `return f();` inside a VOID function is Solidity's tail form (f is itself void): lower to `f(); return;` so
     // the call is a statement (its callee reference is counted for reachability and it resolves in statement
     // position). OZ/COMP `delegate` returns `_delegate(..)`. A single call expression only.
@@ -5132,7 +5828,8 @@ export default class AstBuilder
         cur = cur.expression();
       } else if (cur instanceof FieldAccessContext) {
         const mn = cur.memberName();
-        const member = mn.Identifier() ? mn.Identifier().getText() : (mn.getText() === '.value' ? 'value' : null);
+        const member = mn.Identifier() ? mn.Identifier().getText()
+          : (mn.getText() === '.value' || mn.getText() === '.error' ? mn.getText().slice(1) : null);
         if (member === null) return null; // a non-field member (.length, .lockingBytecode, ...) is not an lvalue
         segs.unshift({ member });
         cur = cur.expression();
@@ -5376,7 +6073,7 @@ export default class AstBuilder
   // A receiver aliased by `T[] storage p = c.push();` routes to the aliased container element.
   private buildPushStatement(
     ctx: ExpressionStatementContext,
-    lv: { rawName: string; isThis: boolean; segs: LvSeg[] },
+    lv: { rawName: string; isThis: boolean; nameLoc: Location; segs: LvSeg[] },
     keyFns: Array<() => ExpressionNode>, member: string | undefined,
   ): StatementNode {
     const loc = Location.fromCtx(ctx);
@@ -5386,24 +6083,64 @@ export default class AstBuilder
     // Storage-pointer receiver (`uint[] storage p = c.push(); p.push(v);`): substitute the aliased element.
     let { rawName, isThis } = lv;
     let effKeyFns = keyFns;
-    if (!isThis && lv.segs.length === 0) {
+    if (!isThis) {
       const alias = this.storageAliases.get(rawName);
-      if (alias && alias.keys.length === 1) {
-        const aliasKey = alias.keys[0];
+      if (alias) {
         rawName = alias.container;
-        effKeyFns = [(): ExpressionNode => cloneNode(aliasKey) as ExpressionNode];
+        effKeyFns = [
+          ...alias.keys.map((aliasKey) =>
+            (): ExpressionNode => cloneNode(aliasKey) as ExpressionNode),
+          ...keyFns,
+        ];
       }
     }
 
     const assignVal = ctx.expression(1);
     const hasSecond = !!ctx._second;
+    const hasThird = !!ctx._third;
     const hasRhsPush = !!ctx._rhsPush;
+
+    if (ctx._pushField) {
+      // The no-arg push returns a reference to a zero-initialized new element. For a struct-field assignment,
+      // construct that final element directly: `rows.push().x = v` is one `rows.push(S(v, 0, ...))`. Besides
+      // avoiding a redundant write, this is essential for mapping-entry arrays: an entry write is not visible to
+      // a later read in the same transaction, so push-then-read-modify-write would observe stale input state.
+      const arrayType = this.resolvePushReceiverArrayType(lv);
+      if (!(arrayType?.elementType instanceof StructType)) {
+        throw new ParseError('.push().field assignment requires an array of structs', loc);
+      }
+      const field = ctx._pushField.getText();
+      if (!arrayType.elementType.fields.some((candidate) => candidate.name === field)) {
+        throw new ParseError(`Struct '${arrayType.elementType.name}' has no field '${field}'`, loc);
+      }
+      const assigned = this.visit(ctx.expression(1)!) as ExpressionNode;
+      const value = stamp(new FunctionCallNode(
+        ident(arrayType.elementType.name),
+        arrayType.elementType.fields.map((candidate) => candidate.name === field
+          ? assigned
+          : createDefaultValueExpression(candidate.type, loc)),
+      ));
+      return this.buildArrayPush(
+        rawName, isThis, effKeyFns, member, value, false, ctx,
+      );
+    }
 
     if (!hasSecond && !hasRhsPush) {
       // Solidity `arr.push() = value` appends the element type's default then writes it - equivalent to
       // `arr.push(value)` (the value expression is the second `expression` child, present only for this form).
       if (assignVal) {
-        return this.buildArrayPush(rawName, isThis, effKeyFns, member, this.visit(assignVal) as ExpressionNode, false, ctx);
+        let value = this.visit(assignVal) as ExpressionNode;
+        const pushAssignOp = ctx._pushAssignOp?.text;
+        if (pushAssignOp && pushAssignOp !== '=') {
+          const arrayType = this.resolvePushReceiverArrayType(lv);
+          if (!arrayType) throw new ParseError('Compound assignment to .push() requires an array receiver', loc);
+          value = stamp(new BinaryOpNode(
+            createDefaultValueExpression(arrayType.elementType, loc),
+            pushAssignOp.slice(0, -1) as BinaryOperator,
+            value,
+          ));
+        }
+        return this.buildArrayPush(rawName, isThis, effKeyFns, member, value, false, ctx);
       }
       const argCtx = ctx.pushArgument();
       const noArg = argCtx === null;
@@ -5461,16 +6198,34 @@ export default class AstBuilder
     }
 
     if (hasSecond) {
-      // 2-deep: append a default inner array, then push the value onto it.
+      // 2/3-deep: append a default inner array, then push the value (or another default array) onto it.
       const iName = `__pushChain_i_${this.nestedLvalueCounter++}`;
       const iDef = stamp(new VariableDefinitionNode(
         PrimitiveType.BIGINT, [], iName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(rawName)))));
       iDef.allowUnused = true;
       stmts.push(iDef);
       stmts.push(this.buildArrayPush(rawName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx));
-      stmts.push(this.buildArrayPush(
-        rawName, false, [(): ExpressionNode => ident(iName)], undefined, valueExpr, noArgNested, ctx,
-      ));
+      if (hasThird) {
+        const rootType = this.resolvePushReceiverArrayType(lv);
+        const secondType = rootType?.elementType;
+        const thirdType = secondType instanceof ArrayType ? secondType.elementType : undefined;
+        if (!(secondType instanceof ArrayType) || !(thirdType instanceof ArrayType)) {
+          throw new ParseError('Three chained .push() calls require a three-dimensional array', loc);
+        }
+        stmts.push(this.buildArrayPush(
+          rawName, false, [(): ExpressionNode => ident(iName)], undefined,
+          createDefaultValueExpression(thirdType, loc), false, ctx,
+        ));
+        stmts.push(this.buildArrayPush(
+          rawName, false,
+          [(): ExpressionNode => ident(iName), (): ExpressionNode => stamp(new IntLiteralNode(0n))],
+          undefined, noArgNested ? createDefaultValueExpression(thirdType.elementType, loc) : valueExpr, false, ctx,
+        ));
+      } else {
+        stmts.push(this.buildArrayPush(
+          rawName, false, [(): ExpressionNode => ident(iName)], undefined, valueExpr, noArgNested, ctx,
+        ));
+      }
     } else {
       // 1-deep with a value-side push: `b.push() = b.push();`.
       stmts.push(this.buildArrayPush(rawName, false, [], undefined, valueExpr, false, ctx));
@@ -5571,6 +6326,61 @@ export default class AstBuilder
 
   visitExpressionStatement(ctx: ExpressionStatementContext): StatementNode {
     const lhsCtx = ctx.expression(0);
+    // A discarded tuple expression evaluates each ordinary component. Builtin function references inside it
+    // (`(abi.encode, "")`) are values with no runtime representation and contribute no evaluation.
+    if (lhsCtx instanceof TupleExpressionContext) {
+      const loc = Location.fromCtx(ctx);
+      const statements = lhsCtx.expression_list()
+        .filter((component) => !component.getText().startsWith('abi.') && component.getText() !== 'assert')
+        .map((component) => {
+          const statement = new ExpressionStatementNode(this.visit(component) as ExpressionNode);
+          statement.location = loc;
+          return statement;
+        });
+      const block = new BlockNode(statements);
+      block.location = loc;
+      return block;
+    }
+    // A tuple conditional at statement scope evaluates its condition once and the selected tuple components,
+    // then discards them. Reuse the per-component ternary lowering; the zero-component case retains only the
+    // condition temp declaration, so even `effect() ? () : ();` still evaluates effect().
+    const tupleTernary = this.tupleTernary(lhsCtx);
+    if (tupleTernary) {
+      const loc = Location.fromCtx(ctx);
+      const { tempDecl, values } = this.desugarTupleTernary(tupleTernary);
+      const statements: StatementNode[] = [tempDecl, ...values.map((value) => {
+        const statement = new ExpressionStatementNode(value);
+        statement.location = loc;
+        return statement;
+      })];
+      const block = new BlockNode(statements);
+      block.location = loc;
+      return block;
+    }
+    // A known struct type used as a discarded expression (`S;` / `S[7];`) is a Solidity no-op. Resolve it here
+    // against the actual struct registry rather than accepting every identifier syntactically as a possible type.
+    const tupleBase = lhsCtx instanceof TupleIndexOpContext ? lhsCtx.expression() : undefined;
+    const discardedStructType = lhsCtx instanceof IdentifierContext
+      ? lhsCtx.anyIdentifier().getText()
+      : tupleBase instanceof IdentifierContext
+        ? tupleBase.anyIdentifier().getText()
+        : undefined;
+    if (discardedStructType && (this.structMap.has(discardedStructType) || discardedStructType === 'uint')) {
+      if (lhsCtx instanceof TupleIndexOpContext
+        && BigInt(lhsCtx.NumberLiteral().getText().replaceAll('_', '')) >= 1n << 256n) {
+        throw new ParseError('Type-expression array bound does not fit uint256', Location.fromCtx(lhsCtx));
+      }
+      const node = new BlockNode([]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    // `data.push;` / `data.pop;` / `data.delete;` merely reference an array member function and discard it.
+    // Solidity emits no runtime operation, so preserve that behavior with an empty statement block.
+    if (ctx._bareMember) {
+      const node = new BlockNode([]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
     // Assignment `lvalue op= value` (left-factored): reconstruct the lvalue segments from the parsed LHS and
     // delegate to the shared builder (the same one the lvPart assignmentStatement path uses). The value side is
     // an assignChain, so `a = b = c;` desugars to sequential right-to-left assignments.
@@ -5578,6 +6388,11 @@ export default class AstBuilder
       const loc = Location.fromCtx(ctx);
       const { links, valueCtx } = this.unrollAssignChain(lhsCtx, ctx._op.text, ctx.assignChain()!);
       if (links.length === 1) {
+        const directSelfMethod = /^this\.([A-Za-z_$][A-Za-z0-9_$]*)$/.exec(valueCtx.getText())?.[1];
+        if (ctx._op.text === '=' && lhsCtx instanceof IdentifierContext && directSelfMethod
+          && this.currentContractFunctionNames.has(directSelfMethod)) {
+          this.selfExternalFunctionAliases.set(lhsCtx.anyIdentifier().getText(), directSelfMethod);
+        }
         // `x op= cond ? a = v : b` - distribute the outer assignment into the ternary's arms.
         const t = this.maybeDesugarTernaryAssignValue(valueCtx, links[0], loc);
         if (t) return t;
@@ -5655,6 +6470,66 @@ export default class AstBuilder
     return node;
   }
 
+  visitBareAbiFunctionReferenceStatement(ctx: BareAbiFunctionReferenceStatementContext): BlockNode {
+    const node = new BlockNode([]);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitBareAbiReferenceExpression(ctx: any): Node {
+    throw new ParseError(
+      'A builtin function reference is only supported as a discarded expression',
+      Location.fromCtx(ctx),
+    );
+  }
+
+  visitPrimitiveTypeReferenceStatement(ctx: PrimitiveTypeReferenceStatementContext): BlockNode {
+    for (const exprCtx of ctx.expression_list()) {
+      const value = this.evalConstIntNode(this.visit(exprCtx) as ExpressionNode);
+      if (value === undefined) {
+        throw new ParseError(
+          `Type-expression array bound '${exprCtx.getText()}' must be a compile-time integer constant`,
+          Location.fromCtx(exprCtx),
+        );
+      }
+      if (value <= 0n || value >= 1n << 256n) {
+        throw new ParseError(
+          `Type-expression array bound '${exprCtx.getText()}' must be positive and fit uint256`,
+          Location.fromCtx(exprCtx),
+        );
+      }
+    }
+    const node = new BlockNode([]);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitUserDefinedArrayTypeReferenceStatement(ctx: any): StatementNode {
+    const name = ctx.Identifier().getText();
+    const dimensions = ctx.expression_list() as ExpressionContext[];
+    if (!this.structMap.has(name) && !this.enumMap.has(name) && !this.typeDefMap.has(name)) {
+      throw new ParseError(`Unknown user-defined array type '${name}'`, Location.fromCtx(ctx));
+    }
+    for (const dimension of dimensions) {
+      const value = this.evalConstIntNode(this.visit(dimension) as ExpressionNode);
+      if (value === undefined) {
+        throw new ParseError(
+          `Type-expression array bound '${dimension.getText()}' must be a compile-time integer constant`,
+          Location.fromCtx(dimension),
+        );
+      }
+      if (value <= 0n || value >= 1n << 256n) {
+        throw new ParseError(
+          `Type-expression array bound '${dimension.getText()}' must be positive and fit uint256`,
+          Location.fromCtx(dimension),
+        );
+      }
+    }
+    const block = new BlockNode([]);
+    block.location = Location.fromCtx(ctx);
+    return block;
+  }
+
   // Build the statement for a call-shaped bare expression. Statement-only forms (low-level `.call`/`.staticcall`/
   // `.delegatecall`, satoshi `addr.transfer(v)`, `this.transfer(a,b)`, `this.tokens[c].transfer(...)`) are matched
   // before visiting (the expression visitor would mis-handle `this.transfer` as a self-call); everything else is
@@ -5683,13 +6558,20 @@ export default class AstBuilder
         const node = new LowLevelCallStatementNode(target, this.visit(args[0].expression()) as ExpressionNode, llMethod);
         node.location = Location.fromCtx(lhsCtx); return node;
       }
+      // A struct constructor used as a statement (`S(1, 2);`) computes a value and discards it; it is not a
+      // user-function call. Route it through ExpressionStatement so semantic struct-constructor resolution runs.
+      if (ids.length === 1 && this.structMap.has(ids[0].getText())) {
+        const node = new ExpressionStatementNode(this.visit(lhsCtx) as ExpressionNode);
+        node.location = Location.fromCtx(lhsCtx);
+        return node;
+      }
       return wrap(this.visit(lhsCtx) as ExpressionNode);
     }
     if (lhsCtx instanceof MethodCallNamedContext) {
       return wrap(this.visit(lhsCtx) as ExpressionNode);
     }
     const ctx = lhsCtx as MethodCallContext;
-    const method = ctx.Identifier().getText();
+    const method = ctx.Identifier()?.getText() ?? 'length';
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
     const callArgs = this.buildCallArguments(ctx.expressionList());
@@ -5711,14 +6593,14 @@ export default class AstBuilder
       const node = new TokenContainerMethodStatementNode(keyExpr, method, args); node.location = loc; return node;
     }
     if (method === 'transfer') {
-      if (recvCtx.getText() === 'this') {
+      if (recvCtx.getText() === 'this' && !this.currentContractFunctionNames.has(method)) {
         if (callArgs.length !== 2) {
           throw new ParseError('this.transfer() expects 2 arguments (lockingBytecode, amount)', loc);
         }
         const node = new TransferStatementNode(callArgs[0], callArgs[1]);
         node.location = loc; return node;
       }
-      if (callArgs.length === 1 && ctx.callOptions() === null) {
+      if (recvCtx.getText() !== 'this' && callArgs.length === 1 && ctx.callOptions() === null) {
         const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0]);
         node.location = loc; return node;
       }

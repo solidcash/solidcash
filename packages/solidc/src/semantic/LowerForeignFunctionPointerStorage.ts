@@ -197,6 +197,7 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
       const cast = new FunctionCallNode(ifaceId, [xRead]); cast.location = node.location;
       const args = node.parameters.map((a) => this.visit(a) as ExpressionNode);
       const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
+      mc.callOptions = node.callOptions;
       const selRead = new IdentifierNode(info.selVar); selRead.location = node.location;
       mc.runtimeSelector = selRead;
       return mc;

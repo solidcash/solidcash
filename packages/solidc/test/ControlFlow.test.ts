@@ -46,6 +46,18 @@ describe('SBE-5: for-loop flexibility + prefix increment statements', () => {
     expect(a.contractName).toBe('C');
   });
 
+  it('accepts arbitrary expressions in the update clause', () => {
+    expect(compileString(
+      'contract C { function f() public { for (uint i = 0; i < 3; true) { i++; } require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+    expect(compileString(
+      'contract C { function tick() internal {} function f() public {'
+      + ' for (uint i = 0; i < 3; tick()) { i++; } require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
   it('accepts prefix ++ and -- as statements (same effect as postfix)', () => {
     const a = compileString('contract C() { function f() { int i = 0; ++i; --i; require(i == 0); } }');
     expect(a.contractName).toBe('C');

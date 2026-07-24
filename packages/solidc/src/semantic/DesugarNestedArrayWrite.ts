@@ -106,7 +106,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       const visited = this.visit(stmt) as StatementNode;
       const myHoists = this.pendingHoists; // 2D array-value reads hoisted out of THIS statement
       const desugared = visited instanceof MappingAssignNode
-        ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited)
+        ? (this.tryDesugarNestedPushPop(visited) ?? this.tryDesugar(visited)
           ?? this.tryDesugarMappingArrayValue(visited))
         : visited instanceof MappingFieldAssignNode
           ? this.tryDesugarLocalStructArrayField(visited)
@@ -162,35 +162,56 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     return { base: cur, keys };
   }
 
-  // `a[i].push(v)` / `a[i].pop()` on a nested state array (`uint256[][]`): a read-modify-write of row i via a
-  // local push/pop -> `T[] t = a[i]; t.push(v); a[i] = t;`. Returns undefined if not applicable.
+  // `a[i]...[j].push(v)` / `.pop()` on a nested state array: read the target array through locals, mutate it,
+  // then rebuild every containing row. For one key this is `T[] t = a[i]; t.push(v); a[i] = t`; deeper keys
+  // repeat the same read/write-back shape for each dimension.
   private tryDesugarNestedPushPop(node: MappingAssignNode): StatementNode[] | undefined {
-    if (!(node.arrayPush || node.arrayPop) || node.keys.length !== 1) return undefined;
+    if (!(node.arrayPush || node.arrayPop) || node.keys.length < 1) return undefined;
     const isState = !this.locals.has(node.name) && this.stateArrays.has(node.name);
     if (!isState) return undefined;
-    const rowType = (this.stateArrays.get(node.name) as ArrayType).elementType;
-    if (!(rowType instanceof ArrayType)) return undefined; // only nested (element is itself an array)
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const tmpName = `__np_tmp_${this.counter++}`;
-    const read = new ArrayAccessNode(this.ident(node.name, node), clone(node.keys[0]));
-    read.location = node.location;
-    const decl = new VariableDefinitionNode(rowType, [], tmpName, read);
-    decl.location = node.location;
+    const stmts: StatementNode[] = [];
+    const tmpNames: string[] = [];
+    let currentType: Type = this.stateArrays.get(node.name)!;
+    let currentRead: ExpressionNode = this.ident(node.name, node);
+    for (let i = 0; i < node.keys.length; i++) {
+      if (!(currentType instanceof ArrayType)) return undefined;
+      const elementType = currentType.elementType;
+      const tmpName = `__np_tmp_${this.counter++}`;
+      const read = new ArrayAccessNode(currentRead, clone(node.keys[i]));
+      read.location = node.location;
+      const decl = new VariableDefinitionNode(elementType, [], tmpName, read);
+      decl.location = node.location;
+      stmts.push(decl);
+      tmpNames.push(tmpName);
+      currentType = elementType;
+      currentRead = this.ident(tmpName, node);
+    }
+    if (!(currentType instanceof ArrayType)) return undefined;
 
     let op: StatementNode;
     if (node.arrayPush) {
-      const push = new ArrayPushNode(tmpName, node.expression);
+      const push = new ArrayPushNode(tmpNames.at(-1)!, node.expression);
       push.noArg = node.noArg;
       op = push;
     } else {
-      op = new ArrayPopNode(tmpName);
+      op = new ArrayPopNode(tmpNames.at(-1)!);
     }
     op.location = node.location;
+    stmts.push(op);
 
-    const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpName, node));
+    for (let i = node.keys.length - 1; i >= 1; i--) {
+      const back = new ArrayAssignNode(
+        tmpNames[i - 1], clone(node.keys[i]), this.ident(tmpNames[i], node),
+      );
+      back.location = node.location;
+      stmts.push(back);
+    }
+    const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpNames[0], node));
     back.location = node.location;
-    return [decl, op, back];
+    stmts.push(back);
+    return stmts;
   }
 
   // `m[i].f = v` where m is a LOCAL struct array (`S[] memory`): the parser makes a MappingFieldAssignNode which

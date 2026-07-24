@@ -38,6 +38,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 export default class DesugarDynamicArrayCopyCast extends AstTraversal {
   private stateArrays = new Map<string, ArrayType>();
   private locals = new Set<string>();
+  private localArrays = new Map<string, ArrayType>();
 
   visitSourceFile(node: SourceFileNode): Node {
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
@@ -60,17 +61,27 @@ export default class DesugarDynamicArrayCopyCast extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const saved = this.locals;
+    const savedArrays = this.localArrays;
     this.locals = new Set();
-    for (const p of node.parameters) if (p instanceof ParameterNode) this.locals.add(p.name);
+    this.localArrays = new Map();
+    for (const p of node.parameters) {
+      if (!(p instanceof ParameterNode)) continue;
+      this.locals.add(p.name);
+      if (p.type instanceof ArrayType) this.localArrays.set(p.name, p.type);
+    }
     this.collectLocals(node.body);
     if (node.body) node.body = this.visit(node.body) as BlockNode;
     this.locals = saved;
+    this.localArrays = savedArrays;
     return node;
   }
 
   private collectLocals(node: Node | undefined): void {
     if (!node) return;
-    if (node instanceof VariableDefinitionNode) this.locals.add(node.name);
+    if (node instanceof VariableDefinitionNode) {
+      this.locals.add(node.name);
+      if (node.type instanceof ArrayType) this.localArrays.set(node.name, node.type);
+    }
     for (const key of Object.keys(node)) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const v = (node as any)[key];
@@ -95,9 +106,11 @@ export default class DesugarDynamicArrayCopyCast extends AstTraversal {
     if (!(node.expression instanceof IdentifierNode)) return undefined;
     const tgtName = node.identifier.name;
     const srcName = node.expression.name;
-    if (this.locals.has(tgtName) || this.locals.has(srcName)) return undefined; // a local shadows the state array
+    if (this.locals.has(tgtName)) return undefined; // a local shadows the target state array
     const tgt = this.stateArrays.get(tgtName);
-    const src = this.stateArrays.get(srcName);
+    // A calldata/memory/local value array is a valid source too. Prefer its declared type when a local shadows a
+    // same-named state array; the loop reads the local directly and pushes cast elements into the state target.
+    const src = this.localArrays.get(srcName) ?? this.stateArrays.get(srcName);
     if (!tgt || !src || tgt.elementType.toString() === src.elementType.toString()) return undefined;
 
     const loc = node.location;

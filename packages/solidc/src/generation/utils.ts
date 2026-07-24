@@ -146,6 +146,11 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   // StructType -> StructType: no-op (same blob at VM level)
   if (from instanceof StructType && to instanceof StructType) return [];
 
+  // Solidity permits an explicit conversion between identically-shaped array types (most commonly to turn a
+  // calldata slice into an ordinary dynamic-array value). The slice already uses the target array's packed
+  // representation, so the conversion emits no bytecode.
+  if (from instanceof ArrayType && to instanceof ArrayType && from.toString() === to.toString()) return [];
+
   // Solidity-compat narrowing casts: `bytes20(address)` / `uint160(address)`. A SolidCash address is a
   // variable-length locking bytecode, not a 20-byte value, so we narrow to the embedded 20-byte hash (the
   // P2PKH pubkey-hash at offset 3: 0x76a914 <20-byte hash> 0x88ac) first. This is lossy and warned in

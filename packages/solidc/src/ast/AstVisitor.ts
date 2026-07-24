@@ -33,6 +33,7 @@ import {
   StateArrayAssignNode,
   StateArrayDeleteNode,
   TupleIndexOpNode,
+  SequenceExpressionNode,
   RequireNode,
   InstantiationNode,
   TupleAssignmentNode,
@@ -142,6 +143,7 @@ export default abstract class AstVisitor<T> {
   abstract visitInstantiation(node: InstantiationNode): T;
   abstract visitSlice(node: SliceNode): T;
   abstract visitTupleIndexOp(node: TupleIndexOpNode): T;
+  abstract visitSequenceExpression(node: SequenceExpressionNode): T;
   abstract visitBinaryOp(node: BinaryOpNode): T;
   abstract visitUnaryOp(node: UnaryOpNode): T;
   abstract visitNullaryOp(node: NullaryOpNode): T;

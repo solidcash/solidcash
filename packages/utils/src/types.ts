@@ -613,7 +613,11 @@ export function parseType(str: string): Type {
     if (arrowIndex >= 0) {
       const keyStr = inner.slice(0, arrowIndex).trim();
       const valueStr = inner.slice(arrowIndex + 2).trim();
-      return new MappingType(parseType(keyStr), parseType(valueStr));
+      const key = parseTypeAndOptionalName(keyStr);
+      const value = parseTypeAndOptionalName(valueStr);
+      const mapping = new MappingType(key.type, value.type, key.name, value.name);
+      assertUniqueMappingNames(mapping);
+      return mapping;
     }
   }
 
@@ -736,7 +740,41 @@ function parseFunctionType(str: string): FunctionType {
 // address handle so FunctionType.toString never maps over an undefined - the member types of a function
 // pointer are inert on BCH (the value is a functionId/address), so the placeholder is sound for compilation.
 function parseFunctionTypeMember(member: string): Type {
-  return parseType(member.replace(/(memory|calldata|storage)$/, '')) ?? new AddressType(false);
+  const withoutLocation = member.replace(/(memory|calldata|storage)$/, '');
+  return parseTypeWithOptionalName(withoutLocation) ?? new AddressType(false);
+}
+
+// Grammar getText() removes whitespace, joining deprecated function-parameter names and named mapping
+// components to their types. Recover the longest valid type prefix (`uinttransient` -> `uint`,
+// `mapping(uint=>uint)entries` -> the mapping) and discard the inert name.
+function parseTypeWithOptionalName(member: string): Type {
+  return parseTypeAndOptionalName(member).type;
+}
+
+function parseTypeAndOptionalName(member: string): { type: Type; name?: string } {
+  const direct = parseType(member);
+  if (direct) return { type: direct };
+  for (let i = member.length - 1; i > 0; i--) {
+    const prefix = member.slice(0, i);
+    const suffix = member.slice(i);
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(suffix)) continue;
+    const parsed = parseType(prefix.replace(/(memory|calldata|storage)$/, ''));
+    if (parsed) return { type: parsed, name: suffix };
+  }
+  return { type: new AddressType(false) };
+}
+
+function assertUniqueMappingNames(mapping: MappingType): void {
+  const seen = new Set<string>();
+  const walk = (m: MappingType): void => {
+    for (const name of [m.keyName, m.valueName]) {
+      if (!name) continue;
+      if (seen.has(name)) throw new Error(`Conflicting parameter name '${name}' in mapping`);
+      seen.add(name);
+    }
+    if (m.valueType instanceof MappingType) walk(m.valueType);
+  };
+  walk(mapping);
 }
 
 // Given a string starting with '(', return [inside, remainder-after-matching-paren].

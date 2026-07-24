@@ -74,8 +74,10 @@ import {
   ParentInvocationArgCountError,
   UndefinedParentInvocationError,
   DuplicateParentInvocationError,
+  InvalidDataLocationError,
 } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { Modifier } from '../ast/Globals.js';
 import { cloneNode } from '../ast/clone.js';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
@@ -298,12 +300,28 @@ function expandContract(
     }
   }
 
-  if (parentNames.length === 0) return;
+  const stampModifierQualifiers = (qualifiers: string[]): void => {
+    const functions = [
+      ...contract.functions,
+      contract.constructorDef,
+      contract.fallbackDef,
+      contract.receiveDef,
+    ].filter((f): f is FunctionDefinitionNode => f !== undefined);
+    for (const fn of functions) {
+      if (!fn.allowedModifierQualifiers) fn.allowedModifierQualifiers = qualifiers;
+    }
+  };
+
+  if (parentNames.length === 0) {
+    stampModifierQualifiers([contract.name]);
+    return;
+  }
 
   // `m(args)` and `Base(args)` are grammatically identical in the constructor list, so modifier
   // invocations parse into parentInvocations - reroute those to the constructor's custom modifiers.
   // Invocations naming INDIRECT ancestors (grandparent ctor args) are kept for constructor inlining.
   const linearization = computeLinearization(contract, contractMap, originalImplements);
+  stampModifierQualifiers([...new Set([contract.name, ...linearization])]);
   const ancestorSet = new Set(linearization);
   const modifierNames = new Set(contract.modifierDefinitions.map((m) => m.name));
   for (const ancestor of linearization) {
@@ -548,6 +566,33 @@ function functionSignature(f: FunctionDefinitionNode): string {
   return `${f.name}(${f.parameters.map((p) => String(p.type)).join(',')})`;
 }
 
+function declaredDataLocation(modifiers: string[]): string | undefined {
+  return modifiers.find((modifier) =>
+    modifier === Modifier.MEMORY || modifier === Modifier.CALLDATA || modifier === Modifier.STORAGE);
+}
+
+// Data location is not part of an external ABI signature, so an external declaration may be implemented by a
+// public function using memory. For every non-external base function Solidity requires locations to remain
+// identical across an override, even though SolidCash erases the locations after validating the declaration.
+function validateOverrideDataLocations(child: FunctionDefinitionNode, parent: FunctionDefinitionNode): void {
+  if (parent.visibility === 'external') return;
+  const childLocations = [
+    ...child.parameters.map((parameter) => declaredDataLocation(parameter.modifier)),
+    ...child.returnTypes.map((_type, i) => declaredDataLocation(child.returnModifiers[i] ?? [])),
+  ];
+  const parentLocations = [
+    ...parent.parameters.map((parameter) => declaredDataLocation(parameter.modifier)),
+    ...parent.returnTypes.map((_type, i) => declaredDataLocation(parent.returnModifiers[i] ?? [])),
+  ];
+  if (childLocations.length === parentLocations.length
+      && childLocations.some((location, i) => location !== parentLocations[i])) {
+    throw new InvalidDataLocationError(
+      child,
+      `data locations must match overridden non-external function '${parent.name}'`,
+    );
+  }
+}
+
 function mergeFunctions(
   child: ContractNode,
   parent: ContractNode,
@@ -591,6 +636,7 @@ function mergeFunctions(
         if (!parentFunc.isAbstract && !parentFunc.modifiers.includes(FunctionModifier.VIRTUAL)) {
           throw new NonVirtualOverrideError(existingFunc, parentFunc.name, parentFunc.inheritedFrom ?? parent.name);
         }
+        validateOverrideDataLocations(existingFunc, parentFunc);
         preserveOverriddenFunction(child, parentFunc, parent, subs);
         continue;
       }
@@ -859,8 +905,19 @@ function mergeNamedList(
       }
 
       // Overridable members (modifiers) cannot overload: a child's OWN same-name definition overrides the
-      // parent's (most-derived wins), so the parent's is dropped and references resolve to the child's override.
+      // parent's for unqualified lookup (most-derived wins). Preserve the parent under its qualified name so
+      // an explicit `A.m` invocation can still select that exact base implementation.
       if (overridable && !childOrigin) {
+        const origin = parentItem.inheritedFrom ?? parent.name;
+        const qualified = cloneNode(parentItem as unknown as Node) as unknown as {
+          name: string; inheritedFrom?: string;
+        };
+        qualified.name = `${origin}.${parentItem.name}`;
+        qualified.inheritedFrom = origin;
+        if (!childMap.has(qualified.name)) {
+          toInsert.push(qualified as unknown as Node);
+          childMap.set(qualified.name, qualified);
+        }
         continue;
       }
 
@@ -890,6 +947,21 @@ function mergeNamedList(
 
     toInsert.push(cloned as unknown as Node);
     childMap.set(cloned.name, cloned);
+
+    // Every inherited modifier is also addressable through the contract that originally declared it (`A.m`).
+    // Carry the alias through further inheritance; diamond duplicates are removed by the normal origin check.
+    if (key === 'modifierDefinitions' && !parentItem.name.includes('.')) {
+      const origin = parentItem.inheritedFrom ?? parent.name;
+      const qualified = cloneNode(cloned as unknown as Node) as unknown as {
+        name: string; inheritedFrom?: string;
+      };
+      qualified.name = `${origin}.${parentItem.name}`;
+      qualified.inheritedFrom = origin;
+      if (!childMap.has(qualified.name)) {
+        toInsert.push(qualified as unknown as Node);
+        childMap.set(qualified.name, qualified);
+      }
+    }
   }
 
   // Prepend all parent items at once to preserve their original order

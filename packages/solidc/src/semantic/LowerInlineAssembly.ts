@@ -185,11 +185,15 @@ function lowerLowLevelCall(call: YulFunctionCallNode, okVar: string, okIsNew: bo
   const tuple = loc(new TupleAssignmentNode(
     [{ name: okTmp, type: PrimitiveType.BOOL }, { name: retVar, type: new BytesType() }], llcall, true,
   ), src);
-  // Bind the Yul word var from the bool success (Yul `ok` is a 0/1 word).
-  const okWord = loc(new CastNode(UINT256, loc(new IdentifierNode(okTmp), src), false), src);
+  // A fresh Yul `let ok` is a uint256 word, but assigning into an existing high-level `bool success` must retain
+  // the bool type. Both hold the same 0/1 VM value; only the AST target type differs.
+  const targetType = currentVars.get(okVar);
+  const okValue = !okIsNew && targetType === PrimitiveType.BOOL
+    ? loc(new IdentifierNode(okTmp), src)
+    : loc(new CastNode(UINT256, loc(new IdentifierNode(okTmp), src), false), src);
   const okStmt = okIsNew
-    ? loc(new VariableDefinitionNode(UINT256, [], okVar, okWord), src)
-    : loc(new AssignNode(loc(new IdentifierNode(okVar), src), okWord), src);
+    ? loc(new VariableDefinitionNode(UINT256, [], okVar, okValue), src)
+    : loc(new AssignNode(loc(new IdentifierNode(okVar), src), okValue), src);
   return loc(new BlockNode([tuple, okStmt]), src);
 }
 
@@ -806,7 +810,10 @@ function runtimeMstore(offExpr: ExpressionNode, valExpr: ExpressionNode, src: Yu
   yulMemUsed = true;
   const offName = `__yoff_${yulTmpN++}`;
   const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
-  const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
+  // Memory offsets are Yul words even when their main-AST producer is bytes32 (e.g. keccak256(...)).
+  const decl = loc(new VariableDefinitionNode(
+    UINT256, [], offName, loc(new CastNode(UINT256, offExpr, false), src),
+  ), src);
   const store = memWordStore(off, valExpr, src);
   return loc(new BlockNode([decl, growTo(offName, 32n, src), store]), src);
 }
@@ -819,7 +826,9 @@ function runtimeMstore8(offExpr: ExpressionNode, valExpr: ExpressionNode, src: Y
   yulMemUsed = true;
   const offName = `__yoff8_${yulTmpN++}`;
   const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
-  const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
+  const decl = loc(new VariableDefinitionNode(
+    UINT256, [], offName, loc(new CastNode(UINT256, offExpr, false), src),
+  ), src);
   const store = memByteStore(off, valExpr, { fullWord: true }, src);
   return loc(new BlockNode([decl, growTo(offName, 1n, src), store]), src);
 }
@@ -1258,6 +1267,19 @@ function isBytes32Call(e: YulExpressionNode): boolean {
   return e instanceof YulFunctionCallNode && (e.name === 'keccak256' || e.name === 'sha256');
 }
 
+function isByteCall(e: YulExpressionNode): boolean {
+  return e instanceof YulFunctionCallNode && e.name === 'byte';
+}
+
+// A high-level bytes32 local/parameter is also a Yul word when referenced from assembly. Arithmetic must use its
+// uint256 interpretation, just like the direct keccak256/sha256 result above.
+function isBytes32Word(e: YulExpressionNode): boolean {
+  if (isBytes32Call(e)) return true;
+  if (!(e instanceof YulPathNode) || e.members.length !== 0) return false;
+  const t = currentVars.get(e.base);
+  return t instanceof BytesType && t.bound === 32;
+}
+
 // Resolve a Yul `create` offset operand to a compile-time bytecode blob: `add(<hexLocal>, 0x20)` (EVM skips the
 // bytes length word) or a bare `<hexLocal>` -> the local's hex-literal bytes. undefined if not a constant local.
 function resolveConstantBytecode(offset: YulExpressionNode): Uint8Array | undefined {
@@ -1672,7 +1694,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name in ARITH_OPS && args.length === 2) {
     // A bytes32-producing operand (keccak256/sha256) must be cast to uint256 for arithmetic (Yul words are 256-bit),
     // e.g. `add(keccak256(0,23), 1)` as a computed __evm_storage slot key.
-    const operand = (a: YulExpressionNode): ExpressionNode => (isBytes32Call(a)
+    const operand = (a: YulExpressionNode): ExpressionNode => (isBytes32Word(a)
       ? loc(new CastNode(UINT256, lowerValue(a), false), call)
       : lowerValue(a));
     return loc(new BinaryOpNode(operand(args[0]), ARITH_OPS[name], operand(args[1])), call);
@@ -2012,6 +2034,16 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     }
     const target = loc(new IdentifierNode(name), stmt);
     let value = lowerValue(stmt.value);
+    const t = currentVars.get(name);
+    // An address-to-address Yul assignment copies the same locking-bytecode value. Preserve its address type
+    // directly; normalizing through uint256 would make the subsequent payable-address cast invalid even though
+    // no representation conversion is required (`address payable r; assembly { r := z }`).
+    if (stmt.value instanceof YulPathNode && stmt.value.members.length === 0) {
+      const vt = currentVars.get(stmt.value.base);
+      if (vt instanceof AddressType && t instanceof AddressType && vt.payable === t.payable) {
+        return loc(new AssignNode(target, value), stmt);
+      }
+    }
     // A plain non-word var read (address, bytesN, bool) yields a value of that type; normalize it to the uint256
     // word so the target-cast below reinterprets it uniformly (EVM `:=` copies the raw word). Complex values
     // (arith / calls) are already uint256, and mstore etc. keep the un-normalized read (they encode differently).
@@ -2022,15 +2054,15 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     }
     // The assembled value is a uint256 word; a target of a different type reinterprets it (EVM `:=` writes the
     // raw word). Cast to the target so the lowered assignment type-checks - except when the target IS uint256.
-    const t = currentVars.get(name);
     const isWord = t instanceof IntType && !t.signed && t.bits === 256;
     if (t instanceof ValueType) {
       value = loc(new CastNode(t.underlyingType, value, false), stmt);
       value = loc(new CastNode(t, value, false), stmt);
     } else if (t && !isWord) {
       value = loc(new CastNode(t, value, false), stmt);
-    } else if (isWord && isBytes32Call(stmt.value)) {
-      // keccak256/sha256 yields bytes32; a uint256-word target needs the cast (a typed target is handled above).
+    } else if (isWord && (isBytes32Call(stmt.value) || isByteCall(stmt.value))) {
+      // Hashes and byte() yield bytes-shaped main-AST values, but every Yul assignment copies a uint256 word.
+      // Reinterpret them for a uint256 target (a differently typed target is handled above).
       value = loc(new CastNode(UINT256, value, false), stmt);
     }
     return loc(new AssignNode(target, value), stmt);
@@ -2238,7 +2270,12 @@ function lowerSwitch(node: YulSwitchNode): StatementNode {
   let chain: BlockNode | undefined = node.defaultBody ? lowerBlock(node.defaultBody) : undefined;
   for (let i = node.cases.length - 1; i >= 0; i--) {
     const c = node.cases[i];
-    const cond = loc(new BinaryOpNode(lowerValue(node.expression), BinaryOperator.EQ, lowerValue(c.value)), c);
+    // Yul switch compares 256-bit words regardless of the high-level type of a referenced variable. Normalize
+    // both sides so `bool success; assembly { switch success case 0 { ... } }` compares uint256( success ) to
+    // uint256(0), rather than producing a bool-vs-int type error.
+    const cond = loc(new BinaryOpNode(
+      lowerBitwiseOperand(node.expression), BinaryOperator.EQ, lowerBitwiseOperand(c.value),
+    ), c);
     const branch = loc(new BranchNode(cond, lowerBlock(c.body), chain), c);
     chain = loc(new BlockNode([branch]), c);
   }
@@ -2475,6 +2512,11 @@ export default class LowerInlineAssembly extends AstTraversal {
   // Track the enclosing contract's state variables so sstore/sload can resolve slot numbers.
   visitContract(node: ContractNode): Node {
     computeStorageLayout(node.stateVariables, node.collections);
+    // SourceFile traversal visits file-level functions before the contract. A helper such as
+    // `readSlot(uint i) { assembly { r := sload(add(base(), i)) } }` can therefore request the raw-slot
+    // register before we get here. Preserve that request: the helper is later inlined/called by this contract,
+    // so its MappingAccess must resolve against the contract's synthesized collection too.
+    const freeFunctionEvmStorageUsed = evmStorageUsed;
     evmStorageUsed = false;
     logEventUsed = false;
     const result = super.visitContract(node) as ContractNode;
@@ -2483,7 +2525,8 @@ export default class LowerInlineAssembly extends AstTraversal {
     if (result.fallbackDef) result.fallbackDef = this.visitFunctionDefinition(result.fallbackDef) as FunctionDefinitionNode;
     if (result.receiveDef) result.receiveDef = this.visitFunctionDefinition(result.receiveDef) as FunctionDefinitionNode;
     // Synthesize the EVM-storage register if any assembly routed a slot to it (docs/evm-storage-parity.md).
-    if (evmStorageUsed && !result.collections.some((c) => c.name === EVM_STORAGE)) {
+    if ((freeFunctionEvmStorageUsed || evmStorageUsed)
+      && !result.collections.some((c) => c.name === EVM_STORAGE)) {
       const mapping = new CollectionNode(new MappingType(UINT256, UINT256), EVM_STORAGE);
       mapping.location = node.location;
       result.collections.push(mapping);

@@ -54,7 +54,8 @@ const UPDATE_FN = '__updateBlockOracle';
 // coinbase is the full coinbase-output-0 locking bytecode (variable length, inline address/pushdata
 // encoding); every other field is a uint32.
 function registerType(varName: string): Type {
-  return varName === '__block_coinbase' ? new AddressType() : new IntType(false, 32);
+  // Solidity declares block.coinbase as address payable.
+  return varName === '__block_coinbase' ? new AddressType(true) : new IntType(false, 32);
 }
 
 // param name written into register `__block_<field>` by the update function.

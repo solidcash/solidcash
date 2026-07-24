@@ -20,6 +20,7 @@ import {
   MappingAssignNode,
   IdentifierNode,
   ExpressionNode,
+  FieldAccessNode,
 } from '../ast/AST.js';
 import { FunctionType, AddressType, BytesType, ArrayType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -111,7 +112,7 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
       // Lower a genuinely-foreign param that is CALLED here, or STORED into a foreign fn-ptr state var (the
       // storage pass then calls through the stored value).
       if (fnPtrParams.includes(p) && !selfRefPositions.has(pos)
-        && (this.isCalled(fn, p.name) || this.isStoredToFnPtrState(fn, p.name)
+        && (this.isCalled(fn, p.name) || this.isSelectorRead(fn, p.name) || this.isStoredToFnPtrState(fn, p.name)
           || this.isPushedToFnPtrArray(fn, p.name))) {
         const ft = p.type as FunctionType;
         const ifaceName = this.synthInterface(ft);
@@ -151,11 +152,26 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
       const cast = new FunctionCallNode(ifaceId, [yRead]); cast.location = node.location;
       const args = node.parameters.map((a) => this.visit(a) as ExpressionNode);
       const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
+      mc.callOptions = node.callOptions;
       const selRead = new IdentifierNode(info.selParam); selRead.location = node.location;
       mc.runtimeSelector = selRead;
       return mc;
     }
     return super.visitFunctionCall(node);
+  }
+
+  visitFieldAccess(node: FieldAccessNode): Node {
+    // A received external function pointer is split into (address, selector) at the ABI boundary. Reading
+    // `p.selector` therefore becomes a direct read of the synthesized selector parameter.
+    if (node.name === 'selector' && node.expression instanceof IdentifierNode) {
+      const info = this.rewrites.get(node.expression.name);
+      if (info) {
+        const selector = new IdentifierNode(info.selParam);
+        selector.location = node.location;
+        return selector;
+      }
+    }
+    return super.visitFieldAccess(node);
   }
 
   private synthInterface(ft: FunctionType): string {
@@ -233,6 +249,25 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
         const val = (n as unknown as Record<string, unknown>)[key];
         if (val instanceof Node) walk(val);
         else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    if (fn.body) walk(fn.body);
+    return found;
+  }
+
+  private isSelectorRead(fn: FunctionDefinitionNode, name: string): boolean {
+    let found = false;
+    const walk = (node: Node): void => {
+      if (found) return;
+      if (node instanceof FieldAccessNode && node.name === 'selector'
+        && node.expression instanceof IdentifierNode && node.expression.name === name) {
+        found = true;
+        return;
+      }
+      for (const key of Object.keys(node)) {
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
       }
     };
     if (fn.body) walk(fn.body);

@@ -315,9 +315,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (node.args.length !== eventDef.parameters.length) {
         throw new EmitArgumentCountError(node, eventDef.parameters.length, node.args.length);
       }
+      // Event arguments use the same Solidity literal conversions as function-call arguments and assignments:
+      // notably `"abc"` -> bytes3 and a short fixed-bytes literal -> a right-padded wider bytesN.
+      node.args = this.coerceHexArgs(node.args, eventDef.parameters.map((p) => p.type));
       for (let i = 0; i < node.args.length; i++) {
         const paramType = eventDef.parameters[i].type;
-        node.args[i] = this.maybeCoerceZeroToBytes(node.args[i], paramType);
         const argType = node.args[i].type;
         if (argType && !implicitlyCastable(argType, paramType)) {
           throw new EmitArgumentTypeError(node, eventDef.parameters[i].name, argType, paramType);
@@ -734,10 +736,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       return node;
     }
 
-    // Handle .codehash on address types -> bytes (20 or 32 depending on P2SH type, checked at runtime)
+    // Solidity exposes address.codehash as bytes32. P2SH20 hashes are widened at codegen.
     if ((exprType instanceof AddressType)
         && node.name === 'codehash') {
-      node.type = new BytesType();
+      node.type = new BytesType(32);
       return node;
     }
 
@@ -844,6 +846,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
     node.expression = this.visit(node.expression);
+    node.expression = this.maybeCoerceHexLiteralToString(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.stateVariable?.type);
@@ -877,6 +880,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Uninitialized declaration (`int x;`): no initializer to type-check; codegen emits the zero value.
     if (node.expression) {
       node.expression = this.visit(node.expression);
+      node.expression = this.maybeCoerceHexLiteralToString(node.expression, node.type);
       node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
       node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
       node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
@@ -979,6 +983,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.expression.type = node.identifier.type;
     }
     node.expression = this.visit(node.expression);
+    node.expression = this.maybeCoerceHexLiteralToString(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
@@ -1324,6 +1329,36 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
+    if (node.fieldNames && node.namedOverloadCandidates) {
+      const names = node.fieldNames;
+      const argsFor = (f: FunctionDefinitionNode): ExpressionNode[] => {
+        const params = f.parameters.filter((p) => !p.name.startsWith('__internal__'));
+        return params.map((p) => node.parameters[names.indexOf(p.name)]);
+      };
+      const matches = applyFreeFunctionShadowing(node.namedOverloadCandidates.filter((f) => {
+        const args = argsFor(f);
+        return implicitlyCastableSignature(args.map((arg) => arg.type!), declaredParamTypes(f));
+      }));
+      if (matches.length === 0) throw new NoMatchingOverloadError(node);
+
+      let selected: FunctionDefinitionNode | undefined;
+      if (matches.length === 1) {
+        [selected] = matches;
+      } else {
+        const exactMatches = matches.filter((f) => {
+          const argTypes = argsFor(f).map((arg) => arg.type!);
+          const paramTypes = declaredParamTypes(f);
+          return argTypes.every((argType, i) => argType.toString() === paramTypes[i]?.toString());
+        });
+        if (exactMatches.length === 1) [selected] = exactMatches;
+        else throw new AmbiguousOverloadError(node);
+      }
+      node.resolvedFunction = selected;
+      node.parameters = argsFor(selected!);
+      node.fieldNames = undefined;
+      node.namedOverloadCandidates = undefined;
+    }
+
     // Indirect call through a function-typed value: check args against the signature, result is its returns.
     if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
       const ft = node.identifier.type;
@@ -1490,6 +1525,13 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    // Named overloads need candidate-specific name-to-position mapping, which visitFunctionCall performs
+    // before the ordinary positional statement-call overload path below.
+    if (node.call.namedOverloadCandidates) {
+      node.call = this.visitFunctionCall(node.call) as FunctionCallNode;
+      return node;
+    }
+
     // For multi-overload functions where resolution is deferred, handle here
     const overloads = this.functionDefinitions.get(node.call.identifier.name);
     if (overloads && overloads.length > 1 && !node.call.resolvedFunction) {
@@ -1729,6 +1771,27 @@ export default class TypeCheckTraversal extends AstTraversal {
       return hex;
     }
     return expr;
+  }
+
+  // A Solidity hex string literal is an untyped byte sequence and may initialize/assign `string` even though an
+  // ordinary bytesN value may not implicitly convert to string. AstBuilder represents the literal as fixed bytes,
+  // so restore the literal-only conversion with an explicit no-op bytes->string cast.
+  private maybeCoerceHexLiteralToString(expr: ExpressionNode, expected?: Type): ExpressionNode {
+    if (!this.solidityImportCompat || expected !== PrimitiveType.STRING || !(expr instanceof HexLiteralNode)) {
+      return expr;
+    }
+    // Solidity rejects a hex literal containing malformed UTF-8 when the destination is string. Leave it as
+    // bytesN so the normal assignability diagnostic rejects it; TextDecoder's fatal mode also catches truncated
+    // and overlong sequences.
+    try {
+      new TextDecoder('utf-8', { fatal: true }).decode(expr.value);
+    } catch {
+      return expr;
+    }
+    const cast = new CastNode(PrimitiveType.STRING, expr, false);
+    cast.type = PrimitiveType.STRING;
+    cast.location = expr.location;
+    return cast;
   }
 
   // Solidity implicitly widens a fixed bytesN to a wider bytesM (M >= N), right-padding with zero bytes
@@ -2340,6 +2403,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.value = this.maybeCoerceHexToInt(node.value, node.arrayType.elementType);
     node.value = this.maybeCoerceZeroToBytes(node.value, node.arrayType.elementType);
     node.value = this.maybeCoerceStringToBytesN(node.value, node.arrayType.elementType);
+    node.value = this.maybeCoerceBytesWiden(node.value, node.arrayType.elementType);
     // Validate element type compatibility
     if (!implicitlyCastable(node.value.type, node.arrayType.elementType)) {
       throw new TypeError(node as any, node.value.type, node.arrayType.elementType);
@@ -2371,6 +2435,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.value.blobEncoded = true;
     }
     node.value = this.visit(node.value);
+    node.value = this.maybeCoerceBytesWiden(node.value, arrType.elementType);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);
     }
@@ -2388,6 +2453,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const arrType = sv.type as ArrayType;
     node.value = this.maybeCoerceZeroToBytes(node.value, arrType.elementType);
     node.value = this.maybeCoerceStringToBytesN(node.value, arrType.elementType);
+    node.value = this.maybeCoerceBytesWiden(node.value, arrType.elementType);
     expectInt(node as any, node.index.type);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);

@@ -68,6 +68,21 @@ describe('BCH crypto types + number units usable as identifiers (lexer split)', 
   });
 });
 
+describe('malformed bounded-type spellings are identifiers', () => {
+  it('accepts non-canonical uint/bytes/fixed spellings as variable names', () => {
+    expect(compileString(
+      'contract C { uint uint7; uint bytes01; uint uint300; uint fixed1x01; uint ufixed0x0; }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('keeps canonical bounded types reserved in identifier positions', () => {
+    for (const name of ['uint8', 'int256', 'bytes32', 'fixed8x0', 'ufixed256x80']) {
+      expect(() => compileString(`contract C { uint ${name}; }`, { solidityImportCompat: true })).toThrow();
+    }
+  });
+});
+
 // The integer literal 0 (and only 0) implicitly converts to any bytesN (all-zero bytes) - a common idiom
 // (`bytes32 constant SLOT = 0`, EVM storage slot 0). Non-zero int literals still error, matching Solidity.
 describe('integer literal 0 coerces to bytesN', () => {

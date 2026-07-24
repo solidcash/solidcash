@@ -1,4 +1,4 @@
-import { ArrayType, IntType, BytesType, StructType, PrimitiveType, Type } from '@solidcash/utils';
+import { ArrayType, IntType, BytesType, StructType, PrimitiveType, Type, encodeString } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -30,6 +30,7 @@ import {
   NewArrayNode,
   IntLiteralNode,
   HexLiteralNode,
+  StringLiteralNode,
   IdentifierNode,
   ExpressionNode,
   AssemblyStatementNode,
@@ -375,14 +376,13 @@ export default class LowerMemoryModel extends AstTraversal {
         const ty = n.type;
         const fresh = n.expression instanceof NewArrayNode && !n.expression.rawBytes;
         // A `bytes` buffer root: `new bytes(runtimeN)` (NewArrayNode rawBytes) OR `new bytes(constN)`, which the
-        // builder folds to an all-ZERO HexLiteralNode. A NON-zero `hex".."` / byte-string literal is left as a
-        // value-copy constant (its compile-time bytes back Yul `create` p2sh32 derivation, abi decode, etc.).
+        // builder folds to a HexLiteralNode. Literal data is copied into the allocated buffer by lowerBytesDecl.
         // Exclude a HexLiteral carrying a codegenError: `new string(n)` with a NON-constant length folds to an
         // empty placeholder HexLiteral with codegenError set (no BCH analogue), and an empty array's `.every()` is
         // vacuously true - converting it would silently drop the error and allocate 0 bytes. `new bytes` never sets it.
         const freshBytes = (n.expression instanceof NewArrayNode && n.expression.rawBytes)
-          || (n.expression instanceof HexLiteralNode && !n.expression.codegenError
-            && n.expression.value.every((byte) => byte === 0));
+          || n.expression instanceof StringLiteralNode
+          || (n.expression instanceof HexLiteralNode && !n.expression.codegenError);
         if ((this.isHandledMemArray(ty) || this.isHandledMemStructArray(ty)) && fresh) candType.set(n.name, ty!);
         else if ((this.isHandledMemBytes(ty) || this.isHandledMemString(ty)) && freshBytes) candType.set(n.name, ty!);
         else if (this.isHandledMemStruct(ty) && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
@@ -476,6 +476,9 @@ export default class LowerMemoryModel extends AstTraversal {
     const isValueArr = (e: unknown): e is IdentifierNode =>
       e instanceof IdentifierNode && candidates.has(e.name)
       && !structArrayCands.has(e.name) && !structCands.has(e.name);
+    const isBytesPtr = (e: unknown): e is IdentifierNode =>
+      e instanceof IdentifierNode && candidates.has(e.name)
+      && (this.isHandledMemBytes(candType.get(e.name)) || this.isHandledMemString(candType.get(e.name)));
     // The base identifier of `arr[i]` (ArrayAccess or numeric-literal TupleIndexOp), if it is a struct-array cand.
     const structArrBase = (e: unknown): string | undefined => {
       if (e instanceof ArrayAccessNode && e.array instanceof IdentifierNode && structArrayCands.has(e.array.name)) {
@@ -514,6 +517,10 @@ export default class LowerMemoryModel extends AstTraversal {
         if (!isValueArr(n.expression)) walk(n.expression);
         return;
       }
+      // Before symbol resolution rewrites a bare state assignment to StateAssignNode it is still `x = b`.
+      // Serializing a byte-buffer pointer at that value-copy boundary is supported below.
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode
+        && !candidates.has(n.identifier.name) && isBytesPtr(n.expression)) return;
       if (n instanceof ArrayAccessNode && isValueArr(n.array)) { walk(n.index); return; }
       if (n instanceof TupleIndexOpNode && isValueArr(n.tuple)) return; // numeric-literal index
       if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && n.expression instanceof IdentifierNode
@@ -681,6 +688,15 @@ export default class LowerMemoryModel extends AstTraversal {
         out.push(this.at(sa, stmt));
         continue;
       }
+      if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+        && stmt.expression instanceof IdentifierNode && this.memBytes.has(stmt.expression.name)
+        && !this.memBytes.has(stmt.identifier.name)) {
+        out.push(this.at(new AssignNode(
+          new IdentifierNode(stmt.identifier.name),
+          this.serializeBytes(stmt.expression.name, stmt),
+        ), stmt));
+        continue;
+      }
       // `return a;` on a memory value-array -> serialize the buffer block into a fresh value-copy array and return
       // that (P3 boundary serialization), so the array can be a memory-model pointer (aliasing/composition) while
       // still crossing the export boundary in the value-copy blob format.
@@ -814,10 +830,11 @@ export default class LowerMemoryModel extends AstTraversal {
 
   // `bytes memory b = new bytes(n)` -> allocate a zero-filled [length(32)][data] block (data word-aligned so an
   // assembly word-store stays inside the allocation); `bytes b = a` -> pointer alias. A constant `new bytes(constN)`
-  // reaches here as an all-zero HexLiteralNode (only those convert - see analyzeConvertible), so the data is zeros.
+  // reaches here as an all-zero HexLiteralNode. String literals are copied into the allocated data words.
   private lowerBytesDecl(node: VariableDefinitionNode, bytesT: Type | undefined): StatementNode[] | undefined {
     const isHex = node.expression instanceof HexLiteralNode;
-    const isAlloc = node.expression instanceof NewArrayNode || isHex;
+    const isString = node.expression instanceof StringLiteralNode;
+    const isAlloc = node.expression instanceof NewArrayNode || isHex || isString;
     // Pointer-valued init (alias / ref-field read): share the pointer.
     if (node.expression && !isAlloc) {
       const r = this.resolvePtr(node.expression);
@@ -835,8 +852,10 @@ export default class LowerMemoryModel extends AstTraversal {
     // assignable to a `string` return/state var - see types.ts string<->bytes rules).
     this.memBytes.set(node.name, bytesT instanceof BytesType ? bytesT : new BytesType());
     // Length: the runtime size expr for `new bytes(n)`, or the (zero) literal's byte length for the folded constant.
-    const n = (): ExpressionNode => (isHex
-      ? this.intLit(BigInt((node.expression as HexLiteralNode).value.length))
+    const literal = isString ? encodeString((node.expression as StringLiteralNode).value)
+      : isHex ? (node.expression as HexLiteralNode).value : undefined;
+    const n = (): ExpressionNode => (literal
+      ? this.intLit(BigInt(literal.length))
       : this.clone((node.expression as NewArrayNode).size));
     const ptr = new IdentifierNode(node.name);
     // uint b = mload(0x40);
@@ -848,7 +867,19 @@ export default class LowerMemoryModel extends AstTraversal {
       new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.bytesBlockBytes(n()))])), node);
     // __yulmem = <store n at b>;   (the byte length)
     const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), n(), this.uint()), node);
-    return [decl, bump, grow, setLen];
+    const stores: StatementNode[] = [];
+    if (literal?.some((byte) => byte !== 0)) {
+      for (let offset = 0; offset < literal.length; offset += Number(WORD)) {
+        const word = new Uint8Array(Number(WORD));
+        word.set(literal.slice(offset, offset + Number(WORD)));
+        stores.push(this.at(this.mstore(
+          this.add(this.clone(ptr), this.intLit(WORD + BigInt(offset))),
+          new HexLiteralNode(word),
+          new BytesType(32),
+        ), node));
+      }
+    }
+    return [decl, bump, grow, setLen, ...stores];
   }
 
   // Allocate a struct block at `ptrName = mload(0x40)` (bump the in-buffer free pointer + grow), then store the
@@ -1132,7 +1163,8 @@ export default class LowerMemoryModel extends AstTraversal {
   //   base[i] (ref element) -> {mload(basePtr+32+i*32), elementType}.
   private resolvePtr(expr: ExpressionNode): { ptr: ExpressionNode, memType: Type } | undefined {
     if (expr instanceof IdentifierNode) {
-      const t = this.memArrays.get(expr.name) ?? this.memStructArrays.get(expr.name) ?? this.memStructs.get(expr.name);
+      const t = this.memArrays.get(expr.name) ?? this.memStructArrays.get(expr.name)
+        ?? this.memStructs.get(expr.name) ?? this.memBytes.get(expr.name);
       return t ? { ptr: new IdentifierNode(expr.name), memType: t } : undefined;
     }
     if (expr instanceof FieldAccessNode) {

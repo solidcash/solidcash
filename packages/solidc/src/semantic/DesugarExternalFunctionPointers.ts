@@ -179,6 +179,7 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     const args = node.parameters.map((a) => cloneNode(a) as ExpressionNode);
     if (rhs instanceof FieldAccessNode) {
       const mc = new MethodCallNode(cloneNode(rhs.expression) as ExpressionNode, rhs.name, args);
+      mc.callOptions = node.callOptions;
       mc.location = node.location;
       return mc;
     }
@@ -188,6 +189,7 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     const mFalse = t.ifFalse as FieldAccessNode;
     const iface = this.castInterfaceName(mTrue.expression)!;
     const mc = new MethodCallNode(cloneNode(mTrue.expression) as ExpressionNode, mTrue.name, args);
+    mc.callOptions = node.callOptions;
     mc.runtimeSelector = new TernaryOpNode(
       cloneNode(t.condition) as ExpressionNode,
       this.selectorOf(iface, mTrue.name, node),

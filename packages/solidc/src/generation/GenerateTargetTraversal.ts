@@ -84,6 +84,7 @@ import {
   TimeOpNode,
   ArrayNode,
   TupleIndexOpNode,
+  SequenceExpressionNode,
   RequireNode,
   SourceFileNode,
   Node,
@@ -1893,17 +1894,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // True if `node` contains a `return` nested inside a loop. Generic tree walk (skips cross-references that
   // point outside the function body) so any container - branch, block, switch, try - is covered.
-  private hasReturnInLoop(node: Node, inLoop: boolean): boolean {
+  private hasReturnInLoop(node: Node, inLoop: boolean, seen = new WeakSet<Node>()): boolean {
+    if (seen.has(node)) return false;
+    seen.add(node);
     if (node instanceof ReturnNode) return inLoop;
     const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
     for (const key of Object.keys(node)) {
       if (key === 'resolvedFunction' || key === 'definition' || key === 'collection') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) {
-        if (this.hasReturnInLoop(v, nowInLoop)) return true;
+        if (this.hasReturnInLoop(v, nowInLoop, seen)) return true;
       } else if (Array.isArray(v)) {
         for (const item of v) {
-          if (item instanceof Node && this.hasReturnInLoop(item, nowInLoop)) return true;
+          if (item instanceof Node && this.hasReturnInLoop(item, nowInLoop, seen)) return true;
         }
       }
     }
@@ -2023,8 +2026,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // preAllocateCondDeleteWrite); the SDK derives those as writes, not drops. Marked separately so switch/loop
       // conditional deletes keep the plain path.
       const softDeleteEntrySlots = new Set<number>();
+      const seenConditionalEntryNodes = new WeakSet<Node>();
       const collectCondEntries = (n: Node | undefined): void => {
-        if (!n) return;
+        if (!n || seenConditionalEntryNodes.has(n)) return;
+        seenConditionalEntryNodes.add(n);
         if (n instanceof BranchNode && n.branchOps) {
           n.branchOps.mappingWriteSlots.forEach((s) => conditionalEntrySlots.add(s));
           n.branchOps.mappingDeleteSlots.forEach((s) => { conditionalEntrySlots.add(s); softDeleteEntrySlots.add(s); });
@@ -5718,6 +5723,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.nipFromStack();
     }
 
+    return node;
+  }
+
+  visitSequenceExpression(node: SequenceExpressionNode): Node {
+    node.discarded = this.visit(node.discarded) as ExpressionNode;
+    this.emit(Op.OP_DROP, { location: node.discarded.location, positionHint: PositionHint.END });
+    this.popFromStack();
+    node.value = this.visit(node.value) as ExpressionNode;
     return node;
   }
 
@@ -13281,8 +13294,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** First entry slot index written by a runtime loop (inLoop) reachable in `node`, or -1. */
   private findLoopEntryWriteSlot(node: Node): number {
     let found = -1;
+    const seen = new WeakSet<Node>();
     const walk = (n: Node): void => {
-      if (found >= 0 || !n) return;
+      if (found >= 0 || !n || seen.has(n)) return;
+      seen.add(n);
       const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
       if (typeof idx === 'number' && idx >= 0 && this.entrySlots?.[idx]?.inLoop) {
         found = idx;
@@ -19075,6 +19090,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SUB, locationData);            // [hash_plus_equal, hash_len] (20 for p2sh20, 32 for p2sh32)
     this.emit(Op.OP_SPLIT, locationData);          // [hash, equal_byte]
     this.emit(Op.OP_DROP, locationData);           // [hash]
+
+    // Solidity types address.codehash as bytes32. A P2SH32 address already contains 32 bytes; widen a P2SH20
+    // hash using the normal bytes20 -> bytes32 right-padding convention.
+    this.emit(Op.OP_DUP, locationData);             // [hash, hash]
+    this.emit(Op.OP_SIZE, locationData);            // [hash, hash, hash_len]
+    this.emit(Op.OP_NIP, locationData);             // [hash, hash_len]
+    this.emit(encodeInt(20n), locationData);
+    this.emit(Op.OP_EQUAL, locationData);            // [hash, is20]
+    this.emit(Op.OP_IF, locationData);               // [hash]
+    this.emit(new Uint8Array(12), locationData);     // [hash, zero_pad_12]
+    this.emit(Op.OP_CAT, locationData);              // [hash32]
+    this.emit(Op.OP_ENDIF, locationData);            // [hash32]
 
     // Stack tracking: consumed lbc, produced hash
     this.popFromStack();

@@ -6,15 +6,18 @@ import {
   BlockNode,
   ReturnNode,
   StateAccessNode,
-  MappingAccessNode,
   ArrayAccessNode,
   FieldAccessNode,
   IdentifierNode,
+  ExpressionNode,
+  FunctionCallNode,
+  FunctionCallStatementNode,
+  ExpressionStatementNode,
   ParameterNode,
   StateVariableVisibility,
 } from '../ast/AST.js';
 import {
-  MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, StructType, Type,
+  MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, StructType, EnumType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -48,6 +51,8 @@ export default class SynthesizePublicGetters extends AstTraversal {
   // Names that are contracts/interfaces (their AddressType placeholder resolves to an address - a getter can
   // return it soundly), as opposed to enums (whose placeholder resolves to an EnumType with a different ABI).
   private contractIfaceNames: Set<string> = new Set();
+  private indexedGetterArities: Map<string, number> = new Map();
+  private enumTypes: Map<string, EnumType> = new Map();
 
   visitSourceFile(node: SourceFileNode): Node {
     if (!this.enabled) return node;
@@ -67,7 +72,78 @@ export default class SynthesizePublicGetters extends AstTraversal {
     return t instanceof AddressType && !!t.interfaceName && this.contractIfaceNames.has(t.interfaceName);
   }
 
+  // Build the ABI shape and ordinary expression tree for a public nested array/mapping getter:
+  //   mapping(K => V[][]) m -> m(K,uint256,uint256) returns (V)
+  //   mapping(K => V)[] a  -> a(uint256,K) returns (V)
+  // Using the same nested ArrayAccess tree that parsed `m[k][i]` produces lets the existing symbol/type/codegen
+  // paths handle mixed mapping/array storage rather than introducing a second getter-specific access model.
+  private buildIndexedGetter(
+    name: string, type: Type, loc: ContractNode['location'],
+  ): { keys: ParameterNode[]; read: ExpressionNode; returnType: Type } | undefined {
+    const keys: ParameterNode[] = [];
+    let read: ExpressionNode = Object.assign(new IdentifierNode(name), { location: loc });
+    let current = type;
+    let index = 0;
+    let mappingCount = 0;
+    let arrayCount = 0;
+    let sawArray = false;
+    while (current instanceof MappingType || current instanceof ArrayType) {
+      if (current instanceof MappingType) {
+        // Array-of-mapping storage is not yet a valid SolidCash state layout. Mapping->mapping->array and
+        // mapping->3D-array reads likewise exceed the currently proven mixed-container access lowering.
+        if (sawArray) return undefined;
+        mappingCount += 1;
+      } else {
+        sawArray = true;
+        arrayCount += 1;
+      }
+      const keyType = current instanceof MappingType ? current.keyType : new IntType(false, 256);
+      const keyName = `__getterKey${index += 1}`;
+      const key = Object.assign(new ParameterNode(keyType, keyName), { location: loc });
+      const keyRef = Object.assign(new IdentifierNode(keyName), { location: loc });
+      keys.push(key);
+      read = Object.assign(new ArrayAccessNode(read, keyRef), { location: loc });
+      current = current instanceof MappingType ? current.valueType : current.elementType;
+    }
+    if (arrayCount > 0 && (mappingCount > 1 || (mappingCount > 0 && arrayCount > 2))) return undefined;
+    const returnType = this.enumTypes.get(current instanceof AddressType ? current.interfaceName ?? '' : '') ?? current;
+    if (!isSafeGetterType(returnType) && !this.isContractAddr(returnType) && !(returnType instanceof EnumType)) {
+      return undefined;
+    }
+    return { keys, read, returnType };
+  }
+
+  // A Solidity `this.m(keys...)` call to an auto-getter is semantically the same state read as `m[keys...]`,
+  // but lowering it as an internal subroutine call would hide the mapping/array witnesses from the caller's
+  // entry-access scan. Inline only compiler-synthesized indexed getters back to their ordinary read expression;
+  // externally called getters remain real ABI entry points.
+  visitFunctionCall(node: FunctionCallNode): Node {
+    const visited = super.visitFunctionCall(node) as FunctionCallNode;
+    const arity = this.indexedGetterArities.get(visited.identifier.name);
+    if (!visited.fromThisCall || arity === undefined || visited.parameters.length !== arity) return visited;
+    let read: ExpressionNode = Object.assign(new IdentifierNode(visited.identifier.name), { location: visited.location });
+    for (const key of visited.parameters) {
+      read = Object.assign(new ArrayAccessNode(read, key), { location: visited.location });
+    }
+    return read;
+  }
+
+  visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    const call = this.visit(node.call);
+    if (call instanceof FunctionCallNode) {
+      node.call = call;
+      return node;
+    }
+    const statement = new ExpressionStatementNode(call as ExpressionNode);
+    statement.location = node.location;
+    return statement;
+  }
+
   visitContract(node: ContractNode): Node {
+    this.indexedGetterArities = new Map();
+    this.enumTypes = new Map(node.enumDefinitions.map((definition) => [
+      definition.name, new EnumType(definition.name, definition.members),
+    ]));
     const isPub = (v: StateVariableVisibility): boolean =>
       v === StateVariableVisibility.PUBLIC || v === StateVariableVisibility.EXTERNAL;
     const existing = new Set(node.functions.map((f) => f.name));
@@ -78,21 +154,17 @@ export default class SynthesizePublicGetters extends AstTraversal {
       if (!isPub(sv.visibility) || existing.has(sv.name)) continue;
       const loc = sv.location ?? fallback;
       // A public array's getter takes a uint index and returns the element (`function a(uint i) returns (T)
-      // { return this.a[i]; }`), like Solidity. Value-element only (struct/nested/enum-placeholder elements
-      // keep the whole-array read model, same restriction as scalars/mappings).
+      // { return this.a[i]; }`), like Solidity. Nested arrays/mappings contribute one ABI key per level.
       if (sv.type instanceof ArrayType) {
-        if (!isSafeGetterType(sv.type.elementType) && !this.isContractAddr(sv.type.elementType)) continue;
-        const idxName = '__getterIndex';
-        const key = Object.assign(new ParameterNode(new IntType(false, 256), idxName), { location: loc });
-        const stateRead = Object.assign(new StateAccessNode(sv.name), { location: loc });
-        const read = Object.assign(new ArrayAccessNode(stateRead, Object.assign(new IdentifierNode(idxName),
-          { location: loc })), { location: loc });
-        const body = Object.assign(new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]),
+        const indexed = this.buildIndexedGetter(sv.name, sv.type, loc);
+        if (!indexed) continue;
+        const body = Object.assign(new BlockNode([Object.assign(new ReturnNode([indexed.read]), { location: loc })]),
           { location: loc });
-        const fn = new FunctionDefinitionNode(sv.name, [key], body);
-        fn.returnTypes = [sv.type.elementType];
+        const fn = new FunctionDefinitionNode(sv.name, indexed.keys, body);
+        fn.returnTypes = [indexed.returnType];
         fn.location = loc;
         getters.push(fn);
+        this.indexedGetterArities.set(sv.name, indexed.keys.length);
         continue;
       }
       // A public struct's getter returns its members except mappings and arrays (Solidity's rule), as field
@@ -118,43 +190,31 @@ export default class SynthesizePublicGetters extends AstTraversal {
         getters.push(fn);
         continue;
       }
-      if (!isSafeGetterType(sv.type) && !this.isContractAddr(sv.type)) continue;
+      const scalarType = this.enumTypes.get(sv.type instanceof AddressType ? sv.type.interfaceName ?? '' : '') ?? sv.type;
+      if (!isSafeGetterType(scalarType) && !this.isContractAddr(scalarType) && !(scalarType instanceof EnumType)) continue;
       const read = new StateAccessNode(sv.name); read.location = loc;
       const body = new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]); body.location = loc;
       const fn = new FunctionDefinitionNode(sv.name, [], body);
-      fn.returnTypes = [sv.type];
+      fn.returnTypes = [scalarType];
       fn.location = loc;
       getters.push(fn);
     }
 
     for (const coll of node.collections) {
       if (!isPub(coll.visibility) || existing.has(coll.name)) continue;
-      if (!(coll.type instanceof MappingType)) continue;
       const loc = coll.location ?? fallback;
-      const keys: ParameterNode[] = [];
-      const keyArgs: IdentifierNode[] = [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let t: any = coll.type;
-      let i = 0;
-      while (t instanceof MappingType) {
-        const kn = `__getterKey${i += 1}`;
-        keys.push(Object.assign(new ParameterNode(t.keyType, kn), { location: loc }));
-        keyArgs.push(Object.assign(new IdentifierNode(kn), { location: loc }));
-        t = t.valueType;
-      }
-      // NOTE: a mapping whose value is an array would take one uint index per dimension (Solidity's rule),
-      // but element reads through a mapping entry's nested arrays are not wired yet - synthesizing a getter
-      // whose body cannot compile would break declarations that compile fine unused. Left unsynthesized.
-      if (!isSafeGetterType(t)) continue; // complex value getter (struct/array/enum/address)
-      const read = new MappingAccessNode(coll.name, keyArgs); read.location = loc;
-      const body = new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]); body.location = loc;
-      const fn = new FunctionDefinitionNode(coll.name, keys, body);
-      fn.returnTypes = [t];
+      const indexed = this.buildIndexedGetter(coll.name, coll.type, loc);
+      if (!indexed) continue; // complex terminal getter (struct/enum placeholder)
+      const body = new BlockNode([Object.assign(new ReturnNode([indexed.read]), { location: loc })]); body.location = loc;
+      const fn = new FunctionDefinitionNode(coll.name, indexed.keys, body);
+      fn.returnTypes = [indexed.returnType];
       fn.location = loc;
       getters.push(fn);
+      this.indexedGetterArities.set(coll.name, indexed.keys.length);
     }
 
     node.functions = [...node.functions, ...getters];
+    node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
     return node;
   }
 }

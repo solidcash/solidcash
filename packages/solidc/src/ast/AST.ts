@@ -108,6 +108,11 @@ export class SourceFileNode extends Node {
   // register under bare names (same-name events in different libraries collide), so `L.E.selector` folds from
   // this parse-time record instead.
   libraryEventSignatures: Map<string, string[]> = new Map();
+  libraryErrorSignatures: Map<string, string[]> = new Map();
+  libraryErrorDefinitions: Set<ErrorDefinitionNode> = new Set();
+  // Library modifiers are namespaced (`L.onlyOwner`) and expanded on the corresponding lowered free/library
+  // functions before semantic traversal. Kept on the source file so imports can merge them with library helpers.
+  libraryModifierDefinitions: ModifierDefinitionNode[] = [];
 
   constructor(
     public contract: ContractNode,
@@ -307,6 +312,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).
   hadInlineAssembly?: boolean;
+  // A helper proven at parse time to return a specific `this.method` external pointer. Consumers may preserve
+  // the helper call's side effects while replacing pointer metadata reads with that method's declaration data.
+  returnedSelfFunctionName?: string;
   // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
   // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).
@@ -321,11 +329,18 @@ export class FunctionDefinitionNode extends Node implements Named {
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
   isFreeFunction: boolean = false;
+  // True for a function declared inside a Solidity library, including the lowered primary-library contract
+  // form. Library ABI rules uniquely permit storage-reference parameters and returns at public/external
+  // visibility, so this cannot be inferred from isFreeFunction alone.
+  isLibraryFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;
   inheritedFrom?: string;
+  // Contract names through which this function may explicitly qualify a modifier (`A.m`). Captured from the
+  // function's declaring contract before inheritance flattening so a later sibling base cannot become visible.
+  allowedModifierQualifiers?: string[];
   // The contract that defined this function body, set during inheritance flattening. Used to resolve
   // `super.f()` relative to the right point in the linearization.
   definingContract?: string;
@@ -1005,6 +1020,12 @@ export class CastNode extends ExpressionNode implements Typed {
 export class FunctionCallNode extends ExpressionNode {
   resolvedFunction?: FunctionDefinitionNode;
   fieldNames?: string[];
+  // Call options are retained here for calls through a function-pointer identifier, then transferred to the
+  // MethodCallNode synthesized by the external-function-pointer lowering.
+  callOptions?: CallOptions;
+  // Candidate set retained until type checking for named calls whose overloads share the same field-name set.
+  // Each candidate must be checked with arguments mapped by name, since its declaration order may differ.
+  namedOverloadCandidates?: FunctionDefinitionNode[];
   // Set by SynthesizeBlockOracle on a blockhash(<computed n>) call: a stable per-function index for this call
   // site (codegen runs twice, so the key must not depend on a codegen-visit counter). Keys the read as
   // <computed:i>; the SDK resolves n from the auto-derivation probe trace.
@@ -1078,6 +1099,23 @@ export class TupleIndexOpNode extends ExpressionNode {
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitTupleIndexOp(this);
+  }
+}
+
+// Evaluate `discarded`, remove its single stack value, then evaluate and return `value`. This models Solidity
+// expressions that extract compile-time metadata from a runtime value (for example `getContract().f.selector`):
+// the receiver's side effects are preserved even though only the declaration selector is returned.
+export class SequenceExpressionNode extends ExpressionNode {
+  constructor(
+    public discarded: ExpressionNode,
+    public value: ExpressionNode,
+  ) {
+    super();
+    this.type = value.type;
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitSequenceExpression(this);
   }
 }
 
@@ -1701,6 +1739,7 @@ export class InterfaceCollectionNode extends Node implements Named, Typed {
 
 export class InterfaceNode extends Node implements Named {
   parents: string[] = [];
+  hasFallback: boolean = false;
 
   constructor(
     public name: string,
@@ -2249,6 +2288,8 @@ export class MethodCallStatementNode extends StatementNode {
 
 export class ModifierDefinitionNode extends Node implements Named {
   inheritedFrom?: string;
+  isAbstract: boolean = false;
+  isVirtual: boolean = false;
 
   constructor(
     public name: string,

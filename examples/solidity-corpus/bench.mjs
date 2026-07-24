@@ -1,6 +1,11 @@
-import { compileFile } from '/Code/cashscript/packages/solidc/dist/index.js';
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(BENCH_DIR, '..', '..');
+const { compileFile } = await import(join(REPO_ROOT, 'packages/solidc/dist/index.js'));
 
 // Parallel bench to solidity-by-example: attempt to compile every .sol in the ethereum/solidity compiler test
 // corpus (../solidity). Reuses the SBE tooling shape (compileFile + solidityImportCompat + OK/FAIL scorecard),
@@ -39,7 +44,7 @@ for (const f of files) {
   // fixtures, not real contracts, so they are SKIPPED (never scored). Whether SolidCash also happens to accept
   // one is kept only as an over-permissiveness diagnostic (`overAccepted`), not counted against the score.
   if (cls === 'NEGATIVE') { results.push({ rel, status: 'NEGATIVE', overAccepted: !tryCompile(f) }); i++; continue; }
-  writeFileSync('/Code/cashscript/examples/solidity-corpus/current.txt', rel); // culprit marker if it crashes/hangs
+  writeFileSync(join(BENCH_DIR, 'current.txt'), rel); // culprit marker if it crashes/hangs
   const err = tryCompile(f);
   results.push({ rel, status: err ? 'FAIL' : 'OK', err });
   if (++i % 500 === 0) process.stderr.write(`  ...${i}/${files.length}\n`);
@@ -49,7 +54,7 @@ const by = (s) => results.filter(r => r.status === s);
 const ok = by('OK'), fail = by('FAIL'), neg = by('NEGATIVE'), multi = by('MULTIFILE');
 const overAcc = neg.filter(r => r.overAccepted).length; // solc-negative fixtures we also accept (diagnostic only)
 const inScope = ok.length + fail.length;
-writeFileSync('/Code/cashscript/examples/solidity-corpus/results.json', JSON.stringify(results, null, 1));
+writeFileSync(join(BENCH_DIR, 'results.json'), JSON.stringify(results, null, 1));
 
 console.log(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
   + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} of them we also accept, `

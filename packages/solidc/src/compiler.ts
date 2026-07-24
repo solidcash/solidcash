@@ -820,16 +820,17 @@ export function parseCode(
   // Solidity's storage-layout specifier `contract C [is ..] layout at <expr> { }` sets an EVM storage base slot;
   // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
   // `contract Name [is ..]` header (so a `layout at .. {` inside a string / body is not touched) and stopping at
-  // the body `{` on the header line (`[^{};\n]`), preserving line numbers for diagnostics. (Native code has no
-  // such clause, so the strip is a no-op there.)
+  // the body `{`. The clause may span lines and contain NatSpec comments; blank its non-newline characters so
+  // downstream source locations keep their original line numbers. (Native code has no such clause, so the strip
+  // is a no-op there.)
   code = code.replace(
-    /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)\s+layout\s+at\s+([^{};\n]+?)(?=\s*\{)/g,
-    (_m, header, expr) => {
+    /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
+    (_m, header, clause, expr) => {
       if (/\berc7201\b/.test(expr)) {
         console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
           + 'base slot on the UTXO model, so the layout specifier is ignored.');
       }
-      return header;
+      return header + clause.replace(/[^\r\n]/g, ' ');
     },
   );
 

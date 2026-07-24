@@ -588,3 +588,20 @@ answered: yes, and ~13% of budget.
 - `Layer3IntentSpike.test.ts` - M4 caller intent (3/3).
 - `Layer3ResultSpike.test.ts` - M5 result/effect (3/3).
 - `Layer3TranscriptSpike.test.ts` - full transcript in one covenant (3/3).
+
+## 13. Multi-invocation result-dependency chain (the R1-R5 gap, on-chain)
+
+`Layer3ChainSpike.test.ts` (3/3, real BCH-2026 VM). Corpus 6's fixture: `A.root -> B.quoteAndCredit(x) -> r`
+then `B.consume(r)` - two logical invocations against one physical callee, where invocation 2's input is
+bound to invocation 1's authenticated result. This is the load-bearing edge corpus 5 says R1-R5 cannot
+express: a result crossing from one invocation into a downstream one.
+
+B computes `r = x * rate` (rate = B committed state). The covenant records the quote (inv1 effect:
+`OP_RETURN 6a08 <bytes8(x)>`), requires the consumed value to equal the produced result
+(`rClaimed == r` - the dependency), and settles it (inv2 effect: `value == 2000 + rClaimed`). Every
+endpoint validates the whole chain.
+
+VM-proven: POSITIVE accepts; a forged dependency (consume a value B never quoted, `rClaimed != x*rate`)
+rejects; an inv2 settlement that does not reflect the consumed result rejects. Both endpoints 2826
+instructions, 13.1% of budget. So a two-step transcript with an internal result edge holds on-chain at
+the same ~13% cost - the multi-invocation shape does not blow the budget.

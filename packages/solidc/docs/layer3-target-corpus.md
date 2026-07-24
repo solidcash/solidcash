@@ -521,3 +521,32 @@ authorization is persistent (preserved, not consumed), i.e. "A trusts B until A 
 one-shot intent would add a nonce. Finer granularity (a specific method/args, not just the callee) would
 encode more in the commitment. Both are follow-ups; the CALLEE-level intent gate is the load-bearing
 message-bus guarantee and it holds on-chain.
+
+## 11. Milestone 5: result / effect binding (the dependency R1-R5 could not authenticate)
+
+`Layer3ResultSpike.test.ts` (3/3, real BCH-2026 VM). This is the load-bearing edge of corpus 5: the Kashi
+`shareOut -> collateral` result flow that R4/R5 cannot express (an authenticated result crossing owners).
+
+The callee computes `r = amount * rate` over an authentic input (`amount` from the invocation) and its
+own committed state (`rate` = the callee's master NFT commitment, preserved). It delivers `r` to a result
+output (`OP_RETURN 6a08 <bytes8(r)>`) and the caller consumes it into a settlement output
+(`tx.outputs[3].value == 2000 + r`). The covenant binds BOTH the produced result and its consumption to
+the same computation, and every endpoint validates.
+
+VM-proven:
+- POSITIVE: result produced and consumed consistently -> accepted. Both endpoints 2664 instructions,
+  12.8% of budget.
+- HOSTILE (forged result): the result output carries a value other than `amount * rate` -> reject.
+- HOSTILE (settlement mismatch): the caller settlement over-credits (does not reflect `r`) -> reject.
+
+SOUND FRAMING FOR UTXO (important). In EVM the result guarantee leans on the callee's private storage;
+on BCH the state is on-chain, so the callee's computation is not secret - both covenants can and do
+recompute it. The guarantee M5 provides is therefore CORRECTNESS, not secrecy: the result is bound to the
+correct function of the authenticated inputs and committed state, and its consumption is bound to that
+result, so no attacker can inject a wrong result into the caller's settlement. That is exactly the
+property the Kashi flow needs (shareOut must be the real Rebase.toBase and must land in Kashi collateral).
+
+The spike uses a single linear `amount * rate`; a full transcript would carry the real Rebase math and
+multiple result edges, but the binding mechanism - produce to a bound output, consume from it, both
+endpoints verify - is the same. Follow-ups: multi-edge result graphs, and folding result+sender+intent
+into one combined transcript covenant.

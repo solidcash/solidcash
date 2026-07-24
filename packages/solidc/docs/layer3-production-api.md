@@ -120,8 +120,41 @@ compiler - `generateTranscriptCovenant` emits SolidCash that `solidc` compiles -
 path; what the SDK owns is the cross-participant transaction assembly the language has no single-covenant
 form for.
 
-Remaining product surface, NOT built here: a compiler-side `transcript` LANGUAGE CONSTRUCT (sugar so a
-developer writes a `transcript { }` block instead of a spec object + appBody strings) - a convenience over
-the complete SDK path above, not a missing capability; and a loop-parsed variable-N covenant (only the
-unrolled-per-shape generator is wired; it is general for any concrete shape). The resource state TRANSITION
-remains application business logic (appBody) by design, exactly as a contract function body is.
+## Design decision: NO `transcript` language construct (2026-07-24)
+
+We deliberately do NOT add a compiler-side `transcript { }` keyword. Reasons, in order:
+
+1. **Anti-parity.** Solidity has no such construct. A developer never declares a transcript; the call graph
+   IS the transcript, and the EVM provides `msg.sender`, the call, and the return value at runtime. Parity
+   means the same authenticated-invocation surface must be IMPLICIT in the code a developer already writes
+   (`msg.sender`, `IContract(addr).method(args)`), not a BCH-only keyword.
+2. **Zero new capability.** A `transcript { }` block would lower to exactly the covenant
+   `generateTranscriptCovenant` already emits, and the SDK would still assemble the multi-participant
+   transaction. It is ergonomic sugar, not a new guarantee.
+3. **Wrong home.** A transcript is a multi-participant, multi-output TRANSACTION SHAPE, not a single
+   covenant, so the SDK transaction layer is its natural home (a `contract` compiles to one covenant; a
+   transcript spans several plus their records/settlements). Covenant generation still runs through the
+   compiler (`generateTranscriptCovenant` emits SolidCash that `solidc` compiles), so the compiler is on the
+   path; the SDK owns the cross-participant assembly the language has no single-covenant form for.
+
+### What the existing constructs already provide (the parity map)
+
+A code-grounded comparison of the EXISTING `msg.sender` + `IContract(addr).method()` machinery against the
+transcript's guarantees:
+
+| Guarantee | Existing construct | Transcript |
+|---|---|---|
+| Authenticated `msg.sender` | ALREADY implicit - `emitMsgSender` + minting-NFT scan, fail-closed (`GenerateTargetTraversal.ts`) | M3 is the same primitive |
+| Result binding | ALREADY implicit - return-event NFT category-bound to the co-spent callee (`call-model.md`) | M5 adds a recipient-bound settlement delivery |
+| Caller-intent authorization (M4) | ABSENT - the star model has no callee-side proof "A authorized this call" | GENUINELY NEW |
+| N-party mutual authentication | ABSENT - star topology; callees don't authenticate each other; mutual cycles unconstructible (`external-contract-calls.md`) | GENUINELY NEW (canonical order + controller brand) |
+
+The two genuinely-new guarantees (M4 caller intent, N-party mutual authentication) are NOT blocked on a
+language construct - they are delivered by this SDK module today. The parity-correct direction for closing
+gaps is to fold guarantees back into the EXISTING constructs implicitly: e.g. `msg.sender` resolution was
+hardened to enforce EXACTLY ONE co-spent caller master (`call-model.md` soundness invariants;
+`MsgSenderUniqueMaster.test.ts`), closing the peer-mode ambiguity seam without any new keyword.
+
+The resource state TRANSITION remains application business logic (appBody) by design, exactly as a contract
+function body is. A loop-parsed variable-N covenant is not wired (only the unrolled-per-shape generator,
+which is general for any concrete shape).

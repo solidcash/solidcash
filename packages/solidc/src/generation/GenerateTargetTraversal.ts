@@ -19424,16 +19424,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
 
-    // MATCH: get lockingBytecode at [i], replace sentinel
+    // MATCH: enforce EXACTLY ONE co-spent minting NFT of the declared category. If the sentinel is already
+    // set, a second matching minting master is co-spent (peer-mode ambiguity) - abort so msg.sender can
+    // never resolve to a builder-chosen one of several. Otherwise store this lbc and keep scanning (no early
+    // exit) so a later duplicate still aborts.
+    this.emit(Op.OP_OVER, locationData);            // [expected, sentinel, i, sentinel]
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);       // [expected, sentinel, i, sentinelSet]
+    this.emit(Op.OP_NOT, locationData);             // [expected, sentinel, i, sentinelEmpty]
+    this.emit(Op.OP_VERIFY, locationData);          // abort on a 2nd match -> [expected, sentinel, i]
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);   // [expected, sentinel, i, lbc]
     this.emit(Op.OP_ROT, locationData);             // [expected, i, lbc, sentinel]
     this.emit(Op.OP_DROP, locationData);             // [expected, i, lbc]
     this.emit(Op.OP_SWAP, locationData);             // [expected, lbc, i]
-    // Force loop exit
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_NIP, locationData);             // [expected, lbc, count]
-    this.emit(Op.OP_1, locationData);               // exit loop
+    this.emit(Op.OP_1ADD, locationData);            // keep scanning (no early exit) to catch a duplicate
+    this.emit(Op.OP_0, locationData);
     this.emit(Op.OP_ELSE, locationData);
 
     // No match - i++, continue

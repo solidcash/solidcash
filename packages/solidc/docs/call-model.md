@@ -184,6 +184,14 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
 - **Integrity binding:** any value a covenant acts on provably came from the actually-co-spent target
   (identity `OP_EQUALVERIFY` + category-bound return event). This is non-negotiable; without it a "call"
   degenerates into a parameter.
+- **`msg.sender` resolution (contract caller):** a callee reading `msg.sender` resolves it to the
+  `OP_UTXOBYTECODE` of a co-spent minting NFT (`0x02`) of the SDK-declared caller category. The covenant
+  enforces EXACTLY ONE such co-spent input, fail-closed on 0 or >1 (`emitMsgSenderMintingVerification`), so
+  `msg.sender` is always the genuine, unambiguous caller master - never a builder-chosen one of several
+  co-spent minting masters. It proves IDENTITY (this master was co-spent), not per-call AUTHORIZATION:
+  co-presence of a peer's master is not proof that peer initiated this call. For peer-mode caller-intent
+  authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
+  `layer3-production-api.md`. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
 - **Script is sole arbiter:** unchecked == unconstrained.
 - **Co-spend liveness:** targets are real inputs, recreated for reads; the tx grows with N.
 

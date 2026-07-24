@@ -192,3 +192,72 @@ export function generateTranscriptCovenant(spec: TranscriptSpec): string {
   return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${bindingParams(n).join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
+
+/** Params for the controller-bound framework: participant `input_i, output_i` pairs + the controller input index. */
+export function controllerBindingParams(n: number): string[] {
+  return [...bindingParams(n), 'bigint controllerIdx'];
+}
+
+/**
+ * The SOUND N-party MUTUAL-authentication framework (closes audit L3-1 fully). Participants are bound to ONE
+ * canonical transcript ATTESTED by a co-spent CONTROLLER NFT of a unique mint-once category
+ * (`controllerCategory`, baked in), whose commitment is `sha256(ordered participant locking bytecodes)` - the
+ * canonical transcript root. Every participant reconstructs the root from the co-spent set and requires it ==
+ * the controller's attestation, so:
+ * - an INJECTED extra participant fails membership (it is not in the named set) or, if it names itself, its
+ *   reconstructed root mismatches the controller's single attestation;
+ * - a DISJOINT co-bundled transcript cannot match the one controller's one root;
+ * - EXACT-CODE identity follows from the root binding the exact p2sh32 participant addresses (no fragile
+ *   self-reconstruction of the covenant needed).
+ * Preserves participant masters (bytecode/category/commitment/value), canonical byte-lex order, the canonical
+ * blob binding, membership, and the controller in place.
+ */
+export function bindingFrameworkBodyControllerBound(n: number, controllerCategory: string): string[] {
+  if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
+  if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
+  const body: string[] = [];
+  for (let i = 0; i < n; i += 1) {
+    body.push(`bytes u${i} = tx.inputs[input${i}].unlockingBytecode;`);
+    body.push(`require(u${i}.slice(0, 5) == hex"0453434231");`);
+    body.push(`bytes lbc${i} = tx.inputs[input${i}].lockingBytecode;`);
+    body.push(`require(tx.inputs[input${i}].tokenCategory.slice(32, 33) == hex"02");`);
+    body.push(`require(tx.outputs[output${i}].lockingBytecode == lbc${i});`);
+    body.push(`require(tx.outputs[output${i}].tokenCategory == tx.inputs[input${i}].tokenCategory);`);
+    body.push(`require(tx.outputs[output${i}].nftCommitment == tx.inputs[input${i}].nftCommitment);`);
+    body.push(`require(tx.outputs[output${i}].value == tx.inputs[input${i}].value);`);
+    body.push(`bigint hi${i} = int(bytes.concat(lbc${i}.slice(2, 18).reverse(), hex"01"));`);
+    body.push(`bigint lo${i} = int(bytes.concat(lbc${i}.slice(18, 34).reverse(), hex"01"));`);
+  }
+  for (let i = 0; i + 1 < n; i += 1) {
+    body.push(`require(hi${i} < hi${i + 1} || (hi${i} == hi${i + 1} && lo${i} < lo${i + 1}));`);
+  }
+  body.push('bigint l0 = int(bytes.concat(u0.slice(5, 6), hex"00"));');
+  body.push('bigint a = 6 + l0;');
+  body.push('bigint l1 = int(bytes.concat(u0.slice(a, a + 1), hex"00"));');
+  body.push('bigint rp = a + 1 + l1;');
+  body.push('require(u0.slice(rp, rp + 1) == hex"4d");');
+  for (let i = 1; i < n; i += 1) body.push(`require(u${i}.slice(0, rp) == u0.slice(0, rp));`);
+  const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
+  body.push(`require(${members.join(' || ')});`);
+  // Controller attestation - exact identity + exhaustiveness.
+  const distinct = Array.from({ length: n }, (_u, i) => `controllerIdx != input${i}`).join(' && ');
+  body.push(`require(${distinct});`);
+  // OP_UTXOTOKENCATEGORY returns the category in INTERNAL (reversed) byte order, so bake the reverse of the
+  // display-order controllerCategory to compare against it.
+  const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
+  body.push(`require(tx.inputs[controllerIdx].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
+  let rootExpr = 'lbc0';
+  for (let i = 1; i < n; i += 1) rootExpr = `bytes.concat(${rootExpr}, lbc${i})`;
+  body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${rootExpr}));`);
+  body.push('require(tx.outputs[controllerIdx].lockingBytecode == tx.inputs[controllerIdx].lockingBytecode);');
+  body.push('require(tx.outputs[controllerIdx].tokenCategory == tx.inputs[controllerIdx].tokenCategory);');
+  body.push('require(tx.outputs[controllerIdx].nftCommitment == tx.inputs[controllerIdx].nftCommitment);');
+  return body;
+}
+
+/** Generate the sound controller-bound N-party binding covenant (binding-only) for `n` participants. */
+export function generateControllerBoundCovenant(n: number, controllerCategory: string): string {
+  const body = bindingFrameworkBodyControllerBound(n, controllerCategory);
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
+    + `  function __layer3_bind(${controllerBindingParams(n).join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
+}

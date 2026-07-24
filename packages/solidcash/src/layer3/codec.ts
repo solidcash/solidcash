@@ -27,6 +27,11 @@ export function participantArgs(n: number): bigint[] {
   return args;
 }
 
+/** Controller-bound args: the participant pairs followed by the controller input index. */
+export function controllerParticipantArgs(n: number, controllerIdx: number): bigint[] {
+  return [...participantArgs(n), BigInt(controllerIdx)];
+}
+
 /**
  * Wrap positional args in the SCB1 hidden-batch envelope for a handler selector, producing the exact bytes
  * the compiler route unlocker expects as its positional blob.

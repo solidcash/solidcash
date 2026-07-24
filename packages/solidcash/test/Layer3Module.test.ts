@@ -144,3 +144,30 @@ describe('layer3.deriveIntentCommitments - M4 authorization mapping', () => {
     expect(commitments[0]).toHaveLength(40); // hash160 = 20 bytes
   });
 });
+
+describe('layer3.generateControllerBoundCovenant - sound N-party mutual auth (audit L3-1 full)', () => {
+  const CAT = 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+  const rev = (CAT.match(/../g) as string[]).reverse().join('');
+
+  it('bakes the reversed controller category, the sha256 participant-set root, and controller preservation', () => {
+    const src = layer3.generateControllerBoundCovenant(2, CAT);
+    expect(src).toContain(`tx.inputs[controllerIdx].tokenCategory.slice(0, 32) == hex"${rev}"`); // internal order
+    expect(src).toContain('tx.inputs[controllerIdx].nftCommitment == sha256(bytes.concat(lbc0, lbc1))'); // root
+    expect(src).toContain('tx.outputs[controllerIdx].nftCommitment == tx.inputs[controllerIdx].nftCommitment');
+    expect(src).toContain('controllerIdx != input0 && controllerIdx != input1'); // controller distinct
+  });
+
+  it('folds the root over 3 participants with nested concat', () => {
+    expect(layer3.generateControllerBoundCovenant(3, CAT))
+      .toContain('sha256(bytes.concat(bytes.concat(lbc0, lbc1), lbc2))');
+  });
+
+  it('controllerParticipantArgs appends the controller input index', () => {
+    expect(layer3.controllerParticipantArgs(2, 2)).toEqual([0n, 0n, 1n, 1n, 2n]);
+  });
+
+  it('rejects a bad controller category and n < 2', () => {
+    expect(() => layer3.generateControllerBoundCovenant(2, 'zz')).toThrow();
+    expect(() => layer3.generateControllerBoundCovenant(1, CAT)).toThrow();
+  });
+});

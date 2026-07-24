@@ -1269,7 +1269,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const calls = new Set<number>();
       const writes = { value: false };
       scan(fn.body, slots, calls, writes);
-      if (writes.value && fn.returnTypes.length > 0 && internallyInvoked.has(fn.functionId)) {
+      // An event emitted from a returning OP_INVOKE subroutine is silently dropped (the subroutine
+      // epilogue returns before emit settlement, which only runs on the entry-point path). Void emit
+      // helpers are force-inlined, so the exposure is any returning internally-invoked helper that
+      // emits - whether or not it also writes state. Reject it (fail closed) rather than lose the event.
+      if (fn.returnTypes.length > 0 && internallyInvoked.has(fn.functionId)) {
         let emits = false;
         const detectEmit = (current: Node, seen = new Set<Node>()): void => {
           if (seen.has(current) || emits) return;

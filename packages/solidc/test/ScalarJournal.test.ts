@@ -91,4 +91,32 @@ describe('Release 1 scalar journal lowering', () => {
       /Returning state helper 'update' with an event must be inlined/,
     );
   });
+
+  it('rejects a returning emit helper (no direct state write) invoked from a journal handler', () => {
+    // Regression for J5: a returning helper that emits but does not itself write state survives as an
+    // OP_INVOKE subroutine (void emit helpers are force-inlined; returning ones are not) and its event
+    // was silently dropped at the subroutine epilogue. It must now fail closed instead.
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract EmitReturn() {
+        int x;
+        event Changed(int value);
+        function log(int v) internal returns (int) {
+          emit Changed(v);
+          return v + 1;
+        }
+        function bump(int n) internal returns (int) {
+          this.x = this.x + n;
+          int tag = log(n);
+          if (n > 0) { return tag; }
+          return 0;
+        }
+        function run(int n) {
+          int result = bump(n);
+          require(result >= 0);
+        }
+      }
+    `, { forceStateful: true })).toThrow(
+      /Returning state helper 'log' with an event must be inlined/,
+    );
+  });
 });

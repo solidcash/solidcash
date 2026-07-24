@@ -26,6 +26,56 @@ Headline: **the covenant authenticates whatever the lowered bytecode computes.**
 covenant surface, so a lowering that computes the wrong state transition yields state that is
 "correctly wrong" and settles on-chain. That is exactly what J1 and J2 do.
 
+> The original Disposition above (Decision 3) reflects the pre-remediation state. It is superseded by
+> the independent completion review below, which re-verified the fixes on the rebuilt code.
+
+## Completion review - independent re-verification (2026-07-24)
+
+Reviewer: Claude (fresh completion pass). Baseline: `1a324595` (remediation `0f46a2bd`, `1f76667f`),
+rebuilt from source. Method: I did not trust the remediation annotations or the handoff. I rebuilt
+the six packages, then reproduced each finding with fresh VM/compile probes on the real `BCH_2026_05`
+VM (`MockNetworkProvider.send()`), removing every probe afterward (worktree left clean).
+
+**Decision 2 (sound, but specific corrections remain before graduation).** The two covenant-accepted
+wrong-state holes are closed and regression-locked; no covenant-accepted wrong *funds/state* finding
+remains open. One fail-open *event-integrity* residual (J5) and one weak batch test (F5, batch doc)
+are the substantive open items; J3/J4 residuals are fail-closed robustness only.
+
+| Finding | Re-verified disposition (this pass) | Evidence |
+|---|---|---|
+| J1 inflation | **FIXED** - covenant-correct | VM: the literal repro now settles `SRC=100 -> 40+30+30` (was 130). `canonicalCacheKey` shares supported keys (param/literal/nullary) by structural identity; unsupported keys (local alias, field) reject at compile; the mixed-literal false-split fails closed (`SortedList` "duplicate slot"). No false-*share* is possible (disjoint identity prefixes). Regression-locked (`CollectionJournalRelease3` "does not stale-read a shared literal-key debit"). |
+| J2 burn | **FIXED** - sound boundary | Any `ReturnNode` (incl. nested in if/for) in a wrapper calling a multi-entry helper rejects at compile. The gate and the write-back rewrite share the same `node.functions` scope, so constructor/fallback/receive are not journaled (no reorder there). Restrictive (rejects guard-clause wrappers) but not unsound; exit-aware flushing remains future work. |
+| J3 external-effect guard | **VERIFIED (direct); residuals FAIL-CLOSED** | Method/dotted/low-level shapes force inlining. Residuals the tracer flagged - a deploy (`new`) in a scalar writer, and a transitive cast-form `IFoo(x).m()` external call - both throw at compile ("Block layout not available", param-arity mismatch). Robustness, not soundness. |
+| J4 returning array off-by-R | **FIXED (single-tail, VM); multi-return residual FAIL-CLOSED** | VM: the previously-rejected `push;return` handler now inlines and settles `[5,7]`. The multi/non-tail-return variant that survives to the scalar-journal off-by-R path is covenant-**rejected** (`mandatory-script-verify-flag-failed`) - fail-closed, not corruption. |
+| J5 dropped event | **RESIDUAL - FAIL-OPEN (event integrity)** | The codegen guard rejects a *lexical* `emit` in a returning journal handler, but a **returning** emit-helper (not force-inlined, unlike void ones) called from a returning journal handler compiles and **silently drops its event** (confirmed: the shape compiles; the drop mechanism is the subroutine epilogue returning before emit settlement). Not funds/state; diverges the on-chain log from source. Fix: reject (or inline) any journal handler whose transitive closure emits, not only direct emits. |
+| J6 recursive budget | **VERIFIED end-to-end** | VM: a mutually-recursive *collection* handler carries `recursiveStateHandler=true`; within-budget `run` settles; over-budget `run` is rejected at the SDK concrete-VM preflight ("does not fit or fails its concrete BCH VM preflight"), not an unrelated failure. Closes the metadata-only gap. |
+
+Validation reproduced this pass (single-threaded): `CollectionJournalRelease3` 14/14; `ScalarJournal`
++ `CollectionJournal` 16/16; `HiddenBatchRelease4` + `RepeatedExternalBatchRelease5` 29/29; full
+compiler suite 2,302 pass (the one "failure" was `HiddenBatch > allocates one exact two-row resource
+shape` timing out under concurrent probe load - it passes isolated in ~15s; commit `357157ad` already
+raised its timeout). Full SDK suite: see batch doc.
+
+Remaining before graduation (Decision 1): fix J5 (transitive-emit event loss); strengthen F5 (batch
+doc); optionally give J3/J4 clean diagnostics instead of confusing internal errors. R5 stays
+default-off regardless per `compiler-hidden-batch-v1.md` graduation gates.
+
+### Post-review J5 closure (2026-07-24)
+
+The completion review's J5 residual is now fixed. Code generation rejects every returning,
+internally invoked function containing an `EmitStatementNode`, regardless of whether that helper
+itself writes state. This covers the reproduced `log(v) returns (int) { emit E(v); return v + 1; }`
+shape which previously survived as an `OP_INVOKE` subroutine and silently lost its event. Expanded
+modifier emits and Yul `log*` operations are represented as `EmitStatementNode` before this check;
+returning transitive helpers are checked as their own internally invoked functions, while established
+inlining covers void emit helpers.
+
+The compiler regression `ScalarJournal.test.ts` now exercises the non-state-writing returning helper,
+and the complete compiler suite passes 2,304 tests. J5 is therefore **FIXED by an explicit
+fail-closed boundary**. The completion review's Decision 2 remains appropriate because J3/J4
+diagnostics and the batch audit's weak F5 caller-removal test remain follow-ups; no known fail-open
+journal finding remains.
+
 ## Remediation status
 
 Post-audit corrections (2026-07-23):

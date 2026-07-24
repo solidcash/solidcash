@@ -322,7 +322,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         ['sig', 'sig[]'].includes(parameter.type.toString()))
     )) {
       reason = 'transaction-signature-route-binding-required';
-    } else if (!reason && routeSensitive) {
+    } else if (!reason && routeSensitive
+      && !(compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind')) {
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall) {
       reason = 'batched-handler-forward-call-not-enabled';

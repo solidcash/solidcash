@@ -56,6 +56,11 @@ export interface CompilerOptions {
   experimentalHiddenBatch?: boolean;
   // Experimental Release 5 grouping of one repeated external callee.
   experimentalRepeatedExternalBatch?: boolean;
+  // Test-only layer-3 participation spike. This permits exactly the reserved
+  // `__layer3_bind` handler to introspect the transaction while executing
+  // through SCB1. It emits no layer-3 artifact capability and is not a
+  // production protocol switch.
+  experimentalLayer3BindingSpike?: boolean;
 }
 
 export interface AbiInput {

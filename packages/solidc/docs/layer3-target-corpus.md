@@ -196,3 +196,55 @@ Decision: **GO to Milestone 2 transaction-binding spike**, with these limits:
 
 Passing this gate establishes need, not feasibility. Cost, immutable-version interoperability,
 contention, full projection exhaustiveness, and independent review remain mandatory later gates.
+
+## 8. Milestone-2 measured results (2026-07-24, this pass)
+
+Status: the two-participant invariant-15 **binding core is now VM-proven and feasible**, not just
+compiled. Test: `packages/solidcash/test/e2e/Layer3ParticipantBindingSpike.test.ts` (5/5), executed on
+the real BCH-2026 VM via `MockNetworkProvider.sendRawTransaction` (full consensus verifier).
+
+Design realized: two clones of one stateful `Participant` artifact (distinct random categories, shared
+body), co-spent in one hand-built `TransactionBuilder` (no single-owner SDK path exists; the two peer
+masters + their canonical minting-NFT recreations at output0/output1 are laid out manually). Each
+master executes the SCB1 `__layer3_bind` handler. Row args are carried as the SCB1 row payload
+(not yet the separate L3P1 table); `createCompilerRouteUnlocker(route, sel)(blob)` gives each per-input
+unlocker with the byte-identical positional second push.
+
+Proven ENFORCED by the covenant (each negative has a same-UTXO positive control):
+
+| Invariant-15 check | Proven | Evidence |
+|---|---|---|
+| 5 row bound to actual input locking bytecode | yes | forged owner LBC row -> VM reject |
+| 6 input base category == stateCategory, minting | yes | forged category row -> VM reject |
+| 7 canonical owner output preserves LBC + category | yes (partial) | tampered output-0 category -> VM reject |
+| 8 both participant inputs select SCB1 | yes | corrupted input-1 SCB1 selector -> VM reject |
+| 11 active input is a named row | yes | `activeInputIndex in {input0,input1}` |
+| owner distinctness | yes (via `!=`) | positive requires distinct locking bytecodes |
+
+Frozen feasibility measurement (2 participants, one direct-owner row each), `BCH_2026_05`:
+
+| metric | per participant input | note |
+|---|---|---|
+| evaluated instructions | 2,480 | |
+| operation cost | ~304,700 | budget 2,057,600 (~15%) |
+| unlocking bytecode bytes | 2,531 | |
+| total transaction bytes | 5,525 | 2 masters + fee, 3 outputs |
+
+NOT yet done (honest; continue per the binding-spike handoff before Milestone 3):
+
+- separate **L3P1 participant-table codec** (checks 1-4 header/version/count/row-length/exhaustion are
+  currently the SCB1 outer envelope's, not a dedicated participant table);
+- check 2 **canonical strict byte-lexicographic owner order** (this pass uses distinctness `!=`, not
+  `<`; the `bytes <` compiler limitation still applies);
+- check 9 **byte-identical second pushes** across both inputs;
+- check 10 **controller-prefix (`L3B1CTRL`) inside each final redeem script** (needs redeem-script push
+  location parsing; the wrapper-stack-binding limitation applies to a length-from-constructor-param
+  approach);
+- check 12 general **duplicate-logical-owner / two-authorities** beyond the 2-distinct-participant case;
+- remaining hostile matrix rows: non-minimal push, legacy/direct route, controller-prefix
+  removal/substitution, duplicate logical owner, overlapping input/output blocks, executor/non-direct
+  kind, trailing-byte/truncation at each field boundary.
+
+This establishes **feasibility of the binding core** on top of the earlier need gate. Cost at scale,
+immutable-version interoperability, contention/liveness, full projection exhaustiveness, and
+independent review remain mandatory later gates before any production layer-3 surface.

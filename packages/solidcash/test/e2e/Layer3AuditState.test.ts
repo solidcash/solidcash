@@ -59,6 +59,11 @@ contract Participant() {
     require(shareOut == s);
     require(tx.outputs[stateIdx].lockingBytecode == tx.inputs[stateIdx].lockingBytecode);
     require(tx.outputs[stateIdx].nftCommitment == bytes.concat(bytes4(elastic + amount), bytes4(base + s)));
+    // F1 FIX: the state NFT must carry the PRODUCER's own token category (only the producer can mint it),
+    // rejecting an attacker's foreign-category inflated state.
+    require(tx.inputs[stateIdx].tokenCategory.slice(0, 32) == tx.inputs[producerIdx].tokenCategory.slice(0, 32));
+    // F2 FIX: bind the settlement RECIPIENT to the consumer, not just its value.
+    require(tx.outputs[4].lockingBytecode == tx.inputs[consumerIdx].lockingBytecode);
     require(tx.outputs[4].value == 2000 + shareOut);
   }
 }`;
@@ -81,22 +86,24 @@ async function setup(): Promise<any> {
   return { provider, route, sel, handler, parts };
 }
 
-async function build(s: any, bValue: bigint, creditTo?: string): Promise<TransactionBuilder> {
+async function build(s: any, bValue: bigint, opts: { creditTo?: string; cat?: string } = {}): Promise<TransactionBuilder> {
   const S = (M * bValue) / E;
   const argParts = [0n, 0n, 1n, 1n, 1n, 0n, 2n, M, S].map((v) => bigIntToVmNumber(v));
   const argsBlob = scriptToBytecode(argParts);
   const row = concat(hexToBin(s.handler.selector), le(0, 4), le(0, 2), le(argsBlob.length, 2), argsBlob);
   const blob = concat(hexToBin('53434231'), Uint8Array.from([1, 0, 1]), row);
 
+  // Default: state NFT carries the PRODUCER's (parts[1]) own category (the F1 fix requires it). The F1
+  // attack passes cat = a foreign category to prove the category check rejects it.
+  const stateCat = opts.cat ?? s.parts[1].setup.categoryId;
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: s.provider });
-  const stateUtxo = randomState(bValue);
+  const stateUtxo = {
+    txid: binToHex(Uint8Array.from({ length: 32 }, (_, i) => (i * 7 + Number(bValue)) & 0xff)), vout: 0, satoshis: 5000n,
+    token: { category: stateCat, amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(concat(num4(E), num4(bValue))) } },
+  };
   await s.provider.addUtxo(p2pkh.address, stateUtxo);
-  function randomState(b: bigint): any {
-    return { txid: binToHex(Uint8Array.from({ length: 32 }, (_, i) => (i * 7 + Number(b)) & 0xff)), vout: 0, satoshis: 5000n,
-      token: { category: STATE_CAT, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E), num4(b))) } } };
-  }
 
-  const b = new TransactionBuilder({ provider: s.provider });
+  const b = new TransactionBuilder({ provider: s.provider, allowImplicitNftBurn: true });
   b.addInput(s.parts[0].setup.masterUtxo, s.parts[0].contract.createCompilerRouteUnlocker(s.route, s.sel)(blob));
   b.addInput(s.parts[1].setup.masterUtxo, s.parts[1].contract.createCompilerRouteUnlocker(s.route, s.sel)(blob));
   b.addInput(stateUtxo, p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
@@ -112,35 +119,32 @@ async function build(s: any, bValue: bigint, creditTo?: string): Promise<Transac
   });
   b.addOutput({ // output 2 = state NFT transition to (E+M, B+S)
     to: p2pkh.tokenAddress, amount: 5000n,
-    token: { category: STATE_CAT, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E + M), num4(bValue + S))) } },
+    token: { category: stateCat, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E + M), num4(bValue + S))) } },
   });
   b.addOutput({ to: s.parts[0].contract.address, amount: 3000n }); // output 3 spare
-  b.addOutput({ to: creditTo ?? s.parts[0].contract.address, amount: 2000n + S }); // output 4 credit == 2000 + S
+  b.addOutput({ to: opts.creditTo ?? s.parts[0].contract.address, amount: 2000n + S }); // output 4 credit == 2000 + S
   return b;
 }
 
 const send = (s: any, b: TransactionBuilder): Promise<string> =>
   s.provider.sendRawTransaction(binToHex(encodeTransaction(b.buildLibauthTransaction())));
 
-describe('layer-3 audit: state-NFT authenticity (section 6.1 stand-in)', () => {
-  it('honest pre-state B=8 mints S=4 (control)', async () => {
+describe('layer-3 audit: F1/F2 fixes verified', () => {
+  it('honest deposit with a PRODUCER-category state NFT is accepted (self-pin allows the recreated state)', async () => {
     const s = await setup();
     await expect(send(s, await build(s, HONEST_B))).resolves.toBeTypeOf('string');
   });
 
-  it('FINDING: an attacker-supplied inflated pre-state B=1000 mints S=600 and the covenant accepts it', async () => {
+  it('F1 FIXED: an inflated FOREIGN-category state NFT (B=1000) is now rejected by the category check', async () => {
     const s = await setup();
-    // The state NFT is foreign-category + key-guarded, so nothing authenticates B. Inflate it 125x.
-    const S = (M * 1000n) / E; // 600
-    const result = await send(s, await build(s, 1000n)).then(() => `ACCEPTED with S=${S}`).catch((e) => `REJECTED: ${String(e).slice(0, 50)}`);
-    expect(result).toBe(`ACCEPTED with S=600`);
+    const result = await send(s, await build(s, 1000n, { cat: STATE_CAT })).then(() => 'ACCEPTED').catch((e) => `REJECTED: ${String(e).slice(0, 45)}`);
+    expect(result).toContain('REJECTED');
   });
 
-  it('FINDING: the consumer credit checks value == 2000+S but NOT the recipient; it can be redirected', async () => {
+  it('F2 FIXED: redirecting the consumer credit to an attacker is now rejected by the recipient bind', async () => {
     const s = await setup();
-    // Send the "consumer" credit output to an attacker P2PKH instead of the consumer; same value.
     const attacker = new Contract(p2pkhArtifact, [alicePkh], { provider: s.provider }).address;
-    const result = await send(s, await build(s, HONEST_B, attacker)).then(() => 'ACCEPTED').catch((e) => `REJECTED: ${String(e).slice(0, 50)}`);
-    expect(result).toBe('ACCEPTED');
+    const result = await send(s, await build(s, HONEST_B, { creditTo: attacker })).then(() => 'ACCEPTED').catch((e) => `REJECTED: ${String(e).slice(0, 45)}`);
+    expect(result).toContain('REJECTED');
   });
 });

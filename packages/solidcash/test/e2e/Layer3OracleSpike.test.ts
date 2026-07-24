@@ -59,6 +59,17 @@ function makeOracle(): string {
   for (let i = 0; i < n; i += 1) body.push(`require(u${i}.slice(rp + 3, rp + 13) == hex"${PREFIX10}");`);
   const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
   body.push(`require(${members.join(' || ')});`);
+  // F1: each state NFT carries its OWNER's token category (Bento=1, Kashi=0, token=2).
+  body.push('require(tx.inputs[bentoIdx].tokenCategory.slice(0, 32) == tx.inputs[input1].tokenCategory.slice(0, 32));');
+  body.push('require(tx.inputs[kashiIdx].tokenCategory.slice(0, 32) == tx.inputs[input0].tokenCategory.slice(0, 32));');
+  body.push('require(tx.inputs[tokenIdx].tokenCategory.slice(0, 32) == tx.inputs[input2].tokenCategory.slice(0, 32));');
+  // N2: state inputs distinct from participants and from each other.
+  body.push('require(bentoIdx != input0 && bentoIdx != input1 && bentoIdx != input2);');
+  body.push('require(kashiIdx != input0 && kashiIdx != input1 && kashiIdx != input2);');
+  body.push('require(tokenIdx != input0 && tokenIdx != input1 && tokenIdx != input2);');
+  body.push('require(bentoIdx != kashiIdx && bentoIdx != tokenIdx && kashiIdx != tokenIdx);');
+  // N1: preserve each participant's protected satoshi value.
+  for (let i = 0; i < n; i += 1) body.push(`require(tx.outputs[output${i}].value == tx.inputs[input${i}].value);`);
   // Bento (E,B) -> S, write (E+M, B+S)
   body.push('bytes bento = tx.inputs[bentoIdx].nftCommitment;');
   body.push('bigint elastic = int(bento.slice(0, 4));');
@@ -114,9 +125,9 @@ async function build(s: any, opts: { tokenState?: string } = {}): Promise<Transa
   const sign = (): any => p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
   const stateUtxo = (cat: string, commit: string): any =>
     randomUtxo({ satoshis: 5000n, token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: commit } } });
-  const bentoU = stateUtxo(BENTO_CAT, binToHex(concat(num4(E), num4(B))));
-  const kashiU = stateUtxo(KASHI_CAT, binToHex(num4(U)));
-  const tokenU = stateUtxo(TOKEN_CAT, binToHex(concat(num4(X), num4(Y))));
+  const bentoU = stateUtxo(s.parts[1].setup.categoryId, binToHex(concat(num4(E), num4(B))));
+  const kashiU = stateUtxo(s.parts[0].setup.categoryId, binToHex(num4(U)));
+  const tokenU = stateUtxo(s.parts[2].setup.categoryId, binToHex(concat(num4(X), num4(Y))));
   await s.provider.addUtxo(p2pkh.address, bentoU);
   await s.provider.addUtxo(p2pkh.address, kashiU);
   await s.provider.addUtxo(p2pkh.address, tokenU);
@@ -139,9 +150,9 @@ async function build(s: any, opts: { tokenState?: string } = {}): Promise<Transa
   const tok = (cat: string, commit: string): any => ({
     to: p2pkh.tokenAddress, amount: 5000n, token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: commit } },
   });
-  builder.addOutput(tok(BENTO_CAT, binToHex(concat(num4(E + M), num4(B + S))))); // 3
-  builder.addOutput(tok(KASHI_CAT, binToHex(num4(U + S)))); // 4
-  builder.addOutput(tok(TOKEN_CAT, opts.tokenState ?? binToHex(concat(num4(X - M), num4(Y + M))))); // 5
+  builder.addOutput(tok(s.parts[1].setup.categoryId, binToHex(concat(num4(E + M), num4(B + S))))); // 3
+  builder.addOutput(tok(s.parts[0].setup.categoryId, binToHex(num4(U + S)))); // 4
+  builder.addOutput(tok(s.parts[2].setup.categoryId, opts.tokenState ?? binToHex(concat(num4(X - M), num4(Y + M))))); // 5
   return builder;
 }
 
@@ -164,7 +175,7 @@ describe('layer-3 multi-resource oracle spike (E2E)', () => {
     // Three owners, share, and three multi-field state writes (Bento, Kashi, token) in one covenant.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 3841, ratioPct: 13.3 }, { instr: 3841, ratioPct: 13.3 }, { instr: 3841, ratioPct: 13.3 },
+      { instr: 4030, ratioPct: 13.2 }, { instr: 4030, ratioPct: 13.2 }, { instr: 4030, ratioPct: 13.2 },
     ]);
   });
 

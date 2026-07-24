@@ -8,15 +8,37 @@ by the VM. Attack harness: `test/e2e/Layer3Audit.test.ts` (compact binding) and
 
 ## Summary
 
-| # | Item | Result | Severity |
-|---|---|---|---|
-| F1 | Foreign-category state NFT is unauthenticated (inflation) | CONFIRMED exploitable | Critical (as-built) |
-| F2 | Value-settlement output binds value but not recipient | CONFIRMED exploitable | High (M5/result form) |
-| N1 | Value/commitment preservation relies on the stateful covenant, not the binding | Implicit dependency | Note |
-| N2 | Index validity is enforced by VM crash, not explicit range checks | Fragile | Note |
-| D1 | Extra unnamed participant-covenant input | Rejected (defense holds) | - |
-| D2 | Duplicate/aliased participant (input0==input1) | Rejected (defense holds) | - |
-| D3 | msg.sender caller/callee constrained to the real participants | Sound by construction | - |
+| # | Item | Result | Severity | Status |
+|---|---|---|---|---|
+| F1 | Foreign-category state NFT is unauthenticated (inflation) | CONFIRMED exploitable | Critical (as-built) | FIXED |
+| F2 | Value-settlement output binds value but not recipient | CONFIRMED exploitable | High (M5/result form) | FIXED |
+| N1 | Value/commitment preservation relies on the stateful covenant, not the binding | Implicit dependency | Note | FIXED |
+| N2 | Index validity is enforced by VM crash, not explicit range checks | Fragile | Note | FIXED |
+| D1 | Extra unnamed participant-covenant input | Rejected (defense holds) | - | - |
+| D2 | Duplicate/aliased participant (input0==input1) | Rejected (defense holds) | - | - |
+| D3 | msg.sender caller/callee constrained to the real participants | Sound by construction | - | - |
+
+## Remediation applied (all four fixed and re-verified on the VM)
+
+- F1: each owner's state NFT must carry the OWNER's own token category
+  (`require(tx.inputs[stateIdx].tokenCategory[..32] == tx.inputs[ownerIdx].tokenCategory[..32])`), applied
+  in state-write / Kashi / oracle / refined-intent. A recreated (conserved) same-category state NFT does
+  NOT trip the self-pin - verified, the honest producer-category deposit is accepted. `Layer3AuditState`
+  now shows the foreign-category inflation attack REJECTED. Residual: an owner minting a bad pre-state for
+  itself is out of scope (it can already grief itself); the CashTokens category-minting rule stops others.
+- F2: the settlement output's RECIPIENT is bound
+  (`require(tx.outputs[k].lockingBytecode == tx.inputs[consumerIdx].lockingBytecode)`), applied in result /
+  state-write. `Layer3AuditState` shows the redirect REJECTED.
+- N1: explicit protected-satoshi preservation
+  (`require(tx.outputs[output_i].value == tx.inputs[input_i].value)`) added to the settlement/state
+  covenants (result, state-write, refined-intent, Kashi, oracle); the pure-binding spikes remain
+  protected by forceStateful (D-value drain still rejects), now stated as a verified dependency.
+- N2: explicit index checks (state indices distinct from participants and from each other) added to
+  state-write, refined-intent, Kashi, oracle; msg.sender indices remain constrained to the real
+  participants by dual membership (D3).
+
+Cost impact of the fixes stayed within budget: state-write 13.3%, result 12.8%, refined-intent 13.5%,
+Kashi 13.5%, oracle 13.2% (all per-input, all still under ~14%).
 
 The core message-bus MECHANISM (identity-by-reference binding, canonical order, brand cross-check, the
 msg.sender constraint) is sound - the defenses hold on the VM. Both findings are MISSING CHECKS in the

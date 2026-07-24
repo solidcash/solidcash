@@ -14,8 +14,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 // three owners (Kashi, Bento, token), the authenticated share result S = floor(M*B/E), and REAL persistent
 // state writes to BOTH Bento (E += M, B += S) and Kashi (collateral U += S), plus the token transfer
 // record. This is the exact I1.shareOut -> Kashi-collateral flow corpus 5 says R1-R5 cannot authenticate,
-// executed atomically against the corpus-4 oracle. State NFTs use foreign categories (no self-pin) and are
-// key-guarded stand-ins for producer-branded state; the transition binding is production-identical.
+// executed atomically against the corpus-4 oracle. Each state NFT carries its OWNER's own token category
+// (F1 fix, audit finding F1): category-authenticated so an attacker cannot substitute a foreign-category
+// inflated pre-state, and recreated (conserved) so the self-pin allows it. Settlement into committed state.
 const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const E = 12n; const B = 9n; const U = 5n; const M = 8n; // S = floor(8*9/12) = 6; Bento->(20,15) Kashi->11
@@ -61,6 +62,15 @@ function makeKashi(): string {
   for (let i = 0; i < n; i += 1) body.push(`require(u${i}.slice(rp + 3, rp + 13) == hex"${PREFIX10}");`);
   const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
   body.push(`require(${members.join(' || ')});`);
+  // F1: each state NFT carries its OWNER's token category (Bento=participant 1, Kashi=participant 0).
+  body.push('require(tx.inputs[bentoStateIdx].tokenCategory.slice(0, 32) == tx.inputs[input1].tokenCategory.slice(0, 32));');
+  body.push('require(tx.inputs[kashiStateIdx].tokenCategory.slice(0, 32) == tx.inputs[input0].tokenCategory.slice(0, 32));');
+  // N2: state inputs are distinct from the participants and from each other.
+  body.push('require(bentoStateIdx != input0 && bentoStateIdx != input1 && bentoStateIdx != input2);');
+  body.push('require(kashiStateIdx != input0 && kashiStateIdx != input1 && kashiStateIdx != input2);');
+  body.push('require(bentoStateIdx != kashiStateIdx);');
+  // N1: preserve each participant's protected satoshi value.
+  for (let i = 0; i < n; i += 1) body.push(`require(tx.outputs[output${i}].value == tx.inputs[input${i}].value);`);
   // Bento share: read (E,B), S = floor(M*B/E), write (E+M, B+S).
   body.push('bytes bento = tx.inputs[bentoStateIdx].nftCommitment;');
   body.push('bigint elastic = int(bento.slice(0, 4));');
@@ -110,10 +120,10 @@ async function build(s: any, opts: { bentoState?: string; kashiState?: string } 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: s.provider });
   const sign = (): any => p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
   const bentoUtxo = randomUtxo({
-    satoshis: 5000n, token: { category: BENTO_CAT, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E), num4(B))) } },
+    satoshis: 5000n, token: { category: s.parts[1].setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E), num4(B))) } },
   });
   const kashiUtxo = randomUtxo({
-    satoshis: 5000n, token: { category: KASHI_CAT, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(num4(U)) } },
+    satoshis: 5000n, token: { category: s.parts[0].setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(num4(U)) } },
   });
   await s.provider.addUtxo(p2pkh.address, bentoUtxo);
   await s.provider.addUtxo(p2pkh.address, kashiUtxo);
@@ -134,11 +144,11 @@ async function build(s: any, opts: { bentoState?: string; kashiState?: string } 
   }
   builder.addOutput({ // output 3 = Bento state -> (E+M, B+S)
     to: p2pkh.tokenAddress, amount: 5000n,
-    token: { category: BENTO_CAT, amount: 0n, nft: { capability: 'mutable', commitment: opts.bentoState ?? binToHex(concat(num4(E + M), num4(B + S))) } },
+    token: { category: s.parts[1].setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: opts.bentoState ?? binToHex(concat(num4(E + M), num4(B + S))) } },
   });
   builder.addOutput({ // output 4 = Kashi collateral -> U+S
     to: p2pkh.tokenAddress, amount: 5000n,
-    token: { category: KASHI_CAT, amount: 0n, nft: { capability: 'mutable', commitment: opts.kashiState ?? binToHex(num4(U + S)) } },
+    token: { category: s.parts[0].setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: opts.kashiState ?? binToHex(num4(U + S)) } },
   });
   builder.addOutput({ to: s.parts[0].contract.address, amount: 3000n }); // output 5 spare
   builder.addOutput({ to: concat(hexToBin('6a08'), num8(M)), amount: 0n }); // output 6 token transfer record
@@ -164,7 +174,7 @@ describe('layer-3 Kashi acceptance capstone (E2E)', () => {
     // Full Kashi deposit: 3 owners + share + two state writes + token record, one covenant. Under budget.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 3620, ratioPct: 13.6 }, { instr: 3620, ratioPct: 13.6 }, { instr: 3620, ratioPct: 13.6 },
+      { instr: 3744, ratioPct: 13.5 }, { instr: 3744, ratioPct: 13.5 }, { instr: 3744, ratioPct: 13.5 },
     ]);
   });
 

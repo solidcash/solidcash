@@ -67,9 +67,13 @@ contract Participant() {
     require(this.activeInputIndex == input0 || this.activeInputIndex == input1);
     require(callerIdx != calleeIdx);
     require(this.activeInputIndex == callerIdx || this.activeInputIndex == calleeIdx);
+    require(tx.outputs[output0].value == tx.inputs[input0].value); // N1: explicit value preservation
+    require(tx.outputs[output1].value == tx.inputs[input1].value);
     bigint rate = int(tx.inputs[calleeIdx].nftCommitment);
     bigint r = amount * rate;
     require(tx.outputs[2].lockingBytecode == bytes.concat(hex"6a08", bytes8(r)));
+    // F2: bind the settlement RECIPIENT to the caller (consumer), not just its value.
+    require(tx.outputs[3].lockingBytecode == tx.inputs[callerIdx].lockingBytecode);
     require(tx.outputs[3].value == 2000 + r);
   }
 }`;
@@ -143,7 +147,7 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
     });
     // Compact binding + result production + settlement consumption, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2664, ratioPct: 12.8 }, { instr: 2664, ratioPct: 12.8 }]);
+    expect(metrics).toEqual([{ instr: 2687, ratioPct: 12.8 }, { instr: 2687, ratioPct: 12.8 }]);
   });
 
   it('HOSTILE: a forged result (not amount*rate) is rejected', async () => {

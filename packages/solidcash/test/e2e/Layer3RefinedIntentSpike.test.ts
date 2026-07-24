@@ -64,6 +64,11 @@ contract Participant() {
     require(u1.slice(rp + 3, rp + 13) == hex"${PREFIX10}");
     require(this.activeInputIndex == input0 || this.activeInputIndex == input1);
     require(callerIdx != calleeIdx);
+    require(authIdx != input0 && authIdx != input1); // N2: auth input is not a participant
+    require(tx.outputs[output0].value == tx.inputs[input0].value); // N1: explicit value preservation
+    require(tx.outputs[output1].value == tx.inputs[input1].value);
+    // F1: the auth NFT MUST carry the caller's own token category (only the caller can mint it).
+    require(tx.inputs[authIdx].tokenCategory.slice(0, 32) == tx.inputs[callerIdx].tokenCategory.slice(0, 32));
     bytes state = tx.inputs[authIdx].nftCommitment;
     bytes authKey = state.slice(0, 20);
     require(authKey == hash160(bytes.concat(tx.inputs[calleeIdx].lockingBytecode, selector)));
@@ -111,7 +116,7 @@ async function build(
   const authKey = opts.authKey ?? hash160(concat(hexToBin(s.parts[calleeIdx].contract.lockingBytecode), SELECTOR));
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: s.provider });
   const authUtxo = randomUtxo({
-    satoshis: 5000n, token: { category: AUTH_CAT, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(authKey, num4(0n))) } },
+    satoshis: 5000n, token: { category: s.parts[0].setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(authKey, num4(0n))) } },
   });
   await s.provider.addUtxo(p2pkh.address, authUtxo);
 
@@ -131,7 +136,7 @@ async function build(
   });
   builder.addOutput({ // output 2 = auth state NFT, nonce advanced to (outNonce ?? 1)
     to: p2pkh.tokenAddress, amount: 5000n,
-    token: { category: AUTH_CAT, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(authKey, num4(opts.outNonce ?? 1n))) } },
+    token: { category: s.parts[0].setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(authKey, num4(opts.outNonce ?? 1n))) } },
   });
   builder.addOutput({ to: s.parts[0].contract.address, amount: 2000n });
   return builder;
@@ -155,7 +160,7 @@ describe('layer-3 refined intent (method granularity + one-shot nonce) spike (E2
     });
     // Method-specific authorization + one-shot nonce advance, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 3026, ratioPct: 13.5 }, { instr: 3026, ratioPct: 13.5 }]);
+    expect(metrics).toEqual([{ instr: 3080, ratioPct: 13.5 }, { instr: 3080, ratioPct: 13.5 }]);
   });
 
   it('HOSTILE: calling a method the caller did not authorize (wrong selector) is rejected', async () => {

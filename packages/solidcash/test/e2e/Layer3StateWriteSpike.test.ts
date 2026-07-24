@@ -68,6 +68,12 @@ contract Participant() {
     require(u1.slice(rp + 3, rp + 13) == hex"${PREFIX10}");
     require(this.activeInputIndex == input0 || this.activeInputIndex == input1);
     require(producerIdx != consumerIdx);
+    require(stateIdx != input0 && stateIdx != input1); // N2: state input is not a participant
+    // N1: preserve the protected satoshi value explicitly (do not rely on forceStateful implicitly).
+    require(tx.outputs[output0].value == tx.inputs[input0].value);
+    require(tx.outputs[output1].value == tx.inputs[input1].value);
+    // F1: the state NFT MUST carry the producer's own token category (only the producer can mint it).
+    require(tx.inputs[stateIdx].tokenCategory.slice(0, 32) == tx.inputs[producerIdx].tokenCategory.slice(0, 32));
     bytes packed = tx.inputs[stateIdx].nftCommitment;
     bigint elastic = int(packed.slice(0, 4));
     bigint base = int(packed.slice(4, 8));
@@ -77,6 +83,8 @@ contract Participant() {
     require(tx.outputs[stateIdx].lockingBytecode == tx.inputs[stateIdx].lockingBytecode);
     require(tx.outputs[stateIdx].tokenCategory == tx.inputs[stateIdx].tokenCategory);
     require(tx.outputs[stateIdx].nftCommitment == bytes.concat(bytes4(elastic + amount), bytes4(base + s)));
+    // F2: bind the settlement RECIPIENT to the consumer, not just its value.
+    require(tx.outputs[4].lockingBytecode == tx.inputs[consumerIdx].lockingBytecode);
     require(tx.outputs[4].value == 2000 + shareOut);
   }
 }`;
@@ -108,10 +116,12 @@ async function build(s: any, opts: { newState?: string } = {}): Promise<Transact
   const row = concat(hexToBin(s.handler.selector), le(0, 4), le(0, 2), le(argsBlob.length, 2), argsBlob);
   const blob = concat(hexToBin('53434231'), Uint8Array.from([1, 0, 1]), row);
 
+  // F1: the state NFT carries the producer's (parts[producerIdx]) own category.
+  const stateCat = s.parts[producerIdx].setup.categoryId;
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: s.provider });
   const stateUtxo = randomUtxo({
     satoshis: 5000n,
-    token: { category: STATE_CAT, amount: 0n, nft: { capability: 'mutable', commitment: pack(E, B) } },
+    token: { category: stateCat, amount: 0n, nft: { capability: 'mutable', commitment: pack(E, B) } },
   });
   await s.provider.addUtxo(p2pkh.address, stateUtxo);
 
@@ -131,7 +141,7 @@ async function build(s: any, opts: { newState?: string } = {}): Promise<Transact
   });
   builder.addOutput({ // output 2 = state NFT, commitment transitioned to (E+M, B+S)
     to: p2pkh.tokenAddress, amount: 5000n,
-    token: { category: STATE_CAT, amount: 0n, nft: { capability: 'mutable', commitment: opts.newState ?? pack(E + M, B + S) } },
+    token: { category: stateCat, amount: 0n, nft: { capability: 'mutable', commitment: opts.newState ?? pack(E + M, B + S) } },
   });
   builder.addOutput({ to: s.parts[0].contract.address, amount: 3000n }); // output 3 spare
   builder.addOutput({ to: s.parts[0].contract.address, amount: 2000n + S }); // output 4 consumer settlement
@@ -156,7 +166,7 @@ describe('layer-3 persistent state-write spike (E2E)', () => {
     });
     // Committed state read + floored share + state rewrite, all in one covenant, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 3104, ratioPct: 13.3 }, { instr: 3104, ratioPct: 13.3 }]);
+    expect(metrics).toEqual([{ instr: 3165, ratioPct: 13.3 }, { instr: 3165, ratioPct: 13.3 }]);
   });
 
   it('HOSTILE: a forged post-state (not E+M, B+S) is rejected', async () => {

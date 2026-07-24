@@ -97,11 +97,13 @@ recreation outputs. The application adds the fee and its effects.
 
 Built, `tsc`-clean, lint-clean, and covered by two suites:
 
-- `Layer3Production.test.ts` (7/7, real consensus VM): an invocation transcript built end to end from a spec
+- `Layer3Production.test.ts` (8/8, real consensus VM): an invocation transcript built end to end from a spec
   is accepted + under budget; a forged msg.sender is rejected; an unauthorized caller (M4 intent) is
   rejected; a COMPLETE Kashi-shaped transcript (invocation + resource transition + settlement) is assembled
-  from one `buildTranscriptTransaction` call and accepted; a 3-participant / two-invocation transcript is
-  built from a spec; an authenticated event log is bound; a forged event topic is rejected.
+  from one `buildTranscriptTransaction` call and accepted; the FULL 3-owner, 9-field Kashi oracle
+  (Bento/Kashi/token, min-share math at millions-magnitude - target-corpus section 4) transitions end to end
+  through `buildTranscriptTransaction`; a 3-participant / two-invocation transcript is built from a spec; an
+  authenticated event log is bound; a forged event topic is rejected.
 - `Layer3Module.test.ts` (11/11, pure logic): pins the module-owned layout indices, the SCB1 blob envelope,
   the OP_RETURN push encoding, every generated binding string, and the fail-closed validation guards.
 

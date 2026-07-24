@@ -19,6 +19,7 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
   return out;
 };
 const num4 = (n: bigint): Uint8Array => Uint8Array.from({ length: 4 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn));
+const num8 = (n: bigint): Uint8Array => Uint8Array.from({ length: 8 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn));
 
 async function compileAndSetup(spec: layer3.TranscriptSpec, provider: any): Promise<any> {
   const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
@@ -157,6 +158,71 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
       change: { address: participants[0].contract.address, satoshis: 15000n },
     });
     await expect(provider.sendRawTransaction(rawOf(builder))).resolves.toBeTypeOf('string');
+  });
+
+  it('PRODUCTION: the full 3-owner, 9-field Kashi oracle transitions end to end from a spec', async () => {
+    const provider = createTestProvider();
+    const M = 500000n; const E = 1000000n; const B = 800000n; const C = 200000n; const K = 50000n;
+    const U = 30000n; const T = 90000n; const X = 5000000n; const Y = 1200000n; const L = 600000n;
+    const S = (M * B) / E; // 400000
+    // resources: Bento (owner 1), Kashi (owner 0), token (owner 2). Layout gives their input/output indices.
+    const shape: layer3.TranscriptSpec = { participants: 3, resources: [{ owner: 1 }, { owner: 0 }, { owner: 2 }] };
+    const lay = layer3.transcriptLayout(shape);
+    const [bi, ki, ti] = [lay.stateInput(0), lay.stateInput(1), lay.stateInput(2)];
+    const [bo, ko, to] = [lay.stateOutput(0), lay.stateOutput(1), lay.stateOutput(2)];
+    const spec: layer3.TranscriptSpec = {
+      ...shape,
+      appBody: [
+        `bytes bento = tx.inputs[${bi}].nftCommitment;`,
+        'bigint E = int(bento.slice(0, 8)); bigint Bv = int(bento.slice(8, 16));',
+        'bigint Cv = int(bento.slice(16, 24)); bigint Kv = int(bento.slice(24, 32));',
+        `require(${M} * Bv / E == ${S});`,
+        `require(tx.outputs[${bo}].nftCommitment == bytes.concat(`
+          + `bytes8(E + ${M}), bytes8(Bv + ${S}), bytes8(Cv), bytes8(Kv + ${S})));`,
+        `bytes kashi = tx.inputs[${ki}].nftCommitment;`,
+        'bigint Uv = int(kashi.slice(0, 8)); bigint Tv = int(kashi.slice(8, 16));',
+        `require(tx.outputs[${ko}].nftCommitment == bytes.concat(bytes8(Uv + ${S}), bytes8(Tv + ${S})));`,
+        `bytes tok = tx.inputs[${ti}].nftCommitment;`,
+        'bigint Xv = int(tok.slice(0, 8)); bigint Yv = int(tok.slice(8, 16)); bigint Lv = int(tok.slice(16, 24));',
+        `require(Xv >= ${M}); require(Lv >= ${M});`,
+        `require(tx.outputs[${to}].nftCommitment == bytes.concat(`
+          + `bytes8(Xv - ${M}), bytes8(Yv + ${M}), bytes8(Lv - ${M})));`,
+      ],
+    };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
+    const ordered = layer3.sortParticipants(participants);
+    const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const guard = (): any => p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
+    const stateOf = (cat: string, commit: Uint8Array): any => randomUtxo({
+      satoshis: 5000n,
+      token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commit) } },
+    });
+    const bento = stateOf(ordered[1].categoryId, concat(num8(E), num8(B), num8(C), num8(K)));
+    const kashi = stateOf(ordered[0].categoryId, concat(num8(U), num8(T)));
+    const token = stateOf(ordered[2].categoryId, concat(num8(X), num8(Y), num8(L)));
+    await provider.addUtxo(p2.address, bento);
+    await provider.addUtxo(p2.address, kashi);
+    await provider.addUtxo(p2.address, token);
+    const fee = await createFeeFunder(provider, 60000n);
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      resources: [
+        { utxo: bento, unlocker: guard(), address: p2.tokenAddress,
+          outputCommitment: binToHex(concat(num8(E + M), num8(B + S), num8(C), num8(K + S))) },
+        { utxo: kashi, unlocker: guard(), address: p2.tokenAddress,
+          outputCommitment: binToHex(concat(num8(U + S), num8(T + S))) },
+        { utxo: token, unlocker: guard(), address: p2.tokenAddress,
+          outputCommitment: binToHex(concat(num8(X - M), num8(Y + M), num8(L - M))) },
+      ],
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: ordered[0].contract.address, satoshis: 20000n },
+    });
+    await expect(provider.sendRawTransaction(rawOf(builder))).resolves.toBeTypeOf('string');
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const r = createVirtualMachineBch2026().evaluate({ inputIndex: 0, sourceOutputs, transaction });
+    expect('metrics' in r && !(r as any).error).toBe(true);
+    expect((r as any).metrics.operationCost / (r as any).metrics.maximumOperationCost).toBeLessThan(0.4);
   });
 
   const TOPIC = 'a1b2c3d4e5f6070809101112131415161718192021222324252627282930313f';

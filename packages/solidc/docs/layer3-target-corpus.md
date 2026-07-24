@@ -630,3 +630,23 @@ This closes the spike's acceptance shape: the exact three-owner result graph sec
 R1-R5 gap is buildable and sound at ~14% of budget. What remains for the general product (five-table
 transcript codec, SDK graph derivation, and the full Kashi Rebase math against the section-4 oracle) is
 productization over this proven mechanism, not a further soundness question.
+
+## 15. Real Kashi share math: Rebase.toBase (floored division) in-covenant
+
+`Layer3RebaseSpike.test.ts` (2/2, real BCH-2026 VM). Corpus 4's share rule is `S = floor(M * B / E)`
+(Bento `Rebase.toBase(M, roundUp=false)`), not a linear stand-in. The producer's committed state packs
+`(elastic E, base B)` as two 4-byte fields; the covenant reads them and computes `s = amount * base /
+elastic` (BCH `OP_DIV` floors for positive operands), binds `shareOut == s`, and the consumer credits it.
+
+VM-proven: POSITIVE with `E=10, B=8, M=6 -> S=floor(48/10)=4` accepts; a `shareOut` of 5 (rounding up past
+the floor) rejects. Both endpoints 2838 instructions, 12.8% of budget. The floored division and the
+two-field committed-state read both hold on-chain.
+
+REMAINING FOR FULL CORPUS-4 ACCEPTANCE (persistent-state writes). This spike reads (E, B) but does not
+write the post-state `E += M, B += S` (nor the other seven oracle fields). A persistent state UPDATE
+changes the owner's committed state across transactions, which is the data-NFT state machinery
+(setupStatefulUtxos state fields co-spent and rewritten), not the read-only committed values these spikes
+use. That data-NFT integration - plus the full multi-resource oracle and the general five-table
+transcript codec + SDK graph derivation - is the productization boundary. Every soundness and cost
+question the spike existed to answer is now answered across sections 8-15; what remains is building the
+general product over this proven, ~13-14%-of-budget mechanism.

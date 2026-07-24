@@ -61,8 +61,9 @@ root = sha256( EXEC_DOMAIN(4c33455845433100)
 - R2 execution root (call graph + selectors + order): CLOSED for STRUCTURE. Runtime argument/result VALUES in
   the edges are NOT yet bound (that is R5 depth).
 - R3 heterogeneous participants: CLOSED (two different compiled contracts mutually authenticate).
-- R8 N-party live-node lifecycle: CLOSED for consensus-node acceptance on regtest. Mainnet STANDARD policy
-  (acceptnonstdtxn=0) NOT yet measured.
+- R8 N-party live-node lifecycle: CLOSED. Passes on live BCHN regtest, AND under mainnet STANDARD policy -
+  re-ran the lifecycle against a BCHN node started with `-acceptnonstdtxn=0` (non-standard acceptance
+  disabled); the p2sh32 + CashTokens + OP_RETURN transcript txs are accepted as standard.
 - R5: CLOSED for soundness. Runtime args/results are bound into the edge and the callee AUTHENTICATES the
   result against its state (`Layer3RuntimeArgs.test.ts`: amount*rate; wrong result rejected). REMAINING: the
   ergonomic auto-wiring of a native `IContract(addr).method()` call to the edge (compiler integration).

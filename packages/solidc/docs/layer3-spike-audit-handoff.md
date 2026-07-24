@@ -5,6 +5,13 @@ section 5 (harness) and section 6 (stand-ins) FIRST - they determine what the 54
 prove. The green suite is necessary evidence, not sufficient: several soundness-critical properties are
 deliberately stubbed and are called out below for you to break.
 
+AN ADVERSARIAL SELF-AUDIT WAS ALREADY RUN (`layer3-spike-audit-findings.md`,
+`test/e2e/Layer3Audit*.test.ts`). It CONFIRMED the section-6.1 state-NFT stub is exploitable (inflate a
+foreign-category pre-state, mint excess share) and found a NEW issue: the M5/result value-settlement
+output binds the value but not the recipient (redirectable). It also verified defenses (extra-input,
+aliasing, msg.sender constraint) hold. Do not treat that self-audit as exhaustive or as a substitute for
+yours - re-run it, extend it, and challenge its severity calls.
+
 ## 1. What was built and why
 
 The disposable Milestone-2 participant-binding spike (`layer3-target-corpus.md` authorizes only this)

@@ -482,3 +482,35 @@ refuse a call it did not initiate. Intent-binding is the M3/M4 follow-up: the ca
 covenant must authorize each invocation it emits (e.g. the invocation table must equal the set of calls
 the caller's own logic emitted, or carry a caller authorization). The identity binding here is the
 prerequisite that makes an intent layer meaningful.
+
+## 10. Milestone 4: caller intent binding (designed; two anchor blockers found, NOT yet passing)
+
+M3 binds msg.sender IDENTITY (the sender is always the real co-spent caller). M4 must bind caller
+INTENT: an invocation naming A as caller is valid only for a call A actually authorized, so an attacker
+cannot inject "A -> C" merely because A is co-spent for another reason.
+
+Design (sound): the caller pre-commits its authorization - `hash160(authorized-callee lockingBytecode)`
+- somewhere only the caller controls; the covenant requires
+`tx.inputs[callerIdx].nftCommitment == hash160(tx.inputs[calleeIdx].lockingBytecode)`. Because the
+callee identity is category-derived and random, the authorization cannot be baked into shared covenant
+code and must be set per-instance AFTER the callee exists. Hostiles: unauthorized callee (commit to a
+different identity) and no-authorization (empty commitment) must both reject.
+
+TWO CONCRETE BLOCKERS found while implementing (both VM-confirmed on MockNetworkProvider's BCH-2026):
+
+1. **A separate authorization NFT branded to the caller's category is rejected by the stateful
+   self-pin.** Co-spending a second input that carries the caller's own token category fails input 0's
+   covenant; the identical fixture with the auth NFT under a FOREIGN category passes. So the stateful
+   covenant asserts something about how its category may appear across inputs, and an extra
+   same-category input violates it.
+2. **The caller's master NFT commitment is not free - it is state-controlled.** Re-minting the caller's
+   master with `commitment = hash160(callee)` (instead of empty) fails the covenant even with the M4
+   intent check removed, so the stateful machinery constrains the master commitment (empty for a
+   no-state contract). It cannot be repurposed as an authorization slot.
+
+CONCLUSION / NEXT STEP: the authorization must live in PROPER contract state - a data-NFT field set via
+`initialState` and co-spent as state, which the stateful covenant expects - not in a side NFT or the
+master commitment. That requires extending the hidden-batch fixture to co-spend and preserve the
+caller's data NFT and have `__layer3_bind` read its commitment. This is the M4 implementation work; the
+design and the two anchor constraints above are the load-bearing findings. M3 (identity binding) stands
+as the delivered milestone.

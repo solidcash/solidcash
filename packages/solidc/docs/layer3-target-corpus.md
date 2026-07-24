@@ -735,3 +735,16 @@ rejects; presenting a stale nonce (replay) rejects; failing to advance the nonce
 usable) rejects. Both endpoints 3026 instructions, 13.5% of budget. Intent granularity is now
 method-specific and single-use; extending `authKey` to hash the args as well (`hash160(callee ++ selector
 ++ args)`) binds intent to exact arguments with no covenant change beyond the preimage.
+
+## 21. SDK graph derivation: unsorted participant list -> ready transcript transaction
+
+`Layer3DeriveSpike.test.ts` (1/1, real BCH-2026 VM). In the general product the caller describes a call
+graph and the SDK derives the low-level transcript; this proves that derivation. `deriveTranscript()` takes
+an UNSORTED participant list and produces a ready-to-send transaction end to end: it applies canonical
+ordering, assigns participant indices, encodes the SCB1 transcript blob, adds the co-spend inputs, and adds
+the owner-preserving recreation outputs - no hand-built indices.
+
+VM-proven: handed the participants in REVERSE canonical order, the same derivation code produces a VALID
+transcript for N=2, 3, and 4 (the covenant's canonical-order check confirms the SDK sorted them correctly).
+This is the SDK counterpart to the covenant-side codec (section 19): the codec parses the table on-chain,
+the derivation builds it off-chain, and the two agree.

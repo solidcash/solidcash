@@ -2,10 +2,12 @@
 // shape, derive the transaction: canonical ordering, index assignment, blob encoding, participant inputs
 // (compiler route unlockers), and owner-preserving recreation outputs. The application adds its effects
 // (settlements, records, resource-state transitions) to the returned builder.
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { hash160 } from '@solidcash/utils';
 import type { Utxo } from './../interfaces.js';
 import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
+import { randomUtxo } from './../utils.js';
 import { type InvocationSpec, type TranscriptSpec, opReturnPrefix, transcriptLayout } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
@@ -43,6 +45,37 @@ export function sortParticipants(participants: TranscriptParticipant[]): Transcr
   );
 }
 
+/** The M4 intent commitment a caller's master must carry to authorize a callee: hash160(callee lockingBytecode). */
+export function intentCommitment(calleeLockingBytecode: string): string {
+  return binToHex(hash160(hexToBin(calleeLockingBytecode)));
+}
+
+/**
+ * Mint each participant's master with its M4 intent authorization: a caller's master commits to
+ * hash160(callee lockingBytecode); a non-caller's master stays uncommitted. Canonical order is derived here,
+ * so callers/callees resolve exactly as the covenant sees them. Mutates each participant's `master` to the
+ * authorized UTXO and returns the participants. Call after instantiation, before buildTranscriptTransaction.
+ */
+export async function authorizeParticipants(
+  provider: any, participants: TranscriptParticipant[], spec: TranscriptSpec,
+): Promise<TranscriptParticipant[]> {
+  const ordered = sortParticipants(participants);
+  const commit = ordered.map(() => '');
+  for (const inv of spec.invocations ?? []) {
+    commit[inv.caller] = intentCommitment(ordered[inv.callee].contract.lockingBytecode);
+  }
+  for (let i = 0; i < ordered.length; i += 1) {
+    const p = ordered[i];
+    const master = randomUtxo({
+      satoshis: p.master.satoshis,
+      token: { category: p.categoryId, amount: 0n, nft: { capability: 'minting', commitment: commit[i] } },
+    });
+    await provider.addUtxo(p.contract.tokenAddress, master);
+    p.master = master;
+  }
+  return participants;
+}
+
 /**
  * Derive the transcript transaction's binding half: sorted participant inputs + owner-preserving recreation
  * outputs, unlocked by the shared transcript blob. The caller adds the fee input and application effects
@@ -60,7 +93,11 @@ export function deriveTranscriptTransaction(opts: DeriveTranscriptOptions): Deri
     builder.addOutput({
       to: p.contract.tokenAddress,
       amount: p.master.satoshis,
-      token: { category: p.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      // Preserve the master's actual commitment (the caller's M4 intent authorization rides here).
+      token: {
+        category: p.categoryId, amount: 0n,
+        nft: { capability: 'minting', commitment: p.master.token?.nft?.commitment ?? '' },
+      },
     });
   }
   return { builder, ordered, blob };

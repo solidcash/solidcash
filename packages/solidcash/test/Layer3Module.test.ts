@@ -76,8 +76,10 @@ describe('layer3.generateTranscriptCovenant - generated framework + spec binding
     expect(src).toContain('function __layer3_bind(');
     expect(src).toContain(`hex"${layer3.CONTROLLER_BRAND_PREFIX}"`); // brand cross-check
     expect(src).toContain('.value == tx.inputs[input0].value');      // N1 value preservation
-    // invocation: msg.sender bound to caller lbc at senderOutput(0) = 2
+    // invocation M3: msg.sender bound to caller lbc at senderOutput(0) = 2
     expect(src).toContain('tx.outputs[2].lockingBytecode == bytes.concat(hex"6a23", tx.inputs[input0].lockingBytecode)');
+    // invocation M4: caller intent - caller's master commitment authorizes the callee
+    expect(src).toContain('tx.inputs[input0].nftCommitment == hash160(tx.inputs[input1].lockingBytecode)');
     // resource F1: state category == owner category; N2 distinctness
     expect(src).toContain('tx.inputs[2].tokenCategory.slice(0, 32) == tx.inputs[input1].tokenCategory.slice(0, 32)');
     expect(src).toContain('2 != input0 && 2 != input1');
@@ -99,6 +101,10 @@ describe('layer3.generateTranscriptCovenant - generated framework + spec binding
     expect(() => layer3.generateTranscriptCovenant({ participants: 1 })).toThrow();
     expect(() => layer3.generateTranscriptCovenant({ participants: 2, invocations: [{ caller: 0, callee: 0 }] })).toThrow();
     expect(() => layer3.generateTranscriptCovenant({ participants: 2, invocations: [{ caller: 0, callee: 2 }] })).toThrow();
+    // M4 single-master constraint: a caller cannot commit to two different callees.
+    expect(() => layer3.generateTranscriptCovenant({
+      participants: 3, invocations: [{ caller: 0, callee: 1 }, { caller: 0, callee: 2 }],
+    })).toThrow();
     expect(() => layer3.generateTranscriptCovenant({ participants: 2, resources: [{ owner: 5 }] })).toThrow();
     expect(() => layer3.generateTranscriptCovenant({ participants: 2, effects: [{ consumer: 9, valueExpr: 'x' }] })).toThrow();
     expect(() => layer3.generateTranscriptCovenant({ participants: 2, events: [{ emitter: 3, topicHex: 'aa' }] })).toThrow();

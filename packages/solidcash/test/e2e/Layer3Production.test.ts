@@ -35,6 +35,8 @@ async function compileAndSetup(spec: layer3.TranscriptSpec, provider: any): Prom
     const contract = inner.withCategory(hexToBin(s.categoryId));
     participants.push({ contract, master: s.masterUtxo, categoryId: s.categoryId });
   }
+  // Mint each caller's master with its M4 intent authorization (always-on: every invocation binds intent).
+  await layer3.authorizeParticipants(provider, participants, spec);
   return { route, sel, handler, participants };
 }
 
@@ -68,6 +70,27 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
     const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
     forged.outputs[2].lockingBytecode = concat(hexToBin('6a23'), hexToBin(ordered[1].contract.lockingBytecode));
     await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+  });
+
+  it('HOSTILE: an unauthorized caller (master commits to no callee) is rejected (M4)', async () => {
+    const provider = createTestProvider();
+    const spec: layer3.TranscriptSpec = { participants: 2, invocations: [{ caller: 0, callee: 1 }] };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
+    const ordered = layer3.sortParticipants(participants);
+    // Strip the caller's authorization: re-mint its master with an empty (unauthorized) commitment.
+    const bad = randomUtxo({
+      satoshis: ordered[0].master.satoshis,
+      token: { category: ordered[0].categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    });
+    await provider.addUtxo(ordered[0].contract.tokenAddress, bad);
+    ordered[0].master = bad;
+    const fee = await createFeeFunder(provider, 30000n);
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: participants[0].contract.address, satoshis: 12000n },
+    });
+    await expect(provider.sendRawTransaction(rawOf(builder))).rejects.toThrow();
   });
 
   it('builds a COMPLETE Kashi-shaped transcript (invocation + resource transition + settlement) from a spec', async () => {

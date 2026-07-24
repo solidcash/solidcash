@@ -37,6 +37,10 @@ const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
 const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
 const participants = /* [{ contract: new Contract(artifact, [], { provider, salt }), master, categoryId }, ...] */;
 
+// 2b. Authorize the callers (M4): mint each caller's master committing to hash160(its callee) so the
+//     covenant's intent gate accepts the invocation. The module derives the canonical order + mapping.
+await layer3.authorizeParticipants(provider, participants, spec);
+
 // 3. Assemble the WHOLE transaction from the spec + per-instance data (state guards + post-state commitments,
 //    settlement values). The module builds every input and output in the canonical layout.
 const { builder } = layer3.buildTranscriptTransaction({
@@ -67,7 +71,11 @@ FRAMEWORK with all self-audit fixes:
 
 then, per the spec (all at module-computed layout indices):
 
-- each invocation binds msg.sender = the caller's real locking bytecode to its OP_RETURN output;
+- each invocation binds BOTH msg.sender (M3: the caller's real locking bytecode to its OP_RETURN output)
+  AND caller intent (M4: the caller's own master NFT commitment must equal `hash160(callee lockingBytecode)`,
+  so an authenticated caller cannot be co-opted into a call it did not pre-authorize). Intent is always on:
+  a caller commits to exactly one callee (its single master), so a caller calling two callees is a
+  generation-time error;
 - each resource binds its state NFT to the OWNER's token category (F1), requires it distinct from the
   participants (N2), and preserves its locking bytecode + category (the commitment transition is appBody);
 - `appBody` statements (the application's resource transitions) run;
@@ -87,18 +95,19 @@ recreation outputs. The application adds the fee and its effects.
 
 Built, `tsc`-clean, lint-clean, and covered by two suites:
 
-- `Layer3Production.test.ts` (6/6, real consensus VM): an invocation transcript built end to end from a spec
-  is accepted + under budget; a forged msg.sender is rejected; a COMPLETE Kashi-shaped transcript (invocation
-  + resource transition + settlement) is assembled from one `buildTranscriptTransaction` call and accepted; a
-  3-participant / two-invocation transcript is built from a spec; an authenticated event log is bound; a
-  forged event topic is rejected.
+- `Layer3Production.test.ts` (7/7, real consensus VM): an invocation transcript built end to end from a spec
+  is accepted + under budget; a forged msg.sender is rejected; an unauthorized caller (M4 intent) is
+  rejected; a COMPLETE Kashi-shaped transcript (invocation + resource transition + settlement) is assembled
+  from one `buildTranscriptTransaction` call and accepted; a 3-participant / two-invocation transcript is
+  built from a spec; an authenticated event log is bound; a forged event topic is rejected.
 - `Layer3Module.test.ts` (11/11, pure logic): pins the module-owned layout indices, the SCB1 blob envelope,
   the OP_RETURN push encoding, every generated binding string, and the fail-closed validation guards.
 
 This is the production SDK layer over the audited covenants (`layer3-spike-audit-findings.md`) - end to end
-from spec to transaction: participant binding, authenticated invocations, owner-bound resources,
-consumer-bound settlements, and provenance-bound event logs. Bounded to `MAX_PARTICIPANTS = 8` per generated
-covenant (blob < 76 bytes).
+from spec to transaction, carrying the full capstone (target-corpus section 12): participant binding,
+authenticated invocations (M3 msg.sender + M4 caller intent), owner-bound resources, consumer-bound
+settlements (M5 result), and provenance-bound event logs. Bounded to `MAX_PARTICIPANTS = 8` per generated
+covenant (blob < 76 bytes); intent binds a caller to one callee per master.
 
 Architectural note: a transcript is a MULTI-participant, multi-output TRANSACTION SHAPE, not a single
 covenant, so the SDK transaction layer is its natural home (a `contract` compiles to one covenant; a

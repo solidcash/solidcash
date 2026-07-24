@@ -126,13 +126,21 @@ export function generateTranscriptCovenant(spec: TranscriptSpec): string {
   const layout = transcriptLayout(spec);
   const body = bindingFrameworkBody(n, spec.brandPrefix ?? CONTROLLER_BRAND_PREFIX);
 
+  const callerAuthorizes = new Map<number, number>(); // each caller's single committed callee (one master)
   (spec.invocations ?? []).forEach((inv, j) => {
     if (inv.caller < 0 || inv.caller >= n || inv.callee < 0 || inv.callee >= n) {
       throw new Error('layer3: invocation endpoint out of range');
     }
     if (inv.caller === inv.callee) throw new Error('layer3: invocation caller == callee');
-    // msg.sender = the caller participant's real locking bytecode, delivered + bound to its OP_RETURN.
+    const prior = callerAuthorizes.get(inv.caller);
+    if (prior !== undefined && prior !== inv.callee) {
+      throw new Error('layer3: a caller commits to one callee (its single master); it cannot call two callees');
+    }
+    callerAuthorizes.set(inv.caller, inv.callee);
+    // M3: msg.sender = the caller's real locking bytecode, delivered + bound to its OP_RETURN.
     body.push(`require(tx.outputs[${layout.senderOutput(j)}].lockingBytecode == bytes.concat(hex"6a23", tx.inputs[input${inv.caller}].lockingBytecode));`);
+    // M4: caller intent - the caller's own master commitment must pre-authorize exactly this callee.
+    body.push(`require(tx.inputs[input${inv.caller}].nftCommitment == hash160(tx.inputs[input${inv.callee}].lockingBytecode));`);
   });
 
   (spec.resources ?? []).forEach((r, k) => {

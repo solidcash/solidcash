@@ -456,3 +456,29 @@ participants it is O(N), and it measured CHEAPER than the earlier O(N^2) pairwis
 (n8 op-cost/budget 13.9% vs 18.7%; instr 2058/3102/5190 for n=2/4/8). A non-canonical (reversed)
 participant order is now a VM-proven rejected hostile. `ByteLexProbe.test.ts` pins the primitive
 (high-half difference, low-half tiebreak, strict-equality rejection).
+
+## 9. Milestone 3: authenticated invocation (msg.sender binding)
+
+`Layer3InvocationSpike.test.ts` (4/4, real BCH-2026 VM). The first message atop the compact binding: the
+SCB1 blob adds an invocation `(callerIdx -> calleeIdx)`. The covenant computes
+`sender = tx.inputs[callerIdx].lockingBytecode` - the identity of the REAL co-spent caller, read by
+reference exactly like the participant identities - and binds it into an OP_RETURN output
+(`6a23 <35-byte sender>`) that every endpoint validates.
+
+VM-proven:
+- POSITIVE: A->B and B->A each deliver the correct bound sender and broadcast.
+- HOSTILE (forged sender): the invocation reads participant 0 as caller but the OP_RETURN names
+  participant 1 -> the `output == identity(input[callerIdx])` bind rejects. This is the rev1 finding: a
+  transcript cannot name a msg.sender that is not the actual co-spent caller.
+- HOSTILE (tamper): flipping a byte of the delivered sender in a captured tx rejects.
+
+Cost: both endpoints 2466 instructions, 12.9% of budget - the invocation adds ~400 instructions over the
+2-participant binding and stays well under budget.
+
+WHAT IS PROVEN vs WHAT IS NEXT. This closes msg.sender *identity* forgery: the sender is always the real
+co-spent caller, never a fabricated one. It does NOT yet bind caller *intent* - a caller co-spent for
+another reason has its covenant merely confirm the OP_RETURN carries its own identity; it cannot yet
+refuse a call it did not initiate. Intent-binding is the M3/M4 follow-up: the caller's application
+covenant must authorize each invocation it emits (e.g. the invocation table must equal the set of calls
+the caller's own logic emitted, or carry a caller authorization). The identity binding here is the
+prerequisite that makes an intent layer meaningful.

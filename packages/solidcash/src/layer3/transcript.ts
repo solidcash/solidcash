@@ -9,9 +9,21 @@ import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
 import {
-  EXEC_DOMAIN, type ExecutionInvocation, type InvocationSpec, type TranscriptSpec, opReturnPrefix, transcriptLayout,
+  EXEC_DOMAIN, type ExecutionInvocation, type InvocationSpec, type TranscriptSpec, type TypedTransition,
+  opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
+
+/** Apply a TypedTransition to a commitment hex: add delta to the width-byte LE field at offset, preserving the rest. */
+export function applyTypedTransition(commitmentHex: string, t: TypedTransition): string {
+  const bytes = hexToBin(commitmentHex);
+  let field = 0n;
+  for (let i = 0; i < t.width; i += 1) field += BigInt(bytes[t.offset + i] ?? 0) << BigInt(8 * i);
+  field += BigInt(t.delta);
+  const out = new Uint8Array(bytes);
+  for (let i = 0; i < t.width; i += 1) out[t.offset + i] = Number((field >> BigInt(8 * i)) & 0xffn);
+  return binToHex(out);
+}
 
 const concatBin = (parts: Uint8Array[]): Uint8Array => {
   const buf = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -206,9 +218,13 @@ export function buildTranscriptTransaction(opts: BuildTranscriptOptions): Derive
   resources.forEach((r, k) => { // resource state: preserved by default, transitioned only if opted in
     const resSpec = opts.spec.resources![k];
     const ownerCat = ordered[resSpec.owner].categoryId;
-    // Fail-closed: a non-transition resource recreates with its INPUT commitment (the covenant preserves it);
-    // only a transition:true resource carries the app-supplied post-state commitment.
-    const commitment = resSpec.transition ? r.outputCommitment : (r.utxo.token?.nft?.commitment ?? '');
+    const inCommit = r.utxo.token?.nft?.commitment ?? '';
+    // Fail-closed: a non-transition resource recreates with its INPUT commitment; a TypedTransition is
+    // computed by the module (R6); only a raw `transition: true` uses the app-supplied post-state commitment.
+    let commitment: string;
+    if (!resSpec.transition) commitment = inCommit;
+    else if (typeof resSpec.transition === 'object') commitment = applyTypedTransition(inCommit, resSpec.transition);
+    else commitment = r.outputCommitment;
     builder.addOutput({
       to: r.address, amount: r.utxo.satoshis,
       token: { category: ownerCat, amount: 0n, nft: { capability: 'mutable', commitment } },

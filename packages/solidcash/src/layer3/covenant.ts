@@ -18,11 +18,18 @@ export interface ExecutionInvocation { caller: number; callee: number; selectorH
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
 export const EXEC_DOMAIN = '4c33455845433100';
 /**
- * A resource: an owner-branded state NFT co-spent and preserved (locking bytecode, category, value, and -
- * unless `transition` - commitment). Set `transition: true` to opt OUT of commitment preservation, in which
- * case the app's `appBody` MUST bind the output commitment (see L3-2 in layer3-production-audit.md).
+ * A TYPED transition (R6): add `delta` to the `width`-byte little-endian field at `offset` in the resource's
+ * NFT commitment (which is `total` bytes), preserving every other byte. The module generates the full,
+ * fail-closed output-commitment binding - no raw `appBody` needed for this common case.
  */
-export interface ResourceSpec { owner: number; transition?: boolean }
+export interface TypedTransition { offset: number; width: number; total: number; delta: number }
+/**
+ * A resource: an owner-branded state NFT co-spent and preserved (locking bytecode, category, value, and -
+ * unless `transition` - commitment). `transition` may be: absent/false = preserve commitment; a
+ * `TypedTransition` = a typed, module-generated, fail-closed field-delta (R6, preferred); or `true` = opt out
+ * of commitment binding entirely, requiring the app's `appBody` to bind it (raw escape hatch - see R6).
+ */
+export interface ResourceSpec { owner: number; transition?: boolean | TypedTransition }
 /** An effect: a settlement output bound to a consumer participant with an app-computed value expression. */
 export interface EffectSpec { consumer: number; valueExpr: string }
 /** An event: an authenticated OP_RETURN log bound to the emitter's identity + a fixed topic (EVM indexed log). */
@@ -213,7 +220,20 @@ export function generateTranscriptCovenant(spec: TranscriptSpec): string {
     body.push(`require(tx.outputs[${so}].value == tx.inputs[${si}].value);`);
     if (!r.transition) {
       body.push(`require(tx.outputs[${so}].nftCommitment == tx.inputs[${si}].nftCommitment);`);
-    }
+    } else if (typeof r.transition === 'object') {
+      // R6 typed field-delta: preserve every byte except the [offset, offset+width) field, which is += delta.
+      const t = r.transition;
+      if (!(Number.isInteger(t.offset) && Number.isInteger(t.width) && Number.isInteger(t.total)
+        && t.offset >= 0 && t.width > 0 && t.offset + t.width <= t.total)) {
+        throw new Error('layer3: invalid TypedTransition field bounds');
+      }
+      const inC = `tx.inputs[${si}].nftCommitment`;
+      const field = `int(${inC}.slice(${t.offset}, ${t.offset + t.width}))`;
+      const pre = `${inC}.slice(0, ${t.offset})`;
+      const post = `${inC}.slice(${t.offset + t.width}, ${t.total})`;
+      const rebuilt = `bytes.concat(bytes.concat(${pre}, bytes${t.width}(${field} + ${t.delta})), ${post})`;
+      body.push(`require(tx.outputs[${so}].nftCommitment == ${rebuilt});`);
+    } // transition === true: raw appBody escape hatch (must bind the output commitment itself)
   });
 
   body.push(...(spec.appBody ?? []));

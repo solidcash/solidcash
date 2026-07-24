@@ -1,7 +1,7 @@
 # Pre-message-bus work scope (handoff)
 
 Author: Claude; corrected against the current specifications by Codex. Date: 2026-07-24.
-Baseline: `codex/state-bus-research` at `0a0096f0`.
+Preparation baseline: `codex/state-bus-research` at `9dba31ba`.
 
 ## 0. How to use this handoff
 
@@ -285,7 +285,9 @@ participant in one canonical graph.
 
 Before spike work:
 
-1. create a new worktree from this branch rather than mixing the spike into the v1 implementation;
+1. use a dedicated worktree rather than mixing the spike into the v1 implementation
+   (`.worktrees/state-bus` already provides that isolation for Milestones 0-1; create a child
+   spike branch/worktree immediately before production-neutral Milestone-2 code);
 2. record the exact baseline commit and build/test totals;
 3. keep all existing artifact capability metadata and compiler defaults byte-identical;
 4. prohibit production code from advertising a layer-3 selector, version, or controller prefix;
@@ -477,7 +479,7 @@ No property is considered proven solely because the SDK refuses to construct a t
 
 The next implementation turn should perform only Milestones 0-1:
 
-1. create the dedicated spike worktree;
+1. confirm the dedicated research worktree and reserve a child spike branch for Milestone 2;
 2. pin baseline build, compiler, SDK, and byte-identity evidence;
 3. extract the bounded acyclic Kashi `cook` target from the surveyed corpus;
 4. write its participant/invocation/resource/result graph and sequential oracle;

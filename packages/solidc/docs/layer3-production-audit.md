@@ -32,15 +32,23 @@ the audit commit:
   `ResourceSpec.transition: true` opt-out; only then does `appBody` bind the output commitment.
 - **L3-3 CLOSED.** Resource satoshi value is now covenant-preserved (`output.value == input.value`);
   capability is preserved by the existing 33-byte `tokenCategory` equality.
-- **L3-1 CLOSED (commit f2441967).** Two layers: (a) every named participant is bound to ONE canonical
-  transcript blob (identical SCB1 args region), rejecting overlapping/divergent/reordered/omitted views; and
-  (b) the SOUND N-party form `generateControllerBoundCovenant` binds every participant to a co-spent
-  CONTROLLER NFT (unique mint-once category) whose commitment == `sha256(ordered participant locking
-  bytecodes)`. Each participant reconstructs the root from the co-spent set and requires the match, so an
-  INJECTED extra participant fails membership and a DISJOINT transcript cannot match the one controller's one
-  root - closing the disjoint residual. Exact-code identity (also L3-7) follows from the root binding the
-  exact p2sh32 addresses. VM regressions: `Layer3NPartyMutual.test.ts` 4/4 (2-/3-party accepted; wrong root
-  rejected; injected participant rejected). Independent covenant review still wanted before mainnet (gate 5).
+- **L3-1 PARTIAL (see re-audit R2).** Two layers landed: (a) every named participant is bound to ONE
+  canonical blob (identical SCB1 args region), rejecting overlapping/divergent/reordered/omitted views; and
+  (b) `generateControllerBoundCovenant` binds homogeneous clone participants to ONE controller-attested
+  address SET (`sha256(ordered participant lbcs)`), rejecting injected/disjoint participants. HONEST SCOPE:
+  this is participant-SET (membership) binding, NOT a canonical EXECUTION transcript - it commits WHO, not
+  WHAT/order/args/results, and the participants are clones, not heterogeneous app contracts. L3-1 for a
+  general cyclic bus is NOT closed. `Layer3NPartyMutual.test.ts` 5/5.
+
+Re-audit (`layer3-production-reaudit.md`, commit 0ee830fb) additionally found and this pass FIXED:
+- **R1 CLOSED.** The controller output now preserves its satoshi value
+  (`tx.outputs[controllerIdx].value == tx.inputs[controllerIdx].value`); the siphon test flips to rejected.
+
+STILL OPEN per the re-audit (the general cyclic heterogeneous bus): R2 canonical execution transcript, R3
+heterogeneous N-party composition + cycles (A->B->A, repeated settlement of one physical callee), R5 invocation
+semantics wired to the N-party path, R6 typed transition, R7 controller genesis/uniqueness, R8 N-party
+live-node lifecycle, and independent review. The "real bus" commits are integration tests of the pre-existing
+native external-call path, not a new bus (R4).
 - **L3-4, L3-5, L3-6, L3-7, L3-8, L3-9: OPEN.** These are the scaffold-vs-real-composition, complete
   invocation/intent/result, full resource authority, exact-controller-identity, deployability, and typed-API
   items. They are a scope program, not point fixes, and are not addressed here.

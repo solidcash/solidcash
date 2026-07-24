@@ -136,15 +136,15 @@ describe('layer-3 sound N-party mutual authentication (controller-attested canon
     await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow();
   });
 
-  it('AUDIT: accepts siphoning satoshis from the controller output', async () => {
+  it('R1 CLOSED: siphoning satoshis from the controller output is rejected', async () => {
     const s = await setup(2);
     const builder = buildTx(s, s.ordered, 2, s.controller);
     const fee = randomUtxo({ satoshis: 50000n });
     await s.provider.addUtxo(s.p2.address, fee);
     builder.addInput(fee, s.p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
     addTails(s, builder, s.ordered, s.controller);
-    builder.outputs[2].amount = 1n;
+    builder.outputs[2].amount = 1n; // reduce controller output 2000 -> 1; covenant now preserves value
     builder.addOutput({ to: s.ordered[0].contract.address, amount: 13999n });
-    await expect(s.provider.sendRawTransaction(raw(builder))).resolves.toBeTypeOf('string');
+    await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow();
   });
 });

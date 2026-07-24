@@ -199,18 +199,20 @@ export function controllerBindingParams(n: number): string[] {
 }
 
 /**
- * The SOUND N-party MUTUAL-authentication framework (closes audit L3-1 fully). Participants are bound to ONE
- * canonical transcript ATTESTED by a co-spent CONTROLLER NFT of a unique mint-once category
- * (`controllerCategory`, baked in), whose commitment is `sha256(ordered participant locking bytecodes)` - the
- * canonical transcript root. Every participant reconstructs the root from the co-spent set and requires it ==
- * the controller's attestation, so:
- * - an INJECTED extra participant fails membership (it is not in the named set) or, if it names itself, its
- *   reconstructed root mismatches the controller's single attestation;
- * - a DISJOINT co-bundled transcript cannot match the one controller's one root;
- * - EXACT-CODE identity follows from the root binding the exact p2sh32 participant addresses (no fragile
- *   self-reconstruction of the covenant needed).
- * Preserves participant masters (bytecode/category/commitment/value), canonical byte-lex order, the canonical
- * blob binding, membership, and the controller in place.
+ * Controller-attested participant-SET binding (membership only - NOT a canonical execution transcript; see
+ * layer3-production-reaudit.md R2). Homogeneous clone participants are bound to ONE attested address SET by a
+ * co-spent CONTROLLER NFT (category `controllerCategory` baked in) whose commitment is
+ * `sha256(ordered participant locking bytecodes)`. Every participant reconstructs the root from the co-spent
+ * set and requires it == the controller's attestation, so an INJECTED extra participant fails membership (or
+ * mismatches the root) and a DISJOINT co-bundle cannot match the one controller's one root. It preserves the
+ * controller in place (bytecode/category/commitment/value) and the participant masters.
+ *
+ * SCOPE / what this does NOT do: it commits WHO the participants are, not WHAT they execute - no calls,
+ * selectors, arguments, results, resources, events, or ordering are bound. The participants are clones of one
+ * generated covenant (homogeneous), not independently compiled application contracts. It relies on the
+ * EXTERNAL assumption of a single immutable mint-once controller NFT for the baked category (no genesis /
+ * uniqueness proof here). It is an experimental building block toward a canonical execution transcript, not a
+ * complete heterogeneous cyclic message bus.
  */
 export function bindingFrameworkBodyControllerBound(n: number, controllerCategory: string): string[] {
   if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
@@ -252,10 +254,14 @@ export function bindingFrameworkBodyControllerBound(n: number, controllerCategor
   body.push('require(tx.outputs[controllerIdx].lockingBytecode == tx.inputs[controllerIdx].lockingBytecode);');
   body.push('require(tx.outputs[controllerIdx].tokenCategory == tx.inputs[controllerIdx].tokenCategory);');
   body.push('require(tx.outputs[controllerIdx].nftCommitment == tx.inputs[controllerIdx].nftCommitment);');
+  body.push('require(tx.outputs[controllerIdx].value == tx.inputs[controllerIdx].value);'); // R1: preserve value
   return body;
 }
 
-/** Generate the sound controller-bound N-party binding covenant (binding-only) for `n` participants. */
+/**
+ * Generate the controller-attested participant-SET binding covenant for `n` homogeneous participants
+ * (membership only - not an execution transcript; see `bindingFrameworkBodyControllerBound`).
+ */
 export function generateControllerBoundCovenant(n: number, controllerCategory: string): string {
   const body = bindingFrameworkBodyControllerBound(n, controllerCategory);
   return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'

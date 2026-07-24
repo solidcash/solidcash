@@ -56,19 +56,23 @@ where peers authenticate EACH OTHER in canonical order rather than one caller au
 audit findings L3-2/L3-3 are now fail-closed and L3-1 is partially closed, but it remains experimental and
 is NOT the bus. For real applications, compose real contracts as above.
 
-## N-party mutual authentication (now built, controller-attested)
+## N-party participant-SET binding (membership only - NOT the bus)
 
-The one topology the native STAR path cannot give - N peers authenticating EACH OTHER under ONE canonical
-global transcript - is now built soundly via `generateControllerBoundCovenant` (see
-`layer3-production-audit.md` L3-1 CLOSED). A co-spent CONTROLLER NFT (unique mint-once category) commits to
-`sha256(ordered participant locking bytecodes)`; every participant reconstructs that root from the co-spent
-set and requires the match. This gives exact-code identity + exhaustiveness without fragile self-
-reconstruction: an injected extra participant fails membership, and a disjoint transcript cannot match the
-one controller's one root. `Layer3NPartyMutual.test.ts` proves 2-/3-party acceptance and rejects a wrong
-root and an injected participant on the real VM.
+`generateControllerBoundCovenant` binds N HOMOGENEOUS clone participants to ONE controller-attested address
+SET: a co-spent CONTROLLER NFT commits `sha256(ordered participant locking bytecodes)`, and every participant
+reconstructs that root and requires the match, rejecting injected/disjoint participants
+(`Layer3NPartyMutual.test.ts`, 5/5). This is a building block, not the message bus. Per the re-audit
+(`layer3-production-reaudit.md` R2/R3), it commits WHO the participants are, NOT what they execute - there are
+no calls, selectors, arguments, results, resources, events, or ordering in the root, and the participants are
+clones of one generated covenant, not independently compiled heterogeneous contracts. It also relies on the
+external assumption of a single immutable mint-once controller NFT (no genesis/uniqueness proof here, R7).
 
-The circular `A <-> B` *address-derivation* fixed point (`external-contract-calls.md`) is sidestepped, not
-solved: the controller-attested model shares one covenant + an external root of trust rather than baking each
-peer's address into the others. Independent covenant review is still wanted before mainnet use (audit gate 5),
-and the deeper generalization (heterogeneous peers each running DIFFERENT compiled code under one mutual
-transcript) remains open.
+## What remains for a general cyclic heterogeneous bus (re-audit required path)
+
+NOT implemented: a canonical, domain-separated EXECUTION transcript root covering calls/args/order/results/
+resources/events (R2); binding independently compiled HETEROGENEOUS participant covenants to their
+projections of that root (R3); a real mint-once controller genesis + uniqueness proof (R7); repeated
+settlement of one physical callee UTXO and the smallest heterogeneous cycle A->B->A (R3); N-party live-node
+lifecycle + mainnet standard-policy acceptance (R8); and independent covenant review (gate 5). The honest
+status: native ACYCLIC star/chain composition works for the tested shapes and is regtest-proven; N-party
+membership binding is experimental; the general cyclic heterogeneous bus is NOT implemented.

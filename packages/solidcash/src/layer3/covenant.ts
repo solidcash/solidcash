@@ -15,6 +15,8 @@ export const CONTROLLER_SALT_HEX = '4c3342314354524c';
 export interface InvocationSpec { caller: number; callee: number }
 /** An execution-transcript edge: caller -> callee.selector, in list order. Committed by the execution root (R2). */
 export interface ExecutionInvocation { caller: number; callee: number; selectorHex: string }
+/** An execution-transcript event: an authenticated OP_RETURN record (emitter identity + topic), committed by the root. */
+export interface ExecutionEvent { emitter: number; topicHex: string }
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
 export const EXEC_DOMAIN = '4c33455845433100';
 /**
@@ -153,11 +155,17 @@ export function bindingFrameworkBody(n: number, brandPrefix = CONTROLLER_BRAND_P
  */
 export function executionMemberBody(
   n: number, selfPos: number, invocations: ExecutionInvocation[], controllerCategory: string, controllerLbc: string,
+  events?: ExecutionEvent[],
 ): string[] {
   if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
   if (selfPos < 0 || selfPos >= n) throw new Error('layer3: selfPos out of range');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
   if (!/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) throw new Error('layer3: controllerLbc must be hex bytes');
+  const evs = events ?? [];
+  evs.forEach((ev) => {
+    if (ev.emitter < 0 || ev.emitter >= n) throw new Error('layer3: execution event emitter out of range');
+    if (!/^([0-9a-fA-F]{2})+$/.test(ev.topicHex)) throw new Error('layer3: event topic must be hex bytes');
+  });
   const body: string[] = [];
   for (let i = 0; i < n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${i}].lockingBytecode;`);
   let lbcConcat = 'lbc0';
@@ -170,6 +178,8 @@ export function executionMemberBody(
     const edge = `bytes.concat(bytes.concat(lbc${inv.caller}, lbc${inv.callee}), hex"${inv.selectorHex.toLowerCase()}")`;
     payload = `bytes.concat(${payload}, ${edge})`;
   }
+  // R4: events are committed in the root too, so the emitter set is part of the canonical transcript.
+  for (const ev of evs) payload = `bytes.concat(${payload}, bytes.concat(lbc${ev.emitter}, hex"${ev.topicHex.toLowerCase()}"))`;
   body.push(`bytes execRoot = sha256(${payload});`);
   const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
   body.push(`require(tx.inputs[${n}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
@@ -180,6 +190,20 @@ export function executionMemberBody(
   body.push(`require(tx.outputs[${n}].nftCommitment == tx.inputs[${n}].nftCommitment);`);
   body.push(`require(tx.outputs[${n}].value == tx.inputs[${n}].value);`);
   body.push(`require(this.activeInputIndex == ${selfPos});`);
+  // R4 EMITTER EXHAUSTIVENESS: each committed event record is present at its fixed output (n+1+j), AND the
+  // total number of OP_RETURN outputs equals the committed event count - so no UNRECORDED record can be
+  // emitted and none omitted. Only enforced when `events` is provided.
+  if (events !== undefined) {
+    evs.forEach((ev, j) => {
+      const prefix = opReturnPrefix(IDENTITY_LEN + ev.topicHex.length / 2);
+      body.push(`require(tx.outputs[${n + 1 + j}].lockingBytecode == bytes.concat(hex"${prefix}", lbc${ev.emitter}, hex"${ev.topicHex.toLowerCase()}"));`);
+    });
+    body.push('bigint opret = 0;');
+    body.push('for (bigint oi = 0; oi < tx.outputs.length; oi = oi + 1) {');
+    body.push('  if (tx.outputs[oi].lockingBytecode.slice(0, 1) == hex"6a") { opret = opret + 1; }');
+    body.push('}');
+    body.push(`require(opret == ${evs.length});`);
+  }
   return body;
 }
 

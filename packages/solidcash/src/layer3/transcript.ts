@@ -9,8 +9,8 @@ import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
 import {
-  EXEC_DOMAIN, type ExecutionInvocation, type InvocationSpec, type TranscriptSpec, type TypedTransition,
-  opReturnPrefix, transcriptLayout,
+  EXEC_DOMAIN, type ExecutionEvent, type ExecutionInvocation, type InvocationSpec, type TranscriptSpec,
+  type TypedTransition, opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
@@ -42,11 +42,14 @@ export function participantSetRoot(orderedLbcs: string[]): string {
  * selector) edges). The deployer sets the controller commitment to this so the controller attests the call
  * graph, matching what every participant recomputes on-chain.
  */
-export function executionRoot(orderedLbcs: string[], invocations: ExecutionInvocation[]): string {
+export function executionRoot(
+  orderedLbcs: string[], invocations: ExecutionInvocation[], events: ExecutionEvent[] = [],
+): string {
   const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), ...orderedLbcs.map((l) => hexToBin(l))];
   for (const inv of invocations) {
     parts.push(hexToBin(orderedLbcs[inv.caller]), hexToBin(orderedLbcs[inv.callee]), hexToBin(inv.selectorHex));
   }
+  for (const ev of events) parts.push(hexToBin(orderedLbcs[ev.emitter]), hexToBin(ev.topicHex));
   return binToHex(sha256.hash(concatBin(parts)));
 }
 

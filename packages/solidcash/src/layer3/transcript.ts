@@ -51,24 +51,36 @@ export function intentCommitment(calleeLockingBytecode: string): string {
 }
 
 /**
- * Mint each participant's master with its M4 intent authorization: a caller's master commits to
- * hash160(callee lockingBytecode); a non-caller's master stays uncommitted. Canonical order is derived here,
- * so callers/callees resolve exactly as the covenant sees them. Mutates each participant's `master` to the
- * authorized UTXO and returns the participants. Call after instantiation, before buildTranscriptTransaction.
+ * The M4 master-commitment each participant must carry, in canonical order: a caller commits to
+ * hash160(its callee lockingBytecode); a non-caller stays uncommitted (''). Pure and provider-agnostic - a
+ * real-network app mints each participant's master (genesis) with `commitments[i]`; the mock helper
+ * `authorizeParticipants` uses it directly. Index i corresponds to the canonical order (input i / output i).
+ */
+export function deriveIntentCommitments(participants: TranscriptParticipant[], spec: TranscriptSpec): string[] {
+  const ordered = sortParticipants(participants);
+  const commitments = ordered.map(() => '');
+  for (const inv of spec.invocations ?? []) {
+    commitments[inv.caller] = intentCommitment(ordered[inv.callee].contract.lockingBytecode);
+  }
+  return commitments;
+}
+
+/**
+ * Mock/local-dev helper: mint each participant's master with its M4 intent authorization (from
+ * deriveIntentCommitments) via the provider's addUtxo. Mutates each participant's `master` to the authorized
+ * UTXO and returns the participants. Call after instantiation, before buildTranscriptTransaction. On a real
+ * network the app instead mints each master (genesis) with the corresponding deriveIntentCommitments entry.
  */
 export async function authorizeParticipants(
   provider: any, participants: TranscriptParticipant[], spec: TranscriptSpec,
 ): Promise<TranscriptParticipant[]> {
   const ordered = sortParticipants(participants);
-  const commit = ordered.map(() => '');
-  for (const inv of spec.invocations ?? []) {
-    commit[inv.caller] = intentCommitment(ordered[inv.callee].contract.lockingBytecode);
-  }
+  const commitments = deriveIntentCommitments(participants, spec);
   for (let i = 0; i < ordered.length; i += 1) {
     const p = ordered[i];
     const master = randomUtxo({
       satoshis: p.master.satoshis,
-      token: { category: p.categoryId, amount: 0n, nft: { capability: 'minting', commitment: commit[i] } },
+      token: { category: p.categoryId, amount: 0n, nft: { capability: 'minting', commitment: commitments[i] } },
     });
     await provider.addUtxo(p.contract.tokenAddress, master);
     p.master = master;

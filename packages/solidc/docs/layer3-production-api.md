@@ -37,8 +37,10 @@ const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
 const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
 const participants = /* [{ contract: new Contract(artifact, [], { provider, salt }), master, categoryId }, ...] */;
 
-// 2b. Authorize the callers (M4): mint each caller's master committing to hash160(its callee) so the
-//     covenant's intent gate accepts the invocation. The module derives the canonical order + mapping.
+// 2b. Authorize the callers (M4): each caller's master must commit to hash160(its callee) so the covenant's
+//     intent gate accepts the invocation. `authorizeParticipants` mints them via addUtxo (mock/local dev);
+//     on a real network mint each master (genesis) with the matching `deriveIntentCommitments(...)` entry
+//     (the pure, provider-agnostic core - index i is the canonical order).
 await layer3.authorizeParticipants(provider, participants, spec);
 
 // 3. Assemble the WHOLE transaction from the spec + per-instance data (state guards + post-state commitments,

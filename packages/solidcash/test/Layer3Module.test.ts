@@ -119,3 +119,17 @@ describe('layer3.sortParticipants - canonical byte-lexicographic order', () => {
     expect(ordered.map((p) => p.contract.lockingBytecode)).toEqual(['aa00', 'bb00', 'cc00']);
   });
 });
+
+describe('layer3.deriveIntentCommitments - M4 authorization mapping', () => {
+  it('commits each caller to hash160(callee lbc) in canonical order; non-callers stay empty', () => {
+    // ordered = [aa00, bb00, cc00]; spec caller 0 -> callee 2 (over the ordered participants).
+    const parts = [part('cc00'), part('aa00'), part('bb00')];
+    const commitments = layer3.deriveIntentCommitments(parts, {
+      participants: 3, invocations: [{ caller: 0, callee: 2 }],
+    });
+    expect(commitments[0]).toBe(layer3.intentCommitment('cc00')); // ordered[0]=aa00 commits to ordered[2]=cc00
+    expect(commitments[1]).toBe(''); // ordered[1]=bb00 is not a caller
+    expect(commitments[2]).toBe(''); // ordered[2]=cc00 is not a caller
+    expect(commitments[0]).toHaveLength(40); // hash160 = 20 bytes
+  });
+});

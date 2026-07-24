@@ -23,9 +23,9 @@ contract Participant() {
     require(input0 < input1);
     require(output0 < output1);
     // Owner distinctness (no duplicate logical owner / two settlement authorities). Strict canonical
-    // byte order is NOT enforced here: three int()-based attempts (reverse++0x00, int(lbc),
-    // reverse++0x01) all fail at the VM in the SCB1-handler context, so a bounded byte-by-byte
-    // lexicographic helper is required (corpus doc 8.1). Distinctness still gives the no-dup property.
+    // byte order is enforced in the compact successor form via a two-16-byte-half compare (corpus 8.7,
+    // ByteLexProbe.test.ts) - int() of the whole 36-byte value trips the int-type range guard, not
+    // reverse(). This superseded full-identity fixture keeps distinctness for the no-dup property.
     require(lockingBytecode0 != lockingBytecode1);
     require(category0.length == 33 && category1.length == 33);
     require(category0.slice(32, 33) == hex"02");

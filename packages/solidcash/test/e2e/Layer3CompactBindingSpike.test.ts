@@ -39,8 +39,16 @@ function makeCompact(n: number): string {
     body.push(`require(tx.outputs[output${i}].tokenCategory == cat${i});`);
     body.push(`require(tx.inputs[input${i}].unlockingBytecode.slice(0, 5) == hex"0453434231");`);
   }
+  // Canonical strict byte-lexicographic owner order over the 32-byte P2SH32 hash (bytes 2..33 of the
+  // locking bytecode; the aa20 prefix / 87 suffix are identical for all P2SH32). Compare in two 16-byte
+  // halves so each int() (17 bytes) stays inside the int-type range guard that a 36-byte whole-value
+  // int() would blow. Adjacent strict order subsumes distinctness in O(N) instead of O(N^2) pairwise.
   for (let i = 0; i < n; i += 1) {
-    for (let j = i + 1; j < n; j += 1) body.push(`require(lbc${i} != lbc${j});`); // pairwise distinctness
+    body.push(`bigint hi${i} = int(bytes.concat(lbc${i}.slice(2, 18).reverse(), hex"01"));`);
+    body.push(`bigint lo${i} = int(bytes.concat(lbc${i}.slice(18, 34).reverse(), hex"01"));`);
+  }
+  for (let i = 0; i + 1 < n; i += 1) {
+    body.push(`require(hi${i} < hi${i + 1} || (hi${i} == hi${i + 1} && lo${i} < lo${i + 1}));`);
   }
   // Front-parse the active input's own unlocking: selector(5) + direct-push positional blob + direct-push
   // batchBlob + PUSHDATA2 redeem. Read both direct-push lengths (opcode == length for <76-byte pushes).
@@ -72,6 +80,8 @@ async function setup(n: number, branded = true): Promise<any> {
     const s = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {});
     parts.push({ setup: s, contract: inner.withCategory(hexToBin(s.categoryId)) });
   }
+  // Order participants by canonical big-endian locking bytecode so input i < input i+1 holds on-chain.
+  parts.sort((x, y) => (BigInt(`0x${x.contract.lockingBytecode}`) < BigInt(`0x${y.contract.lockingBytecode}`) ? -1 : 1));
   return { provider, route, sel, handler, parts, n };
 }
 
@@ -129,13 +139,14 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
       metrics.push({ n, ...measureBuilder(b, n) });
       await expect(s.provider.sendRawTransaction(rawOf(b))).resolves.toBeTypeOf('string');
     }
-    // Fully-checked compact binding (identity-by-reference + pairwise distinctness + controller prefix).
+    // Fully-checked compact binding (identity-by-reference + O(N) canonical order + controller prefix).
     // Every input stays well under budget; the index-only blob fits far past the full-identity ~2 cap.
+    // Canonical order is cheaper than the earlier O(N^2) distinctness at scale (n8: 13.9% vs 18.7%).
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { n: 2, instr: 1949, ratioPct: 13.9 },
-      { n: 4, instr: 2888, ratioPct: 16.1 },
-      { n: 8, instr: 4850, ratioPct: 18.7 },
+      { n: 2, instr: 2058, ratioPct: 11.8 },
+      { n: 4, instr: 3102, ratioPct: 12.6 },
+      { n: 8, instr: 5190, ratioPct: 13.9 },
     ]);
   });
 
@@ -170,6 +181,13 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
     const s = await setup(2);
     // Swap the two participants' recreation outputs: output0 now preserves participant 1, not 0.
     await expect(s.provider.sendRawTransaction(rawOf(await build(s, (i) => 1 - i)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
+  });
+
+  it('HOSTILE: non-canonical (reversed) participant order is rejected', async () => {
+    const s = await setup(2);
+    const reversed = { ...s, parts: [...s.parts].reverse() }; // input0 now the larger owner key
+    await expect(s.provider.sendRawTransaction(rawOf(await build(reversed)))).rejects.toThrow();
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

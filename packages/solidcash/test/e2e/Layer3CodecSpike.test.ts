@@ -8,11 +8,12 @@ import { Contract, TransactionBuilder } from '../../src/index.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-// General transcript codec (step 1): a VARIABLE-length participant table parsed by the covenant in a loop,
-// replacing the hand-built fixed positional args of the earlier spikes. table = count(1) + count x
-// (inputIdx(1), outputIdx(1)); the covenant reads the count and loops, validating each participant's binding.
-// This proves the covenant can parse a variable table (the basis of the five-table codec), not just decode a
-// fixed arg list. N here is dynamic (2 or 3) with the SAME covenant.
+// Task 2 (general transcript codec): the covenant parses VARIABLE-length tables in loops, and the loops are
+// FAIL-CLOSED (a count exceeding the loop bound is rejected, never silently under-validated). Two tables are
+// parsed here - a participant table (count + (inputIdx, outputIdx)) AND an invocation table (count +
+// (callerIdx, calleeIdx)) - proving the multi-table structure of the five-table codec; resource/effect/event
+// tables are additional loop-parsed sections over the identical mechanism. MAX per table = 8 (bounded loop);
+// exceeding it fails closed via `require(i == count)`.
 const brand = hexToBin('4c3342314354524c');
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
@@ -27,6 +28,7 @@ const le = (value: number, width: number): Uint8Array =>
 const HANDLER = `pragma solidcash >=0.8.0;
 contract Participant() {
   function __layer3_bind(bytes table) public {
+    // --- participant table: count(1) + count x (inputIdx, outputIdx) ---
     int n = int(table.slice(0, 1));
     int i = 0;
     bool active = false;
@@ -44,7 +46,22 @@ contract Participant() {
         i = i + 1;
       }
     }
+    require(i == n); // FAIL-CLOSED: reject when the participant count exceeds the loop bound
     require(active);
+    // --- invocation table: count(1) + count x (callerIdx, calleeIdx), based at 1 + 2n ---
+    int invBase = 1 + n * 2;
+    int invCount = int(table.slice(invBase, invBase + 1));
+    int j = 0;
+    for (int step2 = 0; step2 < 8; step2 = step2 + 1) {
+      if (j < invCount) {
+        int caller = int(table.slice(invBase + 1 + j * 2, invBase + 2 + j * 2));
+        int callee = int(table.slice(invBase + 2 + j * 2, invBase + 3 + j * 2));
+        require(caller != callee);
+        require(caller < n && callee < n); // invocation endpoints are named participants
+        j = j + 1;
+      }
+    }
+    require(j == invCount); // FAIL-CLOSED: reject when the invocation count exceeds the loop bound
   }
 }`;
 
@@ -66,9 +83,13 @@ async function setup(n: number): Promise<any> {
   return { provider, route, sel, handler, parts, n };
 }
 
-async function build(s: any): Promise<TransactionBuilder> {
-  const rows: number[] = [s.n];
-  for (let i = 0; i < s.n; i += 1) rows.push(i, i); // (inputIdx, outputIdx)
+// participantCountByte overrides the declared count (for the fail-closed test).
+async function build(s: any, opts: { declaredN?: number; invocations?: [number, number][] } = {}): Promise<TransactionBuilder> {
+  const rows: number[] = [opts.declaredN ?? s.n];
+  for (let i = 0; i < s.n; i += 1) rows.push(i, i);
+  const invs = opts.invocations ?? [[0, 1]];
+  rows.push(invs.length);
+  for (const [c, e] of invs) rows.push(c, e);
   const table = Uint8Array.from(rows);
   const argsBlob = scriptToBytecode([table]);
   const row = concat(hexToBin(s.handler.selector), le(0, 4), le(0, 2), le(argsBlob.length, 2), argsBlob);
@@ -92,17 +113,33 @@ async function build(s: any): Promise<TransactionBuilder> {
 
 const rawOf = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 
-describe('layer-3 variable-table codec spike (E2E)', () => {
-  it('POSITIVE: the same covenant loop-parses a 2- and a 3-participant table', async () => {
+describe('layer-3 variable-table codec (task 2)', () => {
+  it('POSITIVE: the same covenant loop-parses participant + invocation tables at N=2 and N=3', async () => {
     for (const n of [2, 3]) {
       const s = await setup(n);
-      await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
+      const invs: [number, number][] = n === 3 ? [[0, 1], [1, 2]] : [[0, 1]];
+      await expect(s.provider.sendRawTransaction(rawOf(await build(s, { invocations: invs })))).resolves.toBeTypeOf('string');
     }
   });
 
-  it('measures the loop-parsed codec cost', async () => {
+  it('FAIL-CLOSED: a participant count exceeding the loop bound (9 > 8) is rejected, not under-validated', async () => {
+    const s = await setup(2);
+    // Declare 9 participants in the header while only 2 rows exist; the loop can validate at most 8, and
+    // require(i == n) rejects rather than silently accepting the first few.
+    const result = await s.provider.sendRawTransaction(rawOf(await build(s, { declaredN: 9 }))).then(() => 'ACCEPTED').catch((e) => `REJECTED: ${String(e).slice(0, 45)}`);
+    expect(result).toContain('REJECTED');
+  });
+
+  it('HOSTILE: an invocation naming a non-participant endpoint is rejected', async () => {
+    const s = await setup(2);
+    // Invocation callee = 5 (>= participant count 2) -> require(callee < n) rejects.
+    const result = await s.provider.sendRawTransaction(rawOf(await build(s, { invocations: [[0, 5]] }))).then(() => 'ACCEPTED').catch((e) => `REJECTED: ${String(e).slice(0, 45)}`);
+    expect(result).toContain('REJECTED');
+  });
+
+  it('measures the two-table codec cost', async () => {
     const s = await setup(3);
-    const b = await build(s);
+    const b = await build(s, { invocations: [[0, 1], [1, 2]] });
     const transaction = b.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(b.inputs);
     const vm = createVirtualMachineBch2026();
@@ -112,11 +149,9 @@ describe('layer-3 variable-table codec spike (E2E)', () => {
       const m = (rr as any).metrics;
       return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
     });
-    // Bounded loop (max 8) parses the variable table; costs more than an unrolled fixed-N handler but is
-    // general. Still well under budget at n=3.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 2777, ratioPct: 18.7 }, { instr: 2777, ratioPct: 18.7 }, { instr: 2777, ratioPct: 18.7 },
+      { instr: 3965, ratioPct: 19.8 }, { instr: 3965, ratioPct: 19.8 }, { instr: 3965, ratioPct: 19.8 },
     ]);
   });
 });

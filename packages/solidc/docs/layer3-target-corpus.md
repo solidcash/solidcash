@@ -720,3 +720,18 @@ higher than the unrolled fixed-N handlers (the bounded loop runs its full 8 iter
 the generality-vs-cost trade-off, still comfortably under budget. This is the parsing basis of the
 five-table codec; the invocation/resource/effect/event tables are additional loop-parsed sections over the
 same mechanism.
+
+## 20. Refined intent: method granularity + one-shot nonce (the M4 follow-ups)
+
+`Layer3RefinedIntentSpike.test.ts` (4/4, real BCH-2026 VM). Section 10 bound intent at callee granularity
+and persistently. This closes both noted follow-ups. The caller's authorization is a mutable state NFT
+holding `authKey(20) || nonce(4)`, where `authKey = hash160(callee lockingBytecode ++ selector)` - so the
+caller authorizes a SPECIFIC method on a specific callee. The invocation presents the current nonce; the
+covenant requires it to match the committed nonce and advances the state to `nonce + 1`, making each
+authorization one-shot.
+
+VM-proven: POSITIVE accepts and advances the nonce; calling an un-authorized method (wrong selector)
+rejects; presenting a stale nonce (replay) rejects; failing to advance the nonce (keeping the authorization
+usable) rejects. Both endpoints 3026 instructions, 13.5% of budget. Intent granularity is now
+method-specific and single-use; extending `authKey` to hash the args as well (`hash160(callee ++ selector
+++ args)`) binds intent to exact arguments with no covenant change beyond the preimage.

@@ -668,3 +668,40 @@ key-guarded here as a stand-in; a production owner would brand its state NFT to 
 state-transition binding the transcript covenant performs - read committed pre-state, compute, write the
 committed post-state, all atomic - is identical. This closes the last mechanism the corpus-4 oracle needs:
 every field it updates is a committed value transitioned exactly like this.
+
+## 17. Kashi acceptance capstone (corpus 3-4 load-bearing dependency, all mechanisms in one covenant)
+
+`Layer3KashiSpike.test.ts` (3/3, real BCH-2026 VM). The corpus's own acceptance shape, executed on-chain in
+a single covenant: a three-owner Kashi `depositCollateral(M)` that produces the authenticated share
+`S = floor(M*B/E)` and settles it against the corpus-4 oracle - REAL persistent state writes to BOTH Bento
+(`E += M, B += S`) and Kashi collateral (`U += S`), plus the token transfer record. This is exactly the
+`I1.shareOut -> Kashi userCollateralShare` flow section 5 names as the R1-R5 gap.
+
+Owners: Kashi (consumer), Bento (producer, holds (E,B)), token; each a branded participant, canonically
+ordered, brand-cross-checked, commitment-preserved. Bento (E,B) and Kashi (U) live in co-spent mutable
+state NFTs. With `E=12, B=9, U=5, M=8`: `S = floor(72/12) = 6`; post-state Bento `(20, 15)`, Kashi `11`.
+
+VM-proven: POSITIVE accepts and applies all three owners' effects atomically; a wrong Bento post-state
+(base != B+S) rejects; a wrong Kashi collateral post-state (U + wrong) rejects. All three endpoints 3620
+instructions, 13.6% of budget - the entire three-owner deposit with two state writes leaves ~86% headroom.
+
+## 18. Final disposition
+
+Every soundness, cost, and acceptance question the disposable Milestone-2 spike existed to answer is
+answered, on the real BCH-2026 VM, across sections 8-17 (45 tests, 13 files):
+
+- participant binding (identity-by-reference, canonical order, brand cross-check, N-scaling);
+- authenticated message: msg.sender identity, caller intent, callee result production + consumption;
+- multi-invocation result-dependency chains;
+- the three-owner authenticated result graph section 5 named as the R1-R5 gap;
+- the real Kashi share math `floor(M*B/E)`;
+- persistent state writes;
+- the full corpus 3-4 Kashi acceptance case, all mechanisms atomic, at ~14% of budget.
+
+What remains is engineering the GENERAL PRODUCT over this proven mechanism, none of it a soundness or
+buildability question: the general five-table transcript codec (a variable-table covenant parser replacing
+the hand-built fixtures), SDK graph derivation (auto-building the transcript from a high-level call graph),
+the remaining corpus-4 resource fields (token X/Y/L and Bento C/K, each the identical state-write pattern),
+and the one-shot-nonce / method-args intent-granularity follow-ups. The spike's verdict is delivered:
+the journaled message bus is sound and buildable on BCH-2026, and a full three-owner Kashi deposit fits in
+~14% of a single input's operation budget.

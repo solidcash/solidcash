@@ -56,11 +56,19 @@ where peers authenticate EACH OTHER in canonical order rather than one caller au
 audit findings L3-2/L3-3 are now fail-closed and L3-1 is partially closed, but it remains experimental and
 is NOT the bus. For real applications, compose real contracts as above.
 
-## The genuine remaining frontier
+## N-party mutual authentication (now built, controller-attested)
 
-The one thing NEITHER path fully delivers is sound N-party MUTUAL authentication with a canonical global
-transcript over HETEROGENEOUS contracts - i.e. circular `A <-> B` references, which `external-contract-calls.md`
-records as a deliberate casualty (a hash fixed point with no constructible genesis). The scaffold reaches for
-it but is unsound (L3-1 disjoint residual); the native path is sound but star-shaped. Closing that gap
-soundly (a controller-lineage or canonical-digest construction with exact-code identity) is the real research
-item, and it should get independent covenant review before any such claim.
+The one topology the native STAR path cannot give - N peers authenticating EACH OTHER under ONE canonical
+global transcript - is now built soundly via `generateControllerBoundCovenant` (see
+`layer3-production-audit.md` L3-1 CLOSED). A co-spent CONTROLLER NFT (unique mint-once category) commits to
+`sha256(ordered participant locking bytecodes)`; every participant reconstructs that root from the co-spent
+set and requires the match. This gives exact-code identity + exhaustiveness without fragile self-
+reconstruction: an injected extra participant fails membership, and a disjoint transcript cannot match the
+one controller's one root. `Layer3NPartyMutual.test.ts` proves 2-/3-party acceptance and rejects a wrong
+root and an injected participant on the real VM.
+
+The circular `A <-> B` *address-derivation* fixed point (`external-contract-calls.md`) is sidestepped, not
+solved: the controller-attested model shares one covenant + an external root of trust rather than baking each
+peer's address into the others. Independent covenant review is still wanted before mainnet use (audit gate 5),
+and the deeper generalization (heterogeneous peers each running DIFFERENT compiled code under one mutual
+transcript) remains open.

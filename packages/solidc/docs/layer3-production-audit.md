@@ -32,11 +32,15 @@ the audit commit:
   `ResourceSpec.transition: true` opt-out; only then does `appBody` bind the output commitment.
 - **L3-3 CLOSED.** Resource satoshi value is now covenant-preserved (`output.value == input.value`);
   capability is preserved by the existing 33-byte `tokenCategory` equality.
-- **L3-1 PARTIALLY CLOSED.** Every named participant is now bound to ONE canonical transcript blob (identical
-  SCB1 args region), so the reproduced overlapping/divergent/reordered/omitted views no longer co-validate.
-  RESIDUAL: a fully DISJOINT injected transcript with a different-structured blob is not yet caught -
-  structure-independent exhaustiveness (a canonical digest binding every co-spent branded input to one
-  transcript identity) is still required before L3-1 can be called fully closed. Independent re-review wanted.
+- **L3-1 CLOSED (commit f2441967).** Two layers: (a) every named participant is bound to ONE canonical
+  transcript blob (identical SCB1 args region), rejecting overlapping/divergent/reordered/omitted views; and
+  (b) the SOUND N-party form `generateControllerBoundCovenant` binds every participant to a co-spent
+  CONTROLLER NFT (unique mint-once category) whose commitment == `sha256(ordered participant locking
+  bytecodes)`. Each participant reconstructs the root from the co-spent set and requires the match, so an
+  INJECTED extra participant fails membership and a DISJOINT transcript cannot match the one controller's one
+  root - closing the disjoint residual. Exact-code identity (also L3-7) follows from the root binding the
+  exact p2sh32 addresses. VM regressions: `Layer3NPartyMutual.test.ts` 4/4 (2-/3-party accepted; wrong root
+  rejected; injected participant rejected). Independent covenant review still wanted before mainnet (gate 5).
 - **L3-4, L3-5, L3-6, L3-7, L3-8, L3-9: OPEN.** These are the scaffold-vs-real-composition, complete
   invocation/intent/result, full resource authority, exact-controller-identity, deployability, and typed-API
   items. They are a scope program, not point fixes, and are not addressed here.

@@ -550,3 +550,41 @@ The spike uses a single linear `amount * rate`; a full transcript would carry th
 multiple result edges, but the binding mechanism - produce to a bound output, consume from it, both
 endpoints verify - is the same. Follow-ups: multi-edge result graphs, and folding result+sender+intent
 into one combined transcript covenant.
+
+## 12. Capstone: the full authenticated transcript in one covenant
+
+`Layer3TranscriptSpike.test.ts` (3/3, real BCH-2026 VM). A single `__layer3_bind` covenant enforces a
+complete authenticated invocation `A -> B.compute(amount)` end to end, every endpoint validating every
+layer:
+
+- participant binding: identity-by-reference, canonical byte-lex order, controller-brand cross-check,
+  category + minting, owner output + commitment preservation (sections 8.5-8.7, 9);
+- M3 msg.sender: the sender output is bound to the real co-spent caller (section 9);
+- M4 intent: the caller's committed authorization must name the co-spent callee (section 10);
+- M5 result: the callee result `r = amount * rate` is produced to a result output and consumed into the
+  caller settlement, both bound to the correct computation (section 11).
+
+VM-proven: POSITIVE accepts; forged msg.sender rejects; forged result rejects. Both endpoints 2726
+instructions, 13% of the operation budget - the entire transcript covenant (7 checks families over 2
+participants, 2 OP_RETURN records, and a settlement) fits comfortably, confirming the whole message-bus
+primitive is buildable on BCH-2026 with large headroom. The VM accepts two OP_RETURN outputs (sender and
+result records) at consensus.
+
+DISPOSITION. The disposable Milestone-2 spike is complete: participant binding was the gate, and it now
+carries authenticated sender, caller intent, and callee result in one covenant - the exact three-owner
+result graph section 5 showed R1-R5 cannot express. What remains is not spike proof but productization:
+lifting the hand-built fixtures into the general five-table transcript codec + SDK graph derivation, the
+multi-invocation Kashi acceptance case against the section-4 oracle, and the one-shot/finer-granularity
+follow-ups noted in sections 10-11. The soundness and cost questions the spike existed to answer are
+answered: yes, and ~13% of budget.
+
+## Spike test index (all real BCH-2026 VM via MockNetworkProvider)
+
+- `ByteLexProbe.test.ts` - the two-half unsigned byte-lex primitive (section 8.7).
+- `Layer3ParticipantBindingSpike.test.ts` - full-identity 2-participant binding (superseded; 7/7).
+- `Layer3CompactBindingSpike.test.ts` - compact identity-by-reference, N=2/4/8 (7/7).
+- `Layer3ScalingSpike.test.ts` - op-cost scaling n=2/4/8 (1/1).
+- `Layer3InvocationSpike.test.ts` - M3 msg.sender binding (4/4).
+- `Layer3IntentSpike.test.ts` - M4 caller intent (3/3).
+- `Layer3ResultSpike.test.ts` - M5 result/effect (3/3).
+- `Layer3TranscriptSpike.test.ts` - full transcript in one covenant (3/3).

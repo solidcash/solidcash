@@ -228,6 +228,10 @@ review and freeze. No frozen bytes or production capability are emitted during t
 
 ## 4. Hard gates - do NOT start the bus until all hold
 
+Research section 0.1 summarizes four headline gates; section 8's “Additional go/no-go gates” expands
+the normative checklist to the six substantive layer-3 gates below. Items 1 and 8 preserve the v1
+soundness boundary and release ordering around that checklist.
+
 1. No known fail-open defect in an accepted v1 shape; every unsupported journal shape has an explicit
    fail-closed boundary. J2 may remain explicitly scoped rather than feature-complete.
 2. **Observed need:** a real bounded acyclic workload cannot be expressed by R1-R5.
@@ -274,3 +278,211 @@ The critical path is observed need -> a disposable implementation of the current
 streaming invariants -> measured revision -> independent review -> freeze. Immediate caller identity
 already exists in R5; layer 3 must prove that identity and one settlement authority for every
 participant in one canonical graph.
+
+## 7. Execution plan for the large effort
+
+### Milestone 0 - preserve the trusted baseline
+
+Before spike work:
+
+1. create a new worktree from this branch rather than mixing the spike into the v1 implementation;
+2. record the exact baseline commit and build/test totals;
+3. keep all existing artifact capability metadata and compiler defaults byte-identical;
+4. prohibit production code from advertising a layer-3 selector, version, or controller prefix;
+5. keep R5 default-off and do not reuse its experimental flag for the spike.
+
+The spike may use test-only helpers and generated scripts. If it requires production compiler
+plumbing for measurement, that plumbing must be inert without a test-only entry point and must not
+change emitted artifacts.
+
+**Baseline gate**
+
+```text
+yarn build
+packages/solidc: complete suite
+packages/solidcash: complete suite
+git diff of representative direct/R1-R5 artifacts: byte-identical
+```
+
+### Milestone 1 - observed-need dossier
+
+The first deliverable is evidence, not code:
+
+- choose the smallest bounded acyclic Kashi `cook` subset;
+- list its participants, physical state owners, invocation preorder, result dependencies, and
+  concrete resources;
+- prove why R4 owner-local batching and R5 one-repeated-callee grouping cannot express it;
+- define a sequential reference interpreter and expected final state;
+- record a smaller synthetic 2-participant/3-invocation case for parser debugging only.
+
+Deliverable: `packages/solidc/docs/layer3-target-corpus.md`.
+
+**Stop condition:** if no real acyclic workload remains after R1-R5 auto-derivation, record no
+observed need and stop layer-3 work.
+
+### Milestone 2 - transaction-binding spike
+
+Implement only the participation lemma and canonical participant blocks:
+
+- encode the current candidate participant row;
+- bind owner/executor input locking bytecode, category, capability, selected route, and controller
+  prefix;
+- require strict owner-key order and reject duplicate logical owners;
+- require contiguous, non-overlapping participant input/output blocks;
+- prove one settlement authority for each state owner.
+
+Start with two participants and no general invocation/resource tables. This isolates identity from
+parser complexity.
+
+Suggested test surface:
+
+```text
+packages/solidc/test/Layer3ParticipantBindingSpike.test.ts
+packages/solidcash/test/e2e/Layer3ParticipantBindingSpike.test.ts
+```
+
+Required hostile cases:
+
+- fabricated participant row;
+- locking-bytecode, category, capability, input-index, and route substitution;
+- legacy artifact or legacy route;
+- duplicate owner under a different participant ID;
+- two settlement authorities for one category;
+- executor substitution and illegal owner/executor overlap;
+- untouched positive transaction.
+
+Every negative must preserve unrelated transaction structure sufficiently to identify the intended
+covenant check. A construction-time SDK rejection is not evidence for an on-chain invariant.
+
+### Milestone 3 - streaming parser and validator
+
+Add tables incrementally:
+
+1. header/count bounds and exact blob consumption;
+2. participant order and blocks;
+3. resource ownership/ranges and unique mutable input indices;
+4. invocation preorder, parents, and `subtreeEnd`;
+5. callsite occurrence uniqueness;
+6. effect/event output ranges.
+
+For each step, freeze a measurement snapshot before adding the next table. Parsing must be
+front-consuming and single-pass. Test decoy magic, non-minimal pushes, truncation at every field,
+unknown flags/kinds, count substitution, trailing suffixes, duplicate keys, and malformed ranges.
+
+Suggested compiler test:
+
+```text
+packages/solidc/test/Layer3FormatCostSpike.test.ts
+```
+
+The test should emit a structured metrics record containing:
+
+```text
+encoded bytes
+redeem/controller bytes
+unlocking bytes per input
+transaction bytes
+evaluated instructions
+operation cost / maximum operation cost
+stack-pushed bytes
+hash iterations
+peak stack items/bytes
+```
+
+### Milestone 4 - acyclic projection and derivation
+
+Implement only enough projection to execute the Milestone-1 Kashi subset:
+
+- deterministic invocation preorder;
+- one live journal per owner;
+- authenticated child result consumed by its parent;
+- one physical owner input/output block per participant;
+- exact inbound/outbound range consumption;
+- SDK finite worklist with deterministic termination.
+
+Explicitly reject:
+
+- back-edges/callbacks;
+- future-result dependencies;
+- unresolved dynamic targets;
+- duplicate physical owners not collapsed into one participant;
+- graphs or blobs beyond measured bounds.
+
+Compare every accepted execution with the sequential reference interpreter. Attack omitted,
+injected, reordered, duplicated, and substituted invocations/results/resources.
+
+### Milestone 5 - measurement and revision loop
+
+Run the complete candidate at:
+
+- smallest synthetic case;
+- selected Kashi subset;
+- realistic 2-, 3-, and 8-participant distributions;
+- each proposed maximum independently and a realistic combined near-maximum.
+
+Check measurements into a stable fixture rather than only a prose table. Any encoding or bound
+change invalidates prior measurements and returns to Milestone 3.
+
+**No-go triggers**
+
+- fixed covenant overhead makes the target corpus undeployable;
+- parser/projection exceeds BCH-2026 operation, stack, item, script, unlocking, or transaction limits;
+- no bounded version-retention strategy fits;
+- retry/stale-input behavior is impractical at the useful participant count;
+- participant/exhaustiveness soundness requires pairwise or random-access validation that does not
+  fit the measured budget.
+
+### Milestone 6 - independent review and freeze
+
+Give the reviewer:
+
+- exact candidate encoding and controller-prefix bytes;
+- generated covenant sources/bytecode and source maps;
+- sequential reference interpreter;
+- all positive and hostile raw transactions;
+- measurement fixtures and reproduction commands;
+- version and contention results;
+- explicit unsupported graph classes.
+
+Only after all findings are resolved may the normative document freeze exact bytes and enable
+Deferred Release A implementation. The frozen release remains acyclic.
+
+## 8. Validation matrix
+
+| Property | Compiler/static evidence | SDK/construction evidence | BCH-2026 covenant evidence |
+|---|---|---|---|
+| canonical encoding | deterministic encoder + byte fixtures | exact-common-version selection | minimal parsing + exact exhaustion |
+| participant identity | owner-key sort and duplicate diagnostics | actual input/resource resolution | LBC/category/capability/route/controller equality |
+| one settlement authority | owner/resource graph analysis | one physical owner block | unique owner/block/output checks |
+| invocation exhaustiveness | canonical preorder/range metadata | finite worklist | complete row/range consumption |
+| sequential equivalence | reference interpreter | derived journals/results | authenticated final owner/resource outputs |
+| boundedness | static/candidate limit diagnostics | complete VM preflight | all input budgets and standardness pass |
+| version behavior | advertised exact versions | intersection or deterministic failure | selected route parses only its exact version |
+| contention/liveness | alias/owner diagnostics | stale-input/retry benchmarks | not an on-chain safety claim |
+
+No property is considered proven solely because the SDK refuses to construct a transaction.
+
+## 9. Commit and review discipline
+
+- Commit each invariant or table independently with its positive, negative, and cost regression.
+- Never combine an encoding change with unrelated journal/R5 work.
+- Rebuild `solidc` before any dist-importing SDK suite; do not rebuild concurrently with those tests.
+- Run heavy cost tests single-threaded and distinguish deterministic budget regression from timeout.
+- Keep measurement changes reviewable: state why bytes/operations changed and which release owns the
+  regression.
+- After every candidate-format change, re-run all earlier malformed-input vectors.
+- Preserve a clean rollback point at the last measured candidate.
+
+## 10. First work package ready to start
+
+The next implementation turn should perform only Milestones 0-1:
+
+1. create the dedicated spike worktree;
+2. pin baseline build, compiler, SDK, and byte-identity evidence;
+3. extract the bounded acyclic Kashi `cook` target from the surveyed corpus;
+4. write its participant/invocation/resource/result graph and sequential oracle;
+5. issue an observed-need go/no-go.
+
+Do not begin transcript code in the same turn unless the observed-need gate passes with a concrete
+acyclic target. If it passes, the following work package is Milestone 2's two-participant
+transaction-binding spike—not the five-table format and not cycle support.

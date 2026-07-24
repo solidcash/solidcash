@@ -39,26 +39,23 @@ contract Participant() {
     require(tx.outputs[output1].lockingBytecode == lockingBytecode1);
     require(tx.outputs[output0].tokenCategory == category0);
     require(tx.outputs[output1].tokenCategory == category1);
-    require(tx.inputs[input0].unlockingBytecode.slice(0, 5) == hex"0453434231");
-    require(tx.inputs[input1].unlockingBytecode.slice(0, 5) == hex"0453434231");
-    // Each participant's final redeem-script push must begin with the exact 10-byte L3B1CTRL controller
-    // prefix. Front-parse the unlocking bytecode: selector(5) + PUSHDATA1 positional blob + PUSHDATA1
-    // batchBlob arg + PUSHDATA2 redeem script; the redeem script data starts 3 bytes after its opcode.
-    bytes u0 = tx.inputs[input0].unlockingBytecode;
-    require(u0.slice(5, 6) == hex"4c");
-    bigint u0a = 7 + int(bytes.concat(u0.slice(6, 7), hex"00"));
-    require(u0.slice(u0a, u0a + 1) == hex"4c");
-    bigint u0b = u0a + 2 + int(bytes.concat(u0.slice(u0a + 1, u0a + 2), hex"00"));
-    require(u0.slice(u0b, u0b + 1) == hex"4d");
-    require(u0.slice(u0b + 3, u0b + 13) == hex"084c3342314354524c75");
-    bytes u1 = tx.inputs[input1].unlockingBytecode;
-    require(u1.slice(5, 6) == hex"4c");
-    bigint u1a = 7 + int(bytes.concat(u1.slice(6, 7), hex"00"));
-    require(u1.slice(u1a, u1a + 1) == hex"4c");
-    bigint u1b = u1a + 2 + int(bytes.concat(u1.slice(u1a + 1, u1a + 2), hex"00"));
-    require(u1.slice(u1b, u1b + 1) == hex"4d");
-    require(u1.slice(u1b + 3, u1b + 13) == hex"084c3342314354524c75");
     require(this.activeInputIndex == input0 || this.activeInputIndex == input1);
+    // Cost note: reading tx.inputs[i].unlockingBytecode returns the whole ~4 KB item and every OP_SPLIT
+    // charges its full length, so parsing an unlocking bytecode is expensive. Each participant input
+    // therefore SELF-checks only its OWN controller prefix (read once), and merely cross-checks that the
+    // OTHER input selects SCB1 (so it too runs this handler and self-checks). This halves the 4 KB parses.
+    bigint other = input0 + input1 - this.activeInputIndex;
+    require(tx.inputs[other].unlockingBytecode.slice(0, 5) == hex"0453434231");
+    // Self: selector(5) + PUSHDATA1 positional blob + PUSHDATA1 batchBlob arg + PUSHDATA2 redeem push;
+    // the branded redeem-script data begins 3 bytes after its 0x4d opcode.
+    bytes us = tx.inputs[this.activeInputIndex].unlockingBytecode;
+    require(us.slice(0, 5) == hex"0453434231");
+    require(us.slice(5, 6) == hex"4c");
+    bigint a = 7 + int(bytes.concat(us.slice(6, 7), hex"00"));
+    require(us.slice(a, a + 1) == hex"4c");
+    bigint b = a + 2 + int(bytes.concat(us.slice(a + 1, a + 2), hex"00"));
+    require(us.slice(b, b + 1) == hex"4d");
+    require(us.slice(b + 3, b + 13) == hex"084c3342314354524c75");
   }
 }
 `;
@@ -182,10 +179,13 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     // Feasibility: both participant inputs stay well under the BCH-2026 operation budget.
     // Frozen Milestone-2 feasibility measurement (2 branded participants, one direct-owner row each,
     // full binding incl. controller-prefix parsing). Lengths are deterministic; op cost ~14% of budget.
+    // Frozen Milestone-2 feasibility measurement (2 branded participants, full binding incl.
+    // controller-prefix, self-checked). Op cost ~14% of budget; the ratio is structural (both scale
+    // with covenant/unlocking size), so cutting redundant work also shrank the budget proportionally.
     expect(metrics.every((m) => m.opCost < m.budget)).toBe(true);
-    expect(encodeTransaction(transaction).length).toBe(8679);
-    expect(metrics[0]).toMatchObject({ instructions: 2738, unlockingBytes: 4108 });
-    expect(metrics[1]).toMatchObject({ instructions: 2738, unlockingBytes: 4108 });
+    expect(encodeTransaction(transaction).length).toBe(7131);
+    expect(metrics[0]).toMatchObject({ instructions: 2615, unlockingBytes: 3334 });
+    expect(metrics[1]).toMatchObject({ instructions: 2615, unlockingBytes: 3334 });
     await expect(s.provider.sendRawTransaction(rawHex())).resolves.toBeTypeOf('string');
   });
 

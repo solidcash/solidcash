@@ -289,3 +289,44 @@ distinctness. Still open: L3P1 codec (checks 1-4 as a dedicated table), 2 (stric
 byte-lexicographic helper), 9 (byte-identical second pushes), general 12 (duplicate owner beyond the
 2-distinct case), and the remaining hostile rows (non-minimal push, legacy route, duplicate logical
 owner, block overlap, two authorities, executor kind, field-boundary truncation).
+
+### 8.2 Cost analysis and reduction (2026-07-24)
+
+The controller-prefix check reads and slices each participant input's whole ~4 KB unlocking bytecode
+(OP_SPLIT charges the full item length), which dominated cost. It was rewritten so each input
+SELF-checks only its own prefix and merely cross-checks that the other input selects SCB1 (so the
+other also runs this handler and self-checks). Result per participant input, `BCH_2026_05`:
+
+| | before | after (self-checked) |
+|---|---:|---:|
+| evaluated instructions | 2,738 | 2,615 |
+| operation cost | 470,207 | 378,129 |
+| operation budget | 3,319,200 | 2,700,000 |
+| ratio | 14.2% | 14.0% |
+| unlocking bytes | 4,108 | 3,334 |
+| total tx bytes | 8,679 | 7,131 |
+
+Key finding: **~14% is a structural ratio, not creeping cost.** Both operation cost and budget scale
+with covenant/unlocking size (`budget = 800 * (41 + |unlocking|)`), so cutting redundant work (-20%
+op cost) shrank the budget proportionally and the ratio held. The 86% headroom is comfortable for two
+participants.
+
+Scaling caveat (the real cost gate): the ratio stays bounded only if per-input work scales with
+contract size, i.e. an UNROLLED N-participant handler (bigger covenant earns a bigger budget). A
+LOOPED parser (small code that reads N x 4 KB unlockings) would grow cost without growing the budget
+and could exceed it. A dedicated 2/4/8-participant measurement is the honest next feasibility step;
+the 2-participant point plus this reasoning suggests ~14% holds for the unrolled design but is not yet
+proven for N=8.
+
+### 8.3 Findings on the remaining invariant-15 checks
+
+- Check 9 (byte-identical second pushes) is **largely subsumed** here: each input's handler binds BOTH
+  participant inputs/outputs to the values decoded from ITS OWN blob, so for both handlers to pass, the
+  two blobs must agree on every bound field (owner LBC, category, and the introspected indices). A
+  general transcript with UNBOUND row data would still need an explicit identical-blob check.
+- Check 12 (duplicate logical owner / two settlement authorities) is covered for two participants by
+  owner distinctness plus the consensus duplicate-input rule; a general N-row table needs an explicit
+  pairwise no-duplicate pass.
+- Check 2 (canonical strict order) needs an unsigned byte-lexicographic helper (see 8.1). Note it is
+  also COSTLY (a 32-byte per-byte unsigned comparison), so it trades against the budget above; a
+  production implementation should weigh a compact order key against the operation budget.

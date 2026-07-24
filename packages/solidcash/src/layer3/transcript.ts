@@ -2,9 +2,11 @@
 // shape, derive the transaction: canonical ordering, index assignment, blob encoding, participant inputs
 // (compiler route unlockers), and owner-preserving recreation outputs. The application adds its effects
 // (settlements, records, resource-state transitions) to the returned builder.
+import { hexToBin } from '@bitauth/libauth';
 import type { Utxo } from './../interfaces.js';
 import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
+import type { InvocationSpec } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
 export interface TranscriptParticipant {
@@ -62,4 +64,22 @@ export function deriveTranscriptTransaction(opts: DeriveTranscriptOptions): Deri
     });
   }
   return { builder, ordered, blob };
+}
+
+/**
+ * Append the msg.sender records the invocations bind: for each invocation an OP_RETURN
+ * `6a23 <caller lockingBytecode>` output. Call after deriveTranscriptTransaction so the outputs land at the
+ * indices the covenant expects (the invocations' `senderOutput` must match this order, i.e. participant
+ * count + invocation index). Returns the output index of the first record added.
+ */
+export function appendInvocationRecords(
+  builder: TransactionBuilder, ordered: TranscriptParticipant[], invocations: InvocationSpec[],
+): void {
+  for (const inv of invocations) {
+    const sender = hexToBin(ordered[inv.caller].contract.lockingBytecode);
+    const opReturn = new Uint8Array(2 + sender.length);
+    opReturn.set([0x6a, 0x23], 0);
+    opReturn.set(sender, 2);
+    builder.addOutput({ to: opReturn, amount: 0n });
+  }
 }

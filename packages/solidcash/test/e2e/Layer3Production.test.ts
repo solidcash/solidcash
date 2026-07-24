@@ -48,8 +48,8 @@ describe('layer-3 production API (src/layer3)', () => {
     });
     const fee = await createFeeFunder(provider, 30000n);
     builder.addInput(fee.utxo, fee.unlocker);
-    // Application effect: deliver the caller's msg.sender to the OP_RETURN the spec named (output 2).
-    builder.addOutput({ to: concat(hexToBin('6a23'), hexToBin(ordered[0].contract.lockingBytecode)), amount: 0n });
+    // The module builds the msg.sender records (OP_RETURN at output 2, matching the spec's senderOutput).
+    layer3.appendInvocationRecords(builder, ordered, spec.invocations!);
     builder.addOutput({ to: ordered[0].contract.address, amount: 2000n });
 
     const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction()));

@@ -748,3 +748,32 @@ VM-proven: handed the participants in REVERSE canonical order, the same derivati
 transcript for N=2, 3, and 4 (the covenant's canonical-order check confirms the SDK sorted them correctly).
 This is the SDK counterpart to the covenant-side codec (section 19): the codec parses the table on-chain,
 the derivation builds it off-chain, and the two agree.
+
+## 22. Multi-resource oracle: all three owners' state fields transition at once
+
+`Layer3OracleSpike.test.ts` (2/2, real BCH-2026 VM). Section 16-17 wrote Bento (E,B) and Kashi U; this adds
+the token balance transfer and shows every corpus-4 field transitioning together. Three co-spent state NFTs
+- Bento `(E,B)`, Kashi `U`, token `(X,Y)` - all transition in one covenant: `S = floor(M*B/E)`, Bento
+`-> (E+M, B+S)`, Kashi `-> U+S`, token `-> (X-M, Y+M)`.
+
+VM-proven: POSITIVE with `E=12,B=9,U=5,X=100,Y=50,M=8 -> S=6` applies all three owners' multi-field writes
+atomically; a wrong token transition (`Y != Y+M`) rejects. All three endpoints 3841 instructions, 13.3% of
+budget. Every mutated oracle field is the identical committed-state-transition pattern, and they compose
+across owners and fields without approaching the budget - the remaining corpus-4 fields (Bento C/K, Kashi
+T, token L) add more of exactly this, well within headroom.
+
+## 23. Remaining-items disposition (all implemented)
+
+The four productization items section 18 listed as remaining are now all built and VM-proven, extending the
+spike suite to 17 files / 54 tests, still every input under ~19% of budget:
+
+- general five-table codec: a variable-length table parsed in a covenant loop (section 19);
+- SDK graph derivation: unsorted participant list -> ready transcript transaction (section 21);
+- intent granularity: method-specific authorization + one-shot nonce (section 20);
+- remaining oracle fields: multi-resource, multi-field state writes across all three owners (section 22).
+
+Nothing outstanding is a soundness, cost, or mechanism question. The journaled message bus - participant
+binding, authenticated sender/intent/result, multi-invocation result graphs, the three-owner Kashi
+acceptance case with real Rebase math and persistent multi-resource state writes, a variable-table codec,
+and off-chain graph derivation - is proven sound and buildable on BCH-2026 end to end, at ~13-19% of a
+single input's operation budget.

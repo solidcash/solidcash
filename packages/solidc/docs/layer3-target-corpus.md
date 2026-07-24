@@ -483,34 +483,41 @@ covenant must authorize each invocation it emits (e.g. the invocation table must
 the caller's own logic emitted, or carry a caller authorization). The identity binding here is the
 prerequisite that makes an intent layer meaningful.
 
-## 10. Milestone 4: caller intent binding (designed; two anchor blockers found, NOT yet passing)
+## 10. Milestone 4: caller intent binding (msg.sender is not enough; the caller must authorize)
 
-M3 binds msg.sender IDENTITY (the sender is always the real co-spent caller). M4 must bind caller
-INTENT: an invocation naming A as caller is valid only for a call A actually authorized, so an attacker
-cannot inject "A -> C" merely because A is co-spent for another reason.
+`Layer3IntentSpike.test.ts` (3/3, real BCH-2026 VM). M3 binds msg.sender IDENTITY (the sender is always
+the real co-spent caller). M4 binds caller INTENT: an invocation naming A as caller is valid only for a
+call A actually authorized, so an attacker cannot inject "A -> C" merely because A is co-spent for
+another reason.
 
-Design (sound): the caller pre-commits its authorization - `hash160(authorized-callee lockingBytecode)`
-- somewhere only the caller controls; the covenant requires
-`tx.inputs[callerIdx].nftCommitment == hash160(tx.inputs[calleeIdx].lockingBytecode)`. Because the
-callee identity is category-derived and random, the authorization cannot be baked into shared covenant
-code and must be set per-instance AFTER the callee exists. Hostiles: unauthorized callee (commit to a
-different identity) and no-authorization (empty commitment) must both reject.
+Solution: the caller pre-commits its authorization - `hash160(authorized-callee lockingBytecode)` - in
+its OWN master NFT commitment (state only the caller can mint/update), PRESERVED across the spend. The
+covenant requires both `tx.outputs[output_i].nftCommitment == tx.inputs[input_i].nftCommitment` (neither
+participant's commitment may be rewritten this tx) and
+`tx.inputs[callerIdx].nftCommitment == hash160(tx.inputs[calleeIdx].lockingBytecode)` (the caller
+committed to exactly this callee). Because the callee identity is category-derived and random, the
+authorization is set per-instance when the caller mints its master, not baked into shared covenant code.
 
-TWO CONCRETE BLOCKERS found while implementing (both VM-confirmed on MockNetworkProvider's BCH-2026):
+VM-proven:
+- POSITIVE: caller's master commits to the co-spent callee -> accepted. Both endpoints 2491 instructions,
+  12.9% of budget (the callee also verifies the caller's committed authorization).
+- HOSTILE (unauthorized callee): the caller's master commits to a different identity -> reject.
+- HOSTILE (no authorization): the caller's master commitment is empty -> reject.
 
-1. **A separate authorization NFT branded to the caller's category is rejected by the stateful
-   self-pin.** Co-spending a second input that carries the caller's own token category fails input 0's
-   covenant; the identical fixture with the auth NFT under a FOREIGN category passes. So the stateful
-   covenant asserts something about how its category may appear across inputs, and an extra
-   same-category input violates it.
-2. **The caller's master NFT commitment is not free - it is state-controlled.** Re-minting the caller's
-   master with `commitment = hash160(callee)` (instead of empty) fails the covenant even with the M4
-   intent check removed, so the stateful machinery constrains the master commitment (empty for a
-   no-state contract). It cannot be repurposed as an authorization slot.
+TWO ANCHOR CONSTRAINTS this pinned down along the way (both VM-confirmed), useful for any future
+stateful co-spend fixture:
 
-CONCLUSION / NEXT STEP: the authorization must live in PROPER contract state - a data-NFT field set via
-`initialState` and co-spent as state, which the stateful covenant expects - not in a side NFT or the
-master commitment. That requires extending the hidden-batch fixture to co-spend and preserve the
-caller's data NFT and have `__layer3_bind` read its commitment. This is the M4 implementation work; the
-design and the two anchor constraints above are the load-bearing findings. M3 (identity binding) stands
-as the delivered milestone.
+1. **A separate NFT branded to the caller's own token category is rejected by the stateful self-pin.**
+   The identical fixture with that NFT under a FOREIGN category passes, so an extra same-category input
+   at a foreign address violates the self-pin. (This is why the authorization rides the master, not a
+   side NFT.)
+2. **The master NFT commitment is preservation-controlled, not free.** Changing it across the spend
+   (e.g. hash160(callee) -> empty) fails even with the intent check removed; PRESERVING it (input ==
+   output) passes. So the master commitment is a usable authorization slot as long as the covenant keeps
+   it fixed - which M4 now enforces.
+
+WHAT IS PROVEN vs WHAT IS NEXT. This binds intent at CALLEE granularity (A authorized calling B). The
+authorization is persistent (preserved, not consumed), i.e. "A trusts B until A changes the commitment";
+one-shot intent would add a nonce. Finer granularity (a specific method/args, not just the callee) would
+encode more in the commitment. Both are follow-ups; the CALLEE-level intent gate is the load-bearing
+message-bus guarantee and it holds on-chain.

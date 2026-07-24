@@ -134,6 +134,48 @@ export function bindingFrameworkBody(n: number, brandPrefix = CONTROLLER_BRAND_P
   return body;
 }
 
+/**
+ * R3/R5: the reusable EXECUTION-transcript verification snippet a HETEROGENEOUS participant embeds in its own
+ * function body (alongside its app logic), so independently-compiled contracts - not clones - mutually
+ * authenticate under one controller-attested execution root. Fixed layout: the `n` participants are at inputs
+ * 0..n-1, the controller at input `n`. The snippet reads every participant's locking bytecode at its fixed
+ * position, recomputes the execution root (domain || lbcs || ordered edges), and requires the co-spent
+ * controller (exact category + lbc) to commit exactly that root and be preserved. `selfPos` is this
+ * participant's own fixed input index. Because the root binds each lbc to its POSITION, no participant can be
+ * substituted or permuted without changing the root the controller attests.
+ */
+export function executionMemberBody(
+  n: number, selfPos: number, invocations: ExecutionInvocation[], controllerCategory: string, controllerLbc: string,
+): string[] {
+  if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
+  if (selfPos < 0 || selfPos >= n) throw new Error('layer3: selfPos out of range');
+  if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
+  if (!/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) throw new Error('layer3: controllerLbc must be hex bytes');
+  const body: string[] = [];
+  for (let i = 0; i < n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${i}].lockingBytecode;`);
+  let lbcConcat = 'lbc0';
+  for (let i = 1; i < n; i += 1) lbcConcat = `bytes.concat(${lbcConcat}, lbc${i})`;
+  let payload = `bytes.concat(hex"${EXEC_DOMAIN}", ${lbcConcat})`;
+  for (const inv of invocations) {
+    if (inv.caller < 0 || inv.caller >= n || inv.callee < 0 || inv.callee >= n) {
+      throw new Error('layer3: execution invocation endpoint out of range');
+    }
+    const edge = `bytes.concat(bytes.concat(lbc${inv.caller}, lbc${inv.callee}), hex"${inv.selectorHex.toLowerCase()}")`;
+    payload = `bytes.concat(${payload}, ${edge})`;
+  }
+  body.push(`bytes execRoot = sha256(${payload});`);
+  const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
+  body.push(`require(tx.inputs[${n}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
+  body.push(`require(tx.inputs[${n}].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
+  body.push(`require(tx.inputs[${n}].nftCommitment == execRoot);`);
+  body.push(`require(tx.outputs[${n}].lockingBytecode == tx.inputs[${n}].lockingBytecode);`);
+  body.push(`require(tx.outputs[${n}].tokenCategory == tx.inputs[${n}].tokenCategory);`);
+  body.push(`require(tx.outputs[${n}].nftCommitment == tx.inputs[${n}].nftCommitment);`);
+  body.push(`require(tx.outputs[${n}].value == tx.inputs[${n}].value);`);
+  body.push(`require(this.activeInputIndex == ${selfPos});`);
+  return body;
+}
+
 /** Generate the full `__layer3_bind` covenant source for a transcript spec, using the module's layout. */
 export function generateTranscriptCovenant(spec: TranscriptSpec): string {
   const n = spec.participants;

@@ -248,3 +248,44 @@ NOT yet done (honest; continue per the binding-spike handoff before Milestone 3)
 This establishes **feasibility of the binding core** on top of the earlier need gate. Cost at scale,
 immutable-version interoperability, contention/liveness, full projection exhaustiveness, and
 independent review remain mandatory later gates before any production layer-3 surface.
+
+### 8.1 Continuation: controller-prefix binding + canonical-order finding (2026-07-24)
+
+Two further invariant-15 checks were added to the same VM-proven fixture (now 6/6):
+
+- **Check 10 controller-prefix binding - DONE, VM-proven.** Each clone's redeem script is branded with
+  the exact 10-byte layer-3 controller prefix `08 "L3B1CTRL" 75` (push8 OP_DROP), realized via the
+  `salt` prologue (harmless push+drop before dispatch; clones stay distinct by category). The handler
+  front-parses each participant input's unlocking bytecode (selector(5) + PUSHDATA1 positional blob +
+  PUSHDATA1 batchBlob arg + PUSHDATA2 redeem push) and requires the redeem-script data to begin with
+  those 10 bytes. Hostile: an unbranded participant (redeem script lacking the prefix) is VM-rejected,
+  with a branded positive control. This closes the "substitute an arbitrary SCB1 contract as a
+  participant" gap: the co-spent contract must carry the controller brand.
+
+- **Check 2 canonical strict order - NOT enforced; specific VM obstacle found.** Two approaches failed
+  at the VM and were reverted to owner distinctness (`!=`, which gives the no-dup / one-settlement
+  property but not anti-malleability ordering):
+  1. `int(reverse(lbc) ++ 0x00)` (intended big-endian unsigned / lexicographic): `OP_BIN2NUM` strips
+     the trailing 0x00 sign-forcing pad, so the value is sign-magnitude, not unsigned.
+  2. `int(lbc)` (numeric key): the fixed P2SH32 suffix `0x87` sets the sign bit, so every owner key is
+     negative and the direct comparison did not behave as a stable sortable key at the VM.
+  Conclusion: strict canonical order needs a **bounded byte-lexicographic helper** (compare the 32-byte
+  hash byte-by-byte), not an `int()` cast. This confirms the handoff's `bytes <` limitation and is the
+  top remaining hardening item. Distinctness still guarantees no duplicate logical owner.
+
+Updated frozen feasibility measurement (2 branded participants, full binding incl. controller-prefix
+parsing), `BCH_2026_05`:
+
+| metric | per participant input | note |
+|---|---|---|
+| evaluated instructions | 2,738 | |
+| operation cost | ~470,200 | budget 3,319,200 (~14%) |
+| unlocking bytecode bytes | 4,108 | |
+| total transaction bytes | 8,679 | 2 masters + fee, 3 outputs |
+
+Proven-enforced checks now: 5 (row-input-LBC), 6 (category+minting), 7 (owner output preservation,
+partial), 8 (both inputs select SCB1), 10 (controller prefix), 11 (active input is a named row), owner
+distinctness. Still open: L3P1 codec (checks 1-4 as a dedicated table), 2 (strict order - needs the
+byte-lexicographic helper), 9 (byte-identical second pushes), general 12 (duplicate owner beyond the
+2-distinct case), and the remaining hostile rows (non-minimal push, legacy route, duplicate logical
+owner, block overlap, two authorities, executor kind, field-boundary truncation).

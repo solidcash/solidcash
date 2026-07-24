@@ -22,6 +22,11 @@ contract Participant() {
   ) public {
     require(input0 < input1);
     require(output0 < output1);
+    // Owner distinctness (no duplicate logical owner / two settlement authorities). NOTE: strict
+    // canonical byte order is NOT yet enforced here - see corpus doc section 8. Attempts via
+    // int(reverse(lbc)++0x00) and int(lbc) both failed at the VM: OP_BIN2NUM strips the sign-forcing
+    // pad and treats the fixed 0x87 P2SH32 suffix as a negative sign, so neither matches a stable
+    // sortable key. A production covenant needs a bounded byte-lexicographic helper.
     require(lockingBytecode0 != lockingBytecode1);
     require(category0.length == 33 && category1.length == 33);
     require(category0.slice(32, 33) == hex"02");
@@ -36,6 +41,23 @@ contract Participant() {
     require(tx.outputs[output1].tokenCategory == category1);
     require(tx.inputs[input0].unlockingBytecode.slice(0, 5) == hex"0453434231");
     require(tx.inputs[input1].unlockingBytecode.slice(0, 5) == hex"0453434231");
+    // Each participant's final redeem-script push must begin with the exact 10-byte L3B1CTRL controller
+    // prefix. Front-parse the unlocking bytecode: selector(5) + PUSHDATA1 positional blob + PUSHDATA1
+    // batchBlob arg + PUSHDATA2 redeem script; the redeem script data starts 3 bytes after its opcode.
+    bytes u0 = tx.inputs[input0].unlockingBytecode;
+    require(u0.slice(5, 6) == hex"4c");
+    bigint u0a = 7 + int(bytes.concat(u0.slice(6, 7), hex"00"));
+    require(u0.slice(u0a, u0a + 1) == hex"4c");
+    bigint u0b = u0a + 2 + int(bytes.concat(u0.slice(u0a + 1, u0a + 2), hex"00"));
+    require(u0.slice(u0b, u0b + 1) == hex"4d");
+    require(u0.slice(u0b + 3, u0b + 13) == hex"084c3342314354524c75");
+    bytes u1 = tx.inputs[input1].unlockingBytecode;
+    require(u1.slice(5, 6) == hex"4c");
+    bigint u1a = 7 + int(bytes.concat(u1.slice(6, 7), hex"00"));
+    require(u1.slice(u1a, u1a + 1) == hex"4c");
+    bigint u1b = u1a + 2 + int(bytes.concat(u1.slice(u1a + 1, u1a + 2), hex"00"));
+    require(u1.slice(u1b, u1b + 1) == hex"4d");
+    require(u1.slice(u1b + 3, u1b + 13) == hex"084c3342314354524c75");
     require(this.activeInputIndex == input0 || this.activeInputIndex == input1);
   }
 }
@@ -56,7 +78,7 @@ interface RowArgs {
   cat0: Uint8Array; lbc0: Uint8Array; cat1: Uint8Array; lbc1: Uint8Array;
 }
 
-async function setup(): Promise<{
+async function setup(brand = true): Promise<{
   provider: ReturnType<typeof createTestProvider>;
   A: Contract; B: Contract;
   route: any; sel: Uint8Array; handler: any;
@@ -69,10 +91,14 @@ async function setup(): Promise<{
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);
   const handler = artifact.hiddenBatch!.handlers.find((h) => h.name === '__layer3_bind')!;
-  const innerA = new Contract(artifact, [], { provider });
-  const innerB = new Contract(artifact, [], { provider });
-  const setupA = await setupStatefulUtxos(provider, innerA, artifact.stateLayout!, {}, { saltContract: true });
-  const setupB = await setupStatefulUtxos(provider, innerB, artifact.stateLayout!, {}, { saltContract: true });
+  // Brand each clone's redeem script with the exact 10-byte layer-3 controller prefix
+  // `08 "L3B1CTRL" 75` (push8 OP_DROP), realized via the salt prologue. Clones stay distinct by category.
+  // brand=false produces unbranded clones whose redeem script lacks the prefix (hostile fixture).
+  const opts = brand ? { provider, salt: hexToBin('4c3342314354524c') } : { provider };
+  const innerA = new Contract(artifact, [], opts);
+  const innerB = new Contract(artifact, [], opts);
+  const setupA = await setupStatefulUtxos(provider, innerA, artifact.stateLayout!, {});
+  const setupB = await setupStatefulUtxos(provider, innerB, artifact.stateLayout!, {});
   const A = innerA.withCategory(hexToBin(setupA.categoryId));
   const B = innerB.withCategory(hexToBin(setupB.categoryId));
   const valid: RowArgs = {
@@ -153,12 +179,13 @@ describe('layer-3 participant-binding spike (E2E)', () => {
         unlockingBytes: transaction.inputs[inputIndex].unlockingBytecode.length,
       };
     });
-    // Frozen Milestone-2 feasibility measurement (2 participants, one direct-owner row each).
-    // Lengths are deterministic (fixed-width categories/locking bytecodes); op cost stays well under budget.
-    expect(encodeTransaction(transaction).length).toBe(5525);
-    expect(metrics[0]).toMatchObject({ instructions: 2480, unlockingBytes: 2531 });
-    expect(metrics[1]).toMatchObject({ instructions: 2480, unlockingBytes: 2531 });
+    // Feasibility: both participant inputs stay well under the BCH-2026 operation budget.
+    // Frozen Milestone-2 feasibility measurement (2 branded participants, one direct-owner row each,
+    // full binding incl. controller-prefix parsing). Lengths are deterministic; op cost ~14% of budget.
     expect(metrics.every((m) => m.opCost < m.budget)).toBe(true);
+    expect(encodeTransaction(transaction).length).toBe(8679);
+    expect(metrics[0]).toMatchObject({ instructions: 2738, unlockingBytes: 4108 });
+    expect(metrics[1]).toMatchObject({ instructions: 2738, unlockingBytes: 4108 });
     await expect(s.provider.sendRawTransaction(rawHex())).resolves.toBeTypeOf('string');
   });
 
@@ -201,5 +228,13 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     forged.inputs[1].unlockingBytecode[1] ^= 1;
     await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
+  });
+
+  it('HOSTILE: an unbranded participant (no L3B1CTRL controller prefix) is rejected', async () => {
+    const s = await setup(false); // clones whose redeem scripts lack the controller prefix
+    await expect(sendRow(s, s.valid)).rejects.toThrow();
+    // Positive control: a branded setup with the same construction is accepted.
+    const branded = await setup(true);
+    await expect(sendRow(branded, branded.valid)).resolves.toBeTypeOf('string');
   });
 });

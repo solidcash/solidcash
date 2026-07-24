@@ -176,11 +176,15 @@ export function buildTranscriptTransaction(opts: BuildTranscriptOptions): Derive
   builder.addInput(opts.fee.utxo, opts.fee.unlocker); // fee input
 
   appendInvocationRecords(builder, ordered, opts.spec.invocations ?? []); // sender records
-  resources.forEach((r, k) => { // resource state transitions
-    const ownerCat = ordered[opts.spec.resources![k].owner].categoryId;
+  resources.forEach((r, k) => { // resource state: preserved by default, transitioned only if opted in
+    const resSpec = opts.spec.resources![k];
+    const ownerCat = ordered[resSpec.owner].categoryId;
+    // Fail-closed: a non-transition resource recreates with its INPUT commitment (the covenant preserves it);
+    // only a transition:true resource carries the app-supplied post-state commitment.
+    const commitment = resSpec.transition ? r.outputCommitment : (r.utxo.token?.nft?.commitment ?? '');
     builder.addOutput({
       to: r.address, amount: r.utxo.satoshis,
-      token: { category: ownerCat, amount: 0n, nft: { capability: 'mutable', commitment: r.outputCommitment } },
+      token: { category: ownerCat, amount: 0n, nft: { capability: 'mutable', commitment } },
     });
   });
   effects.forEach((value, m) => { // effect settlements, recipient = consumer participant

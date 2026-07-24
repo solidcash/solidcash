@@ -13,8 +13,12 @@ export const CONTROLLER_SALT_HEX = '4c3342314354524c';
 
 /** An authenticated invocation: caller -> callee, msg.sender delivered to the layout's sender OP_RETURN. */
 export interface InvocationSpec { caller: number; callee: number }
-/** A resource: an owner-branded state NFT co-spent and preserved (transition supplied by appBody). */
-export interface ResourceSpec { owner: number }
+/**
+ * A resource: an owner-branded state NFT co-spent and preserved (locking bytecode, category, value, and -
+ * unless `transition` - commitment). Set `transition: true` to opt OUT of commitment preservation, in which
+ * case the app's `appBody` MUST bind the output commitment (see L3-2 in layer3-production-audit.md).
+ */
+export interface ResourceSpec { owner: number; transition?: boolean }
 /** An effect: a settlement output bound to a consumer participant with an app-computed value expression. */
 export interface EffectSpec { consumer: number; valueExpr: string }
 /** An event: an authenticated OP_RETURN log bound to the emitter's identity + a fixed topic (EVM indexed log). */
@@ -115,6 +119,12 @@ export function bindingFrameworkBody(n: number, brandPrefix = CONTROLLER_BRAND_P
   body.push('bigint rp = a + 1 + l1;');
   body.push('require(u0.slice(rp, rp + 1) == hex"4d");');
   for (let i = 0; i < n; i += 1) body.push(`require(u${i}.slice(rp + 3, rp + 13) == hex"${brandPrefix}");`);
+  // L3-1: bind every named participant to ONE canonical transcript blob (the SCB1 args region, identical up
+  // to the redeem push). Without this each input validated only its own local participant mapping, so
+  // divergent/overlapping views (e.g. [A,B] and [B,C]) could co-validate. Note: this closes the reproduced
+  // overlapping/divergent/reordered/omitted counterexamples; full exhaustiveness against an injected DISJOINT
+  // transcript (a structure-independent canonical digest) is a further correction - see layer3-production-audit.md L3-1.
+  for (let i = 1; i < n; i += 1) body.push(`require(u${i}.slice(0, rp) == u0.slice(0, rp));`);
   const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
   body.push(`require(${members.join(' || ')});`);
   return body;
@@ -149,9 +159,15 @@ export function generateTranscriptCovenant(spec: TranscriptSpec): string {
     const distinct = Array.from({ length: n }, (_u, i) => `${si} != input${i}`).join(' && ');
     body.push(`require(${distinct});`); // N2: state input is not a participant
     body.push(`require(tx.inputs[${si}].tokenCategory.slice(0, 32) == tx.inputs[input${r.owner}].tokenCategory.slice(0, 32));`); // F1
-    // Resource self-preservation (locking bytecode + category); the commitment transition is appBody.
+    // Resource preservation, fail-closed by default: locking bytecode, category, and satoshi value are ALWAYS
+    // preserved (L3-3). The commitment is preserved unless the resource opts into a transition (L3-2); a
+    // transition delegates the output commitment to appBody.
     body.push(`require(tx.outputs[${so}].lockingBytecode == tx.inputs[${si}].lockingBytecode);`);
     body.push(`require(tx.outputs[${so}].tokenCategory == tx.inputs[${si}].tokenCategory);`);
+    body.push(`require(tx.outputs[${so}].value == tx.inputs[${si}].value);`);
+    if (!r.transition) {
+      body.push(`require(tx.outputs[${so}].nftCommitment == tx.inputs[${si}].nftCommitment);`);
+    }
   });
 
   body.push(...(spec.appBody ?? []));

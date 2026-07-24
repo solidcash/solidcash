@@ -98,7 +98,7 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
     const provider = createTestProvider();
     const E = 10n; const B = 8n; const amount = 5n; const share = (amount * B) / E; // 4
     const shape: layer3.TranscriptSpec = {
-      participants: 2, invocations: [{ caller: 0, callee: 1 }], resources: [{ owner: 1 }],
+      participants: 2, invocations: [{ caller: 0, callee: 1 }], resources: [{ owner: 1, transition: true }],
       effects: [{ consumer: 0, valueExpr: 'share' }],
     };
     const layout = layer3.transcriptLayout(shape);
@@ -166,7 +166,10 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
     const U = 30000n; const T = 90000n; const X = 5000000n; const Y = 1200000n; const L = 600000n;
     const S = (M * B) / E; // 400000
     // resources: Bento (owner 1), Kashi (owner 0), token (owner 2). Layout gives their input/output indices.
-    const shape: layer3.TranscriptSpec = { participants: 3, resources: [{ owner: 1 }, { owner: 0 }, { owner: 2 }] };
+    const shape: layer3.TranscriptSpec = {
+      participants: 3,
+      resources: [{ owner: 1, transition: true }, { owner: 0, transition: true }, { owner: 2, transition: true }],
+    };
     const lay = layer3.transcriptLayout(shape);
     const [bi, ki, ti] = [lay.stateInput(0), lay.stateInput(1), lay.stateInput(2)];
     const [bo, ko, to] = [lay.stateOutput(0), lay.stateOutput(1), lay.stateOutput(2)];

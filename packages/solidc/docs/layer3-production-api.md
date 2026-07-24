@@ -1,6 +1,16 @@
-# Layer-3 transcript - production SDK module (`src/layer3`)
+# Layer-3 transcript - EXPERIMENTAL SDK module (`src/layer3`)
 
-The proven spike covenants are generalized into a reusable SDK module, exported from `solidcash` as
+> STATUS: EXPERIMENTAL research scaffold - NOT a production message bus. An independent audit
+> (`layer3-production-audit.md`, Decision 3) found VM-accepted unsafe states and a scope gap versus the
+> research spec. L3-2 (resource commitment) and L3-3 (resource value) are now fail-closed; L3-1 (canonical
+> transcript) is partially closed (overlapping/divergent views rejected; disjoint-injection residual open);
+> L3-4..L3-9 (real heterogeneous-contract composition, complete invocation/intent/result, full resource
+> authority, exact controller identity, deployability, typed API) remain OPEN. This module generates a
+> HOMOGENEOUS participant covenant and instantiates N copies - it does NOT yet co-spend independently
+> compiled application contracts. Keep default-off; do not merge as a production bus. See the audit for the
+> graduation gates.
+
+The spike covenants are generalized into a reusable SDK module, exported from `solidcash` as
 `layer3.*`. It has three parts - a covenant GENERATOR, a blob CODEC, and a transaction DERIVER - so an
 application describes a transcript by SPEC and gets a generated covenant + a derived, VM-valid transaction,
 with no hand-written per-case covenant.
@@ -107,11 +117,14 @@ Built, `tsc`-clean, lint-clean, and covered by two suites:
 - `Layer3Module.test.ts` (11/11, pure logic): pins the module-owned layout indices, the SCB1 blob envelope,
   the OP_RETURN push encoding, every generated binding string, and the fail-closed validation guards.
 
-This is the production SDK layer over the audited covenants (`layer3-spike-audit-findings.md`) - end to end
-from spec to transaction, carrying the full capstone (target-corpus section 12): participant binding,
-authenticated invocations (M3 msg.sender + M4 caller intent), owner-bound resources, consumer-bound
-settlements (M5 result), and provenance-bound event logs. Bounded to `MAX_PARTICIPANTS = 8` per generated
-covenant (blob < 76 bytes); intent binds a caller to one callee per master.
+This exercises the capstone BINDING MECHANISMS (target-corpus section 12) end to end from spec to
+transaction - participant binding, authenticated invocations (M3 msg.sender + M4 caller intent), owner-bound
+resources with fail-closed preservation, consumer-bound settlements (M5 result), and provenance-bound event
+logs - for the specific measured shapes in the tests. It does NOT establish a general, sound, heterogeneous
+message bus: see the audit banner above and `layer3-production-audit.md` for the VM-accepted issues (L3-1
+residual) and the open scope items (L3-4..L3-9). Bounded to `MAX_PARTICIPANTS = 8` per generated covenant
+(blob < 76 bytes); M4 intent binds a caller to one callee per master (a persistent callee allowlist, not
+authorization of an exact call - L3-5).
 
 Architectural note: a transcript is a MULTI-participant, multi-output TRANSACTION SHAPE, not a single
 covenant, so the SDK transaction layer is its natural home (a `contract` compiles to one covenant; a

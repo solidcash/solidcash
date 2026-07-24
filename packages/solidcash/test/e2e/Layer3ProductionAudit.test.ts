@@ -7,7 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 const OPEN = 'contract Open { function spend() { require(true); } }';
 
-async function fixture() {
+async function fixture(): Promise<any> {
   const provider = createTestProvider();
   const spec: layer3.TranscriptSpec = { participants: 2, resources: [{ owner: 0 }] };
   const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
@@ -58,23 +58,26 @@ async function fixture() {
   return { provider, result, spec, open };
 }
 
-const raw = (builder: any) => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
-describe('layer-3 production audit probes', () => {
-  it('accepts an arbitrary resource commitment when ResourceSpec has no appBody transition', async () => {
-    const { provider, result } = await fixture();
-    await expect(provider.sendRawTransaction(raw(result.builder))).resolves.toBeTypeOf('string');
+describe('layer-3 production audit probes (findings now CLOSED - fail-closed regressions)', () => {
+  it('L3-2 CLOSED: a non-transition resource preserves its commitment; a rewritten commitment is rejected', async () => {
+    const { provider, result, spec } = await fixture();
+    // Honest build now preserves the input commitment (01020304); the covenant enforces it. Forge it:
+    const stateOutput = layer3.transcriptLayout(spec).stateOutput(0);
+    result.builder.outputs[stateOutput].token.nft.commitment = 'deadbeef';
+    await expect(provider.sendRawTransaction(raw(result.builder))).rejects.toThrow();
   });
 
-  it('accepts siphoning satoshis from a declared resource output', async () => {
+  it('L3-3 CLOSED: siphoning satoshis from a declared resource output is rejected', async () => {
     const { provider, result, spec, open } = await fixture();
     const stateOutput = layer3.transcriptLayout(spec).stateOutput(0);
     result.builder.outputs[stateOutput].amount = 1000n;
     result.builder.addOutput({ to: open.address, amount: 4000n });
-    await expect(provider.sendRawTransaction(raw(result.builder))).resolves.toBeTypeOf('string');
+    await expect(provider.sendRawTransaction(raw(result.builder))).rejects.toThrow();
   });
 
-  it('accepts three participants using two different overlapping transcripts in an N=2 covenant', async () => {
+  it('L3-1 CLOSED: three participants using two different OVERLAPPING transcripts ([A,B] vs [B,C]) is rejected', async () => {
     const provider = createTestProvider();
     const spec: layer3.TranscriptSpec = { participants: 2 };
     const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
@@ -118,6 +121,10 @@ describe('layer-3 production audit probes', () => {
         },
       });
     }
-    await expect(provider.sendRawTransaction(raw(builder))).resolves.toBeTypeOf('string');
+    // Input 2 carries a divergent blob; the L3-1 canonical-blob binding aborts it. Overlapping/divergent
+    // views no longer co-validate. (Residual: a fully DISJOINT injected transcript with a different-structured
+    // blob is not yet caught - full exhaustiveness needs a structure-independent canonical digest, see
+    // layer3-production-audit.md L3-1.)
+    await expect(provider.sendRawTransaction(raw(builder))).rejects.toThrow();
   });
 });

@@ -22,6 +22,29 @@ The green suite demonstrates that the generated examples execute and reject the
 covered mutations. It does not establish the advertised participation,
 resource, invocation, or application-integration properties.
 
+## Remediation status (2026-07-24, implementer response)
+
+The audit is accepted. The prior "production / full capstone" framing was overstated; Decision 3 (research
+scaffold, keep experimental, do not merge as a message bus) stands. Concrete corrections applied on top of
+the audit commit:
+
+- **L3-2 CLOSED.** Resource commitment is now preserved by default (fail-closed). A transition is an explicit
+  `ResourceSpec.transition: true` opt-out; only then does `appBody` bind the output commitment.
+- **L3-3 CLOSED.** Resource satoshi value is now covenant-preserved (`output.value == input.value`);
+  capability is preserved by the existing 33-byte `tokenCategory` equality.
+- **L3-1 PARTIALLY CLOSED.** Every named participant is now bound to ONE canonical transcript blob (identical
+  SCB1 args region), so the reproduced overlapping/divergent/reordered/omitted views no longer co-validate.
+  RESIDUAL: a fully DISJOINT injected transcript with a different-structured blob is not yet caught -
+  structure-independent exhaustiveness (a canonical digest binding every co-spent branded input to one
+  transcript identity) is still required before L3-1 can be called fully closed. Independent re-review wanted.
+- **L3-4, L3-5, L3-6, L3-7, L3-8, L3-9: OPEN.** These are the scaffold-vs-real-composition, complete
+  invocation/intent/result, full resource authority, exact-controller-identity, deployability, and typed-API
+  items. They are a scope program, not point fixes, and are not addressed here.
+- **`msg.sender` hardening: confirmed sound** by the audit and unchanged.
+
+Regressions: `Layer3ProductionAudit.test.ts` now asserts L3-1/2/3 are REJECTED; all 91 layer3 tests
+(spikes + production + module + msg.sender) green.
+
 ## Verification performed
 
 The complete explicitly enumerated Layer-3 suite passed:

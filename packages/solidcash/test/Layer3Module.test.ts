@@ -83,11 +83,22 @@ describe('layer3.generateTranscriptCovenant - generated framework + spec binding
     // resource F1: state category == owner category; N2 distinctness
     expect(src).toContain('tx.inputs[2].tokenCategory.slice(0, 32) == tx.inputs[input1].tokenCategory.slice(0, 32)');
     expect(src).toContain('2 != input0 && 2 != input1');
+    // resource preservation, fail-closed by default: value ALWAYS (L3-3), commitment when no transition (L3-2)
+    expect(src).toContain('tx.outputs[3].value == tx.inputs[2].value');
+    expect(src).toContain('tx.outputs[3].nftCommitment == tx.inputs[2].nftCommitment');
+    // L3-1: canonical-blob binding across participants
+    expect(src).toContain('u1.slice(0, rp) == u0.slice(0, rp)');
     // effect F2: settlement recipient == consumer, value == app expr
     expect(src).toContain('tx.outputs[4].lockingBytecode == tx.inputs[input0].lockingBytecode');
     expect(src).toContain('tx.outputs[4].value == settle');
     // event: emitter identity (35) + 4-byte topic => push 39 = 0x27, at eventOutput(0) = 5
     expect(src).toContain('tx.outputs[5].lockingBytecode == bytes.concat(hex"6a27", tx.inputs[input1].lockingBytecode, hex"aabbccdd")');
+  });
+
+  it('a transition resource omits commitment preservation (delegates to appBody) but keeps value preserved', () => {
+    const src = layer3.generateTranscriptCovenant({ participants: 2, resources: [{ owner: 0, transition: true }] });
+    expect(src).toContain('tx.outputs[2].value == tx.inputs[2].value'); // value still fail-closed
+    expect(src).not.toContain('tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment'); // commitment delegated
   });
 
   it('appends app resource-transition statements verbatim before effect binding', () => {

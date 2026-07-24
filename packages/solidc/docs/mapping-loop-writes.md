@@ -38,8 +38,9 @@ runtime-variable output count, exactly like `dynamicChunkVars`.
 
 The following bullets describe the original unsorted loop-mint path and are retained as historical threat-model
 context. Mandatory C2 now routes varying-key writes through the sorted-upsert machinery; invariant keys are cached
-and flushed once. Current restrictions are multi-collection interleaving and chunked (>60-byte) values in one
-runtime loop, both of which still fail closed.
+and flushed once. Authenticated reverse-suffix chunk outputs support both invariant and per-key values above 60
+bytes. Current restrictions include multi-collection interleaving, unsupported loop-local value expressions,
+duplicate keys in array-mutation loops, and the composition cases listed in `sorted-mapping-c2.md` §10.1.
 
 The write is sound only when each iteration writes a **distinct** entry. The compiler enforces the checkable part
 of that and fails closed (`EntryWriteInLoopError`) otherwise:
@@ -47,14 +48,16 @@ of that and fails closed (`EntryWriteInLoopError`) otherwise:
 - **Key must vary per iteration.** A loop write is accepted only when its key references a loop-mutated variable
   (the induction variable, or a local transitively derived from it). An invariant key - `for (i<n) m[k] = v`,
   `k` fixed - would mint N entries for the same key (ambiguous read); it is **rejected**.
-- **Pure write only.** A read-modify-write in the loop (`m[k[i]] += v[i]`, or any read of the written collection)
-  is **rejected** - see "Read-modify-write is deferred" below.
-- **Delete in a loop** is **rejected**.
+- **Supported value sources are explicit.** Literal, invariant parameter, and aligned parameter-array values are
+  supported. An arbitrary loop-local expression such as `m[ks[i]] = i` still fails closed.
+- **RMW and delete are supported by the sorted-upsert path.** The historical restrictions below explain why the
+  former unsorted design could not support them safely.
 - **Single collection.** Two different collections written in one loop is **rejected** (the covenant precomputes
   one entry address / trailing region). A sound extension (interleave M entries per iteration at stride M with M
   per-collection count-pins, or M separate trailing regions) is deferred - no current use case needs it.
-- **Negative-existence guard** (`require(!m[k])` inside the loop) is **rejected** - and is unsound even outside a
-  loop (finding C2, `mapping-omission-security.md`).
+- **Array mutations are authenticated.** Varying-key push/pop/index assignment reconstructs and authenticates one
+  old whole-array witness per effective key. Duplicate mutation keys are rejected because they require sequential
+  folding over one co-spent entry.
 
 ## Historical RMW blocker and C2 resolution
 
@@ -84,13 +87,13 @@ proven. The runtime sorted-upsert loop now implements existing updates, absent i
 delete-to-default. The same-key case is coalesced by `CacheMappingEntryInLoop`; canonical counter keys are lowered
 by `LowerC2CounterLoops` to full-width slot order.
 
-### Accepted gaps (correctness, not fund-safety)
+### Current operational limits
 
-- **Non-injective varying keys** (`m[i % 2] = v`) compile but mint duplicate entries - the same distinct-key
-  assumption as duplicate values in a `keys[]` array. Duplicates corrupt the writer's **own** state (ambiguous
-  read), never another party's funds.
-- **Derivation is O(N) probes**, so the SDK caps a single loop write at ~62 iterations; a larger loop fails to
-  derive rather than miscompiling.
+- Duplicate keys in ordinary set/arithmetic loops are deduplicated or folded according to the operation. Duplicate
+  keys in varying-key array-mutation loops are rejected until sequential mutation folding is implemented.
+- Derivation and covenant verification scale with the number of effective keys and value chunks. Practical
+  transaction-size, fee, and VM-operation limits are reached before the commitment format's theoretical bounds.
+- The authoritative fail-closed feature list is `sorted-mapping-c2.md` §10.1.
 
 ## Verified
 

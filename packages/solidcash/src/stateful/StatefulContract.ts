@@ -5522,6 +5522,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
     const valueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
+    const loopValueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
     // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
     // their commitments from the trace (registered as valueChunkVars after the builder is created).
     const computedValueChunkCollections = new Set<string>();
@@ -5556,7 +5557,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // P5b value witnesses (__internal__valueWitness_N), collected in entryAccesses (slotIndex) order to match
       // the SymbolTable param injection; appended to finalArgs after this loop (between blockhash and iteration).
-      const chunkableReadWitnesses: Uint8Array[] = [];
+      const chunkableReadWitnesses: Array<Uint8Array | Uint8Array[]> = [];
 
       for (let slotIndex = 0; slotIndex < entryAccesses.length; slotIndex++) {
         const access = entryAccesses[slotIndex];
@@ -5599,10 +5600,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (keyType === 'address' && typeof value === 'string' && value.includes(':')) {
                 return addressToLockScript(value);
               }
+              // State addresses are decoded as their native locking bytecode and VM numerics are already in the
+              // canonical forms used by the on-chain key expression.
               if (value instanceof Uint8Array) return value;
               if (typeof value === 'bigint') return bigIntToVmNumber(value);
               if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
-              throw new Error(`Unsupported C2 state-array key value for '${source.stateArrayName}'`);
+              // Use the state codec for every legal mapping-key type. Besides integers/bools/bytes this covers
+              // strings, fixed bytes, enums, user-defined value types, and other aliases exactly as the state
+              // decoder materializes them. Keeping this canonical encoder shared with normal ABI/state values is
+              // important: the SDK's slot lookup must hash the same byte vector as the covenant's OP_SHA256.
+              try {
+                return encodePushdataValue(value as StateValue, keyType, stateLayout.structs);
+              } catch (cause) {
+                throw new Error(
+                  `Unsupported C2 state-array key value for '${source.stateArrayName}' (type ${keyType})`,
+                  { cause },
+                );
+              }
             }
             // Expression/computed key (e.g. balances[hash160(pk)] with a local var): not a function param, so
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
@@ -5627,7 +5641,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return typeof v === 'bigint' ? bigIntToVmNumber(v)
               : v instanceof Uint8Array ? v
                 : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
-                  : bigIntToVmNumber(BigInt(v as unknown as string));
+                  : encodePushdataValue(v as StateValue, keyType, stateLayout.structs);
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           batchTargetSlots.set(slotIndex, slot);
@@ -6243,7 +6257,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : typeof v === 'bigint' ? bigIntToVmNumber(v)
             : v instanceof Uint8Array ? v
               : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
-                : bigIntToVmNumber(BigInt(v as string)));
+                : encodePushdataValue(v as StateValue, keyType, stateLayout.structs));
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
       let arr = argOf(info.varyingArrayParam);
@@ -6320,7 +6334,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : typeof v === 'bigint' ? bigIntToVmNumber(v)
             : v instanceof Uint8Array ? v
               : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
-                : bigIntToVmNumber(BigInt(v as string)));
+                : encodePushdataValue(v as StateValue, keyType, stateLayout.structs));
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
       let keysArr = argOf(info.varyingArrayParam) as unknown[];
@@ -6331,21 +6345,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // A rawbytes VALUE (whole bytes/string/array/bytesN param `m[k[i]] = a`): the covenant stores the value tail
       // (len4 ++ value inline for a chunkable type, verbatim for bytesN); the SDK mirrors it. Only op==='set' reaches
       // here for rawbytes (the guard gates RMW/const to int). scalarTail is the invariant value's on-chain bytes.
-      // On-chain value bytes for a rawbytes value: the inline tail len4 ++ value (chunkable type) or verbatim (bytesN/
-      // address). Shared by the invariant `= a` and the per-key `= vs[i]` forms; >60 B fails closed (chunked-in-loop is
-      // unsupported - the covenant reverts too).
+      // On-chain value bytes for a rawbytes value. Chunked values in this loop remain fail-closed until the
+      // compiler and builder share a bounded-cost runtime output layout.
       const encodeValueTail = (v: unknown): Uint8Array => {
         const vB = v instanceof Uint8Array ? v
           : typeof v === 'string' ? utf8ToBin(v)
             : encodePushdataValue(v as StateValue, collection.valueType, stateLayout.structs);
         if (!collection.chunkableValue) return vB; // fixed rawbytes (bytesN/address): stored verbatim, no tail
-        if (vB.length > 60) {
-          throw new Error(`C2 array-value loop '${info.collection}': value is ${vB.length} B > 60 (a chunked value in`
-            + ' a loop is unsupported - the covenant fails closed at runtime).');
-        }
         const len4 = new Uint8Array(4); new DataView(len4.buffer).setUint32(0, vB.length, true);
-        return new Uint8Array([...len4, ...vB]);
+        return vB.length > 60
+          ? new Uint8Array([...len4, ...sha256Sync(vB), ...vB.slice(0, VALUE_HEAD_SIZE)])
+          : new Uint8Array([...len4, ...vB]);
       };
+      const rawValueBytes = (v: unknown): Uint8Array => v instanceof Uint8Array ? v
+        : typeof v === 'string' ? utf8ToBin(v)
+          : encodePushdataValue(v as StateValue, collection.valueType, stateLayout.structs);
       const rawScalar = !isDelete && info.valueScalarParam !== undefined ? argOf(info.valueScalarParam) : undefined;
       const isRawbytesVal = rawScalar !== undefined
         && typeof rawScalar !== 'bigint' && typeof rawScalar !== 'boolean' && typeof rawScalar !== 'number';
@@ -6353,22 +6367,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let scalarAmt: bigint | undefined;
       if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) scalarAmt = toBig(argOf(info.valueScalarParam));
       else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
-      const perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
+      let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
       if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
         valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
       }
       // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
       // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).
-      const perKeyRawbytes = perKey && Array.isArray(valsArr) && (valsArr as unknown[]).length > 0
+      let perKeyRawbytes = perKey && Array.isArray(valsArr) && (valsArr as unknown[]).length > 0
         && ((): boolean => { const v0 = (valsArr as unknown[])[0];
           return !(typeof v0 === 'bigint' || typeof v0 === 'number' || typeof v0 === 'boolean'); })();
       // Value bytes for a commitment: the per-key/invariant rawbytes tail (already a Uint8Array), else the int as a
       // minimal VM number.
       const commitValue = (nv: bigint | Uint8Array): Uint8Array =>
         nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
-      if (!Array.isArray(keysArr) || (perKey && !Array.isArray(valsArr))) continue;
-      if (perKey && (valsArr as unknown[]).length !== keysArr.length) {
+      if (!Array.isArray(keysArr) || (perKey && !info.mutation && !Array.isArray(valsArr))) continue;
+      if (perKey && !info.mutation && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
@@ -6380,7 +6394,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // dedupe (keep one); a scalar `+=` duplicate is handled by the covenant's isDup accumulate (below - the entry is
       // co-spent once and the scalar applied per occurrence), so it is NOT pre-merged here; a scalar `-=` duplicate
       // stays fail-closed (`-=` has no pending-defer).
-      if (Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey || info.op === 'set')) {
+      if (info.mutation && Array.isArray(keysArr) && keysArr.length > 1) {
+        const mutationSlots = keysArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
+        if (mutationSlots.some((h, i) => mutationSlots.indexOf(h) !== i)) {
+          throw new Error(`C2 array mutation loop ${info.collection}: duplicate keys are ambiguous; combine them first`);
+        }
+      }
+      if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey || info.op === 'set')) {
         const kArr = keysArr as unknown[];
         const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
@@ -6425,7 +6445,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
       // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent
       // ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches it.
-      if (foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
+      if (!info.mutation && foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
         const debitE = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
         let senderKey: Uint8Array | null = null;
         try { senderKey = addressToLockScript(this._signer.getAddress()); } catch { senderKey = null; }
@@ -6495,6 +6515,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // argument must carry the same order the commitments were built in, else the covenant OP_VERIFY fails).
           const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
           if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          // Array-mutation operand arrays use the same loop index as the key array and must follow any covenant
+          // adjacency reorder exactly.
+          for (const pname of [info.mutationValueArrayParam, info.mutationIndexArrayParam]) {
+            if (!pname) continue;
+            const pi = abiFunction!.inputs.findIndex((p) => p.name === pname);
+            const pv = pi >= 0 ? args[pi] : undefined;
+            if (Array.isArray(pv)) {
+              const reordered = order.map((i) => pv[i]);
+              args[pi] = reordered;
+              finalArgs[pi] = reordered;
+            }
+          }
           if (perKey && Array.isArray(valsArr)) {
             const vArr = valsArr as unknown[];
             valsArr = order.map((i) => vArr[i]);
@@ -6504,6 +6536,71 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
         }
+      }
+
+      if (info.mutation) {
+        const readRawValue = async (slot: Uint8Array): Promise<Uint8Array> => {
+          const entry = list.find(slot);
+          if (!entry) return encodePushdataValue([], collection.valueType, stateLayout.structs);
+          const tail = entry.value;
+          if (tail.length < 4) throw new Error(`C2 array value for ${info.collection} has an invalid tail`);
+          const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+          if (len <= 60) return tail.slice(4, 4 + len);
+          const root = tail.slice(4, 36);
+          const headData = tail.slice(36, 64);
+          const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+          const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+            .filter((u) => u.token?.category === this.categoryId
+              && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
+            .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
+            .sort((a, b) => a.chunkIndex - b.chunkIndex);
+          const raw = joinValueChunks(headData, chunks, len);
+          if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+            throw new Error(`C2 value chunks do not match the authenticated root`);
+          }
+          return raw;
+        };
+        const operand = (arrayName: string | undefined, scalarName: string | undefined,
+          constant: string | undefined, i: number): unknown => {
+          const av = argOf(arrayName);
+          if (arrayName && Array.isArray(av)) return av[i];
+          if (scalarName) return argOf(scalarName);
+          if (constant !== undefined) return BigInt(constant);
+          return undefined;
+        };
+        const oldWitnesses: Uint8Array[] = [];
+        const mutated: StateValue[] = [];
+        for (let i = 0; i < keysArr.length; i++) {
+          const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+          const raw = await readRawValue(slot);
+          oldWitnesses.push(raw);
+          const decoded = decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
+          if (!Array.isArray(decoded)) throw new Error(`C2 mutation target ${info.collection} is not an array`);
+          const next = [...decoded] as StateValue[];
+          if (info.mutation === 'push') {
+            next.push(operand(info.mutationValueArrayParam, info.mutationValueScalarParam,
+              info.mutationValueConst, i) as StateValue);
+          } else if (info.mutation === 'pop') {
+            if (next.length === 0) throw new Error(`C2 array mutation ${info.collection}: pop from empty array`);
+            next.pop();
+          } else {
+            const rawIndex = operand(info.mutationIndexArrayParam, info.mutationIndexScalarParam,
+              info.mutationIndexConst, i);
+            const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
+            if (!Number.isSafeInteger(index) || index < 0 || index >= next.length) {
+              throw new Error(`C2 array mutation ${info.collection}: index ${index} out of bounds`);
+            }
+            next[index] = operand(info.mutationValueArrayParam, info.mutationValueScalarParam,
+              info.mutationValueConst, i) as StateValue;
+          }
+          mutated.push(next);
+        }
+        const wi = abiFunction!.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
+        if (wi < 0) throw new Error(`C2 array mutation ${info.collection}: missing old-value witness ABI input`);
+        finalArgs[wi] = oldWitnesses;
+        valsArr = mutated;
+        perKey = true;
+        perKeyRawbytes = true;
       }
       const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
       // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
@@ -6537,6 +6634,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
+        const loopRawValue = collection.chunkableValue && info.op === 'set'
+          ? rawValueBytes(perKeyRawbytes ? (valsArr as unknown[])[i] : rawScalar)
+          : undefined;
+        if (loopRawValue && loopRawValue.length > 60) {
+          loopValueChunkMints.push({
+            collection: info.collection, slot, digest: sha256Sync(loopRawValue),
+            chunks: splitValueIntoValueChunks(loopRawValue),
+          });
+        }
         const amt: bigint | Uint8Array = perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
           : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
@@ -6559,10 +6665,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             throw new Error(`C2 upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx`);
           }
           cospent.add(uidOf(entry.utxo));
-          const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
+          const oldVal = info.op === '+' || info.op === '-'
+            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
           const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
           insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
+          if (collection.chunkableValue) {
+            const oldTail = entry.value;
+            if (oldTail.length >= 36
+              && (oldTail[0] | (oldTail[1] << 8) | (oldTail[2] << 16) | (oldTail[3] << 24)) > 60) {
+              valueChunkGc.push({
+                collection: info.collection, slotHex, oldDigestHex: binToHex(oldTail.slice(4, 36)),
+              });
+            }
+          }
           // Record this update as the pending-defer target BEFORE pushing its (initially normal) commitment, so a
           // following bracketed new key can re-point it (foldActive) OR a duplicate can accumulate into it (also `-`,
           // whose covenant pending-defer is active for duplicates even though it never inserts/folds).
@@ -8323,6 +8439,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const mint of valueChunkMints) {
       const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
       mint.chunks.forEach((data, i) => builder.addValueChunkOutput({
+        to: chunkAddr,
+        amount: 1000n,
+        token: {
+          category: this.categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: buildValueChunkCommitment(i, data) },
+        },
+      }));
+    }
+    // Runtime-loop groups are final outputs in reverse iteration order. The covenant addresses group i as
+    // outputCount - chunksAlreadyVerified - groupSize, so each group remains direct-indexed and bounded-cost.
+    for (const mint of [...loopValueChunkMints].reverse()) {
+      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
+      mint.chunks.forEach((data, i) => builder.addLateValueChunkOutput({
         to: chunkAddr,
         amount: 1000n,
         token: {

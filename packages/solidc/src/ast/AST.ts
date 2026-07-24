@@ -293,6 +293,10 @@ export class FunctionDefinitionNode extends Node implements Named {
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
     valueArrayOffset?: string;
+    mutation?: 'push' | 'pop' | 'setAt';
+    mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
+    mutationIndexArrayParam?: string; mutationIndexScalarParam?: string; mutationIndexConst?: string;
+    oldValuesWitnessParam?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
   // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.

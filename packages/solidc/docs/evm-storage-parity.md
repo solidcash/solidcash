@@ -426,15 +426,11 @@ Priorities carry the PACKING lens above: each phase lowers to a 128B-aware subst
   address; declared-var guards are sound via the always-present register; mapping guards use the existing C2
   C2 backend (and after P4 the assembly path shares that collection). Sorting the whole slot space would be pure
   overhead. Not implemented.
-- **P5 - sorted value-type tail [DEFERRED, niche].** This is an enhancement to the OPT-IN C2 sorted-MAPPING
-  feature (a sorted mapping whose VALUE is an unbounded `string`/`bytes`), orthogonal to storage parity -
-  especially once P2 is dropped (the slot space does not use the sorted list). A sorted entry's 128B
-  commitment holds slot(32)+next(32)+value(<=64), so a >64-byte value fails closed (`sortedValueKind` null,
-  `SortedMappingCodegenPendingError`); closing it needs the dynamic-storage chunk model spliced into the
-  sorted-entry value (value -> chunk pointer + length; SDK derives the run). Low value-per-complexity for a
-  rare combination (sorted mapping + string value) - documented, not built. `int`/`bytesN`/`address`/`struct`
-  values already work and are VM-tested.
-  `bytesN`/`address`/`struct`/`int` values already work and are VM-tested.
+- **P5 - sorted value-type tail [DONE].** Mandatory C2 mappings support unbounded `string`, `bytes`, structs, and
+  arrays. Values up to 60 bytes remain inline; larger values store an authenticated length/root/head tail and
+  mutable value-chunk NFTs at the digest-specific collection address. Writes pin every chunk and reads reassemble
+  and verify the root; overwrites reclaim the old digest's chunks. Fixed-width `int`/`bytesN`/`address` values remain
+  inline. Runtime-loop chunk output is tracked separately in the C2 loop implementation notes.
 
 Byte-identical LOGICAL slot numbers (the SDK keccak veneer) is reachable any time after P1, reusing the ABI
 encoder + real-keccak fold; fold it in only where a corpus contract exposes a raw slot number cross-chain.
@@ -464,6 +460,4 @@ encoder + real-keccak fold; fold it in only where a corpus contract exposes a ra
       slot math.
 - [x] P2: DROPPED BY DESIGN - the slot space needs no absence proof (declared vars = always-present register;
       mappings = existing C2 backend; raw slots directly located by slot id). Sorting it would be pure overhead.
-- [~] P5: sorted string / unbounded-bytes value tail - DEFERRED as a niche C2-sorted-MAPPING enhancement (not
-      the slot space, and orthogonal to storage parity once P2 is dropped). Needs the chunk model spliced into
-      the sorted entry value; low value-per-complexity, documented rather than built.
+- [x] P5: sorted string / unbounded-bytes value tail, including authenticated chunk storage and overwrite GC.

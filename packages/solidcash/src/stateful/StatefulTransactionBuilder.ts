@@ -254,6 +254,7 @@ export class StatefulTransactionBuilder {
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
   private valueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
+  private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
   private valueChunkVars: Map<string, Uint8Array> = new Map(); // collection -> chunk-address locking bytecode
@@ -793,6 +794,12 @@ export class StatefulTransactionBuilder {
    */
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
+    return this;
+  }
+
+  /** Runtime-loop value chunks must be the final transaction outputs for reverse-suffix covenant indexing. */
+  addLateValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
+    this.lateValueChunkOutputs.push(output);
     return this;
   }
 
@@ -1990,6 +1997,12 @@ export class StatefulTransactionBuilder {
       builder.addOutput(output);
     }
 
+    for (const vco of this.lateValueChunkOutputs) {
+      const chunkOutput = { ...vco };
+      chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+      builder.addOutput(chunkOutput);
+    }
+
     // No change output - adding outputs past the block range changes
     // OP_TXOUTPUTCOUNT, which the covenant's bounds checks rely on.
     // Instead, funder UTXOs are sized to exactly cover the fee (see
@@ -2284,6 +2297,7 @@ export class StatefulTransactionBuilder {
       + this._dynamicChunkOutputCount()
       + iterationEntryOutputCount
       + this.pendingOutputs.length
+      + this.lateValueChunkOutputs.length
       + changeOutputCount;
   }
 

@@ -1574,7 +1574,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
           if (!coll?.sorted || !vt || !isChunkableValueType(vt)) continue;
           const wname = `__internal__valueWitness_${info.slotIndex}`;
-          const wparam = new ParameterNode(new BytesType(), wname);
+          // A varying-key array RMW loop needs one old whole-value witness per iteration. The covenant selects
+          // witness[i] with the same runtime index as key[i] and authenticates it against that entry's inline
+          // value/root before mutation. Ordinary reads keep the scalar bytes witness.
+          const varyingArrayKey = info.keySources?.some((s) => s.kind === 'expression'
+            && /^arridx\(id:\w+,.+\)$/.test(s.canonical ?? ''));
+          const wtype = vt instanceof ArrayType && (info.inLoop || varyingArrayKey)
+            ? new ArrayType(new BytesType()) : new BytesType();
+          const wparam = new ParameterNode(wtype, wname);
           wparam.location = node.location;
           node.parameters.push(wparam);
           this.symbolTables[0].set(Symbol.variable(wparam));
@@ -2986,7 +2993,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectLoopWrittenSlotKeys(node: Node, depth: number, out: Set<string>, loopVars: Set<string>): void {
     if (!node) return;
     if (node instanceof MappingAssignNode && node.collection && depth > 0
-      && !node.arrayIndex && !node.arrayPush && !node.arrayPop
+      && ((!node.arrayIndex && !node.arrayPush && !node.arrayPop)
+        || (node.collection.sorted && node.collection.innermostValueType instanceof ArrayType))
       && node.keys.some((k) => this.exprReferencesAny(k, loopVars))) {
       const { keyParams } = this.getMappingKeyDescriptors(node.keys);
       out.add(`${node.collection.name}:${keyParams.join(':')}`);

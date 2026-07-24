@@ -308,6 +308,14 @@ export interface SortedUpsertLoopAbi {
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
+  mutation?: 'push' | 'pop' | 'setAt';
+  mutationValueArrayParam?: string;
+  mutationValueScalarParam?: string;
+  mutationValueConst?: string;
+  mutationIndexArrayParam?: string;
+  mutationIndexScalarParam?: string;
+  mutationIndexConst?: string;
+  oldValuesWitnessParam?: string;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 

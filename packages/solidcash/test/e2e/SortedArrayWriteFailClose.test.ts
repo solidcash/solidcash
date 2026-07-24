@@ -18,11 +18,15 @@ describe('sorted C2 array writes: fail-close boundary', () => {
     expect(() => compileString(K('for (int j = 1; j < 3; j++) { m[k][j] = m[k][j - 1] + 1; }'))).not.toThrow();
   });
 
-  it('a DIFFERENT-key insert loop `for(i) m[ks[i]]=v` fails closed (per-iteration sorted insert not implemented)', () => {
-    expect(() => compileString(
+  it('a DIFFERENT-key mutation loop compiles as an authenticated per-entry RMW', () => {
+    const art = compileString(
       `contract C() { mapping(int => int[]) m;
-        function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); for (int j = 0; j < 3; j++) { m[ks[j]].push(v); } } }`,
-    )).toThrow();
+        function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); for (int j = 0; j < ks.length; j++) { m[ks[j]].push(v); } } }`,
+    );
+    const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.mutation).toBe('push');
+    expect(info?.mutationValueScalarParam).toBe('v');
+    expect(info?.oldValuesWitnessParam).toMatch(/^__internal__valueWitness_/);
   });
 
   it('multi-dimensional array element write `m[k][i][j]` now COMPILES (whole-value RMW desugar)', () => {

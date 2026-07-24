@@ -25,9 +25,14 @@ All 4 CRITICAL fixed + regression-tested (`packages/solidc/test/SecurityAudit.te
 - **C3** FIXED (ea67656f): `emitOwnCategoryMutableNftConservation` pins the count of co-spent C-mutable(0x01)
   NFTs input==output for gated (non-entry/dynamic/deploy) functions -> un-accessed NFT DESTRUCTION rejected at
   VM (e2e-proven). Residual: flag=1 balanced-output corruption (needs per-NFT commitment pin).
-- **C2** FIXED-mitigated (daeaa39d): compile-time warning on negative mapping guards
-  (`require(!m[k])`/`==0|false`). Full soundness needs an entry-set accumulator. Docs:
-  `docs/mapping-omission-security.md`.
+- **C2** FIXED (2026-07-22 mandatory-C2 merge): every mapping now uses the authenticated sorted-linked-list
+  backend. Reads require either the exact node or an adjacent predecessor exclusion proof, closing omission for
+  negative guards and one-time writes. Unsupported access shapes fail compilation instead of using the legacy
+  default-on-absent backend. Docs: `docs/mapping-omission-security.md`, `docs/sorted-mapping-c2.md`.
+  **“FIXED” is the security-finding status, not a claim of complete Solidity mapping-shape parity.** Remaining
+  fail-closed feature gaps are tracked in `docs/sorted-mapping-c2.md` §10.1: loop-variable-derived values,
+  multi-collection runtime loops, duplicate-key array-mutation loops, consecutive same-entry scalar RMW
+  coalescing, and separately scoped cross-contract extensions.
   - **Lineage (recorded 2026-07):** this gap is inherent to the entry-NFT model since the `future` branch
     (code-traced: `emitSlotExistsCheck` + `OP_ELSE` default, `emitMintingNftUniqueness` counts only the `0x02`
     master, no `0x01` conservation, no per-mapping entry count). The `SECURITY_AUDIT_2026_03_06.md` pass called
@@ -36,13 +41,12 @@ All 4 CRITICAL fixed + regression-tested (`packages/solidc/test/SecurityAudit.te
     class - it even treats "not included as inputs -> can't be modified" as a *safety* property, the inverse of
     this attack. Omission is the structural blind spot of covenant auditing. Not a rework regression; our C3
     conservation loop (absent in `future`) was a net improvement on the sibling destruction vector.
-  - **Sound solution (proposed):** positive guards already sound (fail-safe, O(1), scales); consume-once +
+  - **Sound solution (shipped):** positive guards remain fail-safe; consume-once +
     provisioned eligibility -> **nullifier** (spend a unique UTXO, consensus double-spend enforces once-ness, O(1)
     identity pin, no accumulator); persistent readable negative flags / lazy unbounded negative guards ->
-    **authenticated set** (master commits a sorted/indexed-Merkle root, non-membership proof per read, O(log N) -
-    EVM's storage-trie model, caller supplies the witness). Diagnostic escalates warning -> error unless a
-    negative-guarded mapping is nullifier- or accumulator-backed (fail-closed). Full design + phasing in
-    `docs/mapping-omission-security.md`.
+    **authenticated set**. SolidCash uses a sorted linked list of entry NFTs: the spender supplies an exact node
+    or the adjacent predecessor, and the covenant authenticates the proof and transition. Full protocol:
+    `docs/sorted-mapping-c2.md`.
 
 All 8 HIGH fixed + regression-tested:
 - **H1** FIXED (cc09895d): multi-data-NFT self-reads now `emitNftIndexTagVerify` (were Skip) - swapped-sibling
@@ -119,7 +123,9 @@ audit agent, root cause confirmed but full exploit not independently PoC'd.
   delegate provided it. At minimum require `checkSig` on delegatecall-bearing fallbacks + document proxies as
   unsafe without a pinned delegate.
 
-#### C2 — Mapping-entry OMISSION forces a default read (negative-guard bypass / replay / double-claim)  `[VERIFIED]`
+#### C2 — Mapping-entry OMISSION forces a default read (negative-guard bypass / replay / double-claim)  `[VERIFIED, FIXED]`
+> Historical vulnerable implementation below. The mandatory authenticated sorted-list backend described in
+> `docs/sorted-mapping-c2.md` replaced it on 2026-07-22.
 - **Location:** `GenerateTargetTraversal.ts:8273-8341` (mapping read), `:8514-8549` (write),
   `emitSlotExistsCheck :527-536`. Confirmed **no entry-set accumulator** exists (no count/merkle/nullifier
   pinned in the master state).
@@ -417,8 +423,7 @@ Remaining follow-up: independent on-chain PoC for H1/H2 (root causes confirmed; 
    (silent state-write mis-targeting; broad blast radius for composite-key contracts).
 2. **C1 delegatecall** — pin the delegate + authorize the commitment (or gate proxies behind checkSig + docs).
 3. **C3 un-accessed NFT destruction** — an all-inputs 0x01-of-C conservation loop (or authorize each sub-NFT spend).
-4. **C2 mapping omission** — diagnostic for negative-guard/one-time-write + document; entry-set accumulator for
-   full soundness.
+4. **C2 mapping omission** — replaced the omission-prone backend with mandatory authenticated sorted lists.
 5. **H5 fallback modifier** + **H6 param bounds** + **MD3 fallback locktime** — route fallback/receive through
    `expandModifiers`/`InjectLocktimeGuard`/`visitContract` (shared root cause); emit param bounds checks.
 6. **H1 multi-NFT tag** (verify tag on self-reads), **H4 multiCall change** (default to funder LBC),

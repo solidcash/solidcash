@@ -88,15 +88,70 @@ describe('C2 per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
     expect((await c.chk(4n, last, alicePub, sig).send()).txid).toBeDefined();
   });
 
-  it('per-key value >60 B fails closed (chunked-in-loop unsupported)', async () => {
+  it('persists per-key values above 60 B using authenticated reverse-suffix chunks', async () => {
     const SRC = `contract C() {
       mapping(int => bytes) m;
       function fill(int[] ks, bytes[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; } }
+      function chk(int k, bytes exp) { require(m[k] == exp); }
     }`;
     const art = compileString(SRC, { forceStateful: true });
     const c = await deploy(art);
     await fund(c.address);
-    const big = new Uint8Array(70).fill(0x5a); // 70 B > 60
-    await expect(c.fill([2n, 8n], [Uint8Array.from([0x01]), big], alicePub, sig).send()).rejects.toThrow(/> 60|unsupported/i);
+    const big = new Uint8Array(70).fill(0x5a);
+    const bigger = new Uint8Array(145).fill(0xa5);
+    expect((await c.fill([2n, 8n], [big, bigger], alicePub, sig).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.chk(2n, big).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.chk(8n, bigger).send()).txid).toBeDefined();
+  });
+
+  it('authenticates varying-key push, element assignment, and pop across the chunk boundary', async () => {
+    const SRC = `contract C() {
+      mapping(int => int[]) m;
+      function fill(int[] ks, int[][] vs, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; }
+      }
+      function pushMany(int[] ks, int[] vs, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        for (int i = 0; i < ks.length; i++) { m[ks[i]].push(vs[i]); }
+      }
+      function setMany(int[] ks, int[] idxs, int[] vs, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        for (int i = 0; i < ks.length; i++) { m[ks[i]][idxs[i]] = vs[i]; }
+      }
+      function popMany(int[] ks, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        for (int i = 0; i < ks.length; i++) { m[ks[i]].pop(); }
+      }
+      function chk(int k, int idx, int exp) { require(m[k][idx] == exp); }
+    }`;
+    const art = compileString(SRC, { forceStateful: true });
+    expect(art.abi.find((f: any) => f.name === 'pushMany')?.sortedUpsertLoopInfo?.[0]?.mutation).toBe('push');
+    expect(art.abi.find((f: any) => f.name === 'setMany')?.sortedUpsertLoopInfo?.[0]?.mutation).toBe('setAt');
+    expect(art.abi.find((f: any) => f.name === 'popMany')?.sortedUpsertLoopInfo?.[0]?.mutation).toBe('pop');
+
+    const c = await deploy(art);
+    await fund(c.address);
+    await c.fill([2n, 8n], [[10n], [20n]], alicePub, sig).send();
+
+    // One push changes each int[] from an inline 36-byte value to a chunked 68-byte value.
+    await fund(c.address);
+    expect((await c.pushMany([2n, 8n], [11n, 21n], alicePub, sig).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.chk(2n, 1n, 11n).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.chk(8n, 1n, 21n).send()).txid).toBeDefined();
+
+    // Mutate authenticated chunked old values, then pop back to the inline representation (old chunks are GC'd).
+    await fund(c.address);
+    expect((await c.setMany([2n, 8n], [0n, 1n], [12n, 22n], alicePub, sig).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.popMany([2n, 8n], alicePub, sig).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.chk(2n, 0n, 12n).send()).txid).toBeDefined();
+    await fund(c.address);
+    expect((await c.chk(8n, 0n, 20n).send()).txid).toBeDefined();
   });
 });

@@ -406,6 +406,30 @@ chunks, wrong roots, output misplacement, and unsupported compiler shapes all fa
 guaranteed: a provider or UTXO owner can withhold required data/inputs and prevent progress, but cannot cause an
 incorrect mapping result to be accepted.
 
+### 10.1 Implementation status and remaining fail-closed gaps
+
+The C2 omission vulnerability is fixed and the authenticated backend is mandatory. That security status is
+different from complete Solidity-compatible support for every mapping program. As of 2026-07-24, these shapes remain
+intentionally fail-closed:
+
+- A varying-key runtime loop whose assigned value is computed directly from the induction variable or another
+  unsupported loop-local expression, for example `m[ks[i]] = i`. Parameter, literal, and aligned value-array
+  sources are supported.
+- Writes to multiple C2 collections within one runtime loop. The current covenant owns one collection address and
+  one trailing entry-output region.
+- Repeated keys in a varying-key array-mutation loop (`m[ks[i]].push`, `.pop`, or indexed assignment). Correct
+  Solidity semantics require applying the mutations sequentially to one co-spent entry; the SDK rejects the
+  ambiguous request rather than accepting a last-write approximation.
+- Consecutive straight-line scalar RMWs of the same entry may revert because each generated transition attempts to
+  co-spend the same input. Array/composite cases and invariant-key loops have dedicated coalescing, but the general
+  scalar straight-line case is not yet guaranteed to coalesce.
+- Cross-contract extensions not covered by the current caller/callee entry planner remain separately scoped. Basic
+  cross-contract C2 reads/writes and `msg.sender`-keyed calls have dedicated coverage; do not infer support for every
+  loop, value type, sidecar, or composition shape.
+
+These are completeness/availability limitations, not fallback paths. The compiler or SDK rejects them before an
+omission-prone transaction can be accepted.
+
 ## 11. Cost model
 
 A point read or update requires one entry input. An insert requires one predecessor input and two entry outputs.
@@ -443,6 +467,8 @@ Important coverage includes:
 - atomic straight-line shared-predecessor batches and forged proof/link/predecessor/orphan rejection;
 - swap-remove computed-key aliasing, absent-key guarded no-ops, and forged alias/non-alias sentinel rejection;
 - arrays, structs, push/pop, and inline/chunked transitions;
+- varying-key array push/pop/index assignment with authenticated per-entry old-value witnesses;
+- invariant and per-key values above 60 bytes in runtime loops, using authenticated reverse-suffix chunk outputs;
 - long direct and computed values, tampered chunks, strict reconstruction, and overwrite collection;
 - malformed, cyclic, duplicated, and disconnected sorted lists.
 

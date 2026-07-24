@@ -22,11 +22,10 @@ contract Participant() {
   ) public {
     require(input0 < input1);
     require(output0 < output1);
-    // Owner distinctness (no duplicate logical owner / two settlement authorities). NOTE: strict
-    // canonical byte order is NOT yet enforced here - see corpus doc section 8. Attempts via
-    // int(reverse(lbc)++0x00) and int(lbc) both failed at the VM: OP_BIN2NUM strips the sign-forcing
-    // pad and treats the fixed 0x87 P2SH32 suffix as a negative sign, so neither matches a stable
-    // sortable key. A production covenant needs a bounded byte-lexicographic helper.
+    // Owner distinctness (no duplicate logical owner / two settlement authorities). Strict canonical
+    // byte order is NOT enforced here: three int()-based attempts (reverse++0x00, int(lbc),
+    // reverse++0x01) all fail at the VM in the SCB1-handler context, so a bounded byte-by-byte
+    // lexicographic helper is required (corpus doc 8.1). Distinctness still gives the no-dup property.
     require(lockingBytecode0 != lockingBytecode1);
     require(category0.length == 33 && category1.length == 33);
     require(category0.slice(32, 33) == hex"02");
@@ -182,6 +181,7 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     // Frozen Milestone-2 feasibility measurement (2 branded participants, full binding incl.
     // controller-prefix, self-checked). Op cost ~14% of budget; the ratio is structural (both scale
     // with covenant/unlocking size), so cutting redundant work also shrank the budget proportionally.
+    // Frozen Milestone-2 feasibility measurement (2 branded participants, full binding, self-checked).
     expect(metrics.every((m) => m.opCost < m.budget)).toBe(true);
     expect(encodeTransaction(transaction).length).toBe(7131);
     expect(metrics[0]).toMatchObject({ instructions: 2615, unlockingBytes: 3334 });
@@ -236,5 +236,16 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     // Positive control: a branded setup with the same construction is accepted.
     const branded = await setup(true);
     await expect(sendRow(branded, branded.valid)).resolves.toBeTypeOf('string');
+  });
+
+  it('HOSTILE: co-spending one owner twice (two settlement authorities) is rejected', async () => {
+    const s = await setup();
+    // Both participant slots resolve to owner A's single master UTXO -> duplicate input + non-distinct row.
+    const dup = {
+      ...s, B: s.A, setupB: s.setupA,
+      valid: { ...s.valid, cat1: s.valid.cat0, lbc1: s.valid.lbc0 },
+    };
+    await expect(sendRow(dup, dup.valid)).rejects.toThrow();
+    await expect(sendRow(s, s.valid)).resolves.toBeTypeOf('string');
   });
 });

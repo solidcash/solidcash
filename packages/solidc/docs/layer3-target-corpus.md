@@ -362,3 +362,37 @@ offloading it to a dedicated sidecar/verifier input rather than paying it in eve
 
 Net: the operation budget is not the binding constraint at candidate scale; the 223-byte transcript
 capacity is. Both point at the same design lever (compact identity-by-reference and/or a carrier).
+
+### 8.5 Initial-scope completion status (Milestone 2, 2 participants)
+
+The two-participant invariant-15 binding spike is complete except for one VM-blocked check. Test:
+`Layer3ParticipantBindingSpike.test.ts` (7/7), all VM-executed with same-UTXO positive controls.
+
+VM-proven ENFORCED (invariant-15):
+- 5 row bound to actual input locking bytecode (forged owner LBC -> reject);
+- 6 input base category + minting capability (forged category -> reject);
+- 7 canonical owner output preservation, locking bytecode + category (tampered output -> reject);
+- 8 both participant inputs select SCB1 (non-SCB1 input -> reject);
+- 10 controller-prefix inside each redeem script (unbranded participant -> reject);
+- 11 active input is a named row;
+- 12 / one settlement authority: co-spending one owner twice -> reject (distinctness + consensus
+  duplicate-input);
+- owner distinctness.
+
+Feasibility: per input 2,615 instructions, op cost ~14% of budget (self-checked prefix), 3,334
+unlocking bytes, 7,131 tx bytes. Scaling to N measured in 8.4.
+
+REMAINING (not blocking the no-dup/binding soundness, documented for completion):
+- **Check 2 canonical STRICT order - VM-blocked via int().** Three attempts (reverse++0x00,
+  int(lbc), reverse++0x01) all fail at the VM in the SCB1-handler context; a debug trace shows the
+  comparison returning false for a correctly big-endian-sorted pair. A bounded byte-by-byte
+  lexicographic helper (per-byte unsigned compare with a decided flag) is required; int()/OP_BIN2NUM
+  is not usable here. Distinctness currently provides the no-dup property; strict ordering is
+  anti-malleability hardening.
+- **L3P1 dedicated participant-table codec (checks 1-4 as a table).** The spike carries the projection
+  as SCB1 row args rather than a separate magic/version/count/exhaustion table; the outer SCB1 envelope
+  provides those guarantees. A dedicated table is capped at ~2 full-identity rows by the 223-byte blob
+  (8.4), so it needs the compact identity-by-reference form.
+- Remaining hostile rows (non-minimal push, field-boundary truncation) are covered by the existing
+  SCB1 parser's minimal-push + exact-exhaustion checks (R4/R5 suites); executor/non-direct-kind and
+  block-overlap are N/A for the single-input-per-owner direct-only spike.

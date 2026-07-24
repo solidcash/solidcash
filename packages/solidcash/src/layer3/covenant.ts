@@ -1,46 +1,70 @@
 // Layer-3 transcript covenant generator (production). Generates the reusable participant-binding FRAMEWORK
 // for N participants - identity-by-reference, canonical byte-lex order, controller-brand cross-check,
 // membership, and value/commitment preservation, with the self-audit fixes (F1/F2/N1/N2) baked in - then
-// emits the invocation and resource logic hard-coded from the transcript spec. Every generated covenant runs
-// on every participant input and validates the whole transcript.
-//
-// UNROLLED per shape: the generator is general (correct covenant for any spec), matching how a compiler
-// emits fixed-shape code. The blob (./codec.ts) carries `input_i = i, output_i = i` over the sorted set.
+// emits invocation, resource, and effect logic from the transcript spec. The MODULE owns the transaction
+// LAYOUT (see transcriptLayout): the spec is index-free, and the generator + the deriver both read indices
+// from the layout so covenant and transaction always agree. Every generated covenant runs on every
+// participant input and validates the whole transcript. Unrolled per shape; the generator is general.
 
 /** The default controller brand: `L3B1CTRL` prologue (`<salt> OP_DROP` -> `084c3342314354524c75`). */
 export const CONTROLLER_BRAND_PREFIX = '084c3342314354524c75';
 /** The salt value that produces CONTROLLER_BRAND_PREFIX when passed as a Contract `salt` option. */
 export const CONTROLLER_SALT_HEX = '4c3342314354524c';
 
-/** An authenticated invocation: caller -> callee, with the caller's identity delivered to an OP_RETURN output. */
-export interface InvocationSpec {
-  /** Caller participant index (into the canonically-ordered set). */
-  caller: number;
-  /** Callee participant index. */
-  callee: number;
-  /** Output index carrying the OP_RETURN `6a23 <caller lockingBytecode>` msg.sender record. */
-  senderOutput: number;
-}
-
-/** A resource: an owner-branded state NFT co-spent at a fixed input index. */
-export interface ResourceSpec {
-  /** Owner participant index whose category authenticates this state NFT. */
-  owner: number;
-  /** Input index of the co-spent state NFT. */
-  stateInput: number;
-}
+/** An authenticated invocation: caller -> callee, msg.sender delivered to the layout's sender OP_RETURN. */
+export interface InvocationSpec { caller: number; callee: number }
+/** A resource: an owner-branded state NFT co-spent and preserved (transition supplied by appBody). */
+export interface ResourceSpec { owner: number }
+/** An effect: a settlement output bound to a consumer participant with an app-computed value expression. */
+export interface EffectSpec { consumer: number; valueExpr: string }
 
 export interface TranscriptSpec {
   /** Number of co-spent participant owners. */
   participants: number;
-  /** Invocations to bind (msg.sender delivery). */
   invocations?: InvocationSpec[];
-  /** Resource state NFTs to bind (owner category + distinctness). */
   resources?: ResourceSpec[];
-  /** Application-specific covenant statements appended last (SolidCash source; e.g. state transitions). */
+  effects?: EffectSpec[];
+  /** Application-specific covenant statements (resource state transitions), appended before effect binding. */
   appBody?: string[];
   /** Controller brand prefix (10-byte hex). Defaults to CONTROLLER_BRAND_PREFIX. */
   brandPrefix?: string;
+}
+
+/** The canonical input/output layout the module assigns for a spec, so covenant and transaction agree. */
+export interface TranscriptLayout {
+  participants: number;
+  invocations: number;
+  resources: number;
+  effects: number;
+  /** Input index of the resource state NFT for resource k (participants ... then resources). */
+  stateInput: (k: number) => number;
+  /** Fee input index (after participants + resources). */
+  feeInput: number;
+  /** Output index of the msg.sender OP_RETURN for invocation j (after participant recreations). */
+  senderOutput: (j: number) => number;
+  /** Output index of the resource state recreation for resource k. */
+  stateOutput: (k: number) => number;
+  /** Output index of the settlement for effect m. */
+  effectOutput: (m: number) => number;
+  /** Total output count before the change output. */
+  outputCount: number;
+}
+
+/** Compute the canonical transaction layout for a spec. */
+export function transcriptLayout(spec: TranscriptSpec): TranscriptLayout {
+  const n = spec.participants;
+  const I = spec.invocations?.length ?? 0;
+  const R = spec.resources?.length ?? 0;
+  const E = spec.effects?.length ?? 0;
+  return {
+    participants: n, invocations: I, resources: R, effects: E,
+    stateInput: (k) => n + k,
+    feeInput: n + R,
+    senderOutput: (j) => n + j,
+    stateOutput: (k) => n + I + k,
+    effectOutput: (m) => n + I + R + m,
+    outputCount: n + I + R + E,
+  };
 }
 
 /** Participant-binding parameters (`input_i, output_i` pairs). */
@@ -78,25 +102,42 @@ export function bindingFrameworkBody(n: number, brandPrefix = CONTROLLER_BRAND_P
   return body;
 }
 
-/** Generate the full `__layer3_bind` covenant source for a transcript spec. */
+/** Generate the full `__layer3_bind` covenant source for a transcript spec, using the module's layout. */
 export function generateTranscriptCovenant(spec: TranscriptSpec): string {
   const n = spec.participants;
+  const layout = transcriptLayout(spec);
   const body = bindingFrameworkBody(n, spec.brandPrefix ?? CONTROLLER_BRAND_PREFIX);
-  for (const inv of spec.invocations ?? []) {
+
+  (spec.invocations ?? []).forEach((inv, j) => {
     if (inv.caller < 0 || inv.caller >= n || inv.callee < 0 || inv.callee >= n) {
       throw new Error('layer3: invocation endpoint out of range');
     }
     if (inv.caller === inv.callee) throw new Error('layer3: invocation caller == callee');
-    // msg.sender = the caller participant's real locking bytecode, delivered + bound to an OP_RETURN.
-    body.push(`require(tx.outputs[${inv.senderOutput}].lockingBytecode == bytes.concat(hex"6a23", tx.inputs[input${inv.caller}].lockingBytecode));`);
-  }
-  for (const r of spec.resources ?? []) {
+    // msg.sender = the caller participant's real locking bytecode, delivered + bound to its OP_RETURN.
+    body.push(`require(tx.outputs[${layout.senderOutput(j)}].lockingBytecode == bytes.concat(hex"6a23", tx.inputs[input${inv.caller}].lockingBytecode));`);
+  });
+
+  (spec.resources ?? []).forEach((r, k) => {
     if (r.owner < 0 || r.owner >= n) throw new Error('layer3: resource owner out of range');
-    const distinct = Array.from({ length: n }, (_u, i) => `${r.stateInput} != input${i}`).join(' && ');
+    const si = layout.stateInput(k); const so = layout.stateOutput(k);
+    const distinct = Array.from({ length: n }, (_u, i) => `${si} != input${i}`).join(' && ');
     body.push(`require(${distinct});`); // N2: state input is not a participant
-    body.push(`require(tx.inputs[${r.stateInput}].tokenCategory.slice(0, 32) == tx.inputs[input${r.owner}].tokenCategory.slice(0, 32));`); // F1
-  }
+    body.push(`require(tx.inputs[${si}].tokenCategory.slice(0, 32) == tx.inputs[input${r.owner}].tokenCategory.slice(0, 32));`); // F1
+    // Resource self-preservation (locking bytecode + category); the commitment transition is appBody.
+    body.push(`require(tx.outputs[${so}].lockingBytecode == tx.inputs[${si}].lockingBytecode);`);
+    body.push(`require(tx.outputs[${so}].tokenCategory == tx.inputs[${si}].tokenCategory);`);
+  });
+
   body.push(...(spec.appBody ?? []));
+
+  (spec.effects ?? []).forEach((e, m) => {
+    if (e.consumer < 0 || e.consumer >= n) throw new Error('layer3: effect consumer out of range');
+    const eo = layout.effectOutput(m);
+    // F2: bind the settlement RECIPIENT to the consumer and its value to the app expression.
+    body.push(`require(tx.outputs[${eo}].lockingBytecode == tx.inputs[input${e.consumer}].lockingBytecode);`);
+    body.push(`require(tx.outputs[${eo}].value == ${e.valueExpr});`);
+  });
+
   return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${bindingParams(n).join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }

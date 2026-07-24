@@ -6,7 +6,7 @@ import { hexToBin } from '@bitauth/libauth';
 import type { Utxo } from './../interfaces.js';
 import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
-import type { InvocationSpec } from './covenant.js';
+import { type InvocationSpec, type TranscriptSpec, transcriptLayout } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
 export interface TranscriptParticipant {
@@ -82,4 +82,61 @@ export function appendInvocationRecords(
     opReturn.set(sender, 2);
     builder.addOutput({ to: opReturn, amount: 0n });
   }
+}
+
+/** A co-spent resource state NFT instance (owner-branded), with its guard unlocker and post-state commitment. */
+export interface ResourceInstance {
+  /** The state NFT input UTXO (its category must be the owner participant's category). */
+  utxo: Utxo;
+  /** The guard unlocker for the state NFT (P2PKH signer, or a data-NFT write unlocker). */
+  unlocker: any;
+  /** The token address to recreate the state NFT at (its own address - the covenant preserves it). */
+  address: string;
+  /** The application-computed post-transition commitment (hex). */
+  outputCommitment: string;
+}
+
+export interface BuildTranscriptOptions extends DeriveTranscriptOptions {
+  /** The spec the covenant was generated from (drives the layout). */
+  spec: TranscriptSpec;
+  /** Resource state NFTs in resource-spec order. */
+  resources?: ResourceInstance[];
+  /** Settlement values in effect-spec order (recipient is the effect's consumer participant). */
+  effects?: bigint[];
+  /** Fee input. */
+  fee: { utxo: Utxo; unlocker: any };
+  /** Optional change output (added last). */
+  change?: { address: string; satoshis: bigint };
+}
+
+/**
+ * Build the COMPLETE transcript transaction from a spec: participant + resource inputs, fee, participant
+ * recreations, invocation msg.sender records, resource state transitions, and effect settlements - in the
+ * canonical layout the covenant was generated for. The application supplies only per-instance data
+ * (resource guards + post-state commitments, settlement values); the module assembles the transaction.
+ */
+export function buildTranscriptTransaction(opts: BuildTranscriptOptions): DeriveTranscriptResult {
+  const layout = transcriptLayout(opts.spec);
+  const resources = opts.resources ?? [];
+  const effects = opts.effects ?? [];
+  if (resources.length !== layout.resources) throw new Error('layer3: resource instance count mismatch');
+  if (effects.length !== layout.effects) throw new Error('layer3: effect value count mismatch');
+
+  const { builder, ordered, blob } = deriveTranscriptTransaction(opts); // participant inputs + recreations
+  for (const r of resources) builder.addInput(r.utxo, r.unlocker); // resource state inputs
+  builder.addInput(opts.fee.utxo, opts.fee.unlocker); // fee input
+
+  appendInvocationRecords(builder, ordered, opts.spec.invocations ?? []); // sender records
+  resources.forEach((r, k) => { // resource state transitions
+    const ownerCat = ordered[opts.spec.resources![k].owner].categoryId;
+    builder.addOutput({
+      to: r.address, amount: r.utxo.satoshis,
+      token: { category: ownerCat, amount: 0n, nft: { capability: 'mutable', commitment: r.outputCommitment } },
+    });
+  });
+  effects.forEach((value, m) => { // effect settlements, recipient = consumer participant
+    builder.addOutput({ to: ordered[opts.spec.effects![m].consumer].contract.address, amount: value });
+  });
+  if (opts.change) builder.addOutput({ to: opts.change.address, amount: opts.change.satoshis });
+  return { builder, ordered, blob };
 }

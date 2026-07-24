@@ -1,27 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { binToHex, createVirtualMachineBch2026, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { binToHex, createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-const num4 = (n: bigint): Uint8Array => Uint8Array.from({ length: 4 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn));
-
-// Production API: build a real authenticated transcript from a SPEC via the src/layer3 module - the covenant
-// is GENERATED (not hand-written), the blob is ENCODED by the codec, and the transaction is DERIVED by the
-// SDK. No per-test fixture covenant. Proves the reusable module produces a valid, VM-accepted transcript.
+// Production API: build a COMPLETE authenticated transcript from a high-level SPEC via the src/layer3 module.
+// The covenant is GENERATED, the layout is OWNED by the module, the blob is ENCODED, and the whole
+// transaction (participant + resource inputs, all recreations, sender records, resource transitions, effect
+// settlements, change) is ASSEMBLED by buildTranscriptTransaction. The application supplies only per-instance
+// data (state guard + post-state commitment, settlement value). No hand-built covenant, no hand-built layout.
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   let c = 0;
   for (const p of parts) { out.set(p, c); c += p.length; }
   return out;
 };
+const num4 = (n: bigint): Uint8Array => Uint8Array.from({ length: 4 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn));
 
-async function buildFromSpec(spec: layer3.TranscriptSpec, provider: any): Promise<any> {
-  const source = layer3.generateTranscriptCovenant(spec);
-  const artifact = compileString(source, {
+async function compileAndSetup(spec: layer3.TranscriptSpec, provider: any): Promise<any> {
+  const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
     forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
@@ -34,75 +34,65 @@ async function buildFromSpec(spec: layer3.TranscriptSpec, provider: any): Promis
     const s = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {});
     participants.push({ contract: inner.withCategory(hexToBin(s.categoryId)), master: s.masterUtxo, categoryId: s.categoryId });
   }
-  return { artifact, route, sel, handler, participants };
+  return { route, sel, handler, participants };
 }
 
-describe('layer-3 production API (src/layer3)', () => {
-  it('generates a covenant, encodes the blob, and derives a valid A->B transcript from a spec', async () => {
+const rawOf = (b: any): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
+
+describe('layer-3 production API (src/layer3) - complete transcript from a spec', () => {
+  it('builds a valid A->B invocation transcript end to end', async () => {
     const provider = createTestProvider();
-    const spec: layer3.TranscriptSpec = { participants: 2, invocations: [{ caller: 0, callee: 1, senderOutput: 2 }] };
-    const { route, sel, handler, participants } = await buildFromSpec(spec, provider);
-
-    const { builder, ordered } = layer3.deriveTranscriptTransaction({
-      provider, route, sel, handlerSelector: handler.selector, participants,
-    });
+    const spec: layer3.TranscriptSpec = { participants: 2, invocations: [{ caller: 0, callee: 1 }] };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
     const fee = await createFeeFunder(provider, 30000n);
-    builder.addInput(fee.utxo, fee.unlocker);
-    // The module builds the msg.sender records (OP_RETURN at output 2, matching the spec's senderOutput).
-    layer3.appendInvocationRecords(builder, ordered, spec.invocations!);
-    builder.addOutput({ to: ordered[0].contract.address, amount: 2000n });
-
-    const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
-    await expect(provider.sendRawTransaction(raw)).resolves.toBeTypeOf('string');
-
-    // The derived transcript runs under budget on the real VM.
-    const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const vm = createVirtualMachineBch2026();
-    const r = vm.evaluate({ inputIndex: 0, sourceOutputs, transaction });
-    expect('metrics' in r && !(r as any).error).toBe(true);
-    expect((r as any).metrics.operationCost / (r as any).metrics.maximumOperationCost).toBeLessThan(0.4);
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: participants[0].contract.address, satoshis: 12000n },
+    });
+    await expect(provider.sendRawTransaction(rawOf(builder))).resolves.toBeTypeOf('string');
   });
 
-  it('HOSTILE: a forged msg.sender in the spec-derived transcript is rejected', async () => {
+  it('HOSTILE: a forged msg.sender in the assembled transcript is rejected', async () => {
     const provider = createTestProvider();
-    const spec: layer3.TranscriptSpec = { participants: 2, invocations: [{ caller: 0, callee: 1, senderOutput: 2 }] };
-    const { route, sel, handler, participants } = await buildFromSpec(spec, provider);
-    const { builder, ordered } = layer3.deriveTranscriptTransaction({
-      provider, route, sel, handlerSelector: handler.selector, participants,
-    });
+    const spec: layer3.TranscriptSpec = { participants: 2, invocations: [{ caller: 0, callee: 1 }] };
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
     const fee = await createFeeFunder(provider, 30000n);
-    builder.addInput(fee.utxo, fee.unlocker);
-    // Forge: deliver participant 1's identity as the sender instead of the caller (participant 0).
-    builder.addOutput({ to: concat(hexToBin('6a23'), hexToBin(ordered[1].contract.lockingBytecode)), amount: 0n });
-    builder.addOutput({ to: ordered[0].contract.address, amount: 2000n });
-    const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
-    await expect(provider.sendRawTransaction(raw)).rejects.toThrow();
+    const { builder, ordered } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: participants[0].contract.address, satoshis: 12000n },
+    });
+    // Forge the msg.sender record (output 2) to name participant 1 instead of the caller (participant 0).
+    const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
+    forged.outputs[2].lockingBytecode = concat(hexToBin('6a23'), hexToBin(ordered[1].contract.lockingBytecode));
+    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
   });
 
-  it('derives a resource-bearing transcript (Bento state transition) entirely from a spec', async () => {
+  it('builds a COMPLETE Kashi-shaped transcript (invocation + resource transition + settlement) from a spec', async () => {
     const provider = createTestProvider();
-    const E = 10n; const B = 8n; const amount = 5n; const s = (amount * B) / E; // 4
-    // Spec: 2 participants + a producer (participant 1) resource state NFT at input 2, with the Rebase
-    // transition as appBody. The covenant generator emits binding + F1/N2 resource binding; appBody the math.
+    const E = 10n; const B = 8n; const amount = 5n; const share = (amount * B) / E; // 4
+    const shape: layer3.TranscriptSpec = {
+      participants: 2, invocations: [{ caller: 0, callee: 1 }], resources: [{ owner: 1 }],
+      effects: [{ consumer: 0, valueExpr: 'share' }],
+    };
+    const layout = layer3.transcriptLayout(shape);
+    const si = layout.stateInput(0); const so = layout.stateOutput(0);
+    // The application supplies the resource transition (Rebase) as appBody, referencing the module's layout.
     const spec: layer3.TranscriptSpec = {
-      participants: 2,
-      resources: [{ owner: 1, stateInput: 2 }],
+      ...shape,
       appBody: [
-        'bytes packed = tx.inputs[2].nftCommitment;',
+        `bytes packed = tx.inputs[${si}].nftCommitment;`,
         'bigint elastic = int(packed.slice(0, 4));',
         'bigint base = int(packed.slice(4, 8));',
-        `bigint share = ${amount} * base / elastic;`,
-        'require(tx.outputs[2].lockingBytecode == tx.inputs[2].lockingBytecode);',
-        'require(tx.outputs[2].tokenCategory == tx.inputs[2].tokenCategory);',
-        `require(tx.outputs[2].nftCommitment == bytes.concat(bytes4(elastic + ${amount}), bytes4(base + share)));`,
+        `bigint share = 2000 + ${amount} * base / elastic;`,
+        `require(tx.outputs[${so}].nftCommitment == bytes.concat(bytes4(elastic + ${amount}), bytes4(base + ${amount} * base / elastic)));`,
       ],
     };
-    const { route, sel, handler, participants } = await buildFromSpec(spec, provider);
-    const { builder, ordered } = layer3.deriveTranscriptTransaction({
-      provider, route, sel, handlerSelector: handler.selector, participants,
-    });
-    // Application: the producer's (ordered[1]) owner-branded state NFT at input 2, recreated at output 2.
+    const { route, sel, handler, participants } = await compileAndSetup(spec, provider);
+
+    // Sort to learn which participant is owner=1 (producer), so its state NFT carries its category.
+    const ordered = layer3.sortParticipants(participants);
     const producerCat = ordered[1].categoryId;
     const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const stateUtxo = randomUtxo({
@@ -110,15 +100,24 @@ describe('layer-3 production API (src/layer3)', () => {
       token: { category: producerCat, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E), num4(B))) } },
     });
     await provider.addUtxo(p2.address, stateUtxo);
-    builder.addInput(stateUtxo, p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv))); // input 2
-    const fee = await createFeeFunder(provider, 30000n);
-    builder.addInput(fee.utxo, fee.unlocker);
-    builder.addOutput({ // output 2 = state NFT transition to (E+amount, B+share)
-      to: p2.tokenAddress, amount: 5000n,
-      token: { category: producerCat, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num4(E + amount), num4(B + s))) } },
+    const fee = await createFeeFunder(provider, 40000n);
+
+    const { builder } = layer3.buildTranscriptTransaction({
+      provider, route, sel, handlerSelector: handler.selector, participants, spec,
+      resources: [{
+        utxo: stateUtxo, unlocker: p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        address: p2.tokenAddress, outputCommitment: binToHex(concat(num4(E + amount), num4(B + share))),
+      }],
+      effects: [2000n + share], // settlement value == 2000 + share, bound by the covenant to the consumer
+      fee: { utxo: fee.utxo, unlocker: fee.unlocker },
+      change: { address: ordered[0].contract.address, satoshis: 15000n },
     });
-    builder.addOutput({ to: ordered[0].contract.address, amount: 2000n });
-    const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
-    await expect(provider.sendRawTransaction(raw)).resolves.toBeTypeOf('string');
+    await expect(provider.sendRawTransaction(rawOf(builder))).resolves.toBeTypeOf('string');
+
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const r = createVirtualMachineBch2026().evaluate({ inputIndex: 0, sourceOutputs, transaction });
+    expect('metrics' in r && !(r as any).error).toBe(true);
+    expect((r as any).metrics.operationCost / (r as any).metrics.maximumOperationCost).toBeLessThan(0.4);
   });
 });

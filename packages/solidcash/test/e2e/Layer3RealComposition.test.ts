@@ -11,7 +11,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 // it through the authenticated return-event NFT, and Kashi consumes it into its own collateral. Each
 // contract's state is its OWN self-pinned master (not a P2PKH fixture), so the callee's state covenant stays
 // authoritative. This is the smallest real caller/callee settlement the audit asked to prove.
-const IBENTO = `interface IBento { function deposit(int amount) returns (int); }`;
+const IBENTO = 'interface IBento { function deposit(int amount) returns (int); }';
 
 const BENTO = `pragma solidcash >=0.8.0;
 ${IBENTO}
@@ -33,6 +33,30 @@ contract Kashi(bytes bentoAddr) {
   int collateral;
   function borrow(int amount) {
     int shareOut = IBento(bentoAddr).deposit(amount);
+    this.collateral = this.collateral + shareOut;
+  }
+}`;
+
+// 3-owner graph: Kashi settles against BOTH Bento (share) and a Token (balance) in one atomic borrow.
+const ITOKEN = 'interface IToken { function debit(int amount) returns (int); }';
+const TOKEN = `pragma solidcash >=0.8.0;
+${ITOKEN}
+contract Token() is IToken {
+  int balance;
+  function debit(int amount) returns (int) {
+    require(this.balance >= amount);
+    this.balance = this.balance - amount;
+    return amount;
+  }
+}`;
+const KASHI3 = `pragma solidcash >=0.8.0;
+${IBENTO}
+${ITOKEN}
+contract Kashi3(bytes bentoAddr, bytes tokenAddr) {
+  int collateral;
+  function borrow(int amount) {
+    int shareOut = IBento(bentoAddr).deposit(amount);
+    IToken(tokenAddr).debit(amount);
     this.collateral = this.collateral + shareOut;
   }
 }`;
@@ -59,6 +83,34 @@ async function setup(
   };
 }
 
+async function setup3(
+  bentoState: Record<string, bigint>, tokenState: Record<string, bigint>,
+): Promise<{ scKashi: ConnectedStatefulContract; scBento: ConnectedStatefulContract; scToken: ConnectedStatefulContract }> {
+  const provider = createTestProvider();
+  const artBento = compileString(BENTO);
+  const artToken = compileString(TOKEN);
+  const artKashi = compileString(KASHI3);
+  const bento = new Contract(artBento, [], { provider });
+  const { categoryId: catBento } = await setupStatefulUtxos(
+    provider, bento, artBento.stateLayout!, bentoState, { saltContract: true },
+  );
+  const token = new Contract(artToken, [], { provider });
+  const { categoryId: catToken } = await setupStatefulUtxos(
+    provider, token, artToken.stateLayout!, tokenState, { saltContract: true },
+  );
+  const bentoAddr = bento.withCategory(hexToBin(catBento)).lockingBytecode;
+  const tokenAddr = token.withCategory(hexToBin(catToken)).lockingBytecode;
+  const kashi = new Contract(artKashi, [bentoAddr, tokenAddr], { provider });
+  const { categoryId: catKashi } = await setupStatefulUtxos(
+    provider, kashi, artKashi.stateLayout!, { collateral: 0n }, { saltContract: true },
+  );
+  return {
+    scKashi: StatefulContract.withCategory(kashi, catKashi),
+    scBento: StatefulContract.withCategory(bento, catBento),
+    scToken: StatefulContract.withCategory(token, catToken),
+  };
+}
+
 describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled contracts)', () => {
   it('settles a real Rebase across two contracts: Bento returns shareOut, Kashi consumes it into collateral', async () => {
     const { scKashi, scBento } = await setup({ elastic: 10n, base: 8n });
@@ -79,5 +131,27 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
     expect(tx.txid).toBeDefined();
     expect((await scBento.getState()).base).toBe(9n);
     expect((await scKashi.getState()).collateral).toBe(9n);
+  });
+
+  it('settles a 3-owner graph atomically: Kashi <- Bento (share) + Token (balance), all real contracts', async () => {
+    const { scKashi, scBento, scToken } = await setup3({ elastic: 10n, base: 8n }, { balance: 100n });
+    // borrow(5): Bento share=4 (elastic 15, base 12); Token balance 100->95; Kashi collateral 0->4.
+    const tx = await scKashi.borrow(5n)
+      .withExternalCall(scBento, 'deposit', [5n])
+      .withExternalCall(scToken, 'debit', [5n])
+      .send();
+    expect(tx.txid).toBeDefined();
+    expect((await scBento.getState()).base).toBe(12n);
+    expect((await scToken.getState()).balance).toBe(95n);
+    expect((await scKashi.getState()).collateral).toBe(4n);
+  });
+
+  it('HOSTILE: the callee covenant stays authoritative - an over-debit (balance < amount) reverts the whole settlement', async () => {
+    // Token balance 3 < borrow 5: Token.debit's own require(balance >= amount) fails, aborting the atomic tx.
+    const { scKashi, scBento, scToken } = await setup3({ elastic: 10n, base: 8n }, { balance: 3n });
+    await expect(scKashi.borrow(5n)
+      .withExternalCall(scBento, 'deposit', [5n])
+      .withExternalCall(scToken, 'debit', [5n])
+      .send()).rejects.toThrow();
   });
 });

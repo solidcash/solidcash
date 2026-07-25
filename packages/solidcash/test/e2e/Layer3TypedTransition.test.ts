@@ -79,12 +79,9 @@ describe('R6: typed, module-generated fail-closed resource transition', () => {
     await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
   });
 
-  it('AUDIT: SDK/covenant disagree when the input commitment exceeds TypedTransition.total', async () => {
-    const { provider, builder, spec } = await build(Uint8Array.of(0xaa));
-    const so = layer3.transcriptLayout(spec).stateOutput(0);
-    const decoded = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
-    expect(decoded.inputs.length).toBeGreaterThan(0);
-    expect(decoded.outputs[so].token!.nft!.commitment.length).toBe(17);
-    await expect(provider.sendRawTransaction(rawOf(builder))).rejects.toThrow();
+  it('P11 CLOSED: an input commitment exceeding TypedTransition.total is rejected by BOTH sides', async () => {
+    // The SDK now rejects the oversized input at build time (matching the covenant's `nftCommitment.length ==
+    // total` requirement), so there is no SDK/covenant disagreement: a 17-byte input for total=16 fails.
+    await expect(build(Uint8Array.of(0xaa))).rejects.toThrow();
   });
 });

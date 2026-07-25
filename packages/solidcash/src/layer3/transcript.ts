@@ -9,14 +9,17 @@ import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
 import {
-  EXEC_DOMAIN, type ExecutionEvent, type ExecutionInvocation, type InvocationSpec, type TranscriptSpec,
-  type TypedTransition, opReturnPrefix, transcriptLayout,
+  EXEC_DOMAIN, EXEC_VERSION, type ExecutionEvent, type ExecutionInvocation, type InvocationSpec,
+  type TranscriptSpec, type TypedTransition, opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
 /** Apply a TypedTransition to a commitment hex: add delta to the width-byte LE field at offset, preserving the rest. */
 export function applyTypedTransition(commitmentHex: string, t: TypedTransition): string {
   const bytes = hexToBin(commitmentHex);
+  // P11: the covenant requires the input commitment to be exactly `total` bytes; reject here too so the SDK
+  // never builds an output the covenant will discard bytes from.
+  if (bytes.length !== t.total) throw new Error(`layer3: TypedTransition input commitment must be ${t.total} bytes`);
   let field = 0n;
   for (let i = 0; i < t.width; i += 1) field += BigInt(bytes[t.offset + i] ?? 0) << BigInt(8 * i);
   field += BigInt(t.delta);
@@ -37,19 +40,34 @@ export function participantSetRoot(orderedLbcs: string[]): string {
   return binToHex(sha256.hash(concatBin(orderedLbcs.map((l) => hexToBin(l)))));
 }
 
+const u8 = (n: number): Uint8Array => {
+  if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error('layer3: framed count/index out of byte range');
+  return Uint8Array.of(n);
+};
+
 /**
- * The canonical EXECUTION root (R2): sha256(domain || participant lbcs || ordered (caller_lbc, callee_lbc,
- * selector) edges). The deployer sets the controller commitment to this so the controller attests the call
- * graph, matching what every participant recomputes on-chain.
+ * The canonical EXECUTION root (R2), FRAMED to be collision-free (audit P1). Every table is length-counted and
+ * every variable field is length-prefixed, with a version byte and fixed-width 4-byte selectors, so two
+ * different transcripts can NEVER share a preimage:
+ *   domain || version || n || (len(lbc_i) || lbc_i)*
+ *          || invCount || (callerIdx || calleeIdx || selector[4])*
+ *          || evCount  || (emitterIdx || len(topic) || topic)*
+ * Rows reference participants by INDEX (the lbcs live once in the participant table). This is the single
+ * authoritative encoder; `executionMemberBody` mirrors it byte-for-byte on-chain.
  */
 export function executionRoot(
   orderedLbcs: string[], invocations: ExecutionInvocation[], events: ExecutionEvent[] = [],
 ): string {
-  const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), ...orderedLbcs.map((l) => hexToBin(l))];
+  const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), hexToBin(EXEC_VERSION), u8(orderedLbcs.length)];
+  for (const l of orderedLbcs) { const b = hexToBin(l); parts.push(u8(b.length), b); }
+  parts.push(u8(invocations.length));
   for (const inv of invocations) {
-    parts.push(hexToBin(orderedLbcs[inv.caller]), hexToBin(orderedLbcs[inv.callee]), hexToBin(inv.selectorHex));
+    const sel = hexToBin(inv.selectorHex);
+    if (sel.length !== 4) throw new Error('layer3: selector must be exactly 4 bytes');
+    parts.push(u8(inv.caller), u8(inv.callee), sel);
   }
-  for (const ev of events) parts.push(hexToBin(orderedLbcs[ev.emitter]), hexToBin(ev.topicHex));
+  parts.push(u8(events.length));
+  for (const ev of events) { const t = hexToBin(ev.topicHex); parts.push(u8(ev.emitter), u8(t.length), t); }
   return binToHex(sha256.hash(concatBin(parts)));
 }
 

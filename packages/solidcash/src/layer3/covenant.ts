@@ -19,6 +19,43 @@ export interface ExecutionInvocation { caller: number; callee: number; selectorH
 export interface ExecutionEvent { emitter: number; topicHex: string }
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
 export const EXEC_DOMAIN = '4c33455845433100';
+/** Version byte of the framed execution-root encoding (audit P1). Bump on any encoding change. */
+export const EXEC_VERSION = '01';
+
+const u8hex = (n: number): string => {
+  if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error('layer3: framed count/index out of byte range');
+  return n.toString(16).padStart(2, '0');
+};
+
+/**
+ * The FRAMED execution-root sha256 expression (audit P1), byte-for-byte identical to the SDK `executionRoot`
+ * encoder: domain || version || n || (len(lbc_i) || lbc_i)* || invCount || (callerIdx || calleeIdx ||
+ * selector[4])* || evCount || (emitterIdx || len(topic) || topic)*. All counts/indices/selectors/topics are
+ * compile-time literals; only the participant lbcs (and their lengths) are read at runtime from `lbc0..lbc_{n-1}`,
+ * which the caller must have in scope. Length-counted tables + fixed 4-byte selectors make the preimage
+ * collision-free.
+ */
+export function framedRootExpr(n: number, invocations: ExecutionInvocation[], events: ExecutionEvent[]): string {
+  let p = `bytes.concat(hex"${EXEC_DOMAIN}${EXEC_VERSION}${u8hex(n)}", bytes.concat(bytes1(lbc0.length), lbc0))`;
+  for (let i = 1; i < n; i += 1) p = `bytes.concat(${p}, bytes.concat(bytes1(lbc${i}.length), lbc${i}))`;
+  p = `bytes.concat(${p}, hex"${u8hex(invocations.length)}")`;
+  for (const inv of invocations) {
+    if (inv.caller < 0 || inv.caller >= n || inv.callee < 0 || inv.callee >= n) {
+      throw new Error('layer3: execution invocation endpoint out of range');
+    }
+    const sel = inv.selectorHex.toLowerCase();
+    if (!/^[0-9a-f]{8}$/.test(sel)) throw new Error('layer3: selector must be exactly 4 bytes');
+    p = `bytes.concat(${p}, hex"${u8hex(inv.caller)}${u8hex(inv.callee)}${sel}")`;
+  }
+  p = `bytes.concat(${p}, hex"${u8hex(events.length)}")`;
+  for (const ev of events) {
+    if (ev.emitter < 0 || ev.emitter >= n) throw new Error('layer3: execution event emitter out of range');
+    const topic = ev.topicHex.toLowerCase();
+    if (!/^([0-9a-f]{2})+$/.test(topic)) throw new Error('layer3: event topic must be hex bytes');
+    p = `bytes.concat(${p}, hex"${u8hex(ev.emitter)}${u8hex(topic.length / 2)}${topic}")`;
+  }
+  return `sha256(${p})`;
+}
 /**
  * A TYPED transition (R6): add `delta` to the `width`-byte little-endian field at `offset` in the resource's
  * NFT commitment (which is `total` bytes), preserving every other byte. The module generates the full,
@@ -168,19 +205,7 @@ export function executionMemberBody(
   });
   const body: string[] = [];
   for (let i = 0; i < n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${i}].lockingBytecode;`);
-  let lbcConcat = 'lbc0';
-  for (let i = 1; i < n; i += 1) lbcConcat = `bytes.concat(${lbcConcat}, lbc${i})`;
-  let payload = `bytes.concat(hex"${EXEC_DOMAIN}", ${lbcConcat})`;
-  for (const inv of invocations) {
-    if (inv.caller < 0 || inv.caller >= n || inv.callee < 0 || inv.callee >= n) {
-      throw new Error('layer3: execution invocation endpoint out of range');
-    }
-    const edge = `bytes.concat(bytes.concat(lbc${inv.caller}, lbc${inv.callee}), hex"${inv.selectorHex.toLowerCase()}")`;
-    payload = `bytes.concat(${payload}, ${edge})`;
-  }
-  // R4: events are committed in the root too, so the emitter set is part of the canonical transcript.
-  for (const ev of evs) payload = `bytes.concat(${payload}, bytes.concat(lbc${ev.emitter}, hex"${ev.topicHex.toLowerCase()}"))`;
-  body.push(`bytes execRoot = sha256(${payload});`);
+  body.push(`bytes execRoot = ${framedRootExpr(n, invocations, evs)};`); // framed, collision-free (audit P1)
   const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
   body.push(`require(tx.inputs[${n}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
   body.push(`require(tx.inputs[${n}].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
@@ -295,6 +320,9 @@ export function generateTranscriptCovenant(spec: TranscriptSpec): string {
         throw new Error('layer3: invalid TypedTransition field bounds');
       }
       const inC = `tx.inputs[${si}].nftCommitment`;
+      // P11: the input commitment MUST be exactly `total` bytes, so no trailing byte can be silently kept by
+      // the SDK while the covenant discards it (SDK/covenant agree for every ADMITTED input).
+      body.push(`require(${inC}.length == ${t.total});`);
       const field = `int(${inC}.slice(${t.offset}, ${t.offset + t.width}))`;
       const pre = `${inC}.slice(0, ${t.offset})`;
       const post = `${inC}.slice(${t.offset + t.width}, ${t.total})`;
@@ -349,7 +377,8 @@ export function generateControllerCovenant(): string {
 contract Layer3Controller(bytes deployerPkh) {
   function setRoot(bytes newRoot, pubkey pk, sig s) {
     require(hash160(pk) == deployerPkh);
-    require(checkSig(s, pk));${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == newRoot);')}
+    require(checkSig(s, pk));
+    require(tx.inputs[this.activeInputIndex].nftCommitment.length == 0);${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == newRoot);')}
   }
   function attest() {${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);')}
   }
@@ -369,6 +398,7 @@ contract Layer3OneShotController(bytes deployerPkh) {
   function setRoot(bytes newRoot, pubkey pk, sig s) {
     require(hash160(pk) == deployerPkh);
     require(checkSig(s, pk));
+    require(tx.inputs[this.activeInputIndex].nftCommitment.length == 0);
     require(tx.outputs[this.activeInputIndex].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
     require(tx.outputs[this.activeInputIndex].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
     require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value);
@@ -455,19 +485,13 @@ export function bindingFrameworkBodyControllerBound(
   if (controllerLbc !== undefined) {
     body.push(`require(tx.inputs[controllerIdx].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
   }
-  let lbcConcat = 'lbc0';
-  for (let i = 1; i < n; i += 1) lbcConcat = `bytes.concat(${lbcConcat}, lbc${i})`;
   if (invocations && invocations.length) {
-    // R2 EXECUTION root: domain || participant lbcs || ordered (caller_lbc, callee_lbc, selector) edges. This
-    // commits the call GRAPH + selectors + order (read from the co-spent participants), not just addresses.
-    let payload = `bytes.concat(hex"${EXEC_DOMAIN}", ${lbcConcat})`;
-    for (const inv of invocations) {
-      const edge = `bytes.concat(bytes.concat(lbc${inv.caller}, lbc${inv.callee}), hex"${inv.selectorHex.toLowerCase()}")`;
-      payload = `bytes.concat(${payload}, ${edge})`;
-    }
-    body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${payload}));`);
+    // R2 EXECUTION root, FRAMED (audit P1): the shared collision-free encoder.
+    body.push(`require(tx.inputs[controllerIdx].nftCommitment == ${framedRootExpr(n, invocations, [])});`);
   } else {
-    body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${lbcConcat}));`); // participant-set root
+    let lbcConcat = 'lbc0';
+    for (let i = 1; i < n; i += 1) lbcConcat = `bytes.concat(${lbcConcat}, lbc${i})`;
+    body.push(`require(tx.inputs[controllerIdx].nftCommitment == sha256(${lbcConcat}));`); // participant-set root (membership only)
   }
   body.push('require(tx.outputs[controllerIdx].lockingBytecode == tx.inputs[controllerIdx].lockingBytecode);');
   body.push('require(tx.outputs[controllerIdx].tokenCategory == tx.inputs[controllerIdx].tokenCategory);');

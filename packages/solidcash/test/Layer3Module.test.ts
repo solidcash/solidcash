@@ -52,25 +52,33 @@ describe('layer3.participantArgs / encodeTranscriptBlob - SCB1 codec', () => {
   });
 });
 
-describe('layer3 execution-root audit probes', () => {
-  it('admits two semantic transcripts with the same unframed root preimage', () => {
-    const a = `aa20${'11'.repeat(32)}87`;
-    const b = `aa20${'22'.repeat(32)}87`;
-    const selector = 'aabbccdd';
-    const topic = 'deadbeef';
-    const selectorWithEventBytes = `${selector}${a}${topic}`;
+describe('layer3 execution-root framing (audit P1 - CLOSED)', () => {
+  const a = `aa20${'11'.repeat(32)}87`;
+  const b = `aa20${'22'.repeat(32)}87`;
+  const selector = 'aabbccdd';
+  const topic = 'deadbeef';
 
-    const selectorTail = layer3.executionRoot(
-      [a, b],
-      [{ caller: 0, callee: 1, selectorHex: selectorWithEventBytes }],
-    );
-    const separateEvent = layer3.executionRoot(
-      [a, b],
-      [{ caller: 0, callee: 1, selectorHex: selector }],
-      [{ emitter: 0, topicHex: topic }],
-    );
+  it('rejects the oversized selector that the unframed encoding used to smuggle event bytes into', () => {
+    // Previously selectorHex = selector||a||topic collided with a separate event; framing enforces 4-byte selectors.
+    expect(() => layer3.executionRoot([a, b], [{ caller: 0, callee: 1, selectorHex: `${selector}${a}${topic}` }])).toThrow();
+  });
 
-    expect(selectorTail).toBe(separateEvent);
+  it('gives DISTINCT roots to distinct transcripts (selector-only vs. selector + separate event)', () => {
+    const selectorOnly = layer3.executionRoot([a, b], [{ caller: 0, callee: 1, selectorHex: selector }]);
+    const withEvent = layer3.executionRoot(
+      [a, b], [{ caller: 0, callee: 1, selectorHex: selector }], [{ emitter: 0, topicHex: topic }],
+    );
+    expect(selectorOnly).not.toBe(withEvent); // table counts + length framing prevent the collision
+  });
+
+  it('framing distinguishes swapped tables (an extra edge vs. an extra event cannot alias)', () => {
+    const twoEdges = layer3.executionRoot(
+      [a, b], [{ caller: 0, callee: 1, selectorHex: selector }, { caller: 1, callee: 0, selectorHex: '11223344' }],
+    );
+    const oneEdgeOneEvent = layer3.executionRoot(
+      [a, b], [{ caller: 0, callee: 1, selectorHex: selector }], [{ emitter: 1, topicHex: '11223344' }],
+    );
+    expect(twoEdges).not.toBe(oneEdgeOneEvent);
   });
 });
 

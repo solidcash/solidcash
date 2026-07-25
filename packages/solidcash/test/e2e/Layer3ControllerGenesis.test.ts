@@ -128,4 +128,18 @@ describe('R7: real mint-once controller genesis + exact identity', () => {
     b.addOutput({ to: s.ordered[0].contract.address, amount: 12000n });
     await expect(s.provider.sendRawTransaction(raw(b))).rejects.toThrow();
   });
+
+  it('P12: setRoot is SET-ONCE - a second setRoot on the already-set controller is rejected', async () => {
+    const s = await setupRealController(2); // s.ctrlUtxo already has the root set (commitment != empty)
+    const setB = new TransactionBuilder({ provider: s.provider });
+    setB.addInput(s.ctrlUtxo, s.controller.unlock.setRoot(hexToBin('ff'.repeat(32)), alicePub, sig()));
+    const fee = randomUtxo({ satoshis: 20000n }); await s.provider.addUtxo(s.p2.address, fee);
+    setB.addInput(fee, s.p2.unlock.spend(alicePub, sig()));
+    setB.addOutput({
+      to: s.controller.tokenAddress, amount: s.ctrlUtxo.satoshis,
+      token: { category: s.ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: 'ff'.repeat(32) } },
+    });
+    setB.addOutput({ to: s.p2.address, amount: 15000n });
+    await expect(s.provider.sendRawTransaction(raw(setB))).rejects.toThrow(); // input commitment not empty
+  });
 });

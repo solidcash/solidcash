@@ -9277,6 +9277,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    if (node.parameters.length === 0) {
+      this.emit(new Uint8Array(0), locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     node.parameters.forEach((param, i) => {
       param = this.visit(param);
       node.parameters[i] = param;
@@ -9336,6 +9342,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitAbiEncodePacked(node: AbiEncodePackedNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+
+    if (node.parameters.length === 0) {
+      this.emit(new Uint8Array(0), locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
 
     node.parameters.forEach((param, i) => {
       param = this.visit(param);
@@ -9608,8 +9620,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * After execution: pops 1 value, pushes 1 encoded bytes value.
    */
   private emitPushdataEncode(type: Type, locationData: SingleLocationData): void {
-    // A function pointer is its integer functionId on the wire: encode/decode it as an int.
-    if (type instanceof FunctionType) type = PrimitiveType.BIGINT;
+    // Internal function pointers are integer functionIds. External event pointers are materialized as the
+    // selector+address bytes blob by SymbolTableTraversal, so preserve and frame that composite value.
+    if (type instanceof FunctionType) type = type.isExternal ? new BytesType() : PrimitiveType.BIGINT;
     // StructType: the value is already an encoded blob from construction - no-op
     if (type instanceof StructType) {
       return;

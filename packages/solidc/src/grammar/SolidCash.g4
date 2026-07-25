@@ -705,7 +705,8 @@ yulFunctionName
 yulPath
     // `.length`/`.slot`/`.offset` calldata & storage accessors: `.offset` lexes as `.` + identifier, but
     // `.length` is a single DotLength token (like `.value`), so accept it explicitly in the member chain.
-    : anyIdentifier ('.' anyIdentifier | '.length')*
+    // `address` is a keyword token but is also the EVM external-function-pointer component `fp.address`.
+    : anyIdentifier ('.' anyIdentifier | '.length' | '.' 'address')*
     ;
 
 yulLiteral

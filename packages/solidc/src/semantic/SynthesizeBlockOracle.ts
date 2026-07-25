@@ -80,6 +80,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private stateVarNames = new Set<string>();
   private fnDeclaredNames = new Set<string>();
   private warnedShims = new Set<string>();
+  private userGasleft = false;
 
 
   // One-time compiler warning for an EVM primitive that has no BCH analogue and is lowered as a shim.
@@ -92,7 +93,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     // gasleft() -> fixed 1000000: BCH has no gas metering. A literal (not a revert) so ported code that
     // gates on a gas budget keeps running; warn it is a shim.
-    if (node.identifier.name === 'gasleft' && node.parameters.length === 0) {
+    if (node.identifier.name === 'gasleft' && node.parameters.length === 0 && !this.userGasleft) {
       this.warnShim('gasleft', 'Warning: gasleft() has no BCH analogue (no gas metering); SolidCash lowers '
         + 'it as a fixed shim (1000000). Do not rely on its value.');
       const lit = new IntLiteralNode(1_000_000n);
@@ -180,6 +181,9 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     this.used = new Set();
     this.loc = node.location;
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
+    // Solidity permits a contract function to shadow the gasleft builtin (with a compiler warning). Preserve
+    // that ordinary call for semantic overload resolution rather than replacing it with the BCH gas shim.
+    this.userGasleft = node.functions.some((fn) => fn.name === 'gasleft' && fn.parameters.length === 0);
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;

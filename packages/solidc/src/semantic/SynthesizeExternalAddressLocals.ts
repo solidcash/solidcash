@@ -21,12 +21,14 @@ import {
   WhileNode,
   DoWhileNode,
   CollectionIterationNode,
+  ContractReferenceNode,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { Modifier } from '../ast/Globals.js';
 
 /**
  * Rewrites an external method call whose target address is read from THIS contract's own (self-pinned) state
@@ -82,6 +84,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // every use - safe to trace through (the Marketplace `IERC20 token = IERC20(job.token)` intermediary). A
   // reassignable local is excluded (it could be rebound to a caller value between decl and the call = forgery).
   private singleAssignLocals: Set<string> = new Set();
+  // Storage-reference locals keep pointing at their initializer even when assignments through them update the
+  // referenced struct. They are safe provenance aliases despite looking "reassigned" to a generic AST scan.
+  private storagePointerLocals: Set<string> = new Set();
+  private localStructTypes: Map<string, StructType> = new Map();
   // interface / contract name -> the method names it declares (own + inherited). A target-receiver method that is
   // NOT one of these is a `using L for IFace` library method (`token.safeTransfer(..)`), NOT an external call - it
   // must be left for the using-for resolver, not hoisted into an __extaddr_ address local (which drops the interface
@@ -184,6 +190,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     this.usedInFn = new Map();
     this.pendingMidbodyDecls = [];
     this.localInits = new Map();
+    this.storagePointerLocals = new Set();
+    this.localStructTypes = new Map();
     // Pre-populate from the WHOLE body (not just bindings visited so far): a computed target is recognised mid-visit
     // (castComputedTarget) and must resolve an inliner alias (`__rh<N>_factory`) whose binding a deeply-nested inline
     // may place in a traversal position not yet reached. Sound: only single-assignment aliases (SYNTH_ALIAS /
@@ -259,15 +267,31 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // behind an interface cast): rewrite the object to the synthesized __extaddr_ local.
   visitMethodCall(node: MethodCallNode): Node {
     const target = this.externalTargetStateVar(node.object);
-    const chain = target ? undefined : this.chainTarget(node.object);
-    const castChain = target || chain ? undefined : this.castChainTarget(node.object);
-    const paramField = target || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
-    const computed = target || chain || castChain || paramField
+    const cachedField = target ? undefined : this.localStructFieldTarget(node.object);
+    const chain = target || cachedField ? undefined : this.chainTarget(node.object);
+    const castChain = target || cachedField || chain ? undefined : this.castChainTarget(node.object);
+    const paramField = target || cachedField || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
+    const computed = target || cachedField || chain || castChain || paramField
       ? undefined : this.castComputedTarget(node.object);
-    const transitive = target || chain || castChain || paramField || computed
+    const transitive = target || cachedField || chain || castChain || paramField || computed
       ? undefined : this.castTransitiveTarget(node.object);
     if (target && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
       const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
+    } else if (cachedField && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(cachedField.iface, node.methodName)) {
+      // C2's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
+      // its current interface field immediately before the call rather than tracing back to the initial state
+      // read. The external-call covenant then pins the co-spent target to exactly that runtime field value.
+      const localName = `${PREFIX}cache${this.transitiveCounter}_${cachedField.iface}`;
+      this.transitiveCounter += 1;
+      const def = new VariableDefinitionNode(
+        new AddressType(false, cachedField.iface), [], localName, cloneNode(node.object) as ExpressionNode,
+      );
+      def.location = node.object.location ?? node.location;
+      this.pendingMidbodyDecls.push(def);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
@@ -278,7 +302,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       // cannot substitute a self-pinned value (extcall-target-pinning.md). Indices are params/literals, so the
       // hoisted decl is valid at the function-body top.
       if (!this.usedInFn.has(chain.localName)) {
-        this.usedInFn.set(chain.localName, { iface: chain.iface, init: cloneNode(node.object) as ExpressionNode });
+        this.usedInFn.set(chain.localName, { iface: chain.iface, init: chain.init });
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(chain.localName);
@@ -397,15 +421,32 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // array element, or mapping value, possibly nested (`s.field`, `ss[i].field`, `ms[k].field`, `s.a.b`). Returns
   // the interface + a stable local name (from the chain shape, so identical chains dedup). Returns undefined
   // unless the whole chain is state-rooted with param/literal indices (sound + valid at the body top).
-  private chainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
+  private chainTarget(obj: ExpressionNode):
+  { iface: string; localName: string; init: ExpressionNode } | undefined {
     if (!(obj instanceof FieldAccessNode)) return undefined;
-    const base = this.resolveChainType(obj.expression);
+    // A single-assignment storage pointer is the same self-pinned chain (`S storage s = m[k]; s.target`).
+    // Normalize its base before checking provenance and use the normalized chain as the body-top initializer.
+    const normalized = this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode);
+    if (!(normalized instanceof FieldAccessNode)) return undefined;
+    const base = this.resolveChainType(normalized.expression);
     if (!(base instanceof StructType)) return undefined;
-    const fieldType = base.fields.find((f) => f.name === obj.name)?.type;
+    const fieldType = base.fields.find((f) => f.name === normalized.name)?.type;
     if (!(fieldType instanceof AddressType) || !fieldType.interfaceName) return undefined;
-    const key = this.chainKey(obj);
+    const key = this.chainKey(normalized);
     if (!key) return undefined;
-    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}` };
+    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}`, init: normalized };
+  }
+
+  private localStructFieldTarget(obj: ExpressionNode): { iface: string } | undefined {
+    if (!(obj instanceof FieldAccessNode) || !(obj.expression instanceof IdentifierNode)) return undefined;
+    const localName = obj.expression.name;
+    if (!localName.startsWith('__c2cache_') && !this.singleAssignLocals.has(localName)) return undefined;
+    const init = this.localInits.get(localName);
+    const structType = this.localStructTypes.get(localName)
+      ?? (init ? this.resolveChainType(init) : undefined);
+    if (!(structType instanceof StructType)) return undefined;
+    const fieldType = structType.fields.find((field) => field.name === obj.name)?.type;
+    return fieldType instanceof AddressType && fieldType.interfaceName ? { iface: fieldType.interfaceName } : undefined;
   }
 
   // `IFoo(<chain>)` where <chain> is an `address`-typed value reached through self-pinned STATE (a struct field,
@@ -414,10 +455,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // the interface + a stable per-(chain, iface) local name; undefined unless the whole chain is state-rooted with
   // param/literal indices (so the hoisted `IFoo(chain)` decl is sound + valid at the body top).
   private castChainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
-    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
-    const iface = obj.identifier.name;
+    const iface = obj instanceof FunctionCallNode ? obj.identifier.name
+      : obj instanceof ContractReferenceNode ? obj.contractName : undefined;
+    const args = obj instanceof FunctionCallNode ? obj.parameters
+      : obj instanceof ContractReferenceNode ? obj.constructorArgs : undefined;
+    if (!iface || !args || args.length !== 1) return undefined;
     if (!this.typeNames.has(iface)) return undefined;
-    const arg = obj.parameters[0];
+    const arg = args[0];
     if (arg instanceof IdentifierNode) return undefined; // bare state var / param - externalTargetStateVar's job
     if (!(this.resolveChainType(arg) instanceof AddressType)) return undefined;
     const key = this.chainKey(arg);
@@ -648,7 +692,17 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const scan = (node: unknown): void => {
       if (!node || typeof node !== 'object' || seen.has(node)) return;
       seen.add(node);
-      if (node instanceof VariableDefinitionNode && node.expression) this.localInits.set(node.name, node.expression);
+      if (node instanceof VariableDefinitionNode && node.expression) {
+        this.localInits.set(node.name, node.expression);
+        if (node.type instanceof StructType) this.localStructTypes.set(node.name, node.type);
+        if (node.modifier.includes(Modifier.STORAGE)
+          // Earlier storage desugaring can erase the source modifier while retaining the self-pinned initializer.
+          // A struct local initialized directly from a state mapping/array element is necessarily that reference
+          // shape; ordinary memory copies do not read a state container as their initializer.
+          || (node.type instanceof StructType && this.resolveChainType(node.expression) instanceof StructType)) {
+          this.storagePointerLocals.add(node.name);
+        }
+      }
       // A tuple-destructured declaration `(address input, address output) = (path[i], path[i+1])` (swap loops) or
       // `(address t0, address t1) = sortTokens(a, b)` (pairFor): map each NEW element to its per-slot RHS (a tuple
       // literal element) or the i-th value of the tuple-returning call, so it resolves like any single-assign local.
@@ -732,7 +786,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // (the caller passes a clone); indices in the reached chain are params/literals (resolveChainType re-validates).
   private inlineStoragePtrBases(expr: ExpressionNode, depth = 0): ExpressionNode {
     if (depth > 24) return expr;
-    if (expr instanceof IdentifierNode && this.singleAssignLocals.has(expr.name) && this.localInits.has(expr.name)) {
+    if (expr instanceof IdentifierNode
+      && (this.singleAssignLocals.has(expr.name) || this.storagePointerLocals.has(expr.name))
+      && this.localInits.has(expr.name)) {
       return this.inlineStoragePtrBases(cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1);
     }
     if (expr instanceof FieldAccessNode) { expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1); }

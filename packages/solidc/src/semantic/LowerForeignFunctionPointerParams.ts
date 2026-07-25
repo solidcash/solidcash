@@ -171,6 +171,13 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
         return selector;
       }
     }
+    // The address half of the same split value is the original, now address-typed parameter.
+    if (node.name === 'address' && node.expression instanceof IdentifierNode
+      && this.rewrites.has(node.expression.name)) {
+      const address = new IdentifierNode(node.expression.name);
+      address.location = node.location;
+      return address;
+    }
     return super.visitFieldAccess(node);
   }
 
@@ -259,7 +266,7 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
     let found = false;
     const walk = (node: Node): void => {
       if (found) return;
-      if (node instanceof FieldAccessNode && node.name === 'selector'
+      if (node instanceof FieldAccessNode && (node.name === 'selector' || node.name === 'address')
         && node.expression instanceof IdentifierNode && node.expression.name === name) {
         found = true;
         return;

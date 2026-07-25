@@ -369,6 +369,12 @@ export default class AstBuilder
   // Integer-literal constants (`int constant N = 3;`), so a const can be used as an array dimension `T[N]`.
   // Populated by a pre-scan of constant definitions before any types are built (see scanConstantDimensions).
   private constantIntValues: Map<string, number> = new Map();
+  // String constants used by compile-time builtins such as `erc7201(CONST)`. These are also pre-scanned because
+  // the builtin result may itself be used while constructing an array type.
+  private constantStringValues: Map<string, string> = new Map();
+  // Declared file-level constants, used for parse-time validation of builtins whose argument category is stricter
+  // than the general SolidCash bytes/string assignability rules (currently erc7201 requires Solidity `string`).
+  private constantTypes: Map<string, Type> = new Map();
   // Counter for synthesized temp locals used to desugar nested lvalue writes (`s.arr[i] = v`, `m[i].arr[j] = v`).
   private nestedLvalueCounter = 0;
   // Function name -> its return struct type (for functions returning a struct, e.g. the OZ StorageSlot factory
@@ -417,7 +423,8 @@ export default class AstBuilder
       this.processPragma(pragma);
     });
 
-    // File-level integer constants usable as array dimensions in file-level definitions and in contracts below.
+    // File-level constants usable while building types in file-level definitions and contracts below.
+    this.scanConstantStrings(ctx.constantDefinition_list());
     this.scanConstantDimensions(ctx.constantDefinition_list());
 
     const imports = ctx.importDirective_list().map(
@@ -846,8 +853,8 @@ export default class AstBuilder
       ...ctx.abstractFunctionDefinition_list().map((f) => f.functionName().getText()),
     ]);
     this.selfExternalFunctionReturnAliases = new Map();
-    // Resolve integer-literal constants up front so a const can be used as an array dimension `T[N]` anywhere
-    // in the contract body (state vars, params, locals, struct fields), regardless of declaration order.
+    // Resolve constants up front so they can be used while constructing types anywhere in the contract body.
+    this.scanConstantStrings(ctx.constantDefinition_list());
     this.scanConstantDimensions(ctx.constantDefinition_list());
     this.scanConstantStateVars(ctx.stateVariableDeclaration_list());
     const specs = ctx.inheritanceSpecifier_list();
@@ -865,16 +872,18 @@ export default class AstBuilder
       (e) => this.visitEnumDefinition(e),
     );
 
-    // Collect struct definitions first (they must be available for type resolution)
-    const structDefinitions: StructDefinitionNode[] = [];
-    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
-
-    // Collect type definitions (user-defined value types)
+    // Register user-defined value types before struct fields: a struct may contain `T` or `T[]` even when the
+    // `type T is ...` declaration appears later in source. UDVT underlyings are elementary, so they do not
+    // depend on struct registration.
     const typeDefinitions: TypeDefinitionNode[] = [];
     for (const tdCtx of ctx.typeDefinition_list()) {
       const td = this.visitTypeDefinition(tdCtx);
       typeDefinitions.push(td);
     }
+
+    // Collect struct definitions after enums/typedefs (all field types must already be resolvable).
+    const structDefinitions: StructDefinitionNode[] = [];
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
 
     // Contract-level constructor parameters are built AFTER enums/structs/typedefs register so a struct/enum/
     // UDVT-typed parameter (`contract C(Point p)`) resolves to its real type - Solidity parity, a struct is a
@@ -1702,6 +1711,14 @@ export default class AstBuilder
       const loc = Location.fromCtx(ctx);
       const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
       const ident = (nm: string): IdentifierNode => stamp(new IdentifierNode(nm));
+      if (!modifiers.includes(Modifier.STORAGE)) {
+        // A value declaration copies the freshly-created default element rather than aliasing it. The local's
+        // ordinary uninitialized value is exactly that default, so use the same value for the append and retain
+        // the declared name (`uint y = arr.push();` -> `uint y; arr.push(y);`).
+        const valueDef = this.finishVariableDefinition(ctx, type, modifiers, name, undefined);
+        const valuePush = this.buildArrayPush(arrName, false, [], undefined, ident(name), false, ctx);
+        return stamp(new BlockNode([valueDef, valuePush]));
+      }
       const uid = this.nestedLvalueCounter++;
       const idxName = `__pushPtr_i_${uid}`;
       const defName = `__pushPtr_def_${uid}`;
@@ -1718,7 +1735,7 @@ export default class AstBuilder
         const push = this.buildArrayPush(arrName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx);
         return stamp(new BlockNode([idxDef, push]));
       }
-      // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
+    // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
       const defDef = stamp(new VariableDefinitionNode(type, [], defName, undefined));
       defDef.allowUnused = true;
       const push = this.buildArrayPush(arrName, false, [], undefined, ident(defName), false, ctx);
@@ -2832,6 +2849,13 @@ export default class AstBuilder
   visitParenthesizedFunctionCall(ctx: any): ExpressionNode {
     const callee = this.visit(ctx.expression()) as ExpressionNode;
     const args = this.buildCallArguments(ctx.expressionList());
+    // Parentheses do not turn an ordinary member call into a function-pointer call: `((d.f))(args)` has the
+    // same lookup and dispatch semantics as `d.f(args)`. Keep `super.f` on its established indirect/self
+    // resolution path, where the inheritance pass has the context needed to select the base implementation.
+    if (callee instanceof FieldAccessNode
+      && !(callee.expression instanceof IdentifierNode && callee.expression.name === 'super')) {
+      return this.buildMethodCall(ctx, callee.expression, callee.name, args, undefined, false);
+    }
     const node = new IndirectCallNode(callee, args);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -2920,7 +2944,15 @@ export default class AstBuilder
     // Ethereum. Literal ids fold at parse time; runtime string/bytes expressions lower to the specification's
     // hash/arithmetic expression (Solidity accepts calldata, memory, storage, concat, ternary, and pure-call ids).
     if (identifiers.length === 1 && name === 'erc7201' && parameters.length === 1) {
-      const arg = parameters[0];
+      let arg = parameters[0];
+      if (arg instanceof IdentifierNode) {
+        const constantValue = this.constantStringValues.get(arg.name);
+        if (constantValue !== undefined) {
+          const resolved = new StringLiteralNode(constantValue, '"');
+          resolved.location = arg.location;
+          arg = resolved;
+        }
+      }
       if (arg instanceof StringLiteralNode) {
         const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.value));
         lit.location = Location.fromCtx(ctx);
@@ -2928,6 +2960,19 @@ export default class AstBuilder
         const cast = new CastNode(parseType('uint256'), lit, false);
         cast.location = Location.fromCtx(ctx);
         return cast;
+      }
+      if (arg instanceof IntLiteralNode) {
+        throw new ParseError('erc7201(...) expects a string namespace id', Location.fromCtx(ctx));
+      }
+      if (arg instanceof HexLiteralNode) {
+        try {
+          new TextDecoder('utf-8', { fatal: true }).decode(arg.value);
+        } catch {
+          throw new ParseError('erc7201(...) expects a valid UTF-8 string namespace id', Location.fromCtx(ctx));
+        }
+      }
+      if (arg instanceof IdentifierNode && this.constantTypes.get(arg.name) instanceof BytesType) {
+        throw new ParseError('erc7201(...) expects a string namespace id, not bytes', Location.fromCtx(ctx));
       }
       const loc = Location.fromCtx(ctx);
       const at = <T extends Node>(node: T): T => { node.location = loc; return node; };
@@ -3463,6 +3508,7 @@ export default class AstBuilder
     }
     const hexValue = hexToBin(hexContent);
     const hexLiteral = new HexLiteralNode(hexValue);
+    hexLiteral.numericValue = BigInt(`0x${hexContent.replace(/_/g, '')}`);
     hexLiteral.location = Location.fromCtx(ctx);
     return hexLiteral;
   }
@@ -3497,6 +3543,20 @@ export default class AstBuilder
       if (visChild) { visibility = visChild.getText() as StateVariableVisibility; }
     }
     const isImmutable = allModTexts.includes('immutable');
+    const overrideSpec = [
+      ...((ctx as any).overrideSpecifier_list?.() ?? []),
+      ...plainModifiers.map((m: any) => m.overrideSpecifier?.()),
+      ...collectionModifiers.map((m: any) =>
+        m.overrideSpecifier?.() ?? m.modifier?.()?.overrideSpecifier?.()),
+    ].find(Boolean);
+    const overrideBases = overrideSpec
+      ? overrideSpec.Identifier_list().map((id: any) => id.getText()) as string[]
+      : [];
+    const markOverride = <T extends StateVariableNode | CollectionNode>(node: T): T => {
+      node.isOverride = overrideSpec !== undefined;
+      node.overrideBases = overrideBases;
+      return node;
+    };
 
     // A `constant` state var (`uint public constant ONE = 5`) parses as a state variable because the dedicated
     // constantDefinition rule has no visibility slot. It is a compile-time constant, not stored state - route it
@@ -3511,6 +3571,7 @@ export default class AstBuilder
       const cnode = new ConstantDefinitionNode(
         cType, name, this.visit(constExpr) as ExpressionNode,
       );
+      cnode.visibility = visibility;
       cnode.location = Location.fromCtx(ctx);
       return cnode;
     }
@@ -3528,7 +3589,7 @@ export default class AstBuilder
       const mapPos = children.indexOf(mappingTypeCtx as unknown as { getText?: () => string });
       node.enumerable = mapPos > 0 && children.slice(0, mapPos).some((c) => c.getText?.() === 'enumerable');
       node.location = Location.fromCtx(ctx);
-      return node;
+      return markOverride(node);
     }
 
     // Check if this is an array type declaration
@@ -3544,7 +3605,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.immutable = isImmutable;
         node.location = Location.fromCtx(ctx);
-        return node;
+        return markOverride(node);
       }
 
       // Chunk-packed array (behind chunkedArrays, default on): an unbounded `T[]` with a chunk-packable element
@@ -3557,7 +3618,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.immutable = isImmutable;
         node.location = Location.fromCtx(ctx);
-        return node;
+        return markOverride(node);
       }
 
       // Solidity-import compat: a BOUNDED value-type array T[N] is contiguous packed storage in Solidity. Model
@@ -3571,7 +3632,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.immutable = isImmutable;
         node.location = Location.fromCtx(ctx);
-        return node;
+        return markOverride(node);
       }
 
       // Non-packed array: store as entry NFTs (collection)
@@ -3579,7 +3640,7 @@ export default class AstBuilder
       node.visibility = visibility;
       node.immutable = isImmutable;
       node.location = Location.fromCtx(ctx);
-      return node;
+      return markOverride(node);
     }
 
     const typeText = ctx.typeName().getText();
@@ -3599,7 +3660,7 @@ export default class AstBuilder
     const initCtx = ctx.expression?.();
     if (initCtx) node.initializer = this.visit(initCtx) as ExpressionNode;
     node.location = Location.fromCtx(ctx);
-    return node;
+    return markOverride(node);
   }
 
   visitStateAccess(ctx: StateAccessContext): StateAccessNode {
@@ -4630,6 +4691,28 @@ export default class AstBuilder
   // literal, a parenthesised/arithmetic compile-time expression (`(2)`, `(2 + 1) / 1`), or reference an
   // earlier such constant; anything not a compile-time integer is skipped (a clear ParseError at use in
   // resolveArrayBound). Repeated to a fixpoint so a constant referencing a LATER one still resolves.
+  private scanConstantStrings(ctxs: ConstantDefinitionContext[]): void {
+    const entries = ctxs
+      .filter((c) => c.typeName().getText() === 'string')
+      .map((c) => ({ name: c.anyIdentifier().getText(), exprCtx: c.expression() }));
+    let progress = true;
+    while (progress) {
+      progress = false;
+      for (const { name, exprCtx } of entries) {
+        if (this.constantStringValues.has(name)) continue;
+        let expression: ExpressionNode | undefined;
+        try { expression = this.visit(exprCtx) as ExpressionNode; } catch { expression = undefined; }
+        const value = expression instanceof StringLiteralNode
+          ? expression.value
+          : expression instanceof IdentifierNode ? this.constantStringValues.get(expression.name) : undefined;
+        if (value !== undefined) {
+          this.constantStringValues.set(name, value);
+          progress = true;
+        }
+      }
+    }
+  }
+
   private scanConstantDimensions(ctxs: ConstantDefinitionContext[]): void {
     this.scanConstantsToFixpoint(ctxs
       .filter((c) => AstBuilder.isIntTypeName(c.typeName().getText()))
@@ -5081,15 +5164,23 @@ export default class AstBuilder
       return node;
     }
 
-    // `this.f(args)`: an external self-call to the contract's OWN function `f`. On BCH the covenant IS the
+    // `this.f(args)` / `Base(this).f(args)`: an external self-call to the contract's OWN function `f`. A cast to
+    // a base/interface still performs virtual dispatch in Solidity, so the most-derived implementation is the
+    // same direct function selected by `this.f`. On BCH the covenant IS the
     // contract, so resolve it to a direct call to `f` (a subroutine). Solidity's external-self-call semantics
     // (fresh calldata, `msg.sender` = the contract) do not apply here.
-    if (isThisReceiver) {
+    const selfCastReceiver = object instanceof FunctionCallNode && object.parameters.length === 1
+      && this.contractInterfaceNames.has(object.identifier.name)
+      && this.currentContractFunctionNames.has(methodName)
+      && object.parameters[0] instanceof UnaryOpNode
+      && object.parameters[0].operator === UnaryOperator.INPUT_LOCKING_BYTECODE;
+    if (isThisReceiver || selfCastReceiver) {
       const line = `:${Location.fromCtx(ctx).start.line}`;
       // `{value:..}` / `{gas:..}` call options are EVM message-call semantics; a self-call is a direct subroutine
       // on BCH, so they are inert and dropped (like the other EVM shims).
       const optNote = callOpts ? ' ({value}/{gas} call options are inert on a self-call and ignored)' : '';
-      console.log(`Warning: 'this.${methodName}(...)'${line} is an external self-call in Solidity; on BCH it is a `
+      const spelling = selfCastReceiver ? `${object.identifier.name}(this).${methodName}` : `this.${methodName}`;
+      console.log(`Warning: '${spelling}(...)'${line} is an external self-call in Solidity; on BCH it is a `
         + `direct internal call to '${methodName}' (no separate calldata, msg.sender is not re-set to self)${optNote}.`);
       const id = new IdentifierNode(methodName);
       id.location = Location.fromCtx(ctx);
@@ -5178,6 +5269,16 @@ export default class AstBuilder
   }
 
   private resolveType(typeText: string): Type {
+    // Function-type parameter names are retained by the compatibility grammar inside typeName.getText(), where
+    // whitespace is absent (`function(bytes6 _name,uint _shift)` -> `function(bytes6_name,uint_shift)`).
+    // Separate underscore-prefixed names from bounded primitive members before the shared type parser sees them;
+    // otherwise `bytes6_name` is mistaken for a malformed bytes bound and throws before optional-name recovery.
+    if (typeText.startsWith('function(')) {
+      typeText = typeText.replace(
+        /\b(bytes(?:[1-9][0-9]*)|u?int(?:[0-9]+)?|u?fixed(?:[0-9]+x[0-9]+)?)_[A-Za-z_$][A-Za-z0-9_$]*(?=[,)])/g,
+        '$1',
+      );
+    }
     // Handle 'addresspayable' from grammar (two tokens concatenated without space)
     if (typeText === 'addresspayable') return new AddressType(true);
     if (typeText === 'address') return new AddressType(false);
@@ -5497,6 +5598,7 @@ export default class AstBuilder
         const args = this.buildCallArguments(ctx.expressionList()!);
         node = new RevertNode(errorName, args);
       }
+      if (ctx.Identifier()) node.errorQualifier = anyId.getText();
     } else if (ctx.expression()) {
       // revert("message") or revert(reasonExpr). BCH has no on-chain revert reason: a string literal keeps its
       // message as compile-time metadata; a dynamic reason (e.g. OZ `revert(errorMessage)`) drops to an
@@ -5525,6 +5627,7 @@ export default class AstBuilder
     // site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
     const type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false, ctx.typeName().getText());
     const name = ctx.anyIdentifier().getText();
+    this.constantTypes.set(name, type);
     const expression = this.visit(ctx.expression());
     const node = new ConstantDefinitionNode(type, name, expression);
     node.location = Location.fromCtx(ctx);

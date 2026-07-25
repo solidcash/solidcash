@@ -1,5 +1,6 @@
 import {
   IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, EnumType,
+  FunctionType,
   hash256, computeErc7201SlotNumber, isFixedWidthType,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -11,10 +12,11 @@ import {
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
   InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode, StateArrayPopNode,
-  TernaryOpNode,
+  TernaryOpNode, TupleIndexOpNode, SourceFileNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
   YulNode, YulBlockNode, YulStatementNode, YulExpressionNode, YulVariableDeclarationNode, YulAssignmentNode,
   YulIfNode, YulSwitchNode, YulForLoopNode, YulExpressionStatementNode, YulBreakNode, YulContinueNode,
@@ -45,11 +47,18 @@ let currentParams: ParameterNode[] = [];
 // Declared type of every in-scope param + local of the enclosing function (name -> Type). A UDVT-typed var is
 // a raw word inside assembly, so it is unwrapped when read and the assembled word is re-wrapped when written.
 let currentVars = new Map<string, Type>();
+let currentConstantTypes = new Map<string, Type>();
+// Calldata aggregate variables are pointer words inside Yul, even though their high-level AST value is an
+// array/struct. Name -> ABI byte offset expression. Includes aggregate parameters and derived calldata locals
+// such as `uint[2] calldata t = x[1]`.
+let currentCalldataPointers = new Map<string, ExpressionNode>();
+let originalCalldataSnapshots = new Map<string, string>();
 // Constant hex-literal-initialized locals (`bytes memory b = hex"..."`), so Yul `create(0, add(b,0x20), n)` can
 // resolve b to a compile-time bytecode blob and derive the deployed contract's p2sh32 address.
 let currentVarValues = new Map<string, Uint8Array>();
 // `bytes X = type(C).creationCode` locals: X -> contract name C, so a Yul `create2` over X lowers to `new C{salt}()`.
 let currentCreationCodeLocals = new Map<string, string>();
+let declaredLibraryNames = new Set<string>();
 
 // Free-memory-pointer byte buffers (`let clone := mload(0x40)`) and their ordered mstore writes, so an EIP-1167
 // minimal-proxy style `create(0, clone, size)` can reconstruct the blob (const||runtime||const) and derive the
@@ -868,7 +877,9 @@ function runtimeReturn(ptrArg: YulExpressionNode, sizeArg: YulExpressionNode, sr
   const size = (): ExpressionNode => lowerValue(sizeArg);
   const padded = loc(new BytesConcatNode([yulmem(src), newBytes(size(), src)]), src);
   const slice = loc(new SliceNode(padded, ptr(), addE(ptr(), size(), src)), src);
-  return loc(new ReturnNode([slice]), src);
+  const ret = loc(new ReturnNode([slice]), src);
+  ret.isYulReturn = true;
+  return ret;
 }
 
 // Copy srcBytes[srcOff : srcOff+len] into __yulmem[dst : dst+len], growing the buffer to cover it. Shared by
@@ -945,6 +956,49 @@ function calldataDataOffset(name: string): bigint | undefined {
     headWords += w;
   }
   return 4n + BigInt(headWords) * 32n + 32n;
+}
+
+// ABI byte offset at which a calldata aggregate parameter's content begins. Static aggregates live inline in the
+// head; dynamic aggregates point into the tail (after their length word).
+function calldataAggregateOffset(name: string): bigint | undefined {
+  const idx = currentParams.findIndex((p) => p.name === name);
+  if (idx < 0) return undefined;
+  if (isDynamicCalldataType(currentParams[idx].type)) return calldataDataOffset(name);
+  let prefixWords = 0;
+  for (const p of currentParams.slice(0, idx)) {
+    const words = calldataHeadWords(p.type);
+    if (words === undefined) return undefined;
+    prefixWords += words;
+  }
+  return 4n + BigInt(prefixWords) * 32n;
+}
+
+function collectCalldataPointers(node: Node): void {
+  if (node instanceof VariableDefinitionNode && node.modifier.includes('calldata')) {
+    const array = node.expression instanceof ArrayAccessNode ? node.expression.array
+      : node.expression instanceof TupleIndexOpNode ? node.expression.tuple : undefined;
+    const index = node.expression instanceof ArrayAccessNode && node.expression.index instanceof IntLiteralNode
+      ? node.expression.index.value
+      : node.expression instanceof TupleIndexOpNode ? BigInt(node.expression.index) : undefined;
+    if (array instanceof IdentifierNode && index !== undefined) {
+    const base = currentCalldataPointers.get(array.name);
+    const baseType = currentVars.get(array.name);
+    const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
+    const words = elementType ? compositeSlotWords(elementType) : 0;
+    if (base && words > 0) {
+      const delta = new IntLiteralNode(index * BigInt(words) * 32n);
+      delta.location = node.location;
+      const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
+      ptr.location = node.location;
+      currentCalldataPointers.set(node.name, ptr);
+    }
+    }
+  }
+  for (const key of Object.keys(node)) {
+    const value = (node as unknown as Record<string, unknown>)[key];
+    if (value instanceof Node) collectCalldataPointers(value);
+    else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) collectCalldataPointers(item);
+  }
 }
 
 // A calldata param's `.offset`/`.length` that is ASSIGNED in the function (`x.offset := v`) is a mutable Yul
@@ -1424,6 +1478,14 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
       throw new YulNotLowerable();
     }
     if (expr.members.length > 0) throw new YulNotLowerable(); // other member access (later phase)
+    const calldataPtr = currentCalldataPointers.get(expr.base);
+    const directParam = currentParams.find((p) => p.name === expr.base);
+    // Solidity forbids a bare dynamic calldata array/bytes value in assembly: callers must use `.offset` and
+    // `.length`. Keep its offset internally for deriving a fixed child (`T calldata t = x[i]`) but do not expose
+    // the dynamic base itself as a word.
+    if (calldataPtr && !(directParam && isDynamicCalldataType(directParam.type))) {
+      return loc(cloneNode(calldataPtr) as ExpressionNode, expr);
+    }
     const id = loc(new IdentifierNode(expr.base), expr);
     // A UDVT-typed operand is a raw word inside assembly; unwrap it to its underlying type so arithmetic /
     // bitwise ops type-check (e.g. shl(0x40, _duration) where _duration is a `Duration` = uint64).
@@ -1601,7 +1663,13 @@ function structFieldStore(
   sf: { varName: string; struct: StructType; index: number }, word: ExpressionNode, src: YulNode,
 ): StatementNode {
   const args: ExpressionNode[] = sf.struct.fields.map((f, i) => {
-    if (i === sf.index) return loc(new CastNode(f.type, word, false), src);
+    if (i === sf.index) {
+      if (f.type instanceof ValueType) {
+        const underlying = loc(new CastNode(f.type.underlyingType, word, false), src);
+        return loc(new CastNode(f.type, underlying, false), src);
+      }
+      return loc(new CastNode(f.type, word, false), src);
+    }
     const base = loc(new IdentifierNode(sf.varName), src);
     return loc(new FieldAccessNode(base, f.name), src);
   });
@@ -1890,7 +1958,13 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     const sf = resolveStructField(args[0]);
     if (sf) {
       const base = loc(new IdentifierNode(sf.varName), call);
-      const field = loc(new FieldAccessNode(base, sf.struct.fields[sf.index].name), call);
+      let field: ExpressionNode = loc(new FieldAccessNode(base, sf.struct.fields[sf.index].name), call);
+      const fieldType = sf.struct.fields[sf.index].type;
+      // A UDVT occupies the same memory word as its underlying value. Make the zero-cost unwrap explicit before
+      // converting to the uint256 Yul word; direct UDVT -> uint256 casts are intentionally rejected elsewhere.
+      if (fieldType instanceof ValueType) {
+        field = loc(new CastNode(fieldType.underlyingType, field, false), call);
+      }
       return loc(new CastNode(UINT256, field, false), call);
     }
     if (runtimeMem) return runtimeMload(args[0], call);
@@ -1958,6 +2032,49 @@ function tryCreate2Instantiation(value: YulExpressionNode, src: YulNode): Instan
   return inst;
 }
 
+// Runtime clz in eight fixed branches (rather than a 256-step loop): each branch consumes the high half when
+// present, or adds that half's width to the leading-zero count. After widths 128..1, zero needs one final bit.
+function lowerClzBinding(
+  call: YulFunctionCallNode, targetName: string, targetIsNew: boolean, src: YulStatementNode,
+): StatementNode {
+  yulCallCounter += 1;
+  const valueName = `__yul_clz_value_${yulCallCounter}`;
+  const countName = `__yul_clz_count_${yulCallCounter}`;
+  const id = (name: string): IdentifierNode => loc(new IdentifierNode(name), src);
+  const stmts: StatementNode[] = [
+    loc(new VariableDefinitionNode(UINT256, [], valueName,
+      loc(new CastNode(UINT256, lowerValue(call.args[0]), false), call)), src),
+    loc(new VariableDefinitionNode(UINT256, [], countName, intLit(0n, src)), src),
+  ];
+  for (const width of [128n, 64n, 32n, 16n, 8n, 4n, 2n, 1n]) {
+    const threshold = intLit(2n ** width, src);
+    const cond = loc(new BinaryOpNode(id(valueName), BinaryOperator.LT, threshold), src);
+    const addCount = loc(new AssignNode(id(countName),
+      loc(new BinaryOpNode(id(countName), BinaryOperator.PLUS, intLit(width, src)), src)), src);
+    const shrinkValue = loc(new AssignNode(id(valueName),
+      loc(new BinaryOpNode(id(valueName), BinaryOperator.DIV, intLit(2n ** width, src)), src)), src);
+    stmts.push(loc(new BranchNode(
+      cond, loc(new BlockNode([addCount]), src), loc(new BlockNode([shrinkValue]), src),
+    ), src));
+  }
+  const isZero = loc(new TernaryOpNode(
+    loc(new BinaryOpNode(id(valueName), BinaryOperator.EQ, intLit(0n, src)), src),
+    intLit(1n, src), intLit(0n, src),
+  ), src);
+  let result: ExpressionNode = loc(new BinaryOpNode(id(countName), BinaryOperator.PLUS, isZero), src);
+  const targetType = targetIsNew ? UINT256 : currentVars.get(targetName);
+  if (targetType instanceof ValueType) {
+    result = loc(new CastNode(targetType.underlyingType, result, false), src);
+    result = loc(new CastNode(targetType, result, false), src);
+  } else if (targetType && !(targetType instanceof IntType && !targetType.signed && targetType.bits === 256)) {
+    result = loc(new CastNode(targetType, result, false), src);
+  }
+  stmts.push(targetIsNew
+    ? loc(new VariableDefinitionNode(UINT256, [], targetName, result), src)
+    : loc(new AssignNode(id(targetName), result), src));
+  return loc(new BlockNode(stmts), src);
+}
+
 function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulBlockNode) return lowerBlock(stmt);
 
@@ -1968,6 +2085,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       return defs.length === 1 ? defs[0] : loc(new BlockNode(defs), stmt);
     }
     if (stmt.names.length !== 1) throw new YulNotLowerable(); // multi-value `let x, y := f()` (later)
+    if (stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'clz' && stmt.value.args.length === 1) {
+      return lowerClzBinding(stmt.value, stmt.names[0], true, stmt);
+    }
     // `let pair := create2(0, add(code,0x20), mload(code), salt)` -> `address pair = new C{salt}()` (deploy). Emit
     // the InstantiationNode DIRECTLY (no CastNode wrap) so deploy-result-local registration + deploy-then-call fold
     // (SymbolTableTraversal, keyed on `expression instanceof InstantiationNode`) engage.
@@ -2002,6 +2122,17 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     }
     let expr = lowerValue(stmt.value);
     if (isBytes32Call(stmt.value)) expr = loc(new CastNode(UINT256, expr, false), stmt);
+    // A fresh Yul `let` is a uint256 word. Normalize Solidity one-slot value types, including constants (which
+    // are absent from currentVars). Do NOT admit dynamic calldata aggregates or external function values:
+    // Solidity rejects direct assembly access to those because they require offset/length or two stack slots.
+    if (stmt.value instanceof YulPathNode && stmt.value.members.length === 0) {
+      const vt = currentVars.get(stmt.value.base) ?? currentConstantTypes.get(stmt.value.base);
+      const oneWord = vt === PrimitiveType.BOOL || vt === PrimitiveType.BIGINT
+        || vt instanceof IntType || vt instanceof AddressType || vt instanceof EnumType
+        || (vt instanceof BytesType && vt.bound !== undefined && vt.bound <= 32);
+      const vIsWord = vt instanceof IntType && !vt.signed && vt.bits === 256;
+      if (oneWord && !vIsWord) expr = loc(new CastNode(UINT256, expr, false), stmt);
+    }
     return loc(new VariableDefinitionNode(UINT256, [], stmt.names[0], expr), stmt);
   }
 
@@ -2012,8 +2143,72 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       const local = cdComponentLocal(stmt.paths[0].base, stmt.paths[0].members[0]);
       return loc(new AssignNode(loc(new IdentifierNode(local), stmt), lowerValue(stmt.value)), stmt);
     }
+    // Solidity cleans an external function value to address160+selector32 when it is compared. The corpus
+    // deliberately ORs ones only ABOVE those widths into each component to verify that cleanup. SolidCash stores
+    // a self pointer as its functionId, so those unreachable dirty bits have no representation: prove the exact
+    // `p.member := or(p.member, shl(width, sub(0, 1)))` shape and discard it. Any other component write stays
+    // fail-closed below.
+    if (stmt.paths.length === 1 && stmt.paths[0].members.length === 1) {
+      const target = stmt.paths[0];
+      const member = target.members[0];
+      const width = member === 'address' ? '160' : member === 'selector' ? '32' : undefined;
+      const pointerType = currentVars.get(target.base);
+      const rhs = stmt.value;
+      const samePath = (value: YulExpressionNode): boolean => value instanceof YulPathNode
+        && value.base === target.base && value.members.length === 1 && value.members[0] === member;
+      const call = (value: YulExpressionNode, name: string, arity: number): value is YulFunctionCallNode =>
+        value instanceof YulFunctionCallNode && value.name === name && value.args.length === arity;
+      if (width && pointerType instanceof FunctionType && pointerType.isExternal
+        && call(rhs, 'or', 2) && samePath(rhs.args[0])
+        && call(rhs.args[1], 'shl', 2)
+        && rhs.args[1].args[0] instanceof YulLiteralNode && rhs.args[1].args[0].raw === width
+        && call(rhs.args[1].args[1], 'sub', 2)
+        && rhs.args[1].args[1].args[0] instanceof YulLiteralNode
+        && rhs.args[1].args[1].args[0].raw === '0'
+        && rhs.args[1].args[1].args[1] instanceof YulLiteralNode
+        && rhs.args[1].args[1].args[1].raw === '1') {
+        return loc(new BlockNode([]), stmt);
+      }
+    }
     if (stmt.paths.length !== 1 || stmt.paths[0].members.length > 0) throw new YulNotLowerable();
     const name = stmt.paths[0].base;
+    // A calldata struct variable is a pointer in Yul. When the assigned word resolves to another known calldata
+    // struct parameter, materialize the target's positional view as a normal struct value. This preserves later
+    // high-level field reads without treating the aggregate itself as an integer.
+    const targetStruct = currentVars.get(name);
+    if (targetStruct instanceof StructType && currentCalldataPointers.has(name)) {
+      let sourceName: string | undefined;
+      if (stmt.value instanceof YulPathNode && stmt.value.members.length === 0
+        && currentCalldataPointers.has(stmt.value.base)) {
+        sourceName = stmt.value.base;
+      } else if (isIntLiteral(stmt.value)) {
+        const offset = BigInt(stmt.value.raw);
+        sourceName = [...currentCalldataPointers].find(([, ptr]) =>
+          ptr instanceof IntLiteralNode && ptr.value === offset)?.[0];
+        const originalParam = currentParams.find((p) =>
+          (p.type instanceof StructType || p.type instanceof ArrayType)
+          && calldataAggregateOffset(p.name) === offset)?.name;
+        sourceName ??= originalParam ? (originalCalldataSnapshots.get(originalParam) ?? originalParam) : undefined;
+      }
+      const sourceStruct = sourceName ? currentVars.get(sourceName) : undefined;
+      if (sourceName && sourceStruct instanceof StructType) {
+        const args = targetStruct.fields.map((field, i) => {
+          const sourceField = sourceStruct.fields[i];
+          if (!sourceField || sourceField.type.toString() !== field.type.toString()) {
+            return createDefaultValueExpression(field.type, stmt.location!);
+          }
+          return loc(new FieldAccessNode(loc(new IdentifierNode(sourceName!), stmt), sourceField.name), stmt);
+        });
+        const ctor = loc(new FunctionCallNode(loc(new IdentifierNode(targetStruct.name), stmt), args), stmt);
+        const originalName = [...originalCalldataSnapshots].find(([, snapshot]) => snapshot === sourceName)?.[0];
+        const sourcePtr = currentCalldataPointers.get(originalName ?? sourceName);
+        if (sourcePtr) currentCalldataPointers.set(name, cloneNode(sourcePtr) as ExpressionNode);
+        return loc(new AssignNode(loc(new IdentifierNode(name), stmt), ctor), stmt);
+      }
+    }
+    if (stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'clz' && stmt.value.args.length === 1) {
+      return lowerClzBinding(stmt.value, name, false, stmt);
+    }
     // `pair := create2(0, add(code,0x20), mload(code), salt)` -> `pair = new C{salt}()` (deploy). Emit the
     // InstantiationNode DIRECTLY (bypass the target-type CastNode wrap below) so the deploy-result-local /
     // deploy-then-call fold machinery (keyed on `expression instanceof InstantiationNode`) engages.
@@ -2050,7 +2245,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     if (stmt.value instanceof YulPathNode && stmt.value.members.length === 0) {
       const vt = currentVars.get(stmt.value.base);
       const vIsWord = vt instanceof IntType && !vt.signed && vt.bits === 256;
-      if (vt && !vIsWord && !(vt instanceof ValueType)) value = loc(new CastNode(UINT256, value, false), stmt);
+      if (vt && !vIsWord && !(vt instanceof ValueType)) {
+        value = loc(new CastNode(UINT256, value, vt instanceof FunctionType), stmt);
+      }
     }
     // The assembled value is a uint256 word; a target of a different type reinterprets it (EVM `:=` writes the
     // raw word). Cast to the target so the lowered assignment type-checks - except when the target IS uint256.
@@ -2059,7 +2256,7 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       value = loc(new CastNode(t.underlyingType, value, false), stmt);
       value = loc(new CastNode(t, value, false), stmt);
     } else if (t && !isWord) {
-      value = loc(new CastNode(t, value, false), stmt);
+      value = loc(new CastNode(t, value, t instanceof FunctionType), stmt);
     } else if (isWord && (isBytes32Call(stmt.value) || isByteCall(stmt.value))) {
       // Hashes and byte() yield bytes-shaped main-AST values, but every Yul assignment copies a uint256 word.
       // Reinterpret them for a uint256 target (a differently typed target is handled above).
@@ -2205,7 +2402,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           const [ptr, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
           if (size === 32n) {
             const word = memory.get(ptr);
-            if (word !== undefined) return loc(new ReturnNode([lowerValue(word)]), stmt);
+            if (word !== undefined) {
+              const ret = loc(new ReturnNode([lowerValue(word)]), stmt);
+              ret.isYulReturn = true;
+              return ret;
+            }
           }
         }
         if (runtimeMem) return runtimeReturn(e.args[0], e.args[1], stmt);
@@ -2436,7 +2637,32 @@ function inlineYulStmts(stmts: YulStatementNode[], defs: Map<string, YulFunction
       out.push(...pre, yulAt(new YulSwitchNode(e, s.cases.map((c) => yulAt(new YulCaseNode(c.value, blk(c.body)), c)),
         s.defaultBody ? blk(s.defaultBody) : undefined), s));
     } else if (s instanceof YulForLoopNode) {
-      out.push(yulAt(new YulForLoopNode(blk(s.pre), s.condition, blk(s.post), blk(s.body)), s));
+      const preBlock = blk(s.pre);
+      const postBlock = blk(s.post);
+      const bodyBlock = blk(s.body);
+      const condPre: YulStatementNode[] = [];
+      const condition = hoistYulCalls(s.condition, defs, condPre);
+      if (condPre.length === 0) {
+        out.push(yulAt(new YulForLoopNode(preBlock, condition, postBlock, bodyBlock), s));
+      } else {
+        // A Yul for-condition is evaluated before the first iteration and after every post block. A local
+        // function used there may have side effects, so hoisting it once ahead of the loop is incorrect.
+        // Materialize the result in a loop-scope temporary, then repeat a freshly-inlined evaluation at the
+        // end of the post block. lowerForLoop already makes `continue` execute the complete post block.
+        yulCallCounter += 1;
+        const condName = `__yulin_${yulCallCounter}_condition`;
+        preBlock.statements.push(...condPre,
+          yulAt(new YulVariableDeclarationNode([condName], condition), s.condition));
+
+        const nextPre: YulStatementNode[] = [];
+        const nextCondition = hoistYulCalls(s.condition, defs, nextPre);
+        postBlock.statements.push(...nextPre,
+          yulAt(new YulAssignmentNode([new YulPathNode(condName)], nextCondition), s.condition));
+
+        out.push(yulAt(new YulForLoopNode(
+          preBlock, yulAt(new YulPathNode(condName), s.condition), postBlock, bodyBlock,
+        ), s));
+      }
     } else out.push(s);
   }
   return out;
@@ -2484,6 +2710,32 @@ function inlineLocalYulFunctions(block: YulBlockNode): YulBlockNode {
   return block;
 }
 
+function yulPathIsUsed(node: YulNode, name: string): boolean {
+  if (node instanceof YulPathNode && node.base === name) return true;
+  for (const value of Object.values(node)) {
+    if (value instanceof YulNode && yulPathIsUsed(value, name)) return true;
+    if (Array.isArray(value)) {
+      for (const item of value) if (item instanceof YulNode && yulPathIsUsed(item, name)) return true;
+    }
+  }
+  return false;
+}
+
+// A library name in Yul denotes a link-time library address. If the declaration receiving that address is dead,
+// it has no runtime effect and Solidity's optimizer removes it. Drop only this validated shape; an unknown name
+// remains an error, and a used library address remains available for a future deployed-library lowering.
+function pruneDeadLibraryLets(block: YulBlockNode): YulBlockNode {
+  block.statements = block.statements.filter((statement, index, statements) => {
+    if (!(statement instanceof YulVariableDeclarationNode)
+      || !(statement.value instanceof YulPathNode)
+      || statement.value.members.length !== 0
+      || !declaredLibraryNames.has(statement.value.base)) return true;
+    return statement.names.some((name) =>
+      statements.some((other, otherIndex) => otherIndex !== index && yulPathIsUsed(other, name)));
+  });
+  return block;
+}
+
 // Truncate a Yul function body at its first TOP-LEVEL `leave` (unconditional early return): everything after it is
 // dead. A leave nested inside control flow is left in place (handled as un-inlinable by the caller).
 function truncateAtLeave(block: YulBlockNode): YulBlockNode {
@@ -2509,9 +2761,23 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 // existing codegen (stack model, control flow, type checking). Unsupported Yul is left untouched for the
 // inline-assembly diagnostic. Native BCH-ASM (no yulBlock) is unaffected. See docs/yul-inline-assembly.md.
 export default class LowerInlineAssembly extends AstTraversal {
+  visitSourceFile(node: SourceFileNode): Node {
+    declaredLibraryNames = new Set(node.declaredLibraryNames);
+    currentConstantTypes = new Map(node.constantDefinitions.map((constant) => [constant.name, constant.type]));
+    const result = super.visitSourceFile(node);
+    declaredLibraryNames = new Set();
+    currentConstantTypes = new Map();
+    return result;
+  }
+
   // Track the enclosing contract's state variables so sstore/sload can resolve slot numbers.
   visitContract(node: ContractNode): Node {
     computeStorageLayout(node.stateVariables, node.collections);
+    const fileConstantTypes = currentConstantTypes;
+    currentConstantTypes = new Map([
+      ...fileConstantTypes,
+      ...node.constantDefinitions.map((constant) => [constant.name, constant.type] as const),
+    ]);
     // SourceFile traversal visits file-level functions before the contract. A helper such as
     // `readSlot(uint i) { assembly { r := sload(add(base(), i)) } }` can therefore request the raw-slot
     // register before we get here. Preserve that request: the helper is later inlined/called by this contract,
@@ -2546,6 +2812,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     occupiedSlots = new Set();
     compositeRanges = [];
     currentVarSlot = new Map();
+    currentConstantTypes = fileConstantTypes;
     return result;
   }
 
@@ -2553,6 +2820,8 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     currentParams = node.parameters;
     currentVars = new Map();
+    currentCalldataPointers = new Map();
+    originalCalldataSnapshots = new Map();
     currentVarValues = new Map();
     currentCreationCodeLocals = new Map();
     bufferWrites = new Map();
@@ -2567,12 +2836,37 @@ export default class LowerInlineAssembly extends AstTraversal {
     );
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
+    if (bodyHasAssembly(node.body)) {
+      for (const p of node.parameters) {
+        if (!p.modifier.includes('calldata') || !(p.type instanceof StructType)) continue;
+        const snapshot = `__cdorig_${p.name}`;
+        originalCalldataSnapshots.set(p.name, snapshot);
+        currentVars.set(snapshot, p.type);
+      }
+    }
+    for (const p of node.parameters) {
+      if (!p.modifier.includes('calldata') || !(p.type instanceof ArrayType || p.type instanceof StructType)) continue;
+      const offset = calldataAggregateOffset(p.name);
+      if (offset !== undefined) currentCalldataPointers.set(p.name, intLit(offset, node));
+    }
+    collectCalldataPointers(node.body);
     currentStorageAliases = new Map();
     collectStorageAliases(node.body, currentStorageAliases);
     // Record that this function had inline assembly BEFORE it is lowered away, so PruneUnreachableFreeFunctions can
     // still drop it when dead (a fully-lowerable helper like OZ Math.mulDiv leaves no residual assembly to detect).
     if (bodyHasAssembly(node.body)) node.hadInlineAssembly = true;
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
+    if (originalCalldataSnapshots.size > 0) {
+      const originals = [...originalCalldataSnapshots].map(([param, snapshot]) => {
+        const p = node.parameters.find((candidate) => candidate.name === param)!;
+        const decl = loc(new VariableDefinitionNode(
+          p.type, ['memory'], snapshot, loc(new IdentifierNode(param), node),
+        ), node);
+        decl.allowUnused = true;
+        return decl;
+      });
+      result.body.statements = [...originals, ...(result.body.statements ?? [])];
+    }
     // Declare the shared runtime memory buffer once at the body top (before any block that uses it), so every
     // lowered assembly block reads/writes one function-scoped `__yulmem` - matching EVM's function-scoped memory.
     // LowerMemoryModel runs first and reuses the SAME buffer for high-level `memory` arrays/structs; if it already
@@ -2600,6 +2894,8 @@ export default class LowerInlineAssembly extends AstTraversal {
     }
     currentParams = [];
     currentVars = new Map();
+    currentCalldataPointers = new Map();
+    originalCalldataSnapshots = new Map();
     currentVarValues = new Map();
     currentCreationCodeLocals = new Map();
     currentStorageAliases = new Map();
@@ -2652,7 +2948,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     runtimeMem = runtime;
     yulMemUsed = false;
     try {
-      const block = lowerBlock(inlineLocalYulFunctions(node.yulBlock!));
+      const block = lowerBlock(inlineLocalYulFunctions(pruneDeadLibraryLets(node.yulBlock!)));
       const prefix: StatementNode[] = [];
       // The `__yulmem` buffer is function-scoped (declared once at the body top by visitFunctionDefinition), not
       // per-block, so blocks share one EVM-faithful memory. Just record that this function needs it.

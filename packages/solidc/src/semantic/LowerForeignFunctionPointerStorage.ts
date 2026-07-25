@@ -16,6 +16,7 @@ import {
   MethodCallStatementNode,
   MethodCallNode,
   FieldAccessNode,
+  CastNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
@@ -46,6 +47,9 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
   private counter = 0;
   // fn-ptr state var name -> its synth interface + companion selector field name
   private lowered = new Map<string, { iface: string; selVar: string }>();
+  // Never-initialized INTERNAL fn-ptr state vars always fail at OP_INVOKE's invalid default id. Calls through
+  // them still need their argument types restored after external pointer state values are split to addresses.
+  private uninitializedInternal = new Map<string, FunctionType>();
   // companion selector assignments to append after the current statement (visitBlock drains this)
   private appends: StatementNode[] = [];
   private currentFn: FunctionDefinitionNode | undefined;
@@ -66,10 +70,20 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
     const fnPtrVars = node.stateVariables.filter(
       (sv) => sv.type instanceof FunctionType && (sv.type as FunctionType).isExternal,
     );
-    if (fnPtrVars.length === 0) return node;
 
     const bodies = [node.constructorDef, ...node.functions, node.fallbackDef, node.receiveDef]
       .filter((f): f is FunctionDefinitionNode => !!f?.body);
+
+    this.uninitializedInternal = new Map();
+    for (const sv of node.stateVariables) {
+      if (!(sv.type instanceof FunctionType) || sv.type.isExternal || sv.initializer) continue;
+      let assigned = false;
+      for (const fn of bodies) {
+        this.forEachAssignTo(fn.body!, sv.name, () => { assigned = true; });
+      }
+      if (!assigned) this.uninitializedInternal.set(sv.name, sv.type);
+    }
+    if (fnPtrVars.length === 0) return node;
 
     // Classify: a fn-ptr state var is FOREIGN-received (flatten) iff it has >=1 assignment and EVERY assignment
     // stores a foreign VALUE this pass can fully split (a lowered fn-ptr param / another foreign fn-ptr var). A
@@ -201,6 +215,20 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
       const selRead = new IdentifierNode(info.selVar); selRead.location = node.location;
       mc.runtimeSelector = selRead;
       return mc;
+    }
+    const invalidCallee = this.uninitializedInternal.get(node.identifier.name);
+    if (invalidCallee) {
+      node.parameters = node.parameters.map((arg, pos) => {
+        const expected = invalidCallee.parameterTypes[pos];
+        // The dispatch is guaranteed to hit the invalid default function id before its arguments are consumed.
+        // Restore only the nominal type erased by THIS pass; the unsafe cast emits no conversion opcodes.
+        if (expected instanceof FunctionType && arg instanceof IdentifierNode && this.lowered.has(arg.name)) {
+          const cast = new CastNode(expected, arg, true);
+          cast.location = arg.location;
+          return cast;
+        }
+        return arg;
+      });
     }
     return super.visitFunctionCall(node);
   }

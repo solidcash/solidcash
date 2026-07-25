@@ -62,6 +62,8 @@ import {
   TypeIntrospectionNode,
   StateVariableNode,
   StateVariableVisibility,
+  ExpressionStatementNode,
+  PlaceholderStatementNode,
 } from '../ast/AST.js';
 import {
   CircularContractInheritanceError,
@@ -129,10 +131,9 @@ function mangleCollidingPrivateVars(
 ): void {
   const resolve = (name: string): ContractNode | undefined => (name === primary.name ? primary : contractMap.get(name));
   const ancestors = linearization.map(resolve).filter((c): c is ContractNode => Boolean(c));
-  const byName = new Map<string, ContractNode[]>(); // private var name -> ancestors declaring it
+  const byName = new Map<string, ContractNode[]>(); // state-var name -> hierarchy members declaring it
   for (const c of ancestors) {
     for (const sv of c.stateVariables as StateVariableNode[]) {
-      if (sv.visibility !== StateVariableVisibility.PRIVATE) continue;
       const list = byName.get(sv.name) ?? [];
       list.push(c);
       byName.set(sv.name, list);
@@ -143,6 +144,9 @@ function mangleCollidingPrivateVars(
     for (const c of decls) {
       const sv = (c.stateVariables as StateVariableNode[]).find((v) => v.name === name);
       if (!sv) continue; // already mangled via a shared ancestor visited under another root
+      // Only the private declaration is scope-inaccessible and safe to mangle. A collision between two
+      // non-private declarations remains a genuine inheritance error.
+      if (sv.visibility !== StateVariableVisibility.PRIVATE) continue;
       const mangled = `${c.name}__${name}`;
       sv.name = mangled;
       const members: (Node | undefined)[] = [
@@ -603,6 +607,37 @@ function mergeFunctions(
 
   for (const parentFunc of parent.functions) {
     const existingFunc = childFuncMap.get(functionSignature(parentFunc));
+    // A public state variable may explicitly override a zero-argument virtual function with its generated getter.
+    // Getter synthesis runs after inheritance expansion, so recognize the source declaration here and suppress
+    // the inherited bodies that its getter replaces.
+    const variableOverride = [...child.stateVariables, ...child.collections]
+      .find((declaration) => declaration.name === parentFunc.name && declaration.isOverride);
+    if (!existingFunc && variableOverride) {
+      const parentOrigin = parentFunc.inheritedFrom ?? parent.name;
+      const getterType = variableOverride instanceof StateVariableNode
+        ? variableOverride.type
+        : variableOverride.type;
+      const declaredParams = parentFunc.parameters.filter((p) => !p.name.startsWith('__internal__'));
+      const matchesGetter = declaredParams.length === 0 && parentFunc.returnTypes.length === 1
+        && parentFunc.returnTypes[0].toString() === getterType.toString();
+      if (matchesGetter) {
+        if (parentFunc.modifiers.includes(FunctionModifier.PURE)) {
+          throw new Error(
+            `Public state getter '${variableOverride.name}' is view and cannot override pure function `
+            + `'${parentOrigin}.${parentFunc.name}'`,
+          );
+        }
+        if (!parentFunc.isAbstract && !parentFunc.modifiers.includes(FunctionModifier.VIRTUAL)) {
+          throw new NonVirtualOverrideError(variableOverride, parentFunc.name, parentOrigin);
+        }
+        if (variableOverride.overrideBases.length > 0
+          && !variableOverride.overrideBases.includes(parentOrigin)
+          && !variableOverride.overrideBases.includes(parent.name)) {
+          throw new OverrideBaseListError(variableOverride, variableOverride.name, parentOrigin);
+        }
+        continue;
+      }
+    }
 
     if (existingFunc) {
       // Diamond detection: both inherited from the same original ancestor -> skip duplicate
@@ -676,7 +711,10 @@ function preserveOverriddenFunction(
   if (parentFunc.isAbstract) return; // no body to call via super/Base
   const definingContract = parentFunc.inheritedFrom ?? parent.name;
   const mangled = superImplName(definingContract, parentFunc.name);
-  if (child.functions.some((f) => f.name === mangled)) return; // already preserved (diamond)
+  const parameterSignature = (f: FunctionDefinitionNode): string =>
+    f.parameters.map((parameter) => String(parameter.type)).join(',');
+  if (child.functions.some((f) =>
+    f.name === mangled && parameterSignature(f) === parameterSignature(parentFunc))) return; // diamond duplicate
 
   const cloned = cloneNode(parentFunc);
   cloned.name = mangled;
@@ -746,11 +784,19 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
     if (impl && impl.startsWith('__base_')) used.add(impl);
     return impl;
   };
+  const isDiscardedBaseReference = (name: string): boolean => {
+    const dot = name.indexOf('.');
+    if (dot < 0) return false;
+    const namespace = name.slice(0, dot);
+    const target = name.slice(dot + 1);
+    return namespace !== 'super' && ancestors.has(namespace)
+      && superImplFor(contract, namespace, target) !== undefined;
+  };
 
   for (const fn of contract.functions) {
     const definingContract = fn.definingContract ?? fn.inheritedFrom ?? contract.name;
     const used = new Set<string>();
-    new SuperCallRewriter(makeResolve(definingContract, used)).visit(fn.body);
+    new SuperCallRewriter(makeResolve(definingContract, used), isDiscardedBaseReference).visit(fn.body);
     references.set(fn.name, used);
   }
 
@@ -760,7 +806,17 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
   const entryRoots = new Set<string>();
   for (const special of [contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
     if (!special?.body) continue;
-    new SuperCallRewriter(makeResolve(contract.name, entryRoots)).visit(special.body);
+    new SuperCallRewriter(makeResolve(contract.name, entryRoots), isDiscardedBaseReference).visit(special.body);
+  }
+  // Modifier bodies are expanded only after inheritance flattening. Resolve their super/Base calls now while
+  // the linearization and preserved implementations are still available, and conservatively retain any base
+  // body referenced by a modifier (an unused modifier is harmless dead code; a used one must remain callable).
+  for (const modifier of contract.modifierDefinitions) {
+    const body = new BlockNode(modifier.statements);
+    body.location = modifier.location;
+    const definingContract = modifier.inheritedFrom ?? contract.name;
+    new SuperCallRewriter(makeResolve(definingContract, entryRoots), isDiscardedBaseReference).visit(body);
+    modifier.statements = body.statements ?? [];
   }
 
   // Keep only preserved functions reachable from the non-preserved (real) functions + the entry-point members.
@@ -783,7 +839,10 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
 
 // Renames matching FunctionCallNode identifiers (super.f / Base.f -> preserved impl) in place.
 class SuperCallRewriter extends AstTraversal {
-  constructor(private readonly resolve: (callName: string) => string | undefined) {
+  constructor(
+    private readonly resolve: (callName: string) => string | undefined,
+    private readonly isDiscardedBaseReference: (name: string) => boolean,
+  ) {
     super();
   }
 
@@ -791,6 +850,34 @@ class SuperCallRewriter extends AstTraversal {
     const target = this.resolve(node.identifier.name);
     if (target) node.identifier.name = target;
     return super.visitFunctionCall(node);
+  }
+
+  visitBlock(node: BlockNode): Node {
+    node.statements = (node.statements ?? []).map((statement) =>
+      statement instanceof PlaceholderStatementNode ? statement : this.visit(statement) as StatementNode);
+    return node;
+  }
+
+  visitFieldAccess(node: FieldAccessNode): Node {
+    if (node.expression instanceof IdentifierNode) {
+      const target = this.resolve(`${node.expression.name}.${node.name}`);
+      if (target) {
+        const identifier = new IdentifierNode(target);
+        identifier.location = node.location;
+        return identifier;
+      }
+    }
+    return super.visitFieldAccess(node);
+  }
+
+  visitExpressionStatement(node: ExpressionStatementNode): Node {
+    if (node.expression instanceof FieldAccessNode && node.expression.expression instanceof IdentifierNode
+      && this.isDiscardedBaseReference(`${node.expression.expression.name}.${node.expression.name}`)) {
+      const empty = new BlockNode([]);
+      empty.location = node.location;
+      return empty;
+    }
+    return super.visitExpressionStatement(node);
   }
 }
 

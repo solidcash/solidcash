@@ -37,6 +37,7 @@ class ReferenceFinder extends AstTraversal {
  */
 export default function lowerTransientStateVars(ast: SourceFileNode): SourceFileNode {
   lowerContract(ast.contract);
+  for (const contract of ast.importedContracts) lowerContract(contract);
   return ast;
 }
 

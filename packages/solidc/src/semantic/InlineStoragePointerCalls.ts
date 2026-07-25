@@ -584,7 +584,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) this.walk(v, visit);
-      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      else if (Array.isArray(v)) {
+        for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      }
+      else if (key === 'callOptions' && v && typeof v === 'object') {
+        // Call/deploy options are a plain object rather than an AST Node. They can still refer to helper
+        // parameters (`new D{value: amount}()`), so descend into each expression during alpha-renaming.
+        for (const opt of Object.values(v as unknown as Record<string, unknown>)) {
+          if (opt instanceof Node) this.walk(opt, visit);
+        }
+      }
     }
   }
 }

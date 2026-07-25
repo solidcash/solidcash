@@ -23,11 +23,12 @@ import {
   StringLiteralNode,
   AbiEncodeWithSignatureNode,
   AbiEncodeWithSelectorNode,
+  AbiEncodeCallNode,
   AbiEncodeNode,
   FieldAccessNode,
   StateAccessNode,
 } from '../ast/AST.js';
-import { AddressType, BytesType } from '@solidcash/utils';
+import { AddressType, BytesType, ValueType } from '@solidcash/utils';
 import { UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -88,7 +89,9 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
   }
 
   private matchSelfCall(expr: Node | undefined): MethodCallNode | undefined {
-    if (!(expr instanceof MethodCallNode) || expr.methodName !== 'call' || expr.parameters.length !== 1) {
+    if (!(expr instanceof MethodCallNode)
+      || (expr.methodName !== 'call' && expr.methodName !== 'staticcall')
+      || expr.parameters.length !== 1) {
       return undefined;
     }
     return this.isSelfAddressExpr(expr.object) ? expr : undefined;
@@ -153,12 +156,33 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
         args = payload.parameters;
       }
     }
+    if (!target && payload instanceof AbiEncodeCallNode) {
+      const matches = (this.contract?.functions ?? []).filter((f) => f.name === payload.functionName);
+      if (matches.length === 1) {
+        target = matches[0];
+        args = payload.parameters;
+      }
+    }
     if (!target) {
       const fb = this.contract?.fallbackDef;
       if (!fb) return undefined;
       if (this.bodyReadsMsgData(fb)) return this.inlineMsgDataFallback(fb, payload, loc, success, emptyBytes);
       target = fb;
       args = fb.parameters.length > 0 ? [payload] : [];
+    }
+    // A selector/signature payload is ABI-decoded by the callee. UDVTs use their underlying ABI type, so a raw
+    // `int(-5)` argument targeting `MyInt` must be re-wrapped when reducing the self-call to a typed direct call.
+    // abi.encodeCall already enforces the nominal source type and needs no repair.
+    if (!(payload instanceof AbiEncodeCallNode)) {
+      args = args.map((arg, i) => {
+        const expected = target!.parameters[i]?.type;
+        if (!(expected instanceof ValueType)) return arg;
+        if (arg instanceof CastNode && arg.type instanceof ValueType
+          && arg.type.toString() === expected.toString()) return arg;
+        const cast = new CastNode(expected, arg, false);
+        cast.location = arg.location ?? loc;
+        return cast;
+      });
     }
     const id = new IdentifierNode(target.name);
     id.location = loc;

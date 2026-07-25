@@ -19,7 +19,22 @@ import {
   MappingFieldAssignNode,
   MappingDeleteNode,
   ArrayAssignNode,
+  AssemblyStatementNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
+import {
+  YulNode,
+  YulBlockNode,
+  YulVariableDeclarationNode,
+  YulAssignmentNode,
+  YulIfNode,
+  YulSwitchNode,
+  YulForLoopNode,
+  YulFunctionDefinitionNode,
+  YulExpressionStatementNode,
+  YulFunctionCallNode,
+  YulPathNode,
+} from '../ast/YulAST.js';
 import {
   ModifierRedefinitionError,
   UndefinedModifierError,
@@ -31,8 +46,17 @@ function cloneNode<T extends Node>(node: T): T {
   for (const [key, value] of Object.entries(node)) {
     if (value instanceof Node) {
       clone[key] = cloneNode(value);
+    } else if (value instanceof YulNode) {
+      clone[key] = cloneYulNode(value);
     } else if (Array.isArray(value)) {
-      clone[key] = value.map((item) => (item instanceof Node ? cloneNode(item) : item));
+      clone[key] = value.map((item) => {
+        if (item instanceof Node) return cloneNode(item);
+        // TupleAssignmentNode elements are plain metadata objects rather than Nodes. They carry declaration
+        // names that modifier alpha-renaming mutates, so sharing them would mutate the modifier template and
+        // every later application.
+        if (item && typeof item === 'object' && Object.getPrototypeOf(item) === Object.prototype) return { ...item };
+        return item;
+      });
     } else if (value instanceof Map) {
       clone[key] = new Map(value);
     } else {
@@ -40,6 +64,58 @@ function cloneNode<T extends Node>(node: T): T {
     }
   }
   return clone;
+}
+
+function cloneYulNode<T extends YulNode>(node: T): T {
+  const clone = Object.create(Object.getPrototypeOf(node));
+  for (const [key, value] of Object.entries(node)) {
+    if (value instanceof YulNode) clone[key] = cloneYulNode(value);
+    else if (Array.isArray(value)) {
+      clone[key] = value.map((item) => (item instanceof YulNode ? cloneYulNode(item) : item));
+    } else clone[key] = value;
+  }
+  return clone;
+}
+
+// Yul can refer directly to high-level locals and parameters. Modifier expansion renames those bindings, so
+// rewrite the matching outer references too, while preserving names introduced by Yul's own lexical scopes.
+function renameYulOuterRefs(block: YulBlockNode, nameMap: Map<string, string>, inherited = new Set<string>()): void {
+  const scope = new Set(inherited);
+  const expression = (node: YulNode, bound: Set<string>): void => {
+    if (node instanceof YulPathNode) {
+      if (!bound.has(node.base) && nameMap.has(node.base)) node.base = nameMap.get(node.base)!;
+      return;
+    }
+    if (node instanceof YulFunctionCallNode) {
+      node.args.forEach((arg) => expression(arg, bound));
+    }
+  };
+  const nested = (child: YulBlockNode, bound = scope): void => renameYulOuterRefs(child, nameMap, bound);
+  for (const statement of block.statements) {
+    if (statement instanceof YulVariableDeclarationNode) {
+      if (statement.value) expression(statement.value, scope);
+      statement.names.forEach((name) => scope.add(name));
+    } else if (statement instanceof YulAssignmentNode) {
+      statement.paths.forEach((path) => expression(path, scope));
+      expression(statement.value, scope);
+    } else if (statement instanceof YulExpressionStatementNode) expression(statement.expression, scope);
+    else if (statement instanceof YulIfNode) {
+      expression(statement.condition, scope);
+      nested(statement.body);
+    } else if (statement instanceof YulSwitchNode) {
+      expression(statement.expression, scope);
+      statement.cases.forEach((item) => nested(item.body));
+      if (statement.defaultBody) nested(statement.defaultBody);
+    } else if (statement instanceof YulForLoopNode) {
+      const loopScope = new Set(scope);
+      renameYulOuterRefs(statement.pre, nameMap, loopScope);
+      expression(statement.condition, loopScope);
+      renameYulOuterRefs(statement.post, nameMap, loopScope);
+      renameYulOuterRefs(statement.body, nameMap, loopScope);
+    } else if (statement instanceof YulFunctionDefinitionNode) {
+      nested(statement.body, new Set([...scope, ...statement.params, ...statement.returns]));
+    } else if (statement instanceof YulBlockNode) nested(statement);
+  }
 }
 
 // Recursively tag every state access in a modifier's own body with its defining contract (fromModifier). Stops
@@ -74,6 +150,9 @@ export function tagModifierStateAccess(nodes: (Node | undefined)[], definingCont
 // its `.name` is left alone (its children are still walked). Shared by param- and local-declaration renaming.
 function renameNamedRefs(nodes: Node[], nameMap: Map<string, string>): void {
   function walk(node: Node): void {
+    if (node instanceof AssemblyStatementNode && node.yulBlock) {
+      renameYulOuterRefs(node.yulBlock, nameMap);
+    }
     if (!(node instanceof StateAccessNode || node instanceof StateAssignNode
       || node instanceof DeleteStateNode || node instanceof FieldAccessNode)) {
       const nm = (node as unknown as { name?: unknown }).name;
@@ -97,6 +176,11 @@ function collectLocalDeclNames(nodes: Node[]): string[] {
   const names: string[] = [];
   function walk(node: Node): void {
     if (node instanceof VariableDefinitionNode) names.push(node.name);
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) {
+        if (!element.skip && !element.existing && element.name) names.push(element.name);
+      }
+    }
     for (const [, value] of Object.entries(node)) {
       if (value instanceof Node) walk(value);
       else if (Array.isArray(value)) { for (const item of value) if (item instanceof Node) walk(item); }
@@ -109,7 +193,22 @@ function collectLocalDeclNames(nodes: Node[]): string[] {
 // Rename local variable declarations AND their references. Unlike renameParamRefs this also rewrites the
 // declaration's own `.name`, since a modifier local is declared inside the body (not injected as a binding).
 function renameLocalDecls(nodes: Node[], oldNames: string[], newNames: string[]): void {
-  renameNamedRefs(nodes, new Map(oldNames.map((o, i) => [o, newNames[i]])));
+  const nameMap = new Map(oldNames.map((o, i) => [o, newNames[i]]));
+  renameNamedRefs(nodes, nameMap);
+  const walk = (node: Node): void => {
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) {
+        if (!element.skip && !element.existing && element.name && nameMap.has(element.name)) {
+          element.name = nameMap.get(element.name)!;
+        }
+      }
+    }
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  nodes.forEach(walk);
 }
 
 // Solidity requires every implemented modifier body to contain `_` somewhere, including in a nested branch or

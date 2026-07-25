@@ -56,6 +56,9 @@ export interface Typed {
 
 export class ConstantDefinitionNode extends Node implements Named, Typed {
   inheritedFrom?: string;
+  // Present when parsed from a state-variable declaration (`uint public constant X = ...`). File-level and
+  // dedicated constant declarations have no externally callable visibility.
+  visibility?: StateVariableVisibility;
 
   constructor(
     public type: Type,
@@ -434,6 +437,8 @@ export class StateVariableNode extends Node implements Named, Typed {
   fieldIndex: number = 0;
   visibility: StateVariableVisibility = StateVariableVisibility.PUBLIC;
   inheritedFrom?: string;
+  isOverride: boolean = false;
+  overrideBases: string[] = [];
 
   constructor(
     public type: Type,
@@ -478,6 +483,8 @@ export class CollectionNode extends Node implements Named {
   enumerable: boolean = false;
   visibility: StateVariableVisibility = StateVariableVisibility.PUBLIC;
   inheritedFrom?: string;
+  isOverride: boolean = false;
+  overrideBases: string[] = [];
 
   constructor(
     public type: MappingType | ArrayType,
@@ -1458,6 +1465,9 @@ export class StringLiteralNode extends LiteralNode<string> {
 }
 
 export class HexLiteralNode extends LiteralNode<Uint8Array> {
+  // Exact Solidity hex-NUMBER value. Odd-nibble literals need this because their native SolidCash byte form
+  // zero-extends the final nibble (`0x123` -> bytes 0x1203), while numeric context means integer 0x123.
+  numericValue?: bigint;
   // Set when this literal is a placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a
   // runtime length): it type-checks as bytes so a NON-primary contract using it does not fail the file, but
   // codegen throws this message if a compiled contract actually reaches it. See visitHexLiteral.
@@ -2054,6 +2064,7 @@ export class ErrorDefinitionNode extends Node implements Named {
 
 export class RevertNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
+  errorQualifier?: string; // `D` in `revert D.E(...)`; retained for scoped declaration resolution
   fieldNames?: string[]; // set for named-arg reverts revert E({a: x}); reordered against the error's params
 
   constructor(
@@ -2234,6 +2245,10 @@ export class TokenContainerMethodStatementNode extends StatementNode {
 }
 
 export class ReturnNode extends StatementNode {
+  // Set by Yul lowering for `return(ptr, size)`: this is an EVM halt with a raw byte region, not a Solidity
+  // source-level return whose expressions must match the enclosing function's declared ABI returns.
+  isYulReturn: boolean = false;
+
   constructor(
     public expressions: ExpressionNode[],
   ) {

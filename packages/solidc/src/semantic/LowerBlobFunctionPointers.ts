@@ -19,12 +19,19 @@ import {
   BinaryOpNode,
   TupleIndexOpNode,
   CastNode,
+  NullaryOpNode,
+  UnaryOpNode,
   IntLiteralNode,
+  StateAccessNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
-import { FunctionType, BytesType } from '@solidcash/utils';
-import { BinaryOperator } from '../ast/Operator.js';
+import {
+  FunctionType, BytesType, AddressType,
+} from '@solidcash/utils';
+import {
+  BinaryOperator, NullaryOperator, UnaryOperator,
+} from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -45,9 +52,10 @@ import AstTraversal from '../ast/AstTraversal.js';
 export default class LowerBlobFunctionPointers extends AstTraversal {
   private synthIfaces: InterfaceNode[] = [];
   private counter = 0;
+  private callCounter = 0;
   private structDefs: StructDefinitionNode[] = [];
   // fn-ptr struct field name -> the synth interface for its call ABI
-  private blobFields = new Map<string, { iface: string }>();
+  private blobFields = new Map<string, { iface: string; type: FunctionType }>();
   // fn name (returns a fn-ptr, not inlined) -> the synth interface for the returned value's call ABI
   private blobReturnFns = new Map<string, { iface: string }>();
   // fn-ptr LOCAL name -> the synth interface for its call ABI (assigned a blob-returning call)
@@ -55,6 +63,9 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
   private hoists: StatementNode[] = [];
   private inBlobReturnFn = false;
   private typeNames = new Set<string>();
+  private contractName = '';
+  private selfFunctionTypes = new Map<string, FunctionType>();
+  private contractFunctions = new Map<string, FunctionDefinitionNode>();
   // `iface.method` -> the fn-ptr type a cross-contract call returns (received as a blob via the return-event NFT)
   private ifaceFnPtrReturns = new Map<string, FunctionType>();
   // A fn-ptr blob is a FIXED size: selector(4) ++ p2sh32 locking bytecode(35) = 39 bytes. A RETURNED blob uses a
@@ -65,6 +76,7 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
   visitSourceFile(node: SourceFileNode): Node {
     this.synthIfaces = [];
     this.counter = 0;
+    this.callCounter = 0;
     this.structDefs = [
       ...node.structDefinitions,
       ...(node.contract ? node.contract.structDefinitions : []),
@@ -93,12 +105,19 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
     // Remaining fn-ptr struct fields (the fixed-method ones were already lowered to interface-typed) are the
     // received-value case: represent them as a bytes blob.
     this.blobFields = new Map();
+    this.contractName = node.name;
+    this.selfFunctionTypes = new Map(node.functions.map((fn) => [
+      fn.name,
+      new FunctionType(fn.parameters.map((p) => p.type), fn.returnTypes, true),
+    ]));
+    this.contractFunctions = new Map(node.functions.map((fn) => [fn.name, fn]));
     const blobParams = new Set<string>();
     for (const sd of this.structDefs) {
       for (const f of sd.fields) {
         if (f.type instanceof FunctionType && (f.type as FunctionType).isExternal) {
-          const iface = this.synthInterface(f.type as FunctionType);
-          this.blobFields.set(f.name, { iface });
+          const type = f.type as FunctionType;
+          const iface = this.synthInterface(type);
+          this.blobFields.set(f.name, { iface, type });
           f.type = new BytesType();
         }
       }
@@ -158,6 +177,19 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
             const arg = n.parameters[pos];
             if (this.blobFields.has(field.name) && arg instanceof IdentifierNode && paramNames.has(arg.name)) {
               out.add(`${fn.name}.${arg.name}`);
+            }
+          });
+        }
+        // Passing a lowered blob field to a same-contract function-pointer parameter carries the complete
+        // selector+address value. Retype that receiving parameter to bytes as well, so calls such as
+        // `consume(s.f)` remain representation-consistent after the struct field is lowered.
+        const callee = this.contractFunctions.get(n.identifier.name);
+        if (callee) {
+          callee.parameters.forEach((parameter, pos) => {
+            const arg = n.parameters[pos];
+            if (parameter.type instanceof FunctionType && parameter.type.isExternal
+              && arg instanceof FieldAccessNode && this.blobFields.has(arg.name)) {
+              out.add(`${callee.name}.${parameter.name}`);
             }
           });
         }
@@ -248,7 +280,45 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
         return this.emitBlobCall(fieldRead, info.iface, node);
       }
     }
+    // A self external-function value (`this.g`) stored in a blob field carries the same two components as a
+    // foreign member: g's selector plus this contract's locking bytecode. Encode it at the struct-constructor
+    // boundary, before the field's lowered `bytes` type reaches semantic argument checking.
+    const sd = this.structDefs.find((s) => s.name === name);
+    if (sd) {
+      node.parameters = node.parameters.map((arg, pos) => {
+        const field = sd.fields[pos];
+        const info = field ? this.blobFields.get(field.name) : undefined;
+        const selfMethod = info ? this.selfMember(arg, info.type) : undefined;
+        if (selfMethod) return this.buildSelfBlob(selfMethod, arg);
+        return this.visit(arg) as ExpressionNode;
+      });
+      return node;
+    }
     return super.visitFunctionCall(node);
+  }
+
+  // Indexed/nested struct receivers are parsed as MethodCallNode (`items[i].fn(args)`), rather than the
+  // dotted FunctionCallNode used for a plain local (`s.fn(args)`). They carry the same blob field value,
+  // so route both shapes through the identical selector+address split and audited external dispatch.
+  visitMethodCall(node: MethodCallNode): Node {
+    const info = this.blobFields.get(node.methodName);
+    if (info) {
+      const fieldRead = new FieldAccessNode(node.object as ExpressionNode, node.methodName);
+      fieldRead.location = node.location;
+      return this.emitBlobCall(fieldRead, info.iface, node);
+    }
+    return super.visitMethodCall(node);
+  }
+
+  visitMethodCallStatement(node: MethodCallStatementNode): Node {
+    const result = this.visit(node.call);
+    if (result instanceof MethodCallNode) {
+      node.call = result;
+      node.expression = undefined;
+      return node;
+    }
+    node.expression = result as ExpressionNode;
+    return node;
   }
 
   // `IFace(addr).method` -> its parts (used to build the return blob).
@@ -258,6 +328,22 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
     if (!(base instanceof FunctionCallNode) || !(base.identifier instanceof IdentifierNode)) return undefined;
     if (base.parameters.length !== 1 || !this.typeNames.has(base.identifier.name)) return undefined;
     return { iface: base.identifier.name, method: expr.name, address: base.parameters[0] };
+  }
+
+  private selfMember(expr: ExpressionNode, expected: FunctionType): string | undefined {
+    if (!(expr instanceof StateAccessNode)) return undefined;
+    const actual = this.selfFunctionTypes.get(expr.name);
+    return actual?.toString() === expected.toString() ? expr.name : undefined;
+  }
+
+  private buildSelfBlob(method: string, at: Node): ExpressionNode {
+    const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+    inputIndex.location = at.location;
+    const lockingBytecode = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, inputIndex);
+    lockingBytecode.location = at.location;
+    const address = new CastNode(new AddressType(false), lockingBytecode, false);
+    address.location = at.location;
+    return this.buildBlob(this.contractName, method, address, at);
   }
 
   // `IFace.method.selector + address` (bytes blob = selector(4) ++ address).
@@ -284,7 +370,7 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
   // Hoist `bytes __b = <blob>; bytes __a = __b.split(4)[1];` and build `__FnPtr(__a).__call(args)` with a runtime
   // selector `bytes4(__b.split(4)[0])` + fnPtrCall (via the __FnPtr_ interface name the collect phase matches).
   private emitBlobCall(blob: ExpressionNode, iface: string, at: Node): MethodCallNode {
-    const uniq = `${this.counter}_${this.hoists.length}`;
+    const uniq = `${this.counter}_${this.callCounter++}`;
     const blobName = `__fpblob_${uniq}`;
     const addrName = `__fpaddr_${uniq}`;
     const selName = `__fpsel_${uniq}`;
@@ -300,7 +386,7 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
 
     const ifaceId = this.id(iface, at);
     const cast = new FunctionCallNode(ifaceId, [this.id(addrName, at)]); cast.location = at.location;
-    const args = (at as FunctionCallNode).parameters.map((a) => this.visit(a) as ExpressionNode);
+    const args = (at as FunctionCallNode | MethodCallNode).parameters.map((a) => this.visit(a) as ExpressionNode);
     const mc = new MethodCallNode(cast, '__call', args); mc.location = at.location;
     mc.runtimeSelector = this.id(selName, at);
     return mc;

@@ -193,7 +193,7 @@ import {
   computeFunctionSignature, computeFunctionSelector, computeEvmFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
-  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType,
+  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
@@ -285,6 +285,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private conditionalRefNames: Set<string> = new Set();
   private insideConstructor: boolean = false;
+  private insideFunctionPointerStateAssignment: boolean = false;
   private tupleStateTempCounter: number = 0;
   private knownLibraryNames: Set<string> = new Set();
   private libraryFunctionSignatures: Map<string, string[]> = new Map();
@@ -305,6 +306,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private loopDeclaredLocals = new Set<string>();
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
+  private fileEnumNames: Set<string> = new Set();
+  private fileStructNames: Set<string> = new Set();
+  private fileTypeDefNames: Set<string> = new Set();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
   // Events declared in a sibling/imported contract (not the target contract nor a library): a qualified
   // `emit C.E(...)` of one is recorded on the emitting contract so the artifact lists it (Solidity ABI parity).
@@ -323,6 +327,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   // operator overloads: typeStr -> operatorKey -> fullFunctionName
   // operatorKey examples: '+', '-', '==', 'unary_-', 'unary_~'
   private operatorOverloads: Map<string, Map<string, string>> = new Map();
+  // Operator aliases are legal only in a file-level `using ... global` directive. The same visitor handles
+  // source-unit and contract directives, so retain the declaration scope while registering each group.
+  private processingFileUsingDirective = false;
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
 
@@ -361,6 +368,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // enum is already in enumMap.
     for (const ed of node.enumDefinitions) {
       this.registerEnum(ed);
+      this.fileEnumNames.add(ed.name);
     }
 
     // File-level event/error selectors may initialize file constants, so these declarations must be available
@@ -390,6 +398,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       const structType = new StructType(sd.name, sd.fields);
       this.structMap.set(sd.name, structType);
+      this.fileStructNames.add(sd.name);
       this.symbolTables[0].set(Symbol.function(sd.name, structType, sd.fields.map((f) => f.type)));
     }
 
@@ -399,6 +408,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new TypeDefinitionRedefinitionError(td);
       }
       this.typeDefMap.set(td.name, td.valueType);
+      this.fileTypeDefNames.add(td.name);
     }
 
     // Register events declared in sibling/imported contracts, so a qualified `emit C.E(...)` resolves (the event's
@@ -417,10 +427,19 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Register file-level interfaces (and their struct/enum/type/event definitions)
     for (const iface of node.interfaceDefinitions) {
-      // Register interface-level enums
+      // Register interface-level enums under their qualified name, and under the bare name when unambiguous.
+      // `I.Direction.Right` is parsed as nested field accesses, so retaining `I.Direction` lets the outer member
+      // access resolve without attempting to read `I` as a runtime variable.
       for (const ed of iface.enumDefinitions) {
+        const enumType = new EnumType(ed.name, ed.members);
+        const qualified = `${iface.name}.${ed.name}`;
+        if (!this.enumMap.has(qualified)) {
+          this.enumMap.set(qualified, enumType);
+          this.symbolTables[0].set(Symbol.enumType(qualified, enumType));
+        }
         if (!this.enumMap.has(ed.name)) {
-          this.registerEnum(ed);
+          this.enumMap.set(ed.name, enumType);
+          this.symbolTables[0].set(Symbol.enumType(ed.name, enumType));
         }
       }
       // Register interface-level structs. A struct name shared with a contract-level struct is a DISTINCT
@@ -537,7 +556,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // BODIES are visited, so a library function's `address(x).method(d)` member call resolves against a
     // library-scoped `using L for address` lifted to file level - e.g. OZ SafeERC20).
     for (const ufd of node.usingForDirectives) {
-      this.visitUsingForDirective(ufd);
+      this.processingFileUsingDirective = true;
+      try {
+        this.visitUsingForDirective(ufd);
+      } finally {
+        this.processingFileUsingDirective = false;
+      }
     }
 
     // LowerInlineAssembly can synthesize the raw EVM-slot register on the contract for an sload/sstore inside a
@@ -579,7 +603,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level enums
+    const localEnumNames = new Set<string>();
     for (const ed of node.enumDefinitions) {
+      if (localEnumNames.has(ed.name)
+        || (this.enumMap.has(ed.name) && !this.fileEnumNames.has(ed.name))) {
+        throw new EnumRedefinitionError(ed);
+      }
+      localEnumNames.add(ed.name);
+      // Solidity permits a contract declaration to shadow a file-level declaration (warning only).
+      if (this.fileEnumNames.has(ed.name)) {
+        this.enumMap.delete(ed.name);
+      }
       this.registerEnum(ed);
     }
 
@@ -587,20 +621,37 @@ export default class SymbolTableTraversal extends AstTraversal {
     // struct of the same name is a distinct contract-scoped type that wins the bare slot (the interface's stays
     // reachable via its qualified IFace.Struct name). A name taken by another CONTRACT/file struct is a genuine
     // redefinition and still errors.
+    const localStructNames = new Set<string>();
     for (const sd of node.structDefinitions) {
-      if (this.structMap.has(sd.name) && !this.interfaceStructNames.has(sd.name)) {
+      if (localStructNames.has(sd.name)
+        || (this.structMap.has(sd.name)
+          && !this.interfaceStructNames.has(sd.name)
+          && !this.fileStructNames.has(sd.name))) {
         throw new StructRedefinitionError(sd);
       }
+      localStructNames.add(sd.name);
       const structType = new StructType(sd.name, sd.fields);
       this.structMap.set(sd.name, structType);
       // Register as a function symbol so Identifier(Score) in FunctionCallExpression resolves
       this.symbolTables[0].set(Symbol.function(sd.name, structType, sd.fields.map((f) => f.type)));
     }
 
-    // Register user-defined value type definitions
+    // Register user-defined value type definitions. A contract-scoped type may shadow a file-level
+    // type/struct/enum (Solidity warning only), but duplicate declarations in the same contract still fail.
+    const localTypeDefNames = new Set<string>();
     for (const td of node.typeDefinitions) {
-      if (this.typeDefMap.has(td.name) || this.structMap.has(td.name) || this.enumMap.has(td.name)) {
+      const shadowsFile = this.fileTypeDefNames.has(td.name)
+        || this.fileStructNames.has(td.name) || this.fileEnumNames.has(td.name);
+      if (localTypeDefNames.has(td.name)
+        || ((this.typeDefMap.has(td.name) || this.structMap.has(td.name) || this.enumMap.has(td.name))
+          && !shadowsFile)) {
         throw new TypeDefinitionRedefinitionError(td);
+      }
+      localTypeDefNames.add(td.name);
+      if (shadowsFile) {
+        this.typeDefMap.delete(td.name);
+        this.structMap.delete(td.name);
+        this.enumMap.delete(td.name);
       }
       this.typeDefMap.set(td.name, td.valueType);
     }
@@ -768,6 +819,38 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectionMap.set(coll.name, coll);
     }
 
+    const userParams = (fn: FunctionDefinitionNode): ParameterNode[] =>
+      fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const sameTypes = (left: Type[], right: Type[]): boolean =>
+      left.length === right.length && left.every((type, index) =>
+        type.toString().replace(/address payable/g, 'address')
+          === right[index].toString().replace(/address payable/g, 'address'));
+    const mutabilityCompatible = (candidate: FunctionDefinitionNode, base: FunctionDefinitionNode): boolean => {
+      const kind = (fn: FunctionDefinitionNode): 'pure' | 'view' | 'payable' | 'nonpayable' => {
+        if (fn.modifiers.includes(FunctionModifier.PURE)) return 'pure';
+        if (fn.modifiers.includes(FunctionModifier.VIEW)) return 'view';
+        if (fn.modifiers.includes(FunctionModifier.PAYABLE)) return 'payable';
+        return 'nonpayable';
+      };
+      const candidateKind = kind(candidate);
+      const baseKind = kind(base);
+      if (baseKind === 'payable') return candidateKind === 'payable';
+      if (candidateKind === 'payable') return false;
+      const rank = { pure: 0, view: 1, nonpayable: 2 } as const;
+      return rank[candidateKind] <= rank[baseKind];
+    };
+    const hasConcreteImplementation = (abstractFn: FunctionDefinitionNode): boolean =>
+      node.functions.some((candidate) =>
+        candidate !== abstractFn && !candidate.isAbstract && candidate.name === abstractFn.name
+        && sameTypes(userParams(candidate).map((parameter) => parameter.type),
+          userParams(abstractFn).map((parameter) => parameter.type))
+        && sameTypes(candidate.returnTypes, abstractFn.returnTypes)
+        && mutabilityCompatible(candidate, abstractFn));
+
+    // Once fulfilled, the retained abstract declaration must not reach selector dispatch/codegen: it shares the
+    // concrete implementation's ABI selector but has no executable body or compiler-injected return parameters.
+    node.functions = node.functions.filter((func) => !func.isAbstract || !hasConcreteImplementation(func));
+
     // Pre-register all user-defined functions (before visiting bodies)
     for (const func of node.functions) {
       this.validateModifiers(func, node);
@@ -854,6 +937,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node.isAbstract) {
       for (const func of node.functions) {
         if (func.isAbstract) {
+          // Inheritance flattening deliberately retains the abstract declaration for provenance. A synthesized
+          // public-variable/constant getter (or another concrete declaration) with the same ABI fulfills it;
+          // do not reject solely because the retained abstract node is still present.
+          if (hasConcreteImplementation(func)) continue;
           if (func.inheritedFrom) {
             throw new UnimplementedAbstractFunctionError(node, func.name, func.inheritedFrom);
           } else {
@@ -1047,7 +1134,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    if (node.name.startsWith('__internal__') && !node.name.startsWith('__internal__c2CounterPerm_')) {
+    if (node.name.startsWith('__internal__')
+      && !node.name.startsWith('__internal__c2CounterPerm_')
+      && node.name !== '__internal__msgData'
+      && node.name !== '__internal__msgSig') {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
     }
     const existing = this.symbolTables[0].get(node.name);
@@ -1067,7 +1157,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitConstantDefinition(node: ConstantDefinitionNode): Node {
-    if (this.symbolTables[0].get(node.name)) {
+    const own = this.symbolTables[0].symbols.get(node.name);
+    const visible = this.symbolTables[0].get(node.name);
+    // Solidity permits a contract constant to shadow a file-level/global declaration (warning only), including
+    // builtin functions such as `min`/`max`. The contract scope's own table remains authoritative for genuine
+    // same-scope duplicates.
+    const shadowsOuter = this.compilerOptions.solidityImportCompat && !own && visible !== undefined;
+    if (own || (visible && !shadowsOuter)) {
       throw new VariableRedefinitionError(node);
     }
 
@@ -1190,6 +1286,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.elements = expr.elements.map((e) => this.resolveConstantExpressionIdentifiers(e));
     } else if (expr instanceof BytesConcatNode || expr instanceof StringConcatNode) {
       expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e));
+    } else if (expr instanceof TypeIntrospectionNode) {
+      // Constant initializers bypass ordinary expression traversal. Numeric min/max need their concrete
+      // IntType/FixedType for type checking. Contract/interface declarations may appear later in the file, so
+      // resolve them only when their declaration is already registered.
+      if (expr.property === 'min' || expr.property === 'max') {
+        return this.visitTypeIntrospection(expr) as ExpressionNode;
+      }
+      if (this.contractMap.has(expr.typeArgText) || this.interfaceMap.has(expr.typeArgText)) {
+        return this.visitTypeIntrospection(expr) as ExpressionNode;
+      }
+      return expr;
     } else if (expr instanceof FieldAccessNode) {
       // A library/namespaced constant `L.X` -> rewrite to the compound identifier `L.X` so type-checking sees the
       // constant, not a struct-field access on L (which errors "struct has no field X").
@@ -2207,7 +2314,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
-  private collectTransferStatements(node: Node, transferInfos: TransferInfo[]): void {
+  private collectTransferStatements(
+    node: Node, transferInfos: TransferInfo[], seen: WeakSet<Node> = new WeakSet<Node>(),
+  ): void {
+    if (seen.has(node)) return;
+    seen.add(node);
     if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode) {
       const transferIndex = transferInfos.length;
       node.transferIndex = transferIndex;
@@ -2236,30 +2347,33 @@ export default class SymbolTableTraversal extends AstTraversal {
       const startIndex = transferInfos.length;
       const ifIsLonger = node.branchOps.ifTransferCount >= node.branchOps.transferCount - node.branchOps.ifTransferCount;
       if (ifIsLonger || !node.elseBlock) {
-        this.collectTransferStatements(node.ifBlock, transferInfos);
+        this.collectTransferStatements(node.ifBlock, transferInfos, seen);
         if (node.elseBlock) {
           this.assignTransferIndices(node.elseBlock, startIndex);
         }
       } else {
-        this.collectTransferStatements(node.elseBlock!, transferInfos);
+        this.collectTransferStatements(node.elseBlock!, transferInfos, seen);
         this.assignTransferIndices(node.ifBlock, startIndex);
       }
       return;
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
-        this.collectTransferStatements(stmt, transferInfos);
+        this.collectTransferStatements(stmt, transferInfos, seen);
       }
     }
     if ('body' in node && (node as any).body) {
-      this.collectTransferStatements((node as any).body, transferInfos);
+      this.collectTransferStatements((node as any).body, transferInfos, seen);
     }
     if ('block' in node && (node as any).block) {
-      this.collectTransferStatements((node as any).block, transferInfos);
+      this.collectTransferStatements((node as any).block, transferInfos, seen);
     }
     // Scan expressions for AddressSendExpressionNode and InstantiationNode with value
     if (node instanceof VariableDefinitionNode) {
-      if (node.expression) this.collectTransferStatements(node.expression, transferInfos);
+      if (node.expression) this.collectTransferStatements(node.expression, transferInfos, seen);
+    }
+    if (node instanceof StateAssignNode || node instanceof AssignNode || node instanceof ExpressionStatementNode) {
+      this.collectTransferStatements(node.expression, transferInfos, seen);
     }
     // Contract deployment with {value}: new Contract{value: x}(args)
     if (node instanceof InstantiationNode && node.callOptions?.value
@@ -2268,6 +2382,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.transferIndex = transferIndex;
       transferInfos.push({ transferIndex });
       return;
+    }
+    // Descend through expression wrappers such as casts and creation-option wrappers. Semantic back-references
+    // are deliberately excluded: only operations structurally present at this call site belong in its layout.
+    if (node instanceof ExpressionNode) {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
+          || key === 'symbolTable' || key === 'type' || key === 'location') continue;
+        if (value instanceof Node) this.collectTransferStatements(value, transferInfos, seen);
+        else if (Array.isArray(value)) {
+          for (const child of value) {
+            if (child instanceof Node) this.collectTransferStatements(child, transferInfos, seen);
+          }
+        }
+      }
     }
   }
 
@@ -4120,6 +4248,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Each call site gets its own slot (no de-duplication)
       let addressParam = node.addressExpression instanceof IdentifierNode
         ? node.addressExpression.name : undefined;
+      // An interface/address constant is not a runtime stack source. Peel only the compile-time cast wrappers
+      // produced by `IFoo(address(<literal>))`; arbitrary constant expressions remain unrecognized and therefore
+      // fail closed below rather than being mistaken for code-baked target identities.
+      const constantTarget = addressParam ? this.constantMap.get(addressParam)?.expression : undefined;
+      const unwrapConstantAddress = (expr: ExpressionNode | undefined): ExpressionNode | undefined => {
+        if (expr instanceof FunctionCallNode && expr.parameters.length === 1
+          && (this.interfaceMap.has(expr.identifier.name) || this.contractMap.has(expr.identifier.name))) {
+          return unwrapConstantAddress(expr.parameters[0]);
+        }
+        if (expr instanceof CastNode && expr.type instanceof AddressType) return unwrapConstantAddress(expr.expression);
+        return expr;
+      };
+      const constantAddress = unwrapConstantAddress(constantTarget);
+      if (constantAddress instanceof HexLiteralNode || constantAddress instanceof IntLiteralNode) {
+        addressParam = undefined;
+      }
       // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
       const addressStateVar = addressParam?.startsWith('__extaddr_')
@@ -4135,8 +4279,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         && node.addressExpression instanceof IdentifierNode) {
         const aliasInit = this.findLocalInit(this.currentFunction?.body, addressParam)
           ?? this.findTupleInit(this.currentFunction?.body, addressParam);
-        if (aliasInit instanceof ArrayAccessNode && aliasInit.array instanceof IdentifierNode
-          && aliasInit.index instanceof IdentifierNode) {
+        const localArrayElement = aliasInit instanceof ArrayAccessNode
+          && aliasInit.array instanceof IdentifierNode && aliasInit.index instanceof IdentifierNode;
+        const stateArrayElement = aliasInit instanceof MappingAccessNode && aliasInit.keys.length === 1
+          && aliasInit.keys[0] instanceof IdentifierNode;
+        if (localArrayElement || stateArrayElement) {
           node.addressExpression = cloneNode(aliasInit) as ExpressionNode;
           addressParam = undefined;
         }
@@ -4241,7 +4388,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       // any unrecognised address shape leaves all sources unset so emitExternalCallVerification still throws.
       const addressLiteral = node.addressExpression instanceof HexLiteralNode
         && !node.addressExpression.codegenError
-        ? binToHex(node.addressExpression.value) : undefined;
+        ? binToHex(node.addressExpression.value)
+        : node.addressExpression instanceof CastNode
+          && node.addressExpression.type instanceof AddressType
+          && node.addressExpression.expression instanceof IntLiteralNode
+          ? binToHex(encodeInt(node.addressExpression.expression.value))
+          : constantAddress instanceof HexLiteralNode && !constantAddress.codegenError
+            ? binToHex(constantAddress.value)
+            : constantAddress instanceof IntLiteralNode
+              ? binToHex(encodeInt(constantAddress.value))
+              : undefined;
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -5327,6 +5483,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitArrayPush(node: ArrayPushNode): Node {
+    // The parser only knows state variables declared in the contract currently being built, so a bare inherited
+    // dynamic-array mutation initially looks like a local-array mutation. Inheritance has been expanded here.
+    if (this.isStateCollectionName(node.name) && !this.isShadowedByLocal(node.name)) {
+      const sv = this.stateVariableMap.get(node.name);
+      if ((sv?.isPacked || sv?.isDynamic) && sv.type instanceof ArrayType) {
+        const stateNode = new StateArrayPushNode(node.name, node.value);
+        stateNode.noArg = node.noArg;
+        stateNode.location = node.location;
+        return this.visit(stateNode);
+      }
+    }
     const sym = this.symbolTables[0].get(node.name);
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
@@ -5348,6 +5515,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitArrayPop(node: ArrayPopNode): Node {
+    // See visitArrayPush: inherited state arrays cannot be classified by the parser-local state name set.
+    if (this.isStateCollectionName(node.name) && !this.isShadowedByLocal(node.name)) {
+      const sv = this.stateVariableMap.get(node.name);
+      if ((sv?.isPacked || sv?.isDynamic) && sv.type instanceof ArrayType) {
+        const stateNode = new StateArrayPopNode(node.name);
+        stateNode.location = node.location;
+        return this.visit(stateNode);
+      }
+    }
     const sym = this.symbolTables[0].get(node.name);
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
@@ -5422,6 +5598,86 @@ export default class SymbolTableTraversal extends AstTraversal {
   // a Solidity no-op: the enum type name resolves as a valueless CONSTANT symbol that codegen cannot
   // materialize. Drop the statement.
   visitExpressionStatement(node: ExpressionStatementNode): Node {
+    // A bare compiler-special global function name or inheritance dispatch base is a discarded reference
+    // (`selfdestruct;`, `erc7201;`, `super;`) and has no runtime effect. Registered globals retain normal
+    // resolution: notably `blobhash` must remain undefined for the corpus' pre-Cancun mode (whose EVM-version
+    // metadata is outside the source).
+    if (node.expression instanceof IdentifierNode) {
+      if (node.expression.name === 'erc7201' || node.expression.name === 'selfdestruct'
+        || (node.expression.name === 'super' && !this.currentFunction?.isFreeFunction
+          && !this.currentContract?.isLibraryContract)
+        || this.knownLibraryNames.has(node.expression.name)) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
+    // A struct type name is likewise legal as a valueless expression statement (`S;`, `Lib.S;`). It is not a
+    // variable read and must not reach identifier resolution/codegen. Qualified library structs are registered
+    // under both their compound and (when unambiguous) bare names.
+    if ((node.expression instanceof IdentifierNode && this.structMap.has(node.expression.name))
+      || (node.expression instanceof FieldAccessNode
+        && node.expression.expression instanceof IdentifierNode
+        && (this.structMap.has(`${node.expression.expression.name}.${node.expression.name}`)
+          || this.structMap.has(node.expression.name)))) {
+      const empty = new BlockNode([]);
+      empty.location = node.location;
+      return empty;
+    }
+    // A qualified interface function reference used only as an expression statement (`IERC20.transfer;`) is a
+    // valid Solidity function value whose value is discarded. Require both the declared interface and exact
+    // member so misspellings and non-function members continue through normal diagnostics.
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const libraryMember = `${node.expression.expression.name}.${node.expression.name}`;
+      if (this.knownLibraryNames.has(node.expression.expression.name)
+        && this.libraryFunctionSignatures.get(libraryMember)?.length === 1) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+      const iface = this.interfaceMap.get(node.expression.expression.name);
+      const memberName = node.expression.name;
+      if (iface?.functions.filter((fn) => fn.name === memberName).length === 1) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
+    // A discarded attached-library member (`a.double;` under `using D for uint`) is a valid function value with
+    // no runtime effect. Restrict this no-op to a plain identifier receiver and a uniquely resolvable binding:
+    // computed receivers may have side effects, while an overloaded/unknown member must retain its diagnostic.
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const field = node.expression;
+      const receiverType = this.resolveLowLevelReceiverType(field.expression);
+      const ifaceKey = receiverType instanceof AddressType ? receiverType.interfaceName : undefined;
+      const intKey = receiverType instanceof IntType
+        ? (receiverType.signed ? 'int256' : 'uint256') : undefined;
+      const bindings = receiverType
+        ? [...(this.usingForBindings.get(receiverType.toString()) ?? []),
+          ...(intKey && intKey !== receiverType.toString() ? this.usingForBindings.get(intKey) ?? [] : []),
+          ...(ifaceKey ? this.usingForBindings.get(ifaceKey) ?? [] : []),
+          ...(this.usingForBindings.get('*') ?? [])]
+        : [];
+      const matches = bindings.filter((binding) => binding.methodName === field.name);
+      const overloads = matches.flatMap((binding) => this.functionDefinitions.get(binding.fullFunctionName) ?? []);
+      if (matches.length === 1 && overloads.length === 1) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
+    // `T.wrap;` / `T.unwrap;` denotes a UDVT conversion function value. When discarded, it has no runtime
+    // effect; resolving the base as a variable would incorrectly reject the type name.
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode
+      && this.typeDefMap.has(node.expression.expression.name)
+      && (node.expression.name === 'wrap' || node.expression.name === 'unwrap')) {
+      const empty = new BlockNode([]);
+      empty.location = node.location;
+      return empty;
+    }
     // A discarded current-contract-qualified function reference (`C.f;`) has no effect. External functions
     // cannot otherwise be materialized as an unbound functionId, so use their declaration selector as the
     // discarded value (the surrounding expression statement drops it).
@@ -5473,7 +5729,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!syms.some((s) => s?.symbolType === SymbolType.STATE_VARIABLE)) return undefined;
     const plainScalar = (t: Type): boolean => !(t instanceof StructType)
       && !(t instanceof ArrayType) && !(t instanceof MappingType) && !(t instanceof TupleType);
-    if (!node.elements.every((e, i) => e.skip || plainScalar(syms[i]!.type!))) return undefined;
+    // A concrete struct STATE variable is a value blob and StateAssign already rebuilds its state slot. Admit it
+    // here so `(x, y) = (y, x)` gets the same RHS-before-write temp semantics as scalar state swaps. Keep local
+    // storage-pointer structs excluded: assigning those rebinds/copies storage and has different aliasing semantics.
+    const safeTarget = (s: Symbol): boolean => plainScalar(s.type!)
+      || (s.symbolType === SymbolType.STATE_VARIABLE && s.type instanceof StructType);
+    if (!node.elements.every((e, i) => e.skip || safeTarget(syms[i]!))) return undefined;
 
     const stmts: StatementNode[] = [];
     const tmpNames = node.elements.map(() => `__tuple_state_${this.tupleStateTempCounter++}`);
@@ -5534,7 +5795,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       const definition = new VariableDefinitionNode(variable.type!, [], variable.name!, initializer);
       definition.location = node.location;
 
-      if (this.symbolTables[0].get(variable.name!)) {
+      const existing = this.symbolTables[0].get(variable.name!);
+      // Tuple-declared locals follow the same Solidity shadowing rule as an ordinary declaration: an inner
+      // local may shadow a contract state variable/function. A live local in this scope still cannot be
+      // shadowed because stack slots are name-keyed.
+      const shadowsOuter = this.compilerOptions.solidityImportCompat
+        && (existing?.symbolType === SymbolType.FUNCTION || existing?.symbolType === SymbolType.STATE_VARIABLE);
+      if (existing && !shadowsOuter) {
         throw new VariableRedefinitionError(definition);
       }
       this.symbolTables[0].set(Symbol.variable(definition));
@@ -5654,6 +5921,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     const callName = node.identifier.name;
     if (callName.includes('.')) {
       const [varName, methodName] = callName.split('.');
+      // `C.f(args)` inside C is Solidity's explicitly-qualified direct call (not an external message call).
+      // Route it through the ordinary bare-function path so overload selection and the external-only rejection
+      // remain centralized there. Explicit ancestor calls have already been rewritten to __base_* earlier.
+      if (varName === this.currentContract?.name
+        && this.currentContract.functions.some((fn) => fn.name === methodName)) {
+        node.identifier.name = methodName;
+        return this.visitFunctionCall(node);
+      }
       // `C.x(args)` where x is a function-pointer state variable: C is only the current-contract qualifier,
       // not a namespace or collection receiver. Route to the ordinary indirect state-pointer call.
       if ((varName === this.currentContract?.name || this.contractMap.has(varName))
@@ -6026,13 +6301,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Indirect call through a function-typed variable: resolve the callee as a variable, not a function.
+    // Indirect call through a function-typed variable: resolve the callee as a variable, not a function.
     const calleeSym = this.symbolTables[0].get(node.identifier.name);
     const isIndirect = !this.functionDefinitions.has(node.identifier.name) && calleeSym?.type instanceof FunctionType;
 
     this.expectedSymbolType = isIndirect ? SymbolType.VARIABLE : SymbolType.FUNCTION;
-    // A `this.f()` self-call to an external function is resolved via functionDefinitions above (resolvedFunction
-    // is set); external functions are not identifier symbols, so skip the identifier resolution that would fail.
-    if (!(node.fromThisCall && node.resolvedFunction?.visibility === 'external')) {
+    // A `this.f()` self-call to an external function is resolved via functionDefinitions above. With overloads,
+    // the exact declaration remains deferred to TypeCheck, but external entry points are still not identifier
+    // symbols; skip ordinary identifier resolution whenever the candidate set contains an external overload.
+    if (!(node.fromThisCall
+      && (node.resolvedFunction?.isEntryPoint
+        || overloads?.some((candidate) => candidate.isEntryPoint)))) {
       node.identifier = this.visit(node.identifier) as IdentifierNode;
     }
     this.expectedSymbolType = SymbolType.VARIABLE;
@@ -6055,7 +6334,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // stayed unresolved (only `x = sibling(..)` / `return sibling(..)` resolved).
     this.qualifyLibrarySiblingCall(node.call.identifier);
     // Check if this is an address method call: dest.transfer(amount)
-    const callName = node.call.identifier.name;
+    let callName = node.call.identifier.name;
+    if (callName.includes('.')) {
+      const [qualifier, methodName] = callName.split('.');
+      if (qualifier === this.currentContract?.name
+        && this.currentContract.functions.some((fn) => fn.name === methodName)) {
+        node.call.identifier.name = methodName;
+        callName = methodName;
+      }
+    }
     if (callName.includes('.')) {
       const [varName, methodName] = callName.split('.');
       if (methodName === 'transfer' && node.call.parameters.length === 1) {
@@ -6119,6 +6406,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.call = resolved;
         return node;
       }
+    }
+
+    // A value-returning global builtin may be called as a statement when its result is intentionally discarded
+    // (`addmod(a,b,n);`, `sha256(data);`). Expression-form calls already resolve through visitFunctionCall; use
+    // that same path here and let statement codegen drop the declared return value.
+    const globalCallee = this.symbolTables[0].get(callName);
+    if (!this.functionDefinitions.has(callName) && globalCallee?.symbolType === SymbolType.FUNCTION) {
+      node.call = this.visit(node.call) as FunctionCallNode;
+      return node;
     }
 
     // Function call statements are only valid for user-defined functions
@@ -6453,6 +6749,50 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Solidity external-function event values are the composite `(address, selector)`. Materialize that pair as
+    // `selector ++ address` before ordinary member traversal can mistake `C(addr).f` for external state. Cast it
+    // back to the nominal FunctionType so event overload/type checking still sees the declared Solidity type.
+    const eventDef = node.eventDefinition;
+    if (eventDef) {
+      node.args = node.args.map((arg, index) => {
+        const expected = eventDef.parameters[index]?.type;
+        if (!(expected instanceof FunctionType) || !expected.isExternal) return arg;
+        let selector: ExpressionNode | undefined;
+        let address: ExpressionNode | undefined;
+        if (arg instanceof StateAccessNode) {
+          const fn = this.functionDefinitions.get(arg.name)?.[0];
+          if (fn?.functionSelector) {
+            selector = new HexLiteralNode(fn.functionSelector);
+            const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+            const lockingBytecode = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, inputIndex);
+            address = new CastNode(new AddressType(false), lockingBytecode, false);
+          }
+        } else if (arg instanceof FieldAccessNode && arg.expression instanceof FunctionCallNode) {
+          const cast = arg.expression;
+          const holder = this.interfaceMap.get(cast.identifier.name) ?? this.contractMap.get(cast.identifier.name);
+          const method = holder?.functions.find((fn) => fn.name === arg.name);
+          if (method && cast.parameters.length === 1) {
+            const signature = computeFunctionSignature(
+              method.name,
+              method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+            );
+            selector = new HexLiteralNode(computeFunctionSelector(signature));
+            address = cast.parameters[0];
+          }
+        }
+        if (!selector || !address) return arg;
+        selector.location = arg.location;
+        address.location = address.location ?? arg.location;
+        const addressBytes = new CastNode(new BytesType(), address, true);
+        addressBytes.location = address.location;
+        const blob = new BytesConcatNode([selector, addressBytes]);
+        blob.location = arg.location;
+        const nominal = new CastNode(expected, blob, true);
+        nominal.location = arg.location;
+        return nominal;
+      });
+    }
+
     node.args = this.visitList(node.args);
     return node;
   }
@@ -6662,7 +7002,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ImmutableStateVariableAssignmentError(node, sv.name);
     }
     node.stateVariable = sv;
+    const previousFunctionPointerStateAssignment = this.insideFunctionPointerStateAssignment;
+    this.insideFunctionPointerStateAssignment = sv.type instanceof FunctionType;
     node.expression = this.visit(node.expression);
+    this.insideFunctionPointerStateAssignment = previousFunctionPointerStateAssignment;
     return node;
   }
 
@@ -6820,12 +7163,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!fn) {
         throw new AbiEncodeCallUndefinedFunctionError(node, 'this', node.functionName);
       }
-      if (node.parameters.length !== fn.parameters.length) {
-        throw new AbiEncodeCallArgCountError(node, fn.parameters.length, node.parameters.length);
+      // State/covenant synthesis appends reserved parameters to the implementation, but encodeCall describes the
+      // source-level external ABI. Hidden witness/oracle/context parameters never participate in its selector or
+      // argument tuple.
+      const abiParams = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
+      if (node.parameters.length !== abiParams.length) {
+        throw new AbiEncodeCallArgCountError(node, abiParams.length, node.parameters.length);
       }
-      const selfParamTypes = fn.parameters.map((p) => p.type.toString());
+      const selfParamTypes = abiParams.map((p) => p.type.toString());
       node.computedSelector = this.computeAbiSelector(computeFunctionSignature(node.functionName, selfParamTypes));
-      node.resolvedParamTypes = fn.parameters.map((p) => p.type);
+      node.resolvedParamTypes = abiParams.map((p) => p.type);
       node.parameters = this.visitList(node.parameters);
       return node;
     }
@@ -7106,8 +7453,20 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitRevert(node: RevertNode): Node {
     if (node.errorName) {
-      // Look up error by name
-      const candidates = [...this.errorMap.values()].filter((e) => e.name === node.errorName);
+      // A qualified `revert D.E(..)` resolves only against D. An unqualified name sees the registered overload
+      // set as before.
+      const holder = node.errorQualifier
+        ? this.contractMap.get(node.errorQualifier) ?? this.interfaceMap.get(node.errorQualifier)
+        : undefined;
+      const libraryTypes = node.errorQualifier
+        ? this.libraryErrorSignatures.get(`${node.errorQualifier}.${node.errorName}`)
+        : undefined;
+      const candidates = (node.errorQualifier
+        ? (holder?.errorDefinitions ?? [...this.errorMap.values()].filter((error) =>
+          libraryTypes !== undefined
+          && error.name === node.errorName
+          && error.parameters.map((p) => p.type.toString()).join(',') === libraryTypes.join(',')))
+        : [...this.errorMap.values()]).filter((e) => e.name === node.errorName);
       if (candidates.length === 0) {
         throw new UndefinedErrorError(node);
       }
@@ -7228,6 +7587,32 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFieldAccess(node: FieldAccessNode): Node {
+    // Collapse a qualified enum type in `I.E.Member` / `L.E.Member` to its registered compound identifier before
+    // ordinary traversal visits the qualifier (`I`/`L` is a declaration namespace, not a runtime value).
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const compound = `${node.expression.expression.name}.${node.expression.name}`;
+      if (this.enumMap.has(compound)) {
+        const identifier = new IdentifierNode(compound);
+        identifier.location = node.expression.location;
+        node.expression = identifier;
+      }
+    }
+
+    // `I(addressExpr).method.address` is the address component of an external function value. The inner
+    // `I(addressExpr).method` otherwise falls through to external-state lookup (and reports `method` as a
+    // missing state variable), so reduce the member before visiting it. The address component is exactly the
+    // cast argument; visiting it here preserves its evaluation and normal address type checking.
+    if (node.name === 'address' && node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof FunctionCallNode) {
+      const member = node.expression;
+      const cast = member.expression as FunctionCallNode;
+      const holder = this.interfaceMap.get(cast.identifier.name) ?? this.contractMap.get(cast.identifier.name);
+      if (cast.parameters.length === 1 && holder?.functions.some((fn) => fn.name === member.name)) {
+        return this.visit(cast.parameters[0]);
+      }
+    }
+
     // `this.<fn>.selector` -> the function's 4-byte selector (bytes4). `this.<fn>` parses as a state access;
     // intercept before it resolves (it is a function, not a state var) and fold to the precomputed selector.
     if (node.expression instanceof StateAccessNode && node.name === 'selector') {
@@ -7631,6 +8016,39 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.expression = this.visit(node.expression) as ExpressionNode;
     }
 
+    // `C(addressExpr).method` used as a VALUE is Solidity's external-function pair `(address, selector)`, not an
+    // external state read. Method invocations use MethodCallNode and never reach this branch. Materialize the
+    // same nominal function blob used by event arguments; require a unique declared overload so we never guess.
+    if (!this.insideFunctionPointerStateAssignment
+      && node.expression instanceof FunctionCallNode && node.expression.parameters.length === 1) {
+      const holder = this.interfaceMap.get(node.expression.identifier.name)
+        ?? this.contractMap.get(node.expression.identifier.name);
+      const methods = holder?.functions.filter((fn) => fn.name === node.name) ?? [];
+      if (methods.length === 1) {
+        const method = methods[0];
+        const signature = computeFunctionSignature(
+          method.name,
+          method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+        );
+        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        selector.location = node.location;
+        selector.type = new BytesType(4);
+        const address = this.visit(node.expression.parameters[0]) as ExpressionNode;
+        const addressBytes = new CastNode(new BytesType(), address, true);
+        addressBytes.location = address.location ?? node.location;
+        const blob = new BytesConcatNode([selector, addressBytes]);
+        blob.location = node.location;
+        const nominalType = new FunctionType(
+          method.parameters.map((parameter) => parameter.type),
+          method.returnTypes,
+          true,
+        );
+        const nominal = new CastNode(nominalType, blob, true);
+        nominal.location = node.location;
+        return nominal;
+      }
+    }
+
     // Detect outState field access: ExternalOutputStateNode.counter -> ExternalOutputStateAccessNode
     if (node.expression instanceof ExternalOutputStateNode) {
       const iface = this.interfaceMap.get(node.expression.interfaceName);
@@ -7764,8 +8182,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     const contract = this.contractMap.get(typeText);
     if (iface && (node.property === 'interfaceId' || !contract)) {
       node.interfaceNode = iface;
+      if (node.property === 'name') {
+        node.contractName = iface.name;
+        return node;
+      }
       if (node.property !== 'interfaceId') {
-        throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId']);
+        throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId', 'name']);
       }
       // Pre-compute interfaceId: XOR of all function selectors
       const allFunctions = this.getAllInterfaceFunctions(iface);
@@ -7866,7 +8288,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const dot = node.targetTypeName.lastIndexOf('.');
       const bare = dot >= 0 ? node.targetTypeName.slice(dot + 1) : node.targetTypeName;
       const resolved = this.structMap.get(node.targetTypeName) ?? this.structMap.get(bare)
-        ?? this.enumMap.get(node.targetTypeName) ?? this.enumMap.get(bare);
+        ?? this.enumMap.get(node.targetTypeName) ?? this.enumMap.get(bare)
+        // A UDVT may differ from a primitive only by case (`type Int is int64`). parseTypeStrict's final
+        // PrimitiveType lookup is case-insensitive, so attempting it first would collapse `Int` to native `int`
+        // and incorrectly reject a valid operator binding as non-UDVT.
+        ?? this.typeDefMap.get(node.targetTypeName) ?? this.typeDefMap.get(bare);
       if (resolved) typeKey = resolved.toString();
       else { try { typeKey = parseTypeStrict(node.targetTypeName).toString(); } catch { /* keep raw name */ } }
     }
@@ -7921,6 +8347,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     const operator = binding.operator!;
     const funcName = binding.funcName;
 
+    if (!node.isGlobal || !this.processingFileUsingDirective) {
+      throw new OperatorOverloadSignatureError(
+        node, funcName, "operators can only be defined in a file-level global 'using for' directive",
+      );
+    }
+
     // Operator overloading is only allowed on UDVTs
     const targetType = this.typeDefMap.get(typeKey);
     if (!targetType) {
@@ -7940,6 +8372,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!isUnary && !isBinary) {
       throw new OperatorOverloadSignatureError(node, funcName,
         `expected 1 (unary) or 2 (binary) parameters, got ${params.length}`);
+    }
+
+    if (!func.isFreeFunction) {
+      throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be free functions');
+    }
+    if (!func.modifiers.includes(FunctionModifier.PURE)) {
+      throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be declared pure');
     }
 
     // All params must be the target UDVT type
@@ -7973,6 +8412,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!overloads) {
       overloads = new Map();
       this.operatorOverloads.set(typeKey, overloads);
+    }
+    if (overloads.has(opKey)) {
+      throw new OperatorOverloadSignatureError(
+        node, funcName, `operator '${operator}' already has a definition for '${typeKey}'`,
+      );
     }
     overloads.set(opKey, funcName);
   }
@@ -8010,6 +8454,16 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   override visitUnaryOp(node: UnaryOpNode): Node {
     node.expression = this.visit(node.expression) as ExpressionNode;
+
+    // `.reverse()` is a native SolidCash unary operator in the grammar, but Solidity using-for may bind a
+    // library method with the same spelling. Give an applicable explicit binding precedence over the native
+    // bytes/string operation, matching ordinary method-call resolution.
+    if (node.operator === UnaryOperator.REVERSE && this.usingForBindings.size > 0) {
+      const method = new MethodCallNode(node.expression, 'reverse', []);
+      method.location = node.location;
+      const resolved = this.tryResolveUsingFor(method);
+      if (resolved) return resolved;
+    }
 
     if (this.operatorOverloads.size === 0) return node;
 
@@ -8067,6 +8521,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Get the object's type
     let objectType = node.object.type
       ?? (node.object instanceof IdentifierNode ? node.object.definition?.type : undefined);
+    // A declared function used as the receiver (`this.identity.double(x)` is normalized to identifier
+    // `identity`) needs its full signature reconstructed: the ordinary function symbol stores only its return
+    // type, while using-for is keyed by the complete FunctionType.
+    if (!objectType && node.object instanceof IdentifierNode) {
+      const definitions = this.functionDefinitions.get(node.object.name) ?? [];
+      if (definitions.length === 1) {
+        const definition = definitions[0];
+        objectType = new FunctionType(
+          definition.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.type),
+          definition.returnTypes,
+          definition.visibility === 'external',
+        );
+        node.object.type = objectType;
+      }
+    }
     // For chained calls (e.g. a.mul(b).div(c)), infer from resolved function's return type.
     if (!objectType && node.object instanceof FunctionCallNode && node.object.resolvedFunction) {
       objectType = node.object.resolvedFunction.returnTypes[0];
@@ -8225,7 +8695,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof MappingAccessNode) {
       // Step once PER KEY: `allo[x][y]` is a single MappingAccessNode with keys=[x,y] over
       // mapping(K=>mapping(K2=>V)) -> V (not the one-level mapping(K2=>V)). Single-key `m[k]` steps once as before.
-      let t: Type | undefined = nameType(expr.name);
+      // Prefer the collection declaration: a synthesized public getter has the same name in the symbol table
+      // and its tuple return type is not the indexed storage collection's type.
+      let t: Type | undefined = this.collectionMap.get(expr.name)?.type ?? nameType(expr.name);
       for (let i = 0; i < Math.max(expr.keys.length, 1) && t; i += 1) {
         t = t instanceof ArrayType ? t.elementType : t instanceof MappingType ? t.valueType : undefined;
       }
@@ -8244,7 +8716,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) return new IntType(false, 256);
     if (expr instanceof FieldAccessNode) {
       const base = this.resolveLowLevelReceiverType(expr.expression);
-      return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
+      if (!(base instanceof StructType)) return undefined;
+      // Inherited contract-local structs can reach a derived contract's collection map as a nominal
+      // StructType whose field list is not hydrated. Resolve its canonical declaration by name before
+      // looking up the member (a global struct already carries the same complete field list).
+      const canonical = this.structMap.get(base.name);
+      return base.fields.find((f) => f.name === expr.name)?.type
+        ?? canonical?.fields.find((f) => f.name === expr.name)?.type;
     }
     // A computed arithmetic/bitwise receiver `(a - b).add(c)` / `a.mul(b).add(c)` (SafeMath on an expression, e.g.
     // UniswapV2Library.quote): the operator PRESERVES the operand type, so resolve it from an operand for the
@@ -8278,6 +8756,22 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMethodCall(node: MethodCallNode): Node {
+    // Named-argument syntax makes `this.f({a: x})` arrive as a MethodCall whose receiver is the lowered
+    // active-input locking bytecode. Normalize it to the same fromThisCall FunctionCall used by positional
+    // `this.f(x)`, retaining names/options for ordinary overload and argument reordering.
+    if (node.object instanceof UnaryOpNode
+      && node.object.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.object.expression instanceof NullaryOpNode
+      && node.object.expression.operator === NullaryOperator.INPUT_INDEX) {
+      const identifier = new IdentifierNode(node.methodName);
+      identifier.location = node.location;
+      const call = new FunctionCallNode(identifier, node.parameters);
+      call.location = node.location;
+      call.fieldNames = node.fieldNames;
+      call.callOptions = node.callOptions;
+      call.fromThisCall = true;
+      return this.visitFunctionCall(call);
+    }
     // Detect low-level call: IFoo(cat).bar.call(args) or .staticcall(args)
     // Pattern: MethodCallNode(object=FieldAccessNode(expr=FunctionCallNode), methodName="call"|"staticcall")
     if (
@@ -8561,6 +9055,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           callNode.callInfo.hasReturnValues = true;
           callNode.callInfo.returnTypes = ifaceFunc.returnTypes;
           callNode.callInfo.returnEventSignature = `_Return_${ifaceFunc.name}(${ifaceFunc.returnTypes.map((t) => t.toString()).join(',')})`;
+        } else {
+          // Parenthesized member calls are expression statements rather than FunctionCallStatementNodes. Mark
+          // a no-return external call explicitly void so expression codegen does not OP_DROP its live target
+          // parameter before emitExternalCallVerification reads that parameter at the function epilogue.
+          callNode.type = PrimitiveType.VOID;
         }
         callNode.location = node.location;
         return callNode;
@@ -8706,6 +9205,14 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
+    // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
+    // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
+    // container and output-only transfer slots are present in the authoritative 1:1 block layout.
+    if (!node.transferInfos) {
+      const transferInfos: TransferInfo[] = [];
+      this.collectTransferStatements(node.body, transferInfos);
+      if (transferInfos.length > 0) node.transferInfos = transferInfos;
+    }
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
 
@@ -8886,7 +9393,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       const childInLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
       for (const [key, value] of Object.entries(n)) {
-        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+        // Only walk the structural function body. Semantic back-references can lead into an unrelated callee or
+        // declaration that happens to contain a loop deploy, falsely classifying this function's straight-line
+        // deploy as dynamic and suppressing its fixed transfer block slot.
+        if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
+          || key === 'symbolTable' || key === 'type' || key === 'location') continue;
         walk(value, childInLoop);
       }
     };

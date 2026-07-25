@@ -18,6 +18,7 @@ import {
   BinaryOpNode,
   IntLiteralNode,
   TernaryOpNode,
+  BranchNode,
   WhileNode,
   DoWhileNode,
   ReturnNode,
@@ -168,6 +169,20 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
+      const expanded = this.expandTernaryAssignment(stmt);
+      if (expanded) {
+        // Keep each synthesized statement as its own sequence point. In particular, an increment in the
+        // condition belongs before the branch while increments in either arm stay inside that arm.
+        for (const part of expanded) this.visitBlockStatement(part, out);
+        continue;
+      }
+      this.visitBlockStatement(stmt, out);
+    }
+    node.statements = out;
+    return node;
+  }
+
+  private visitBlockStatement(stmt: StatementNode, out: StatementNode[]): void {
       const savedAfter = this.after; const savedBefore = this.before; const savedStmt = this.currentStmt;
       this.after = []; this.before = []; this.currentStmt = stmt;
       const visited = this.visit(stmt) as StatementNode;
@@ -175,9 +190,56 @@ export default class DesugarPostfixExpressions extends AstTraversal {
       this.after = savedAfter; this.before = savedBefore; this.currentStmt = savedStmt;
       // Prefix increments hoist BEFORE the statement (they read the post-mutation value); postfix AFTER.
       out.push(...before, visited, ...after);
+  }
+
+  // `T x = c ? a : b` / `x = c ? a : b` cannot pull mutations in `a` or `b` to statement scope: only the
+  // selected arm executes. Turn the expression into a real branch first, then the ordinary block visitor lowers
+  // each arm independently:
+  //
+  //   T x; if (c) { x = a; } else { x = b; }
+  //
+  // This also gives prefix/postfix operations in an arm their correct branch-local sequence point.
+  private expandTernaryAssignment(stmt: StatementNode): StatementNode[] | undefined {
+    let ternary: TernaryOpNode | undefined;
+    let makeAssign: (expression: ExpressionNode) => StatementNode;
+    let declaration: VariableDefinitionNode | undefined;
+
+    if (stmt instanceof VariableDefinitionNode && stmt.expression instanceof TernaryOpNode) {
+      ternary = stmt.expression;
+      declaration = new VariableDefinitionNode(stmt.type, [...stmt.modifier], stmt.name);
+      declaration.allowUnused = stmt.allowUnused;
+      declaration.isLoopVariable = stmt.isLoopVariable;
+      declaration.location = stmt.location;
+      makeAssign = (expression) => {
+        const target = new IdentifierNode(stmt.name); target.location = stmt.location;
+        const assign = new AssignNode(target, expression); assign.location = stmt.location;
+        return assign;
+      };
+    } else if (stmt instanceof AssignNode && stmt.expression instanceof TernaryOpNode) {
+      ternary = stmt.expression;
+      makeAssign = (expression) => {
+        const assign = new AssignNode(cloneNode(stmt.identifier) as IdentifierNode, expression);
+        assign.fromModifier = stmt.fromModifier;
+        assign.isReferenceDataWrite = stmt.isReferenceDataWrite;
+        assign.location = stmt.location;
+        return assign;
+      };
+    } else if (stmt instanceof StateAssignNode && stmt.expression instanceof TernaryOpNode) {
+      ternary = stmt.expression;
+      makeAssign = (expression) => {
+        const assign = new StateAssignNode(stmt.name, expression);
+        assign.fromModifier = stmt.fromModifier;
+        assign.location = stmt.location;
+        return assign;
+      };
+    } else {
+      return undefined;
     }
-    node.statements = out;
-    return node;
+
+    const yes = new BlockNode([makeAssign(ternary.ifTrue)]); yes.location = ternary.ifTrue.location;
+    const no = new BlockNode([makeAssign(ternary.ifFalse)]); no.location = ternary.ifFalse.location;
+    const branch = new BranchNode(ternary.condition, yes, no); branch.location = ternary.location;
+    return declaration ? [declaration, branch] : [branch];
   }
 
   visitUnaryOp(node: UnaryOpNode): Node {
@@ -267,6 +329,55 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     } else {
       node.right = this.visit(node.right) as ExpressionNode;
     }
+    return node;
+  }
+
+  visitBranch(node: BranchNode): Node {
+    // A state assignment used as the RIGHT operand of a short-circuit condition cannot remain a value-form
+    // assignment (state writes are statements in the target IR), and hoisting it would execute the write when
+    // Solidity would skip it. Preserve evaluation order by spelling the short circuit as nested branches:
+    //
+    //   if (left && (x = value)) A else B
+    //     -> if (left) { x = value; if (x) A else B } else B
+    //
+    // `||` is the dual. The ordinary block traversal can then lower/resolve the assignment as a statement.
+    const condition = node.condition;
+    if (condition instanceof BinaryOpNode
+      && (condition.operator === BinaryOperator.AND || condition.operator === BinaryOperator.OR)
+      && condition.right instanceof AssignmentExpressionNode) {
+      const assignment = condition.right.assign;
+      const read = new IdentifierNode(assignment.identifier.name);
+      read.location = condition.right.location;
+      const inner = new BranchNode(
+        read,
+        cloneNode(node.ifBlock) as BlockNode,
+        node.elseBlock ? cloneNode(node.elseBlock) as BlockNode : undefined,
+      );
+      inner.location = node.location;
+      const conditionalSide = new BlockNode([assignment, inner]);
+      conditionalSide.location = node.location;
+
+      let rewritten: BranchNode;
+      if (condition.operator === BinaryOperator.AND) {
+        rewritten = new BranchNode(
+          condition.left,
+          conditionalSide,
+          node.elseBlock ? cloneNode(node.elseBlock) as BlockNode : undefined,
+        );
+      } else {
+        rewritten = new BranchNode(
+          condition.left,
+          cloneNode(node.ifBlock) as BlockNode,
+          conditionalSide,
+        );
+      }
+      rewritten.location = node.location;
+      return this.visitBranch(rewritten);
+    }
+
+    node.condition = this.visit(node.condition);
+    node.ifBlock = this.visit(node.ifBlock) as BlockNode;
+    if (node.elseBlock) node.elseBlock = this.visit(node.elseBlock) as BlockNode;
     return node;
   }
 

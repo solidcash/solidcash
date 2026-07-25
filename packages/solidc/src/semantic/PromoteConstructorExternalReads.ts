@@ -8,6 +8,9 @@ import {
   IdentifierNode,
   ParameterNode,
   AssignNode,
+  MethodCallNode,
+  ContractReferenceNode,
+  LiteralNode,
 } from '../ast/AST.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -62,8 +65,6 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
         this.stateVarIface.set(sv.name, sv.type.interfaceName);
       }
     }
-    if (this.stateVarIface.size === 0) return node;
-
     // Trace `stateVar = IFace(input)` / `stateVar = input` assignments so a promoted read on that state var can
     // record which constructor input holds the target's address (lets the SDK auto-resolve it at deploy).
     this.ctorParams = new Set(node.constructorDef.parameters.map((p) => p.name));
@@ -114,7 +115,7 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     // A namespaced zero-arg call `pool.token0()` on an interface-typed state var, inside the constructor, is a
     // deploy-time external read: replace it with a reference to a synthesized deploy-input parameter.
-    if (this.active && node.parameters.length === 0) {
+    if (this.active && node.parameters.every((p) => p instanceof LiteralNode)) {
       const name = node.identifier.name;
       const dot = name.indexOf('.');
       if (dot > 0) {
@@ -136,5 +137,26 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
     }
     node.parameters = this.visitList(node.parameters) as ExpressionNode[];
     return node;
+  }
+
+  // A zero-argument read through an explicit interface/contract cast is the same deploy-time read:
+  // `IFoo(state.field).get()` / `C(state.field).get()`. This parser shape is a MethodCallNode, so handle it
+  // alongside the dotted `stateVar.get()` FunctionCall form above.
+  visitMethodCall(node: MethodCallNode): Node {
+    if (this.active && node.parameters.every((p) => p instanceof LiteralNode)
+      && !ADDRESS_METHODS.has(node.methodName)) {
+      const contractType = node.object instanceof FunctionCallNode && node.object.parameters.length === 1
+        ? node.object.identifier.name
+        : node.object instanceof ContractReferenceNode && node.object.constructorArgs.length === 1
+          ? node.object.contractName : undefined;
+      if (contractType && this.readReturnType(contractType, node.methodName)) {
+        const paramName = `__ctorread_${contractType}_${node.methodName}_${this.counter++}`;
+        this.promoted.push({ param: paramName, read: node.methodName, contractType });
+        const id = new IdentifierNode(paramName);
+        id.location = node.location;
+        return id;
+      }
+    }
+    return super.visitMethodCall(node);
   }
 }

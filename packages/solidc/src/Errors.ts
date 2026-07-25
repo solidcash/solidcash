@@ -435,6 +435,15 @@ export class BitshiftBitcountNegativeError extends SolidCashError {
   }
 }
 
+export class BitshiftBitcountTooLargeError extends SolidCashError {
+  constructor(
+    node: BinaryOpNode,
+    bitcount: bigint,
+  ) {
+    super(node, `Bitshift bitcount exceeds Solidity's uint32 constant limit: ${bitcount}`);
+  }
+}
+
 export class VersionError extends Error {
   constructor(
     actual: string,

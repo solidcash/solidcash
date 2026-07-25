@@ -39,12 +39,16 @@ import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegate
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
+import LowerSelfCallMsgData from './semantic/LowerSelfCallMsgData.js';
+import LowerInternalMsgDataContext from './semantic/LowerInternalMsgDataContext.js';
+import LowerInternalMsgSigContext from './semantic/LowerInternalMsgSigContext.js';
 import HoistInlineDeployCalls from './semantic/HoistInlineDeployCalls.js';
 import HoistChainedContractCalls from './semantic/HoistChainedContractCalls.js';
 import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
+import AlphaRenameLocalShadows from './semantic/AlphaRenameLocalShadows.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
@@ -104,6 +108,11 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
+  // Solidity's builtin returns the canonical 20-byte EVM address. In Solidity-import mode, select that exact
+  // projection unless the caller explicitly chooses the native BCH p2pkh projection.
+  if (mergedCompilerOptions.solidityImportCompat && mergedCompilerOptions.ecrecover === undefined) {
+    mergedCompilerOptions.ecrecover = 'evm';
+  }
   const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
   const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
   if (cacheable) compileCache.set(cacheKey, artifact);
@@ -197,10 +206,6 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
   ast = ast.accept(new ValidateDataLocations()) as Ast;
 
-  // Lower `transient` state vars to per-function locals - AFTER inheritance so a base's transient var is lowered
-  // into the derived contract's functions too.
-  ast = lowerTransientStateVars(ast);
-
   // Every mapping uses the authenticated C2 backend. There is no omission-prone legacy mapping fallback.
   for (const col of ast.contract.collections) {
     if (col.type instanceof MappingType) col.sorted = true;
@@ -227,6 +232,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
+
+  // Lower `transient` state vars to per-function locals after modifier expansion. A transient reference in a
+  // modifier argument/body is now visible in the concrete function body, and public getters synthesized above
+  // receive the same zero-initialized transaction-local binding as ordinary functions.
+  ast = lowerTransientStateVars(ast);
 
   // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
   // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
@@ -273,6 +283,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
   ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
+
+  // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
+  // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.
+  ast = ast.accept(new AlphaRenameLocalShadows()) as Ast;
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
@@ -352,6 +366,13 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
   ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
+  // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
+  // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
+  ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
+  // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
+  ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
+  // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
+  ast = ast.accept(new LowerInternalMsgSigContext()) as Ast;
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.
@@ -520,6 +541,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
+  if (mergedCompilerOptions.solidityImportCompat && mergedCompilerOptions.ecrecover === undefined) {
+    mergedCompilerOptions.ecrecover = 'evm';
+  }
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -612,6 +636,7 @@ function compileReferencedContracts(
     singleAst.declaredLibraryNames = ast.declaredLibraryNames;
     singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
+    singleAst = singleAst.accept(new AlphaRenameLocalShadows()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     // Keep the referenced-contract bytecode byte-identical to its standalone compilation (see comment above).
     singleAst = singleAst.accept(new CoalesceMappingEntryFieldWrites()) as Ast;

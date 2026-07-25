@@ -56,12 +56,12 @@ const overAcc = neg.filter(r => r.overAccepted).length; // solc-negative fixture
 const inScope = ok.length + fail.length;
 writeFileSync(join(BENCH_DIR, 'results.json'), JSON.stringify(results, null, 1));
 
-console.log(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
+origLog(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
   + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} of them we also accept, `
   + `diagnostic) | ${multi.length} multifile-skipped | ${results.length} total ===\n`);
 
 // Top failure reasons (grouped by error head) - the actionable gap signal.
 const groups = {};
 for (const r of fail) { const head = (r.err || '').replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N').slice(0, 90); groups[head] = (groups[head] || 0) + 1; }
-console.log('--- TOP FAILURE REASONS ---');
-for (const [head, n] of Object.entries(groups).sort((a, b) => b[1] - a[1]).slice(0, 30)) console.log(`${String(n).padStart(5)}  ${head}`);
+origLog('--- TOP FAILURE REASONS ---');
+for (const [head, n] of Object.entries(groups).sort((a, b) => b[1] - a[1]).slice(0, 30)) origLog(`${String(n).padStart(5)}  ${head}`);

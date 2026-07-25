@@ -216,6 +216,85 @@ describe('Release 4 compiler-hidden local batch', () => {
     }));
   });
 
+  it('journals a msg.sender-keyed resource handler behind one spender parameter', () => {
+    const artifact = compileString(`
+      contract CallerAuthorizedToken() {
+        mapping(address => bigint) balances;
+        mapping(address => mapping(address => bigint)) allowances;
+
+        function transferFrom(address from, address to, bigint amount) public {
+          require(this.allowances[from][msg.sender] >= amount);
+          require(this.balances[from] >= amount);
+          this.allowances[from][msg.sender] = this.allowances[from][msg.sender] - amount;
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+      }
+    `, graphOptions);
+    // Both rows settle one physical allowance entry, so the batched clone has to become a value-threaded journal
+    // handler: keying it on `msg.sender` instead would make each row read and flush that entry on its own, and
+    // two rows would then demand two different post-states from the same output.
+    expect(artifact.hiddenBatch?.route.inputs.map((input) => input.name))
+      .toContain('__scb_key_allowances_sender_1');
+    // One C2 batch group per distinct entry: allowance, balances[from], then balances[to] once per row.
+    const batchGroups = artifact.hiddenBatch!.route.inputs
+      .filter((input) => input.name.startsWith('__internal__c2BatchSlot_'));
+    expect(batchGroups.map((input) => input.name)).toEqual([
+      '__internal__c2BatchSlot_0',
+      '__internal__c2BatchSlot_1',
+      '__internal__c2BatchSlot_2',
+      '__internal__c2BatchSlot_3',
+    ]);
+    // The direct entry point keeps reading msg.sender; only the batched clone takes the spender as an argument.
+    expect(artifact.source).toContain('msg.sender');
+    expect(artifact.abi.map((fn) => fn.name)).toContain('transferFrom');
+  });
+
+  it('synthesizes exactly one clone for a resource-shaped graph-tail handler', () => {
+    const artifact = compileString(`
+      interface ISink { function take(bigint amount); }
+      contract SingleCloneToken(address sink) {
+        mapping(address => bigint) balances;
+        function move(address from, address to, bigint amount) public {
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+          ISink(sink).take(amount);
+          require(true);
+        }
+      }
+    `, graphOptions);
+    // Two key alternatives on one collection make this resource-shaped, and the forwarded call makes it a graph
+    // tail. Dispatch only ever reaches the resource clone, so cloning it a second time as `__scb_graph_move` left
+    // a whole dead journal-handler body in the artifact.
+    const cloneNames = (artifact.invocationAnalysis?.functions ?? [])
+      .map((fn) => fn.name)
+      .filter((name) => name.startsWith('__scb_resource_') || name.startsWith('__scb_graph_'));
+    expect(cloneNames).toEqual(['__scb_resource_move']);
+  });
+
+  it('keeps SCB1 row parsing exact once the parser is factored into helpers', () => {
+    const artifact = compileString(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+    // Shared `__scb_parse_row` / `__scb_parse_graph_caller` helpers must not relax the frame checks: row count,
+    // blob exhaustion, positional call-site binding and unknown-selector rejection all still have to be emitted.
+    const messages = (artifact.debug?.functionDebug?.['53434231']?.requires ?? [])
+      .map((entry) => entry.message)
+      .filter((message): message is string => message !== undefined);
+    expect(messages).toContain('unknown batch selector');
+    expect(artifact.hiddenBatch?.maximumRows).toBe(8);
+    expect(artifact.hiddenBatch?.maximumBlobBytes).toBe(223);
+    // The helpers are compiler-owned, so their parameters must not be able to collide with user identifiers.
+    expect(() => compileString(`
+      contract ParserNameCollision() {
+        int total;
+        function start(int n) public { this.total = this.total + n; require(n >= 0); }
+        function blob(int n) public { this.total = this.total + n; require(n >= 0); }
+      }
+    `, graphOptions)).not.toThrow();
+  });
+
   it('allocates one ordered conditional event slot per possible row', () => {
     const artifact = compileString(`contract EventBatch() {
       bigint current;

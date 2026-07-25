@@ -314,47 +314,47 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d51 320abd58 OP_DEFINE 52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c7777 a45a12c9 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '5279018c8a755379018c8a757093018c8a76547994018c8a7653799c635279926700686376567993018c8a55797893018c8a7b757c6e9f6975675479776876557a93018c8a547a9d6d6d51 320abd58 OP_DEFINE 5279018c8a75527976529376537a9c6376547993018c8a6e93018c8a7b757c6e9f697568729c7777 a45a12c9 OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 8c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract MultiFunctionIfStatements(int x, int y) {\n    function transfer(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x && bool(x)) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            d = a;\n        }\n        d = d + a;\n        require(d == y);\n    }\n\n    function timeout(int b) {\n        int d = b;\n        d = d + 2;\n        if (d == x) {\n            int c = d + b;\n            d = c + d;\n            require(c > d);\n        }\n        d = b;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '4d350252797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d5104320abd58894cfa52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c777704a45a12c989748c7a82549d8a',
-        'sourceMap': '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;',
+        'bytecode': '4b5279018c8a755379018c8a757093018c8a76547994018c8a7653799c635279926700686376567993018c8a55797893018c8a7b757c6e9f6975675479776876557a93018c8a547a9d6d6d5104320abd5889285279018c8a75527976529376537a9c6376547993018c8a6e93018c8a7b757c6e9f697568729c777704a45a12c989497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169018c89748c7a82549d8a',
+        'sourceMap': '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;;;;',
         'logs': [],
         'requires': [],
         'functionDebug': {
           '320abd58': {
             'requires': [
               {
-                'ip': 85,
+                'ip': 49,
                 'line': 8,
               },
               {
-                'ip': 106,
+                'ip': 64,
                 'line': 13,
               },
             ],
-            'sourceMap': '2:22:2:27;;;;;;;;;;;:29::34;;;;;;;;;;;3:16:3:21;::::1;;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;;5::5:13:0;:17::18;;:12:::1;:::29:0;:27::28;;:22::29:1;:12;;;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+            'sourceMap': '2:22:2:27;;;;;:29::34;;;;;3:16:3:21;::::1;;;4:12:4:13:0;:16::17;;:12:::1;;;5::5:13:0;:17::18;;:12:::1;:::29:0;:27::28;;:22::29:1;:12;;;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;;;7:16:7:17:0;;:20::21;:16:::1;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
             'logs': [],
           },
           'a45a12c9': {
             'requires': [
               {
-                'ip': 48,
+                'ip': 30,
                 'line': 22,
               },
               {
-                'ip': 53,
+                'ip': 35,
                 'line': 25,
               },
             ],
-            'sourceMap': '16:21:16:26;;;;;;;;;;;17:16:17:17;;18:12:18:13;:16::17;:12:::1;19::19:13:0;:17::18;;:12:::1;:20:23:9:0;20::20:21;:24::25;;:20:::1;;;;;;;;;21:16:21:21:0;::::1;;;;;;;;;:12::22;;;22:20:22:25:0;::::1;:12::27;19:20:23:9;;24:12:25:22:0;25:8::24:1;16:4:26:5;',
+            'sourceMap': '16:21:16:26;;;;;17:16:17:17;;18:12:18:13;:16::17;:12:::1;19::19:13:0;:17::18;;:12:::1;:20:23:9:0;20::20:21;:24::25;;:20:::1;;;21:16:21:21:0;::::1;;;:12::22;;;22:20:22:25:0;::::1;:12::27;19:20:23:9;;24:12:25:22:0;25:8::24:1;16:4:26:5;',
             'logs': [],
           },
         },
       },
       'functionBodies': {
-        '320abd58': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d51',
-        'a45a12c9': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c7777',
+        '320abd58': '5279018c8a755379018c8a757093018c8a76547994018c8a7653799c635279926700686376567993018c8a55797893018c8a7b757c6e9f6975675479776876557a93018c8a547a9d6d6d51',
+        'a45a12c9': '5279018c8a75527976529376537a9c6376547993018c8a6e93018c8a7b757c6e9f697568729c7777',
       },
       'compiler': {
         'name': 'solidc',
@@ -887,11 +887,11 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c6765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695279947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697655795479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169a16300cc707c947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1699d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994018c8a527994018c8a765579547993018c8aa16300cc707c94018c8a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 8c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {\n    function recvFunds() {\n        require(this.age >= period);\n\n        // Check that the first output sends to the recipient\n        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));\n\n        int minerFee = 1000;\n        int currentValue = tx.inputs[this.activeInputIndex].value;\n        int changeValue = currentValue - pledge - minerFee;\n\n        // If there is not enough left for *another* pledge after this one, we send the remainder to the recipient\n        // Otherwise we send the remainder to the recipient and the change back to the contract\n        if (changeValue <= pledge + minerFee) {\n            require(tx.outputs[0].value == currentValue - minerFee);\n        } else {\n            require(tx.outputs[0].value == pledge);\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeValue);\n        }\n    }\n\n    function reclaim(pubkey pk, sig s) {\n        require(hash160(pk) == funder);\n        require(checkSig(s, pk));\n    }\n}\n',
       'debug': {
-        'bytecode': '4d6301537ab27500cd0376a9147b7e0288ac7e8802e803c0c6765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695279947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697655795479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169a16300cc707c947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1699d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89748c7a82549d8a',
-        'sourceMap': '2:4:21:5;;;23::26;;;1:0:27:1;;;;;;',
+        'bytecode': '4b537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994018c8a527994018c8a765579547993018c8aa16300cc707c94018c8a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169018c89748c7a82549d8a',
+        'sourceMap': '2:4:21:5;;;23::26;;;1:0:27:1;;;;;;;;;',
         'logs': [],
         'requires': [],
         'functionDebug': {
@@ -906,23 +906,23 @@ export const fixtures: Fixture[] = [
                 'line': 6,
               },
               {
-                'ip': 67,
+                'ip': 43,
                 'line': 15,
               },
               {
-                'ip': 73,
+                'ip': 49,
                 'line': 17,
               },
               {
-                'ip': 78,
+                'ip': 54,
                 'line': 18,
               },
               {
-                'ip': 82,
+                'ip': 58,
                 'line': 19,
               },
             ],
-            'sourceMap': '3:28:3:34;;:8::36:1;;6:27:6:28:0;:16::45:1;:49::84:0;:74::83;:49::84:1;;;:8::86;8:23:8:27:0;9:37:9:58;:27::65:1;10:26:10:38:0;:41::47;;:26:::1;;;;;;;;;:50::58:0;;:26:::1;;;;;;;;;14:12:14:23:0;:27::33;;:36::44;;:27:::1;;;;;;;;;:12;:46:16:9:0;15:31:15:32;:20::39:1;:43::66:0;;::::1;;;;;;;;;:12::68;16:15:20:9:0;17:31:17:32;:20::39:1;:43::49:0;;:12::51:1;18:31:18:32:0;:20::49:1;:63::84:0;:53::101:1;:12::103;19:31:19:32:0;:20::39:1;:43::54:0;:12::56:1;16:15:20:9;2:4:21:5;;;',
+            'sourceMap': '3:28:3:34;;:8::36:1;;6:27:6:28:0;:16::45:1;:49::84:0;:74::83;:49::84:1;;;:8::86;8:23:8:27:0;9:37:9:58;:27::65:1;10:26:10:38:0;:41::47;;:26:::1;;;:50::58:0;;:26:::1;;;14:12:14:23:0;:27::33;;:36::44;;:27:::1;;;:12;:46:16:9:0;15:31:15:32;:20::39:1;:43::66:0;;::::1;;;:12::68;16:15:20:9:0;17:31:17:32;:20::39:1;:43::49:0;;:12::51:1;18:31:18:32:0;:20::49:1;:63::84:0;:53::101:1;:12::103;19:31:19:32:0;:20::39:1;:43::54:0;:12::56:1;16:15:20:9;2:4:21:5;;;',
             'logs': [],
           },
           '2f7ef34c': {
@@ -942,7 +942,7 @@ export const fixtures: Fixture[] = [
         },
       },
       'functionBodies': {
-        'e8e62fca': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c6765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695279947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697655795479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169a16300cc707c947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1699d6700cc55799d51cdc0c78851cc789d686d6d7551',
+        'e8e62fca': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994018c8a527994018c8a765579547993018c8aa16300cc707c94018c8a9d6700cc55799d51cdc0c78851cc789d686d6d7551',
         '2f7ef34c': '5479a97b88547a547aac777777',
       },
       'compiler': {

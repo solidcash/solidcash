@@ -96,12 +96,18 @@ describe('layer-3 participant-binding scaling', () => {
   it('measures op-cost/budget ratio for N=2,4,8 participants', async () => {
     const results = [];
     for (const n of [2, 4, 8]) results.push(await measure(n));
-    // Measured worst-input op-cost/budget ratio: n=2 -> 15.0%, n=4 -> 17.5%, n=8 -> 20.8%. The ratio
-    // grows sub-linearly (each input cross-reads all N unlockings, ~O(N^2), vs an O(N) budget) but
-    // stays well under budget at the ~8-participant candidate scale.
-    expect(results.every((r) => r.ratioPct < 30)).toBe(true);
+    // Measured worst-input op-cost/budget ratio: n=2 -> 19.7%, n=4 -> 25.7%, n=8 -> 36.5%. The ratio
+    // grows sub-linearly (each input cross-reads all N unlockings, ~O(N^2), vs an O(N) budget) and stays
+    // well under budget at the ~8-participant candidate scale.
+    //
+    // The ratio is HIGHER than it was before cross-function outlining even though the absolute work fell
+    // (n=8: 4370 -> 3081 instructions). BCH-2025 scales the operation-cost budget with the unlocking
+    // bytecode length, so sharing repeated spans buys bytes at the cost of density: the same work is now
+    // billed against a smaller budget. Bytes are the binding constraint (the 10,000-byte input limit is a
+    // hard consensus rule), so this is the right trade - but density is what to watch as scripts shrink.
+    expect(results.every((r) => r.ratioPct < 50)).toBe(true);
     expect(results.map((r) => ({ n: r.n, instr: r.instr }))).toEqual([
-      { n: 2, instr: 1814 }, { n: 4, instr: 2666 }, { n: 8, instr: 4370 },
+      { n: 2, instr: 1367 }, { n: 4, instr: 1947 }, { n: 8, instr: 3081 },
     ]);
   });
 });

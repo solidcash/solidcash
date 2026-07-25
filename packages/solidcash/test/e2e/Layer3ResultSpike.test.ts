@@ -147,7 +147,7 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
     });
     // Compact binding + result production + settlement consumption, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2687, ratioPct: 12.8 }, { instr: 2687, ratioPct: 12.8 }]);
+    expect(metrics).toEqual([{ instr: 2075, ratioPct: 19.8 }, { instr: 2075, ratioPct: 19.8 }]);
   });
 
   it('HOSTILE: a forged result (not amount*rate) is rejected', async () => {

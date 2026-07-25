@@ -166,7 +166,7 @@ describe('layer-3 persistent state-write spike (E2E)', () => {
     });
     // Committed state read + floored share + state rewrite, all in one covenant, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 3165, ratioPct: 13.3 }, { instr: 3165, ratioPct: 13.3 }]);
+    expect(metrics).toEqual([{ instr: 2423, ratioPct: 21.1 }, { instr: 2423, ratioPct: 21.1 }]);
   });
 
   it('HOSTILE: a forged post-state (not E+M, B+S) is rejected', async () => {

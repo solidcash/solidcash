@@ -150,9 +150,9 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
     // far past the full-identity ~2 cap.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { n: 2, instr: 2077, ratioPct: 12.1 },
-      { n: 4, instr: 3159, ratioPct: 13.6 },
-      { n: 8, instr: 5323, ratioPct: 16.2 },
+      { n: 2, instr: 1680, ratioPct: 19.1 },
+      { n: 4, instr: 2541, ratioPct: 24.4 },
+      { n: 8, instr: 4194, ratioPct: 31.9 },
     ]);
   });
 

@@ -175,7 +175,7 @@ describe('layer-3 multi-resource oracle spike (E2E)', () => {
     // Three owners, share, and three multi-field state writes (Bento, Kashi, token) in one covenant.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 4030, ratioPct: 13.2 }, { instr: 4030, ratioPct: 13.2 }, { instr: 4030, ratioPct: 13.2 },
+      { instr: 3246, ratioPct: 22.9 }, { instr: 3246, ratioPct: 22.9 }, { instr: 3246, ratioPct: 22.9 },
     ]);
   });
 

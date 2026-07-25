@@ -119,10 +119,10 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
         }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
-    expect(tokenArtifact.diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'error',
-      code: 'contract-size-limit',
-    }));
+    // This five-function mapping ERC-20 used to compile past BCH's 10,000-byte input-script limit and carry a
+    // `contract-size-limit` error. Sharing repeated spans across its OP_DEFINE'd bodies brings it well inside.
+    expect(tokenArtifact.diagnostics?.some((entry) => entry.code === 'contract-size-limit') ?? false).toBe(false);
+    expect(tokenArtifact.debug!.bytecode.length / 2).toBeLessThan(10_000);
     expect(tokenArtifact.hiddenBatch).toMatchObject({
       minimumRows: 2,
       maximumRows: 2,

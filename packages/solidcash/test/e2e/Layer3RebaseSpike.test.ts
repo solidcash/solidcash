@@ -145,7 +145,7 @@ describe('layer-3 Rebase.toBase share math spike (E2E)', () => {
     });
     // Real floored-division share math bound in-covenant, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2838, ratioPct: 12.8 }, { instr: 2838, ratioPct: 12.8 }]);
+    expect(metrics).toEqual([{ instr: 2156, ratioPct: 20.6 }, { instr: 2156, ratioPct: 20.6 }]);
   });
 
   it('HOSTILE: a shareOut off by the flooring remainder (5 not 4) is rejected', async () => {

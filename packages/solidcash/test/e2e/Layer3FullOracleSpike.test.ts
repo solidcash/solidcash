@@ -177,7 +177,7 @@ describe('layer-3 full corpus-4 oracle (task 4)', () => {
     // Nine oracle fields across three owners at millions-magnitude, min-share branch, one covenant.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 3769, ratioPct: 12.9 }, { instr: 3769, ratioPct: 12.9 }, { instr: 3769, ratioPct: 12.9 },
+      { instr: 2928, ratioPct: 23.3 }, { instr: 2928, ratioPct: 23.3 }, { instr: 2928, ratioPct: 23.3 },
     ]);
   });
 

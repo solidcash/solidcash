@@ -54,10 +54,10 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
     }).toEqual({
       directBytes: 369,
-      batchBytes: 1477,
-      covenantDeltaBytes: 1108,
-      expandedOpcodes: 18,
-      routeBodyBytes: 1020,
+      batchBytes: 1007,
+      covenantDeltaBytes: 638,
+      expandedOpcodes: 23,
+      routeBodyBytes: 312,
     });
   });
 
@@ -76,9 +76,9 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
     }).toEqual({
       directBytes: 3047,
-      batchBytes: 9775,
-      covenantDeltaBytes: 6728,
-      routeBodyBytes: 6532,
+      batchBytes: 3949,
+      covenantDeltaBytes: 902,
+      routeBodyBytes: 1271,
     });
   }, 15_000);
 

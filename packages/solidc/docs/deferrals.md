@@ -1020,9 +1020,11 @@ values above 60 bytes).
 ### CHUNKED (>60 B) value in a loop - RESOLVED 2026-07-24
 
 The deferral below is historical. Runtime upsert loops now persist invariant and per-key long values using
-authenticated reverse-suffix chunk outputs. The SDK places them after the entry transition region and before fee
-change; the covenant counts backward from the suffix and pins collection, slot, digest, index, data, and exact chunk
-count. Varying-key array mutations reuse the layout after authenticating each old whole-array witness.
+authenticated reverse-suffix chunk outputs. The SDK places them after the entry transition region and fee change,
+then guarantees exactly one terminal output: the required external-library sidecar recreation, or otherwise a
+zero-value OP_RETURN anchor. The covenant counts backward from that terminal suffix and pins collection, slot, digest,
+index, data, and exact chunk count. Varying-key array mutations reuse the layout after authenticating each old
+whole-array witness.
 `SortedArrayValueLoop.test.ts` and `SortedArrayValueVaryingLoop.test.ts` cover invariant/per-key long values and
 inline-to-chunked-to-inline push/set/pop transitions.
 

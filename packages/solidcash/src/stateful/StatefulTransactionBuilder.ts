@@ -797,10 +797,24 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  /** Runtime-loop value chunks must be the final transaction outputs for reverse-suffix covenant indexing. */
+  /**
+   * Runtime-loop value chunks occupy the region immediately before one terminal suffix output. The builder
+   * guarantees that suffix is either the required external-library sidecar recreation or a zero-value OP_RETURN
+   * anchor, and inserts fee change before this region.
+   */
   addLateValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.lateValueChunkOutputs.push(output);
     return this;
+  }
+
+  /** Insert a non-covenant output before the authenticated [late chunks][terminal suffix] region. */
+  private insertBeforeLateValueSuffix(builder: TransactionBuilder, output: Output): void {
+    if (this.lateValueChunkOutputs.length === 0) {
+      builder.addOutput(output);
+      return;
+    }
+    const suffixLength = this.lateValueChunkOutputs.length + 1;
+    builder.outputs.splice(builder.outputs.length - suffixLength, 0, output);
   }
 
   /** Pin a collection's loop-entry (NEW) commitment as known-exactly, so auto-derivation skips re-deriving it. */
@@ -2003,10 +2017,19 @@ export class StatefulTransactionBuilder {
       builder.addOutput(chunkOutput);
     }
 
-    // No change output - adding outputs past the block range changes
-    // OP_TXOUTPUTCOUNT, which the covenant's bounds checks rely on.
-    // Instead, funder UTXOs are sized to exactly cover the fee (see
-    // sizeFunderForFee()) so no change is needed.
+    // Reverse-suffix chunk indexing requires exactly ONE output after the late chunk region in every build,
+    // including covenant-only probes and direct build() calls. A sidecar must be last for its self-preservation
+    // covenant; otherwise use a zero-value OP_RETURN anchor. send() inserts any fee change BEFORE this suffix.
+    if (this.lateValueChunkOutputs.length > 0) {
+      if (this.sidecarUtxo) {
+        builder.addOutput({
+          to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
+          amount: this.sidecarUtxo.satoshis,
+        });
+      } else {
+        builder.addOutput({ to: new Uint8Array([0x6a]), amount: 0n }); // OP_RETURN suffix anchor
+      }
+    }
 
     return builder;
   }
@@ -2298,6 +2321,7 @@ export class StatefulTransactionBuilder {
       + iterationEntryOutputCount
       + this.pendingOutputs.length
       + this.lateValueChunkOutputs.length
+      + (this.lateValueChunkOutputs.length > 0 ? 1 : 0)
       + changeOutputCount;
   }
 
@@ -2410,9 +2434,9 @@ export class StatefulTransactionBuilder {
     const changeLockingSize = this.funderChangeAddress?.length ?? 35; // P2SH32 default
     const changeOutputOverhead = 8 + (changeLockingSize < 253 ? 1 : 3) + changeLockingSize;
 
-    // covenantSize already includes the side-car input (build() appends it); account for the recreation
-    // output added below (value 8 + scriptLen 1 + P2SH32 35), with a small margin.
-    const sidecarOutputOverhead = this.sidecarUtxo ? 50n : 0n;
+    // With late chunks, build() already includes the terminal sidecar recreation (or OP_RETURN anchor). Without
+    // late chunks, the sidecar recreation is still appended below and must be included in the estimate.
+    const sidecarOutputOverhead = this.sidecarUtxo && this.lateValueChunkOutputs.length === 0 ? 50n : 0n;
     const totalEstimatedSize = covenantSize + BigInt(feeInputOverhead) + BigInt(changeOutputOverhead)
       + sidecarOutputOverhead;
     const neededFee = this.computeMinFee(totalEstimatedSize);
@@ -2482,13 +2506,16 @@ export class StatefulTransactionBuilder {
       const changeAmount = available - neededFee;
 
       if (changeAmount >= DUST_MINIMUM) {
-        finalBuilder.addOutput({ to: changeTo, amount: changeAmount });
+        const changeOutput = { to: changeTo, amount: changeAmount };
+        // Keep [late chunks][one terminal suffix] contiguous at the end. The compiler authenticates chunk i by
+        // counting backward from OP_TXOUTPUTCOUNT, so fee change must precede the entire suffix region.
+        this.insertBeforeLateValueSuffix(finalBuilder, changeOutput);
       }
     }
 
     // Recreate the side-car as the LAST output (its self-preservation verifies the last output).
-    // Value-preserving (recreation amount == side-car input amount), so it is fee-neutral.
-    if (this.sidecarUtxo) {
+    // With late chunks it was already emitted by build() as their single terminal suffix.
+    if (this.sidecarUtxo && this.lateValueChunkOutputs.length === 0) {
       finalBuilder.addOutput({
         to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
         amount: this.sidecarUtxo.satoshis,

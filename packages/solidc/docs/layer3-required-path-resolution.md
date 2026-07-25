@@ -39,8 +39,8 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
 | P5 | Resources disconnected from the root | CLOSED | `ExecutionResource {owner, categoryHex}` in the framed root; owner verifies the co-spent NFT; the journal writes that resource. `Layer3ResourceRoot`. |
 | P6 | Cross-edge ordering/dependency absent | CLOSED (journal model) | `Layer3Journal` ORDERING (25 != 30), `Layer3Cycle` (edge 2 observes edge 1's post-state). |
 | P7 | Callee exhaustiveness incorrect | CLOSED (journal rows) | Every incoming edge is folded into the flush; omit/add a row and it fails. Native-call-has-a-row is P8. |
-| P8 | Auto-wiring exercises no native calls | SUBSTANTIALLY CLOSED | `generateBalancedParticipant` composes with a REAL native `IContract(addr).ping(val)` call: the callee is co-spent in the layout's callee slot (audit `Layer3BalancedCall`), the controller shifts past it, the caller self-preserves, a wrong callee-base is rejected. Remaining: SDK auto-derivation of the co-spends from compiler metadata (vs. supplied witness). |
-| P9 | Balanced block-layout composability | CLOSED (core invariant) | `balancedLayout` gives every participant a contiguous block (executor + state NFTs + event slots) with equal input/output cardinality; blocks concatenate by computed bases; covenants address slots by BLOCK BASE, and the balanced closure rejects inserted/omitted slots (`Layer3Balanced` shows A's size-2 block shifting B's base to 2). Criteria 1,2,4,7,9,10 VM-proven; transitive/conditional/fee-invariance criteria (3,5,6,8) not yet exercised. |
+| P8 | Auto-wiring exercises no native calls | SUBSTANTIALLY CLOSED | `generateBalancedParticipant` composes with a REAL native `IContract(addr).method()` call: single call (`Layer3BalancedCall`) and a TRANSITIVE A->B->C chain (`Layer3BalancedTransitive`), callees co-spent in the layout callee slots, callers self-preserving, wrong callee-base rejected. Remaining: SDK auto-derivation of the co-spends from compiler metadata (vs. supplied witness). |
+| P9 | Balanced block-layout composability | CLOSED (core invariant) | `balancedLayout` gives every participant a contiguous block (executor + state NFTs + event slots) with equal input/output cardinality; blocks concatenate by computed bases; covenants address slots by BLOCK BASE, and the balanced closure rejects inserted/omitted slots (`Layer3Balanced` shows A's size-2 block shifting B's base to 2). Criteria 1,2,3,4,7,9,10 VM-proven (incl. transitive); conditional-same-size (5), fee-invariance (6), artifact-only auto-composition (8) not yet exercised. |
 | P10 | Event exhaustiveness wrong transport | CLOSED | Events are NFT slots inside the emitter's balanced block (block-relative), branded with the emitter's committed state category, structurally exhaustive via the closure - no global OP_RETURN scan, spendable records (`Layer3BalancedEvents`). |
 | P11 | TypedTransition length disagreement | CLOSED | SDK and covenant both require `commitment.length == total`. `Layer3TypedTransition`. |
 | P12 | setRoot not set-once | CLOSED | `setRoot` requires an empty input commitment; one-shot controller replay policy available. `Layer3Replay`. |
@@ -65,7 +65,8 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
   caller self-preservation) runs alongside the balanced membership.
 
 Tests (real BCH-2026 VM): `Layer3Balanced` (shifted bases + closure), `Layer3BalancedEvents` (event NFT
-slots), `Layer3BalancedCall` (native call under balanced bases).
+slots), `Layer3BalancedCall` (native call under balanced bases), `Layer3BalancedTransitive` (A->B->C native
+chain).
 
 ## Honest scope of what remains
 

@@ -123,6 +123,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
+      if (fn.graphEmissionHandler) continue;
       if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStructPtr(fn)) {
         this.inlinedFns.add(fn.name);
       }
@@ -133,7 +134,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
     // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry.
     for (const fn of node.functions) {
-      if (!fn.collectionJournal
+      if (!fn.graphEmissionHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn)

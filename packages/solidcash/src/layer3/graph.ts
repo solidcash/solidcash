@@ -177,8 +177,9 @@ export function finalizeCompiledGraph(
     if (invocation.parent === null || invocation.caller === null) continue;
     const target = hexToBin(plan.participants[invocation.callee].lockingBytecode);
     const args = hexToBin(invocation.argsHex);
+    const result = hexToBin(resultHex[invocation.index]);
     emissionParts[invocation.caller].push(
-      framed(target), hexToBin(invocation.selectorHex), framed(args),
+      framed(target), hexToBin(invocation.selectorHex), framed(args), framed(result),
     );
   }
   const participantEmissions = emissionParts.map((parts) => concat(...parts));
@@ -542,12 +543,19 @@ contract GraphProjectionVerifier() {
         emissionCursor = emissionCursor + 2;
         bytes emittedArgs = ownerEmissions.slice(emissionCursor, emissionCursor + emittedArgsLength);
         emissionCursor = emissionCursor + emittedArgsLength;
+        bigint emittedResultLength = int(bytes.concat(
+          ownerEmissions.slice(emissionCursor, emissionCursor + 2), hex"00"
+        ));
+        emissionCursor = emissionCursor + 2;
+        bytes emittedResult = ownerEmissions.slice(emissionCursor, emissionCursor + emittedResultLength);
+        emissionCursor = emissionCursor + emittedResultLength;
         bytes expectedTarget;
         ${targetDispatch}
         else { revert("callee out of range"); }
         require(emittedTarget == expectedTarget);
         require(emittedSelector == selector);
         require(emittedArgsLength == argsLength && emittedArgs == args);
+        require(emittedResultLength == resultLength && emittedResult == result);
       }
       if (callee == participantIndex) {
         require(row == localRow);

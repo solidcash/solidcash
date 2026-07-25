@@ -1674,6 +1674,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
       this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
       this.collectExternalCalls(node.body, externalCallSlots);
+      // A graph SCB1 route invokes compiler-owned clones whose foreign calls are authenticated against the
+      // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
+      // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
+      if (node.hiddenBatchRoute && this.compilerOptions.experimentalMessageBusController) {
+        externalCallSlots.length = 0;
+      }
 
       if (externalCallSlots.length > 0) {
         const logicalCallSlots = [...externalCallSlots];
@@ -1805,7 +1811,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
         if (node.graphEmissionHandler) {
-          if (logicalCallSlots.length !== 1 || logicalCallSlots[0].hasReturnValues
+          if (logicalCallSlots.length !== 1
+            || (logicalCallSlots[0].returnTypes?.length ?? 0) > 1
             || logicalCallSlots[0].loopArrayVar || logicalCallSlots[0].fnPtrCall
             || (logicalCallSlots[0].callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) {
             throw new Error(
@@ -1995,7 +2002,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // B-side: inject _returnOutputIdx for functions with return types that are entry points
-    if (node.returnTypes.length > 0 && node.isEntryPoint) {
+    if (node.returnTypes.length > 0 && node.isEntryPoint && !node.graphEmissionHandler) {
       const returnOutputIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       returnOutputIdxParam.location = node.location;
       node.parameters.push(returnOutputIdxParam);
@@ -2008,7 +2015,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
-    if (node.externalCalls) {
+    if (node.externalCalls && !node.graphEmissionHandler) {
       const returningSlots = node.externalCalls.filter((ec) => ec.hasReturnValues);
       for (const slot of returningSlots) {
         // Backward compat: single returning slot uses '__internal__externalReturnOutputIdx', multiple use indexed names

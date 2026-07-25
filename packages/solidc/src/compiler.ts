@@ -8,7 +8,7 @@ import {
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
-  NullaryOpNode,
+  NullaryOpNode, VariableDefinitionNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -253,16 +253,24 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
     let reason: string | undefined;
     const bodyStatements = fn.body.statements ?? [];
-    const graphTailCallEligible = graphControllerLbc !== undefined
-      && methodCallCount === 1
-      && fn.returnTypes.length === 0
-      && bodyStatements.length >= 2
+    const graphTailStatement = bodyStatements.length >= 2
       && bodyStatements[bodyStatements.length - 2] instanceof MethodCallStatementNode
       && bodyStatements[bodyStatements.length - 1] instanceof RequireNode
       && (bodyStatements[bodyStatements.length - 1] as RequireNode).expression
         instanceof BoolLiteralNode
       && ((bodyStatements[bodyStatements.length - 1] as RequireNode)
         .expression as BoolLiteralNode).value === true;
+    const graphResultStatement = bodyStatements.some((statement) => {
+      if (!(statement instanceof VariableDefinitionNode)) return false;
+      let containsCall = false;
+      walkInvocationAst(statement, (candidate) => {
+        if (candidate instanceof MethodCallNode) containsCall = true;
+      });
+      return containsCall;
+    });
+    const graphTailCallEligible = graphControllerLbc !== undefined
+      && methodCallCount === 1
+      && (graphTailStatement || graphResultStatement);
     const keyWitnesses: { routeInput: string; inputIndex: number; perRow?: boolean }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
@@ -467,6 +475,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.hiddenBatchEligible = undefined;
     handler.hiddenBatchRejectionReason = undefined;
     handler.hiddenBatchKeyWitnesses = undefined;
+    handler.parameters = handler.parameters.filter((parameter) =>
+      parameter.name !== '__internal__returnOutputIdx');
     handler.graphEmissionHandler = true;
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);

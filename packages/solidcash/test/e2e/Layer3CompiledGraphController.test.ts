@@ -31,11 +31,20 @@ contract CompiledGraphA(int brand, address target) {
     require(true);
   }
 }`;
-const RETURNING_APP = (name: string) => `pragma solidcash >=0.8.0;
-contract ${name}(int brand) {
+const RETURNING_B = `pragma solidcash >=0.8.0;
+contract CompiledReturningB(int brand) {
   function twice(int n) public pure returns (int) {
     require(n >= 0);
     return n * 2;
+  }
+}`;
+const RETURNING_A = `pragma solidcash >=0.8.0;
+interface IReturningB { function twice(int n) returns (int); }
+contract CompiledReturningA(int brand, address target) {
+  function plusOne(int n) public pure returns (int) {
+    int child = IReturningB(target).twice(n);
+    require(child >= 0);
+    return child + 1;
   }
 }`;
 const STATE_A = `pragma solidcash >=0.8.0;
@@ -263,26 +272,26 @@ async function buildReturning(tamperResult = false) {
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const artifactA = compileString(RETURNING_APP('CompiledReturningA'), options);
-  const artifactB = compileString(RETURNING_APP('CompiledReturningB'), options);
-  const baseA = new Contract(artifactA, [1n], { provider });
+  const artifactB = compileString(RETURNING_B, options);
   const baseB = new Contract(artifactB, [2n], { provider });
-  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
-  const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const artifactA = compileString(RETURNING_A, options);
+  const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const plan = layer3.planCompiledGraph([
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'twice', args: [1n] },
+    { parent: null, callee: 0, function: 'plusOne', args: [2n] },
     { parent: 0, callee: 1, function: 'twice', args: [2n] },
   ]);
   const transcript = layer3.finalizeCompiledGraph(plan, {
-    0: binToHex(scriptToBytecode([bigIntToVmNumber(2n)])),
+    0: binToHex(scriptToBytecode([bigIntToVmNumber(5n)])),
     1: binToHex(scriptToBytecode([bigIntToVmNumber(4n)])),
-  }, [0, 2], [1, 3], [binToHex(packedResult(2n)), binToHex(packedResult(4n))], [4, 5]);
-  const resultA = aggregateResult(2n);
+  }, [0, 2], [1, 3], [binToHex(packedResult(5n)), binToHex(packedResult(4n))], [4, 5]);
+  const resultA = aggregateResult(5n);
   const resultB = aggregateResult(tamperResult ? 5n : 4n);
   const layout: layer3.CompiledGraphPhysicalLayout = {
     participantInputs: [0, 2],
@@ -495,7 +504,7 @@ describe('Layer-3 compiled graph controller', () => {
     } = await buildReturning();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
     expect(layer3.decodeHiddenBatchResults(artifactA, plan.participants[0].batch, resultA))
-      .toEqual([{ row: 0, type: 'int256', value: 2n }]);
+      .toEqual([{ row: 0, type: 'int256', value: 5n }]);
   });
 
   it('rejects a forged return commitment even when the result NFT is otherwise well formed', async () => {

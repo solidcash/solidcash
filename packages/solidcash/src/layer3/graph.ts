@@ -276,7 +276,22 @@ export function generateGraphRootController(projectionVerifierLbc: string): stri
       }`;
   }).join('\n      ');
   return `pragma solidcash >=0.8.0;
-contract GraphRootController() {
+contract GraphRootController(bytes20 initializer) {
+  function initialize(bytes32 root, pubkey pk, sig s) {
+    require(hash160(pk) == initializer);
+    require(checkSig(s, pk));
+    require(root != bytes32(0));
+    require(tx.inputs[this.activeInputIndex].nftCommitment.length == 0);
+    require(tx.inputs[this.activeInputIndex].tokenCategory.slice(32, 33) == hex"01");
+    require(this.activeInputIndex < tx.outputs.length);
+    require(tx.outputs[this.activeInputIndex].lockingBytecode
+      == tx.inputs[this.activeInputIndex].lockingBytecode);
+    require(tx.outputs[this.activeInputIndex].tokenCategory
+      == tx.inputs[this.activeInputIndex].tokenCategory);
+    require(tx.outputs[this.activeInputIndex].nftCommitment == root);
+    require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value);
+    require(true);
+  }
   function attest(bytes transcript) {
     require(tx.inputs[this.activeInputIndex].nftCommitment.length == 32);
     require(tx.inputs[this.activeInputIndex].nftCommitment == sha256(transcript));

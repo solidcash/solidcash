@@ -38,22 +38,63 @@ contract ${name}(int brand) {
   }
 }`;
 
+async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>) {
+  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [alicePkh], { provider },
+  );
+  const genesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
+    address: controller.tokenAddress,
+    satoshis: 3000n,
+    token: { amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  }]);
+  return {
+    projection, controller, categoryId: genesis.categoryId as string, genesisUtxo: genesis.utxos[0],
+  };
+}
+
+async function initializeGraphAuthority(
+  provider: ReturnType<typeof createTestProvider>,
+  controller: Contract,
+  genesisUtxo: any,
+  categoryId: string,
+  root: string,
+  p2pkh: Contract,
+) {
+  const fee = randomUtxo({ satoshis: 20_000n });
+  await provider.addUtxo(p2pkh.address, fee);
+  const tx = new TransactionBuilder({ provider });
+  tx.addInput(genesisUtxo, controller.unlock.initialize(hexToBin(root), alicePub, signature()));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: controller.tokenAddress, amount: genesisUtxo.satoshis,
+    token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: root } },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(tx));
+  const rooted = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo: any) => utxo.token?.nft?.commitment === root);
+  if (!rooted) throw new Error('graph controller initialization did not create the rooted authority');
+  return rooted;
+}
+
 async function build(
   tamperSecondBatch = false,
   omitController = false,
   malformedGraph = false,
   replaceProjection = false,
   aliasProjection = false,
+  forgeControllerCategory = false,
 ) {
   const provider = createTestProvider();
-  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
-  const controller = new Contract(
-    compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [], { provider },
-  );
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
     experimentalHiddenBatch: true,
     experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
   };
   const artifactA = compileString(APP('CompiledGraphA'), options);
   const artifactB = compileString(APP('CompiledGraphB'), options);
@@ -104,12 +145,6 @@ async function build(
     controllerInput: 4,
     totalSlots: 6,
   };
-  const genesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
-    address: controller.tokenAddress,
-    satoshis: 3000n,
-    token: { amount: 0n, nft: { capability: 'mutable', commitment: transcript.root } },
-  }]);
-
   const aUtxo = setupA.masterUtxo;
   const bUtxo = setupB.masterUtxo;
   const feeUtxo = randomUtxo({ satoshis: 50000n });
@@ -118,6 +153,16 @@ async function build(
   const fakeProjection = randomUtxo({ satoshis: 1000n });
   const fakeControllerUtxo = randomUtxo({ satoshis: 3000n });
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const forgedController = forgeControllerCategory
+    ? (await (provider as any).addTokenUtxosDynamic((_category: string) => [{
+      address: controller.tokenAddress,
+      satoshis: 3000n,
+      token: { amount: 0n, nft: { capability: 'mutable', commitment: transcript.root } },
+    }])).utxos[0]
+    : undefined;
   await provider.addUtxo(p2pkh.address, feeUtxo);
   await provider.addUtxo(projection.address, projectionA);
   await provider.addUtxo(projection.address, projectionB);
@@ -149,7 +194,10 @@ async function build(
   if (omitController) {
     tx.addInput(fakeControllerUtxo, p2pkh.unlock.spend(alicePub, signature()));
   } else {
-    tx.addInput(genesis.utxos[0], controller.unlock.attest(transcript.bytes));
+    tx.addInput(
+      forgedController ?? rootedController,
+      controller.unlock.attest(transcript.bytes),
+    );
   }
   tx.addInput(feeUtxo, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({
@@ -176,14 +224,14 @@ const aggregateResult = (value: bigint): Uint8Array => scriptToBytecode([packedR
 
 async function buildReturning(tamperResult = false) {
   const provider = createTestProvider();
-  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
-  const controller = new Contract(
-    compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [], { provider },
-  );
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
     experimentalHiddenBatch: true,
     experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
   };
   const artifactA = compileString(RETURNING_APP('CompiledReturningA'), options);
   const artifactB = compileString(RETURNING_APP('CompiledReturningB'), options);
@@ -212,12 +260,10 @@ async function buildReturning(tamperResult = false) {
     totalSlots: 8,
     returnOutputs: [1, 3],
   };
-  const genesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
-    address: controller.tokenAddress,
-    satoshis: 3000n,
-    token: { amount: 0n, nft: { capability: 'mutable', commitment: transcript.root } },
-  }]);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
   const returnFundingA = randomUtxo({ satoshis: 1000n });
   const returnFundingB = randomUtxo({ satoshis: 1000n });
   const fee = randomUtxo({ satoshis: 50000n });
@@ -248,7 +294,7 @@ async function buildReturning(tamperResult = false) {
   tx.addInput(returnFundingB, p2pkh.unlock.spend(alicePub, signature()));
   tx.addInput(projectionA, projection.unlock.verify(transcript.bytes, 6n, 0n));
   tx.addInput(projectionB, projection.unlock.verify(transcript.bytes, 6n, 1n));
-  tx.addInput(genesis.utxos[0], controller.unlock.attest(transcript.bytes));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({
     to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
@@ -281,14 +327,14 @@ async function buildReturning(tamperResult = false) {
 
 async function buildStateCycle(tamperState = false) {
   const provider = createTestProvider();
-  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
-  const controller = new Contract(
-    compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [], { provider },
-  );
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
     experimentalHiddenBatch: true,
     experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
   };
   const artifactA = compileString(STATE_APP('CompiledStateA'), options);
   const artifactB = compileString(STATE_APP('CompiledStateB'), options);
@@ -313,12 +359,10 @@ async function buildStateCycle(tamperState = false) {
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, [0, 2], [null, null], ['', ''], [4, 5],
   );
-  const controllerGenesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
-    address: controller.tokenAddress,
-    satoshis: 3000n,
-    token: { amount: 0n, nft: { capability: 'mutable', commitment: transcript.root } },
-  }]);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
   const fee = randomUtxo({ satoshis: 50000n });
   const projectionA = randomUtxo({ satoshis: 1000n });
   const projectionB = randomUtxo({ satoshis: 1000n });
@@ -342,7 +386,7 @@ async function buildStateCycle(tamperState = false) {
   tx.addInput(setupB.dataNftUtxos[0], createDataNftUnlocker(b, 2, setupB.categoryId));
   tx.addInput(projectionA, projection.unlock.verify(transcript.bytes, 6n, 0n));
   tx.addInput(projectionB, projection.unlock.verify(transcript.bytes, 6n, 1n));
-  tx.addInput(controllerGenesis.utxos[0], controller.unlock.attest(transcript.bytes));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({
     to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
@@ -401,6 +445,11 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects aliasing two participant projections to one physical proof input', async () => {
     const { provider, transaction } = await build(false, false, false, false, true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects a valid controller covenant carrying a forged token category', async () => {
+    const { provider, transaction } = await build(false, false, false, false, false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

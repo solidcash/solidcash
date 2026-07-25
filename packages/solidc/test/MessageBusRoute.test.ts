@@ -16,8 +16,10 @@ describe('compiler-integrated message-bus SCB1 route', () => {
       forceStateful: true,
       experimentalHiddenBatch: true,
       experimentalMessageBusController: '51',
+      experimentalMessageBusControllerCategory: '00'.repeat(32),
     });
     expect(artifact.hiddenBatch?.graphControllerLockingBytecode).toBe('51');
+    expect(artifact.hiddenBatch?.graphControllerCategory).toBe('00'.repeat(32));
     expect(artifact.hiddenBatch?.route.inputs.map((input) => input.name)).toEqual([
       'batchBlob',
       '__internal__graphTranscript',
@@ -32,6 +34,15 @@ describe('compiler-integrated message-bus SCB1 route', () => {
       forceStateful: true,
       experimentalHiddenBatch: true,
       experimentalMessageBusController: 'not-hex',
+      experimentalMessageBusControllerCategory: '00'.repeat(32),
     })).toThrow(/hex-encoded locking bytecode/);
+  });
+
+  it('requires the unique controller category together with its locking bytecode', () => {
+    expect(() => compileString(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: '51',
+    })).toThrow(/32-byte experimentalMessageBusControllerCategory/);
   });
 });

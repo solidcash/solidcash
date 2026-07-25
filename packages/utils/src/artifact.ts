@@ -67,6 +67,11 @@ export interface CompilerOptions {
    * batch is a framed member of that transcript.
    */
   experimentalMessageBusController?: string;
+  /**
+   * Display-order category ID of the unique mint-once controller NFT. Required with
+   * `experimentalMessageBusController`; locking bytecode alone is cloneable and is not an authority.
+   */
+  experimentalMessageBusControllerCategory?: string;
 }
 
 export interface AbiInput {
@@ -540,6 +545,7 @@ export interface Artifact {
     maximumRows: number;
     maximumBlobBytes: number;
     graphControllerLockingBytecode?: string;
+    graphControllerCategory?: string;
     route: AbiFunction;
     handlers: {
       name: string;

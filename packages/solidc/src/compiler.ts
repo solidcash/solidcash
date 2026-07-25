@@ -187,9 +187,19 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
   const graphControllerLbc = compilerOptions.experimentalMessageBusController?.toLowerCase();
+  const graphControllerCategory = compilerOptions.experimentalMessageBusControllerCategory?.toLowerCase();
   if (graphControllerLbc !== undefined && !/^([0-9a-f]{2})+$/.test(graphControllerLbc)) {
     throw new Error('experimentalMessageBusController must be hex-encoded locking bytecode');
   }
+  if ((graphControllerLbc === undefined) !== (graphControllerCategory === undefined)
+    || (graphControllerCategory !== undefined && !/^[0-9a-f]{64}$/.test(graphControllerCategory))) {
+    throw new Error(
+      'experimentalMessageBusController requires a 32-byte experimentalMessageBusControllerCategory',
+    );
+  }
+  const graphControllerCategoryInternal = graphControllerCategory === undefined
+    ? undefined
+    : (graphControllerCategory.match(/../g) as string[]).reverse().join('');
   if (contract.functions.some((fn) => fn.functionSelector
     && binToHex(fn.functionSelector) === SCB1_SELECTOR_HEX)) {
     throw new Error('Source function selector collides with reserved hidden batch selector 0x53434231');
@@ -516,6 +526,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           && __internal__graphControllerIdx < tx.inputs.length
           && __internal__graphControllerIdx != this.activeInputIndex);
         require(tx.inputs[__internal__graphControllerIdx].lockingBytecode == hex"${graphControllerLbc}");
+        require(tx.inputs[__internal__graphControllerIdx].tokenCategory.slice(0, 32)
+          == hex"${graphControllerCategoryInternal}");
+        require(tx.inputs[__internal__graphControllerIdx].tokenCategory.slice(32, 33) == hex"01");
         require(tx.inputs[__internal__graphControllerIdx].nftCommitment == sha256(__internal__graphTranscript));
         bytes __graph_owner_lbc = tx.inputs[this.activeInputIndex].lockingBytecode;
         bytes __graph_owner_frame = bytes.concat(
@@ -1040,6 +1053,7 @@ function compileResolvedAst(
       maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
       ...(mergedCompilerOptions.experimentalMessageBusController && {
         graphControllerLockingBytecode: mergedCompilerOptions.experimentalMessageBusController.toLowerCase(),
+        graphControllerCategory: mergedCompilerOptions.experimentalMessageBusControllerCategory!.toLowerCase(),
       }),
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({

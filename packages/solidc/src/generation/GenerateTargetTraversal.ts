@@ -11137,6 +11137,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_frame)');
 
+    const graphCallMode = slot.callMode === ExternalCallMode.STATICCALL ? 1 : 0;
+    if (slot.callMode === ExternalCallMode.DELEGATECALL) {
+      throw new Error('Graph emission does not support delegatecall');
+    }
+    this.emit(Uint8Array.of(graphCallMode), locationData);
+    this.pushToStack('(__graph_call_mode)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_target_mode)');
+
     this.emit(slot.compileTimeSelector, locationData);
     this.pushToStack('(__graph_selector)');
     this.emit(Op.OP_CAT, locationData);

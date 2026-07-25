@@ -31,6 +31,7 @@ export interface PlannedGraphInvocation {
   depth: number;
   function: string;
   selectorHex: string;
+  callMode: 'call' | 'staticcall';
   argsHex: string;
   resultTypes: readonly string[];
 }
@@ -182,7 +183,8 @@ export function finalizeCompiledGraph(
     const args = hexToBin(invocation.argsHex);
     const result = hexToBin(resultHex[invocation.index]);
     emissionParts[invocation.caller].push(
-      framed(target), hexToBin(invocation.selectorHex), framed(args), framed(result),
+      framed(target), uint(invocation.callMode === 'staticcall' ? 1 : 0, 1),
+      hexToBin(invocation.selectorHex), framed(args), framed(result),
     );
   }
   const participantEmissions = emissionParts.map((parts) => concat(...parts));
@@ -240,6 +242,7 @@ export function finalizeCompiledGraph(
       uint(invocation.depth, 1),
       uint(invocation.subtreeEnd, 2),
       hexToBin(invocation.selectorHex),
+      uint(invocation.callMode === 'staticcall' ? 1 : 0, 1),
       framed(args),
       framed(result),
     );
@@ -413,7 +416,7 @@ contract GraphRootController(bytes20 initializer) {
       bigint depth = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
       cursor = cursor + 1;
       bigint subtreeEnd = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      cursor = cursor + 6;
+      cursor = cursor + 7;
       require(callee < participantCount);
       if (invocation == 0) {
         require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
@@ -545,6 +548,9 @@ contract GraphProjectionVerifier() {
       cursor = cursor + 3;
       bytes selector = transcript.slice(cursor, cursor + 4);
       cursor = cursor + 4;
+      bigint callMode = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 1;
+      require(callMode == 0 || callMode == 1);
       bigint argsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bytes args = transcript.slice(cursor, cursor + argsLength);
@@ -568,6 +574,10 @@ contract GraphProjectionVerifier() {
         emissionCursor = emissionCursor + 2;
         bytes emittedTarget = ownerEmissions.slice(emissionCursor, emissionCursor + targetLength);
         emissionCursor = emissionCursor + targetLength;
+        bigint emittedCallMode = int(bytes.concat(
+          ownerEmissions.slice(emissionCursor, emissionCursor + 1), hex"00"
+        ));
+        emissionCursor = emissionCursor + 1;
         bytes emittedSelector = ownerEmissions.slice(emissionCursor, emissionCursor + 4);
         emissionCursor = emissionCursor + 4;
         bigint emittedArgsLength = int(bytes.concat(
@@ -586,6 +596,7 @@ contract GraphProjectionVerifier() {
         ${targetDispatch}
         else { revert("callee out of range"); }
         require(emittedTarget == expectedTarget);
+        require(emittedCallMode == callMode);
         require(emittedSelector == selector);
         require(emittedArgsLength == argsLength && emittedArgs == args);
         require(emittedResultLength == resultLength && emittedResult == result);
@@ -734,6 +745,31 @@ export function planCompiledGraph(
     const row = execution.batch.rows[localRow];
     const result = execution.batch.results.find((candidate) => candidate.row === localRow);
     const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
+    let callMode: 'call' | 'staticcall' = 'call';
+    if (invocation.parent !== null) {
+      const parentInvocation = invocations[invocation.parent];
+      const parentArtifact = participants[parentInvocation.callee].artifact;
+      const parentFunction = parentArtifact.abi.find((candidate) =>
+        candidate.name === parentInvocation.function);
+      const candidates = parentFunction?.externalCalls?.filter((call) =>
+        call.functionName === invocation.function) ?? [];
+      const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
+      if (modes.length > 1) {
+        throw new Error(`layer3: call mode for invocation ${index} is ambiguous`);
+      }
+      if (modes[0] === 'delegatecall') {
+        throw new Error('layer3: delegatecall is not a participant-graph call mode');
+      }
+      callMode = modes[0] === 'staticcall' ? 'staticcall' : 'call';
+      if (callMode === 'staticcall') {
+        const calleeFunction = participants[invocation.callee].artifact.abi.find((candidate) =>
+          candidate.name === invocation.function);
+        if (!calleeFunction || calleeFunction.writesState
+          || (calleeFunction.emits?.length ?? 0) > 0) {
+          throw new Error(`layer3: staticcall target '${invocation.function}' is not compiler-proven read-only`);
+        }
+      }
+    }
     return Object.freeze({
       index,
       parent: invocation.parent,
@@ -744,6 +780,7 @@ export function planCompiledGraph(
       depth: depths[index],
       function: row.function,
       selectorHex: row.selectorHex,
+      callMode,
       argsHex: row.argsHex,
       resultTypes: Object.freeze([...(result?.types ?? [])]),
     });

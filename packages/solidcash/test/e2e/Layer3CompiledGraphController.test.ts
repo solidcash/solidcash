@@ -23,12 +23,14 @@ contract ${name}(int brand) {
   function ping(int n) public { require(n >= 0); }
   function authenticated(address expected) public { require(msg.sender == expected); }
   function inspectData(int n) public { require(msg.data == abi.encodeWithSelector(msg.sig, n)); }
+  function viewPing() public pure { require(true); }
 }`;
 const CALLING_APP = `pragma solidcash >=0.8.0;
 interface ICompiledGraphTarget {
   function ping(int n);
   function authenticated(address expected);
   function inspectData(int n);
+  function viewPing();
 }
 contract CompiledGraphA(int brand, address target) {
   function start(int first, int second) public {
@@ -56,6 +58,10 @@ contract CompiledGraphA(int brand, address target) {
   }
   function forwardCalldata(address next, int n) public {
     ICompiledGraphTarget(next).inspectData(n);
+    require(true);
+  }
+  function forwardStatic(address next) public {
+    ICompiledGraphTarget(next).viewPing.staticcall();
     require(true);
   }
 }`;
@@ -154,6 +160,7 @@ async function build(
   loopCount?: number,
   senderAuth?: { forgeExpected: boolean },
   dataAuth = false,
+  staticAuth = false,
 ) {
   const provider = createTestProvider();
   const {
@@ -173,7 +180,10 @@ async function build(
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
-  const graphInvocations = dataAuth ? [
+  const graphInvocations = staticAuth ? [
+    { parent: null, callee: 0, function: 'forwardStatic', args: [b.lockingBytecode] },
+    { parent: 0, callee: 1, function: 'viewPing', args: [] },
+  ] : dataAuth ? [
     { parent: null, callee: 0, function: 'forwardCalldata', args: [b.lockingBytecode, 7n] },
     { parent: 0, callee: 1, function: 'inspectData', args: [7n] },
   ] : senderAuth ? [
@@ -600,6 +610,14 @@ describe('Layer-3 compiled graph controller', () => {
   it('constructs graph msg.data from the authenticated selector and row arguments', async () => {
     const { provider, transaction } = await build(
       false, false, false, false, false, false, 1n, undefined, undefined, undefined, true,
+    );
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('commits compiler-derived staticcall mode for a read-only callee', async () => {
+    const { provider, transaction } = await build(
+      false, false, false, false, false, false, 1n,
+      undefined, undefined, undefined, false, true,
     );
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });

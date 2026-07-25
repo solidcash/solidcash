@@ -80,8 +80,8 @@ async function run(
     to: p2.tokenAddress, amount: siphonStateValue ? 1000n : bState.satoshis,
     token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: binToHex(num8(15n)) } },
   });
-  tx.addOutput({ // 3 B event NFT: same category (branded), none capability, topic in commitment
-    to: p2.tokenAddress, amount: 1000n,
+  tx.addOutput({ // 3 B event NFT: branded category, authenticated (locked to the emitter, none-cap, dust)
+    to: b.tokenAddress, amount: 1000n,
     token: { category: catB, amount: 0n, nft: { capability, commitment: topic } },
   });
   tx.addOutput({ // 4 controller preserved
@@ -103,13 +103,18 @@ describe('P10: event NFT slots within balanced block bounds (no global OP_RETURN
     await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
   });
 
-  it('AUDIT: accepts a minting-capability NFT as an event output', async () => {
+  it('AUDIT-FIXED: a minting-capability NFT in the event slot is rejected (no smuggled mint authority)', async () => {
     const { provider, rawTx } = await run(TOPIC, 'minting');
-    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
   });
 
-  it('AUDIT: accepts siphoning satoshis from the journaled state slot into change', async () => {
+  it('AUDIT-FIXED: a mutable-capability NFT in the event slot is rejected', async () => {
+    const { provider, rawTx } = await run(TOPIC, 'mutable');
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+  });
+
+  it('AUDIT-FIXED: siphoning satoshis from the journaled state slot into change is rejected', async () => {
     const { provider, rawTx } = await run(TOPIC, 'none', true);
-    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
   });
 });

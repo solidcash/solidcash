@@ -44,6 +44,8 @@ export interface ExecutionResource { owner: number; categoryHex: string }
 export const EXEC_DOMAIN = '4c33455845433100';
 /** Version byte of the framed execution-root encoding (audit P1). Bump on any encoding change. */
 export const EXEC_VERSION = '01';
+/** Fixed dust value (satoshis) of a balanced event-log NFT, so no value can be siphoned into a log output. */
+export const EVENT_DUST = 1000;
 
 const u8hex = (n: number): string => {
   if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error('layer3: framed count/index out of byte range');
@@ -358,7 +360,9 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
       throw new Error('layer3: journal resourceIndex out of range');
     }
     const at = spec.n + 1 + k; // the participant's state resource is co-spent at input n+1+k and recreated there
-    journalBody.push(`bigint jstate = int(tx.inputs[${at}].nftCommitment.slice(0, 8));`);
+    // The state field is EXACTLY 8 bytes on both sides (audit): no hidden trailing state can ride along.
+    journalBody.push(`require(tx.inputs[${at}].nftCommitment.length == 8);`);
+    journalBody.push(`bigint jstate = int(tx.inputs[${at}].nftCommitment);`);
     spec.invocations.forEach((inv, j) => {
       if (inv.callee === spec.selfPos) {
         const op = spec.journal!.ops[inv.selectorHex.toLowerCase()];
@@ -367,8 +371,13 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
         journalBody.push(`jstate = jstate ${sym} int(edgeArgs${j});`); // apply this edge's op, in order
       }
     });
+    // Preserve locking bytecode + category + value + fungible amount; only the NFT commitment transitions.
+    journalBody.push(`require(tx.outputs[${at}].lockingBytecode == tx.inputs[${at}].lockingBytecode);`);
     journalBody.push(`require(tx.outputs[${at}].tokenCategory == tx.inputs[${at}].tokenCategory);`);
-    journalBody.push(`require(tx.outputs[${at}].nftCommitment.slice(0, 8) == bytes8(jstate));`); // flush once
+    journalBody.push(`require(tx.outputs[${at}].value == tx.inputs[${at}].value);`);
+    journalBody.push(`require(tx.outputs[${at}].tokenAmount == tx.inputs[${at}].tokenAmount);`);
+    journalBody.push('require(jstate >= 0);'); // non-negative counter: reject underflow; bytes8 fails on overflow
+    journalBody.push(`require(tx.outputs[${at}].nftCommitment == bytes8(jstate));`); // flush once, full commitment
     // A->B->A: each designated outgoing edge must carry this participant's authentic post-state as its args,
     // so a downstream journal that consumes it applies the real computed result, not a committed label.
     (spec.journal.emits ?? []).forEach((e) => {
@@ -508,6 +517,10 @@ export function balancedMemberBody(
       body.push(`require(tx.inputs[${si}].tokenCategory.slice(0, 32) == hex"${resCatInternal}");`);
       body.push(`require(tx.outputs[${si}].lockingBytecode == tx.inputs[${si}].lockingBytecode);`);
       body.push(`require(tx.outputs[${si}].tokenCategory == tx.inputs[${si}].tokenCategory);`);
+      // Value + fungible-amount preservation (audit): the state NFT's satoshis cannot be siphoned into change,
+      // and no fungible amount can be added or dropped while the covenant only rewrites the NFT commitment.
+      body.push(`require(tx.outputs[${si}].value == tx.inputs[${si}].value);`);
+      body.push(`require(tx.outputs[${si}].tokenAmount == tx.inputs[${si}].tokenAmount);`);
     }
   });
   // P10: events are NFT slots INSIDE the emitter's own balanced block (block-relative), branded with the
@@ -524,8 +537,15 @@ export function balancedMemberBody(
     const brandInternal = (myRes.categoryHex.toLowerCase().match(/../g) as string[]).reverse().join('');
     myEvents.forEach((ev, e) => {
       const eo = layout.eventSlot(selfPos, e);
-      body.push(`require(tx.outputs[${eo}].tokenCategory.slice(0, 32) == hex"${brandInternal}");`);
+      // FULLY authenticate the event NFT (audit): a log record is an IMMUTABLE (none-capability), zero-amount,
+      // dust NFT locked to the emitter. Comparing the WHOLE tokenCategory (32 bytes) forces none capability -
+      // a mutable/minting NFT carries a 33-byte category and fails, so no extra mint/mutate authority can be
+      // smuggled into an event slot. Value is pinned to dust so satoshis cannot be siphoned into the log.
+      body.push(`require(tx.outputs[${eo}].tokenCategory == hex"${brandInternal}");`);
       body.push(`require(tx.outputs[${eo}].nftCommitment == hex"${ev.topicHex.toLowerCase()}");`);
+      body.push(`require(tx.outputs[${eo}].tokenAmount == 0);`);
+      body.push(`require(tx.outputs[${eo}].value == ${EVENT_DUST});`);
+      body.push(`require(tx.outputs[${eo}].lockingBytecode == lbc${selfPos});`);
     });
   }
   return body;
@@ -586,7 +606,11 @@ export function generateBalancedParticipant(spec: BalancedParticipantSpec): stri
   if (spec.journal) {
     const at = layout.dataSlot(spec.selfPos, journalDataIndex); // this participant's journaled state NFT
     // The journal reads/flushes the co-spent state NFT commitment (lbc + category already preserved by member).
-    stateBody.push(`bigint jstate = int(tx.inputs[${at}].nftCommitment.slice(0, 8));`);
+    // The state field is EXACTLY 8 bytes on both sides (audit): a longer input commitment (whose trailing
+    // bytes int() would ignore) and a longer output commitment (whose trailing bytes the slice would leave
+    // unconstrained) are both rejected, so the entire commitment is bound - no hidden trailing state.
+    stateBody.push(`require(tx.inputs[${at}].nftCommitment.length == 8);`);
+    stateBody.push(`bigint jstate = int(tx.inputs[${at}].nftCommitment);`);
     spec.invocations.forEach((inv, j) => {
       if (inv.callee === spec.selfPos) {
         const op = spec.journal!.ops[inv.selectorHex.toLowerCase()];
@@ -595,7 +619,11 @@ export function generateBalancedParticipant(spec: BalancedParticipantSpec): stri
         stateBody.push(`jstate = jstate ${sym} int(edgeArgs${j});`);
       }
     });
-    stateBody.push(`require(tx.outputs[${at}].nftCommitment.slice(0, 8) == bytes8(jstate));`);
+    // Specified arithmetic domain (audit): the state is a non-negative 8-byte counter. `require(jstate >= 0)`
+    // rejects underflow (sub past zero) and negative results; `bytes8(jstate)` fails closed on overflow (a
+    // magnitude that does not fit 8 bytes), so over/underflow can never silently wrap.
+    stateBody.push('require(jstate >= 0);');
+    stateBody.push(`require(tx.outputs[${at}].nftCommitment == bytes8(jstate));`);
     (spec.journal.emits ?? []).forEach((e) => {
       const out = spec.invocations[e];
       if (!out || out.caller !== spec.selfPos) {

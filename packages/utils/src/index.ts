@@ -5,6 +5,7 @@ export * from './data.js';
 export * from './fingerprint.js';
 export * from './hash.js';
 export * from './keccak-library.js';
+export * from './outline.js';
 export * from './keccak-compute-library.js';
 export * from './ecrecover-compute-library.js';
 export * from './external-library.js';

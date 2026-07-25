@@ -60,6 +60,7 @@ import {
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
   isChunkableValueType,
+  outlineSharedSpans,
 } from '@solidcash/utils';
 import {
   ContractNode,
@@ -678,11 +679,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   entryPointDebugInfo: Map<string, FunctionDebugInformation> = new Map();  // selector hex -> debug info
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
 
+  // Every OP_DEFINE'd body emitted at contract level, kept in Script form so cross-function outlining can share
+  // repeated spans between them before the dispatcher is emitted. `outputIndex` is the body's data push.
+  private definedBodyRecords: Array<{
+    outputIndex: number;
+    script: Script;
+    locationData: FullLocationData;
+    selectorHex?: string;
+  }> = [];
+
   private resolvedLibraries: Record<string, ExternalLibrary>;
 
   constructor(private compilerOptions: CompilerOptions) {
     super();
     this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
+  }
+
+  // Outlining splices bodies element-for-element, so their location data must be exactly as long as the script.
+  private static alignLocations(
+    locations: FullLocationData, length: number, fallback: SingleLocationData,
+  ): FullLocationData {
+    const aligned = locations.slice(0, length);
+    while (aligned.length < length) aligned.push(locations[locations.length - 1] ?? fallback);
+    return aligned;
   }
 
   private emit(op: OpOrData | OpOrData[], locationData: SingleLocationData): void {
@@ -1402,7 +1421,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const soleFnIsProxyImpl = dispatchFunctions.length === 1
       && dispatchFunctions[0].modifiers.includes(FunctionModifier.DELEGATE)
       && !node.isLibraryContract;
+    const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnIsProxyImpl) {
+      this.outlineSharedFunctionBodies(outlineLoc);
       const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
       if (node.constructorDef) {
         node.constructorDef = visited[visited.length - 1];
@@ -1412,6 +1433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       dispatchFunctions.forEach((f) => {
         this.emitEntryPointFunctionDefine(f, node.parameters);
       });
+      this.outlineSharedFunctionBodies(outlineLoc);
       this.emitDispatch(node, allFunctions, hasFallback, hasReceive);
     }
   }
@@ -1779,10 +1801,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Serialize the function body to bytecode data
-    const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(subTraversal.output)));
+    const bodyScript = asmToScript(scriptToAsm(subTraversal.output));
 
     // Emit: <body_bytecode> <function_id> OP_DEFINE
-    this.emit(bodyBytecode, locationData);
+    this.definedBodyRecords.push({
+      outputIndex: this.output.length,
+      script: bodyScript,
+      locationData: new Array(bodyScript.length).fill(locationData),
+    });
+    this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
     this.emit(Op.OP_DEFINE, locationData);
   }
@@ -2063,9 +2090,75 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Serialize and emit OP_DEFINE with 4-byte hash selector
     const bodyBytecode = scriptToBytecode(optimisationResult.script);
     this.entryPointBytecodes.set(selectorHex, bodyBytecode);
+    this.definedBodyRecords.push({
+      outputIndex: this.output.length,
+      script: optimisationResult.script,
+      locationData: GenerateTargetTraversalWithLocation.alignLocations(
+        optimisationResult.locationData, optimisationResult.script.length, locationData,
+      ),
+      selectorHex,
+    });
     this.emit(bodyBytecode, locationData);
     this.emit(func.functionSelector!, locationData);
     this.emit(Op.OP_DEFINE, locationData);
+  }
+
+  /**
+   * Share byte-identical spans between the OP_DEFINE'd bodies emitted so far, so a helper repeated across (or
+   * within) function bodies is stored once. Runs after every body exists and before the dispatcher, so the new
+   * definitions still land in the prologue that executes ahead of any OP_INVOKE.
+   */
+  private outlineSharedFunctionBodies(locationData: SingleLocationData): void {
+    if (this.definedBodyRecords.length === 0) return;
+    const result = outlineSharedSpans(
+      this.definedBodyRecords.map((record) => {
+        // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
+        // instruction pointer against these, and a pointer reported from inside a shared body would not match.
+        const debugInfo = record.selectorHex === undefined
+          ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
+        const anchors = [
+          ...(debugInfo?.requires ?? []).map((entry) => entry.ip),
+          ...(debugInfo?.logs ?? []).flatMap((entry) => [
+            entry.ip,
+            // Each logged value records the pointer at which it is readable off the stack.
+            ...entry.data.flatMap((item) => (typeof item === 'string' ? [] : [item.ip])),
+          ]),
+        ];
+        return { script: record.script, locationData: record.locationData, anchors };
+      }),
+      () => encodeInt(this.allocateCompactHelperId()),
+    );
+    if (result.functions.length === 0) return;
+
+    result.bodies.forEach((body, index) => {
+      const record = this.definedBodyRecords[index];
+      const bytecode = scriptToBytecode(body.script);
+      this.output[record.outputIndex] = bytecode;
+      if (record.selectorHex === undefined) return;
+      // The SDK reads `functionBodies` as the invoked body (signing bytecode, debug templates), so it has to
+      // track the rewrite exactly.
+      this.entryPointBytecodes.set(record.selectorHex, bytecode);
+      const debugInfo = this.entryPointDebugInfo.get(record.selectorHex);
+      if (debugInfo) {
+        const remap = (ip: number): number => body.indexMap[ip] ?? ip;
+        this.entryPointDebugInfo.set(record.selectorHex, {
+          requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
+          logs: debugInfo.logs.map((entry) => ({
+            ...entry,
+            ip: remap(entry.ip),
+            data: entry.data.map((item) =>
+              (typeof item === 'string' ? item : { ...item, ip: remap(item.ip) })),
+          })),
+          sourceMap: generateSourceMap(body.locationData),
+        });
+      }
+    });
+
+    for (const outlined of result.functions) {
+      this.emit(scriptToBytecode(outlined.script), locationData);
+      this.emit(outlined.id, locationData);
+      this.emit(Op.OP_DEFINE, locationData);
+    }
   }
 
   /**

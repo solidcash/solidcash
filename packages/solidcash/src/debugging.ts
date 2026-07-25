@@ -140,6 +140,17 @@ const debugSingleScenario = (
     return func?.selector;
   })();
 
+  // An instruction pointer only means something relative to the bytecode that is active. OP_INVOKE restarts the
+  // pointer inside the invoked body, and only frames are objects on the control stack (OP_IF pushes a boolean,
+  // OP_BEGIN pushes an integer), so a step inside this function's own body carries exactly one frame: the
+  // dispatcher's. Shared bodies produced by cross-function outlining sit one frame deeper, and main-script steps
+  // (OP_DEFINE, dispatcher) carry none - matching either against this function's require/log pointers would
+  // attribute the wrong statement.
+  const isEntryPointBodyStep = (step: AuthenticationProgramStateCommon): boolean => {
+    if (entryPointFuncSelector === undefined) return true;
+    return step.controlStack.filter((item) => typeof item === 'object' && item !== null).length === 1;
+  };
+
   // Returns the logs array for a debug step - either from the function body's debug info
   // or from the main artifact debug info. For steps inside the main script (before OP_INVOKE),
   // the main logs are empty, so this is safe to use for all steps.
@@ -152,14 +163,7 @@ const debugSingleScenario = (
 
   // P2PKH inputs do not have an artifact, so we skip the console.log handling
   if (artifact) {
-    // For OP_INVOKE contracts, only match logs against debug steps that are inside the function body.
-    // Function body steps always have at least one function frame on the control stack (from OP_INVOKE),
-    // while main script steps (OP_DEFINE, dispatcher) have an empty control stack.
-    // Without this filter, main script steps at IPs that coincidentally match function body log IPs
-    // would incorrectly trigger log output (e.g., logs from non-executed if/else branches).
-    const logMatchingSteps = entryPointFuncSelector !== undefined
-      ? executedDebugSteps.filter((step) => step.controlStack.length > 0)
-      : executedDebugSteps;
+    const logMatchingSteps = executedDebugSteps.filter(isEntryPointBodyStep);
 
     // Try to match each executed debug step to a log entry if it exists. Note that inside loops,
     // the same log statement may be executed multiple times in different debug steps
@@ -213,8 +217,11 @@ const debugSingleScenario = (
       throw new FailedTransactionError(error, getBitauthUri(template));
     }
 
-    // Use entryPointFuncSelector to search the correct function's debug info
-    let requireStatement = findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector);
+    // Use entryPointFuncSelector to search the correct function's debug info. A failure raised inside a shared
+    // body has an unrelated instruction pointer, so it must not be resolved against this function's requires.
+    let requireStatement = isEntryPointBodyStep(lastExecutedDebugStep)
+      ? findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector)
+      : undefined;
     let functionSourceMap = getFunctionSourceMap(artifact, entryPointFuncSelector);
 
     if (requireStatement) {
@@ -238,7 +245,8 @@ const debugSingleScenario = (
 
   // Check if the evaluation failed matches any of the possible failure cases
   if (failedFinalVerify(evaluationResult)) {
-    const finalExecutedVerifyIp = getFinalExecutedVerifyIp(executedDebugSteps);
+    // Only this function's own body shares an instruction-pointer space with its recorded requires.
+    const finalExecutedVerifyIp = getFinalExecutedVerifyIp(executedDebugSteps.filter(isEntryPointBodyStep));
 
     // The final executed verify instruction points to the "implicit" VERIFY that is added at the end of the script.
     // This instruction does not exist in the sourcemap, so we need to decrement the instruction pointer to get the

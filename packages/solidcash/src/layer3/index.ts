@@ -3,4 +3,5 @@
 export * from './codec.js';
 export * from './covenant.js';
 export * from './derive-native.js';
+export * from './hidden-batch.js';
 export * from './transcript.js';

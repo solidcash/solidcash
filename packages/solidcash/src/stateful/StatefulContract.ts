@@ -57,6 +57,7 @@ import {
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
+import { encodeHiddenBatch } from '../layer3/hidden-batch.js';
 import {
   binToHex,
   hexToBin,
@@ -1291,76 +1292,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   batch(
     invocations: readonly { function: string; args?: readonly FunctionArgument[] }[],
   ): StatefulFunctionCall {
-    const capability = this.inner.artifact.hiddenBatch;
-    if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
-    const minimumRows = capability.minimumRows ?? 1;
-    if (invocations.length < minimumRows || invocations.length > capability.maximumRows) {
-      throw new Error(
-        `SCB1 batch row count must be between ${minimumRows} and ${capability.maximumRows}`,
-      );
-    }
-    const structs = this.inner.artifact.structs ?? this.inner.stateLayout?.structs;
-    const keyWitnessValues = new Map<string, {
-      value: FunctionArgument;
-      encoded: Uint8Array;
-    }>();
-    const rows = invocations.map((invocation, rowIndex) => {
-      const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
-      if (!handler) throw new Error(`Unknown SCB1 handler '${invocation.function}'`);
-      if (!handler.eligible) {
-        throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
-      }
-      const args = [...(invocation.args ?? [])];
-      if (args.length !== handler.inputs.length) {
-        throw new Error(
-          `Incorrect number of arguments for batched '${handler.name}': expected ${handler.inputs.length}, got ${args.length}`,
-        );
-      }
-      const encoded = args.map((arg, i) =>
-        encodeFunctionArgument(arg, handler.inputs[i].type, structs));
-      if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
-        throw new Error(`Handler '${handler.name}' contains a signature-like argument and cannot use SCB1`);
-      }
-      for (const binding of handler.batchKeyWitnesses ?? []) {
-        const value = args[binding.inputIndex];
-        const encodedValue = encoded[binding.inputIndex] as Uint8Array;
-        const routeInput = binding.perRow
-          ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
-        const prior = keyWitnessValues.get(routeInput);
-        if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
-          throw new Error(
-            `SCB1 collection witness '${routeInput}' must identify one physical entry`,
-          );
-        }
-        if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
-      }
-      const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
-      if (argsBlob.length > 0xffff) throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
-      return StatefulContract._concatBytes(
-        hexToBin(handler.selector),
-        StatefulContract._uintLe(BigInt(rowIndex), 4),
-        StatefulContract._uintLe(0n, 2),
-        StatefulContract._uintLe(BigInt(argsBlob.length), 2),
-        argsBlob,
-      );
-    });
-    const blob = StatefulContract._concatBytes(
-      hexToBin('53434231'),
-      Uint8Array.from([1, 0, invocations.length]),
-      ...rows,
-    );
-    if (blob.length > capability.maximumBlobBytes) {
-      throw new Error(
-        `SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
-      );
-    }
-    const routeWitnessInputs = capability.route.inputs
-      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
-    const routeWitnesses = routeWitnessInputs.map((input) => {
-      const witness = keyWitnessValues.get(input.name);
-      if (!witness) throw new Error(`Missing SCB1 route witness '${input.name}'`);
-      return witness.value;
-    });
+    const { blob, routeWitnesses } = encodeHiddenBatch(this.inner.artifact, invocations);
     return this._batchRaw(blob, routeWitnesses);
   }
 

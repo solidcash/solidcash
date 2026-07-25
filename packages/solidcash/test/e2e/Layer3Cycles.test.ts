@@ -7,11 +7,12 @@ import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-// Re-audit R5 cycles: repeated settlement against ONE physical callee, and the smallest heterogeneous cycle
-// A -> B -> A. On UTXO each input executes once, so there is no EVM-style reentrancy; a cycle is instead
-// STRUCTURAL in the execution transcript - A->B->A is the edge list [A->B, B->A] committed by the controller
-// root, and each participant runs once and verifies every edge it is in. Repeated 1-callee is [A->B.f,
-// A->B.g] against one physical B input. Both are expressed with executionMemberBody's ordered edge list.
+// HONEST SCOPE (corrected per layer3-required-path-audit.md P2/P3): this proves the participants AGREE ON an
+// ordered edge LABEL list committed by the controller root, and that a missing edge is rejected. It does NOT
+// prove any call executes: A does not call B and B does not call A here; the selectors 11111111/22222222 are
+// arbitrary labels, not the dispatched methods (A.f()/B.g()). Binding labels to actual dispatch/calls (so a
+// cycle has execution meaning) is the unimplemented compiler-integration work. Kept as a framing/agreement
+// probe, not evidence of A->B->A execution or repeated physical-callee settlement.
 const raw = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 

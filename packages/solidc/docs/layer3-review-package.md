@@ -2,8 +2,28 @@
 
 This package is for the external covenant review the specification requires (gate 5). It consolidates the
 covenants, the canonical encoding, the threat model, the trust assumptions, and the hostile test matrix, and
-gives an HONEST per-finding status against `layer3-production-reaudit.md`. Independent review itself remains
-outstanding - this package exists to make it efficient, not to substitute for it.
+gives an HONEST per-finding status. Independent review itself remains outstanding.
+
+## Correction after the required-path audit (`layer3-required-path-audit.md`, 0d7b065b)
+
+That audit (Decision 3) is ACCEPTED. The honest bottom line: what exists is a set of sound BUILDING BLOCKS
+and a now-CANONICAL commitment format, NOT a complete execution bus. Specifically:
+
+- FIXED after the audit (`e5be6df1`): P1 the execution-root encoding is now framed/versioned/collision-free
+  via one shared encoder; P11 typed-transition length agreement; P12 setRoot is set-once.
+- NOT FIXED (the load-bearing gap): the invocation EDGES and SELECTORS are LABELS hashed into the controller
+  commitment - they are NOT bound to the transaction's actual dispatched selectors or calls (audit P2/P3/P7).
+  So `Layer3Cycles` proves the participants AGREE ON a `[A->B, B->A]` label list, NOT that A calls B or B
+  calls A; the selectors `11111111/22222222` are arbitrary while the executed methods are `A.f()/B.g()`.
+  `Layer3RuntimeArgs` is a BESPOKE covenant, not the module protocol; `ExecutionInvocation` still carries only
+  `{caller, callee, selectorHex}` with no argument/result/resource rows (P4/P5). Cross-edge ordering (P6),
+  balanced block layouts (P9), and event-NFT slots (P10) are absent.
+
+Binding labels to actual execution requires reading each participant's dispatched selector/args/result from
+its unlocking + native-call metadata and reconciling repeated rows via a callee journal - real compiler
+integration, not the source-string generation done so far. Until then, keep the feature experimental and
+default-off. The per-finding notes below predate this correction where they still say "CLOSED"; treat the
+label-vs-execution gap above as authoritative.
 
 ## Components under review (SDK: `packages/solidcash/src/layer3/covenant.ts`)
 

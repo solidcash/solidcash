@@ -7,11 +7,11 @@ import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-// Re-audit R5: bind the RUNTIME argument + result VALUES of an invocation into the execution transcript, and
-// have the callee AUTHENTICATE the result against its own state (result == amount * rate). The edge commits
-// (caller, callee, selector, amount8, result8); both participants recompute the controller-attested root over
-// it, and the callee additionally proves result == amount * V where V is read from its own state NFT. A wrong
-// result fails BOTH the callee's computation check and the root, so no wrong result can be injected.
+// HONEST SCOPE (corrected per layer3-required-path-audit.md P4): this is a BESPOKE covenant that hand-writes
+// its own preimage formula - it is NOT the module protocol. `ExecutionInvocation`/`executionRoot`/
+// `executionMemberBody` still carry no argument/result rows, so this proves only that ONE custom amount/result
+// formula can be covenanted and authenticated (callee checks result == amount * rate from its state; a wrong
+// result is rejected). Folding runtime args/results into the framed module encoder is unimplemented.
 const SELECTOR = 'aabbccdd';
 const raw = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);

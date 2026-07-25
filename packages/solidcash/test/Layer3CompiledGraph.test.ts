@@ -20,16 +20,19 @@ describe('layer3.planCompiledGraph', () => {
       { artifact: a, lockingBytecode: '51' },
       { artifact: b, lockingBytecode: '52' },
     ], [
-      { caller: null, callee: 0, function: 'add', args: [1n] },
-      { caller: 0, callee: 1, function: 'add', args: [2n] },
-      { caller: 1, callee: 0, function: 'add', args: [3n] },
+      { parent: null, callee: 0, function: 'add', args: [1n] },
+      { parent: 0, callee: 1, function: 'add', args: [2n] },
+      { parent: 1, callee: 0, function: 'add', args: [3n] },
     ]);
 
     expect(plan.participants.map((participant) => participant.invocations)).toEqual([[0, 2], [1]]);
-    expect(plan.invocations.map(({ caller, callee, localRow }) => ({ caller, callee, localRow }))).toEqual([
-      { caller: null, callee: 0, localRow: 0 },
-      { caller: 0, callee: 1, localRow: 0 },
-      { caller: 1, callee: 0, localRow: 1 },
+    expect(plan.invocations.map(
+      ({ parent, caller, callee, localRow, subtreeEnd }) =>
+        ({ parent, caller, callee, localRow, subtreeEnd }),
+    )).toEqual([
+      { parent: null, caller: null, callee: 0, localRow: 0, subtreeEnd: 2 },
+      { parent: 0, caller: 0, callee: 1, localRow: 0, subtreeEnd: 2 },
+      { parent: 1, caller: 1, callee: 0, localRow: 1, subtreeEnd: 2 },
     ]);
     expect(plan.invocations.every((invocation) =>
       invocation.selectorHex.length === 8 && invocation.resultTypes[0] === 'int256')).toBe(true);
@@ -40,18 +43,32 @@ describe('layer3.planCompiledGraph', () => {
     expect(() => layer3.planCompiledGraph([
       { artifact: a, lockingBytecode: '51' },
       { artifact: a, lockingBytecode: '51' },
-    ], [{ caller: null, callee: 0, function: 'add', args: [1n] }])).toThrow(/same physical/);
+    ], [{ parent: null, callee: 0, function: 'add', args: [1n] }])).toThrow(/same physical/);
     expect(() => layer3.planCompiledGraph(
       [{ artifact: a, lockingBytecode: '51' }],
-      [{ caller: 0, callee: 0, function: 'add', args: [1n] }],
+      [{ parent: 0, callee: 0, function: 'add', args: [1n] }],
     )).toThrow(/exactly one root/);
     expect(() => layer3.planCompiledGraph([
       { artifact: a, lockingBytecode: '51' },
       { artifact: a, lockingBytecode: '52' },
-    ], [{ caller: null, callee: 0, function: 'add', args: [1n] }])).toThrow(/no invocation/);
+    ], [{ parent: null, callee: 0, function: 'add', args: [1n] }])).toThrow(/no invocation/);
     expect(() => layer3.planCompiledGraph(
       [{ artifact: a, lockingBytecode: '51' }],
-      [{ caller: null, callee: 1, function: 'add', args: [1n] }],
+      [{ parent: null, callee: 1, function: 'add', args: [1n] }],
     )).toThrow(/out of range/);
+  });
+
+  it('rejects a child attached after its parent subtree has completed', () => {
+    const a = compile('GraphTreeGuard');
+    expect(() => layer3.planCompiledGraph([
+      { artifact: a, lockingBytecode: '51' },
+      { artifact: a, lockingBytecode: '52' },
+      { artifact: a, lockingBytecode: '53' },
+    ], [
+      { parent: null, callee: 0, function: 'add', args: [1n] },
+      { parent: 0, callee: 1, function: 'add', args: [2n] },
+      { parent: 0, callee: 2, function: 'add', args: [3n] },
+      { parent: 1, callee: 1, function: 'add', args: [4n] },
+    ])).toThrow(/completed subtree/);
   });
 });

@@ -10,8 +10,11 @@ export interface CompiledGraphParticipant {
 }
 
 export interface CompiledGraphInvocation {
-  /** `null` identifies the single transaction-origin root invocation. */
-  caller: number | null;
+  /**
+   * Parent invocation index. `null` identifies the single transaction-origin root.
+   * The logical caller owner is derived as `invocations[parent].callee`; it is never witness-authored.
+   */
+  parent: number | null;
   callee: number;
   function: string;
   args?: readonly FunctionArgument[];
@@ -19,8 +22,11 @@ export interface CompiledGraphInvocation {
 
 export interface PlannedGraphInvocation {
   index: number;
+  parent: number | null;
   caller: number | null;
   callee: number;
+  /** Inclusive end of this invocation's canonical depth-first subtree. */
+  subtreeEnd: number;
   localRow: number;
   function: string;
   selectorHex: string;
@@ -67,21 +73,33 @@ export function planCompiledGraph(
     }
     identities.add(lbc);
   });
-  const roots = invocations.filter((invocation) => invocation.caller === null);
-  if (roots.length !== 1) throw new Error('layer3: compiled graph requires exactly one root invocation');
+  if (invocations.length === 0 || invocations[0].parent !== null
+    || invocations.slice(1).some((invocation) => invocation.parent === null)) {
+    throw new Error('layer3: compiled graph requires exactly one root invocation at index 0');
+  }
 
   const perOwner: HiddenBatchInvocation[][] = participants.map(() => []);
   const globalByOwner: number[][] = participants.map(() => []);
+  const subtreeEnds = invocations.map((_invocation, index) => index);
+  const active: number[] = [];
   invocations.forEach((invocation, index) => {
     if (!Number.isInteger(invocation.callee)
       || invocation.callee < 0 || invocation.callee >= participants.length) {
       throw new Error(`layer3: invocation ${index} callee is out of range`);
     }
-    if (invocation.caller !== null && (
-      !Number.isInteger(invocation.caller)
-      || invocation.caller < 0 || invocation.caller >= participants.length
-    )) {
-      throw new Error(`layer3: invocation ${index} caller is out of range`);
+    if (index === 0) {
+      active.push(0);
+    } else {
+      if (!Number.isInteger(invocation.parent)
+        || invocation.parent! < 0 || invocation.parent! >= index) {
+        throw new Error(`layer3: invocation ${index} parent must be a preceding invocation`);
+      }
+      while (active.length > 0 && active[active.length - 1] !== invocation.parent) active.pop();
+      if (active.length === 0) {
+        throw new Error(`layer3: invocation ${index} re-enters a completed subtree`);
+      }
+      for (const ancestor of active) subtreeEnds[ancestor] = index;
+      active.push(index);
     }
     perOwner[invocation.callee].push({
       function: invocation.function,
@@ -109,10 +127,13 @@ export function planCompiledGraph(
     localCursor[invocation.callee] += 1;
     const row = execution.batch.rows[localRow];
     const result = execution.batch.results.find((candidate) => candidate.row === localRow);
+    const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
     return Object.freeze({
       index,
-      caller: invocation.caller,
+      parent: invocation.parent,
+      caller,
       callee: invocation.callee,
+      subtreeEnd: subtreeEnds[index],
       localRow,
       function: row.function,
       selectorHex: row.selectorHex,

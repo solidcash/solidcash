@@ -84,11 +84,11 @@ describe('layer3.planCompiledGraph', () => {
     ]);
     const first = layer3.finalizeCompiledGraph(
       plan, { 0: '51', 1: '52' }, [0, 1], [2, 3],
-      ['5100000000000000', '5200000000000000'],
+      ['5100000000000000', '5200000000000000'], [4, 5],
     );
     const changed = layer3.finalizeCompiledGraph(
       plan, { 0: '51', 1: '53' }, [0, 1], [2, 3],
-      ['5100000000000000', '5300000000000000'],
+      ['5100000000000000', '5300000000000000'], [4, 5],
     );
     expect(first.root).toMatch(/^[0-9a-f]{64}$/);
     expect(first.root).not.toBe(changed.root);
@@ -96,19 +96,30 @@ describe('layer3.planCompiledGraph', () => {
       plan.participants.reduce((sum, participant) => sum + participant.batch.blob.length, 0),
     );
     expect(() => layer3.finalizeCompiledGraph(
-      plan, { 0: '51' }, [0, 1], [2, 3], ['5100000000000000', '5200000000000000'],
+      plan, { 0: '51' }, [0, 1], [2, 3], ['5100000000000000', '5200000000000000'], [4, 5],
     )).toThrow(/lacks canonical result/);
     expect(() => layer3.finalizeCompiledGraph(
       plan, { 0: '51', 1: '52', 9: '53' }, [0, 1], [2, 3],
-      ['5100000000000000', '5200000000000000'],
+      ['5100000000000000', '5200000000000000'], [4, 5],
     ))
       .toThrow(/unknown invocation/);
 
-    const controller = layer3.generateGraphRootController();
+    const projection = layer3.generateGraphProjectionVerifier();
+    const controller = layer3.generateGraphRootController('51');
     expect(controller).toContain('nftCommitment == sha256(transcript)');
     expect(controller).toContain('participantInput > previousInput');
     expect(controller).toContain('unlocking.slice(0, 5) == hex"0453434231"');
     expect(controller).toContain('outputCategory.slice(0, 32) != controllerCategory');
-    expect(compileString(controller).bytecode.length).toBeGreaterThan(0);
+    expect(projection).toContain('projectionInput == this.activeInputIndex');
+    const controllerArtifact = compileString(controller);
+    const projectionArtifact = compileString(projection);
+    expect(controllerArtifact.debug.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
+      expect.objectContaining({ code: 'contract-size-limit' }),
+    );
+    expect(projectionArtifact.diagnostics ?? []).not.toContainEqual(
+      expect.objectContaining({ code: 'contract-size-limit' }),
+    );
   });
 });

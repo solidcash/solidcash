@@ -59,6 +59,7 @@ export interface FinalizedCompiledGraph {
   /** Byte offset of each participant's `lbc-frame || batch-frame` within `bytes`. */
   participantOffsets: readonly number[];
   participantInputs: readonly number[];
+  projectionInputs: readonly number[];
   returnOutputs: readonly (number | null)[];
   /** Inner SCB1 packed result vector (before the outer `bytes` return-event framing), by participant. */
   participantResultVectorsHex: readonly string[];
@@ -113,6 +114,9 @@ export function finalizeCompiledGraph(
   participantInputs: readonly number[] = plan.participants.map((_participant, index) => index),
   returnOutputs: readonly (number | null)[] = plan.participants.map(() => null),
   participantResultVectorsHex: readonly string[] = plan.participants.map(() => ''),
+  projectionInputs: readonly number[] = plan.participants.map(
+    (_participant, index) => plan.participants.length + index,
+  ),
 ): FinalizedCompiledGraph {
   if (participantInputs.length !== plan.participants.length
     || participantInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
@@ -120,8 +124,14 @@ export function finalizeCompiledGraph(
     throw new Error('layer3: participant physical inputs must be strictly increasing uint16 values');
   }
   if (returnOutputs.length !== plan.participants.length
-    || participantResultVectorsHex.length !== plan.participants.length) {
+    || participantResultVectorsHex.length !== plan.participants.length
+    || projectionInputs.length !== plan.participants.length) {
     throw new Error('layer3: return outputs/result vectors must align with participants');
+  }
+  if (projectionInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
+    || new Set(projectionInputs).size !== projectionInputs.length
+    || projectionInputs.some((input) => participantInputs.includes(input))) {
+    throw new Error('layer3: projection inputs must be distinct uint16 proof slots');
   }
   plan.participants.forEach((participant, index) => {
     const returning = participant.batch.results.length > 0;
@@ -178,9 +188,10 @@ export function finalizeCompiledGraph(
     const batchFrame = framed(participant.batch.blob);
     const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
     const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
-    parts.push(inputFrame, lbcFrame, batchFrame, returnFrame, resultFrame);
+    const projectionFrame = uint(projectionInputs[participantIndex], 2);
+    parts.push(inputFrame, lbcFrame, batchFrame, returnFrame, resultFrame, projectionFrame);
     encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length
-      + returnFrame.length + resultFrame.length;
+      + returnFrame.length + resultFrame.length + projectionFrame.length;
   }
   parts.push(uint(plan.invocations.length, 2));
   plan.invocations.forEach((invocation, index) => {
@@ -205,6 +216,7 @@ export function finalizeCompiledGraph(
     resultsHex: Object.freeze(resultHex),
     participantOffsets: Object.freeze(participantOffsets),
     participantInputs: Object.freeze([...participantInputs]),
+    projectionInputs: Object.freeze([...projectionInputs]),
     returnOutputs: Object.freeze([...returnOutputs]),
     participantResultVectorsHex: Object.freeze(
       participantResultVectorsHex.map((vector) => vector.toLowerCase()),
@@ -238,30 +250,13 @@ export function compiledGraphRouteArgs(
  * application artifacts can pin it at compile time. A mint-once mutable NFT supplies the root commitment;
  * `attest` authenticates the complete transcript bytes and burns the unique category.
  */
-export function generateGraphRootController(): string {
-  const localCounters = Array.from({ length: 8 }, (_unused, owner) =>
-    `bigint localRow${owner} = 0;`).join('\n    ');
-  const resultVectors = Array.from({ length: 8 }, (_unused, owner) =>
-    `bytes resultVector${owner} = hex""; bigint resultCursor${owner} = 0;`).join('\n    ');
-  const resultAssignments = Array.from({ length: 8 }, (_unused, owner) =>
-    `${owner === 0 ? 'if' : 'else if'} (participant == ${owner}) { resultVector${owner} = resultVector; }`)
-    .join('\n      ');
+export function generateGraphRootController(projectionVerifierLbc: string): string {
+  const verifier = projectionVerifierLbc.toLowerCase();
+  if (!/^([0-9a-f]{2})+$/.test(verifier)) {
+    throw new Error('layer3: projection verifier locking bytecode must be hex bytes');
+  }
   const activeFrames = Array.from({ length: 8 }, (_unused, depth) =>
     `bigint activeIndex${depth} = -1; bigint activeEnd${depth} = -1;`).join('\n    ');
-  const localDispatch = Array.from({ length: 8 }, (_unused, owner) =>
-    `${owner === 0 ? 'if' : 'else if'} (callee == ${owner}) {
-        require(localRow == localRow${owner});
-        localRow${owner} = localRow${owner} + 1;
-        if (resultLength > 0) {
-          require(resultCursor${owner} + resultLength <= resultVector${owner}.length);
-          require(resultVector${owner}.slice(
-            resultCursor${owner}, resultCursor${owner} + resultLength
-          ) == resultBytes);
-          resultCursor${owner} = resultCursor${owner} + resultLength;
-        } else {
-          require(resultVector${owner}.length == 0);
-        }
-      }`).join('\n      ');
   const depthDispatch = Array.from({ length: 7 }, (_unused, offset) => {
     const depth = offset + 1;
     return `${depth === 1 ? 'if' : 'else if'} (depth == ${depth}) {
@@ -277,28 +272,24 @@ contract GraphRootController() {
   function attest(bytes transcript) {
     require(tx.inputs[this.activeInputIndex].nftCommitment.length == 32);
     require(tx.inputs[this.activeInputIndex].nftCommitment == sha256(transcript));
-    require(transcript.length >= 10);
-    require(transcript.slice(0, 9) == hex"4c3347524150483100");
+    require(transcript.length >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
     bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
     require(participantCount >= 1 && participantCount <= 8);
     bigint cursor = 10;
     bigint previousInput = -1;
     bigint previousReturnOutput = -1;
-    ${resultVectors}
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       require(cursor + 2 <= transcript.length);
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       require(participantInput > previousInput && participantInput < tx.inputs.length);
       previousInput = participantInput;
-      require(cursor + 2 <= transcript.length);
       bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       require(lbcLength > 0 && cursor + lbcLength <= transcript.length);
       bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
       cursor = cursor + lbcLength;
       require(tx.inputs[participantInput].lockingBytecode == participantLbc);
-      require(cursor + 2 <= transcript.length);
       bigint batchLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       require(batchLength >= 7 && batchLength <= 223 && cursor + batchLength <= transcript.length);
@@ -314,7 +305,6 @@ contract GraphRootController() {
         require(int(bytes.concat(unlocking.slice(6, 7), hex"00")) == batchLength);
         require(unlocking.slice(7, 7 + batchLength) == batchBlob);
       }
-      require(cursor + 4 <= transcript.length);
       bigint returnOutput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint resultVectorLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -335,14 +325,14 @@ contract GraphRootController() {
         }
         require(tx.outputs[returnOutput].nftCommitment == expectedCommitment);
       }
-      ${resultAssignments}
-      else { revert("participant out of range"); }
+      bigint projectionInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(projectionInput < tx.inputs.length);
+      require(tx.inputs[projectionInput].lockingBytecode == hex"${verifier}");
     }
-    require(cursor + 2 <= transcript.length);
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     cursor = cursor + 2;
     require(invocationCount >= 1 && invocationCount <= 24);
-    ${localCounters}
     ${activeFrames}
     bigint previousDepth = -1;
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
@@ -350,21 +340,15 @@ contract GraphRootController() {
       bigint parent = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint callee = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
-      cursor = cursor + 1;
-      bigint localRow = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
-      cursor = cursor + 1;
+      cursor = cursor + 2;
       bigint depth = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
       cursor = cursor + 1;
       bigint subtreeEnd = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      cursor = cursor + 2;
-      bytes selector = transcript.slice(cursor, cursor + 4);
-      cursor = cursor + 4;
+      cursor = cursor + 6;
       require(callee < participantCount);
-      require(selector.length == 4);
       if (invocation == 0) {
         require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
-        activeIndex0 = 0;
-        activeEnd0 = subtreeEnd;
+        activeIndex0 = 0; activeEnd0 = subtreeEnd;
       } else {
         require(parent < invocation && depth >= 1 && depth <= 7 && depth <= previousDepth + 1);
         require(subtreeEnd >= invocation && subtreeEnd < invocationCount);
@@ -372,19 +356,12 @@ contract GraphRootController() {
         else { revert("depth out of range"); }
       }
       previousDepth = depth;
-      require(cursor + 2 <= transcript.length);
       bigint argsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      cursor = cursor + 2;
-      require(cursor + argsLength <= transcript.length);
-      cursor = cursor + argsLength;
+      cursor = cursor + 2 + argsLength;
       require(cursor + 2 <= transcript.length);
       bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      cursor = cursor + 2;
-      require(cursor + resultLength <= transcript.length);
-      bytes resultBytes = transcript.slice(cursor, cursor + resultLength);
-      cursor = cursor + resultLength;
-      ${localDispatch}
-      else { revert("callee out of range"); }
+      cursor = cursor + 2 + resultLength;
+      require(cursor <= transcript.length);
     }
     require(cursor == transcript.length);
     bytes controllerCategory = tx.inputs[this.activeInputIndex].tokenCategory;
@@ -396,6 +373,90 @@ contract GraphRootController() {
         require(outputCategory.slice(0, 32) != controllerCategory);
       }
     }
+    require(true);
+  }
+}`;
+}
+
+/** Fixed proof-slot covenant: exhaustively compares one owner's global rows to its SCB1/result projection. */
+export function generateGraphProjectionVerifier(): string {
+  return `pragma solidcash >=0.8.0;
+contract GraphProjectionVerifier() {
+  function verify(bytes transcript, bigint controllerInput, bigint participantIndex) {
+    require(controllerInput >= 0 && controllerInput < tx.inputs.length);
+    require(tx.inputs[controllerInput].nftCommitment == sha256(transcript));
+    bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
+    require(participantIndex >= 0 && participantIndex < participantCount);
+    bigint cursor = 10;
+    bytes ownerBatch;
+    bytes resultVector;
+    for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
+      bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2 + lbcLength;
+      bigint batchLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes batchBlob = transcript.slice(cursor, cursor + batchLength);
+      cursor = cursor + batchLength + 2;
+      bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes results = transcript.slice(cursor, cursor + resultLength);
+      cursor = cursor + resultLength;
+      bigint projectionInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      if (participant == participantIndex) {
+        require(projectionInput == this.activeInputIndex);
+        require(participantInput < tx.inputs.length);
+        ownerBatch = batchBlob;
+        resultVector = results;
+      }
+    }
+    bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+    cursor = cursor + 2;
+    bigint batchCursor = 7;
+    bigint resultCursor = 0;
+    bigint localRow = 0;
+    for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
+      cursor = cursor + 2;
+      bigint callee = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 1;
+      bigint row = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 4;
+      bytes selector = transcript.slice(cursor, cursor + 4);
+      cursor = cursor + 4;
+      bigint argsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes args = transcript.slice(cursor, cursor + argsLength);
+      cursor = cursor + argsLength;
+      bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes result = transcript.slice(cursor, cursor + resultLength);
+      cursor = cursor + resultLength;
+      if (callee == participantIndex) {
+        require(row == localRow);
+        localRow = localRow + 1;
+        require(ownerBatch.slice(batchCursor, batchCursor + 4) == selector);
+        batchCursor = batchCursor + 4;
+        bigint callsite = int(bytes.concat(ownerBatch.slice(batchCursor, batchCursor + 4), hex"00"));
+        batchCursor = batchCursor + 4;
+        require(callsite == row);
+        bigint occurrence = int(bytes.concat(ownerBatch.slice(batchCursor, batchCursor + 2), hex"00"));
+        batchCursor = batchCursor + 2;
+        require(occurrence == 0);
+        bigint localArgsLength = int(bytes.concat(ownerBatch.slice(batchCursor, batchCursor + 2), hex"00"));
+        batchCursor = batchCursor + 2;
+        require(localArgsLength == argsLength);
+        require(ownerBatch.slice(batchCursor, batchCursor + localArgsLength) == args);
+        batchCursor = batchCursor + localArgsLength;
+        if (resultLength > 0) {
+          require(resultVector.slice(resultCursor, resultCursor + resultLength) == result);
+          resultCursor = resultCursor + resultLength;
+        }
+      }
+    }
+    require(cursor == transcript.length);
+    require(localRow > 0 && batchCursor == ownerBatch.length);
     require(true);
   }
 }`;

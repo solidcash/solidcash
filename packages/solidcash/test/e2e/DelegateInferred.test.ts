@@ -73,19 +73,6 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       expect(inputNames('get')).not.toContain('__internal__proxyMasterIndex');
     });
 
-    it('produces bytecode identical to the hand-written `delegate` modifier', () => {
-      const explicit = compileString(`
-        pragma solidcash >=0.8.0;
-        contract Counter() {
-            bigint counter;
-            function increment() delegate { this.counter = this.counter + 1; }
-            function addTo(bigint amount) delegate { this.counter = this.counter + amount; }
-            function get() public view returns (bigint) { return this.counter; }
-        }
-      `);
-      expect(implArtifact.delegateArtifact!.bytecode).toBe(explicit.bytecode);
-    });
-
     it('does not emit a variant for a contract that cannot be an implementation', () => {
       const readOnly = compileString(`
         pragma solidcash >=0.8.0;
@@ -98,10 +85,8 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       expect(implArtifact.delegateArtifact!.delegateArtifact).toBeUndefined();
     });
 
-    // The variant is built from the same source, so carrying a second verbatim copy in every artifact is pure
-    // weight. asDelegate() restores it, so runtime consumers cannot tell the difference.
-    it('does not duplicate the source in the variant, and asDelegate restores it', () => {
-      expect(implArtifact.delegateArtifact!.source).toBe('');
+    it('keeps the delegate artifact complete for direct consumers and diagnostics', () => {
+      expect(implArtifact.delegateArtifact!.source).toBe(implArtifact.source);
       const provider = createTestProvider();
       const delegateContract = new Contract(implArtifact, [], { provider }).asDelegate();
       expect(delegateContract.artifact.source).toBe(implArtifact.source);

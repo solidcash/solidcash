@@ -18,8 +18,8 @@ import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
  * Mirrors the auto-marking already done for state-touching `library` declarations in AstBuilder.
  */
 
-// Modifiers that make delegate mode meaningless or unsound. These were hard errors in combination with an
-// explicit `delegate` (InvalidModifierCombinationError); as an inference rule they simply skip the function.
+// Modifiers that make inferred delegate mode meaningless or unsound. They simply make the function ineligible;
+// the ordinary standalone form remains valid.
 const INELIGIBLE_MODIFIERS = [
   FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.INTERNAL, FunctionModifier.PRIVATE,
   FunctionModifier.UNSAFE, FunctionModifier.UPGRADE, FunctionModifier.DEPLOY, FunctionModifier.SELFDESTRUCT,

@@ -4233,13 +4233,6 @@ export default class SolidCashParser extends Parser {
 				this.match(SolidCashParser.T__29);
 				}
 				break;
-			case 28:
-				this.enterOuterAlt(localctx, 13);
-				{
-				this.state = 1044;
-				this.match(SolidCashParser.T__27);
-				}
-				break;
 			default:
 				throw new NoViableAltException(this);
 			}

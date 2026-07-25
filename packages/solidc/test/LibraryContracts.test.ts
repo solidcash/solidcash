@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { parseCode, compileString } from '../src/compiler.js';
-import * as Errors from '../src/Errors.js';
 import type { SourceFileNode, FunctionDefinitionNode } from '../src/ast/AST.js';
 
 // Library-contract-class feature - docs/library-contracts.md.
@@ -89,14 +88,14 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     expect(lib.abi.map((f) => f.name)).toContain('inc');
   });
 
-  it('auto-delegates with the same ABI modifier and state layout as a hand-written `public delegate` contract', () => {
-    const contract = 'contract Counter() { bigint count; function inc() public delegate { this.count = this.count + 1; } }';
+  it('auto-delegates with the same ABI modifier and state layout as an inferred contract variant', () => {
+    const contract = 'contract Counter() { bigint count; function inc() public { this.count = this.count + 1; } }';
     const automatic = compileString(LIB);
-    const explicit = compileString(contract);
+    const inferred = compileString(contract).delegateArtifact!;
     expect(automatic.abi.find((f) => f.name === 'inc')?.modifiers).toEqual(
-      explicit.abi.find((f) => f.name === 'inc')?.modifiers,
+      inferred.abi.find((f) => f.name === 'inc')?.modifiers,
     );
-    expect(automatic.stateLayout?.variables).toEqual(explicit.stateLayout?.variables);
+    expect(automatic.stateLayout?.variables).toEqual(inferred.stateLayout?.variables);
   });
 
   // 3b `L.f()` sugar, piece 1: the auto-delegate also applies on the import/free-function path, so a consumer

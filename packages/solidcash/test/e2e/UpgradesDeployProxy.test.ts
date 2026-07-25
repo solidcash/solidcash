@@ -18,7 +18,7 @@ import { createTestProvider, getTxOutputs } from '../test-util.js';
 const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
   contract DelegateImpl() {
     bigint counter;
-    function increment() delegate { this.counter = this.counter + 1; }
+    function increment() public { this.counter = this.counter + 1; }
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
@@ -27,7 +27,7 @@ const DELEGATE_IMPL_MULTI = `pragma solidcash >=0.8.0;
   contract DelegateImplMulti() {
     bigint counter;
     bigint total;
-    function bump(bigint by) delegate { this.counter = this.counter + by; this.total = this.total + 1; }
+    function bump(bigint by) public { this.counter = this.counter + by; this.total = this.total + 1; }
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
@@ -120,7 +120,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     contract InitImpl() {
       int a;
       int b;
-      function initialize(int a_, int b_) delegate { this.a = a_; this.b = b_; }
+      function initialize(int a_, int b_) public { this.a = a_; this.b = b_; }
       function auth(pubkey p, sig s) unsafe { require(checkSig(s, p)); }
     }`;
 
@@ -152,8 +152,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     contract EventImpl() {
       event Changed(int v);
       int version;
-      function initialize(int v) delegate { this.version = v; }
-      function setVersion(int v) delegate { emit Changed(v); this.version = v; }
+      function initialize(int v) public { this.version = v; }
+      function setVersion(int v) public { emit Changed(v); this.version = v; }
     }`;
 
   it('emits an event from inside a delegate function (event NFT lands in the proxy block)', async () => {
@@ -180,9 +180,9 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       event A(int indexed i, int v);
       event B(int v);
       int x;
-      function initialize(int v) delegate { this.x = v; }
-      function two(int v) delegate { emit A(v, v); emit B(v + 1); this.x = v; }
-      function none() delegate { emit B(0); this.x = this.x + 1; }
+      function initialize(int v) public { this.x = v; }
+      function two(int v) public { emit A(v, v); emit B(v + 1); this.x = v; }
+      function none() public { emit B(0); this.x = this.x + 1; }
     }`;
 
   it('supports indexed params, multiple emits in one delegate call, and shifts co-spent impl UTXOs', async () => {
@@ -209,8 +209,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     contract MapImpl() {
       int count;
       mapping(address => int) users;
-      function initialize() delegate { this.count = 0; }
-      function register(int v) delegate { users[msg.sender] = v; this.count = this.count + 1; }
+      function initialize() public { this.count = 0; }
+      function register(int v) public { users[msg.sender] = v; this.count = this.count + 1; }
     }`;
 
   it('writes a msg.sender-keyed C2 mapping from inside a delegate, minting its entry NFTs in the proxy block', async () => {

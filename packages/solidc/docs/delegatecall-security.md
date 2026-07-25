@@ -2,9 +2,9 @@
 
 `addr.delegatecall(input)` implements the proxy/upgrade pattern: the **proxy** holds the persistent state and
 forwards calls to a **delegate** (implementation) contract that carries the mutating logic. On SolidCash the
-delegate is a function marked `delegate` on the implementation; it runs against the *proxy's* state via the
-injected `_proxyMasterIndex` (a witness pointing at the proxy master input), so the proxy can be upgraded by
-pointing at a new delegate while its state lives on.
+delegate is a compiler-derived implementation build; it runs against the *proxy's* state via the injected
+`_proxyMasterIndex` (a witness pointing at the proxy master input), so the proxy can be upgraded by pointing at
+a new delegate while its state lives on.
 
 ## The model, precisely
 
@@ -15,7 +15,7 @@ state.ts`): its `flag=1` (write) path authorizes an arbitrary output commitment 
 its category is present in the inputs — it delegates commitment authorization to "the master". Its `flag=0`
 (read) path preserves the commitment; `flag=2` destroys it.
 
-The delegate side works as intended: a `delegate` function reads `_proxyMasterIndex`, verifies the proxy master
+The delegate side works as intended: an inferred implementation function reads `_proxyMasterIndex`, verifies the proxy master
 has minting capability and preserves itself, forbids `_proxyMasterIndex == OP_INPUTINDEX`, and — because it is
 not itself issuing a delegatecall — runs `emitAutoCovenantVerification` against the proxy's data NFTs, pinning
 their output commitments to the computed new values. **So when the delegate is co-spent, it fully authorizes the

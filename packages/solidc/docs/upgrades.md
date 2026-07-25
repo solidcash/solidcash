@@ -37,7 +37,7 @@ constructor/genesis seed is the native equivalent, and no `initialize()` is requ
   `options.initializer: 'customName'` to run a differently-named initializer.
 
 ```typescript
-// Ported OZ contract with `function initialize(int a_, int b_) delegate { ... }`:
+// Ported OZ contract with ordinary `function initialize(int a_, int b_) { ... }` source:
 await upgrades.deployProxy(getContractFactory(implArtifact, signer), [7n, 9n]);          // runs initialize(7, 9)
 // Native SolidCash contract - seed state at genesis:
 await upgrades.deployProxy(getContractFactory(implArtifact, signer), { a: 7n, b: 9n });  // genesis (no initialize)

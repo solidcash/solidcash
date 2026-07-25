@@ -135,20 +135,18 @@ the failure is a covenant that skips its own state verification. Rejected.
 | `solidcash/src/stateful/upgrades.ts` | 2 | initializer-must-be-delegate check |
 
 Grammar work is small: remove `'delegate'` from the `functionModifier` rule (`SolidCash.g4:253`) and regenerate
-with `yarn antlr`. The `anyIdentifier` soft-keyword entry (`SolidCash.g4:58`) stays either way; it is what keeps
-`delegate` usable as a plain variable name, exactly as Solidity does. Keeping the modifier accepted-but-deprecated
-for one release is cheap and avoids breaking the 3 `.scash` files and the EA port.
+the parser. The `anyIdentifier` soft-keyword entry (`SolidCash.g4:58`) stays; it keeps `delegate` usable as a
+plain variable or function name, exactly as Solidity does.
 
 ## 6. Recommendation
 
-Drop the keyword via option B, in two steps:
+Drop the keyword via option B:
 
-1. **Deprecate, do not remove.** Keep `delegate` parsing and honor it as an explicit "emit only the delegate
-   variant" hint. Nothing breaks.
-2. **Emit both variants by default** for stateful contracts whose functions are delegate-eligible; teach the SDK
-   (`withDelegatecall`, `upgrades.ts`, `Contract.ts:104`) to select the delegate variant. Then remove the
-   keyword from the grammar and update the 3 `.scash` files, 3 test files, and
-   `docs/delegatecall.md` / `docs/modifiers.md` / `docs/library-contracts.md`.
+1. **Emit both variants by default** for stateful contracts whose functions are delegate-eligible.
+2. Teach the SDK (`withDelegatecall`, `upgrades.ts`, `Contract.ts`) to select the inferred variant.
+3. Remove the keyword from the grammar and migrate fixtures, tests, and documentation.
+
+All three steps are now implemented.
 
 ## 7. What shipped
 
@@ -164,9 +162,9 @@ Drop the keyword via option B, in two steps:
 - `solidcash/test/e2e/DelegateInferred.test.ts` — 12 tests: variant emission and eligibility, `asDelegate()`,
   the mis-wiring guard, and three on-chain executions mutating proxy state from keyword-free source.
 
-Verification: the inferred build is **byte-identical** to the hand-written `delegate` version on every case
-tried (single function, multi-function with a mapping, and the `delegate_function.scash` fixture). Regression:
-solidc 2250/2250, solidcash 3191 passed / 0 failed.
+Verification now uses inferred variants exclusively, including single and multi-function state writes,
+mappings, events, overloads, helper calls, serialization, and real proxy execution. The old explicit-modifier
+fixtures have been migrated and the grammar rejects the removed modifier.
 
 Cost: the variant is built **on first read**, not on every compile, so compiling costs nothing extra. Measured
 over the 300 `valid-contract-files` fixtures: 7.8s with the feature vs 8.0s without (noise). Reading every
@@ -218,8 +216,8 @@ A self-audit pass then closed three more:
 - **A failed variant compile no longer disappears.** It stays non-fatal, but now warns with the reason, instead
   of surfacing later as `asDelegate()` reporting "no delegate variant" with no explanation. Measured across the
   300 `valid-contract-files` fixtures: 0 such failures, so this is a diagnostic for the unexpected case.
-- **The variant no longer carries a second copy of the source.** It is compiled from the same input, so the copy
-  was pure weight in every artifact; `asDelegate()` restores it, leaving runtime consumers unaffected.
+- **The nested variant remains a complete artifact.** Its `source` is retained because consumers may use
+  `artifact.delegateArtifact` directly, and diagnostics/template generation read that field.
 
 Worth recording from that pass: `touchesProxyState` turns out to see helper-only state writes already, because
 state-touching internal functions are force-inlined before this pass runs. The body-local concern was real for

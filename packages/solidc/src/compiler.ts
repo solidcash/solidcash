@@ -94,6 +94,41 @@ export interface CompileOptions extends CompilerOptions {
 // Off by default; enabled via SOLIDC_COMPILE_CACHE=1 (test harness sets it) since compilation is
 // deterministic. Skipped when a custom errorListener/importResolver is present (non-serializable).
 const compileCache = new Map<string, Artifact>();
+
+/**
+ * Clone an artifact without forcing its lazy delegate variant. `structuredClone()` reads enumerable getters,
+ * which would eagerly run the second compiler pass whenever SOLIDC_COMPILE_CACHE=1 (including the SDK tests).
+ * Keep the cache's artifact as the single variant owner; each returned clone materializes its own cloned variant
+ * only when a consumer actually reads `delegateArtifact`.
+ */
+function cloneArtifact(artifact: Artifact): Artifact {
+  const delegateDescriptor = Object.getOwnPropertyDescriptor(artifact, 'delegateArtifact');
+  if (!delegateDescriptor?.get) return structuredClone(artifact);
+
+  const withoutDelegate = Object.fromEntries(
+    Object.keys(artifact)
+      .filter((key) => key !== 'delegateArtifact')
+      .map((key) => [key, artifact[key as keyof Artifact]]),
+  ) as unknown as Artifact;
+  const cloned = structuredClone(withoutDelegate);
+  let memo: Artifact | undefined;
+  let built = false;
+  Object.defineProperty(cloned, 'delegateArtifact', {
+    enumerable: true,
+    configurable: true,
+    get(): Artifact | undefined {
+      if (!built) {
+        const variant = delegateDescriptor.get!.call(artifact) as Artifact | undefined;
+        memo = variant ? structuredClone(variant) : undefined;
+        built = true;
+      }
+      return memo;
+    },
+    set(value: Artifact | undefined): void { memo = value; built = true; },
+  });
+  return cloned;
+}
+
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
@@ -102,14 +137,14 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   if (cacheable) {
     cacheKey = `${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
     const hit = compileCache.get(cacheKey);
-    if (hit) return structuredClone(hit);
+    if (hit) return cloneArtifact(hit);
   }
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
   const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
   const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
   attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener);
   if (cacheable) compileCache.set(cacheKey, artifact);
-  return cacheable ? structuredClone(artifact) : artifact;
+  return cacheable ? cloneArtifact(artifact) : artifact;
 }
 
 /**
@@ -155,9 +190,6 @@ function attachDelegateVariant(
       const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
       const variant = compileResolvedAst(variantAst, code, variantOptions, out);
       if (out.delegateFunctionsMarked > 0) {
-        // Same source as the parent, so `source` would be a verbatim copy in every artifact. Drop it here;
-        // Contract.asDelegate() restores it from the parent for runtime consumers.
-        variant.source = '';
         built = variant;
       }
     } catch (e) {

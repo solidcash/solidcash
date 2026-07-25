@@ -62,15 +62,11 @@ describe('delegate inference', () => {
     }`).delegateArtifact).toBeUndefined();
   });
 
-  it('leaves an explicitly-marked delegate contract alone', () => {
-    // The keyword is deprecated but still honoured: it puts delegate mode in the PRIMARY artifact, so there is
-    // nothing left for inference to add and no second build is attached.
-    const artifact = compileString(`contract C() {
+  it('rejects the removed source-level delegate modifier', () => {
+    expect(() => compileString(`contract C() {
       bigint counter;
       function f() delegate { this.counter = this.counter + 1; }
-    }`);
-    expect(artifact.abi.find((f) => f.name === 'f')?.modifiers).toContain('delegate');
-    expect(artifact.delegateArtifact).toBeUndefined();
+    }`)).toThrow();
   });
 
   it('never fails a valid standalone compile, and reports why the variant was skipped', () => {
@@ -115,12 +111,29 @@ describe('delegate inference', () => {
     expect(artifact.delegateArtifact).toBe(artifact.delegateArtifact);
   });
 
-  it('does not carry a second copy of the source', () => {
+  it('keeps the nested artifact complete, including source', () => {
     const artifact = compileString(`contract C() {
       bigint counter;
       function f() public { this.counter = this.counter + 1; }
     }`);
     expect(artifact.source).toContain('contract C()');
-    expect(artifact.delegateArtifact!.source).toBe('');
+    expect(artifact.delegateArtifact!.source).toBe(artifact.source);
+  });
+
+  it('stays lazy when the compile cache clones the artifact', () => {
+    const previous = process.env.SOLIDC_COMPILE_CACHE;
+    process.env.SOLIDC_COMPILE_CACHE = '1';
+    try {
+      const artifact = compileString(`contract CachedDelegate() {
+        bigint counter;
+        function f() public { this.counter = this.counter + 1; }
+      }`);
+      const descriptor = Object.getOwnPropertyDescriptor(artifact, 'delegateArtifact');
+      expect(descriptor?.get).toBeTypeOf('function');
+      expect(artifact.delegateArtifact).toBeDefined();
+    } finally {
+      if (previous === undefined) delete process.env.SOLIDC_COMPILE_CACHE;
+      else process.env.SOLIDC_COMPILE_CACHE = previous;
+    }
   });
 });

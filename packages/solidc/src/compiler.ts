@@ -221,6 +221,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
   const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
+  const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
@@ -230,6 +231,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     let routeUsesMsgSender = false;
     let routeUsesMsgData = false;
     let routeUsesMsgSig = false;
+    let routeUsesMsgValue = false;
     let routeUsesOtherIntrospection = false;
     let signatureCheck = false;
     let statefulExternalCall = false;
@@ -246,6 +248,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             if (node.operator === NullaryOperator.MSG_SENDER) routeUsesMsgSender = true;
             else if (node.operator === NullaryOperator.MSG_DATA) routeUsesMsgData = true;
             else if (node.operator === NullaryOperator.MSG_SIG) routeUsesMsgSig = true;
+            else if (node.operator === NullaryOperator.MSG_VALUE) routeUsesMsgValue = true;
             else routeUsesOtherIntrospection = true;
           }
           if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
@@ -381,8 +384,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
       && !((graphControllerLbc !== undefined
-        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)
-        && !routeUsesOtherIntrospection)
+          && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue)
+          && !routeUsesOtherIntrospection)
         || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
@@ -403,7 +406,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     if (!reason) eligible.push(fn);
     if (!reason && (graphTailCallEligible
       || (graphControllerLbc !== undefined
-        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)))) graphTailHandlers.add(fn);
+        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue)))) {
+      graphTailHandlers.add(fn);
+    }
+    if (!reason && graphControllerLbc !== undefined && routeUsesMsgValue) {
+      graphMsgValueHandlers.add(fn);
+    }
     if (!reason && graphTailCallEligible && !graphTailStatement && !graphResultStatement) {
       graphRuntimeHandlers.add(fn);
     }
@@ -477,7 +485,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     computeFunctionSignature(fn.name, fn.parameters.map((parameter) =>
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
-  const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  const routeMaximumRows = graphMsgValueHandlers.size > 0
+    ? 1
+    : resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
   let resourceHandlerInvokeName: string | undefined;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   if (resourceShapedHandler) {

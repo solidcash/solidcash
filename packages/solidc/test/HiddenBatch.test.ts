@@ -231,4 +231,21 @@ describe('Release 4 compiler-hidden local batch', () => {
       .filter((slot) => slot.kind === 'transfer')).toHaveLength(8);
     expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
   });
+
+  it('limits graph msg.value to one effect-attributed invocation', () => {
+    const artifact = compileString(`contract ValueContext() {
+      function pay(bytes recipient, bigint amount) public {
+        this.transfer(recipient, amount);
+        require(msg.value == -amount && amount >= 0);
+      }
+    }`, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: 'aa',
+      experimentalMessageBusControllerCategory: '00'.repeat(32),
+    });
+    expect(artifact.hiddenBatch?.maximumRows).toBe(1);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'pay')?.eligible)
+      .toBe(true);
+  });
 });

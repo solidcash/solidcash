@@ -322,6 +322,17 @@ class MsgSenderUsageCollector extends AstTraversal {
   }
 }
 
+class MsgValueUsageCollector extends AstTraversal {
+  found = false;
+
+  visitNullaryOp(node: NullaryOpNode): Node {
+    if (node.operator === NullaryOperator.MSG_VALUE) {
+      this.found = true;
+    }
+    return node;
+  }
+}
+
 class NftIndexCollector extends AstTraversal {
   indices = new Set<number>();
 
@@ -388,6 +399,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private contractUsesMsgData: boolean = false;
   private contractUsesMsgSig: boolean = false;
   private contractUsesMsgSender: boolean = false;
+  private contractUsesMsgValue: boolean = false;
   // Compiler-internal subroutine registry, keyed by 2-byte id. `defined` is inherited into
   // sub-traversals; `useCount` is propagated back up.
   private subroutineDefined = new Map<bigint, boolean>();
@@ -944,6 +956,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (msgSenderCollector.found) break;
     }
     this.contractUsesMsgSender = msgSenderCollector.found;
+    const msgValueCollector = new MsgValueUsageCollector();
+    for (const f of allNodeFunctions) {
+      msgValueCollector.visit(f);
+      if (msgValueCollector.found) break;
+    }
+    this.contractUsesMsgValue = msgValueCollector.found;
 
     // Also set contractUsesMsgData if fallback has a bytes parameter
     if (node.fallbackDef && node.fallbackDef.parameters.length > 0) {
@@ -1557,6 +1575,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.userFunctionDefs = this.userFunctionDefs;
       probe.constantExpressions = new Map(this.constantExpressions);
       probe.contractUsesMsgData = this.contractUsesMsgData;
+      probe.contractUsesMsgValue = this.contractUsesMsgValue;
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.compactHelperIds = this.compactHelperIds;
@@ -1745,6 +1764,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
     subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
     subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
+    subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
     // via visitParameter (pushToStack with pushToBottom=true)
@@ -1985,6 +2005,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
     subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
     subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
+    subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
 
     // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
     // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -2353,6 +2374,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgData) {
       this.pushToStack('__internal__handlerMsgData', true);
+    }
+    if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgValue) {
+      this.pushToStack('__internal__handlerMsgValue', true);
     }
     if (activeJournalSlots.length > 0) {
       if (this.isDefineSubTraversal) {
@@ -5662,6 +5686,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     let hiddenContextCount = 0;
+    if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
+      const contextLoc = { location: node.location, positionHint: PositionHint.START };
+      this.emitMsgValue(contextLoc);
+      this.pushToStack(`(__handler_msg_value_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
     if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
       && this.contractUsesMsgData) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
@@ -19625,6 +19655,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., value]
    */
   private emitMsgValue(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__handlerMsgValue')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgValue'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     // Stateless contract (no block layout / satoshi container): msg.value is just the satoshi value of the
     // contract input being spent - there is no persistent balance to diff against.
     if (!this.currentFunction.blockLayout) {

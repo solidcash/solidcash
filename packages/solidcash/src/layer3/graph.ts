@@ -57,6 +57,20 @@ export interface FinalizedCompiledGraph {
   resultsHex: readonly string[];
 }
 
+export interface CompiledGraphPhysicalLayout {
+  /** Physical master input of each participant, by participant index. */
+  participantInputs: readonly number[];
+  /** One-shot controller NFT input carrying `FinalizedCompiledGraph.root`. */
+  controllerInput: number;
+  /** Exact balanced transaction input/output count. */
+  totalSlots: number;
+  /**
+   * Optional return-event output per participant. Required when that participant's SCB1 plan returns values.
+   * The corresponding expected full NFT commitment is supplied in `resultCommitmentsHex`.
+   */
+  returnOutputs?: readonly (number | null)[];
+}
+
 const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
@@ -136,6 +150,96 @@ export function finalizeCompiledGraph(
     root: binToHex(sha256.hash(bytes)),
     resultsHex: Object.freeze(resultHex),
   });
+}
+
+const positionalBlobChecks = (input: number, blobHex: string): string[] => {
+  const length = blobHex.length / 2;
+  if (length <= 75) {
+    return [
+      `require(tx.inputs[${input}].unlockingBytecode.slice(0, 6) == hex"0453434231${length.toString(16).padStart(2, '0')}");`,
+      `require(tx.inputs[${input}].unlockingBytecode.slice(6, ${6 + length}) == hex"${blobHex}");`,
+    ];
+  }
+  if (length <= 255) {
+    return [
+      `require(tx.inputs[${input}].unlockingBytecode.slice(0, 7) == hex"04534342314c${length.toString(16).padStart(2, '0')}");`,
+      `require(tx.inputs[${input}].unlockingBytecode.slice(7, ${7 + length}) == hex"${blobHex}");`,
+    ];
+  }
+  throw new Error('layer3: compiled participant blob exceeds the supported positional push bound');
+};
+
+/**
+ * Generate the transaction-wide verifier which joins independently compiled SCB1 application covenants.
+ *
+ * The controller is one-shot and transcript-specific. Application participants still enforce their own
+ * state transitions and result-event covenant; this controller proves that every named owner actually runs
+ * the exact local batch committed by the global graph, at the agreed physical input, in one balanced
+ * transaction. It therefore closes the otherwise-fatal gap between a root describing calls and application
+ * inputs executing unrelated routes.
+ */
+export function generateCompiledGraphController(
+  transcript: FinalizedCompiledGraph,
+  layout: CompiledGraphPhysicalLayout,
+  resultCommitmentsHex: readonly (string | null)[] = [],
+): string {
+  const n = transcript.plan.participants.length;
+  if (layout.participantInputs.length !== n) {
+    throw new Error('layer3: physical layout must assign every compiled participant exactly once');
+  }
+  if (new Set([...layout.participantInputs, layout.controllerInput]).size !== n + 1) {
+    throw new Error('layer3: physical participant/controller inputs must be distinct');
+  }
+  if (!Number.isInteger(layout.totalSlots) || layout.totalSlots <= layout.controllerInput
+    || layout.participantInputs.some((input) =>
+      !Number.isInteger(input) || input < 0 || input >= layout.totalSlots)) {
+    throw new Error('layer3: physical layout input is outside the balanced transaction');
+  }
+  const returns = layout.returnOutputs ?? Array.from({ length: n }, () => null);
+  if (returns.length !== n) throw new Error('layer3: returnOutputs must align with participants');
+
+  const body: string[] = [
+    `require(this.activeInputIndex == ${layout.controllerInput});`,
+    `require(tx.inputs.length == ${layout.totalSlots});`,
+    `require(tx.outputs.length == ${layout.totalSlots});`,
+    `require(tx.inputs[${layout.controllerInput}].nftCommitment == hex"${transcript.root}");`,
+  ];
+  transcript.plan.participants.forEach((participant, index) => {
+    const input = layout.participantInputs[index];
+    body.push(`require(tx.inputs[${input}].lockingBytecode == hex"${participant.lockingBytecode}");`);
+    body.push(...positionalBlobChecks(input, binToHex(participant.batch.blob)));
+    const needsResult = participant.batch.results.length > 0;
+    const output = returns[index];
+    const commitment = resultCommitmentsHex[index];
+    if (needsResult) {
+      if (output === null || output === undefined || !Number.isInteger(output)
+        || output < 0 || output >= layout.totalSlots) {
+        throw new Error(`layer3: returning participant ${index} lacks a physical return output`);
+      }
+      if (commitment === null || commitment === undefined || !/^([0-9a-fA-F]{2})+$/.test(commitment)) {
+        throw new Error(`layer3: returning participant ${index} lacks its authenticated result commitment`);
+      }
+      body.push(`require(tx.outputs[${output}].nftCommitment == hex"${commitment.toLowerCase()}");`);
+    } else if (output !== null && output !== undefined) {
+      throw new Error(`layer3: non-returning participant ${index} cannot reserve a return output`);
+    }
+  });
+  // Consume the unique controller NFT. With mint-once genesis (no minting capability survives), proving that
+  // no output retains its 32-byte category makes this transcript impossible to attest twice.
+  body.push(`bytes controllerCategory = tx.inputs[${layout.controllerInput}].tokenCategory.slice(0, 32);`);
+  body.push('for (bigint output = 0; output < tx.outputs.length; output = output + 1) {');
+  body.push('  bytes outputCategory = tx.outputs[output].tokenCategory;');
+  body.push('  if (outputCategory.length >= 32) {');
+  body.push('    require(outputCategory.slice(0, 32) != controllerCategory);');
+  body.push('  }');
+  body.push('}');
+  body.push('require(true);');
+  return `pragma solidcash >=0.8.0;
+contract CompiledGraphController() {
+  function attest() {
+    ${body.join('\n    ')}
+  }
+}`;
 }
 
 /**

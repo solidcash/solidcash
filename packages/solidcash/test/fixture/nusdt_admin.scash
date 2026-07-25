@@ -1,0 +1,111 @@
+pragma solidcash >=0.8.0;
+
+// Facet library: Ownable, Pausable, BlackList membership, the freeze extension,
+// deprecation, and `approve`.
+library UsdtAdmin {
+
+    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Pause();
+    event Unpause();
+    event Deprecate(address newAddress);
+    event AddedBlackList(address indexed user);
+    event RemovedBlackList(address indexed user);
+    event Frozen(address indexed user);
+    event Unfrozen(address indexed user);
+    event QuarantineParams(int blocks);
+
+    // ---- shared state layout (see nusdt_state.inc) ----
+    address owner;
+    int totalSupply;
+    mapping(address => int) balances;
+    int basisPointsRate;
+    int maximumFee;
+    mapping(address => mapping(address => int)) allowed;
+    bool paused;
+    mapping(address => bool) isBlackListed;
+    bytes32 name;
+    bytes32 symbol;
+    uint8 decimals;
+    bool deprecated;
+    address upgradedAddress;
+    mapping(address => bool) frozen;
+    mapping(address => int) pendingAmount;
+    mapping(address => int) pendingUnlockAt;
+    int quarantineBlocks;
+    bytes32 backingCategory;
+    bool backingSet;
+    int containerSeen;
+    int backedSupply;
+    int clock;
+
+    function transferOwnership(address newOwner) public {
+        require(msg.sender == this.owner);
+        require(newOwner != this.owner);
+        this.owner = newOwner;
+    }
+
+    function pause() public {
+        require(msg.sender == this.owner);
+        require(!this.paused);
+        this.paused = true;
+        emit Pause();
+    }
+
+    function unpause() public {
+        require(msg.sender == this.owner);
+        require(this.paused);
+        this.paused = false;
+        emit Unpause();
+    }
+
+    // USDT carries the EIP-20 race-condition guard: a non-zero allowance must be
+    // zeroed before it can be changed to another non-zero value. Reproduced.
+    function approve(address spender, int value) public {
+        require(!this.deprecated);
+        address tokenOwner = msg.sender;
+        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
+        this.allowed[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    function addBlackList(address evilUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function removeBlackList(address clearedUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[clearedUser] = false;
+        emit RemovedBlackList(clearedUser);
+    }
+
+    // Freeze is reversible and non-destructive, unlike the blacklist: a frozen
+    // account can neither send nor receive and cannot claim a matured deposit,
+    // but its funds are never seizable.
+    function freeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = true;
+        emit Frozen(user);
+    }
+
+    function unfreeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = false;
+        emit Unfrozen(user);
+    }
+
+    function deprecate(address newAddress) public {
+        require(msg.sender == this.owner);
+        this.deprecated = true;
+        this.upgradedAddress = newAddress;
+        emit Deprecate(newAddress);
+    }
+
+    function setQuarantineBlocks(int blocks) public {
+        require(msg.sender == this.owner);
+        require(blocks >= 0);
+        this.quarantineBlocks = blocks;
+        emit QuarantineParams(blocks);
+    }
+}

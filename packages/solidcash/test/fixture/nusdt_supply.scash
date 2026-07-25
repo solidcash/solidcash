@@ -1,0 +1,83 @@
+pragma solidcash >=0.8.0;
+
+// Facet library: supply management and the blacklist's destructive power.
+library UsdtSupply {
+
+    event Issue(int amount);
+    event Redeem(int amount);
+    event Params(int feeBasisPoints, int maxFee);
+    event DestroyedBlackFunds(address indexed blackListedUser, int balance);
+
+    // ---- shared state layout (see nusdt_state.inc) ----
+    address owner;
+    int totalSupply;
+    mapping(address => int) balances;
+    int basisPointsRate;
+    int maximumFee;
+    mapping(address => mapping(address => int)) allowed;
+    bool paused;
+    mapping(address => bool) isBlackListed;
+    bytes32 name;
+    bytes32 symbol;
+    uint8 decimals;
+    bool deprecated;
+    address upgradedAddress;
+    mapping(address => bool) frozen;
+    mapping(address => int) pendingAmount;
+    mapping(address => int) pendingUnlockAt;
+    int quarantineBlocks;
+    bytes32 backingCategory;
+    bool backingSet;
+    int containerSeen;
+    int backedSupply;
+    int clock;
+
+    // Releases preminted reserve into circulation rather than creating tokens.
+    // Consensus makes over-issuance impossible: the FTs must already sit in the
+    // container, and `containerSeen` was read from the container itself.
+    function issue(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.containerSeen >= this.backedSupply + amount);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        this.backedSupply = this.backedSupply + amount;
+        emit Issue(amount);
+    }
+
+    function redeem(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.totalSupply >= amount);
+        require(this.balances[this.owner] >= amount);
+        this.totalSupply = this.totalSupply - amount;
+        this.balances[this.owner] = this.balances[this.owner] - amount;
+        this.backedSupply = this.backedSupply - amount;
+        emit Redeem(amount);
+    }
+
+    // Destroyed funds leave circulation, but the underlying FTs stay in the
+    // container as unminted premint and so become re-issuable. This is the
+    // "returning burn" of the supply model and it keeps containerSeen >=
+    // backedSupply intact.
+    function destroyBlackFunds(address blackListedUser) public {
+        require(msg.sender == this.owner);
+        require(this.isBlackListed[blackListedUser]);
+        int dirtyFunds = this.balances[blackListedUser];
+        this.balances[blackListedUser] = 0;
+        this.totalSupply = this.totalSupply - dirtyFunds;
+        this.backedSupply = this.backedSupply - dirtyFunds;
+        emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
+    }
+
+    // Hardcoded transparency bounds, exactly as deployed USDT: fees can never be
+    // raised past these no matter who owns the contract.
+    function setParams(int newBasisPoints, int newMaxFee) public {
+        require(msg.sender == this.owner);
+        require(newBasisPoints < 20);
+        require(newMaxFee < 50);
+        this.basisPointsRate = newBasisPoints;
+        this.maximumFee = newMaxFee * (10 ** this.decimals);
+        emit Params(this.basisPointsRate, this.maximumFee);
+    }
+}

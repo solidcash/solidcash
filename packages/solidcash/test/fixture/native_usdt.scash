@@ -1,0 +1,485 @@
+pragma solidcash >=0.8.0;
+
+// =============================================================================
+// NativeTetherToken - a drop-in port of Ethereum USDT (TetherToken,
+// 0xdAC17F958D2ee523a2206206994597C13D831ec7, solc v0.4.18) backed by a REAL
+// CashTokens fungible token, with three compliance extensions.
+//
+// The full deployed USDT surface is reproduced: Ownable, Pausable, the fee
+// mechanism (basisPointsRate / maximumFee), issue/redeem, BlackList +
+// destroyBlackFunds, deprecate, and the exact event set.
+//
+// EXTENSIONS (documented in packages/solidc/docs/native-erc20.md):
+//   1. quarantined admission - the ledger has a bearer face. `withdraw` unwraps
+//      ledger balance into plain P2PKH CashTokens; re-entry via `deposit` lands
+//      in a pending record that matures after `quarantineBlocks`, and only then
+//      can be claimed. The issuer's power is to blacklist/freeze the claimant
+//      inside the window. `cancelDeposit` always returns funds to the depositor,
+//      so a refused deposit is never confiscated.
+//   2. blacklist - USDT-native, extended to gate claims.
+//   3. freeze - reversible, per-account, distinct from blacklist: it blocks
+//      movement in BOTH directions but never destroys funds.
+//
+// DELIBERATE DEVIATIONS from the Solidity original, each forced or sound:
+//
+//   * SafeMath is not used. BCH integers are arbitrary-precision BigInts (since
+//     the May 2025 upgrade), so Solidity's overflow wraparound does not exist
+//     and `add`/`mul` overflow asserts are vacuous. Underflow still matters (a
+//     subtraction can go negative rather than wrapping), so every debit is
+//     guarded by an explicit `require(balance >= value)` - semantically the same
+//     as SafeMath.sub's assert, at a fraction of the size.
+//
+//   * `decimals` is `uint8`, not `int`. `10 ** this.decimals` in setParams needs
+//     an UNSIGNED exponent; a signed one is a compile error. (This is the bug
+//     that makes the older test/imports/fixtures/usdt_tether.scash fixture fail
+//     to compile.)
+//
+//   * The `deprecated` -> `upgradedAddress` call forwarding is not reproduced.
+//     On BCH the contract's category ID IS its identity and the `upgrade`
+//     modifier preserves it, so holders never change address and there is
+//     nothing to forward to. The flag, the address, and the Deprecate event are
+//     all kept, and the ERC20 entry points refuse to operate once deprecated.
+//
+//   * Authorization uses `msg.sender`, exactly as Solidity does. On BCH this
+//     resolves to the first non-token-bearing P2PKH input's locking bytecode (or
+//     a co-spent contract's), and consensus already required that input to carry
+//     a valid signature - so `msg.sender` is authenticated, not advisory.
+//
+//   * The quarantine clock is a CLTV-verified monotonic counter rather than a
+//     block oracle. `require(tx.time >= nowHeight)` makes consensus prove the
+//     real chain height is at least `nowHeight`, and `nowHeight >= this.clock`
+//     forces it forward. The claim gate is `require(tx.time >= unlockAt)`, also
+//     consensus-enforced, so a matured claim can never be accelerated. CAVEAT: a
+//     depositor may pass the smallest accepted `nowHeight` (the current clock),
+//     so if the clock lags the chain the window is shortened by exactly that
+//     lag. Anyone may advance the clock with `tick`, and the issuer - the party
+//     the window protects - has both the means and the incentive to keep it
+//     fresh. This is the single trust assumption in the timer.
+// =============================================================================
+
+contract NativeTetherToken(address initialOwner) {
+
+    // ---- Structs ----
+    struct Pending {
+        int amount;
+        int unlockAt;
+    }
+
+    // ---- Events: byte-for-byte the deployed USDT set ----
+    event Transfer(address indexed from, address indexed to, int value);
+    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Pause();
+    event Unpause();
+    event Issue(int amount);
+    event Redeem(int amount);
+    event Deprecate(address newAddress);
+    event Params(int feeBasisPoints, int maxFee);
+    event AddedBlackList(address indexed user);
+    event RemovedBlackList(address indexed user);
+    event DestroyedBlackFunds(address indexed blackListedUser, int balance);
+
+    // ---- Events: extensions ----
+    event Frozen(address indexed user);
+    event Unfrozen(address indexed user);
+    event Withdrawal(address indexed from, int value);
+    event DepositQuarantined(address indexed to, int value, int unlockAt);
+    event DepositClaimed(address indexed to, int value);
+    event DepositCancelled(address indexed to, int value);
+    event QuarantineParams(int blocks);
+
+    // ---- Constants ----
+    // USDT's MAX_UINT infinite-allowance sentinel, preserved at full width so
+    // that a ported integration passing 2**256-1 still means "infinite".
+    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+
+    // ---- USDT state ----
+    public address owner;
+    public int totalSupply;
+    mapping(address => int) public balances;
+    public int basisPointsRate;
+    public int maximumFee;
+    mapping(address => mapping(address => int)) public allowed;
+    public bool paused;
+    mapping(address => bool) public isBlackListed;
+    public string name;
+    public string symbol;
+    public uint8 decimals;
+    public bool deprecated;
+    public address upgradedAddress;
+
+    // ---- Extension state ----
+    mapping(address => bool) public frozen;
+    mapping(address => Pending) public pendingDeposits;
+    public int quarantineBlocks;
+    // The backing FT category. Pinned once by `setBacking` after genesis, because
+    // the container address derives from this contract's own category ID and so
+    // cannot be known at construction time.
+    public bytes32 backingCategory;
+    public bool backingSet;
+    // Ledger's view of the FT reserve held in the backing token container.
+    public int containerSeen;
+    // Ledger balances + unclaimed pending deposits. Invariant: containerSeen >= backedSupply.
+    public int backedSupply;
+    // Monotonic, CLTV-verified chain height.
+    public int clock;
+
+    // ---- Modifiers ----
+
+    modifier onlyOwner() {
+        require(msg.sender == this.owner);
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!this.paused);
+        _;
+    }
+
+    modifier whenPaused() {
+        require(this.paused);
+        _;
+    }
+
+    modifier notDeprecated() {
+        require(!this.deprecated);
+        _;
+    }
+
+    // ---- Constructor ----
+    // All supply is preminted into the backing token container at genesis; the
+    // ledger starts empty and `issue` releases premint into circulation. This is
+    // the only sound supply model on BCH: fungible amounts of a category can
+    // never be created after the genesis transaction.
+    constructor(string tokenName, string tokenSymbol, uint8 tokenDecimals, int quarantine) {
+        this.name = tokenName;
+        this.symbol = tokenSymbol;
+        this.decimals = tokenDecimals;
+        this.owner = initialOwner;
+        this.paused = false;
+        this.deprecated = false;
+        this.basisPointsRate = 0;
+        this.maximumFee = 0;
+        this.totalSupply = 0;
+        this.containerSeen = 0;
+        this.backedSupply = 0;
+        this.quarantineBlocks = quarantine;
+        this.clock = 0;
+        this.backingSet = false;
+    }
+
+    // Pin the backing FT category, once. `containerSeen` is taken from the
+    // container's ACTUAL token amount rather than an owner-supplied number, so
+    // the owner cannot overstate the premint and `issue` can never release more
+    // than physically exists. One-shot: the category can never be repointed.
+    function setBacking(bytes32 category) onlyOwner {
+        require(!this.backingSet);
+        this.backingSet = true;
+        this.backingCategory = category;
+        this.containerSeen = this.tokens[category].tokenAmount;
+    }
+
+    // ==== Ownable ====
+
+    function transferOwnership(address newOwner) onlyOwner {
+        require(newOwner != this.owner);
+        this.owner = newOwner;
+    }
+
+    // ==== Pausable ====
+
+    function pause() onlyOwner whenNotPaused {
+        this.paused = true;
+        emit Pause();
+    }
+
+    function unpause() onlyOwner whenPaused {
+        this.paused = false;
+        emit Unpause();
+    }
+
+    // ==== ERC20 ====
+    // Fee mechanism reproduced exactly: fee = value * basisPointsRate / 10000,
+    // capped at maximumFee, credited to the owner, and the recipient receives
+    // value - fee. Both USDT Transfer events are emitted in the same order.
+
+    function transfer(address to, int value) whenNotPaused notDeprecated {
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(!this.frozen[to]);
+
+        int fee = (value * this.basisPointsRate) / 10000;
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
+        }
+        int sendAmount = value - fee;
+
+        require(this.balances[sender] >= value);
+        this.balances[sender] = this.balances[sender] - value;
+        this.balances[to] = this.balances[to] + sendAmount;
+        if (fee > 0) {
+            this.balances[this.owner] = this.balances[this.owner] + fee;
+            emit Transfer(sender, this.owner, fee);
+        }
+        emit Transfer(sender, to, sendAmount);
+    }
+
+    function transferFrom(address from, address to, int value) whenNotPaused notDeprecated {
+        address spender = msg.sender;
+        require(!this.isBlackListed[from]);
+        require(!this.frozen[from]);
+        require(!this.frozen[to]);
+
+        int currentAllowance = this.allowed[from][spender];
+
+        int fee = (value * this.basisPointsRate) / 10000;
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
+        }
+
+        // USDT only decrements finite allowances; MAX_UINT is the infinite sentinel.
+        if (currentAllowance < MAX_ALLOWANCE) {
+            require(currentAllowance >= value);
+            this.allowed[from][spender] = currentAllowance - value;
+        }
+
+        int sendAmount = value - fee;
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.balances[to] = this.balances[to] + sendAmount;
+        if (fee > 0) {
+            this.balances[this.owner] = this.balances[this.owner] + fee;
+            emit Transfer(from, this.owner, fee);
+        }
+        emit Transfer(from, to, sendAmount);
+    }
+
+    // USDT's approve carries the EIP-20 race-condition guard: a non-zero
+    // allowance must be zeroed before it can be changed to another non-zero
+    // value. Reproduced verbatim.
+    function approve(address spender, int value) notDeprecated {
+        address tokenOwner = msg.sender;
+        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
+        this.allowed[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    // ==== ERC20 views ====
+
+    function balanceOf(address who) view returns (int) {
+        return this.balances[who];
+    }
+
+    function allowance(address tokenOwner, address spender) view returns (int) {
+        return this.allowed[tokenOwner][spender];
+    }
+
+    function getTotalSupply() view returns (int) {
+        return this.totalSupply;
+    }
+
+    // ==== BlackList ====
+
+    function addBlackList(address evilUser) onlyOwner {
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function removeBlackList(address clearedUser) onlyOwner {
+        this.isBlackListed[clearedUser] = false;
+        emit RemovedBlackList(clearedUser);
+    }
+
+    // Destroyed funds leave circulation but the underlying FTs stay in the
+    // container as unminted premint, so they become re-issuable. This is the
+    // "returning burn" of the supply model, and it keeps
+    // containerSeen >= backedSupply intact.
+    function destroyBlackFunds(address blackListedUser) onlyOwner {
+        require(this.isBlackListed[blackListedUser]);
+        int dirtyFunds = this.balances[blackListedUser];
+        this.balances[blackListedUser] = 0;
+        this.totalSupply = this.totalSupply - dirtyFunds;
+        this.backedSupply = this.backedSupply - dirtyFunds;
+        emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
+    }
+
+    function getBlackListStatus(address maker) view returns (bool) {
+        return this.isBlackListed[maker];
+    }
+
+    function getOwner() view returns (address) {
+        return this.owner;
+    }
+
+    // ==== Extension: freeze ====
+    // Reversible and non-destructive, unlike the blacklist. A frozen account can
+    // neither send nor receive, and cannot claim a matured deposit.
+
+    function freeze(address user) onlyOwner {
+        this.frozen[user] = true;
+        emit Frozen(user);
+    }
+
+    function unfreeze(address user) onlyOwner {
+        this.frozen[user] = false;
+        emit Unfrozen(user);
+    }
+
+    function getFrozenStatus(address user) view returns (bool) {
+        return this.frozen[user];
+    }
+
+    // ==== Supply management ====
+    // `issue` releases preminted reserve into circulation rather than creating
+    // tokens; consensus makes over-issuance impossible because the FTs must
+    // already exist in the container.
+
+    function issue(int amount) onlyOwner {
+        require(amount > 0);
+        require(this.containerSeen >= this.backedSupply + amount);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        this.backedSupply = this.backedSupply + amount;
+        emit Issue(amount);
+    }
+
+    function redeem(int amount) onlyOwner {
+        require(amount > 0);
+        require(this.totalSupply >= amount);
+        require(this.balances[this.owner] >= amount);
+        this.totalSupply = this.totalSupply - amount;
+        this.balances[this.owner] = this.balances[this.owner] - amount;
+        this.backedSupply = this.backedSupply - amount;
+        emit Redeem(amount);
+    }
+
+    function setParams(int newBasisPoints, int newMaxFee) onlyOwner {
+        require(newBasisPoints < 20);
+        require(newMaxFee < 50);
+        this.basisPointsRate = newBasisPoints;
+        this.maximumFee = newMaxFee * (10 ** this.decimals);
+        emit Params(this.basisPointsRate, this.maximumFee);
+    }
+
+    // ==== Deprecation ====
+
+    function deprecate(address newAddress) onlyOwner {
+        this.deprecated = true;
+        this.upgradedAddress = newAddress;
+        emit Deprecate(newAddress);
+    }
+
+    // ==== Extension: the quarantined boundary ====
+
+    // Advance the CLTV-verified clock. Permissionless: anybody may keep the
+    // quarantine timer honest, and a stale clock only ever shortens the window.
+    function tick(int nowHeight) {
+        require(tx.time >= nowHeight);
+        require(nowHeight >= this.clock);
+        this.clock = nowHeight;
+    }
+
+    // Unwrap: burn ledger balance and hand out real bearer CashTokens. Policy
+    // still applies on the way out (paused / blacklist / frozen), which is what
+    // makes an exit-side veto possible at all. totalSupply is unchanged - the
+    // tokens still exist, they have merely left the tracked set.
+    function withdraw(bytes32 category, bytes20 to, int amount)
+        whenNotPaused notDeprecated
+    {
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(amount > 0);
+        require(this.balances[sender] >= amount);
+        require(this.tokens[category].tokenAmount >= amount);
+
+        this.balances[sender] = this.balances[sender] - amount;
+        this.backedSupply = this.backedSupply - amount;
+        this.containerSeen = this.containerSeen - amount;
+        this.tokens[category].transfer(new LockingBytecodeP2PKH(to), amount);
+        emit Withdrawal(sender, amount);
+    }
+
+    // Re-entry, step 2. Bearer FTs are sent to the container address first (step
+    // 1, which needs no contract call and so cannot be censored); this call then
+    // proves the container actually grew by summing every category output of
+    // this transaction and comparing against the ledger's high-water mark. That
+    // sum is what makes the claimed amount unforgeable - a depositor cannot
+    // credit more than they physically delivered.
+    function deposit(bytes32 category, int nowHeight, int amount)
+        whenNotPaused notDeprecated
+    {
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        require(amount > 0);
+        require(tx.time >= nowHeight);
+        require(nowHeight >= this.clock);
+        this.clock = nowHeight;
+
+        address claimant = msg.sender;
+        Pending current = this.pendingDeposits[claimant];
+        require(current.amount == 0);
+
+        int delivered = 0;
+        for (int i = 0; i < tx.outputs.length; i = i + 1) {
+            if (tx.outputs[i].tokenCategory == category) {
+                delivered = delivered + tx.outputs[i].tokenAmount;
+            }
+        }
+        require(delivered >= this.containerSeen + amount);
+
+        this.containerSeen = this.containerSeen + amount;
+        this.backedSupply = this.backedSupply + amount;
+
+        int unlockAt = nowHeight + this.quarantineBlocks;
+        this.pendingDeposits[claimant] = Pending({ amount: amount, unlockAt: unlockAt });
+        emit DepositQuarantined(claimant, amount, unlockAt);
+    }
+
+    // Re-entry, step 3. Permissionless and consensus-gated: the CLTV compare
+    // cannot be accelerated. The issuer's only lever is to blacklist or freeze
+    // the claimant inside the window, which is checked here.
+    function claimDeposit() whenNotPaused notDeprecated {
+        address claimant = msg.sender;
+        Pending p = this.pendingDeposits[claimant];
+        require(p.amount > 0);
+        require(tx.time >= p.unlockAt);
+        require(!this.isBlackListed[claimant]);
+        require(!this.frozen[claimant]);
+
+        delete this.pendingDeposits[claimant];
+        this.balances[claimant] = this.balances[claimant] + p.amount;
+        emit DepositClaimed(claimant, p.amount);
+    }
+
+    // A refused deposit is never confiscated: the depositor takes the FTs back
+    // out to bearer form. Available at any time before the claim, and available
+    // to a blacklisted or frozen claimant too - refusing admission must not mean
+    // seizing funds, or wrapping becomes a honeypot.
+    function cancelDeposit(bytes32 category, bytes20 to) notDeprecated {
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        address claimant = msg.sender;
+        Pending p = this.pendingDeposits[claimant];
+        require(p.amount > 0);
+        require(this.tokens[category].tokenAmount >= p.amount);
+
+        delete this.pendingDeposits[claimant];
+        this.containerSeen = this.containerSeen - p.amount;
+        this.backedSupply = this.backedSupply - p.amount;
+        this.tokens[category].transfer(new LockingBytecodeP2PKH(to), p.amount);
+        emit DepositCancelled(claimant, p.amount);
+    }
+
+    function setQuarantineBlocks(int blocks) onlyOwner {
+        require(blocks >= 0);
+        this.quarantineBlocks = blocks;
+        emit QuarantineParams(blocks);
+    }
+
+    function getPendingAmount(address who) view returns (int) {
+        return this.pendingDeposits[who].amount;
+    }
+}

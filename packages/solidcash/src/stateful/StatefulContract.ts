@@ -5618,6 +5618,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               }
             }
+            // A STATE-VARIABLE key (`balances[this.owner]`) - the ERC-20 fee-credit shape, where the recipient of
+            // the fee is whoever the contract currently records as owner. The compiler already reports this as
+            // kind='state' with the variable's name; resolve it from the state the builder just read, using the
+            // same codec as the state-array path above so the SDK hashes the byte vector the covenant hashes.
+            if (source?.kind === 'state') {
+              const value = onChainState.state[source.stateVarName ?? ''];
+              if (value === undefined) {
+                throw new Error(`C2 key source state variable '${source.stateVarName}' is not present in state`);
+              }
+              if (keyType === 'address' && typeof value === 'string' && value.includes(':')) {
+                return addressToLockScript(value);
+              }
+              if (value instanceof Uint8Array) return value;
+              if (typeof value === 'bigint') return bigIntToVmNumber(value);
+              if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
+              try {
+                return encodePushdataValue(value as StateValue, keyType, stateLayout.structs);
+              } catch (cause) {
+                throw new Error(
+                  `Unsupported C2 state key value for '${source.stateVarName}' (type ${keyType})`,
+                  { cause },
+                );
+              }
+            }
             // Expression/computed key (e.g. balances[hash160(pk)] with a local var): not a function param, so
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).

@@ -22,6 +22,15 @@ const APP = (name: string) => `pragma solidcash >=0.8.0;
 contract ${name}(int brand) {
   function ping(int n) public { require(n >= 0); }
 }`;
+const CALLING_APP = `pragma solidcash >=0.8.0;
+interface ICompiledGraphTarget { function ping(int n); }
+contract CompiledGraphA(int brand, address target) {
+  function start(int n) public {
+    require(n >= 0);
+    ICompiledGraphTarget(target).ping(n);
+    require(true);
+  }
+}`;
 const RETURNING_APP = (name: string) => `pragma solidcash >=0.8.0;
 contract ${name}(int brand) {
   function twice(int n) public pure returns (int) {
@@ -29,12 +38,30 @@ contract ${name}(int brand) {
     return n * 2;
   }
 }`;
-const STATE_APP = (name: string) => `pragma solidcash >=0.8.0;
-contract ${name}(int brand) {
+const STATE_A = `pragma solidcash >=0.8.0;
+interface IStateB { function step(address next, address callback, int n); }
+contract CompiledStateA(int brand) {
   int count;
-  function add(int n) public {
+  function start(address next, address callback, int n) public {
     this.count = this.count + n;
     require(n >= 0);
+    IStateB(next).step(next, callback, n);
+    require(true);
+  }
+  function finish(address next, address callback, int n) public {
+    this.count = this.count + n;
+    require(next.length > 0 && callback.length > 0 && n >= 0);
+  }
+}`;
+const STATE_B = `pragma solidcash >=0.8.0;
+interface IStateA { function finish(address next, address callback, int n); }
+contract CompiledStateB(int brand) {
+  int count;
+  function step(address next, address callback, int n) public {
+    this.count = this.count + n;
+    require(n >= 0);
+    IStateA(callback).finish(next, callback, n);
+    require(true);
   }
 }`;
 
@@ -85,6 +112,7 @@ async function build(
   replaceProjection = false,
   aliasProjection = false,
   forgeControllerCategory = false,
+  sourceChildArg = 1n,
 ) {
   const provider = createTestProvider();
   const {
@@ -96,20 +124,20 @@ async function build(
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const artifactA = compileString(APP('CompiledGraphA'), options);
   const artifactB = compileString(APP('CompiledGraphB'), options);
-  const baseA = new Contract(artifactA, [1n], { provider });
   const baseB = new Contract(artifactB, [2n], { provider });
-  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
-  const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const artifactA = compileString(CALLING_APP, options);
+  const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const plan = layer3.planCompiledGraph([
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'ping', args: [1n] },
-    { parent: 0, callee: 1, function: 'ping', args: [2n] },
+    { parent: null, callee: 0, function: 'start', args: [1n] },
+    { parent: 0, callee: 1, function: 'ping', args: [sourceChildArg] },
   ]);
   let transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1], [null, null], ['', ''], [2, 3]);
   if (malformedGraph || aliasProjection) {
@@ -121,6 +149,8 @@ async function build(
       cursor += 2 + lbcLength;
       const batchLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + batchLength;
+      const emissionsLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + emissionsLength;
       cursor += 2; // return output
       const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + resultVectorLength;
@@ -212,7 +242,7 @@ async function build(
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10000n });
-  return { provider, transaction: raw(tx) };
+  return { provider, transaction: raw(tx), builder: tx, transcript };
 }
 
 const packedResult = (value: bigint): Uint8Array =>
@@ -336,8 +366,8 @@ async function buildStateCycle(tamperState = false) {
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const artifactA = compileString(STATE_APP('CompiledStateA'), options);
-  const artifactB = compileString(STATE_APP('CompiledStateB'), options);
+  const artifactA = compileString(STATE_A, options);
+  const artifactB = compileString(STATE_B, options);
   const baseA = new Contract(artifactA, [1n], { provider });
   const baseB = new Contract(artifactB, [2n], { provider });
   const setupA = await setupStatefulUtxos(
@@ -348,13 +378,14 @@ async function buildStateCycle(tamperState = false) {
   );
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const commonArgs = [b.lockingBytecode, a.lockingBytecode, 1n] as const;
   const plan = layer3.planCompiledGraph([
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'add', args: [1n] },
-    { parent: 0, callee: 1, function: 'add', args: [2n] },
-    { parent: 1, callee: 0, function: 'add', args: [3n] },
+    { parent: null, callee: 0, function: 'start', args: commonArgs },
+    { parent: 0, callee: 1, function: 'step', args: commonArgs },
+    { parent: 1, callee: 0, function: 'finish', args: commonArgs },
   ]);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, [0, 2], [null, null], ['', ''], [4, 5],
@@ -376,9 +407,9 @@ async function buildStateCycle(tamperState = false) {
     artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
   );
   const nextA = buildInitialStateCommitments(
-    artifactA.stateLayout!, { count: tamperState ? 5n : 4n },
+    artifactA.stateLayout!, { count: tamperState ? 3n : 2n },
   )[0];
-  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 2n })[0];
+  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 1n })[0];
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   tx.addInput(setupA.masterUtxo, routeA(...layer3.compiledGraphRouteArgs(transcript, 0, 6) as any));
   tx.addInput(setupA.dataNftUtxos[0], createDataNftUnlocker(a, 0, setupA.categoryId));
@@ -425,6 +456,11 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects an application input executing a different locally-valid batch', async () => {
     const { provider, transaction } = await build(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects a canonical graph whose child arguments differ from the source-executed call', async () => {
+    const { provider, transaction } = await build(false, false, false, false, false, false, 2n);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

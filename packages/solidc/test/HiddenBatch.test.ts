@@ -10,6 +10,13 @@ contract BatchCounter() {
 }`;
 
 describe('Release 4 compiler-hidden local batch', () => {
+  const graphOptions = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+    experimentalMessageBusControllerCategory: '22'.repeat(32),
+  };
+
   it('advertises SCB1 without exposing a source ABI function', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
@@ -65,6 +72,29 @@ describe('Release 4 compiler-hidden local batch', () => {
       rejectionReason: 'batched-handler-forward-call-not-enabled',
       inputs: [],
     });
+  });
+
+  it('admits only exact argument forwarding for a compiler-authenticated graph tail call', () => {
+    const exact = compileString(`
+      interface IB { function ping(int n); }
+      contract A(address target) {
+        function start(int n) public {
+          IB(target).ping(n);
+          require(true);
+        }
+      }
+    `, graphOptions);
+    expect(exact.hiddenBatch?.handlers.find((handler) => handler.name === 'start')?.eligible).toBe(true);
+
+    expect(() => compileString(`
+      interface IB { function ping(int n); }
+      contract A(address target) {
+        function start(int n) public {
+          IB(target).ping(n + 1);
+          require(true);
+        }
+      }
+    `, graphOptions)).toThrow(/exact ordered forwarding/);
   });
 
   it('binds one parameter-keyed mapping entry into the physical SCB1 route', () => {

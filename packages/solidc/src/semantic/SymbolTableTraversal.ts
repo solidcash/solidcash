@@ -1039,6 +1039,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphTranscript',
         '__internal__graphControllerIdx',
         '__internal__graphParticipantOffset',
+        '__internal__graphEmissions',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
@@ -1803,6 +1804,34 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Propagate slot indices to individual external call nodes
         this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
+        if (node.graphEmissionHandler) {
+          if (logicalCallSlots.length !== 1 || logicalCallSlots[0].hasReturnValues
+            || logicalCallSlots[0].loopArrayVar || logicalCallSlots[0].fnPtrCall
+            || (logicalCallSlots[0].callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) {
+            throw new Error(
+              `Graph handler '${node.name}' requires exactly one non-returning regular tail call`,
+            );
+          }
+          const slot = logicalCallSlots[0];
+          if (!slot.addressParam) {
+            throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);
+          }
+          if ((slot.argSources?.length ?? 0) !== node.parameters.length
+            || !slot.argSources!.every((source, index) =>
+              source.kind === 'forward' && source.paramIndex === index)) {
+            throw new Error(
+              `Graph handler '${node.name}' currently requires an exact ordered forwarding of its parameters`,
+            );
+          }
+          const iface = this.interfaceMap.get(slot.interfaceName);
+          const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
+            .filter((candidate) => candidate.name === slot.functionName);
+          const ifaceFunc = ifaceFuncs?.length === 1 ? ifaceFuncs[0] : undefined;
+          if (!ifaceFunc) throw new Error(`Graph handler '${node.name}' has an unresolved target method`);
+          slot.compileTimeSelector = computeFunctionSelector(computeFunctionSignature(
+            slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
+          ));
+        } else {
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
         // B's external call target may be at a position BEFORE B's master.
         const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalCallInputBase');
@@ -1910,6 +1939,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const idxSymbol = this.symbolTables[0].get(idxName);
           if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
           this.pushToStack(idxParam);
+        }
         }
       }
     }

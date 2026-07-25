@@ -63,6 +63,8 @@ export interface FinalizedCompiledGraph {
   returnOutputs: readonly (number | null)[];
   /** Inner SCB1 packed result vector (before the outer `bytes` return-event framing), by participant. */
   participantResultVectorsHex: readonly string[];
+  /** Exact source-emitted child-call rows, grouped by caller owner. */
+  participantEmissionsHex: readonly string[];
 }
 
 export interface CompiledGraphPhysicalLayout {
@@ -170,6 +172,16 @@ export function finalizeCompiledGraph(
     }
     return supplied.toLowerCase();
   });
+  const emissionParts = plan.participants.map(() => [] as Uint8Array[]);
+  for (const invocation of plan.invocations) {
+    if (invocation.parent === null || invocation.caller === null) continue;
+    const target = hexToBin(plan.participants[invocation.callee].lockingBytecode);
+    const args = hexToBin(invocation.argsHex);
+    emissionParts[invocation.caller].push(
+      framed(target), hexToBin(invocation.selectorHex), framed(args),
+    );
+  }
+  const participantEmissions = emissionParts.map((parts) => concat(...parts));
   for (const key of Object.keys(results)) {
     const index = Number(key);
     if (!Number.isInteger(index) || index < 0 || index >= plan.invocations.length) {
@@ -194,12 +206,13 @@ export function finalizeCompiledGraph(
     const inputFrame = uint(participantInputs[participantIndex], 2);
     const lbcFrame = framed(lbc);
     const batchFrame = framed(participant.batch.blob);
+    const emissionFrame = framed(participantEmissions[participantIndex]);
     const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
     const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
     const projectionFrame = uint(projectionInputs[participantIndex], 2);
-    parts.push(inputFrame, lbcFrame, batchFrame, returnFrame, resultFrame, projectionFrame);
+    parts.push(inputFrame, lbcFrame, batchFrame, emissionFrame, returnFrame, resultFrame, projectionFrame);
     encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length
-      + returnFrame.length + resultFrame.length + projectionFrame.length;
+      + emissionFrame.length + returnFrame.length + resultFrame.length + projectionFrame.length;
   }
   parts.push(uint(plan.invocations.length, 2));
   plan.invocations.forEach((invocation, index) => {
@@ -229,6 +242,9 @@ export function finalizeCompiledGraph(
     participantResultVectorsHex: Object.freeze(
       participantResultVectorsHex.map((vector) => vector.toLowerCase()),
     ),
+    participantEmissionsHex: Object.freeze(
+      participantEmissions.map((emissions) => binToHex(emissions)),
+    ),
   });
 }
 
@@ -249,6 +265,7 @@ export function compiledGraphRouteArgs(
     transcript.bytes,
     BigInt(controllerInput),
     BigInt(offset),
+    hexToBin(transcript.participantEmissionsHex[participant]),
     ...execution.batch.routeWitnesses,
   ]);
 }
@@ -329,6 +346,10 @@ contract GraphRootController(bytes20 initializer) {
         require(int(bytes.concat(unlocking.slice(6, 7), hex"00")) == batchLength);
         require(unlocking.slice(7, 7 + batchLength) == batchBlob);
       }
+      bigint emissionsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(cursor + emissionsLength <= transcript.length);
+      cursor = cursor + emissionsLength;
       bigint returnOutput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint resultVectorLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -410,6 +431,25 @@ contract GraphRootController(bytes20 initializer) {
 
 /** Fixed proof-slot covenant: exhaustively compares one owner's global rows to its SCB1/result projection. */
 export function generateGraphProjectionVerifier(): string {
+  const lbcDeclarations = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `bytes participantLbc${index};`).join('\n    ');
+  const lbcAssignments = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `${index === 0 ? 'if' : 'else if'} (participant == ${index}) {
+        participantLbc${index} = participantLbc;
+      }`).join('\n      ');
+  const activeCallees = Array.from({ length: MAX_GRAPH_DEPTH + 1 }, (_unused, depth) =>
+    `bigint activeCallee${depth} = -1;`).join('\n    ');
+  const callerDispatch = Array.from({ length: MAX_GRAPH_DEPTH }, (_unused, offset) => {
+    const depth = offset + 1;
+    return `${depth === 1 ? 'if' : 'else if'} (depth == ${depth}) {
+        caller = activeCallee${depth - 1};
+        activeCallee${depth} = callee;
+      }`;
+  }).join('\n      ');
+  const targetDispatch = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `${index === 0 ? 'if' : 'else if'} (callee == ${index}) {
+          expectedTarget = participantLbc${index};
+        }`).join('\n        ');
   return `pragma solidcash >=0.8.0;
 contract GraphProjectionVerifier() {
   function verify(bytes transcript, bigint controllerInput, bigint participantIndex) {
@@ -420,16 +460,25 @@ contract GraphProjectionVerifier() {
     require(participantIndex >= 0 && participantIndex < participantCount);
     bigint cursor = 10;
     bytes ownerBatch;
+    bytes ownerEmissions;
     bytes resultVector;
+    ${lbcDeclarations}
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      cursor = cursor + 2 + lbcLength;
+      cursor = cursor + 2;
+      bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
+      cursor = cursor + lbcLength;
+      ${lbcAssignments}
       bigint batchLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bytes batchBlob = transcript.slice(cursor, cursor + batchLength);
-      cursor = cursor + batchLength + 2;
+      cursor = cursor + batchLength;
+      bigint emissionsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes emissions = transcript.slice(cursor, cursor + emissionsLength);
+      cursor = cursor + emissionsLength + 2;
       bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bytes results = transcript.slice(cursor, cursor + resultLength);
@@ -440,6 +489,7 @@ contract GraphProjectionVerifier() {
         require(projectionInput == this.activeInputIndex);
         require(participantInput < tx.inputs.length);
         ownerBatch = batchBlob;
+        ownerEmissions = emissions;
         resultVector = results;
       }
     }
@@ -447,13 +497,18 @@ contract GraphProjectionVerifier() {
     cursor = cursor + 2;
     bigint batchCursor = 7;
     bigint resultCursor = 0;
+    bigint emissionCursor = 0;
     bigint localRow = 0;
+    ${activeCallees}
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
+      bigint parent = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint callee = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
       cursor = cursor + 1;
       bigint row = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
-      cursor = cursor + 4;
+      cursor = cursor + 1;
+      bigint depth = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 3;
       bytes selector = transcript.slice(cursor, cursor + 4);
       cursor = cursor + 4;
       bigint argsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -464,6 +519,36 @@ contract GraphProjectionVerifier() {
       cursor = cursor + 2;
       bytes result = transcript.slice(cursor, cursor + resultLength);
       cursor = cursor + resultLength;
+      bigint caller = -1;
+      if (invocation == 0) {
+        require(parent == 65535 && depth == 0);
+        activeCallee0 = callee;
+      } else {
+        ${callerDispatch}
+        else { revert("depth out of range"); }
+      }
+      if (caller == participantIndex) {
+        bigint targetLength = int(bytes.concat(
+          ownerEmissions.slice(emissionCursor, emissionCursor + 2), hex"00"
+        ));
+        emissionCursor = emissionCursor + 2;
+        bytes emittedTarget = ownerEmissions.slice(emissionCursor, emissionCursor + targetLength);
+        emissionCursor = emissionCursor + targetLength;
+        bytes emittedSelector = ownerEmissions.slice(emissionCursor, emissionCursor + 4);
+        emissionCursor = emissionCursor + 4;
+        bigint emittedArgsLength = int(bytes.concat(
+          ownerEmissions.slice(emissionCursor, emissionCursor + 2), hex"00"
+        ));
+        emissionCursor = emissionCursor + 2;
+        bytes emittedArgs = ownerEmissions.slice(emissionCursor, emissionCursor + emittedArgsLength);
+        emissionCursor = emissionCursor + emittedArgsLength;
+        bytes expectedTarget;
+        ${targetDispatch}
+        else { revert("callee out of range"); }
+        require(emittedTarget == expectedTarget);
+        require(emittedSelector == selector);
+        require(emittedArgsLength == argsLength && emittedArgs == args);
+      }
       if (callee == participantIndex) {
         require(row == localRow);
         localRow = localRow + 1;
@@ -488,6 +573,7 @@ contract GraphProjectionVerifier() {
     }
     require(cursor == transcript.length);
     require(localRow > 0 && batchCursor == ownerBatch.length);
+    require(emissionCursor == ownerEmissions.length);
     require(this.activeInputIndex < tx.outputs.length);
     require(tx.outputs[this.activeInputIndex].value == 1000);
     require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);

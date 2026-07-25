@@ -7,7 +7,7 @@ import {
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
-  MethodCallNode, Node, ParameterNode, RequireNode,
+  MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
 } from './ast/AST.js';
@@ -219,6 +219,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
   ]);
   let eligible: FunctionDefinitionNode[] = [];
+  const graphTailHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
@@ -227,6 +228,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     let routeSensitive = false;
     let signatureCheck = false;
     let statefulExternalCall = false;
+    let methodCallCount = 0;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         walkInvocationAst(candidate.body, (node) => {
@@ -240,13 +242,27 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           // during the following semantic pass. The initial frozen route does
           // not attempt to predict that resolution: reject them conservatively
           // so no later synthetic callee parameters can invalidate this call.
-          if (node instanceof MethodCallNode) statefulExternalCall = true;
+          if (node instanceof MethodCallNode) {
+            statefulExternalCall = true;
+            methodCallCount += 1;
+          }
           if (node instanceof FunctionCallNode
             && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
         });
       }
     }
     let reason: string | undefined;
+    const bodyStatements = fn.body.statements ?? [];
+    const graphTailCallEligible = graphControllerLbc !== undefined
+      && methodCallCount === 1
+      && fn.returnTypes.length === 0
+      && bodyStatements.length >= 2
+      && bodyStatements[bodyStatements.length - 2] instanceof MethodCallStatementNode
+      && bodyStatements[bodyStatements.length - 1] instanceof RequireNode
+      && (bodyStatements[bodyStatements.length - 1] as RequireNode).expression
+        instanceof BoolLiteralNode
+      && ((bodyStatements[bodyStatements.length - 1] as RequireNode)
+        .expression as BoolLiteralNode).value === true;
     const keyWitnesses: { routeInput: string; inputIndex: number; perRow?: boolean }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
@@ -339,12 +355,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     } else if (!reason && routeSensitive
       && !(compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind')) {
       reason = 'direct-versus-batch-introspection-divergence';
-    } else if (!reason && statefulExternalCall) {
+    } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (!reason && (footprint.unknown
-      || footprint.effects.some((effect) => effect === 'external-call'))) {
+      || (!graphTailCallEligible && footprint.effects.some((effect) => effect === 'external-call')))) {
       reason = 'unresolved-or-effectful-handler';
     } else if (!reason && [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
@@ -355,6 +371,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
+    if (!reason && graphTailCallEligible) graphTailHandlers.add(fn);
   }
   if (resourceShapedHandler?.hiddenBatchEligible) {
     for (const fn of eligible) {
@@ -427,6 +444,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   ));
   const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
   let resourceHandlerInvokeName: string | undefined;
+  const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   if (resourceShapedHandler) {
     const handler = cloneNode(resourceShapedHandler);
     handler.name = `__scb_resource_${resourceShapedHandler.name}`;
@@ -439,10 +457,26 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
   }
+  for (const sourceHandler of graphTailHandlers) {
+    if (!eligible.includes(sourceHandler)) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_graph_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.graphEmissionHandler = true;
+    graphHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
   const buildDecodeAndCall = (resultIndex?: number, rowIndex?: number): string =>
     eligible.map((fn, handlerIndex) => {
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
-    const invokeName = fn === resourceShapedHandler ? resourceHandlerInvokeName! : fn.name;
+    const invokeName = fn === resourceShapedHandler
+      ? resourceHandlerInvokeName!
+      : (graphHandlerInvokeNames.get(fn) ?? fn.name);
     const invoke = (args: string): string => resultIndex === undefined
       ? `${invokeName}(${args});`
       : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
@@ -481,6 +515,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     'bytes __internal__graphTranscript',
     'bigint __internal__graphControllerIdx',
     'bigint __internal__graphParticipantOffset',
+    'bytes __internal__graphEmissions',
   ];
   const routeParameters = ['bytes batchBlob', ...graphRouteParameters, ...routeKeyParameters].join(', ');
   const parseOneRow = (rowExpression: string, resultIndex?: number, rowIndex?: number): string => `
@@ -534,7 +569,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         bytes __graph_owner_frame = bytes.concat(
           bytes.concat(bytes2(this.activeInputIndex), bytes2(__graph_owner_lbc.length), __graph_owner_lbc),
           bytes2(batchBlob.length),
-          batchBlob
+          batchBlob,
+          bytes2(__internal__graphEmissions.length),
+          __internal__graphEmissions
         );
         require(__internal__graphParticipantOffset >= 0
           && __internal__graphParticipantOffset + __graph_owner_frame.length <= __internal__graphTranscript.length);
@@ -573,6 +610,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         ${resultDeclarations}
         ${parser}
         require(cursor == batchBlob.length);
+        // Keep the emission witness live through compiler-owned call verification above. The generated verifier
+        // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
+        ${graphControllerLbc === undefined
+    ? ''
+    : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
         ${returnStatement}
       }
     }`;

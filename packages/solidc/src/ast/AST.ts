@@ -356,6 +356,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
+  /**
+   * Compiler-owned SCB1 clone whose one supported tail external call is verified against the authenticated
+   * participant emission frame instead of performing ordinary physical-call settlement.
+   */
+  graphEmissionHandler?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)

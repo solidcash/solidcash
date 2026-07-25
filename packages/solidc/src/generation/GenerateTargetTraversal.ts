@@ -2366,7 +2366,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-
     if (this.compilerOptions.enforceFunctionParameterTypes) {
       this.enforceFunctionParameterTypes(node);
     }
@@ -2665,7 +2664,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasExternalReads) {
         this.emitExternalReadVerification(node);
       }
-      if (!this.functionHasDelegatecall && hasExternalCalls) {
+      if (!this.functionHasDelegatecall && hasExternalCalls && !node.graphEmissionHandler) {
         this.emitExternalCallVerification(node);
       }
       if (!this.functionHasDelegatecall && hasExternalOutStateReads) {
@@ -5670,6 +5669,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.pushToStack(`(__handler_msg_sender_${targetFunc.functionId})`);
       hiddenContextCount += 1;
+    }
+    if (targetFunc.graphEmissionHandler) {
+      const slot = targetFunc.externalCalls?.[0];
+      if (!slot) throw new Error(`Graph handler '${targetFunc.name}' lacks call metadata`);
+      this.verifyGraphEmissionRow(slot, targetFunc, node.parameters, locationData);
     }
 
     // The internal-call subroutine skips the synthetic `__internal__returnOutputIdx` param during setup (unused
@@ -10862,6 +10866,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
+    if (this.currentFunction.graphEmissionHandler) {
+      if (!physicalSlot) throw new Error('Graph emission call lacks compiler call metadata');
+      return node;
+    }
     const batchRow = node.externalBatchLogicalIndex === undefined
       ? undefined
       : physicalSlot?.batchInvocations?.find((row) => row.logicalIndex === node.externalBatchLogicalIndex);
@@ -10996,6 +11004,95 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__batch_new)');
     this.emitReplace(this.getStackIndex(accumulator), node);
     this.popFromStack();
+  }
+
+  /** Verify the one source-executed tail call against the compiler-owned participant emission frame. */
+  private verifyGraphEmissionRow(
+    slot: ExternalCallSlot,
+    handler: FunctionDefinitionNode,
+    parameters: ExpressionNode[],
+    locationData: SingleLocationData,
+  ): void {
+    if (!slot.compileTimeSelector) throw new Error('Graph emission call lacks a fixed selector');
+    if (slot.addressParam) {
+      const parameterIndex = handler.parameters.findIndex((parameter) =>
+        parameter.name === slot.addressParam);
+      if (parameterIndex >= 0) {
+        const target = parameters[parameterIndex];
+        if (!(target instanceof IdentifierNode)) {
+          throw new Error('Graph target forwarding requires an identifier');
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex(target.name))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else {
+        this.emit(encodeInt(BigInt(this.getStackIndex(slot.addressParam))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      }
+    } else if (slot.addressLiteral) {
+      this.emit(hexToBin(slot.addressLiteral), locationData);
+    } else {
+      throw new Error('Graph emission target must be a pinned parameter or literal');
+    }
+    this.pushToStack('(__graph_target)');
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.pushToStack('(__graph_target_length)');
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_target_frame)');
+
+    this.emit(slot.compileTimeSelector, locationData);
+    this.pushToStack('(__graph_selector)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_target_selector)');
+
+    if (parameters.length === 0) {
+      this.emit(new Uint8Array(), locationData);
+      this.pushToStack('(__graph_args)');
+    } else {
+      for (let i = 0; i < parameters.length; i++) {
+        const parameter = parameters[i];
+        if (!(parameter instanceof IdentifierNode)) {
+          throw new Error('Graph argument forwarding requires identifiers');
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex(parameter.name))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(__graph_arg_value)');
+        this.emitPushdataEncode(parameter.type!, locationData);
+        this.popFromStack();
+        this.pushToStack(i === 0 ? '(__graph_args)' : '(__graph_arg)');
+        if (i > 0) {
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(__graph_args)');
+        }
+      }
+    }
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.pushToStack('(__graph_args_length)');
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_args_frame)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_emission_row)');
+
+    const expected = '__internal__graphEmissions';
+    this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__graph_expected_emissions)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
   }
 
   visitExternalOutputState(_node: ExternalOutputStateNode): Node {

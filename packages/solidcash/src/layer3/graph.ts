@@ -278,6 +278,7 @@ contract GraphRootController() {
     bigint cursor = 10;
     bigint previousInput = -1;
     bigint previousReturnOutput = -1;
+    bigint previousProjectionInput = -1;
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       require(cursor + 2 <= transcript.length);
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -327,7 +328,8 @@ contract GraphRootController() {
       }
       bigint projectionInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
-      require(projectionInput < tx.inputs.length);
+      require(projectionInput > previousProjectionInput && projectionInput < tx.inputs.length);
+      previousProjectionInput = projectionInput;
       require(tx.inputs[projectionInput].lockingBytecode == hex"${verifier}");
     }
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -373,6 +375,11 @@ contract GraphRootController() {
         require(outputCategory.slice(0, 32) != controllerCategory);
       }
     }
+    require(this.activeInputIndex < tx.outputs.length);
+    require(tx.outputs[this.activeInputIndex].value == 1000);
+    require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);
+    require(tx.outputs[this.activeInputIndex].nftCommitment.length == 0);
+    require(tx.outputs[this.activeInputIndex].tokenAmount == 0);
     require(true);
   }
 }`;
@@ -385,6 +392,7 @@ contract GraphProjectionVerifier() {
   function verify(bytes transcript, bigint controllerInput, bigint participantIndex) {
     require(controllerInput >= 0 && controllerInput < tx.inputs.length);
     require(tx.inputs[controllerInput].nftCommitment == sha256(transcript));
+    require(transcript.length >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
     bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
     require(participantIndex >= 0 && participantIndex < participantCount);
     bigint cursor = 10;
@@ -457,6 +465,11 @@ contract GraphProjectionVerifier() {
     }
     require(cursor == transcript.length);
     require(localRow > 0 && batchCursor == ownerBatch.length);
+    require(this.activeInputIndex < tx.outputs.length);
+    require(tx.outputs[this.activeInputIndex].value == 1000);
+    require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);
+    require(tx.outputs[this.activeInputIndex].nftCommitment.length == 0);
+    require(tx.outputs[this.activeInputIndex].tokenAmount == 0);
     require(true);
   }
 }`;

@@ -43,6 +43,7 @@ async function build(
   omitController = false,
   malformedGraph = false,
   replaceProjection = false,
+  aliasProjection = false,
 ) {
   const provider = createTestProvider();
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -70,7 +71,7 @@ async function build(
     { parent: 0, callee: 1, function: 'ping', args: [2n] },
   ]);
   let transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1], [null, null], ['', ''], [2, 3]);
-  if (malformedGraph) {
+  if (malformedGraph || aliasProjection) {
     const bytes = transcript.bytes.slice();
     let cursor = 10;
     for (const participant of plan.participants) {
@@ -82,10 +83,16 @@ async function build(
       cursor += 2; // return output
       const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + resultVectorLength;
+      if (aliasProjection && participant.participant === 1) {
+        bytes[cursor] = 2;
+        bytes[cursor + 1] = 0;
+      }
       cursor += 2; // projection input
     }
-    cursor += 2; // invocation count
-    bytes[cursor + 4] = 1; // root invocation depth must be zero
+    if (malformedGraph) {
+      cursor += 2; // invocation count
+      bytes[cursor + 4] = 1; // root invocation depth must be zero
+    }
     transcript = {
       ...transcript,
       bytes,
@@ -389,6 +396,11 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects replacing a participant projection proof with an ordinary funding input', async () => {
     const { provider, transaction } = await build(false, false, false, true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects aliasing two participant projections to one physical proof input', async () => {
+    const { provider, transaction } = await build(false, false, false, false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

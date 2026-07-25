@@ -12,7 +12,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
-  createDataNftUnlocker, getDataNftAddress,
+  createDataNftUnlocker, getDataNftAddress, getEventNftAddress,
 } from '../../src/stateful/covenant-helpers.js';
 
 const raw = (builder: TransactionBuilder): string =>
@@ -551,6 +551,87 @@ async function buildStateCycle(tamperState = false) {
   return { provider, transaction: raw(tx) };
 }
 
+async function buildEventGraph(tamperEvent = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const artifact = compileString(`pragma solidcash >=0.8.0;
+    contract CompiledGraphEvent() {
+      event Noted(bigint n);
+      function note(bigint n) public {
+        emit Noted(n);
+        require(n >= 0);
+      }
+    }`, {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  });
+  const base = new Contract(artifact, [], { provider });
+  const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
+  const contract = base.withCategory(hexToBin(setup.categoryId));
+  const plan = layer3.planCompiledGraph([
+    { artifact, lockingBytecode: contract.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'note', args: [7n] },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const eventFunding = Array.from({ length: 8 }, () => randomUtxo({ satoshis: 1000n }));
+  const projectionUtxo = randomUtxo({ satoshis: 1000n });
+  const fee = randomUtxo({ satoshis: 50000n });
+  for (const funding of eventFunding) await provider.addUtxo(p2pkh.address, funding);
+  await provider.addUtxo(projection.address, projectionUtxo);
+  await provider.addUtxo(p2pkh.address, fee);
+  const route = contract.createCompilerRouteUnlocker(
+    artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setup.masterUtxo,
+    route(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  eventFunding.forEach((funding) =>
+    tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
+  tx.addInput(
+    projectionUtxo,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: contract.tokenAddress, amount: setup.masterUtxo.satoshis,
+    token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  const eventSignature = artifact.events![0].signature;
+  tx.addOutput({
+    to: tamperEvent
+      ? contract.tokenAddress
+      : getEventNftAddress(contract, setup.categoryId, eventSignature),
+    amount: 1000n,
+    token: {
+      category: setup.categoryId,
+      amount: 0n,
+      nft: { capability: 'none', commitment: binToHex(scriptToBytecode([bigIntToVmNumber(7n)])) },
+    },
+  });
+  for (let slot = 2; slot < 9; slot += 1) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  return { provider, transaction: raw(tx), layout };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -677,6 +758,19 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a graph settlement whose owner post-state differs from compiled sequential execution', async () => {
     const { provider, transaction } = await buildStateCycle(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('composes an ordinary event NFT inside the compiler-derived balanced block', async () => {
+    const { provider, transaction, layout } = await buildEventGraph();
+    expect(layout.participantInputs).toEqual([0]);
+    expect(layout.controllerInput).toBe(10);
+    expect(layout.totalSlots).toBe(12);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects substituting the event-NFT covenant in a balanced graph slot', async () => {
+    const { provider, transaction } = await buildEventGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

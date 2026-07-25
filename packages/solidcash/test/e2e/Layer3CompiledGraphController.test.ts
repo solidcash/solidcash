@@ -7,6 +7,7 @@ import { compileString } from 'solidc';
 import {
   Contract, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
+import type { FunctionArgument } from '../../src/Argument.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -16,11 +17,14 @@ import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getSatoshiContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
 import {
-  decodeEntryCommitment, encodeEntryCommitment, keyToSlot,
+  bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, keyToSlot, keyToSlotMulti,
 } from '../../src/stateful/SortedList.js';
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+// BCH consensus input-script limit, and the margin the caller-authorized ERC-20 settlement must keep under it.
+const MAXIMUM_INPUT_BYTES = 10_000;
+const INPUT_HEADROOM_BYTES = 1_000;
 const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 const APP = (name: string) => `pragma solidcash >=0.8.0;
 contract ${name}(int brand) {
@@ -822,6 +826,226 @@ async function buildMappingGraph(tamperValue = false) {
   return { provider, transaction: raw(tx), layout };
 }
 
+async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const tokenArtifact = compileString(`pragma solidcash >=0.8.0;
+    contract GraphAllowanceToken() {
+      mapping(bytes20 => bigint) balances;
+      mapping(bytes20 => mapping(address => bigint)) allowance;
+      function transferFrom(bytes20 from, bytes20 to, bigint amount) public {
+        require(this.allowance[from][msg.sender] >= amount);
+        require(this.balances[from] >= amount);
+        this.allowance[from][msg.sender] = this.allowance[from][msg.sender] - amount;
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+      }
+    }`, options);
+  const tokenBase = new Contract(tokenArtifact, [], { provider });
+  const tokenSetup = await setupStatefulUtxos(
+    provider, tokenBase, tokenArtifact.stateLayout!, {},
+  );
+  const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
+  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+    interface IGraphAllowanceToken {
+      function transferFrom(bytes20 from, bytes20 to, bigint amount);
+    }
+    contract GraphAllowanceRouter(int brand, address token) {
+      function route(
+        bytes20 from, bytes20 first, bytes20 second, bigint firstAmount, bigint secondAmount
+      ) public {
+        IGraphAllowanceToken(token).transferFrom(from, first, firstAmount);
+        IGraphAllowanceToken(token).transferFrom(from, second, secondAmount);
+        require(true);
+      }
+    }`, options);
+  const callerBase = new Contract(callerArtifact, [1n, token.lockingBytecode], { provider });
+  const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
+  const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
+  const from = hexToBin('31'.repeat(20));
+  const first = hexToBin('32'.repeat(20));
+  const second = hexToBin('33'.repeat(20));
+  const balanceRows = [
+    { slot: keyToSlot(from), value: 100n },
+    { slot: keyToSlot(first), value: 0n },
+    { slot: keyToSlot(second), value: 0n },
+    // The covenant orders slots with OP_BIN2NUM + OP_LESSTHAN, i.e. as little-endian VM numbers. Sorting the
+    // bytes lexicographically would build a linked list the sorted-list invariant rejects.
+  ].sort((left, right) => Number(bytesToSlotValue(left.slot) - bytesToSlotValue(right.slot)));
+  const balanceCommitments = new Map(balanceRows.map((row, index) => [
+    binToHex(row.slot),
+    encodeEntryCommitment(
+      row.slot,
+      balanceRows[index + 1]?.slot ?? new Uint8Array(32),
+      bigIntToVmNumber(row.value),
+    ),
+  ]));
+  // `Contract.lockingBytecode` is hex; the covenant hashes the raw script bytes, so the spender key must be
+  // decoded before it reaches the slot derivation.
+  const allowanceSlot = keyToSlotMulti([from, hexToBin(caller.lockingBytecode)]);
+  const allowanceCommitment = encodeEntryCommitment(
+    allowanceSlot, new Uint8Array(32), bigIntToVmNumber(50n),
+  );
+  const entries = [
+      {
+        satoshis: 10000n,
+        token: {
+          category: tokenSetup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: binToHex(balanceCommitments.get(binToHex(keyToSlot(from)))!),
+          },
+        },
+      },
+      {
+        satoshis: 10000n,
+        token: {
+          category: tokenSetup.categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(allowanceCommitment) },
+        },
+      },
+      ...[first, second].map((recipient) => ({
+        satoshis: 10000n,
+        token: {
+          category: tokenSetup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable' as const,
+            commitment: binToHex(balanceCommitments.get(binToHex(keyToSlot(recipient)))!),
+          },
+        },
+      })),
+  ].map((entry) => randomUtxo(entry));
+  await provider.addUtxo(
+    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entries[0],
+  );
+  await provider.addUtxo(
+    getEntryNftAddress(token, tokenSetup.categoryId, 'allowance'), entries[1],
+  );
+  await provider.addUtxo(
+    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entries[2],
+  );
+  await provider.addUtxo(
+    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entries[3],
+  );
+  const plan = layer3.planCompiledGraph([
+    { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
+    { artifact: tokenArtifact, lockingBytecode: token.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'route', args: [from, first, second, 10n, 20n] },
+    { parent: 0, callee: 1, function: 'transferFrom', args: [from, first, 10n] },
+    { parent: 0, callee: 1, function: 'transferFrom', args: [from, second, 20n] },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projectionUtxos = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50000n });
+  for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const callerRoute = caller.createCompilerRouteUnlocker(
+    callerArtifact.hiddenBatch!.route, hexToBin(callerArtifact.hiddenBatch!.selector),
+  );
+  const tokenRoute = token.createCompilerRouteUnlocker(
+    tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
+  );
+  const tokenRouteArgs = [
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
+  ] as FunctionArgument[];
+  // Route input 7 is `__scb_key_allowance_sender_1`, the spender key the route must tie to the authenticated
+  // graph caller.
+  if (forgeCallerWitness) tokenRouteArgs[7] = hexToBin(token.lockingBytecode);
+  // C2 batch groups follow the wrapper's journal order: allowance[from][spender], balances[from], then
+  // balances[to] once per row. `entries` is laid out [from-balance, allowance, first, second]. Entry inputs are
+  // addressed by an explicit per-group offset, but the write-backs are positional (activeInputIndex + 1 + group),
+  // so the settled outputs have to be emitted in this same order.
+  const journalOrder = [1, 0, 2, 3];
+  for (const routeSlot of journalOrder) {
+    const entry = entries[routeSlot];
+    const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+    tokenRouteArgs.push(decoded.slot, BigInt(routeSlot + 1), decoded.nextKey, -1n);
+  }
+  tokenRouteArgs.push(0n);
+  const nextValues = [70n, 10n, 20n];
+  const nextBalances = new Map([from, first, second].map((key, index) => [
+    binToHex(keyToSlot(key)),
+    bigIntToVmNumber(nextValues[index]),
+  ]));
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    callerSetup.masterUtxo,
+    callerRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    tokenSetup.masterUtxo,
+    tokenRoute(...tokenRouteArgs as any),
+  );
+  // Every entry is authorized by co-spending the token master, which this graph places at input 1.
+  entries.forEach((entry, slotIndex) =>
+    tx.addInput(entry, createEntryNftUnlocker(
+      token, 1, tokenSetup.categoryId, slotIndex === 1 ? 'allowance' : 'balances',
+    )));
+  projectionUtxos.forEach((proof, participant) =>
+    tx.addInput(proof, projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    )));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: caller.tokenAddress, amount: callerSetup.masterUtxo.satoshis,
+    token: {
+      category: callerSetup.categoryId, amount: 0n,
+      nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({
+    to: token.tokenAddress, amount: tokenSetup.masterUtxo.satoshis,
+    token: {
+      category: tokenSetup.categoryId, amount: 0n,
+      nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  for (const slotIndex of journalOrder) {
+    const entry = entries[slotIndex];
+    const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+    const value = slotIndex === 1
+      ? bigIntToVmNumber(20n)
+      : nextBalances.get(binToHex(decoded.slot))!;
+    tx.addOutput({
+      to: getEntryNftAddress(token, tokenSetup.categoryId, slotIndex === 1 ? 'allowance' : 'balances'),
+      amount: entry.satoshis,
+      token: {
+        category: tokenSetup.categoryId, amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(decoded.slot, decoded.nextKey, value)),
+        },
+      },
+    });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  const tokenInputBytes = tx.buildLibauthTransaction().inputs[1].unlockingBytecode.length;
+  return { provider, transaction: raw(tx), layout, tokenInputBytes };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -999,6 +1223,24 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forged mapping-entry post-state in graph settlement', async () => {
     const { provider, transaction } = await buildMappingGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('settles two msg.sender-authorized ERC-20 transfers in one balanced graph', async () => {
+    const {
+      provider, transaction, layout, tokenInputBytes,
+    } = await buildCallerAuthorizedTransferGraph();
+    expect(layout.participantInputs).toEqual([0, 1]);
+    expect(layout.controllerInput).toBe(8);
+    expect(layout.totalSlots).toBe(10);
+    // Deployability is part of the claim, not a side effect: the honest token input has to clear BCH's
+    // 10,000-byte input-script limit with room to spare, so a later codegen change cannot creep past it.
+    expect(tokenInputBytes).toBeLessThanOrEqual(MAXIMUM_INPUT_BYTES - INPUT_HEADROOM_BYTES);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects substituting the allowance spender witness for the authenticated caller', async () => {
+    const { provider, transaction } = await buildCallerAuthorizedTransferGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

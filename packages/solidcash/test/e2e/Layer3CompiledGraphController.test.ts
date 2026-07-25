@@ -1,7 +1,7 @@
 import {
   bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
 } from '@bitauth/libauth';
-import { scriptToBytecode } from '@solidcash/utils';
+import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
@@ -11,6 +11,9 @@ import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import {
+  createDataNftUnlocker, getDataNftAddress,
+} from '../../src/stateful/covenant-helpers.js';
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
@@ -24,6 +27,14 @@ contract ${name}(int brand) {
   function twice(int n) public pure returns (int) {
     require(n >= 0);
     return n * 2;
+  }
+}`;
+const STATE_APP = (name: string) => `pragma solidcash >=0.8.0;
+contract ${name}(int brand) {
+  int count;
+  function add(int n) public {
+    this.count = this.count + n;
+    require(n >= 0);
   }
 }`;
 
@@ -227,6 +238,87 @@ async function buildReturning(tamperResult = false) {
   return { provider, transaction: raw(tx), artifactA, plan, resultA };
 }
 
+async function buildStateCycle(tamperState = false) {
+  const provider = createTestProvider();
+  const controller = new Contract(compileString(layer3.generateGraphRootController()), [], { provider });
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+  };
+  const artifactA = compileString(STATE_APP('CompiledStateA'), options);
+  const artifactB = compileString(STATE_APP('CompiledStateB'), options);
+  const baseA = new Contract(artifactA, [1n], { provider });
+  const baseB = new Contract(artifactB, [2n], { provider });
+  const setupA = await setupStatefulUtxos(
+    provider, baseA, artifactA.stateLayout!, { count: 0n },
+  );
+  const setupB = await setupStatefulUtxos(
+    provider, baseB, artifactB.stateLayout!, { count: 0n },
+  );
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const plan = layer3.planCompiledGraph([
+    { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'add', args: [1n] },
+    { parent: 0, callee: 1, function: 'add', args: [2n] },
+    { parent: 1, callee: 0, function: 'add', args: [3n] },
+  ]);
+  const transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 2]);
+  const controllerGenesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
+    address: controller.tokenAddress,
+    satoshis: 3000n,
+    token: { amount: 0n, nft: { capability: 'mutable', commitment: transcript.root } },
+  }]);
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const fee = randomUtxo({ satoshis: 50000n });
+  await provider.addUtxo(p2pkh.address, fee);
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const nextA = buildInitialStateCommitments(
+    artifactA.stateLayout!, { count: tamperState ? 5n : 4n },
+  )[0];
+  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 2n })[0];
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(setupA.masterUtxo, routeA(...layer3.compiledGraphRouteArgs(transcript, 0, 4) as any));
+  tx.addInput(setupA.dataNftUtxos[0], createDataNftUnlocker(a, 0, setupA.categoryId));
+  tx.addInput(setupB.masterUtxo, routeB(...layer3.compiledGraphRouteArgs(transcript, 1, 4) as any));
+  tx.addInput(setupB.dataNftUtxos[0], createDataNftUnlocker(b, 2, setupB.categoryId));
+  tx.addInput(controllerGenesis.utxos[0], controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(a, setupA.categoryId), amount: setupA.dataNftUtxos[0].satoshis,
+    token: {
+      category: setupA.categoryId, amount: 0n,
+      nft: { capability: 'mutable', commitment: nextA },
+    },
+  });
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(b, setupB.categoryId), amount: setupB.dataNftUtxos[0].satoshis,
+    token: {
+      category: setupB.categoryId, amount: 0n,
+      nft: { capability: 'mutable', commitment: nextB },
+    },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  return { provider, transaction: raw(tx) };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -259,6 +351,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forged return commitment even when the result NFT is otherwise well formed', async () => {
     const { provider, transaction } = await buildReturning(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('executes an authentic stateful A -> B -> A cycle with one flush per owner', async () => {
+    const { provider, transaction } = await buildStateCycle();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a graph settlement whose owner post-state differs from compiled sequential execution', async () => {
+    const { provider, transaction } = await buildStateCycle(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 });

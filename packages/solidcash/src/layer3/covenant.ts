@@ -211,6 +211,45 @@ export function executionMemberBody(
   return body;
 }
 
+/**
+ * Auto-wiring (refinement 1): generate a full participant covenant from a spec, injecting the execution-
+ * transcript verification (`executionMemberBody`) automatically so the developer does NOT hand-splice it. The
+ * developer supplies the contract/function shell + their own `appBody`; the module wires the transcript. When
+ * an invocation names this participant (`selfPos`) as caller, its `nativeCall` (e.g.
+ * `IFoo(tx.inputs[1].lockingBytecode).method(x)`) is emitted in the SAME body, so the native call and its
+ * transcript edge come from ONE declaration. (Full compiler-side derivation of the edge directly from
+ * `IContract(addr).method()` syntax is a further ergonomic step; this is the module-level auto-wiring.)
+ */
+export interface ExecutionParticipantSpec {
+  contractName: string;
+  functionName: string;
+  functionParams?: string;
+  n: number;
+  selfPos: number;
+  invocations: ExecutionInvocation[];
+  controllerCategory: string;
+  controllerLbc: string;
+  events?: ExecutionEvent[];
+  oneShot?: boolean;
+  appBody?: string[];
+  /** Native calls to emit for the edges this participant is the caller of (index-aligned to `invocations`). */
+  nativeCalls?: Record<number, string>;
+}
+export function generateExecutionParticipant(spec: ExecutionParticipantSpec): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.contractName)) throw new Error('layer3: invalid contractName');
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.functionName)) throw new Error('layer3: invalid functionName');
+  const member = executionMemberBody(
+    spec.n, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc, spec.events, spec.oneShot,
+  );
+  const calls: string[] = [];
+  spec.invocations.forEach((inv, j) => {
+    if (inv.caller === spec.selfPos && spec.nativeCalls?.[j]) calls.push(spec.nativeCalls[j]);
+  });
+  const body = [...member, ...calls, ...(spec.appBody ?? [])];
+  return `pragma solidcash >=0.8.0;\ncontract ${spec.contractName}() {\n`
+    + `  function ${spec.functionName}(${spec.functionParams ?? ''}) {\n    ${body.join('\n    ')}\n  }\n}`;
+}
+
 /** Generate the full `__layer3_bind` covenant source for a transcript spec, using the module's layout. */
 export function generateTranscriptCovenant(spec: TranscriptSpec): string {
   const n = spec.participants;

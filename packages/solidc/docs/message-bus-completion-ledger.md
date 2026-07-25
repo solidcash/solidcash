@@ -46,12 +46,12 @@ Evidence labels:
 
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
-| Direct wrapper and transcript wrapper invoke the same compiled business handler | MISSING | Layer 3 generates a separate bounded arithmetic covenant. |
-| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | MISSING | Current Layer-3 journal is one eight-byte `add/sub/mul` field. |
+| Direct wrapper and transcript wrapper invoke the same compiled business handler | PARTIAL | The compiled-graph path now executes the compiler-owned SCB1 route and original eligible handlers; handlers containing external call expressions remain ineligible. |
+| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
 | Modifiers, `require`, `revert`, and normal control flow preserve source semantics | MISSING in Layer 3 | Available in direct compilation, not connected to transcript replay. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
-| Producer-authenticated ABI return values | MISSING | `deriveNativeExternalCalls` rejects `hasReturnValues` and `opaqueReturn`. |
-| Result-dependent continuation and transitive result chains | MISSING for compiled calls | Prototype result rows do not execute ordinary returning methods. |
+| Producer-authenticated ABI return values | PARTIAL | Compiled SCB1 producer results are bound through return-event vectors and per-invocation transcript bytes; native external-call derivation still rejects returns. |
+| Result-dependent continuation and transitive result chains | PARTIAL | Compiled producer results are authenticated, but ordinary source external-call expressions do not yet resume from transcript results. |
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PARTIAL | Structural cycle and arithmetic-journal fixtures pass; general compiled callbacks do not. |
 | Staticcall snapshots and runtime-enforces no writes/effects | MISSING | No general dirty/effect cursor snapshot implementation. |
 | Existing pinned one-hop delegatecall semantics | MISSING from transcript mode | Transcript derivation rejects call modes. |
@@ -138,3 +138,31 @@ to this shared implementation. This is deliberately a foundation, not a completi
   refactor;
 - the next step is to bind this plan into each participant projection and authenticate its result
   event, then replace the arithmetic-only `BalancedParticipantSpec.journal`.
+
+### 2026-07-25: deployable root/projection split and authority correction
+
+The compiled graph now uses two fixed, independently deployable covenants instead of one oversized
+controller:
+
+- the root controller authenticates the canonical participant frames, SCB1 blobs, result
+  commitments, proof slots, tree structure, and one-shot controller burn;
+- one projection proof input per owner streams the global invocation table and byte-compares every
+  targeted row with that owner's exact compiler-generated SCB1 batch and reached results;
+- both covenants are below the BCH 10,000-byte input-script limit (currently approximately 3.4 KB
+  and 2.3 KB respectively), with compile-time regression gates;
+- projection and controller proof inputs occupy authenticated token-free 1,000-satoshi paired
+  outputs, preserving balanced input/output index space;
+- duplicate/aliased projections, substituted proof code, malformed trees, local-batch
+  substitution, forged result commitments, and forged post-state all fail in BCH-2026 VM tests.
+
+The graph authority is now the pair `(controller locking bytecode, mint-once category)`. Application
+artifacts bake and verify both. The generic controller code alone is intentionally not authority:
+a hostile NFT category at identical code is VM-proven to fail. Controller initialization is an
+authenticated empty-to-root transition before the one-shot graph spend.
+
+This closes transcript agreement and deployment mechanics, not source-edge completeness. The
+remaining load-bearing compiler task is to prove that every non-root row was actually emitted by
+its parent's compiled external-call expression. Present SCB1 eligibility rejects such handlers, so
+the existing manually planned structural graphs are execution-mechanism evidence and MUST NOT be
+treated as full synchronous source-call semantics. Completion requires compiler-owned callsite
+exhaustiveness and suspension/resumption (including callbacks) over the shared journal.

@@ -130,6 +130,68 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       expect(modifiers.payAndWrite).not.toContain('delegate');
     });
 
+    // The gate has to follow calls: an entry point whose own body is clean still cannot run in delegate mode
+    // if a helper it reaches transfers. Checking only the entry body ships a build that reverts at broadcast.
+    it('excludes unsupported operations reached through internal helpers', () => {
+      const viaHelper = compileString(`
+        pragma solidcash >=0.8.0;
+        contract C() {
+          bigint counter;
+          function helper(address r) internal { payable(r).transfer(1000); }
+          function f(address r) public { this.counter = this.counter + 1; this.helper(r); }
+        }
+      `);
+      expect(viaHelper.delegateArtifact).toBeUndefined();
+
+      const viaTokenHelper = compileString(`
+        pragma solidcash >=0.8.0;
+        contract C() {
+          bigint counter;
+          function helper(bytes32 c, address r) internal { this.tokens[c].transfer(r, 1); }
+          function f(bytes32 c, address r) public { this.counter = this.counter + 1; this.helper(c, r); }
+        }
+      `);
+      expect(viaTokenHelper.delegateArtifact).toBeUndefined();
+
+      const viaChain = compileString(`
+        pragma solidcash >=0.8.0;
+        contract C() {
+          bigint counter;
+          function inner(address r) internal { payable(r).transfer(1000); }
+          function outer(address r) internal { this.inner(r); }
+          function f(address r) public { this.counter = this.counter + 1; this.outer(r); }
+        }
+      `);
+      expect(viaChain.delegateArtifact, 'must follow helper chains transitively').toBeUndefined();
+    });
+
+    it('still marks a function whose internal helper is clean', () => {
+      const clean = compileString(`
+        pragma solidcash >=0.8.0;
+        contract C() {
+          bigint counter;
+          function helper(bigint x) internal returns (bigint) { return x + 1; }
+          function f(bigint x) public { this.counter = this.helper(x); }
+        }
+      `);
+      expect(clean.delegateArtifact!.abi.find((f) => f.name === 'f')?.modifiers).toContain('delegate');
+    });
+
+    it('terminates on a recursive internal helper', () => {
+      const recursive = compileString(`
+        pragma solidcash >=0.8.0;
+        contract C() {
+          bigint counter;
+          function helper(bigint x) internal returns (bigint) {
+            if (x > 0) { return this.helper(x - 1); }
+            return 0;
+          }
+          function f(bigint x) public { this.counter = this.helper(x); }
+        }
+      `);
+      expect(recursive.delegateArtifact!.abi.find((f) => f.name === 'f')?.modifiers).toContain('delegate');
+    });
+
     it('emits no variant at all when every function is transfer-only', () => {
       const artifact = compileString(`
         pragma solidcash >=0.8.0;
@@ -193,9 +255,10 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
         .toThrow(/Counter\.get.*not available in delegate mode/);
     });
 
-    // The name alone cannot pick an overload, so the check must accept when ANY overload is delegate-eligible.
-    // Matching only the first ABI entry by name rejects a legitimate call when a view overload is declared first.
-    it('withDelegatecall accepts an overload set where only one overload is delegate', async () => {
+    // Contract.unlock dispatches different-arity overloads on args.length, so the guard has to validate the
+    // overload that will actually be selected. Both directions matter: accepting the delegate one, and
+    // rejecting a call whose arity lands on the non-delegate one.
+    it('withDelegatecall selects the overload by arity, not by first match', async () => {
       const provider = createTestProvider();
       const overloaded = compileString(`
         pragma solidcash >=0.8.0;
@@ -220,7 +283,12 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
       const implSc = StatefulContract.withCategory(implContract, implCatId);
 
+      // Two args -> the delegate overload is selected: accepted.
       expect(() => proxySc.call.__fallback().withDelegatecall(implSc, 'set', [1n, 2n])).not.toThrow();
+      // One arg -> the unlocker would select the `view` overload, so this must be rejected even though the
+      // two-arg overload of the same name IS delegate-qualified.
+      expect(() => proxySc.call.__fallback().withDelegatecall(implSc, 'set', [1n]))
+        .toThrow(/not available in delegate mode/);
     });
   });
 
@@ -302,6 +370,33 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       await runForm(`pragma solidcash >=0.8.0;
         contract C() { bigint counter; event E(int v);
           function f() public { this.counter = this.counter + 1; emit E(1); } }`, 'f', []);
+    });
+
+    // Exercises the arity selection in the execution path (not just the guard): the overload chosen there
+    // decides which synthetic args get injected before Contract.unlock dispatches on the final arg count.
+    it('executes the delegate overload of an overloaded function', async () => {
+      const provider = createTestProvider();
+      const overloaded = compileString(`
+        pragma solidcash >=0.8.0;
+        contract O() {
+          bigint counter;
+          function set(bigint x) public view returns (bigint) { return this.counter + x; }
+          function set(bigint x, bigint y) public { this.counter = x + y; }
+        }
+      `);
+      const proxyContract = new Contract(proxyArtifact, [], { provider });
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const implContract = new Contract(overloaded, [], { provider }).asDelegate();
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
+      const implSc = StatefulContract.withCategory(implContract, implCatId);
+
+      const tx = await proxySc.call.__fallback().withDelegatecall(implSc, 'set', [4n, 5n]).send();
+      expect(proxyCounter(tx, proxyCatId)).toBe(9n);
     });
 
     it('executes a low-level-call delegate function', async () => {

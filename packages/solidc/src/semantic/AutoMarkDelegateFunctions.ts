@@ -53,17 +53,52 @@ function touchesProxyState(fn: FunctionDefinitionNode): boolean {
   return containsStatefulOperation(fn.body?.statements);
 }
 
+function bodyHasUnsupportedOperation(fn: FunctionDefinitionNode): boolean {
+  return walk(fn.body, new Set(), (n) => n instanceof TransferStatementNode
+    || n instanceof AddressTransferStatementNode
+    || n instanceof TokenContainerMethodStatementNode);
+}
+
+/** Every name mentioned anywhere in the body, used to find the internal helpers a function reaches. */
+function referencedNames(fn: FunctionDefinitionNode): Set<string> {
+  const names = new Set<string>();
+  walk(fn.body, new Set(), (n) => {
+    const candidate = n as unknown as { name?: unknown; methodName?: unknown; identifier?: { name?: unknown } };
+    if (typeof candidate.name === 'string') names.add(candidate.name);
+    if (typeof candidate.methodName === 'string') names.add(candidate.methodName);
+    if (typeof candidate.identifier?.name === 'string') names.add(candidate.identifier.name);
+    return false; // visit everything; never short-circuit
+  });
+  return names;
+}
+
 /**
  * Value transfers and token-container operations do not execute in delegate mode: the delegate input fails its
  * covenant (OP_VERIFY). This is a pre-existing limitation of the delegate codegen, reproducible with the
  * hand-written `delegate` modifier, and it poisons the whole function - a state write PLUS a transfer fails too.
  * Disqualify them so the failure is `asDelegate()` throwing at build time rather than an opaque script failure
  * at broadcast. Revisit when delegate-mode value preservation is fixed.
+ *
+ * Follows internal helpers transitively: an entry point whose own body is clean still cannot run in delegate
+ * mode if a helper it calls transfers. Name matching is deliberately coarse (a name that merely collides with a
+ * function walks one extra body); an over-match only costs a delegate build, an under-match ships a broken one.
  */
-function hasUnsupportedDelegateOperation(fn: FunctionDefinitionNode): boolean {
-  return walk(fn.body, new Set(), (n) => n instanceof TransferStatementNode
-    || n instanceof AddressTransferStatementNode
-    || n instanceof TokenContainerMethodStatementNode);
+function hasUnsupportedDelegateOperation(
+  fn: FunctionDefinitionNode, callables: readonly FunctionDefinitionNode[],
+): boolean {
+  const visited = new Set<FunctionDefinitionNode>();
+  const queue: FunctionDefinitionNode[] = [fn];
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (bodyHasUnsupportedOperation(current)) return true;
+    const names = referencedNames(current);
+    for (const callee of callables) {
+      if (!visited.has(callee) && names.has(callee.name)) queue.push(callee);
+    }
+  }
+  return false;
 }
 
 /** A delegate function may not itself issue a delegatecall: that path skips every state covenant. */
@@ -74,13 +109,17 @@ function hasDelegatecall(fn: FunctionDefinitionNode): boolean {
     && !(n instanceof LowLevelCallStatementNode && n.synthesizedFromLibraryCall));
 }
 
-export function isDelegateEligible(fn: FunctionDefinitionNode): boolean {
+export function isDelegateEligible(
+  fn: FunctionDefinitionNode, callables: readonly FunctionDefinitionNode[] = [],
+): boolean {
   if (!fn.isEntryPoint || fn.isFreeFunction) return false;
   // A delegate impl is reached through the proxy's own fallback dispatch, never through its own.
   if (fn.isFallback || fn.isReceive) return false;
   if (fn.modifiers.some((m) => INELIGIBLE_MODIFIERS.includes(m))) return false;
+  // Note: touchesProxyState looks at this body only. Missing a helper-only state write just means no delegate
+  // build (fail closed); missing a helper-only transfer would ship a broken one, so THAT check follows calls.
   if (!touchesProxyState(fn)) return false;
-  if (hasUnsupportedDelegateOperation(fn)) return false;
+  if (hasUnsupportedDelegateOperation(fn, callables)) return false;
   if (hasDelegatecall(fn)) return false;
   return true;
 }
@@ -98,9 +137,12 @@ export default function autoMarkDelegateFunctions(ast: Ast, forceStateful = fals
   const contract = ast.contract;
   if (!contract || !isStateful(contract, forceStateful)) return 0;
 
+  // Contract methods plus file-level free functions: either can host a helper that transfers.
+  const callables = [...contract.functions, ...(ast.freeFunctions ?? [])];
+
   let marked = 0;
   for (const fn of contract.functions) {
-    if (!isDelegateEligible(fn)) continue;
+    if (!isDelegateEligible(fn, callables)) continue;
     fn.modifiers.push(FunctionModifier.DELEGATE);
     marked += 1;
   }

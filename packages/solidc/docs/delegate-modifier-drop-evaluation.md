@@ -192,6 +192,18 @@ A review pass widened eligibility and added multi-contract support. Auditing it 
   confirmed to poison the whole function (state write + transfer fails too). Failing closed at build time beats
   an opaque revert.
 
+A second audit pass found two more, both fixed:
+
+- **Overload validation ignored arity.** `Contract.unlock` dispatches different-arity overloads on
+  `args.length`, so accepting "some overload with this name is delegate" waved through a one-arg call that lands
+  on a `view` overload. Both the guard and the execution path (which picks the overload used to compute
+  synthetic-arg injection) now match visible arity the way the dispatcher does.
+- **The execution gate did not follow internal helpers.** A transfer inside a helper evaded it, restoring the
+  broadcast-time failure the gate exists to prevent. It now walks reachable helpers transitively, contract
+  methods and file-level free functions alike, with a visited set for recursion. `touchesProxyState` is
+  deliberately left body-local: under-detecting there only costs a delegate build, whereas under-detecting an
+  unsupported operation ships a broken one.
+
 The on-chain matrix that drives the rule, now a permanent regression test:
 
 | form | delegate mode |

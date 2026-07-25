@@ -45,8 +45,10 @@ covenant:
 
 This is a limitation of the delegate codegen, not of inference: the same function fails identically with a
 hand-written `delegate` modifier. A transfer poisons the whole function, so a state write alongside one is
-excluded too. Excluding them means `asDelegate()` throws at build time instead of the transaction reverting at
-broadcast. A contract whose only mutating functions transfer gets no delegate build at all.
+excluded too, and the check follows internal helpers transitively - an entry point whose own body is clean is
+still excluded if a helper it calls transfers. Excluding them means `asDelegate()` throws at build time instead
+of the transaction reverting at broadcast. A contract whose only mutating functions transfer gets no delegate
+build at all.
 
 Typed external calls (`IFoo(addr).bar()`) do not make a function eligible either: an external call mutates the
 **callee's** state, never the proxy's, so there is nothing to delegate.

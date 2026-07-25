@@ -8000,7 +8000,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const bArt = group.externalContract.inner.artifact;
         type BAbiEntry = { name: string; selector?: string; inputs: readonly { name: string; type: string }[] };
         const bAbi = bArt.abi as readonly BAbiEntry[];
-        const bFunc = bAbi.find((f) => f.name === group.functionName);
+        // Pick the overload by visible arity, matching how Contract.unlock dispatches. Taking the first
+        // same-name entry would compute the synthetic-arg injection from a different overload than the one the
+        // unlocker then selects.
+        const bSameName = bAbi.filter((f) => f.name === group.functionName);
+        const bFunc = bSameName.find((f) => f.inputs
+          .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
+          ?? bSameName[0];
         if (bFunc) {
           const bVisibleInputs = bFunc.inputs.filter((inp) => !inp.name.startsWith('__internal__'));
           const encodedArgs: any[] = bVisibleInputs.map((inp, idx) => {
@@ -9734,10 +9740,16 @@ export class StatefulFunctionCall {
     proxyMasterIndex?: number,
   ): this {
     const implArtifact = impl.inner.artifact;
-    // Every overload with this name: `functionName` is a bare string, so the caller cannot disambiguate them
-    // here. Accept when ANY of them is delegate-eligible, otherwise a contract whose non-delegate overload
-    // happens to be declared first would reject a legitimate delegate call.
-    const implOverloads = implArtifact.abi.filter((f) => f.name === functionName);
+    // Resolve the overload the unlocker will actually select. Contract.unlock dispatches different-arity
+    // overloads on args.length, so validating "some overload with this name is delegate" would wave through a
+    // one-arg call that lands on a non-delegate overload. Match visible arity the way the dispatcher does; fall
+    // back to all same-name entries when nothing matches, so the dispatcher's own arity error surfaces instead
+    // of a misleading delegate-mode message.
+    const visibleArity = (f: AbiFunction): number => f.inputs
+      .filter((inp) => !inp.name.startsWith('__internal__')).length;
+    const sameName = implArtifact.abi.filter((f) => f.name === functionName);
+    const arityMatched = sameName.filter((f) => visibleArity(f) === args.length);
+    const implOverloads = arityMatched.length > 0 ? arityMatched : sameName;
     // The impl must be the delegate variant: its state writes have to target the co-spent proxy master. A
     // standalone build writes its OWN state, so the proxy's NFTs would go unauthorized. The variant is a
     // different script (different address), so this cannot be corrected here - it must be what was deployed.

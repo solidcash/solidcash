@@ -72,6 +72,7 @@ import FoldHashLiterals from './semantic/FoldHashLiterals.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
@@ -106,8 +107,58 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
   const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
   const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
+  attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener);
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
+}
+
+/**
+ * Compile the same source a second time with its proxy-implementable functions in delegate mode, and attach the
+ * result as `artifact.delegateArtifact`. This is what lets source stay free of a `delegate` keyword: the caller
+ * never chooses the mode, the SDK selects the variant when the contract is used behind a proxy.
+ *
+ * Skipped when the contract cannot be an implementation (no eligible function), when already compiling a
+ * variant (no recursion), and for library artifacts (AstBuilder already auto-marks those in place).
+ */
+const DELEGATE_INELIGIBLE_MODIFIERS: string[] = [
+  'pure', 'view', 'internal', 'private', 'unsafe', 'upgrade', 'deploy', 'selfdestruct', 'split', 'merge',
+  'delegate',
+];
+
+function attachDelegateVariant(
+  artifact: Artifact, code: string, mergedCompilerOptions: CompilerOptions,
+  errorListener?: SolidCashErrorListener,
+): void {
+  if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
+  // Cheap pre-filter on the standalone ABI, so only contracts that could BE an implementation pay for the second
+  // compile: stateful, with an externally-callable state-writing function carrying no disqualifying modifier.
+  // Conservative in the same direction as writesState (a false positive costs one wasted compile, never a
+  // missing variant); AutoMarkDelegateFunctions makes the real decision.
+  if (!artifact.stateLayout) return;
+  const couldBeImplementation = artifact.abi.some((f) => f.writesState !== false
+    && !f.isFallback && !f.isReceive
+    && !f.modifiers?.some((m) => DELEGATE_INELIGIBLE_MODIFIERS.includes(m)));
+  if (!couldBeImplementation) return;
+
+  const variantOptions = { ...mergedCompilerOptions, autoDelegate: true };
+  const out = { delegateFunctionsMarked: 0 };
+  // The variant recompiles the same source, so every warning would otherwise be printed a second time.
+  const { log, warn } = console;
+  console.log = (): void => {};
+  console.warn = (): void => {};
+  try {
+    const variantAst = parseAndResolve(code, variantOptions, errorListener);
+    const variant = compileResolvedAst(variantAst, code, variantOptions, out);
+    if (out.delegateFunctionsMarked === 0) return;
+    delete variant.delegateArtifact;
+    artifact.delegateArtifact = variant;
+  } catch {
+    // The delegate variant is an extra capability, never a reason to fail a valid standalone compile. A
+    // contract whose functions do not survive delegate lowering simply has no delegate variant.
+  } finally {
+    console.log = log;
+    console.warn = warn;
+  }
 }
 
 // Parse + (optionally re-select a non-default primary contract) + resolve imports. The default primary is the
@@ -156,7 +207,9 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
-function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: CompilerOptions): Artifact {
+function compileResolvedAst(
+  ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, out?: { delegateFunctionsMarked: number },
+): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -435,6 +488,13 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // mapping, including compiler-generated mappings, uses authenticated C2 storage.
   for (const col of ast.contract.collections) {
     if (col.type instanceof MappingType) col.sorted = true;
+  }
+
+  // Delegate-variant compile: mark the proxy-implementable functions now that the function set is final (after
+  // inheritance/modifier/getter expansion) and before SymbolTableTraversal injects _proxyMasterIndex. `delegate`
+  // is never written in source; see AutoMarkDelegateFunctions.
+  if (mergedCompilerOptions.autoDelegate && out) {
+    out.delegateFunctionsMarked = autoMarkDelegateFunctions(ast, mergedCompilerOptions.forceStateful ?? false);
   }
 
   // Semantic analysis

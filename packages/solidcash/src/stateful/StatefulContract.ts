@@ -9733,10 +9733,20 @@ export class StatefulFunctionCall {
     args: FunctionArgument[],
     proxyMasterIndex?: number,
   ): this {
+    const implArtifact = impl.inner.artifact;
+    // The impl must be the delegate variant: its state writes have to target the co-spent proxy master. A
+    // standalone build writes its OWN state, so the proxy's NFTs would go unauthorized. The variant is a
+    // different script (different address), so this cannot be corrected here - it must be what was deployed.
+    if (!implArtifact.isLibrary && !implArtifact.abi.some((f) => f.modifiers?.includes('delegate'))) {
+      throw new Error(
+        `Implementation '${implArtifact.contractName}' is not a delegate build: it writes its own state, not the `
+        + "proxy's. Build and deploy it with contract.asDelegate() before using it behind a proxy.",
+      );
+    }
     assertDelegateLayoutCompatible(
       this.parentContract?.inner.artifact.stateLayout,
-      impl.inner.artifact.stateLayout,
-      impl.inner.artifact.contractName,
+      implArtifact.stateLayout,
+      implArtifact.contractName,
     );
     this.callInfos.push({
       type: 'stateful',

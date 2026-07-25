@@ -208,13 +208,18 @@ contract, so writing it by hand is redundant and `deploy` in modifier position i
 
 Full treatment: [selfdestruct.md](./selfdestruct.md).
 
-### `delegate`
+### `delegate` (deprecated: inferred)
 
 | EVM | SolidCash |
 | --- | --- |
-| `delegatecall` runs another contract's code in the caller's storage context. | The implementation side of that pattern. A `delegate` function is co-spent by a proxy and operates on the proxy's state: it receives the proxy's master input index (passed via the altstack), verifies the proxy's minting capability and self-preservation, and skips its own full state covenant (the proxy owns that). Cannot itself contain a `delegatecall`. |
+| `delegatecall` runs another contract's code in the caller's storage context. | The implementation side of that pattern. A delegate function is co-spent by a proxy and operates on the proxy's state: it receives the proxy's master input index (passed via the altstack), verifies the proxy's minting capability and self-preservation, and skips its own full state covenant (the proxy owns that). Cannot itself contain a `delegatecall`. |
 
-Blocked with every other covenant modifier (see the matrix below).
+**Do not write this modifier.** Solidity has none, and neither does SolidCash source any more: the compiler
+infers which functions can act as a proxy implementation and emits that build as `artifact.delegateArtifact`,
+reached from the SDK with `contract.asDelegate()`. See [delegatecall.md](./delegatecall.md).
+
+Written explicitly it still forces delegate mode into the primary artifact, which makes the contract
+non-deployable standalone. Blocked with every other covenant modifier (see the matrix below).
 
 ### `split(n)` / `merge(n)`
 

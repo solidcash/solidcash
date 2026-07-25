@@ -51,6 +51,10 @@ export interface CompilerOptions {
   // (native cross-compilation), 'evm' = the 20-byte keccak EVM address. Omitted = `ecrecover` stays undefined.
   // See docs/ecrecover.md.
   ecrecover?: 'p2pkh' | 'evm';
+  // INTERNAL. Set only on the compiler's second pass to produce artifact.delegateArtifact: auto-marks the
+  // proxy-implementable functions `delegate` so source never needs the keyword (Solidity has none). Not a user
+  // option; setting it yields the delegate variant as the primary artifact.
+  autoDelegate?: boolean;
 }
 
 export interface AbiInput {
@@ -485,6 +489,10 @@ export interface Artifact {
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
+  // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
+  // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
+  // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
+  delegateArtifact?: Artifact;
   compiler: {
     name: string;
     version: string;

@@ -56,6 +56,12 @@ describe('layer3.planCompiledGraph', () => {
       [{ artifact: a, lockingBytecode: '51' }],
       [{ parent: null, callee: 1, function: 'add', args: [1n] }],
     )).toThrow(/out of range/);
+    expect(() => layer3.planCompiledGraph(
+      Array.from({ length: 9 }, (_unused, index) => ({
+        artifact: a, lockingBytecode: (0x51 + index).toString(16),
+      })),
+      [{ parent: null, callee: 0, function: 'add', args: [1n] }],
+    )).toThrow(/between 1 and 8/);
   });
 
   it('rejects a child attached after its parent subtree has completed', () => {
@@ -103,6 +109,10 @@ describe('layer3.planCompiledGraph', () => {
       ['5100000000000000', '5200000000000000'], [4, 5],
     ))
       .toThrow(/unknown invocation/);
+    expect(() => layer3.finalizeCompiledGraph(
+      plan, { 0: '51', 1: '52' }, [0, 1], [2, 3],
+      ['5100000000000000', '5200000000000000'], [5, 4],
+    )).toThrow(/strictly increasing/);
 
     const projection = layer3.generateGraphProjectionVerifier();
     const controller = layer3.generateGraphRootController('51');

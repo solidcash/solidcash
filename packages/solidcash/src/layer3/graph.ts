@@ -80,6 +80,9 @@ export interface CompiledGraphPhysicalLayout {
 }
 
 const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');
+const MAX_GRAPH_PARTICIPANTS = 8;
+const MAX_GRAPH_INVOCATIONS = 24;
+const MAX_GRAPH_DEPTH = 7;
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let offset = 0;
@@ -129,9 +132,14 @@ export function finalizeCompiledGraph(
     throw new Error('layer3: return outputs/result vectors must align with participants');
   }
   if (projectionInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
-    || new Set(projectionInputs).size !== projectionInputs.length
+    || projectionInputs.some((input, index) => index > 0 && input <= projectionInputs[index - 1])
     || projectionInputs.some((input) => participantInputs.includes(input))) {
-    throw new Error('layer3: projection inputs must be distinct uint16 proof slots');
+    throw new Error('layer3: projection inputs must be strictly increasing uint16 proof slots');
+  }
+  if (plan.participants.length > MAX_GRAPH_PARTICIPANTS
+    || plan.invocations.length > MAX_GRAPH_INVOCATIONS
+    || plan.invocations.some((invocation) => invocation.depth > MAX_GRAPH_DEPTH)) {
+    throw new Error('layer3: graph exceeds the deployed participant, invocation, or depth bound');
   }
   plan.participants.forEach((participant, index) => {
     const returning = participant.batch.results.length > 0;
@@ -487,8 +495,13 @@ export function planCompiledGraph(
   participants: readonly CompiledGraphParticipant[],
   invocations: readonly CompiledGraphInvocation[],
 ): CompiledGraphPlan {
-  if (participants.length < 1 || participants.length > 255) {
-    throw new Error('layer3: compiled graph participant count must be between 1 and 255');
+  if (participants.length < 1 || participants.length > MAX_GRAPH_PARTICIPANTS) {
+    throw new Error(
+      `layer3: compiled graph participant count must be between 1 and ${MAX_GRAPH_PARTICIPANTS}`,
+    );
+  }
+  if (invocations.length > MAX_GRAPH_INVOCATIONS) {
+    throw new Error(`layer3: compiled graph has more than ${MAX_GRAPH_INVOCATIONS} invocations`);
   }
   const identities = new Set<string>();
   participants.forEach((participant, index) => {
@@ -528,6 +541,9 @@ export function planCompiledGraph(
       }
       for (const ancestor of active) subtreeEnds[ancestor] = index;
       active.push(index);
+    }
+    if (active.length - 1 > MAX_GRAPH_DEPTH) {
+      throw new Error(`layer3: compiled graph depth exceeds ${MAX_GRAPH_DEPTH}`);
     }
     perOwner[invocation.callee].push({
       function: invocation.function,

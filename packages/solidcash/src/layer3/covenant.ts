@@ -13,8 +13,14 @@ export const CONTROLLER_SALT_HEX = '4c3342314354524c';
 
 /** An authenticated invocation: caller -> callee, msg.sender delivered to the layout's sender OP_RETURN. */
 export interface InvocationSpec { caller: number; callee: number }
-/** An execution-transcript edge: caller -> callee.selector, in list order. Committed by the execution root (R2). */
-export interface ExecutionInvocation { caller: number; callee: number; selectorHex: string }
+/**
+ * An execution-transcript edge: caller -> callee.selector(args) -> result, in list order. Committed by the
+ * framed execution root (R2/P4). `argsHex`/`resultHex` are the edge's canonical argument/result bytes for a
+ * deterministic settlement; the callee authenticates `result == f(args, state)` in its own body.
+ */
+export interface ExecutionInvocation {
+  caller: number; callee: number; selectorHex: string; argsHex?: string; resultHex?: string;
+}
 /** An execution-transcript event: an authenticated OP_RETURN record (emitter identity + topic), committed by the root. */
 export interface ExecutionEvent { emitter: number; topicHex: string }
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
@@ -45,7 +51,13 @@ export function framedRootExpr(n: number, invocations: ExecutionInvocation[], ev
     }
     const sel = inv.selectorHex.toLowerCase();
     if (!/^[0-9a-f]{8}$/.test(sel)) throw new Error('layer3: selector must be exactly 4 bytes');
-    p = `bytes.concat(${p}, hex"${u8hex(inv.caller)}${u8hex(inv.callee)}${sel}")`;
+    const args = (inv.argsHex ?? '').toLowerCase();
+    const result = (inv.resultHex ?? '').toLowerCase();
+    if (args && !/^([0-9a-f]{2})+$/.test(args)) throw new Error('layer3: argsHex must be hex bytes');
+    if (result && !/^([0-9a-f]{2})+$/.test(result)) throw new Error('layer3: resultHex must be hex bytes');
+    // framed row: callerIdx || calleeIdx || selector[4] || len(args) || args || len(result) || result
+    p = `bytes.concat(${p}, hex"${u8hex(inv.caller)}${u8hex(inv.callee)}${sel}`
+      + `${u8hex(args.length / 2)}${args}${u8hex(result.length / 2)}${result}")`;
   }
   p = `bytes.concat(${p}, hex"${u8hex(events.length)}")`;
   for (const ev of events) {
@@ -266,11 +278,20 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
   const member = executionMemberBody(
     spec.n, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc, spec.events, spec.oneShot,
   );
+  // P4: expose each edge's committed args/result (bound in the framed root) as locals for the edges this
+  // participant is the CALLEE of, so its appBody can authenticate result == f(args, state).
+  const edgeVars: string[] = [];
+  spec.invocations.forEach((inv, j) => {
+    if (inv.callee === spec.selfPos) {
+      edgeVars.push(`bytes edgeArgs${j} = hex"${(inv.argsHex ?? '').toLowerCase()}";`);
+      edgeVars.push(`bytes edgeResult${j} = hex"${(inv.resultHex ?? '').toLowerCase()}";`);
+    }
+  });
   const calls: string[] = [];
   spec.invocations.forEach((inv, j) => {
     if (inv.caller === spec.selfPos && spec.nativeCalls?.[j]) calls.push(spec.nativeCalls[j]);
   });
-  const body = [...member, ...calls, ...(spec.appBody ?? [])];
+  const body = [...member, ...edgeVars, ...calls, ...(spec.appBody ?? [])];
   return `pragma solidcash >=0.8.0;\ncontract ${spec.contractName}() {\n`
     + `  function ${spec.functionName}(${spec.functionParams ?? ''}) {\n    ${body.join('\n    ')}\n  }\n}`;
 }

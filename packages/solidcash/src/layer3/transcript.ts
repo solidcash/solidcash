@@ -64,7 +64,9 @@ export function executionRoot(
   for (const inv of invocations) {
     const sel = hexToBin(inv.selectorHex);
     if (sel.length !== 4) throw new Error('layer3: selector must be exactly 4 bytes');
-    parts.push(u8(inv.caller), u8(inv.callee), sel);
+    const args = hexToBin(inv.argsHex ?? '');
+    const result = hexToBin(inv.resultHex ?? '');
+    parts.push(u8(inv.caller), u8(inv.callee), sel, u8(args.length), args, u8(result.length), result);
   }
   parts.push(u8(events.length));
   for (const ev of events) { const t = hexToBin(ev.topicHex); parts.push(u8(ev.emitter), u8(t.length), t); }

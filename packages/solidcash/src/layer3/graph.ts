@@ -59,6 +59,9 @@ export interface FinalizedCompiledGraph {
   /** Byte offset of each participant's `lbc-frame || batch-frame` within `bytes`. */
   participantOffsets: readonly number[];
   participantInputs: readonly number[];
+  returnOutputs: readonly (number | null)[];
+  /** Inner SCB1 packed result vector (before the outer `bytes` return-event framing), by participant. */
+  participantResultVectorsHex: readonly string[];
 }
 
 export interface CompiledGraphPhysicalLayout {
@@ -108,12 +111,34 @@ export function finalizeCompiledGraph(
   plan: CompiledGraphPlan,
   results: Readonly<Record<number, string>> = {},
   participantInputs: readonly number[] = plan.participants.map((_participant, index) => index),
+  returnOutputs: readonly (number | null)[] = plan.participants.map(() => null),
+  participantResultVectorsHex: readonly string[] = plan.participants.map(() => ''),
 ): FinalizedCompiledGraph {
   if (participantInputs.length !== plan.participants.length
     || participantInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
     || participantInputs.some((input, index) => index > 0 && input <= participantInputs[index - 1])) {
     throw new Error('layer3: participant physical inputs must be strictly increasing uint16 values');
   }
+  if (returnOutputs.length !== plan.participants.length
+    || participantResultVectorsHex.length !== plan.participants.length) {
+    throw new Error('layer3: return outputs/result vectors must align with participants');
+  }
+  plan.participants.forEach((participant, index) => {
+    const returning = participant.batch.results.length > 0;
+    const output = returnOutputs[index];
+    const vector = participantResultVectorsHex[index];
+    if (returning) {
+      if (!Number.isInteger(output) || output! < 0 || output! > 0xffff
+        || !/^([0-9a-fA-F]{2})+$/.test(vector)) {
+        throw new Error(`layer3: returning participant ${index} lacks a return output/result vector`);
+      }
+      if (vector.length / 2 > 126) {
+        throw new Error(`layer3: participant ${index} result vector exceeds the NFT commitment envelope`);
+      }
+    } else if (output !== null || vector !== '') {
+      throw new Error(`layer3: non-returning participant ${index} cannot carry a result vector`);
+    }
+  });
   const resultHex = plan.invocations.map((invocation) => {
     const supplied = results[invocation.index];
     if (invocation.resultTypes.length === 0) {
@@ -133,6 +158,13 @@ export function finalizeCompiledGraph(
       throw new Error(`layer3: result names unknown invocation '${key}'`);
     }
   }
+  plan.participants.forEach((participant, owner) => {
+    if (participant.batch.results.length === 0) return;
+    const reachedPrefix = participant.invocations.map((invocation) => resultHex[invocation]).join('');
+    if (!participantResultVectorsHex[owner].toLowerCase().startsWith(reachedPrefix)) {
+      throw new Error(`layer3: participant ${owner} result vector disagrees with its invocation results`);
+    }
+  });
 
   const parts: Uint8Array[] = [GRAPH_DOMAIN, uint(plan.participants.length, 1)];
   const participantOffsets: number[] = [];
@@ -144,8 +176,11 @@ export function finalizeCompiledGraph(
     const inputFrame = uint(participantInputs[participantIndex], 2);
     const lbcFrame = framed(lbc);
     const batchFrame = framed(participant.batch.blob);
-    parts.push(inputFrame, lbcFrame, batchFrame);
-    encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length;
+    const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
+    const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
+    parts.push(inputFrame, lbcFrame, batchFrame, returnFrame, resultFrame);
+    encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length
+      + returnFrame.length + resultFrame.length;
   }
   parts.push(uint(plan.invocations.length, 2));
   plan.invocations.forEach((invocation, index) => {
@@ -170,6 +205,10 @@ export function finalizeCompiledGraph(
     resultsHex: Object.freeze(resultHex),
     participantOffsets: Object.freeze(participantOffsets),
     participantInputs: Object.freeze([...participantInputs]),
+    returnOutputs: Object.freeze([...returnOutputs]),
+    participantResultVectorsHex: Object.freeze(
+      participantResultVectorsHex.map((vector) => vector.toLowerCase()),
+    ),
   });
 }
 
@@ -202,11 +241,27 @@ export function compiledGraphRouteArgs(
 export function generateGraphRootController(): string {
   const localCounters = Array.from({ length: 8 }, (_unused, owner) =>
     `bigint localRow${owner} = 0;`).join('\n    ');
+  const resultVectors = Array.from({ length: 8 }, (_unused, owner) =>
+    `bytes resultVector${owner} = hex""; bigint resultCursor${owner} = 0;`).join('\n    ');
+  const resultAssignments = Array.from({ length: 8 }, (_unused, owner) =>
+    `${owner === 0 ? 'if' : 'else if'} (participant == ${owner}) { resultVector${owner} = resultVector; }`)
+    .join('\n      ');
   const activeFrames = Array.from({ length: 8 }, (_unused, depth) =>
     `bigint activeIndex${depth} = -1; bigint activeEnd${depth} = -1;`).join('\n    ');
   const localDispatch = Array.from({ length: 8 }, (_unused, owner) =>
-    `${owner === 0 ? 'if' : 'else if'} (callee == ${owner}) { `
-      + `require(localRow == localRow${owner}); localRow${owner} = localRow${owner} + 1; }`).join('\n      ');
+    `${owner === 0 ? 'if' : 'else if'} (callee == ${owner}) {
+        require(localRow == localRow${owner});
+        localRow${owner} = localRow${owner} + 1;
+        if (resultLength > 0) {
+          require(resultCursor${owner} + resultLength <= resultVector${owner}.length);
+          require(resultVector${owner}.slice(
+            resultCursor${owner}, resultCursor${owner} + resultLength
+          ) == resultBytes);
+          resultCursor${owner} = resultCursor${owner} + resultLength;
+        } else {
+          require(resultVector${owner}.length == 0);
+        }
+      }`).join('\n      ');
   const depthDispatch = Array.from({ length: 7 }, (_unused, offset) => {
     const depth = offset + 1;
     return `${depth === 1 ? 'if' : 'else if'} (depth == ${depth}) {
@@ -228,6 +283,8 @@ contract GraphRootController() {
     require(participantCount >= 1 && participantCount <= 8);
     bigint cursor = 10;
     bigint previousInput = -1;
+    bigint previousReturnOutput = -1;
+    ${resultVectors}
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       require(cursor + 2 <= transcript.length);
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -257,6 +314,29 @@ contract GraphRootController() {
         require(int(bytes.concat(unlocking.slice(6, 7), hex"00")) == batchLength);
         require(unlocking.slice(7, 7 + batchLength) == batchBlob);
       }
+      require(cursor + 4 <= transcript.length);
+      bigint returnOutput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bigint resultVectorLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(resultVectorLength <= 126 && cursor + resultVectorLength <= transcript.length);
+      bytes resultVector = transcript.slice(cursor, cursor + resultVectorLength);
+      cursor = cursor + resultVectorLength;
+      if (resultVectorLength == 0) {
+        require(returnOutput == 65535);
+      } else {
+        require(returnOutput > previousReturnOutput && returnOutput < tx.outputs.length);
+        previousReturnOutput = returnOutput;
+        bytes expectedCommitment;
+        if (resultVectorLength <= 75) {
+          expectedCommitment = bytes.concat(bytes1(resultVectorLength), resultVector);
+        } else {
+          expectedCommitment = bytes.concat(hex"4c", bytes1(resultVectorLength), resultVector);
+        }
+        require(tx.outputs[returnOutput].nftCommitment == expectedCommitment);
+      }
+      ${resultAssignments}
+      else { revert("participant out of range"); }
     }
     require(cursor + 2 <= transcript.length);
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -281,8 +361,6 @@ contract GraphRootController() {
       cursor = cursor + 4;
       require(callee < participantCount);
       require(selector.length == 4);
-      ${localDispatch}
-      else { revert("callee out of range"); }
       if (invocation == 0) {
         require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
         activeIndex0 = 0;
@@ -303,7 +381,10 @@ contract GraphRootController() {
       bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       require(cursor + resultLength <= transcript.length);
+      bytes resultBytes = transcript.slice(cursor, cursor + resultLength);
       cursor = cursor + resultLength;
+      ${localDispatch}
+      else { revert("callee out of range"); }
     }
     require(cursor == transcript.length);
     bytes controllerCategory = tx.inputs[this.activeInputIndex].tokenCategory;

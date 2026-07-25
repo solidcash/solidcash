@@ -60,6 +60,9 @@ async function build(tamperSecondBatch = false, omitController = false, malforme
       cursor += 2 + lbcLength;
       const batchLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + batchLength;
+      cursor += 2; // return output
+      const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + resultVectorLength;
     }
     cursor += 2; // invocation count
     bytes[cursor + 4] = 1; // root invocation depth must be zero
@@ -123,13 +126,12 @@ async function build(tamperSecondBatch = false, omitController = false, malforme
   return { provider, transaction: raw(tx) };
 }
 
-const aggregateResult = (value: bigint): Uint8Array => {
-  const packed = scriptToBytecode([
+const packedResult = (value: bigint): Uint8Array =>
+  scriptToBytecode([
     bigIntToVmNumber(value),
     ...Array.from({ length: 7 }, () => bigIntToVmNumber(0n)),
   ]);
-  return scriptToBytecode([packed]);
-};
+const aggregateResult = (value: bigint): Uint8Array => scriptToBytecode([packedResult(value)]);
 
 async function buildReturning(tamperResult = false) {
   const provider = createTestProvider();
@@ -155,9 +157,9 @@ async function buildReturning(tamperResult = false) {
     { parent: 0, callee: 1, function: 'twice', args: [2n] },
   ]);
   const transcript = layer3.finalizeCompiledGraph(plan, {
-    0: binToHex(bigIntToVmNumber(2n)),
-    1: binToHex(bigIntToVmNumber(4n)),
-  }, [0, 2]);
+    0: binToHex(scriptToBytecode([bigIntToVmNumber(2n)])),
+    1: binToHex(scriptToBytecode([bigIntToVmNumber(4n)])),
+  }, [0, 2], [1, 3], [binToHex(packedResult(2n)), binToHex(packedResult(4n))]);
   const resultA = aggregateResult(2n);
   const resultB = aggregateResult(tamperResult ? 5n : 4n);
   const layout: layer3.CompiledGraphPhysicalLayout = {

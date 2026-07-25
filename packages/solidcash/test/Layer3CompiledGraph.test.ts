@@ -82,15 +82,26 @@ describe('layer3.planCompiledGraph', () => {
       { parent: null, callee: 0, function: 'add', args: [1n] },
       { parent: 0, callee: 1, function: 'add', args: [2n] },
     ]);
-    const first = layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '52' });
-    const changed = layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '53' });
+    const first = layer3.finalizeCompiledGraph(
+      plan, { 0: '51', 1: '52' }, [0, 1], [2, 3],
+      ['5100000000000000', '5200000000000000'],
+    );
+    const changed = layer3.finalizeCompiledGraph(
+      plan, { 0: '51', 1: '53' }, [0, 1], [2, 3],
+      ['5100000000000000', '5300000000000000'],
+    );
     expect(first.root).toMatch(/^[0-9a-f]{64}$/);
     expect(first.root).not.toBe(changed.root);
     expect(first.bytes.length).toBeGreaterThan(
       plan.participants.reduce((sum, participant) => sum + participant.batch.blob.length, 0),
     );
-    expect(() => layer3.finalizeCompiledGraph(plan, { 0: '51' })).toThrow(/lacks canonical result/);
-    expect(() => layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '52', 9: '53' }))
+    expect(() => layer3.finalizeCompiledGraph(
+      plan, { 0: '51' }, [0, 1], [2, 3], ['5100000000000000', '5200000000000000'],
+    )).toThrow(/lacks canonical result/);
+    expect(() => layer3.finalizeCompiledGraph(
+      plan, { 0: '51', 1: '52', 9: '53' }, [0, 1], [2, 3],
+      ['5100000000000000', '5200000000000000'],
+    ))
       .toThrow(/unknown invocation/);
 
     const controller = layer3.generateGraphRootController();

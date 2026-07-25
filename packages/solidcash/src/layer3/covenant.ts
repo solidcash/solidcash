@@ -40,10 +40,18 @@ export interface ExecutionEvent { emitter: number; topicHex: string }
  * committed category (its state is bound to the transcript). Resource k is co-spent at input `n+1+k`.
  */
 export interface ExecutionResource { owner: number; categoryHex: string }
+/**
+ * A committed native call (audit finding 6): participant `caller` makes an on-chain `IContract(addr).method()`
+ * call to `calleeAddrHex` (the callee's exact locking bytecode) selecting `selectorHex`. Committing it in the
+ * framed root makes the call part of the authenticated transcript; the balanced membership then pins the
+ * co-spent callee at the layout's callee slot to this address (witness-independent), so the call cannot be
+ * retargeted outside the controller-attested transcript.
+ */
+export interface ExecutionExternalCall { caller: number; calleeAddrHex: string; selectorHex: string }
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
 export const EXEC_DOMAIN = '4c33455845433100';
 /** Version byte of the framed execution-root encoding (audit P1). Bump on any encoding change. */
-export const EXEC_VERSION = '01';
+export const EXEC_VERSION = '02';
 /** Fixed dust value (satoshis) of a balanced event-log NFT, so no value can be siphoned into a log output. */
 export const EVENT_DUST = 1000;
 
@@ -62,6 +70,7 @@ const u8hex = (n: number): string => {
  */
 export function framedRootExpr(
   n: number, invocations: ExecutionInvocation[], events: ExecutionEvent[], resources: ExecutionResource[] = [],
+  externalCalls: ExecutionExternalCall[] = [],
 ): string {
   let p = `bytes.concat(hex"${EXEC_DOMAIN}${EXEC_VERSION}${u8hex(n)}", bytes.concat(bytes1(lbc0.length), lbc0))`;
   for (let i = 1; i < n; i += 1) p = `bytes.concat(${p}, bytes.concat(bytes1(lbc${i}.length), lbc${i}))`;
@@ -93,6 +102,16 @@ export function framedRootExpr(
     const cat = r.categoryHex.toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(cat)) throw new Error('layer3: resource category must be 32-byte hex');
     p = `bytes.concat(${p}, hex"${u8hex(r.owner)}${cat}")`; // ownerIdx || category(32)
+  }
+  p = `bytes.concat(${p}, hex"${u8hex(externalCalls.length)}")`;
+  for (const x of externalCalls) {
+    if (x.caller < 0 || x.caller >= n) throw new Error('layer3: external-call caller out of range');
+    const addr = x.calleeAddrHex.toLowerCase();
+    if (!/^([0-9a-f]{2})+$/.test(addr)) throw new Error('layer3: external-call address must be hex bytes');
+    const xsel = x.selectorHex.toLowerCase();
+    if (!/^[0-9a-f]{8}$/.test(xsel)) throw new Error('layer3: external-call selector must be exactly 4 bytes');
+    // framed row: callerIdx || len(addr) || addr || selector[4]
+    p = `bytes.concat(${p}, hex"${u8hex(x.caller)}${u8hex(addr.length / 2)}${addr}${xsel}")`;
   }
   return `sha256(${p})`;
 }
@@ -482,14 +501,15 @@ function resourceLocalIndex(resources: ExecutionResource[]): number[] {
 export function balancedMemberBody(
   layout: BalancedLayout, selfPos: number, invocations: ExecutionInvocation[],
   controllerCategory: string, controllerLbc: string, events: ExecutionEvent[] = [], oneShot = false,
-  resources: ExecutionResource[] = [],
+  resources: ExecutionResource[] = [], externalCalls: ExecutionExternalCall[] = [],
 ): string[] {
   if (selfPos < 0 || selfPos >= layout.n) throw new Error('layer3: selfPos out of range');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
   if (!/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) throw new Error('layer3: controllerLbc must be hex bytes');
+  if (externalCalls.length > layout.calleeSlots) throw new Error('layer3: more external calls than callee slots');
   const body: string[] = [];
   for (let i = 0; i < layout.n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${layout.base(i)}].lockingBytecode;`);
-  body.push(`bytes execRoot = ${framedRootExpr(layout.n, invocations, events, resources)};`);
+  body.push(`bytes execRoot = ${framedRootExpr(layout.n, invocations, events, resources, externalCalls)};`);
   const cb = layout.controllerBase;
   const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
   body.push(`require(tx.inputs[${cb}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
@@ -548,6 +568,13 @@ export function balancedMemberBody(
       body.push(`require(tx.outputs[${eo}].lockingBytecode == lbc${selfPos});`);
     });
   }
+  // Finding 6: pin each committed native call's callee to the layout callee slot, from the ROOT (not the
+  // caller's runtime witness). So the co-spent callee at calleeBase(k) IS the transcript-committed address -
+  // the call cannot be retargeted outside the controller-attested transcript, and every participant enforces it.
+  externalCalls.forEach((x, k) => {
+    const addr = x.calleeAddrHex.toLowerCase();
+    body.push(`require(tx.inputs[${layout.calleeBase(k)}].lockingBytecode == hex"${addr}");`);
+  });
   return body;
 }
 
@@ -570,6 +597,8 @@ export interface BalancedParticipantSpec {
   controllerLbc: string;
   events?: ExecutionEvent[];
   resources?: ExecutionResource[];
+  /** Committed native calls (finding 6): each pins the co-spent callee at a layout callee slot from the root. */
+  externalCalls?: ExecutionExternalCall[];
   oneShot?: boolean;
   appBody?: string[];
   /**
@@ -593,7 +622,7 @@ export function generateBalancedParticipant(spec: BalancedParticipantSpec): stri
   const layout = balancedLayout(spec.blocks, spec.calleeSlots ?? 0);
   const member = balancedMemberBody(
     layout, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc,
-    spec.events, spec.oneShot, spec.resources,
+    spec.events, spec.oneShot, spec.resources, spec.externalCalls,
   );
   const edgeVars: string[] = [];
   spec.invocations.forEach((inv, j) => {

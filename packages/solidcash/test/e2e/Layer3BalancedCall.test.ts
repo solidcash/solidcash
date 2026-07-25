@@ -35,9 +35,14 @@ async function run(calleeBaseWitness: bigint): Promise<{ provider: any; rawTx: s
   ]);
   const ctrlCat: string = gen.categoryId;
   const sink = new Contract(compileString(SINK), [], { provider });
+  // Finding 6: the native call is COMMITTED in the transcript root (caller 0 -> sink.ping) and the membership
+  // pins the co-spent callee at the layout callee slot to this exact address.
+  const externalCalls: layer3.ExecutionExternalCall[] = [
+    { caller: 0, calleeAddrHex: sink.lockingBytecode, selectorHex: layer3.methodSelector('ping') },
+  ];
   const common = {
     blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],
-    controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[],
+    controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[], externalCalls,
   };
   const a = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Caller', functionName: 'invoke', selfPos: 0,
@@ -47,7 +52,7 @@ async function run(calleeBaseWitness: bigint): Promise<{ provider: any; rawTx: s
   const b = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Passive', functionName: 'noop', selfPos: 1,
   })), [], { provider });
-  const root = layer3.executionRoot([a.lockingBytecode, b.lockingBytecode], [], [], []);
+  const root = layer3.executionRoot([a.lockingBytecode, b.lockingBytecode], [], [], [], externalCalls);
   const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const setB = new TransactionBuilder({ provider });
   setB.addInput(gen.utxos[0], controller.unlock.setRoot(hexToBin(root), alicePub, sig()));

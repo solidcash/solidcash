@@ -9,9 +9,9 @@ import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
 import {
-  EXEC_DOMAIN, EXEC_VERSION, type BalancedLayout, type ExecutionEvent, type ExecutionInvocation,
-  type ExecutionResource, type InvocationSpec, type TranscriptSpec, type TypedTransition,
-  opReturnPrefix, transcriptLayout,
+  EXEC_DOMAIN, EXEC_VERSION, type BalancedLayout, type ExecutionEvent, type ExecutionExternalCall,
+  type ExecutionInvocation, type ExecutionResource, type InvocationSpec, type TranscriptSpec,
+  type TypedTransition, opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
@@ -58,7 +58,7 @@ const u8 = (n: number): Uint8Array => {
  */
 export function executionRoot(
   orderedLbcs: string[], invocations: ExecutionInvocation[], events: ExecutionEvent[] = [],
-  resources: ExecutionResource[] = [],
+  resources: ExecutionResource[] = [], externalCalls: ExecutionExternalCall[] = [],
 ): string {
   const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), hexToBin(EXEC_VERSION), u8(orderedLbcs.length)];
   for (const l of orderedLbcs) { const b = hexToBin(l); parts.push(u8(b.length), b); }
@@ -74,6 +74,13 @@ export function executionRoot(
   for (const ev of events) { const t = hexToBin(ev.topicHex); parts.push(u8(ev.emitter), u8(t.length), t); }
   parts.push(u8(resources.length));
   for (const r of resources) { parts.push(u8(r.owner), hexToBin(r.categoryHex)); } // ownerIdx || category(32)
+  parts.push(u8(externalCalls.length));
+  for (const x of externalCalls) {
+    const addr = hexToBin(x.calleeAddrHex);
+    const xsel = hexToBin(x.selectorHex);
+    if (xsel.length !== 4) throw new Error('layer3: external-call selector must be exactly 4 bytes');
+    parts.push(u8(x.caller), u8(addr.length), addr, xsel); // callerIdx || len(addr) || addr || selector[4]
+  }
   return binToHex(sha256.hash(concatBin(parts)));
 }
 

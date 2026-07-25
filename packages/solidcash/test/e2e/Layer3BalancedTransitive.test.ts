@@ -34,9 +34,13 @@ async function run(nestedCalleeBase: bigint): Promise<{ provider: any; rawTx: st
   const ctrlCat: string = gen.categoryId;
   const c = new Contract(compileString(SINK), [], { provider });               // leaf
   const bFwd = new Contract(compileString(FWD), [c.lockingBytecode], { provider }); // forwarder -> C
+  // Finding 6: commit A->B in the root; B->C is transitively bound (B's committed lbc bakes C's address).
+  const externalCalls: layer3.ExecutionExternalCall[] = [
+    { caller: 0, calleeAddrHex: bFwd.lockingBytecode, selectorHex: layer3.methodSelector('relay') },
+  ];
   const common = {
     blocks: BLOCKS, calleeSlots: 2, invocations: [] as layer3.ExecutionInvocation[],
-    controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[],
+    controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[], externalCalls,
   };
   const a = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Caller', functionName: 'invoke', selfPos: 0,
@@ -46,7 +50,7 @@ async function run(nestedCalleeBase: bigint): Promise<{ provider: any; rawTx: st
   const passive = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Passive', functionName: 'noop', selfPos: 1,
   })), [], { provider });
-  const root = layer3.executionRoot([a.lockingBytecode, passive.lockingBytecode], [], [], []);
+  const root = layer3.executionRoot([a.lockingBytecode, passive.lockingBytecode], [], [], [], externalCalls);
   const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const setB = new TransactionBuilder({ provider });
   setB.addInput(gen.utxos[0], controller.unlock.setRoot(hexToBin(root), alicePub, sig()));

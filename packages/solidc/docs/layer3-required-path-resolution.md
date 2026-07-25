@@ -4,6 +4,33 @@ Tracks each finding of `layer3-required-path-audit.md` (Decision 3) against what
 VM-verified. Honest status only: a finding is marked CLOSED only where a real BCH-2026 VM regression proves
 it, and the remaining deep items are named as open, not glossed.
 
+## Response to the external covenant review (`layer3-required-path-resolution-audit.md`, a82deeb9)
+
+That review found VM-confirmed accepted attacks. All are now fixed at the covenant root (commit history):
+
+- CRITICAL - an event slot accepted a minting/mutable NFT (extra token authority smuggled into a log). Fixed:
+  the event NFT is fully authenticated - whole `tokenCategory` (32 bytes) forces none capability, `tokenAmount
+  == 0`, `value == EVENT_DUST`, locking bytecode bound to the emitter (`Layer3BalancedEvents` AUDIT-FIXED).
+- HIGH - a journaled state NFT could shed satoshis into change. Fixed: state slots preserve value AND fungible
+  amount (in == out), not just lbc + category.
+- Journal constrained only the first 8 commitment bytes. Fixed: input commitment length is required to be 8
+  and the FULL output commitment is bound, so no trailing state can drift.
+- Arithmetic domain specified: non-negative 8-byte counter; `require(jstate >= 0)` rejects underflow,
+  `bytes8()` fails closed on overflow.
+- Finding 6 (native calls outside the transcript) - the native call is now COMMITTED in the framed root
+  (`ExecutionExternalCall`, root version bumped to `02`) and the balanced membership pins the co-spent callee
+  at the layout callee slot to the committed address, witness-independent (`Layer3BalancedCall`,
+  `Layer3BalancedTransitive`).
+
+Documented bounds (acknowledged, not hidden - reviewer notes that remain by design):
+
+- The journal is a bounded `add|sub|mul` counter DSL, not arbitrary compiled-method execution.
+- Resource identity is category + mint-once genesis; production custody should hold state under a
+  transcript-governing covenant, not a P2PKH (tests use P2PKH neutral custody).
+- `balancedCaller`/`buildBalancedTranscriptTx` derive the callee index and enforce the slot count, but the
+  developer still supplies the ordered slot list (topology/UTXOs/unlockers).
+- The independent third-party review is external by definition.
+
 ## The execution model that closes P2/P3/P6/P7: the callee state journal
 
 The audit's central, thrice-repeated objection was that invocation edges were only labels hashed into the

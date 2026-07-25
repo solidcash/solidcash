@@ -236,6 +236,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     let signatureCheck = false;
     let statefulExternalCall = false;
     let methodCallCount = 0;
+    let graphHasComputedCallArguments = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         walkInvocationAst(candidate.body, (node) => {
@@ -259,6 +260,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           if (node instanceof MethodCallNode) {
             statefulExternalCall = true;
             methodCallCount += 1;
+            if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
+              graphHasComputedCallArguments = true;
+            }
           }
           if (node instanceof FunctionCallNode
             && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
@@ -412,7 +416,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     if (!reason && graphControllerLbc !== undefined && routeUsesMsgValue) {
       graphMsgValueHandlers.add(fn);
     }
-    if (!reason && graphTailCallEligible && !graphTailStatement && !graphResultStatement) {
+    // Void graph handlers authenticate emissions at the actual external-call
+    // site. Besides making conditional/loop reachability exact, this preserves
+    // the source expression which computes each argument (rather than reducing
+    // it to a forwarded handler parameter in the wrapper epilogue).
+    if (!reason && graphTailCallEligible && !graphResultStatement
+      && (!graphTailStatement || graphHasComputedCallArguments)) {
       graphRuntimeHandlers.add(fn);
     }
   }

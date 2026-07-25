@@ -1841,11 +1841,12 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (!slot.addressParam) {
               throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);
             }
-            if (!(slot.argSources ?? []).every((source) =>
-              source.kind === 'forward'
-              && source.paramIndex !== undefined
-              && source.paramIndex >= 0
-              && source.paramIndex < node.parameters.length)) {
+            if (!node.graphRuntimeEmissionHandler
+              && !(slot.argSources ?? []).every((source) =>
+                source.kind === 'forward'
+                && source.paramIndex !== undefined
+                && source.paramIndex >= 0
+                && source.paramIndex < node.parameters.length)) {
               throw new Error(
                 `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
               );

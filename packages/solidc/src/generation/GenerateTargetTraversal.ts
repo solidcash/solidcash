@@ -10219,6 +10219,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  /** Encode a computed Script number as its unique minimal invocation-field push. */
+  private emitCanonicalGraphNumberEncode(locationData: SingleLocationData): void {
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(new Uint8Array([0x00]), locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_1NEGATE, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(new Uint8Array([0x4f]), locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(encodeInt(17n), locationData);
+    this.emit(Op.OP_WITHIN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(0x50n), locationData);
+    this.emit(Op.OP_ADD, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emitStandardPushdataFrame(locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
 
   /**
    * Emit standard pushdata frame: <len> <data> or OP_PUSHDATA1 <len> <data> or OP_PUSHDATA2 <len_LE> <data>
@@ -11204,14 +11239,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(__graph_args)');
     } else {
       for (let i = 0; i < argumentParameters.length; i++) {
-        const parameter = argumentParameters[i];
-        if (!(parameter instanceof IdentifierNode)) {
-          throw new Error('Graph argument forwarding requires identifiers');
+        let parameter = argumentParameters[i];
+        if (parametersAreCallArguments) {
+          parameter = this.visit(parameter);
+          argumentParameters[i] = parameter;
+        } else {
+          if (!(parameter instanceof IdentifierNode)) {
+            throw new Error('Graph argument forwarding requires identifiers');
+          }
+          this.emit(encodeInt(BigInt(this.getStackIndex(parameter.name))), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.pushToStack('(__graph_arg_value)');
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex(parameter.name))), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.pushToStack('(__graph_arg_value)');
-        this.emitPushdataEncode(parameter.type!, locationData);
+        if (parametersAreCallArguments && (
+          parameter.type === PrimitiveType.INT
+          || parameter.type === PrimitiveType.BIGINT
+          || parameter.type instanceof IntType
+          || parameter.type instanceof FixedType
+        )) {
+          this.emitCanonicalGraphNumberEncode(locationData);
+        } else {
+          this.emitPushdataEncode(parameter.type!, locationData);
+        }
         this.popFromStack();
         this.pushToStack(i === 0 ? '(__graph_args)' : '(__graph_arg)');
         if (i > 0) {

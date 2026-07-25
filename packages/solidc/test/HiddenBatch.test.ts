@@ -74,11 +74,11 @@ describe('Release 4 compiler-hidden local batch', () => {
     });
   });
 
-  it('admits only exact argument forwarding for a compiler-authenticated graph tail call', () => {
+  it('authenticates forwarded and compiler-evaluated graph call arguments', () => {
     const exact = compileString(`
       interface IB { function ping(int n); }
-      contract A(address target) {
-        function start(int n) public {
+      contract A() {
+        function start(address target, int n) public {
           IB(target).ping(n);
           require(true);
         }
@@ -86,15 +86,17 @@ describe('Release 4 compiler-hidden local batch', () => {
     `, graphOptions);
     expect(exact.hiddenBatch?.handlers.find((handler) => handler.name === 'start')?.eligible).toBe(true);
 
-    expect(() => compileString(`
+    const transformed = compileString(`
       interface IB { function ping(int n); }
-      contract A(address target) {
-        function start(int n) public {
+      contract A() {
+        function start(address target, int n) public {
           IB(target).ping(n + 1);
           require(true);
         }
       }
-    `, graphOptions)).toThrow(/forwarded identifier arguments/);
+    `, graphOptions);
+    expect(transformed.hiddenBatch?.handlers.find((handler) => handler.name === 'start')?.eligible)
+      .toBe(true);
   });
 
   it('binds one parameter-keyed mapping entry into the physical SCB1 route', () => {

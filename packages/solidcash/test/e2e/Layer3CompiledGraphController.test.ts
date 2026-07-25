@@ -56,6 +56,10 @@ contract CompiledGraphA(int brand, address target) {
     }
     require(times >= 0);
   }
+  function transform(address next, int n) public {
+    ICompiledGraphTarget(next).ping(n + 1);
+    require(n >= 0);
+  }
   function authenticate(address next, address expected) public {
     ICompiledGraphTarget(next).authenticated(expected);
     require(true);
@@ -166,6 +170,7 @@ async function build(
   dataAuth = false,
   staticAuth = false,
   tamperBlockSize = false,
+  transformedChildArg?: bigint,
 ) {
   const provider = createTestProvider();
   const {
@@ -185,7 +190,10 @@ async function build(
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
-  const graphInvocations = staticAuth ? [
+  const graphInvocations = transformedChildArg !== undefined ? [
+    { parent: null, callee: 0, function: 'transform', args: [b.lockingBytecode, 6n] },
+    { parent: 0, callee: 1, function: 'ping', args: [transformedChildArg] },
+  ] : staticAuth ? [
     { parent: null, callee: 0, function: 'forwardStatic', args: [b.lockingBytecode] },
     { parent: 0, callee: 1, function: 'viewPing', args: [] },
   ] : dataAuth ? [
@@ -853,6 +861,20 @@ describe('Layer-3 compiled graph controller', () => {
   it('consumes one authenticated child row per reached loop iteration', async () => {
     const repeated = await build(false, false, false, false, false, false, 1n, undefined, 2);
     await expect(repeated.provider.sendRawTransaction(repeated.transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('binds a compiler-evaluated call expression to the canonical child row', async () => {
+    const exact = await build(
+      false, false, false, false, false, false, 1n, undefined, undefined,
+      undefined, false, false, false, 7n,
+    );
+    await expect(exact.provider.sendRawTransaction(exact.transaction)).resolves.toBeTypeOf('string');
+
+    const substituted = await build(
+      false, false, false, false, false, false, 1n, undefined, undefined,
+      undefined, false, false, false, 8n,
+    );
+    await expect(substituted.provider.sendRawTransaction(substituted.transaction)).rejects.toThrow();
   });
 
   it('rejects omitting the graph controller even when every local batch remains valid', async () => {

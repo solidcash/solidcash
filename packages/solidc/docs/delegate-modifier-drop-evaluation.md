@@ -176,6 +176,34 @@ of it is to stop re-running the front end - clone the AST at the marking point (
 `SymbolTableTraversal`) and run only the back half twice. That needs a prototype-preserving deep clone of the
 AST, which does not exist yet.
 
+## 7b. Audit follow-up
+
+A review pass widened eligibility and added multi-contract support. Auditing it produced these corrections:
+
+- **`compileStringMulti` now attaches a variant per contract** (was missing entirely). Verified: each artifact
+  gets its own correctly-named variant.
+- **Typed external calls were dead code.** The added walk looked for `ExternalFunctionCallNode`, which is only
+  constructed inside `SymbolTableTraversal` - after this pass runs. It could never match. Removed, because the
+  premise was also wrong: an external call mutates the callee's state, never the proxy's.
+- **Overload regression in `withDelegatecall`.** Matching the first ABI entry by name rejected a legitimate
+  delegate call when a `view` overload was declared first. Now accepts when any overload is eligible.
+- **Transfers and token-container operations are excluded.** They are marked-but-broken: the delegate input
+  fails an OP_VERIFY at broadcast. Confirmed pre-existing (identical failure with the hand-written modifier) and
+  confirmed to poison the whole function (state write + transfer fails too). Failing closed at build time beats
+  an opaque revert.
+
+The on-chain matrix that drives the rule, now a permanent regression test:
+
+| form | delegate mode |
+| --- | --- |
+| state write | executes |
+| emit | executes |
+| state write + emit | executes |
+| low-level call | executes |
+| value transfer | fails covenant -> excluded |
+| state write + value transfer | fails covenant -> excluded |
+| token-container op | fails covenant -> excluded |
+
 ## 8. Caveat
 
 Option B gives *source* parity, not *deployment* parity. Solidity's

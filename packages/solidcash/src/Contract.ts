@@ -292,9 +292,11 @@ export class Contract<
     const delegateArtifact = this.artifact.delegateArtifact;
     if (!delegateArtifact) {
       throw new Error(
-        `${this.artifact.contractName} has no delegate variant: no function both writes state and is externally `
-        + 'callable without a view/pure/internal/unsafe/upgrade/deploy/selfdestruct/split/merge modifier, so it '
-        + 'cannot serve as a proxy implementation.',
+        `${this.artifact.contractName} has no delegate variant, so it cannot serve as a proxy implementation. A `
+        + 'function qualifies when it is externally callable, touches state the proxy owns (a state write, an '
+        + 'emit, or a low-level call), and carries no view/pure/internal/private/unsafe/upgrade/deploy/'
+        + 'selfdestruct/split/merge modifier. Value transfers and token-container operations are excluded: they '
+        + 'do not execute in delegate mode. See packages/solidc/docs/delegatecall.md.',
       );
     }
     return new Contract(delegateArtifact, this.rawConstructorArgs, this.options) as any;

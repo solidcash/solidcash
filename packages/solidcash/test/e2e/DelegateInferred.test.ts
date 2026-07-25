@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import { aliceAddress } from '../fixture/vars.js';
 
 // The implementation carries NO `delegate` modifier: it is an ordinary Solidity-shaped contract, exactly as it
 // would be written for an EVM proxy. The compiler infers which functions can act as a proxy implementation and
@@ -67,7 +68,7 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
 
     it('injects the proxy master index only on delegate functions', () => {
       const abi = implArtifact.delegateArtifact!.abi;
-      const inputNames = (n: string) => abi.find((f) => f.name === n)!.inputs.map((i) => i.name);
+      const inputNames = (n: string): string[] => abi.find((f) => f.name === n)!.inputs.map((i) => i.name);
       expect(inputNames('increment')).toContain('__internal__proxyMasterIndex');
       expect(inputNames('get')).not.toContain('__internal__proxyMasterIndex');
     });
@@ -95,6 +96,49 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
 
     it('does not nest variants recursively', () => {
       expect(implArtifact.delegateArtifact!.delegateArtifact).toBeUndefined();
+    });
+
+    // Marking must track what actually EXECUTES in delegate mode (see the on-chain matrix below), not merely
+    // what counts as a stateful statement. Transfers and token-container ops fail the delegate covenant, so
+    // they are excluded and the failure surfaces as asDelegate() throwing rather than a broadcast-time revert.
+    it('marks emits and low-level calls, excludes transfers and token operations', () => {
+      const artifact = compileString(`
+        pragma solidcash >=0.8.0;
+        contract SideEffects() {
+          bigint counter;
+          event Paid(int amount);
+          function fire() public { emit Paid(1); }
+          function poke(address t) public { t.call(""); }
+          function pay(address recipient) public { payable(recipient).transfer(1); }
+          function sendToken(bytes32 category, address recipient) public {
+            this.tokens[category].transfer(recipient, 1);
+          }
+          function payAndWrite(address recipient) public {
+            this.counter = this.counter + 1;
+            payable(recipient).transfer(1);
+          }
+        }
+      `);
+      const modifiers = Object.fromEntries(
+        artifact.delegateArtifact!.abi.map((f) => [f.name, f.modifiers ?? []]),
+      );
+      expect(modifiers.fire).toContain('delegate');
+      expect(modifiers.poke).toContain('delegate');
+      expect(modifiers.pay).not.toContain('delegate');
+      expect(modifiers.sendToken).not.toContain('delegate');
+      // A transfer poisons the whole function: a state write alongside it still fails the delegate covenant.
+      expect(modifiers.payAndWrite).not.toContain('delegate');
+    });
+
+    it('emits no variant at all when every function is transfer-only', () => {
+      const artifact = compileString(`
+        pragma solidcash >=0.8.0;
+        contract PayOnly() {
+          bigint counter;
+          function pay(address r) public { payable(r).transfer(1000); }
+        }
+      `);
+      expect(artifact.delegateArtifact).toBeUndefined();
     });
   });
 
@@ -129,7 +173,54 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       const implSc = StatefulContract.withCategory(implContract, implCatId);
 
       expect(() => proxySc.call.__fallback().withDelegatecall(implSc, 'increment', []))
-        .toThrow(/not a delegate build/);
+        .toThrow(/not available in delegate mode/);
+    });
+
+    it('withDelegatecall rejects a non-delegate function from a delegate artifact', async () => {
+      const provider = createTestProvider();
+      const proxyContract = new Contract(proxyArtifact, [], { provider });
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const implContract = new Contract(implArtifact, [], { provider }).asDelegate();
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
+      const implSc = StatefulContract.withCategory(implContract, implCatId);
+
+      expect(() => proxySc.call.__fallback().withDelegatecall(implSc, 'get', []))
+        .toThrow(/Counter\.get.*not available in delegate mode/);
+    });
+
+    // The name alone cannot pick an overload, so the check must accept when ANY overload is delegate-eligible.
+    // Matching only the first ABI entry by name rejects a legitimate call when a view overload is declared first.
+    it('withDelegatecall accepts an overload set where only one overload is delegate', async () => {
+      const provider = createTestProvider();
+      const overloaded = compileString(`
+        pragma solidcash >=0.8.0;
+        contract O() {
+          bigint counter;
+          function set(bigint x) public view returns (bigint) { return this.counter + x; }
+          function set(bigint x, bigint y) public { this.counter = x + y; }
+        }
+      `);
+      // The view overload is first in the ABI; the delegate-eligible one is second.
+      expect(overloaded.delegateArtifact!.abi[0].modifiers).not.toContain('delegate');
+      expect(overloaded.delegateArtifact!.abi[1].modifiers).toContain('delegate');
+
+      const proxyContract = new Contract(proxyArtifact, [], { provider });
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const implContract = new Contract(overloaded, [], { provider }).asDelegate();
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
+      const implSc = StatefulContract.withCategory(implContract, implCatId);
+
+      expect(() => proxySc.call.__fallback().withDelegatecall(implSc, 'set', [1n, 2n])).not.toThrow();
     });
   });
 
@@ -180,6 +271,43 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       const { proxySc, implSc, proxyCatId } = await setup(10n);
       const tx = await proxySc.call.__fallback().withDelegatecall(implSc, 'addTo', [7n]).send();
       expect(proxyCounter(tx, proxyCatId)).toBe(17n);
+    });
+
+    // Every form that inference marks must actually run behind a proxy. This is the check that keeps marking
+    // honest: a form that compiles but reverts at broadcast belongs in hasUnsupportedDelegateOperation instead.
+    async function runForm(implSrc: string, fn: string, args: any[]): Promise<void> {
+      const provider = createTestProvider();
+      const artifact = compileString(implSrc);
+      expect(artifact.delegateArtifact, `${fn}: expected a delegate variant`).toBeDefined();
+      const proxyContract = new Contract(proxyArtifact, [], { provider });
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const implContract = new Contract(artifact, [], { provider }).asDelegate();
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
+      const implSc = StatefulContract.withCategory(implContract, implCatId);
+      await proxySc.call.__fallback().withDelegatecall(implSc, fn, args).send();
+    }
+
+    it('executes an emit-only delegate function', async () => {
+      await runForm(`pragma solidcash >=0.8.0;
+        contract C() { bigint counter; event E(int v);
+          function f() public { emit E(1); } }`, 'f', []);
+    });
+
+    it('executes a state-write + emit delegate function', async () => {
+      await runForm(`pragma solidcash >=0.8.0;
+        contract C() { bigint counter; event E(int v);
+          function f() public { this.counter = this.counter + 1; emit E(1); } }`, 'f', []);
+    });
+
+    it('executes a low-level-call delegate function', async () => {
+      await runForm(`pragma solidcash >=0.8.0;
+        contract C() { bigint counter;
+          function f(address t) public { t.call(""); } }`, 'f', [aliceAddress]);
     });
   });
 });

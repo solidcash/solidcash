@@ -1,9 +1,9 @@
 import {
   Ast, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
-  StateAssignNode, MappingAssignNode, StateArrayAssignNode, MappingFieldAssignNode,
-  DeleteStateNode, MappingDeleteNode, StateArrayPushNode, StateArrayPopNode, StateArrayDeleteNode,
   LowLevelCallNode, LowLevelCallStatementNode,
+  TransferStatementNode, AddressTransferStatementNode, TokenContainerMethodStatementNode,
 } from '../ast/AST.js';
+import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
 
 /**
  * Marks the functions that CAN act as a proxy implementation with FunctionModifier.DELEGATE, so `delegate` is
@@ -40,19 +40,37 @@ function walk(node: Node | undefined, seen: Set<Node>, hit: (n: Node) => boolean
   return false;
 }
 
-/** A function only benefits from delegate mode if it writes state - that is what the proxy delegates. */
-function writesState(fn: FunctionDefinitionNode): boolean {
-  return walk(fn.body, new Set(), (n) => n instanceof StateAssignNode || n instanceof MappingAssignNode
-    || n instanceof StateArrayAssignNode || n instanceof MappingFieldAssignNode
-    || n instanceof DeleteStateNode || n instanceof MappingDeleteNode
-    || n instanceof StateArrayPushNode || n instanceof StateArrayPopNode
-    || n instanceof StateArrayDeleteNode);
+/**
+ * A function only benefits from delegate mode if it touches state the proxy owns - that is what gets delegated.
+ * Uses the shared definition (state writes, emits, low-level calls); an emit is included because the event NFT
+ * lands in the PROXY's block, so it does need retargeting.
+ *
+ * Typed external calls are deliberately NOT counted. They cannot be seen here anyway (ExternalFunctionCallNode
+ * is built inside SymbolTableTraversal, which runs after this pass), and they do not need to be: an external
+ * call mutates the CALLEE's state, never the proxy's, so it has nothing to delegate.
+ */
+function touchesProxyState(fn: FunctionDefinitionNode): boolean {
+  return containsStatefulOperation(fn.body?.statements);
+}
+
+/**
+ * Value transfers and token-container operations do not execute in delegate mode: the delegate input fails its
+ * covenant (OP_VERIFY). This is a pre-existing limitation of the delegate codegen, reproducible with the
+ * hand-written `delegate` modifier, and it poisons the whole function - a state write PLUS a transfer fails too.
+ * Disqualify them so the failure is `asDelegate()` throwing at build time rather than an opaque script failure
+ * at broadcast. Revisit when delegate-mode value preservation is fixed.
+ */
+function hasUnsupportedDelegateOperation(fn: FunctionDefinitionNode): boolean {
+  return walk(fn.body, new Set(), (n) => n instanceof TransferStatementNode
+    || n instanceof AddressTransferStatementNode
+    || n instanceof TokenContainerMethodStatementNode);
 }
 
 /** A delegate function may not itself issue a delegatecall: that path skips every state covenant. */
 function hasDelegatecall(fn: FunctionDefinitionNode): boolean {
-  return walk(fn.body, new Set(), (n) => (n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode)
-    && n.callMode === 'delegatecall'
+  return walk(fn.body, new Set(), (n) => (
+    n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode
+  ) && n.callMode === 'delegatecall'
     && !(n instanceof LowLevelCallStatementNode && n.synthesizedFromLibraryCall));
 }
 
@@ -61,7 +79,8 @@ export function isDelegateEligible(fn: FunctionDefinitionNode): boolean {
   // A delegate impl is reached through the proxy's own fallback dispatch, never through its own.
   if (fn.isFallback || fn.isReceive) return false;
   if (fn.modifiers.some((m) => INELIGIBLE_MODIFIERS.includes(m))) return false;
-  if (!writesState(fn)) return false;
+  if (!touchesProxyState(fn)) return false;
+  if (hasUnsupportedDelegateOperation(fn)) return false;
   if (hasDelegatecall(fn)) return false;
   return true;
 }

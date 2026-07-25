@@ -9734,13 +9734,18 @@ export class StatefulFunctionCall {
     proxyMasterIndex?: number,
   ): this {
     const implArtifact = impl.inner.artifact;
+    // Every overload with this name: `functionName` is a bare string, so the caller cannot disambiguate them
+    // here. Accept when ANY of them is delegate-eligible, otherwise a contract whose non-delegate overload
+    // happens to be declared first would reject a legitimate delegate call.
+    const implOverloads = implArtifact.abi.filter((f) => f.name === functionName);
     // The impl must be the delegate variant: its state writes have to target the co-spent proxy master. A
     // standalone build writes its OWN state, so the proxy's NFTs would go unauthorized. The variant is a
     // different script (different address), so this cannot be corrected here - it must be what was deployed.
-    if (!implArtifact.isLibrary && !implArtifact.abi.some((f) => f.modifiers?.includes('delegate'))) {
+    if (!implArtifact.isLibrary && !implOverloads.some((f) => f.modifiers?.includes('delegate'))) {
       throw new Error(
-        `Implementation '${implArtifact.contractName}' is not a delegate build: it writes its own state, not the `
-        + "proxy's. Build and deploy it with contract.asDelegate() before using it behind a proxy.",
+        `Function '${implArtifact.contractName}.${functionName}' is not available in delegate mode: it would `
+        + "use standalone state semantics rather than the proxy's. Build and deploy the implementation with "
+        + 'contract.asDelegate(), and select a state-writing function eligible for delegatecall.',
       );
     }
     assertDelegateLayoutCompatible(

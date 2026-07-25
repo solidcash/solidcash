@@ -32,10 +32,24 @@ twice: the standalone artifact, plus a **delegate build** carried as `artifact.d
 `this.<field>` targets the proxy's state (a `_proxyMasterIndex` parameter is injected and every state access is
 retargeted through it). The SDK reaches the second build with `contract.asDelegate()`.
 
-A function gets a delegate build when it is externally callable, writes state, and carries none of
-`view`, `pure`, `internal`, `private`, `unsafe`, `upgrade`, `deploy`, `selfdestruct`, `split`, `merge`. It must
-also not issue a delegatecall itself. Functions that do not qualify are still present in the delegate build, but
-in their ordinary form.
+A function gets a delegate build when it is externally callable, touches state the proxy owns (a state write,
+an `emit`, or a low-level call), and carries none of `view`, `pure`, `internal`, `private`, `unsafe`, `upgrade`,
+`deploy`, `selfdestruct`, `split`, `merge`. It must also not issue a delegatecall itself. Functions that do not
+qualify are still present in the delegate build, but in their ordinary form.
+
+Two forms are excluded because they do not currently execute in delegate mode - the delegate input fails its
+covenant:
+
+- **value transfers** (`payable(r).transfer(...)`), and
+- **token-container operations** (`this.tokens[cat].transfer(...)`).
+
+This is a limitation of the delegate codegen, not of inference: the same function fails identically with a
+hand-written `delegate` modifier. A transfer poisons the whole function, so a state write alongside one is
+excluded too. Excluding them means `asDelegate()` throws at build time instead of the transaction reverting at
+broadcast. A contract whose only mutating functions transfer gets no delegate build at all.
+
+Typed external calls (`IFoo(addr).bar()`) do not make a function eligible either: an external call mutates the
+**callee's** state, never the proxy's, so there is nothing to delegate.
 
 The delegate build runs against a co-spent proxy whose master has minting capability and preserves itself; both
 are checked automatically.

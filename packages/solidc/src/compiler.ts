@@ -127,14 +127,16 @@ const DELEGATE_INELIGIBLE_MODIFIERS: string[] = [
 
 function attachDelegateVariant(
   artifact: Artifact, code: string, mergedCompilerOptions: CompilerOptions,
-  errorListener?: SolidCashErrorListener,
+  errorListener?: SolidCashErrorListener, primaryName?: string,
 ): void {
   if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
   // Cheap pre-filter on the standalone ABI, so only contracts that could BE an implementation pay for the second
   // compile: stateful, with an externally-callable state-writing function carrying no disqualifying modifier.
   // Conservative in the same direction as writesState (a false positive costs one wasted compile, never a
   // missing variant); AutoMarkDelegateFunctions makes the real decision.
-  if (!artifact.stateLayout) return;
+  const hasStatefulBacking = !!artifact.stateLayout || !!artifact.usesBlockhash
+    || !!mergedCompilerOptions.forceStateful || artifact.abi.some((f) => (f.emits?.length ?? 0) > 0);
+  if (!hasStatefulBacking) return;
   const couldBeImplementation = artifact.abi.some((f) => f.writesState !== false
     && !f.isFallback && !f.isReceive
     && !f.modifiers?.some((m) => DELEGATE_INELIGIBLE_MODIFIERS.includes(m)));
@@ -147,7 +149,7 @@ function attachDelegateVariant(
   console.log = (): void => {};
   console.warn = (): void => {};
   try {
-    const variantAst = parseAndResolve(code, variantOptions, errorListener);
+    const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
     const variant = compileResolvedAst(variantAst, code, variantOptions, out);
     if (out.delegateFunctionsMarked === 0) return;
     delete variant.delegateArtifact;
@@ -595,7 +597,9 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     const ast = parseAndResolve(code, mergedCompilerOptions, errorListener, contract.name);
-    map[contract.name] = compileResolvedAst(ast, code, mergedCompilerOptions);
+    const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
+    attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, contract.name);
+    map[contract.name] = artifact;
   }
 
   // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).

@@ -22,6 +22,14 @@ export interface EncodedHiddenBatch {
    * before decoding it.
    */
   results: readonly { row: number; types: readonly string[] }[];
+  /** Canonical row projection used by the graph transcript. */
+  rows: readonly {
+    row: number;
+    function: string;
+    selectorHex: string;
+    /** Exact pushdata-encoded ABI argument vector parsed by SCB1. */
+    argsHex: string;
+  }[];
 }
 
 export interface DecodedHiddenBatchResult {
@@ -77,6 +85,9 @@ export function encodeHiddenBatch(
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
   const results: { row: number; types: readonly string[] }[] = [];
+  const projectedRows: {
+    row: number; function: string; selectorHex: string; argsHex: string;
+  }[] = [];
   const rows = invocations.map((invocation, rowIndex) => {
     const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
     if (!handler) throw new Error(`Unknown SCB1 handler '${invocation.function}'`);
@@ -111,6 +122,12 @@ export function encodeHiddenBatch(
     if (argsBlob.length > 0xffff) {
       throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
     }
+    projectedRows.push({
+      row: rowIndex,
+      function: invocation.function,
+      selectorHex: handler.selector,
+      argsHex: binToHex(argsBlob),
+    });
     return concat(
       hexToBin(handler.selector),
       uintLe(BigInt(rowIndex), 4),
@@ -142,6 +159,7 @@ export function encodeHiddenBatch(
     routeWitnesses: Object.freeze(routeWitnesses),
     rowCount: invocations.length,
     results: Object.freeze(results),
+    rows: Object.freeze(projectedRows.map((row) => Object.freeze(row))),
   };
 }
 

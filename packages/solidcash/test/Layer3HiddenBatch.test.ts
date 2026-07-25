@@ -35,6 +35,10 @@ describe('layer3.encodeHiddenBatch', () => {
     expect(encoded.rowCount).toBe(2);
     expect(encoded.routeWitnesses).toEqual([]);
     expect(encoded.results).toEqual([]);
+    expect(encoded.rows.map(({ row, function: fn, selectorHex }) => ({ row, fn, selectorHex }))).toEqual([
+      { row: 0, fn: 'add', selectorHex: add.selector },
+      { row: 1, fn: 'clear', selectorHex: clear.selector },
+    ]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
   });

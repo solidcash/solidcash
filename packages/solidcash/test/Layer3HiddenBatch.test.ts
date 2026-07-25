@@ -10,6 +10,12 @@ contract Layer3HiddenBatch() {
   function clear() public { this.counter = 0; require(true); }
 }`;
 
+const RETURN_SOURCE = `pragma solidcash >=0.8.0;
+contract Layer3ReturningBatch() {
+  function twice(int n) public pure returns (int) { return n * 2; }
+  function plusOne(int n) public pure returns (int) { return n + 1; }
+}`;
+
 const artifact = compileString(SOURCE, {
   forceStateful: true,
   experimentalHiddenBatch: true,
@@ -27,8 +33,25 @@ describe('layer3.encodeHiddenBatch', () => {
 
     expect(encoded.rowCount).toBe(2);
     expect(encoded.routeWitnesses).toEqual([]);
+    expect(encoded.results).toEqual([]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
+  });
+
+  it('carries the compiler-authored result schema for authenticated return-event decoding', () => {
+    const returning = compileString(RETURN_SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+    const encoded = layer3.encodeHiddenBatch(returning, [
+      { function: 'twice', args: [3n] },
+      { function: 'plusOne', args: [8n] },
+    ]);
+    expect(encoded.results).toEqual([
+      { row: 0, types: ['int256'] },
+      { row: 1, types: ['int256'] },
+    ]);
+    expect(returning.hiddenBatch!.route.outputs).toEqual([{ type: 'bytes' }]);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

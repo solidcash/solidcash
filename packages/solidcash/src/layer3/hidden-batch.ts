@@ -14,6 +14,12 @@ export interface EncodedHiddenBatch {
   routeWitnesses: readonly FunctionArgument[];
   /** Number of logical handler invocations encoded in `blob`. */
   rowCount: number;
+  /**
+   * ABI result schema in row order. The compiler-owned SCB1 route computes these values and commits its
+   * canonical aggregate return blob to the return-event NFT; a graph consumer must authenticate that output
+   * before decoding it.
+   */
+  results: readonly { row: number; types: readonly string[] }[];
 }
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
@@ -62,11 +68,15 @@ export function encodeHiddenBatch(
 
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
+  const results: { row: number; types: readonly string[] }[] = [];
   const rows = invocations.map((invocation, rowIndex) => {
     const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
     if (!handler) throw new Error(`Unknown SCB1 handler '${invocation.function}'`);
     if (!handler.eligible) {
       throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
+    }
+    if ((handler.outputs?.length ?? 0) > 0) {
+      results.push({ row: rowIndex, types: Object.freeze(handler.outputs!.map((output) => output.type)) });
     }
     const args = [...(invocation.args ?? [])];
     if (args.length !== handler.inputs.length) {
@@ -119,5 +129,10 @@ export function encodeHiddenBatch(
       return witness.value;
     });
 
-  return { blob, routeWitnesses, rowCount: invocations.length };
+  return {
+    blob,
+    routeWitnesses: Object.freeze(routeWitnesses),
+    rowCount: invocations.length,
+    results: Object.freeze(results),
+  };
 }

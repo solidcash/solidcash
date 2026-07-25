@@ -8,13 +8,14 @@
 import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
 
 /**
- * The canonical 4-byte selector of a participant METHOD (audit P3): first 4 bytes of sha256(methodName). The
+ * The canonical 4-byte selector of a participant METHOD (audit P3): first 4 bytes of sha256(signature). The
  * callee's generated covenant requires the edge selector to equal this, so an arbitrary selector makes the
  * covenant unspendable - the selector is bound to the callee's declared method, not a free label. (True
- * multi-method runtime dispatch binding within one contract remains further work.)
+ * Native-call rows require a dispatched (multi-entry) callee: a single-entry artifact elides its selector,
+ * making selector authentication impossible from transaction introspection alone.
  */
-export function methodSelector(methodName: string): string {
-  return binToHex(sha256.hash(utf8ToBin(methodName)).slice(0, 4));
+export function methodSelector(signature: string): string {
+  return binToHex(sha256.hash(utf8ToBin(signature)).slice(0, 4));
 }
 
 /** The default controller brand: `L3B1CTRL` prologue (`<salt> OP_DROP` -> `084c3342314354524c75`). */
@@ -41,11 +42,10 @@ export interface ExecutionEvent { emitter: number; topicHex: string }
  */
 export interface ExecutionResource { owner: number; categoryHex: string }
 /**
- * A committed native call (audit finding 6): participant `caller` makes an on-chain `IContract(addr).method()`
- * call to `calleeAddrHex` (the callee's exact locking bytecode) selecting `selectorHex`. Committing it in the
- * framed root makes the call part of the authenticated transcript; the balanced membership then pins the
- * co-spent callee at the layout's callee slot to this address (witness-independent), so the call cannot be
- * retargeted outside the controller-attested transcript.
+ * A committed native call (audit finding 6): physical executor input `caller` makes an on-chain
+ * `IContract(addr).method()` call to `calleeAddrHex` selecting `selectorHex`. Participant inputs use their
+ * balanced base; a transitive caller uses its callee-slot input index. Committing the physical caller and
+ * callee in the root makes the edge part of the authenticated transcript.
  */
 export interface ExecutionExternalCall { caller: number; calleeAddrHex: string; selectorHex: string }
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
@@ -105,7 +105,9 @@ export function framedRootExpr(
   }
   p = `bytes.concat(${p}, hex"${u8hex(externalCalls.length)}")`;
   for (const x of externalCalls) {
-    if (x.caller < 0 || x.caller >= n) throw new Error('layer3: external-call caller out of range');
+    if (!Number.isInteger(x.caller) || x.caller < 0 || x.caller > 255) {
+      throw new Error('layer3: external-call caller input out of byte range');
+    }
     const addr = x.calleeAddrHex.toLowerCase();
     if (!/^([0-9a-f]{2})+$/.test(addr)) throw new Error('layer3: external-call address must be hex bytes');
     const xsel = x.selectorHex.toLowerCase();
@@ -506,7 +508,14 @@ export function balancedMemberBody(
   if (selfPos < 0 || selfPos >= layout.n) throw new Error('layer3: selfPos out of range');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
   if (!/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) throw new Error('layer3: controllerLbc must be hex bytes');
-  if (externalCalls.length > layout.calleeSlots) throw new Error('layer3: more external calls than callee slots');
+  if (externalCalls.length !== layout.calleeSlots) {
+    throw new Error('layer3: every callee slot must have exactly one external-call row');
+  }
+  externalCalls.forEach((x) => {
+    if (x.caller >= layout.controllerBase) {
+      throw new Error('layer3: external-call caller must be a participant or preceding callee input');
+    }
+  });
   const body: string[] = [];
   for (let i = 0; i < layout.n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${layout.base(i)}].lockingBytecode;`);
   body.push(`bytes execRoot = ${framedRootExpr(layout.n, invocations, events, resources, externalCalls)};`);
@@ -573,7 +582,18 @@ export function balancedMemberBody(
   // the call cannot be retargeted outside the controller-attested transcript, and every participant enforces it.
   externalCalls.forEach((x, k) => {
     const addr = x.calleeAddrHex.toLowerCase();
-    body.push(`require(tx.inputs[${layout.calleeBase(k)}].lockingBytecode == hex"${addr}");`);
+    const selector = x.selectorHex.toLowerCase();
+    const callee = layout.calleeBase(k);
+    // A callee cannot call itself or a later, not-yet-authenticated slot. Requiring a preceding executor makes
+    // the row table a topological physical-call chain; logical A->B->A cycles remain represented by participant
+    // invocation edges, while each UTXO still executes once.
+    if (x.caller >= callee) {
+      throw new Error('layer3: external-call caller must precede its callee slot');
+    }
+    body.push(`require(tx.inputs[${callee}].lockingBytecode == hex"${addr}");`);
+    // Match the compiler's native external-call verification exactly: a dispatched entry point begins with a
+    // minimal 4-byte push (0x04), followed by the canonical ABI selector. Magic/content scanning is forbidden.
+    body.push(`require(tx.inputs[${callee}].unlockingBytecode.slice(0, 5) == hex"04${selector}");`);
   });
   return body;
 }

@@ -21,6 +21,7 @@ const SINK = `pragma solidcash >=0.8.0;
 interface ISink { function ping(int x); }
 contract Sink() is ISink {
   function ping(int x) { require(x >= 0); }
+  function other(int x) { require(x >= 0); }
 }`;
 
 // A(caller) + B(passive), one native-call callee slot. base(0)=0, base(1)=1, calleeBase=2, controller=3, fee=4.
@@ -43,7 +44,7 @@ async function run(
   const externalCalls: layer3.ExecutionExternalCall[] = commitment === 'omitted' ? [] : [{
     caller: 0,
     calleeAddrHex: sink.lockingBytecode,
-    selectorHex: commitment === 'wrong-selector' ? 'deadbeef' : layer3.methodSelector('ping'),
+    selectorHex: commitment === 'wrong-selector' ? 'deadbeef' : layer3.methodSelector('ping(int256)'),
   }];
   const common = {
     blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],
@@ -103,13 +104,12 @@ describe('P8: native IContract call composed under the balanced layout', () => {
     await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
   });
 
-  it('AUDIT: accepts the native call with no committed external-call row', async () => {
-    const { provider, rawTx } = await run(2n, 'omitted');
-    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+  it('HOSTILE: rejects a native call with no committed external-call row', async () => {
+    await expect(run(2n, 'omitted')).rejects.toThrow('every callee slot must have exactly one external-call row');
   });
 
-  it('AUDIT: accepts a false committed selector while dispatching ping(int)', async () => {
+  it('HOSTILE: rejects a false committed selector while dispatching ping(int)', async () => {
     const { provider, rawTx } = await run(2n, 'wrong-selector');
-    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
   });
 });

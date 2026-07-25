@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
@@ -230,11 +230,13 @@ describe('Release 4 ordered result batch SDK E2E', () => {
       provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const transaction = await contract.batch([
+    const invocations = [
       { function: 'add', args: [2n] },
       { function: 'add', args: [3n] },
       { function: 'add', args: [5n] },
-    ]).emitReturn().send();
+    ];
+    const plan = layer3.encodeHiddenBatch(artifact, invocations);
+    const transaction = await contract.batch(invocations).emitReturn().send();
     await contract.check(10n).send();
 
     const returnOutput = getTxOutputs(transaction).find((output) =>
@@ -253,6 +255,13 @@ describe('Release 4 ordered result batch SDK E2E', () => {
       offset += decoded.bytesConsumed;
     }
     expect(values).toEqual([2n, 5n, 10n, 0n, 0n, 0n, 0n, 0n]);
+    expect(layer3.decodeHiddenBatchResults(
+      artifact, plan, hexToBin(returnOutput!.token!.nft!.commitment),
+    )).toEqual([
+      { row: 0, type: 'bigint', value: 2n },
+      { row: 1, type: 'bigint', value: 5n },
+      { row: 2, type: 'bigint', value: 10n },
+    ]);
   });
 });
 

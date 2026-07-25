@@ -26,7 +26,10 @@ contract Sink() is ISink {
 // A(caller) + B(passive), one native-call callee slot. base(0)=0, base(1)=1, calleeBase=2, controller=3, fee=4.
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 0, events: 0 }];
 
-async function run(calleeBaseWitness: bigint): Promise<{ provider: any; rawTx: string }> {
+async function run(
+  calleeBaseWitness: bigint,
+  commitment: 'honest' | 'omitted' | 'wrong-selector' = 'honest',
+): Promise<{ provider: any; rawTx: string }> {
   const provider = createTestProvider();
   const controller = new Contract(compileString(layer3.generateControllerCovenant()), [alicePkh], { provider });
   const ctrlLbc = controller.lockingBytecode;
@@ -37,9 +40,11 @@ async function run(calleeBaseWitness: bigint): Promise<{ provider: any; rawTx: s
   const sink = new Contract(compileString(SINK), [], { provider });
   // Finding 6: the native call is COMMITTED in the transcript root (caller 0 -> sink.ping) and the membership
   // pins the co-spent callee at the layout callee slot to this exact address.
-  const externalCalls: layer3.ExecutionExternalCall[] = [
-    { caller: 0, calleeAddrHex: sink.lockingBytecode, selectorHex: layer3.methodSelector('ping') },
-  ];
+  const externalCalls: layer3.ExecutionExternalCall[] = commitment === 'omitted' ? [] : [{
+    caller: 0,
+    calleeAddrHex: sink.lockingBytecode,
+    selectorHex: commitment === 'wrong-selector' ? 'deadbeef' : layer3.methodSelector('ping'),
+  }];
   const common = {
     blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],
     controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[], externalCalls,
@@ -96,5 +101,15 @@ describe('P8: native IContract call composed under the balanced layout', () => {
   it('HOSTILE: a callee-base witness pointing off the real callee is rejected', async () => {
     const { provider, rawTx } = await run(1n); // input 1 is the passive participant, not the sink
     await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+  });
+
+  it('AUDIT: accepts the native call with no committed external-call row', async () => {
+    const { provider, rawTx } = await run(2n, 'omitted');
+    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+  });
+
+  it('AUDIT: accepts a false committed selector while dispatching ping(int)', async () => {
+    const { provider, rawTx } = await run(2n, 'wrong-selector');
+    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
   });
 });

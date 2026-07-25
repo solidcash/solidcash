@@ -1,10 +1,10 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
-  SourceFileNode, TypeIntrospectionNode, VariableDefinitionNode,
+  SourceFileNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -142,25 +142,56 @@ function attachDelegateVariant(
     && !f.modifiers?.some((m) => DELEGATE_INELIGIBLE_MODIFIERS.includes(m)));
   if (!couldBeImplementation) return;
 
-  const variantOptions = { ...mergedCompilerOptions, autoDelegate: true };
-  const out = { delegateFunctionsMarked: 0 };
-  // The variant recompiles the same source, so every warning would otherwise be printed a second time.
-  const { log, warn } = console;
-  console.log = (): void => {};
-  console.warn = (): void => {};
-  try {
-    const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
-    const variant = compileResolvedAst(variantAst, code, variantOptions, out);
-    if (out.delegateFunctionsMarked === 0) return;
-    delete variant.delegateArtifact;
-    artifact.delegateArtifact = variant;
-  } catch {
-    // The delegate variant is an extra capability, never a reason to fail a valid standalone compile. A
-    // contract whose functions do not survive delegate lowering simply has no delegate variant.
-  } finally {
-    console.log = log;
-    console.warn = warn;
-  }
+  const buildVariant = (): Artifact | undefined => {
+    const variantOptions = { ...mergedCompilerOptions, autoDelegate: true };
+    const out = { delegateFunctionsMarked: 0 };
+    let variantFailure: string | undefined;
+    let built: Artifact | undefined;
+    // The variant recompiles the same source, so every warning would otherwise be printed a second time.
+    const { log, warn } = console;
+    console.log = (): void => {};
+    console.warn = (): void => {};
+    try {
+      const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
+      const variant = compileResolvedAst(variantAst, code, variantOptions, out);
+      if (out.delegateFunctionsMarked > 0) {
+        // Same source as the parent, so `source` would be a verbatim copy in every artifact. Drop it here;
+        // Contract.asDelegate() restores it from the parent for runtime consumers.
+        variant.source = '';
+        built = variant;
+      }
+    } catch (e) {
+      // The delegate variant is an extra capability, never a reason to fail a valid standalone compile. But do
+      // not swallow the reason: otherwise asDelegate() reports "no delegate variant" with no trace of why.
+      variantFailure = e instanceof Error ? e.message : String(e);
+    } finally {
+      console.log = log;
+      console.warn = warn;
+    }
+    if (variantFailure !== undefined) {
+      console.log(
+        `Warning: could not build the delegate (proxy-implementation) variant of '${artifact.contractName}': `
+        + `${variantFailure}. The contract itself compiled; it just cannot be used behind a proxy.`,
+      );
+    }
+    return built;
+  };
+
+  // Build on first read, not on every compile. The variant is a second full pass over the same source, and most
+  // contracts are never used behind a proxy - so paying for it up front doubles the cost of compiling anything
+  // that merely COULD be an implementation. Reading `.delegateArtifact` builds it once and caches the result;
+  // JSON.stringify / formatArtifact read it like any other property, so emitted artifacts still carry it.
+  let memo: Artifact | undefined;
+  let built = false;
+  Object.defineProperty(artifact, 'delegateArtifact', {
+    enumerable: true,
+    configurable: true,
+    get(): Artifact | undefined {
+      if (!built) { memo = buildVariant(); built = true; }
+      return memo;
+    },
+    set(value: Artifact | undefined): void { memo = value; built = true; },
+  });
 }
 
 // Parse + (optionally re-select a non-default primary contract) + resolve imports. The default primary is the

@@ -73,40 +73,61 @@ function referencedNames(fn: FunctionDefinitionNode): Set<string> {
 }
 
 /**
- * Value transfers and token-container operations do not execute in delegate mode: the delegate input fails its
- * covenant (OP_VERIFY). This is a pre-existing limitation of the delegate codegen, reproducible with the
- * hand-written `delegate` modifier, and it poisons the whole function - a state write PLUS a transfer fails too.
- * Disqualify them so the failure is `asDelegate()` throwing at build time rather than an opaque script failure
- * at broadcast. Revisit when delegate-mode value preservation is fixed.
- *
- * Follows internal helpers transitively: an entry point whose own body is clean still cannot run in delegate
- * mode if a helper it calls transfers. Name matching is deliberately coarse (a name that merely collides with a
- * function walks one extra body); an over-match only costs a delegate build, an under-match ships a broken one.
+ * The function plus every helper it can reach, transitively. Both disqualifying checks run over this rather
+ * than the entry body alone: an entry point whose own body is clean can still be un-delegatable because of what
+ * a helper does. Name matching is deliberately coarse (a name that merely collides with a function walks one
+ * extra body); an over-match only costs a delegate build, an under-match ships a broken one.
  */
-function hasUnsupportedDelegateOperation(
+function reachableFrom(
   fn: FunctionDefinitionNode, callables: readonly FunctionDefinitionNode[],
-): boolean {
+): FunctionDefinitionNode[] {
   const visited = new Set<FunctionDefinitionNode>();
   const queue: FunctionDefinitionNode[] = [fn];
   while (queue.length > 0) {
     const current = queue.pop()!;
     if (visited.has(current)) continue;
     visited.add(current);
-    if (bodyHasUnsupportedOperation(current)) return true;
     const names = referencedNames(current);
     for (const callee of callables) {
       if (!visited.has(callee) && names.has(callee.name)) queue.push(callee);
     }
   }
-  return false;
+  return [...visited];
 }
 
-/** A delegate function may not itself issue a delegatecall: that path skips every state covenant. */
-function hasDelegatecall(fn: FunctionDefinitionNode): boolean {
+/**
+ * Value transfers and token-container operations do not execute in delegate mode: the delegate input fails its
+ * covenant (OP_VERIFY). This is a pre-existing limitation of the delegate codegen, reproducible with the
+ * hand-written `delegate` modifier, and it poisons the whole function - a state write PLUS a transfer fails too.
+ * Disqualify them so the failure is `asDelegate()` throwing at build time rather than an opaque script failure
+ * at broadcast. Revisit when delegate-mode value preservation is fixed.
+ */
+function hasUnsupportedDelegateOperation(
+  fn: FunctionDefinitionNode, callables: readonly FunctionDefinitionNode[],
+): boolean {
+  return reachableFrom(fn, callables).some(bodyHasUnsupportedOperation);
+}
+
+function bodyHasDelegatecall(fn: FunctionDefinitionNode): boolean {
   return walk(fn.body, new Set(), (n) => (
     n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode
   ) && n.callMode === 'delegatecall'
     && !(n instanceof LowLevelCallStatementNode && n.synthesizedFromLibraryCall));
+}
+
+/**
+ * A delegate function may not itself issue a delegatecall: that path skips every state covenant AND
+ * emitDelegateSelfPreservation, leaving the contract unprotected.
+ *
+ * Follows helpers for the same reason the unsupported-operation check does. A delegatecall inside an internal
+ * helper does not compile today (the injected delegate-index parameter is not threaded to the call site), so
+ * this is currently unreachable - but if that is ever fixed, a body-local check would silently become
+ * fail-open, which is the one direction this gate must never fail.
+ */
+function hasDelegatecall(
+  fn: FunctionDefinitionNode, callables: readonly FunctionDefinitionNode[],
+): boolean {
+  return reachableFrom(fn, callables).some(bodyHasDelegatecall);
 }
 
 export function isDelegateEligible(
@@ -116,11 +137,12 @@ export function isDelegateEligible(
   // A delegate impl is reached through the proxy's own fallback dispatch, never through its own.
   if (fn.isFallback || fn.isReceive) return false;
   if (fn.modifiers.some((m) => INELIGIBLE_MODIFIERS.includes(m))) return false;
-  // Note: touchesProxyState looks at this body only. Missing a helper-only state write just means no delegate
-  // build (fail closed); missing a helper-only transfer would ship a broken one, so THAT check follows calls.
+  // touchesProxyState reads this body only, and does not need more: state-touching internal functions are
+  // force-inlined before this pass, so a helper-only state write is already visible here. The disqualifying
+  // checks below DO follow calls - a transfer is not inlined, and missing one ships a build that reverts.
   if (!touchesProxyState(fn)) return false;
   if (hasUnsupportedDelegateOperation(fn, callables)) return false;
-  if (hasDelegatecall(fn)) return false;
+  if (hasDelegatecall(fn, callables)) return false;
   return true;
 }
 

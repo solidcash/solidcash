@@ -98,6 +98,15 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       expect(implArtifact.delegateArtifact!.delegateArtifact).toBeUndefined();
     });
 
+    // The variant is built from the same source, so carrying a second verbatim copy in every artifact is pure
+    // weight. asDelegate() restores it, so runtime consumers cannot tell the difference.
+    it('does not duplicate the source in the variant, and asDelegate restores it', () => {
+      expect(implArtifact.delegateArtifact!.source).toBe('');
+      const provider = createTestProvider();
+      const delegateContract = new Contract(implArtifact, [], { provider }).asDelegate();
+      expect(delegateContract.artifact.source).toBe(implArtifact.source);
+    });
+
     // Marking must track what actually EXECUTES in delegate mode (see the on-chain matrix below), not merely
     // what counts as a stateful statement. Transfers and token-container ops fail the delegate covenant, so
     // they are excluded and the failure surfaces as asDelegate() throwing rather than a broadcast-time revert.

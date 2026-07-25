@@ -168,13 +168,17 @@ Verification: the inferred build is **byte-identical** to the hand-written `dele
 tried (single function, multi-function with a mapping, and the `delegate_function.scash` fixture). Regression:
 solidc 2250/2250, solidcash 3191 passed / 0 failed.
 
-Cost, measured over the 300 `valid-contract-files` fixtures: 71 get a delegate build, and total compile time
-goes 7.3s -> 12.4s (+69%). The skipped 229 are cheap contracts, so in practice a contract that *could* be an
-implementation costs about 2x to compile. Tightening the pre-filter barely moved it (73 -> 71 variants), because
-the cost is inherent: with no keyword, every plausible implementation must be prepared. The way to remove most
-of it is to stop re-running the front end - clone the AST at the marking point (late, just before
-`SymbolTableTraversal`) and run only the back half twice. That needs a prototype-preserving deep clone of the
-AST, which does not exist yet.
+Cost: the variant is built **on first read**, not on every compile, so compiling costs nothing extra. Measured
+over the 300 `valid-contract-files` fixtures: 7.8s with the feature vs 8.0s without (noise). Reading every
+variant - which is what serializing artifacts does - costs 14.7s, i.e. roughly 2x for the 71 contracts that have
+one. That is the right shape: you pay for the delegate build when you want it.
+
+Eager building was the first implementation, and it was a real regression, not a theoretical one: it doubled the
+ERC721 `safeTransferFrom` fixture from 1.6s to 3.3s and pushed `ExternalCalls.test.ts` past vitest's 5s default
+under parallel load. Laziness removes that. The remaining ~2x on read is inherent (with no keyword, every
+plausible implementation must be prepared); removing it would mean not re-running the front end at all - cloning
+the AST at the marking point and running only the back half twice - which needs a prototype-preserving AST deep
+clone that does not exist yet.
 
 ## 7b. Audit follow-up
 
@@ -204,6 +208,23 @@ A second audit pass found two more, both fixed:
   deliberately left body-local: under-detecting there only costs a delegate build, whereas under-detecting an
   unsupported operation ships a broken one.
 
+A self-audit pass then closed three more:
+
+- **The delegatecall check now follows helpers too**, matching the unsupported-operation check. A delegatecall
+  inside an internal helper does not compile today (the injected delegate-index parameter is not threaded to the
+  call site, reproducible on master), so this is currently unreachable - but a body-local check would silently
+  become fail-open if that is fixed, and fail-open is the one direction this gate must never take. Both checks
+  now share one `reachableFrom` traversal.
+- **A failed variant compile no longer disappears.** It stays non-fatal, but now warns with the reason, instead
+  of surfacing later as `asDelegate()` reporting "no delegate variant" with no explanation. Measured across the
+  300 `valid-contract-files` fixtures: 0 such failures, so this is a diagnostic for the unexpected case.
+- **The variant no longer carries a second copy of the source.** It is compiled from the same input, so the copy
+  was pure weight in every artifact; `asDelegate()` restores it, leaving runtime consumers unaffected.
+
+Worth recording from that pass: `touchesProxyState` turns out to see helper-only state writes already, because
+state-touching internal functions are force-inlined before this pass runs. The body-local concern was real for
+transfers (which are not inlined) but not for state writes.
+
 The on-chain matrix that drives the rule, now a permanent regression test:
 
 | form | delegate mode |
@@ -215,6 +236,22 @@ The on-chain matrix that drives the rule, now a permanent regression test:
 | value transfer | fails covenant -> excluded |
 | state write + value transfer | fails covenant -> excluded |
 | token-container op | fails covenant -> excluded |
+
+## 7c. Why transfers do not work in delegate mode
+
+Diagnosed, not fixed - the gate keeps them out until it is. Delegate codegen is written on the assumption that a
+delegate function produces no dynamic (transfer) outputs:
+
+- `GenerateTargetTraversal` skips `emitAddDynamicOutputsBeforeEntries` when `currentFunctionIsDelegate`, so
+  output-index arithmetic never leaves room for transfer outputs;
+- value preservation still runs for delegate functions, and it accounts for the delegate's OWN value, so an
+  emitted transfer output cannot balance.
+
+Fixing it is not a small patch, because it starts with a semantics question rather than a bug: on Ethereum a
+`delegatecall`ed transfer spends the PROXY's balance, since the execution context is the proxy's. Matching that
+means the delegate's covenant has to authorize an output funded from the proxy's input, and the proxy's own
+value preservation has to permit it - codegen plus SDK derivation, on the covenant path. That is a feature, and
+it needs its own design and review pass rather than being folded into inference work.
 
 ## 8. Caveat
 

@@ -299,7 +299,12 @@ export class Contract<
         + 'do not execute in delegate mode. See packages/solidc/docs/delegatecall.md.',
       );
     }
-    return new Contract(delegateArtifact, this.rawConstructorArgs, this.options) as any;
+    // The compiler drops the variant's `source` (a verbatim copy of this one) to keep artifacts from carrying
+    // it twice; restore it so the delegate contract is indistinguishable from a directly-compiled artifact.
+    const restored = delegateArtifact.source === ''
+      ? { ...delegateArtifact, source: this.artifact.source }
+      : delegateArtifact;
+    return new Contract(restored, this.rawConstructorArgs, this.options) as any;
   }
 
   static generateSalt(length: number = 32): Uint8Array {

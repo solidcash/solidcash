@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
 } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -27,7 +27,7 @@ contract ${name}(int brand) {
   }
 }`;
 
-async function build(tamperSecondBatch = false, omitController = false) {
+async function build(tamperSecondBatch = false, omitController = false, malformedGraph = false) {
   const provider = createTestProvider();
   const controller = new Contract(compileString(layer3.generateGraphRootController()), [], { provider });
   const options = {
@@ -50,7 +50,25 @@ async function build(tamperSecondBatch = false, omitController = false) {
     { parent: null, callee: 0, function: 'ping', args: [1n] },
     { parent: 0, callee: 1, function: 'ping', args: [2n] },
   ]);
-  const transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1]);
+  let transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1]);
+  if (malformedGraph) {
+    const bytes = transcript.bytes.slice();
+    let cursor = 10;
+    for (const participant of plan.participants) {
+      cursor += 2;
+      const lbcLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + lbcLength;
+      const batchLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + batchLength;
+    }
+    cursor += 2; // invocation count
+    bytes[cursor + 4] = 1; // root invocation depth must be zero
+    transcript = {
+      ...transcript,
+      bytes,
+      root: binToHex(sha256.hash(bytes)),
+    };
+  }
   const layout: layer3.CompiledGraphPhysicalLayout = {
     participantInputs: [0, 1],
     controllerInput: 2,
@@ -220,6 +238,11 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects omitting the graph controller even when every local batch remains valid', async () => {
     const { provider, transaction } = await build(false, true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects a root-committed but structurally invalid invocation tree', async () => {
+    const { provider, transaction } = await build(false, false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

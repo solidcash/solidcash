@@ -28,6 +28,7 @@ export interface PlannedGraphInvocation {
   /** Inclusive end of this invocation's canonical depth-first subtree. */
   subtreeEnd: number;
   localRow: number;
+  depth: number;
   function: string;
   selectorHex: string;
   argsHex: string;
@@ -154,6 +155,7 @@ export function finalizeCompiledGraph(
       uint(invocation.parent === null ? 0xffff : invocation.parent, 2),
       uint(invocation.callee, 1),
       uint(invocation.localRow, 1),
+      uint(invocation.depth, 1),
       uint(invocation.subtreeEnd, 2),
       hexToBin(invocation.selectorHex),
       framed(args),
@@ -198,6 +200,23 @@ export function compiledGraphRouteArgs(
  * `attest` authenticates the complete transcript bytes and burns the unique category.
  */
 export function generateGraphRootController(): string {
+  const localCounters = Array.from({ length: 8 }, (_unused, owner) =>
+    `bigint localRow${owner} = 0;`).join('\n    ');
+  const activeFrames = Array.from({ length: 8 }, (_unused, depth) =>
+    `bigint activeIndex${depth} = -1; bigint activeEnd${depth} = -1;`).join('\n    ');
+  const localDispatch = Array.from({ length: 8 }, (_unused, owner) =>
+    `${owner === 0 ? 'if' : 'else if'} (callee == ${owner}) { `
+      + `require(localRow == localRow${owner}); localRow${owner} = localRow${owner} + 1; }`).join('\n      ');
+  const depthDispatch = Array.from({ length: 7 }, (_unused, offset) => {
+    const depth = offset + 1;
+    return `${depth === 1 ? 'if' : 'else if'} (depth == ${depth}) {
+        require(parent == activeIndex${depth - 1});
+        require(invocation <= activeEnd${depth - 1});
+        require(subtreeEnd <= activeEnd${depth - 1});
+        activeIndex${depth} = invocation;
+        activeEnd${depth} = subtreeEnd;
+      }`;
+  }).join('\n      ');
   return `pragma solidcash >=0.8.0;
 contract GraphRootController() {
   function attest(bytes transcript) {
@@ -239,7 +258,54 @@ contract GraphRootController() {
         require(unlocking.slice(7, 7 + batchLength) == batchBlob);
       }
     }
-    require(cursor < transcript.length);
+    require(cursor + 2 <= transcript.length);
+    bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+    cursor = cursor + 2;
+    require(invocationCount >= 1 && invocationCount <= 24);
+    ${localCounters}
+    ${activeFrames}
+    bigint previousDepth = -1;
+    for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
+      require(cursor + 11 <= transcript.length);
+      bigint parent = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bigint callee = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 1;
+      bigint localRow = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 1;
+      bigint depth = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+      cursor = cursor + 1;
+      bigint subtreeEnd = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes selector = transcript.slice(cursor, cursor + 4);
+      cursor = cursor + 4;
+      require(callee < participantCount);
+      require(selector.length == 4);
+      ${localDispatch}
+      else { revert("callee out of range"); }
+      if (invocation == 0) {
+        require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
+        activeIndex0 = 0;
+        activeEnd0 = subtreeEnd;
+      } else {
+        require(parent < invocation && depth >= 1 && depth <= 7 && depth <= previousDepth + 1);
+        require(subtreeEnd >= invocation && subtreeEnd < invocationCount);
+        ${depthDispatch}
+        else { revert("depth out of range"); }
+      }
+      previousDepth = depth;
+      require(cursor + 2 <= transcript.length);
+      bigint argsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(cursor + argsLength <= transcript.length);
+      cursor = cursor + argsLength;
+      require(cursor + 2 <= transcript.length);
+      bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(cursor + resultLength <= transcript.length);
+      cursor = cursor + resultLength;
+    }
+    require(cursor == transcript.length);
     bytes controllerCategory = tx.inputs[this.activeInputIndex].tokenCategory;
     require(controllerCategory.length >= 32);
     controllerCategory = controllerCategory.slice(0, 32);
@@ -328,6 +394,11 @@ export function planCompiledGraph(
   });
 
   const localCursor = participants.map(() => 0);
+  const depths = invocations.map(() => 0);
+  for (let index = 1; index < invocations.length; index += 1) {
+    depths[index] = depths[invocations[index].parent!] + 1;
+    if (depths[index] > 7) throw new Error('layer3: compiled graph exceeds maximum depth 7');
+  }
   const planned = invocations.map((invocation, index) => {
     const execution = executions[invocation.callee];
     const localRow = localCursor[invocation.callee];
@@ -342,6 +413,7 @@ export function planCompiledGraph(
       callee: invocation.callee,
       subtreeEnd: subtreeEnds[index],
       localRow,
+      depth: depths[index],
       function: row.function,
       selectorHex: row.selectorHex,
       argsHex: row.argsHex,

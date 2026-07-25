@@ -28,8 +28,10 @@ Documented bounds (acknowledged, not hidden - reviewer notes that remain by desi
 - The journal is a bounded `add|sub|mul` counter DSL, not arbitrary compiled-method execution.
 - Resource identity is category + mint-once genesis; production custody should hold state under a
   transcript-governing covenant, not a P2PKH (tests use P2PKH neutral custody).
-- `balancedCaller`/`buildBalancedTranscriptTx` derive the callee index and enforce the slot count, but the
-  developer still supplies the ordered slot list (topology/UTXOs/unlockers).
+- `balancedCaller`/`buildBalancedTranscriptTx` derive the callee index and enforce the slot count. The
+  application still supplies concrete UTXOs/unlockers, but native call topology, occurrence order, caller,
+  target, selector, arguments, and transitive synthesized indices are derived from compiler artifacts by
+  `deriveNativeExternalCalls`; manually authored row tables are rejected.
 - The independent third-party review is external by definition.
 
 ## The execution model that closes P2/P3/P6/P7: the callee state journal
@@ -67,7 +69,7 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
 | P5 | Resources disconnected from the root | CLOSED | `ExecutionResource {owner, categoryHex}` in the framed root; owner verifies the co-spent NFT; the journal writes that resource. `Layer3ResourceRoot`. |
 | P6 | Cross-edge ordering/dependency absent | CLOSED (journal model) | `Layer3Journal` ORDERING (25 != 30), `Layer3Cycle` (edge 2 observes edge 1's post-state). |
 | P7 | Callee exhaustiveness incorrect | CLOSED (journal rows) | Every incoming edge is folded into the flush; omit/add a row and it fails. Native-call-has-a-row is P8. |
-| P8 | Auto-wiring exercises no native calls | SUBSTANTIALLY CLOSED | Real direct and transitive native calls are co-spent under balanced bases. Rows and slots are bijective; address, dispatched selector, exact argument prefix, physical caller, and both A -> B / B -> C edges are root-bound. Hostile omission, selector, argument, and callee-index cases reject. Remaining ergonomic boundary: derive the row/prefix automatically from compiler metadata rather than an explicit SDK spec. |
+| P8 | Auto-wiring exercises no native calls | CLOSED (supported v3 class) | `deriveNativeExternalCalls` recursively walks compiler ABI callsites and argument sources, resolves registered targets, allocates direct/repeated/transitive slots, derives exact unlocking prefixes and injects the same calls into participant source. `balancedCaller` derives base, per-occurrence master-index, and selector witnesses from ABI metadata. Manual tables reject. Direct, repeated, and A -> B -> C VM tests pass; omission, selector, argument/order, and callee-index attacks reject. Dynamic/returning/signature call classes explicitly fail closed. |
 | P9 | Balanced block-layout composability | CLOSED (core invariant) | `balancedLayout` gives every participant a contiguous block (executor + state NFTs + event slots) with equal input/output cardinality; blocks concatenate by computed bases; covenants address slots by BLOCK BASE, and the balanced closure rejects inserted/omitted slots (`Layer3Balanced` shows A's size-2 block shifting B's base to 2). Criteria 1,2,3,4,7,9,10 VM-proven (incl. transitive); conditional-same-size (5), fee-invariance (6), artifact-only auto-composition (8) not yet exercised. |
 | P10 | Event exhaustiveness wrong transport | CLOSED | Events are NFT slots inside the emitter's balanced block (block-relative), branded with the emitter's committed state category, structurally exhaustive via the closure - no global OP_RETURN scan, spendable records (`Layer3BalancedEvents`). |
 | P11 | TypedTransition length disagreement | CLOSED | SDK and covenant both require `commitment.length == total`. `Layer3TypedTransition`. |
@@ -99,9 +101,11 @@ chain).
 
 ## Status of the balanced program
 
-- P8: the generator composes with real native calls - single (`Layer3BalancedCall`) and transitive A->B->C
-  (`Layer3BalancedTransitive`) - and the SDK auto-derives the co-spend index from the layout
-  (`Layer3BalancedAutoDerive`: `balancedCaller` + `buildBalancedTranscriptTx`, no hand-written indices).
+- P8: the generator composes with real native calls - single (`Layer3BalancedCall`), repeated compiler
+  occurrences (`Layer3BalancedRepeatedCall`, including swapped-argument rejection), and transitive A->B->C
+  (`Layer3BalancedTransitive`). The SDK derives rows and call statements from compiler artifacts, derives all
+  compiler-owned caller witnesses from the layout, and rejects manually supplied tables
+  (`Layer3BalancedAutoDerive`, `Layer3NativeDerivation`).
 - P9: all 10 acceptance criteria are VM-proven - 1,2,3,4,7,9,10 in the balanced/call/transitive tests, and
   5 (conditional same-size), 6 (fee-invariance), 8 (independently-compiled composition) in
   `Layer3BalancedCriteria`.

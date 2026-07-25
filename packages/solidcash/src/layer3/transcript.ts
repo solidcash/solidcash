@@ -14,6 +14,7 @@ import {
   type TypedTransition, opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
+import type { DerivedExternalCallTable } from './derive-native.js';
 
 /** Apply a TypedTransition to a commitment hex: add delta to the width-byte LE field at offset, preserving the rest. */
 export function applyTypedTransition(commitmentHex: string, t: TypedTransition): string {
@@ -313,12 +314,30 @@ export interface BalancedSlot {
  */
 export function balancedCaller(
   contract: Contract, utxo: Utxo, fnName: string, args: unknown[], calleeSlot: number, output: BalancedOutput,
+  externalCalls?: DerivedExternalCallTable,
 ): BalancedSlot {
   return {
     utxo,
-    unlock: (layout: BalancedLayout): unknown => (contract.unlock as Record<string, (...a: unknown[]) => unknown>)[fnName](
-      ...args, BigInt(layout.calleeBase(calleeSlot)),
-    ),
+    unlock: (layout: BalancedLayout): unknown => {
+      const fn = contract.artifact.abi.find((candidate) => candidate.name === fnName);
+      if (!fn) throw new Error(`layer3: balanced caller ABI function '${fnName}' is absent`);
+      const internal = fn.inputs.slice(args.length).map((input) => {
+        if (input.name === '__internal__externalCallInputBase') {
+          return BigInt(layout.calleeBase(calleeSlot));
+        }
+        const master = input.name.match(/^__internal__extcallMasterIdx(\d+)$/);
+        if (master) return BigInt(layout.calleeBase(calleeSlot + Number(master[1])));
+        const selector = input.name.match(/^__internal__externalCallSelector(\d*)$/);
+        if (selector) {
+          const occurrence = selector[1] === '' ? 0 : Number(selector[1]);
+          const row = externalCalls?.[calleeSlot + occurrence];
+          if (!row) throw new Error(`layer3: no derived selector for external-call occurrence ${occurrence}`);
+          return hexToBin(row.selectorHex);
+        }
+        throw new Error(`layer3: unsupported balanced-caller compiler input '${input.name}'`);
+      });
+      return (contract.unlock as Record<string, (...a: unknown[]) => unknown>)[fnName](...args, ...internal);
+    },
     output,
   };
 }

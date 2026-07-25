@@ -20,7 +20,8 @@ findings as follows:
 - F3: the row commits the physical caller input, callee address, selector, and
   exact minimally encoded selector/argument prefix. The covenant compares the
   entire prefix with the actual callee unlocking bytecode. Physical callers
-  must precede their callee slot.
+  must precede their callee slot and are identity-bound to the participant or
+  preceding callee input.
 - F4: the transitive fixture commits both A -> B and B -> C. B is named by its
   physical callee-slot input, and both selectors, visible arguments, and
   synthesized co-spend indices are bound.
@@ -31,7 +32,17 @@ findings as follows:
 VM regressions now reject an omitted row, false selector, substituted argument,
 wrong callee index, and omitted/incorrect transitive execution. This resolution
 does not turn the bounded journal into a general VM or remove the documented
-manual-spec/compiler-auto-wiring boundary.
+bounded-call eligibility rules.
+
+The last manual-spec/compiler-auto-wiring boundary was subsequently removed by
+`cf7dd5ad`: `deriveNativeExternalCalls` recursively consumes the compiler
+artifact's `externalCalls` and `argSources`, resolves exact registered targets,
+allocates physical slots, derives selector/argument prefixes (including
+compiler-owned co-spend indices), and supplies the call statements injected by
+`generateBalancedParticipant`. Derived tables are immutable and runtime-branded;
+both public covenant-generation layers reject a manually authored table.
+Expression-based, dynamic, pointer, loop, batch, returning, and signature-bearing
+shapes fail closed until they have a transcript model.
 
 ## Summary
 
@@ -201,7 +212,7 @@ The source and focused tests support the following narrower conclusions:
 
 The last point is address binding, not complete native-call transcript binding.
 
-## Required next step
+## Original required next step (now resolved for the supported v3 call class)
 
 Before claiming finding 6 closed, connect `ExecutionExternalCall` directly to
 the compiler's `externalCalls` ABI entries and generate both sides of a
@@ -217,8 +228,13 @@ row/slot bijection. Add hostile VM tests for:
 8. omitted transitive row; and
 9. wrong/missing return dependency.
 
-Until those reject, the honest status is:
+At the reviewed target, the honest status was:
 
 > The direct event/state attacks are fixed, and native callee addresses are
 > root-bound, but native calls are not exhaustively represented by the
 > transcript.
+
+Current evidence superseding that target is listed in the subsequent-resolution
+section above. Compiler-derived direct, repeated, and transitive callsites are
+exhaustive for the supported v3 call class; unsupported classes reject before a
+covenant is generated.

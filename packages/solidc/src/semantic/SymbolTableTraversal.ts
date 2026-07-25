@@ -1811,33 +1811,38 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
         if (node.graphEmissionHandler) {
-          if (logicalCallSlots.length !== 1
-            || (logicalCallSlots[0].returnTypes?.length ?? 0) > 1
-            || logicalCallSlots[0].loopArrayVar || logicalCallSlots[0].fnPtrCall
-            || (logicalCallSlots[0].callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) {
+          if (logicalCallSlots.length < 1
+            || logicalCallSlots.some((slot) =>
+              (slot.returnTypes?.length ?? 0) > 1
+              || slot.loopArrayVar || slot.fnPtrCall
+              || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR)
+            || (logicalCallSlots.length > 1 && logicalCallSlots.some((slot) => slot.hasReturnValues))) {
             throw new Error(
-              `Graph handler '${node.name}' requires exactly one non-returning regular tail call`,
+              `Graph handler '${node.name}' requires regular straight-line calls and at most one returning call`,
             );
           }
-          const slot = logicalCallSlots[0];
-          if (!slot.addressParam) {
-            throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);
+          for (const slot of logicalCallSlots) {
+            if (!slot.addressParam) {
+              throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);
+            }
+            if (!(slot.argSources ?? []).every((source) =>
+              source.kind === 'forward'
+              && source.paramIndex !== undefined
+              && source.paramIndex >= 0
+              && source.paramIndex < node.parameters.length)) {
+              throw new Error(
+                `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
+              );
+            }
+            const iface = this.interfaceMap.get(slot.interfaceName);
+            const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
+              .filter((candidate) => candidate.name === slot.functionName);
+            const ifaceFunc = ifaceFuncs?.length === 1 ? ifaceFuncs[0] : undefined;
+            if (!ifaceFunc) throw new Error(`Graph handler '${node.name}' has an unresolved target method`);
+            slot.compileTimeSelector = computeFunctionSelector(computeFunctionSignature(
+              slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
+            ));
           }
-          if ((slot.argSources?.length ?? 0) !== node.parameters.length
-            || !slot.argSources!.every((source, index) =>
-              source.kind === 'forward' && source.paramIndex === index)) {
-            throw new Error(
-              `Graph handler '${node.name}' currently requires an exact ordered forwarding of its parameters`,
-            );
-          }
-          const iface = this.interfaceMap.get(slot.interfaceName);
-          const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
-            .filter((candidate) => candidate.name === slot.functionName);
-          const ifaceFunc = ifaceFuncs?.length === 1 ? ifaceFuncs[0] : undefined;
-          if (!ifaceFunc) throw new Error(`Graph handler '${node.name}' has an unresolved target method`);
-          slot.compileTimeSelector = computeFunctionSelector(computeFunctionSignature(
-            slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
-          ));
         } else {
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
         // B's external call target may be at a position BEFORE B's master.

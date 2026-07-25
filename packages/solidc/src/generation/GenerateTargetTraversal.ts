@@ -5677,9 +5677,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       hiddenContextCount += 1;
     }
     if (targetFunc.graphEmissionHandler) {
-      const slot = targetFunc.externalCalls?.[0];
-      if (!slot) throw new Error(`Graph handler '${targetFunc.name}' lacks call metadata`);
-      hiddenContextCount += this.verifyGraphEmissionRow(slot, targetFunc, node.parameters, locationData);
+      const slots = targetFunc.externalCalls ?? [];
+      if (slots.length === 0) throw new Error(`Graph handler '${targetFunc.name}' lacks call metadata`);
+      if (slots.length === 1) {
+        hiddenContextCount += this.verifyGraphEmissionRow(
+          slots[0], targetFunc, node.parameters, locationData,
+        );
+      } else {
+        this.emit(new Uint8Array(), locationData);
+        this.pushToStack('(__graph_emission_vector)');
+        for (const slot of slots) {
+          this.verifyGraphEmissionRow(slot, targetFunc, node.parameters, locationData, false);
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(__graph_emission_vector)');
+        }
+        const expected = '__internal__graphEmissions';
+        this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(__graph_expected_emissions)');
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack(2);
+      }
     }
 
     // The internal-call subroutine skips the synthetic `__internal__returnOutputIdx` param during setup (unused
@@ -11031,6 +11050,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     handler: FunctionDefinitionNode,
     parameters: ExpressionNode[],
     locationData: SingleLocationData,
+    compare = true,
   ): number {
     if (!slot.compileTimeSelector) throw new Error('Graph emission call lacks a fixed selector');
     if (slot.addressParam) {
@@ -11070,12 +11090,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_selector)');
 
-    if (parameters.length === 0) {
+    const argumentParameters = (slot.argSources ?? []).map((source) => {
+      if (source.kind !== 'forward' || source.paramIndex === undefined) {
+        throw new Error('Graph argument source was not proven to be forwarded');
+      }
+      return parameters[source.paramIndex];
+    });
+    if (argumentParameters.length === 0) {
       this.emit(new Uint8Array(), locationData);
       this.pushToStack('(__graph_args)');
     } else {
-      for (let i = 0; i < parameters.length; i++) {
-        const parameter = parameters[i];
+      for (let i = 0; i < argumentParameters.length; i++) {
+        const parameter = argumentParameters[i];
         if (!(parameter instanceof IdentifierNode)) {
           throw new Error('Graph argument forwarding requires identifiers');
         }
@@ -11112,6 +11138,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(__graph_emission_row)');
+      if (!compare) return 0;
       this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(__graph_expected_emissions)');

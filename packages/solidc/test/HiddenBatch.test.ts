@@ -94,7 +94,7 @@ describe('Release 4 compiler-hidden local batch', () => {
           require(true);
         }
       }
-    `, graphOptions)).toThrow(/exact ordered forwarding/);
+    `, graphOptions)).toThrow(/forwarded identifier arguments/);
   });
 
   it('binds one parameter-keyed mapping entry into the physical SCB1 route', () => {

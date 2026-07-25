@@ -253,8 +253,10 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
     let reason: string | undefined;
     const bodyStatements = fn.body.statements ?? [];
+    const directMethodCallCount = bodyStatements.filter((statement) =>
+      statement instanceof MethodCallStatementNode).length;
     const graphTailStatement = bodyStatements.length >= 2
-      && bodyStatements[bodyStatements.length - 2] instanceof MethodCallStatementNode
+      && directMethodCallCount === methodCallCount
       && bodyStatements[bodyStatements.length - 1] instanceof RequireNode
       && (bodyStatements[bodyStatements.length - 1] as RequireNode).expression
         instanceof BoolLiteralNode
@@ -269,7 +271,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       return containsCall;
     });
     const graphTailCallEligible = graphControllerLbc !== undefined
-      && methodCallCount === 1
+      && methodCallCount >= 1
       && (graphTailStatement || graphResultStatement);
     const keyWitnesses: { routeInput: string; inputIndex: number; perRow?: boolean }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>

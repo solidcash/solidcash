@@ -25,9 +25,10 @@ contract ${name}(int brand) {
 const CALLING_APP = `pragma solidcash >=0.8.0;
 interface ICompiledGraphTarget { function ping(int n); }
 contract CompiledGraphA(int brand, address target) {
-  function start(int n) public {
-    require(n >= 0);
-    ICompiledGraphTarget(target).ping(n);
+  function start(int first, int second) public {
+    require(first >= 0 && second >= 0);
+    ICompiledGraphTarget(target).ping(first);
+    ICompiledGraphTarget(target).ping(second);
     require(true);
   }
 }`;
@@ -145,8 +146,9 @@ async function build(
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'start', args: [1n] },
+    { parent: null, callee: 0, function: 'start', args: [1n, 2n] },
     { parent: 0, callee: 1, function: 'ping', args: [sourceChildArg] },
+    { parent: 0, callee: 1, function: 'ping', args: [2n] },
   ]);
   let transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1], [null, null], ['', ''], [2, 3]);
   if (malformedGraph || aliasProjection) {

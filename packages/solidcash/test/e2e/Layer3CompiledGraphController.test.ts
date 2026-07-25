@@ -21,9 +21,13 @@ const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 const APP = (name: string) => `pragma solidcash >=0.8.0;
 contract ${name}(int brand) {
   function ping(int n) public { require(n >= 0); }
+  function authenticated(address expected) public { require(msg.sender == expected); }
 }`;
 const CALLING_APP = `pragma solidcash >=0.8.0;
-interface ICompiledGraphTarget { function ping(int n); }
+interface ICompiledGraphTarget {
+  function ping(int n);
+  function authenticated(address expected);
+}
 contract CompiledGraphA(int brand, address target) {
   function start(int first, int second) public {
     require(first >= 0 && second >= 0);
@@ -43,6 +47,10 @@ contract CompiledGraphA(int brand, address target) {
       ICompiledGraphTarget(next).ping(n);
     }
     require(times >= 0);
+  }
+  function authenticate(address next, address expected) public {
+    ICompiledGraphTarget(next).authenticated(expected);
+    require(true);
   }
 }`;
 const RETURNING_B = `pragma solidcash >=0.8.0;
@@ -138,6 +146,7 @@ async function build(
   sourceChildArg = 1n,
   conditional?: { take: boolean; includeChild: boolean },
   loopCount?: number,
+  senderAuth?: { forgeExpected: boolean },
 ) {
   const provider = createTestProvider();
   const {
@@ -157,7 +166,16 @@ async function build(
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
-  const graphInvocations = loopCount !== undefined ? [
+  const graphInvocations = senderAuth ? [
+    {
+      parent: null, callee: 0, function: 'authenticate',
+      args: [b.lockingBytecode, senderAuth.forgeExpected ? b.lockingBytecode : a.lockingBytecode],
+    },
+    {
+      parent: 0, callee: 1, function: 'authenticated',
+      args: [senderAuth.forgeExpected ? b.lockingBytecode : a.lockingBytecode],
+    },
+  ] : loopCount !== undefined ? [
     { parent: null, callee: 0, function: 'repeat', args: [b.lockingBytecode, 7n, BigInt(loopCount)] },
     ...Array.from({ length: loopCount }, () =>
       ({ parent: 0, callee: 1, function: 'ping', args: [7n] })),
@@ -553,6 +571,22 @@ describe('Layer-3 compiled graph controller', () => {
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 
+  it('supplies graph msg.sender from the authenticated parent participant', async () => {
+    const { provider, transaction } = await build(
+      false, false, false, false, false, false, 1n, undefined, undefined,
+      { forgeExpected: false },
+    );
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects using a different participant as graph msg.sender', async () => {
+    const { provider, transaction } = await build(
+      false, false, false, false, false, false, 1n, undefined, undefined,
+      { forgeExpected: true },
+    );
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
   it('authenticates compiler-produced return blobs in balanced owner slots', async () => {
     const {
       provider, transaction, artifactA, plan, resultA,
@@ -576,4 +610,5 @@ describe('Layer-3 compiled graph controller', () => {
     const { provider, transaction } = await buildStateCycle(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
+
 });

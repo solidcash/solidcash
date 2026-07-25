@@ -65,6 +65,8 @@ export interface FinalizedCompiledGraph {
   participantResultVectorsHex: readonly string[];
   /** Exact source-emitted child-call rows, grouped by caller owner. */
   participantEmissionsHex: readonly string[];
+  /** Logical caller locking bytecode per local invocation, framed in local-row order. */
+  participantCallersHex: readonly string[];
 }
 
 export interface CompiledGraphPhysicalLayout {
@@ -122,6 +124,7 @@ export function finalizeCompiledGraph(
   projectionInputs: readonly number[] = plan.participants.map(
     (_participant, index) => plan.participants.length + index,
   ),
+  rootCallerLockingBytecode = '',
 ): FinalizedCompiledGraph {
   if (participantInputs.length !== plan.participants.length
     || participantInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
@@ -183,6 +186,14 @@ export function finalizeCompiledGraph(
     );
   }
   const participantEmissions = emissionParts.map((parts) => concat(...parts));
+  const callerParts = plan.participants.map(() => [] as Uint8Array[]);
+  for (const invocation of plan.invocations) {
+    const caller = invocation.parent === null
+      ? hexToBin(rootCallerLockingBytecode)
+      : hexToBin(plan.participants[invocation.caller!].lockingBytecode);
+    callerParts[invocation.callee].push(framed(caller));
+  }
+  const participantCallers = callerParts.map((parts) => concat(...parts));
   for (const key of Object.keys(results)) {
     const index = Number(key);
     if (!Number.isInteger(index) || index < 0 || index >= plan.invocations.length) {
@@ -208,12 +219,15 @@ export function finalizeCompiledGraph(
     const lbcFrame = framed(lbc);
     const batchFrame = framed(participant.batch.blob);
     const emissionFrame = framed(participantEmissions[participantIndex]);
+    const callerFrame = framed(participantCallers[participantIndex]);
     const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
     const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
     const projectionFrame = uint(projectionInputs[participantIndex], 2);
-    parts.push(inputFrame, lbcFrame, batchFrame, emissionFrame, returnFrame, resultFrame, projectionFrame);
+    parts.push(inputFrame, lbcFrame, batchFrame, emissionFrame, callerFrame,
+      returnFrame, resultFrame, projectionFrame);
     encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length
-      + emissionFrame.length + returnFrame.length + resultFrame.length + projectionFrame.length;
+      + emissionFrame.length + callerFrame.length
+      + returnFrame.length + resultFrame.length + projectionFrame.length;
   }
   parts.push(uint(plan.invocations.length, 2));
   plan.invocations.forEach((invocation, index) => {
@@ -246,6 +260,9 @@ export function finalizeCompiledGraph(
     participantEmissionsHex: Object.freeze(
       participantEmissions.map((emissions) => binToHex(emissions)),
     ),
+    participantCallersHex: Object.freeze(
+      participantCallers.map((callers) => binToHex(callers)),
+    ),
   });
 }
 
@@ -267,6 +284,7 @@ export function compiledGraphRouteArgs(
     BigInt(controllerInput),
     BigInt(offset),
     hexToBin(transcript.participantEmissionsHex[participant]),
+    hexToBin(transcript.participantCallersHex[participant]),
     ...execution.batch.routeWitnesses,
   ]);
 }
@@ -351,6 +369,10 @@ contract GraphRootController(bytes20 initializer) {
       cursor = cursor + 2;
       require(cursor + emissionsLength <= transcript.length);
       cursor = cursor + emissionsLength;
+      bigint callersLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(cursor + callersLength <= transcript.length);
+      cursor = cursor + callersLength;
       bigint returnOutput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint resultVectorLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -451,6 +473,10 @@ export function generateGraphProjectionVerifier(): string {
     `${index === 0 ? 'if' : 'else if'} (callee == ${index}) {
           expectedTarget = participantLbc${index};
         }`).join('\n        ');
+  const callerLbcDispatch = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `${index === 0 ? 'if' : 'else if'} (caller == ${index}) {
+          expectedCaller = participantLbc${index};
+        }`).join('\n        ');
   return `pragma solidcash >=0.8.0;
 contract GraphProjectionVerifier() {
   function verify(bytes transcript, bigint controllerInput, bigint participantIndex) {
@@ -462,6 +488,7 @@ contract GraphProjectionVerifier() {
     bigint cursor = 10;
     bytes ownerBatch;
     bytes ownerEmissions;
+    bytes ownerCallers;
     bytes resultVector;
     ${lbcDeclarations}
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
@@ -479,7 +506,11 @@ contract GraphProjectionVerifier() {
       bigint emissionsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bytes emissions = transcript.slice(cursor, cursor + emissionsLength);
-      cursor = cursor + emissionsLength + 2;
+      cursor = cursor + emissionsLength;
+      bigint callersLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      bytes callers = transcript.slice(cursor, cursor + callersLength);
+      cursor = cursor + callersLength + 2;
       bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bytes results = transcript.slice(cursor, cursor + resultLength);
@@ -491,6 +522,7 @@ contract GraphProjectionVerifier() {
         require(participantInput < tx.inputs.length);
         ownerBatch = batchBlob;
         ownerEmissions = emissions;
+        ownerCallers = callers;
         resultVector = results;
       }
     }
@@ -499,6 +531,7 @@ contract GraphProjectionVerifier() {
     bigint batchCursor = 7;
     bigint resultCursor = 0;
     bigint emissionCursor = 0;
+    bigint callerCursor = 0;
     bigint localRow = 0;
     ${activeCallees}
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
@@ -558,6 +591,20 @@ contract GraphProjectionVerifier() {
         require(emittedResultLength == resultLength && emittedResult == result);
       }
       if (callee == participantIndex) {
+        bigint logicalCallerLength = int(bytes.concat(
+          ownerCallers.slice(callerCursor, callerCursor + 2), hex"00"
+        ));
+        callerCursor = callerCursor + 2;
+        bytes logicalCaller = ownerCallers.slice(callerCursor, callerCursor + logicalCallerLength);
+        callerCursor = callerCursor + logicalCallerLength;
+        if (invocation == 0) {
+          require(logicalCallerLength == 0 || logicalCaller == tx.origin);
+        } else {
+          bytes expectedCaller;
+          ${callerLbcDispatch}
+          else { revert("caller out of range"); }
+          require(logicalCaller == expectedCaller);
+        }
         require(row == localRow);
         localRow = localRow + 1;
         require(ownerBatch.slice(batchCursor, batchCursor + 4) == selector);
@@ -582,6 +629,7 @@ contract GraphProjectionVerifier() {
     require(cursor == transcript.length);
     require(localRow > 0 && batchCursor == ownerBatch.length);
     require(emissionCursor == ownerEmissions.length);
+    require(callerCursor == ownerCallers.length);
     require(this.activeInputIndex < tx.outputs.length);
     require(tx.outputs[this.activeInputIndex].value == 1000);
     require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);

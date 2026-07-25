@@ -1040,6 +1040,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphControllerIdx',
         '__internal__graphParticipantOffset',
         '__internal__graphEmissions',
+        '__internal__graphCallers',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
@@ -1424,13 +1425,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const usesMsgSender = this.collectMsgSenderUsage(node.body);
       if (usesMsgSender) {
         node.usesMsgSender = true;
-        const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
-        categoryParam.location = node.location;
-        node.parameters.push(categoryParam);
-        this.symbolTables[0].set(Symbol.variable(categoryParam));
-        const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
-        if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
-        this.pushToStack(categoryParam);
+        // Graph handlers receive logical msg.sender from the caller vector
+        // authenticated by the projection covenant. Neither the cloned
+        // handler nor its compiler-owned SCB1 wrapper may acquire the
+        // unrelated direct-route category witness.
+        if (!node.graphEmissionHandler && !node.hiddenBatchRoute) {
+          const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
+          categoryParam.location = node.location;
+          node.parameters.push(categoryParam);
+          this.symbolTables[0].set(Symbol.variable(categoryParam));
+          const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
+          if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
+          this.pushToStack(categoryParam);
+        }
       }
     }
 

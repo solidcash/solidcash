@@ -227,6 +227,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
+    let routeUsesMsgSender = false;
+    let routeUsesOtherIntrospection = false;
     let signatureCheck = false;
     let statefulExternalCall = false;
     let methodCallCount = 0;
@@ -237,7 +239,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             NullaryOperator.INPUT_INDEX, NullaryOperator.BYTECODE,
             NullaryOperator.MSG_SENDER, NullaryOperator.TX_ORIGIN,
             NullaryOperator.MSG_SIG, NullaryOperator.MSG_DATA, NullaryOperator.MSG_VALUE,
-          ].includes(node.operator)) routeSensitive = true;
+          ].includes(node.operator)) {
+            routeSensitive = true;
+            if (node.operator === NullaryOperator.MSG_SENDER) routeUsesMsgSender = true;
+            else routeUsesOtherIntrospection = true;
+          }
           if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
           // Method calls are resolved into external/internal/builtin forms only
           // during the following semantic pass. The initial frozen route does
@@ -252,6 +258,10 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         });
       }
     }
+    // The first semantic pass records msg.sender usage on the function even
+    // when the surface member access has already been lowered away from its
+    // NullaryOp representation.
+    if (fn.usesMsgSender) routeUsesMsgSender = true;
     let reason: string | undefined;
     const bodyStatements = fn.body.statements ?? [];
     const directMethodCallCount = bodyStatements.filter((statement) =>
@@ -366,7 +376,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
-      && !(compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind')) {
+      && !((graphControllerLbc !== undefined && routeUsesMsgSender && !routeUsesOtherIntrospection)
+        || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
@@ -384,7 +395,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
-    if (!reason && graphTailCallEligible) graphTailHandlers.add(fn);
+    if (!reason && (graphTailCallEligible
+      || (graphControllerLbc !== undefined && routeUsesMsgSender))) graphTailHandlers.add(fn);
     if (!reason && graphTailCallEligible && !graphTailStatement && !graphResultStatement) {
       graphRuntimeHandlers.add(fn);
     }
@@ -535,9 +547,28 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     'bigint __internal__graphControllerIdx',
     'bigint __internal__graphParticipantOffset',
     'bytes __internal__graphEmissions',
+    'bytes __internal__graphCallers',
   ];
   const routeParameters = ['bytes batchBlob', ...graphRouteParameters, ...routeKeyParameters].join(', ');
+  const parseGraphCaller = graphControllerLbc === undefined ? '' : `
+          require(__scb_graph_caller_cursor + 2 <= __internal__graphCallers.length);
+          bigint __scb_graph_caller_length = int(bytes.concat(
+            __internal__graphCallers.slice(
+              __scb_graph_caller_cursor, __scb_graph_caller_cursor + 2
+            ),
+            hex"00"
+          ));
+          __scb_graph_caller_cursor = __scb_graph_caller_cursor + 2;
+          require(__scb_graph_caller_cursor + __scb_graph_caller_length
+            <= __internal__graphCallers.length);
+          bytes __scb_graph_caller = __internal__graphCallers.slice(
+            __scb_graph_caller_cursor,
+            __scb_graph_caller_cursor + __scb_graph_caller_length
+          );
+          __scb_graph_caller_cursor = __scb_graph_caller_cursor + __scb_graph_caller_length;
+  `;
   const parseOneRow = (rowExpression: string, resultIndex?: number, rowIndex?: number): string => `
+          ${parseGraphCaller}
           require(cursor + 12 <= batchBlob.length);
           bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
           cursor = cursor + 4;
@@ -590,7 +621,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           bytes2(batchBlob.length),
           batchBlob,
           bytes2(__internal__graphEmissions.length),
-          __internal__graphEmissions
+          __internal__graphEmissions,
+          bytes2(__internal__graphCallers.length),
+          __internal__graphCallers
         );
         require(__internal__graphParticipantOffset >= 0
           && __internal__graphParticipantOffset + __graph_owner_frame.length <= __internal__graphTranscript.length);
@@ -626,14 +659,19 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     ? `rowCount == ${routeMaximumRows}`
     : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
         bigint cursor = 7;
+        ${graphControllerLbc === undefined ? '' : 'bigint __scb_graph_caller_cursor = 0;'}
         ${resultDeclarations}
         ${parser}
         require(cursor == batchBlob.length);
+        ${graphControllerLbc === undefined
+    ? ''
+    : 'require(__scb_graph_caller_cursor == __internal__graphCallers.length);'}
         // Keep the emission witness live through compiler-owned call verification above. The generated verifier
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
         ${graphControllerLbc === undefined
     ? ''
-    : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
+    : `require(__internal__graphEmissions == __internal__graphEmissions);
+        require(__internal__graphCallers == __internal__graphCallers);`}
         ${returnStatement}
       }
     }`;

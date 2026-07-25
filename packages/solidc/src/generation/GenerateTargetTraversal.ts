@@ -2345,6 +2345,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(`__internal__graphResult${i}`, true);
       }
     }
+    if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
+      this.pushToStack('__internal__handlerMsgSender', true);
+    }
     if (activeJournalSlots.length > 0) {
       if (this.isDefineSubTraversal) {
         // Hidden invocation context follows declared parameters and precedes
@@ -5675,9 +5678,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_sig_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (targetJournalSlots.length > 0 && targetFunc.usesMsgSender) {
+    if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
+      && targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (this.stack.includes('__internal__handlerMsgSender')) {
+      if (targetFunc.graphEmissionHandler) {
+        if (!this.stack.includes('__scb_graph_caller')) {
+          throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_caller'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else if (this.stack.includes('__internal__handlerMsgSender')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else {
@@ -5688,12 +5698,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
       const slots = targetFunc.externalCalls ?? [];
-      if (slots.length === 0) throw new Error(`Graph handler '${targetFunc.name}' lacks call metadata`);
       if (slots.length === 1) {
         hiddenContextCount += this.verifyGraphEmissionRow(
           slots[0], targetFunc, node.parameters, locationData,
         );
-      } else {
+      } else if (slots.length > 1) {
         this.emit(new Uint8Array(), locationData);
         this.pushToStack('(__graph_emission_vector)');
         for (const slot of slots) {

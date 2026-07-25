@@ -16,7 +16,7 @@ spec), [subroutine-extraction.md](./subroutine-extraction.md) (internal-call byt
 | External call | `IFoo(addr).m(x)` | co-spend + introspection covenant | No (co-spend) | section 3 |
 | Static external | `IFoo(addr).m.staticcall()`, `.outState.f` | read-only co-spend covenant | No | section 4 |
 | Low-level | `addr.call{value:}(data)` | calldata/value covenant | No | section 5 |
-| Delegatecall | `delegate` modifier; `addr.delegatecall(data)` | proxy/implementation covenant | No | section 6 |
+| Delegatecall | ordinary implementation function; `addr.delegatecall(data)` | inferred proxy/implementation covenant | No | section 6 |
 
 ## 1. The one fact everything follows from: BCH has no message call
 
@@ -286,7 +286,7 @@ after-guard; unauthenticated result reaching a load-bearing position.
 | External call | `CALL` (runtime delivers) | co-spend + introspection covenant (no delivery) |
 | Return data | returndata buffer | return-event NFT commitment, decoded by caller |
 | `staticcall` | no-state-change call | `STATICCALL` mode (all commitments preserved) + `outState` |
-| `delegatecall` | callee code on caller storage | `delegate` modifier: delegate logic on proxy state |
+| `delegatecall` | callee code on caller storage | inferred delegate artifact: implementation logic on proxy state |
 | Send value | `call{value:}` | `{value:}` -> satoshi-transfer output |
 | Reentrancy | real hazard; needs guards | structurally absent (flat atomic tx) |
 | MultiCall (reads) | batch `eth_call` workaround | off-chain UTXO batch fetch (no contract) |

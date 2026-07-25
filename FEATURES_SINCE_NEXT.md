@@ -790,14 +790,15 @@ function createChild(bytes32 tokenId) deploy {
 - **create2**: Implicit in BCH — addresses always deterministic from `hash(bytecode + args + salt)`
 - **create3**: Factory stores `mapping(bytes32 salt => bytes32 categoryId)` — permanent identity
 
-#### `delegate` — Delegatecall Implementation
+#### Inferred Delegatecall Implementation
 ```cash
 contract Implementation() is State {
-    function increment() delegate {
+    function increment() public {
         this.counter = this.counter + 1;
     }
 }
 ```
+- No source-level `delegate` modifier: eligible ordinary functions are compiled into `artifact.delegateArtifact`
 - Operates on proxy's state, not implementation's
 - Synthetic `_proxyMasterIndex` parameter injected
 - Altstack-based: master index saved to altstack at function entry, retrieved via `FROMALTSTACK DUP TOALTSTACK`
@@ -813,10 +814,8 @@ function join() merge(4) { }    // merge 4 copies back
 - SDK: `ThreadManager.split()` / `merge()` with `ThreadHandle` per-thread access
 
 #### Modifier Validation Rules
-- `delegate` + `unsafe` → error
-- `delegate` + `upgrade`/`selfdestruct`/`deploy` → error
-- `delegate` + `internal`/`private` → error
-- `delegate` on non-stateful contract → error
+- Functions using `unsafe`, `upgrade`, `selfdestruct`, `deploy`, `split`, `merge`, `view`, `pure`,
+  `internal`, or `private` are ineligible for the inferred delegate build
 - Stateful contracts require `p2sh32` address type
 
 ---

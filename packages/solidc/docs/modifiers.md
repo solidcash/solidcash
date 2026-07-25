@@ -211,7 +211,7 @@ Full treatment: [selfdestruct.md](./selfdestruct.md).
 
 | EVM | SolidCash |
 | --- | --- |
-| `delegatecall` runs another contract's code in the caller's storage context. | The implementation side of that pattern. A delegate function is co-spent by a proxy and operates on the proxy's state: it receives the proxy's master input index (passed via the altstack), verifies the proxy's minting capability and self-preservation, and skips its own full state covenant (the proxy owns that). Cannot itself contain a `delegatecall`. |
+| `delegatecall` runs another contract's code in the caller's storage context. | The implementation side of that pattern. An eligible ordinary function is emitted in a delegate-mode artifact, co-spent by a proxy, and operates on the proxy's state: it receives the proxy's master input index (passed via the altstack), verifies the proxy's minting capability and self-preservation, and skips its own full state covenant (the proxy owns that). It cannot itself contain a `delegatecall`. |
 
 Solidity has no implementation-side modifier, and neither does SolidCash source: the compiler
 infers which functions can act as a proxy implementation and emits that build as `artifact.delegateArtifact`,

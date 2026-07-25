@@ -196,20 +196,24 @@ function consolidate(int n, sig s) merge(n) {
 }
 ```
 
-### `delegate`
+### Inferred delegate mode
 
-Executes the function in the calling proxy's state context (delegatecall pattern):
+Proxy implementations use ordinary Solidity syntax. For eligible state-mutating entry points, the compiler emits
+a second artifact that executes in the calling proxy's state context:
 
 ```solidity
 contract Implementation() {
     int counter;
 
-    function increment() delegate {
+    function increment() public {
         this.counter = this.counter + 1;
         // `this` refers to the proxy's state, not the implementation's
     }
 }
 ```
+
+Access the inferred build through `artifact.delegateArtifact`, `contract.asDelegate()`, or the SDK proxy helpers.
+`delegate` is not a source-level modifier.
 
 ### `unsafe`
 
@@ -245,23 +249,19 @@ Not all modifiers can be combined. The compiler enforces these rules:
 | `deploy` + `unsafe` | No |
 | `selfdestruct` + `unsafe` | No |
 | `selfdestruct` + `deploy` | No |
-| `delegate` + `unsafe` | No |
-| `delegate` + `upgrade` | No |
-| `delegate` + `selfdestruct` | No |
-| `delegate` + `deploy` | No |
 | `split` + `merge` | No |
 | `split` + `unsafe` | No |
 | `split` + `upgrade` | No |
 | `split` + `selfdestruct` | No |
 | `split` + `deploy` | No |
-| `split` + `delegate` | No |
 | `merge` + `unsafe` | No |
 | `merge` + `upgrade` | No |
 | `merge` + `selfdestruct` | No |
 | `merge` + `deploy` | No |
-| `merge` + `delegate` | No |
 
-All lifecycle modifiers (`deploy`, `upgrade`, `selfdestruct`, `split`, `merge`, `delegate`) require the contract to have state variables.
+All lifecycle modifiers (`deploy`, `upgrade`, `selfdestruct`, `split`, `merge`) require the contract to have state
+variables. Inferred delegate mode additionally requires an externally callable function that mutates proxy-owned
+state and uses none of the incompatible lifecycle or mutability modes.
 
 ## Fallback & Receive
 

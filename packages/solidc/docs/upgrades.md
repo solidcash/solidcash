@@ -29,9 +29,9 @@ constructor/genesis seed is the native equivalent, and no `initialize()` is requ
 - **Genesis seed (default when there is no `initialize`)** - the init args populate the proxy's state at genesis in
   one transaction. Pass a named record `{ counter: 5n }` or an OZ-style positional list `[5n]` (mapped to the
   implementation's state variables in declaration order).
-- **`initialize()` flow (auto-detected, drop-in for ports)** - if the implementation has an `initialize` delegate
-  function, `deployProxy` deploys the proxy at defaults then forwards `initialize(...initArgs)` through it (a second
-  transaction, the Ethereum flow). Pass the init args as a positional list, exactly like OZ
+- **`initialize()` flow (auto-detected, drop-in for ports)** - if the implementation's inferred delegate artifact
+  contains `initialize`, `deployProxy` deploys the proxy at defaults then forwards `initialize(...initArgs)` through
+  it (a second transaction, the Ethereum flow). Pass the init args as a positional list, exactly like OZ
   `upgrades.deployProxy(Factory, [a, b, ...])`.
 - Set `options.initializer: false` to force the genesis seed even when an `initialize` exists, or
   `options.initializer: 'customName'` to run a differently-named initializer.
@@ -67,9 +67,9 @@ contract SolidCashProxy(address implementation) {   // implementation baked at g
 
 Because `implementation` is baked (not a call param), the co-spend pin binds the proxy to exactly that
 implementation - a caller cannot substitute a malicious delegate. Forwarding is permissionless; the
-implementation's `delegate` functions define who may do what (like a public mutating method on Ethereum). This is
-the closest safe analog to EIP-1967 minus in-place upgrade (upgrading means deploying a new proxy and migrating
-state; a standardized upgradeable shape can come later).
+implementation's inferred proxy-context functions define who may do what (like a public mutating method on
+Ethereum). This is the closest safe analog to EIP-1967 minus in-place upgrade (upgrading means deploying a new
+proxy and migrating state; a standardized upgradeable shape can come later).
 
 ### Custom proxy
 
@@ -96,7 +96,8 @@ upgrades.deployProxy(implementationFactory, initialState?, options)
 - `implementationFactory` - a `ContractFactory` for the implementation (`getContractFactory(implArtifact, runner)`).
 - `initialState` - the proxy's initial state: a named record `{ counter: 5n }`, or an OZ-style positional list
   `[5n]`. With an initializer these are its positional args; otherwise they map to the state variables in order.
-- `options.initializer` - `string | false`. Default auto-detects an `initialize` delegate function (Ethereum flow);
+- `options.initializer` - `string | false`. Default auto-detects `initialize` in the inferred delegate artifact
+  (Ethereum flow);
   `false` seeds state at genesis (constructor style); a string names a different initializer. See above.
 - `options.proxy` (optional) - a custom proxy artifact. Omit to use the built-in `SolidCashProxy`.
 - `options.runner` - Signer/NetworkProvider to deploy + sign with (defaults to the factory's runner).
@@ -118,9 +119,9 @@ The returned `ProxyContract` handle:
 
 - The delegate must be **selector-dispatched** (`>= 2` functions) so its unlocking script leads with the
   selector the proxy pins. A single-function implementation has no selector and is rejected on the pinned path.
-- The implementation's mutating logic is in `delegate` functions; they run against the proxy's state via the
-  injected `_proxyMasterIndex`. The delegatecall function on the proxy must not write its own state (the delegate
-  owns all writes).
+- The implementation's eligible ordinary mutating functions are emitted in its inferred delegate artifact; that
+  build runs against the proxy's state via the injected `_proxyMasterIndex`. The delegatecall function on the proxy
+  must not write its own state (the implementation owns all writes).
 
 ## Regenerating the default proxy artifact
 

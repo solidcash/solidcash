@@ -175,7 +175,7 @@ The delegatecall pattern separates state (proxy) from logic (implementation):
 contract Implementation() {
     int counter;
 
-    function increment() delegate {
+    function increment() public {
         this.counter = this.counter + 1;
         // `this` refers to the PROXY's state, not implementation's
     }
@@ -191,10 +191,14 @@ contract Proxy(bytes20 implAddr) {
 }
 ```
 
-The `delegate` modifier causes `this.` state access to target the calling proxy's NFT commitments instead of the implementation's.
+The compiler infers that `increment` can run in proxy context and emits that build as
+`artifact.delegateArtifact`. SDK proxy helpers deploy and call this variant; there is no source-level `delegate`
+modifier.
 
 :::caution
-The `delegate` modifier cannot be combined with `unsafe`, `upgrade`, `selfdestruct`, `deploy`, `split`, or `merge`.
+Functions using `unsafe`, `upgrade`, `selfdestruct`, `deploy`, `split`, `merge`, `view`, `pure`, `internal`, or
+`private` are not eligible for the inferred delegate build. Transfers and token-container operations are also
+currently ineligible.
 :::
 
 ## Fallback & Receive Functions

@@ -26,7 +26,7 @@ contract-class concern.
 ## `library` lowers to a stateless contract
 
 A Solidity `library` is a stateless contract whose code runs in the caller's context via DELEGATECALL, and
-SolidCash already has that primitive (the `delegate` modifier + the `_proxyMasterIndex` altstack trick). So
+SolidCash already has that primitive (inferred delegate mode + the `_proxyMasterIndex` altstack trick). So
 `LibraryNotCompilableError` is liftable: a `library` lowers to a **stateless contract that emits a normal
 artifact** whose public functions are `delegate` entry points. This is the deployed counterpart to the
 inlined `using for` library (compile-time inlined, no artifact) - matching Solidity's own split: internal

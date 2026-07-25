@@ -8,24 +8,24 @@ contract MarketplaceV1() {
   int version_;
   address marketplaceDataAddress;
 
-  function initialize(address unicrow, address dispute, address arb, address treasury, int fee) delegate {
+  function initialize(address unicrow, address dispute, address arb, address treasury, int fee) public {
     require(fee >= 0);
     this.version_ = 1;
   }
 
-  function setMarketplaceDataAddress(address dataAddr) delegate {
+  function setMarketplaceDataAddress(address dataAddr) public {
     this.marketplaceDataAddress = dataAddr;
   }
 
-  function pause() delegate {
+  function pause() public {
     this.paused = true;
   }
 
-  function unpause() delegate {
+  function unpause() public {
     this.paused = false;
   }
 
-  function setVersion(int v) delegate {
+  function setVersion(int v) public {
     this.version_ = v;
   }
 }

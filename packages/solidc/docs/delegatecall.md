@@ -147,6 +147,8 @@ subject of [delegatecall-security.md](./delegatecall-security.md).
 
 ## Related
 
-- `delegate` modifier, `_proxyMasterIndex` injection — `packages/solidc/src/generation/GenerateTargetTraversal.ts`
+- Inferred delegate mode and `_proxyMasterIndex` injection —
+  `packages/solidc/src/semantic/AutoMarkDelegateFunctions.ts` and
+  `packages/solidc/src/generation/GenerateTargetTraversal.ts`
 - Library contracts reuse the same delegate machinery under `L.f()` sugar — see `library-contracts.md`.
 - Security model and hardening rules — `delegatecall-security.md`.

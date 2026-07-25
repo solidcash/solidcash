@@ -44,7 +44,7 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
 | P10 | Event exhaustiveness wrong transport | CLOSED | Events are NFT slots inside the emitter's balanced block (block-relative), branded with the emitter's committed state category, structurally exhaustive via the closure - no global OP_RETURN scan, spendable records (`Layer3BalancedEvents`). |
 | P11 | TypedTransition length disagreement | CLOSED | SDK and covenant both require `commitment.length == total`. `Layer3TypedTransition`. |
 | P12 | setRoot not set-once | CLOSED | `setRoot` requires an empty input commitment; one-shot controller replay policy available. `Layer3Replay`. |
-| P13 | Independent review + policy harness | PARTIAL | Committed standard-policy harness `test/regtest/standard-policy-harness.sh`; the external covenant review itself is external by definition. |
+| P13 | Independent review + policy harness | COMMITTABLE PARTS DONE | Committed CI gate `Layer3BalancedStandardPolicy` (static standard-relay limits, runs without the stack) + reproducible regtest harness `standard-policy-harness.sh` (mempool acceptance under `-acceptnonstdtxn=0`, now covering the balanced shapes). The external human covenant review is external by definition. |
 
 ## The balanced block layout (P8/P9/P10)
 
@@ -68,15 +68,21 @@ Tests (real BCH-2026 VM): `Layer3Balanced` (shifted bases + closure), `Layer3Bal
 slots), `Layer3BalancedCall` (native call under balanced bases), `Layer3BalancedTransitive` (A->B->C native
 chain).
 
-## Honest scope of what remains
+## Status of the balanced program
 
-- P8: the generator composes with a real native call (VM-proven), directly refuting the audit's "no-call
-  fixture" objection. The remaining depth is SDK auto-derivation of the composed co-spends from compiler
-  external-call metadata (today the callee-base is a supplied witness), and transitive A->B->C native chains.
-- P9: the core balanced invariant is implemented and VM-proven (criteria 1,2,4,7,9,10). The robustness
-  criteria not yet exercised: transitive composition (3), conditional-branch same-size blocks (5), fee-change
-  slot-invariance (6), and independently-compiled composition from artifact layouts alone (8).
-- P13: the standard-policy harness is committed; the external covenant review is external by definition.
+- P8: the generator composes with real native calls - single (`Layer3BalancedCall`) and transitive A->B->C
+  (`Layer3BalancedTransitive`) - and the SDK auto-derives the co-spend index from the layout
+  (`Layer3BalancedAutoDerive`: `balancedCaller` + `buildBalancedTranscriptTx`, no hand-written indices).
+- P9: all 10 acceptance criteria are VM-proven - 1,2,3,4,7,9,10 in the balanced/call/transitive tests, and
+  5 (conditional same-size), 6 (fee-invariance), 8 (independently-compiled composition) in
+  `Layer3BalancedCriteria`.
+- P13: the committed CI policy gate (`Layer3BalancedStandardPolicy`) checks the balanced shapes against
+  standard-relay limits without the stack; the regtest harness proves mempool acceptance under
+  `-acceptnonstdtxn=0`. The external human covenant review is the one step no code can perform.
+
+The single item no engineering can close from inside the repo is the P13 *external human review* - by
+definition performed by an independent third party. Everything committable for it (reproducible policy gate +
+harness + review package) is in the tree.
 
 Known bounds of the journal model (documented, not hidden):
 
@@ -86,5 +92,4 @@ Known bounds of the journal model (documented, not hidden):
 - Resource identity binds to a committed category; production soundness requires that category be genesised
   unique (same requirement as any stateful NFT).
 
-Keep the feature experimental and default-off until the remaining P8/P9 robustness items and the external
-review (P13) are done.
+Keep the feature experimental and default-off until the external review (P13) is completed by a third party.

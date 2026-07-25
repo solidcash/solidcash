@@ -42,10 +42,16 @@ docker compose -p "$PROJECT" -f "$COMPOSE" up -d --force-recreate bchn >/dev/nul
 wait_healthy
 echo "bchn recreated with $FLAG; chain at block $(cli getblockchaininfo | grep -o '"blocks": [0-9]*' | grep -o '[0-9]*')"
 
-# 2. Run the N-party lifecycle under standard relay policy.
-echo "-- running N-party lifecycle against the standard-policy node --"
+# 2. Run the lifecycle + balanced-layout shapes under standard relay policy. Each vitest sendRawTransaction
+#    submits to the standard-policy node's mempool, so a passing run IS a mempool-acceptance proof. The
+#    committed CI gate Layer3BalancedStandardPolicy.test.ts additionally checks the same shapes statically
+#    (script/commitment/dust limits) without needing this node reconfiguration.
+echo "-- running the lifecycle + balanced shapes against the standard-policy node --"
 TESTS_USE_REGTEST=true yarn vitest run --no-file-parallelism \
   packages/solidcash/test/e2e/Layer3ControllerGenesis.test.ts \
-  packages/solidcash/test/e2e/Layer3Heterogeneous.test.ts
+  packages/solidcash/test/e2e/Layer3Heterogeneous.test.ts \
+  packages/solidcash/test/e2e/Layer3Balanced.test.ts \
+  packages/solidcash/test/e2e/Layer3BalancedEvents.test.ts \
+  packages/solidcash/test/e2e/Layer3BalancedCall.test.ts
 
-echo "== PASS: the N-party execution-transcript lifecycle is accepted under mainnet standard policy =="
+echo "== PASS: the execution-transcript lifecycle + balanced layouts are accepted under mainnet standard policy =="

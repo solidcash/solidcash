@@ -9,8 +9,9 @@ import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
 import {
-  EXEC_DOMAIN, EXEC_VERSION, type ExecutionEvent, type ExecutionInvocation, type ExecutionResource,
-  type InvocationSpec, type TranscriptSpec, type TypedTransition, opReturnPrefix, transcriptLayout,
+  EXEC_DOMAIN, EXEC_VERSION, type BalancedLayout, type ExecutionEvent, type ExecutionInvocation,
+  type ExecutionResource, type InvocationSpec, type TranscriptSpec, type TypedTransition,
+  opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
@@ -271,4 +272,64 @@ export function buildTranscriptTransaction(opts: BuildTranscriptOptions): Derive
   });
   if (opts.change) builder.addOutput({ to: opts.change.address, amount: opts.change.satoshis });
   return { builder, ordered, blob };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Balanced transcript transaction assembly (audit P8). The SDK derives every native-call co-spend index from
+// the balanced layout - the developer never hand-writes a physical slot number. A `balancedCaller` slot fills
+// its `__internal__externalCallInputBase` witness from `layout.calleeBase(k)`; `buildBalancedTranscriptTx`
+// enforces the balanced structure (exactly `totalSlots` inputs, each paired 1:1 with its output).
+
+/** An output description for a balanced slot (locking target + value, optional token). */
+export interface BalancedOutput { to: string; amount: bigint; token?: unknown }
+
+/**
+ * One physical slot of a balanced transcript: its co-spent input (utxo + unlocker) and its paired output. The
+ * unlocker may be a ready value or a factory receiving the layout - native callers use the factory to derive
+ * their callee-base witness (`layout.calleeBase(k)`) instead of a hand-written index.
+ */
+export interface BalancedSlot {
+  utxo: Utxo;
+  unlock: unknown | ((layout: BalancedLayout) => unknown);
+  output: BalancedOutput;
+}
+
+/**
+ * Build a `balancedCaller` slot: its unlocker forwards `args` and auto-fills the native-call callee-base
+ * witness from the layout (`layout.calleeBase(calleeSlot)`), so the co-spend index is DERIVED, not supplied.
+ * `fnName` is the caller's function; `output` is the caller's self-preserving executor output (a regular
+ * external call recreates the caller at its own slot).
+ */
+export function balancedCaller(
+  contract: Contract, utxo: Utxo, fnName: string, args: unknown[], calleeSlot: number, output: BalancedOutput,
+): BalancedSlot {
+  return {
+    utxo,
+    unlock: (layout: BalancedLayout): unknown => (contract.unlock as Record<string, (...a: unknown[]) => unknown>)[fnName](
+      ...args, BigInt(layout.calleeBase(calleeSlot)),
+    ),
+    output,
+  };
+}
+
+/**
+ * Assemble a balanced transcript transaction from its ordered slots (audit P8/P9). Enforces the balanced
+ * structure - exactly `layout.totalSlots` slots, each contributing one input and one paired output at the
+ * same physical index - and resolves each slot's unlocker (evaluating layout-factory unlockers so native
+ * callers get their derived witness). The developer supplies slots in physical order; the SDK owns the
+ * index math.
+ */
+export function buildBalancedTranscriptTx(
+  provider: unknown, layout: BalancedLayout, slots: BalancedSlot[],
+): TransactionBuilder {
+  if (slots.length !== layout.totalSlots) {
+    throw new Error(`layer3: balanced tx needs exactly ${layout.totalSlots} slots, got ${slots.length}`);
+  }
+  const tx = new TransactionBuilder({ provider: provider as never });
+  for (const s of slots) {
+    const unlock = typeof s.unlock === 'function' ? (s.unlock as (l: BalancedLayout) => unknown)(layout) : s.unlock;
+    tx.addInput(s.utxo, unlock as never);
+  }
+  for (const s of slots) tx.addOutput(s.output as never);
+  return tx;
 }

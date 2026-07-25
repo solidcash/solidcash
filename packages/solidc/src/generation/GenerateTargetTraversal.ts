@@ -2348,6 +2348,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
       this.pushToStack('__internal__handlerMsgSender', true);
     }
+    if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgSig) {
+      this.pushToStack('__internal__handlerMsgSig', true);
+    }
+    if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgData) {
+      this.pushToStack('__internal__handlerMsgData', true);
+    }
     if (activeJournalSlots.length > 0) {
       if (this.isDefineSubTraversal) {
         // Hidden invocation context follows declared parameters and precedes
@@ -5656,9 +5662,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     let hiddenContextCount = 0;
-    if (targetJournalSlots.length > 0 && this.contractUsesMsgData) {
+    if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
+      && this.contractUsesMsgData) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (this.stack.includes('__internal__handlerMsgData')) {
+      if (targetFunc.graphEmissionHandler) {
+        if (!this.stack.includes('__scb_graph_msg_data')) {
+          throw new Error(`Missing logical graph calldata while invoking '${targetFunc.name}'`);
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_msg_data'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else if (this.stack.includes('__internal__handlerMsgData')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else {
@@ -5667,9 +5680,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_data_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (targetJournalSlots.length > 0 && this.contractUsesMsgSig) {
+    if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
+      && this.contractUsesMsgSig) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (this.stack.includes('__internal__handlerMsgSig')) {
+      if (targetFunc.graphEmissionHandler) {
+        if (!this.stack.includes('rowSelector')) {
+          throw new Error(`Missing logical graph selector while invoking '${targetFunc.name}'`);
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex('rowSelector'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else if (this.stack.includes('__internal__handlerMsgSig')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSig'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else {

@@ -228,6 +228,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
     let routeUsesMsgSender = false;
+    let routeUsesMsgData = false;
+    let routeUsesMsgSig = false;
     let routeUsesOtherIntrospection = false;
     let signatureCheck = false;
     let statefulExternalCall = false;
@@ -242,6 +244,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           ].includes(node.operator)) {
             routeSensitive = true;
             if (node.operator === NullaryOperator.MSG_SENDER) routeUsesMsgSender = true;
+            else if (node.operator === NullaryOperator.MSG_DATA) routeUsesMsgData = true;
+            else if (node.operator === NullaryOperator.MSG_SIG) routeUsesMsgSig = true;
             else routeUsesOtherIntrospection = true;
           }
           if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
@@ -376,7 +380,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
-      && !((graphControllerLbc !== undefined && routeUsesMsgSender && !routeUsesOtherIntrospection)
+      && !((graphControllerLbc !== undefined
+        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)
+        && !routeUsesOtherIntrospection)
         || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
@@ -396,7 +402,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
     if (!reason && (graphTailCallEligible
-      || (graphControllerLbc !== undefined && routeUsesMsgSender))) graphTailHandlers.add(fn);
+      || (graphControllerLbc !== undefined
+        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)))) graphTailHandlers.add(fn);
     if (!reason && graphTailCallEligible && !graphTailStatement && !graphResultStatement) {
       graphRuntimeHandlers.add(fn);
     }
@@ -583,6 +590,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           require(argsLength >= 0 && cursor + argsLength <= batchBlob.length);
           bytes rowArgs = batchBlob.slice(cursor, cursor + argsLength);
           cursor = cursor + argsLength;
+          bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
           ${buildDecodeAndCall(resultIndex, rowIndex)}
           else { revert("unknown batch selector"); }
   `;

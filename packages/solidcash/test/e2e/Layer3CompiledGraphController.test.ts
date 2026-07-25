@@ -22,11 +22,13 @@ const APP = (name: string) => `pragma solidcash >=0.8.0;
 contract ${name}(int brand) {
   function ping(int n) public { require(n >= 0); }
   function authenticated(address expected) public { require(msg.sender == expected); }
+  function inspectData(int n) public { require(msg.data == abi.encodeWithSelector(msg.sig, n)); }
 }`;
 const CALLING_APP = `pragma solidcash >=0.8.0;
 interface ICompiledGraphTarget {
   function ping(int n);
   function authenticated(address expected);
+  function inspectData(int n);
 }
 contract CompiledGraphA(int brand, address target) {
   function start(int first, int second) public {
@@ -50,6 +52,10 @@ contract CompiledGraphA(int brand, address target) {
   }
   function authenticate(address next, address expected) public {
     ICompiledGraphTarget(next).authenticated(expected);
+    require(true);
+  }
+  function forwardCalldata(address next, int n) public {
+    ICompiledGraphTarget(next).inspectData(n);
     require(true);
   }
 }`;
@@ -147,6 +153,7 @@ async function build(
   conditional?: { take: boolean; includeChild: boolean },
   loopCount?: number,
   senderAuth?: { forgeExpected: boolean },
+  dataAuth = false,
 ) {
   const provider = createTestProvider();
   const {
@@ -166,7 +173,10 @@ async function build(
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
-  const graphInvocations = senderAuth ? [
+  const graphInvocations = dataAuth ? [
+    { parent: null, callee: 0, function: 'forwardCalldata', args: [b.lockingBytecode, 7n] },
+    { parent: 0, callee: 1, function: 'inspectData', args: [7n] },
+  ] : senderAuth ? [
     {
       parent: null, callee: 0, function: 'authenticate',
       args: [b.lockingBytecode, senderAuth.forgeExpected ? b.lockingBytecode : a.lockingBytecode],
@@ -585,6 +595,13 @@ describe('Layer-3 compiled graph controller', () => {
       { forgeExpected: true },
     );
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('constructs graph msg.data from the authenticated selector and row arguments', async () => {
+    const { provider, transaction } = await build(
+      false, false, false, false, false, false, 1n, undefined, undefined, undefined, true,
+    );
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 
   it('authenticates compiler-produced return blobs in balanced owner slots', async () => {

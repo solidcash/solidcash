@@ -61,6 +61,8 @@ describe('Layer-3 compiler-derived native call tables', () => {
     });
     expect(source).toContain('ISink(first).ping(value);');
     expect(source).toContain('ISink(second).ping(9);');
+    const finalArtifact = compileString(source);
+    expect(finalArtifact.abi.find((fn) => fn.name === 'invoke')?.externalCalls).toHaveLength(2);
   });
 
   it('rejects manually authored rows at both public generation layers', () => {

@@ -475,3 +475,9 @@ Important coverage includes:
 See `mapping-omission-security.md` for the original vulnerability and `mapping-soundness-research.md` for the design
 alternatives that led to C2. See `c2-codegen-optimization.md` for measured bytecode/runtime overhead and the ranked
 optimization plan.
+
+For runtime-loop values above 60 bytes, the output layout ends in
+`[reverse-ordered value chunks][one terminal suffix]`. The terminal suffix is the external-library sidecar
+recreation when one is required, otherwise a zero-value OP_RETURN anchor. Fee change is inserted before this region.
+This is a compiler/SDK invariant: covenant indexing uses `OP_TXOUTPUTCOUNT - 1 - priorChunks - valueChunks`, so SDK
+transaction builders must not append another output after the suffix.

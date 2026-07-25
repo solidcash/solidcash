@@ -11425,13 +11425,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // TXOUTPUTCOUNT-nNew). Adjust down 1 when the reserved returnEvent slot is not materialized (a plain send),
     // then +isInsert (the INSERT's NEW node precedes the chunks). Matches emitDynamicWriteVerification's family.
     if (loopChunkCounter) {
-      // Loop chunks are the final outputs, grouped in REVERSE source-iteration order. At iteration i, `counter`
+      // Loop chunks precede exactly one terminal suffix output and are grouped in REVERSE source-iteration order.
+      // StatefulTransactionBuilder enforces that suffix as either the external-library sidecar recreation or a
+      // zero-value OP_RETURN anchor, with fee change inserted before the chunk region. At iteration i, `counter`
       // is the number of chunks belonging to iterations [0,i), so this iteration's group begins at
-      // outputCount-counter-nNew. This is O(number of chunks), with no transaction-wide introspection scan.
+      // outputCount-1-counter-nNew. This is O(number of chunks), with no transaction-wide introspection scan.
       this.emit(Op.OP_DUP, loc); this.pushToStack('(vc_nnew_for_base)');
       this.emit(Op.OP_TXOUTPUTCOUNT, loc); this.pushToStack('(vc_txoutcount)');
-      this.emit(Op.OP_1, loc); this.pushToStack('(vc_reserved_change)');
-      this.emit(Op.OP_SUB, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_txoutcount_nochange)');
+      this.emit(Op.OP_1, loc); this.pushToStack('(vc_terminal_suffix)');
+      this.emit(Op.OP_SUB, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_txoutcount_nosuffix)');
       this.emit(encodeInt(BigInt(this.getStackIndex(loopChunkCounter))), loc); this.emit(Op.OP_PICK, loc);
       this.pushToStack('(vc_chunkctr_copy)');
       this.emit(Op.OP_SUB, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_suffixbase)');

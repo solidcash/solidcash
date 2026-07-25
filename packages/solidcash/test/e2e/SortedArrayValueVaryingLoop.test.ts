@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
+import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -99,7 +100,30 @@ describe('C2 per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
     await fund(c.address);
     const big = new Uint8Array(70).fill(0x5a);
     const bigger = new Uint8Array(145).fill(0xa5);
-    expect((await c.fill([2n, 8n], [big, bigger], alicePub, sig).send()).txid).toBeDefined();
+    // Before broadcasting the honest transaction, append a second terminal output to the same unspent transaction.
+    // It is zero-valued, so rejection demonstrates the reverse-suffix covenant rather than a value imbalance.
+    let displacedSuffixRejected = false;
+    let honestHadAnchor = false;
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      const honest = decodeTransactionUnsafe(hexToBin(hex));
+      honestHadAnchor = binToHex(honest.outputs.at(-1)!.lockingBytecode) === '6a';
+      const displaced = decodeTransactionUnsafe(hexToBin(hex));
+      displaced.outputs.push({ lockingBytecode: Uint8Array.from([0x6a]), valueSatoshis: 0n });
+      try {
+        await originalSend(binToHex(encodeTransaction(displaced)));
+      } catch {
+        displacedSuffixRejected = true;
+      }
+      return originalSend(hex);
+    };
+    try {
+      expect((await c.fill([2n, 8n], [big, bigger], alicePub, sig).send()).txid).toBeDefined();
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+    expect(honestHadAnchor).toBe(true);
+    expect(displacedSuffixRejected).toBe(true);
     await fund(c.address);
     expect((await c.chk(2n, big).send()).txid).toBeDefined();
     await fund(c.address);

@@ -1,207 +1,111 @@
-# Layer-3 implementation continuation handoff
+# Layer-3 caller-authorized ERC-20: completion record
 
-## Repository state
+The milestone this document handed off is closed. It is kept as the record of
+what the blocker actually was, since the original diagnosis was only half right.
 
-- Worktree: `/Code/cashscript/.worktrees/layer3-binding-spike`
-- Branch: `codex/layer3-binding-spike`
-- Last clean commit: `33c25344 feat(layer3): derive allowance keys from logical callers`
-- The worktree is intentionally dirty. Do not commit it without completing the checks below.
-- Uncommitted files:
-  - `packages/solidc/src/compiler.ts`
-  - `packages/solidcash/test/e2e/Layer3CompiledGraphController.test.ts`
-  - this handoff
-
-The clean committed baseline already proves:
-
-1. compiler-authenticated graph callers and `msg.data`;
-2. conditional/loop call reachability and computed arguments;
-3. balanced compiler blocks, mapping resources, events, effects, returns, and an
-   authentic stateful `A -> B -> A` cycle;
-4. `msg.sender` mapping keys are graph-only route witnesses and are filled by
-   the SDK planner from the authenticated parent locking bytecode.
-
-The last item is commit `33c25344`. It proves caller-key derivation at compiler
-and planner level, but it does **not** yet prove a complete, deployable,
-`msg.sender`-authorized ERC-20 settlement on the BCH-2026 VM.
-
-## Current objective
-
-Close the ledger item:
+## Objective (met)
 
 > Two repeated `transferFrom` calls debit balances and
 > `allowance[from][msg.sender]` under one balanced graph, with the caller
 > derived from the authenticated parent participant, and fit every input under
 > BCH's 10,000-byte input-script limit.
 
-Do not weaken this to a caller-supplied `spender` parameter. That older corpus
-case is useful journal evidence but is not standard ERC-20 authorization.
+Executable evidence:
+`packages/solidcash/test/e2e/Layer3CompiledGraphController.test.ts`
 
-## New end-to-end fixture
+- `settles two msg.sender-authorized ERC-20 transfers in one balanced graph`
+- `rejects substituting the allowance spender witness for the authenticated caller`
 
-`Layer3CompiledGraphController.test.ts` contains an uncommitted helper named
-`buildCallerAuthorizedTransferGraph` and two tests:
+The honest token input measures **6,024 bytes** and the test asserts a
+1,000-byte headroom budget, so the limit cannot be crept past unnoticed. The
+`msg.sender` authorization was not weakened to a caller-supplied `spender`
+parameter at the source level.
 
-- honest two-row `transferFrom` settlement;
-- substituted allowance-spender witness rejection.
+## What the blocker actually was
 
-The fixture uses:
+The handoff framed this as a size problem with a size solution (share the
+direct implementation with the journal handler). Size was one of two blockers,
+and code sharing at the arithmetic level was not where the bytes were.
 
-- `balances[bytes20]`;
-- nested `allowance[bytes20][address]`;
-- actual `msg.sender`;
-- two calls from one router;
-- four C2 entry NFTs;
-- a balanced 10-slot transaction;
-- the real `createVirtualMachineBch2026` for the deployability check.
+### 1. Size: the bytes were in C2 covenant machinery, not handler logic
 
-The fixture initially had two bugs which are already corrected in the dirty
-file:
+Measured, not guessed:
 
-1. the router was compiled against the token's unbranded locking bytecode;
-2. recipient post-state values 10 and 20 were reversed.
+| region | bytes |
+| --- | --- |
+| direct `transferFrom` entry point | 3,174 |
+| SCB1 route (2 rows) | 6,383 |
+| SCB1 route at 1 row | 3,604 |
 
-The fixture still contains temporary instrumentation:
+The value-threaded journal handler is ~64 bytes of arithmetic. Sharing it saves
+~170 bytes. The remaining ~10,000 are per-entry C2 authentication and sorted-list
+proof blocks, emitted inline and repeated byte-for-byte across rows, entries and
+function bodies - roughly 40% of the artifact was byte-identical repeats.
 
-- `ALLOWANCE_SIZE`;
-- `ALLOWANCE_DEBUG`;
-- `createVirtualMachineBch2026` and `generateLibauthSourceOutputs` imports;
-- a `builder` return used only by the trace.
+The fix is a general one: `packages/utils/src/outline.ts` shares byte-identical
+spans across OP_DEFINE'd bodies, exploiting that BCH-2026's `OP_INVOKE` runs a
+function body without resetting the stack. Token redeem bytecode fell
+10,511 -> 4,506. The Release 5 corpus five-function mapping ERC-20, which used
+to carry a `contract-size-limit` error, now compiles to 4,494 bytes.
 
-Remove this instrumentation once the positive test passes. Do not accept the
-hostile test as evidence while the honest input is oversized: both can reject
-before covenant execution.
+Relocation is refused for any span that is not self-contained: unbalanced
+control flow (including an `OP_ELSE` whose `OP_IF` is outside - depth alone does
+not catch this, and it was a real bug caught by the graph e2e suite), anything
+containing `OP_DEFINE`, and anything reading bytecode-relative context
+(`OP_ACTIVEBYTECODE`, `OP_CODESEPARATOR`, the `OP_CHECKSIG` family). Spans also
+never swallow a require/`console.log` anchor, so failing-statement attribution
+survives; the SDK debugger additionally resolves those pointers only against
+steps running in the entry point's own frame.
 
-## Measured blocker
+### 2. Correctness: a `msg.sender` key made the settlement unsatisfiable
 
-On the clean compiler baseline, the honest token measured:
+Even at zero bytes the honest path could not have passed.
+`LowerCollectionJournalHelpers` only journals parameter-keyed entries, so a
+`msg.sender` mapping key made it bail and the batched clone read and flushed the
+allowance entry once **per row**: row 0 demanded a post-state of 40 on the entry
+output while row 1 demanded 20. One output cannot satisfy both.
 
-- artifact/redeem bytecode: approximately 10,844 bytes;
-- complete token unlocking bytecode: 12,311 bytes.
+Since every `msg.sender` key witness is already required to equal
+`__scb_graph_caller` at each row, all rows agree on one spender, so the clone now
+takes it as an ordinary parameter fed by that same route witness. The direct
+entry point still reads `msg.sender`; authorization is unchanged.
 
-The BCH-2026 VM rejected input 1 before execution:
+## Fixture bugs found on the way
 
-```text
-The provided unlocking bytecode exceeds the maximum bytecode length.
-Maximum bytecode length: 10000 bytes.
-Unlocking bytecode length: 12311 bytes.
-```
+Five, all in the test rather than the compiler, each of which had been masked by
+the input being rejected for size before execution:
 
-This is a real consensus/deployability failure, not a mock-provider issue or a
-state mismatch. The relaxed mock provider otherwise reports it misleadingly as
-an `OP_VERIFY` failure, which is why the explicit BCH-2026 trace is necessary.
+1. `Contract.lockingBytecode` is hex; `keyToSlotMulti` hashes raw bytes, so the
+   allowance slot never matched the covenant's.
+2. C2 batch groups follow the wrapper's journal order (allowance,
+   `balances[from]`, then `balances[to]` per row), not entry-creation order.
+3. Entry write-backs are positional (`activeInputIndex + 1 + group`), so the
+   settled outputs must be emitted in that same order.
+4. Slots are little-endian VM numbers compared with `OP_BIN2NUM`/`OP_LESSTHAN`;
+   sorting them with big-endian `Buffer.compare` builds a linked list the
+   sorted-list invariant rejects.
+5. Entries are authorized by co-spending the token master (input 1), not by
+   their own slot index.
 
-## Current compiler experiment
+## Density trade-off, recorded
 
-The dirty compiler has two related size reductions.
+BCH-2025 scales the operation-cost budget with the unlocking bytecode length, so
+sharing spans buys bytes at the cost of density: the same work is billed against
+a smaller budget. Participant-binding scaling at N=8 went 4,370 -> 3,081
+instructions but 20.8% -> 36.5% of budget. Bytes are the hard consensus limit,
+so this is the right direction - density is the thing to watch as scripts shrink,
+and `Layer3ScalingSpike` now pins it explicitly.
 
-### Shared parsing helpers
+## Test state
 
-The synthesized route now places repeated SCB1 row parsing and graph-caller
-frame parsing in internal pure functions. With two static call sites, normal
-`OP_DEFINE`/`OP_INVOKE` lowering shares these bodies while leaving the two
-resource handler invocations statically visible to C2 analysis.
+`yarn test` is green across all three packages: @solidcash/utils 295, solidc
+2,315, solidcash 3,480. That includes seven measurements that were already stale
+on this branch before this work (BatchCostRegression x2, MessageBusRoute's route
+input list, and four Layer3 spike pins), which are now re-pinned.
 
-This compiled successfully and reduced the measurement to:
+## Still open
 
-- artifact/redeem bytecode: approximately 10,569 bytes;
-- complete token unlocking bytecode: 12,029 bytes.
-
-This is sound in shape but insufficient on its own. It has not yet received the
-full HiddenBatch/graph regression run.
-
-Do not replace the two static parser/handler sites with a loop. That experiment
-was tried and reverted: `LowerCollectionJournalHelpers` requires two statically
-visible fixed-batch invocations, and the loop correctly failed closed with
-`SortedMappingCodegenPendingError`.
-
-### Duplicate resource/graph clone removal
-
-The latest, not-yet-tested one-line change skips creation of
-`__scb_graph_transferFrom` when the same source handler already produced
-`__scb_resource_transferFrom`.
-
-Before this change, resource-shaped graph-tail handlers were cloned twice even
-though dispatch uses the resource clone. This may remove a complete unused
-journal-handler body and is the most promising immediate saving.
-
-Run the measurement before making further changes. If it does not materially
-reduce the artifact, inspect whether unreachable internal functions are already
-pruned and then remove/revert the ineffective line.
-
-## Exact next commands
-
-```bash
-cd /Code/cashscript/.worktrees/layer3-binding-spike
-yarn workspace solidc build
-yarn workspace solidcash build
-yarn workspace solidcash test Layer3CompiledGraphController.test.ts \
-  -t 'ERC-20|allowance spender'
-```
-
-Read `ALLOWANCE_SIZE` and the BCH-2026 trace. Required outcome:
-
-- honest path resolves;
-- hostile caller-witness substitution rejects for a covenant reason;
-- every input is at most 10,000 bytes.
-
-If the size crosses the limit, remove all temporary logging and run:
-
-```bash
-yarn workspace solidc test HiddenBatch.test.ts
-yarn workspace solidcash test Layer3CompiledGraph.test.ts
-yarn workspace solidcash test Layer3CompiledGraphController.test.ts
-yarn workspace solidcash test RepeatedExternalBatchCorpus.test.ts
-yarn workspace solidc build
-yarn workspace solidcash build
-yarn lint
-git diff --check
-```
-
-Also add a focused compiler regression proving:
-
-- resource+graph-tail synthesis contains only one handler clone;
-- parser helper factoring does not change row count, exact exhaustion,
-  positional SCB1 binding, caller cursor exhaustion, or unknown-selector
-  rejection;
-- the measured honest token input remains below 10,000 bytes with a small
-  explicit headroom budget, rather than merely below it accidentally.
-
-Commit compiler factoring and the VM fixture separately with detailed messages.
-
-## If the duplicate-clone removal is insufficient
-
-Proceed in this order:
-
-1. Measure generated function-body sizes and confirm which bodies remain in the
-   final artifact. Do not optimize from source length.
-2. Share the direct public `transferFrom` implementation with the internal
-   journal handler. Today the source entry point and the synthesized resource
-   clone may retain equivalent state logic. The safe architecture is:
-   - one value-threaded internal journal handler;
-   - a direct public wrapper which loads/authenticates C2 entries, invokes it
-     once, and flushes once;
-   - the SCB1 wrapper which loads/authenticates the same entries, invokes it
-     twice, and flushes once.
-3. Preserve direct-route byte-identical behavior with a regression. The direct
-   and graph wrappers may differ, but their single-row state transition must be
-   identical.
-4. Only after code sharing is exhausted, consider reducing graph witness size.
-   Any projection/Merkle redesign changes covenant authentication and must not
-   be smuggled in as a byte optimization.
-
-Do not solve the size problem by:
-
-- changing `msg.sender` back to a user parameter;
-- dropping allowance or balance checks;
-- relying on the relaxed mock VM;
-- marking the positive test as skipped while claiming the ledger item proven;
-- permitting oversized artifacts through an SDK-only warning;
-- moving fixed-batch handler calls into dynamic control flow that C2 cannot
-  analyze.
-
-## Remaining broader work after this milestone
-
-The implementation ledger still has gaps beyond ERC-20:
+Unchanged from the original handoff - this milestone does not close them:
 
 1. remaining handler/result/callback and resource/effect/event combinations;
 2. general compiler auto-derivation of graph edges and relocatable balanced
@@ -213,3 +117,12 @@ The implementation ledger still has gaps beyond ERC-20:
 
 Do not state that the entire message-bus specification is implemented until the
 ledger is re-audited against executable evidence for each normative item.
+
+Two follow-ups this work exposed:
+
+- Outlining only sees OP_DEFINE'd bodies. A single-function contract is emitted
+  inline at the top level and gets no sharing (the ERC20_CALLEE direct compile
+  stayed at 3,047 bytes for exactly this reason).
+- The per-entry C2 machinery is still emitted inline before outlining dedupes
+  it. Emitting it as a parameterized helper in the first place would beat
+  post-hoc span sharing, which can only share what happens to be byte-identical.

@@ -306,6 +306,23 @@ export interface ExecutionParticipantSpec {
   appBody?: string[];
   /** Native calls to emit for the edges this participant is the caller of (index-aligned to `invocations`). */
   nativeCalls?: Record<number, string>;
+  /**
+   * A callee STATE JOURNAL (audit P2/P3/P6/P7): this participant EXECUTES every edge naming it as callee, in
+   * list order, against the 8-byte state field of its resource `resourceIndex`. Each edge's selector selects
+   * the operation from `ops` (selectorHex -> add|sub|mul), applied with the edge's args; the final state is
+   * flushed once to the resource output. So repeated calls to one physical callee, ordered dependency, and
+   * selector-to-operation dispatch are REAL state transitions, not hashed labels.
+   */
+  journal?: {
+    resourceIndex: number;
+    ops: Record<string, 'add' | 'sub' | 'mul'>;
+    /**
+     * A->B->A response edges: invocation indices of OUTGOING edges (this participant is the caller) whose args
+     * must equal this participant's flushed post-state. This makes the participant emit its AUTHENTIC computed
+     * state to a downstream consumer, so a caller that consumes the response applies a real result, not a label.
+     */
+    emits?: number[];
+  };
 }
 export function generateExecutionParticipant(spec: ExecutionParticipantSpec): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.contractName)) throw new Error('layer3: invalid contractName');
@@ -321,7 +338,10 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
   const edgeVars: string[] = [];
   spec.invocations.forEach((inv, j) => {
     if (inv.callee === spec.selfPos) {
-      edgeVars.push(`require(hex"${inv.selectorHex.toLowerCase()}" == hex"${sel}"); // P3: selector == method`);
+      // P3: without a journal, the single-method callee binds its edges to its own method selector. WITH a
+      // journal, the journal's op-map dispatches each edge's selector to an operation (real multi-op dispatch),
+      // so the selector is bound there instead.
+      if (!spec.journal) edgeVars.push(`require(hex"${inv.selectorHex.toLowerCase()}" == hex"${sel}"); // P3: selector == method`);
       edgeVars.push(`bytes edgeArgs${j} = hex"${(inv.argsHex ?? '').toLowerCase()}";`);
       edgeVars.push(`bytes edgeResult${j} = hex"${(inv.resultHex ?? '').toLowerCase()}";`);
     }
@@ -330,7 +350,36 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
   spec.invocations.forEach((inv, j) => {
     if (inv.caller === spec.selfPos && spec.nativeCalls?.[j]) calls.push(spec.nativeCalls[j]);
   });
-  const body = [...member, ...edgeVars, ...calls, ...(spec.appBody ?? [])];
+  // P2/P6/P7: the callee JOURNAL executes every incoming edge, in order, against its resource state.
+  const journalBody: string[] = [];
+  if (spec.journal) {
+    const k = spec.journal.resourceIndex;
+    if (!Number.isInteger(k) || k < 0 || k >= (spec.resources?.length ?? 0)) {
+      throw new Error('layer3: journal resourceIndex out of range');
+    }
+    const at = spec.n + 1 + k; // the participant's state resource is co-spent at input n+1+k and recreated there
+    journalBody.push(`bigint jstate = int(tx.inputs[${at}].nftCommitment.slice(0, 8));`);
+    spec.invocations.forEach((inv, j) => {
+      if (inv.callee === spec.selfPos) {
+        const op = spec.journal!.ops[inv.selectorHex.toLowerCase()];
+        if (!op) throw new Error(`layer3: journal has no operation for edge ${j} selector ${inv.selectorHex}`);
+        const sym = op === 'add' ? '+' : op === 'sub' ? '-' : '*';
+        journalBody.push(`jstate = jstate ${sym} int(edgeArgs${j});`); // apply this edge's op, in order
+      }
+    });
+    journalBody.push(`require(tx.outputs[${at}].tokenCategory == tx.inputs[${at}].tokenCategory);`);
+    journalBody.push(`require(tx.outputs[${at}].nftCommitment.slice(0, 8) == bytes8(jstate));`); // flush once
+    // A->B->A: each designated outgoing edge must carry this participant's authentic post-state as its args,
+    // so a downstream journal that consumes it applies the real computed result, not a committed label.
+    (spec.journal.emits ?? []).forEach((e) => {
+      const out = spec.invocations[e];
+      if (!out || out.caller !== spec.selfPos) {
+        throw new Error(`layer3: journal emits[${e}] is not an outgoing edge of this participant`);
+      }
+      journalBody.push(`require(bytes8(jstate) == hex"${(out.argsHex ?? '').toLowerCase()}");`);
+    });
+  }
+  const body = [...member, ...edgeVars, ...journalBody, ...calls, ...(spec.appBody ?? [])];
   return `pragma solidcash >=0.8.0;\ncontract ${spec.contractName}() {\n`
     + `  function ${spec.functionName}(${spec.functionParams ?? ''}) {\n    ${body.join('\n    ')}\n  }\n}`;
 }

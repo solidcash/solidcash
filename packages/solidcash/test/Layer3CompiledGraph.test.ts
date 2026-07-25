@@ -71,4 +71,26 @@ describe('layer3.planCompiledGraph', () => {
       { parent: 1, callee: 1, function: 'add', args: [4n] },
     ])).toThrow(/completed subtree/);
   });
+
+  it('frames the global tree, local owner batches, and authenticated results into one root', () => {
+    const a = compile('GraphCommitA');
+    const b = compile('GraphCommitB');
+    const plan = layer3.planCompiledGraph([
+      { artifact: a, lockingBytecode: '51' },
+      { artifact: b, lockingBytecode: '52' },
+    ], [
+      { parent: null, callee: 0, function: 'add', args: [1n] },
+      { parent: 0, callee: 1, function: 'add', args: [2n] },
+    ]);
+    const first = layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '52' });
+    const changed = layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '53' });
+    expect(first.root).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.root).not.toBe(changed.root);
+    expect(first.bytes.length).toBeGreaterThan(
+      plan.participants.reduce((sum, participant) => sum + participant.batch.blob.length, 0),
+    );
+    expect(() => layer3.finalizeCompiledGraph(plan, { 0: '51' })).toThrow(/lacks canonical result/);
+    expect(() => layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '52', 9: '53' }))
+      .toThrow(/unknown invocation/);
+  });
 });

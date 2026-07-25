@@ -47,6 +47,97 @@ export interface CompiledGraphPlan {
   invocations: readonly PlannedGraphInvocation[];
 }
 
+export interface FinalizedCompiledGraph {
+  plan: CompiledGraphPlan;
+  /** Canonical framed transcript bytes authenticated by every participant projection. */
+  bytes: Uint8Array;
+  /** SHA-256 of `bytes`; suitable for the controller NFT commitment. */
+  root: string;
+  /** Canonical per-invocation result bytes, empty for void invocations. */
+  resultsHex: readonly string[];
+}
+
+const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');
+const concat = (...parts: Uint8Array[]): Uint8Array => {
+  const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
+const uint = (value: number, width: 1 | 2): Uint8Array => {
+  const maximum = width === 1 ? 0xff : 0xffff;
+  if (!Number.isInteger(value) || value < 0 || value > maximum) {
+    throw new Error(`layer3: graph field does not fit uint${width * 8}`);
+  }
+  return width === 1
+    ? Uint8Array.of(value)
+    : Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
+};
+const framed = (bytes: Uint8Array): Uint8Array => concat(uint(bytes.length, 2), bytes);
+
+/**
+ * Freeze a planned graph into one unambiguous execution transcript.
+ *
+ * Results are supplied only after producer VM probes. Every returning invocation must have exactly one
+ * canonical result byte vector, while void invocations must not be assigned one. The transcript commits both
+ * the global depth-first tree and each owner's exact SCB1 execution blob, preventing a graph/local-projection
+ * desynchronization.
+ */
+export function finalizeCompiledGraph(
+  plan: CompiledGraphPlan,
+  results: Readonly<Record<number, string>> = {},
+): FinalizedCompiledGraph {
+  const resultHex = plan.invocations.map((invocation) => {
+    const supplied = results[invocation.index];
+    if (invocation.resultTypes.length === 0) {
+      if (supplied !== undefined && supplied !== '') {
+        throw new Error(`layer3: void invocation ${invocation.index} cannot carry a result`);
+      }
+      return '';
+    }
+    if (supplied === undefined || !/^([0-9a-fA-F]{2})*$/.test(supplied)) {
+      throw new Error(`layer3: returning invocation ${invocation.index} lacks canonical result bytes`);
+    }
+    return supplied.toLowerCase();
+  });
+  for (const key of Object.keys(results)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= plan.invocations.length) {
+      throw new Error(`layer3: result names unknown invocation '${key}'`);
+    }
+  }
+
+  const parts: Uint8Array[] = [GRAPH_DOMAIN, uint(plan.participants.length, 1)];
+  for (const participant of plan.participants) {
+    const lbc = hexToBin(participant.lockingBytecode);
+    parts.push(framed(lbc), framed(participant.batch.blob));
+  }
+  parts.push(uint(plan.invocations.length, 2));
+  plan.invocations.forEach((invocation, index) => {
+    const args = hexToBin(invocation.argsHex);
+    const result = hexToBin(resultHex[index]);
+    parts.push(
+      uint(invocation.parent === null ? 0xffff : invocation.parent, 2),
+      uint(invocation.callee, 1),
+      uint(invocation.localRow, 1),
+      uint(invocation.subtreeEnd, 2),
+      hexToBin(invocation.selectorHex),
+      framed(args),
+      framed(result),
+    );
+  });
+  const bytes = concat(...parts);
+  return Object.freeze({
+    plan,
+    bytes,
+    root: binToHex(sha256.hash(bytes)),
+    resultsHex: Object.freeze(resultHex),
+  });
+}
+
 /**
  * Group a finite logical graph by physical owner while preserving global invocation order.
  *
@@ -147,3 +238,6 @@ export function planCompiledGraph(
     invocations: Object.freeze(planned),
   });
 }
+import {
+  binToHex, hexToBin, sha256, utf8ToBin,
+} from '@bitauth/libauth';

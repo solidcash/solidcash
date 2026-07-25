@@ -384,6 +384,241 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
     + `  function ${spec.functionName}(${spec.functionParams ?? ''}) {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Balanced block layouts (audit P8/P9/P10). Every participant owns a CONTIGUOUS block with equal input and
+// output cardinality: slot 0 is its covenant EXECUTOR (a one-shot spend), followed by `dataSlots` co-spent
+// state NFTs and `events` event-NFT slots. Blocks concatenate by computed bases (base_{i+1} = base_i +
+// size_i), so a later block's input base equals its output base regardless of earlier block contents. The
+// controller is its own 1-slot block after the participants; the fee input is paired with the change output
+// in the final tail slot. Covenants address every slot by block base, never by a fixed global index, so real
+// native calls and event NFTs compose without relocating references.
+// See docs/balanced-block-layout-composability.md.
+
+/** One participant's balanced block: executor (slot 0) + `dataSlots` co-spent state NFTs + `events` event slots. */
+export interface BalancedBlock { dataSlots: number; events: number }
+
+/** The computed physical index space for a balanced transcript: participant blocks, controller, fee tail. */
+export interface BalancedLayout {
+  n: number;
+  blocks: BalancedBlock[];
+  /** Physical index of participant i's covenant executor (block slot 0; input == output base). */
+  base: (i: number) => number;
+  /** Total slots in participant i's block (1 executor + dataSlots + events). */
+  size: (i: number) => number;
+  /** Physical index of state NFT `d` in participant i's block (after the executor). */
+  dataSlot: (i: number, d: number) => number;
+  /** Physical index of event slot `e` in participant i's block (after its state NFTs). */
+  eventSlot: (i: number, e: number) => number;
+  /** Physical index of native-call callee slot `k` (after all participant blocks, before the controller). */
+  calleeBase: (k: number) => number;
+  /** Number of native-call callee slots. */
+  calleeSlots: number;
+  /** Physical base of the controller's 1-slot block (after participants + callee blocks). */
+  controllerBase: number;
+  /** Physical index of the fee/change tail slot (after the controller). */
+  feeBase: number;
+  /** Total input == output count of the whole balanced transaction. */
+  totalSlots: number;
+}
+
+/**
+ * Compute the balanced layout from each participant's block shape. Participant blocks come first, in order,
+ * then `calleeSlots` native-call callee slots (audit P8), then the controller block, then the fee tail.
+ */
+export function balancedLayout(blocks: BalancedBlock[], calleeSlots = 0): BalancedLayout {
+  if (blocks.length < 2) throw new Error('layer3: need >= 2 participant blocks');
+  if (!Number.isInteger(calleeSlots) || calleeSlots < 0) throw new Error('layer3: calleeSlots must be >= 0');
+  const bases: number[] = [];
+  let acc = 0;
+  for (const b of blocks) {
+    if (!Number.isInteger(b.dataSlots) || b.dataSlots < 0) throw new Error('layer3: block dataSlots must be >= 0');
+    if (!Number.isInteger(b.events) || b.events < 0) throw new Error('layer3: block events must be >= 0');
+    bases.push(acc);
+    acc += 1 + b.dataSlots + b.events;
+  }
+  const calleeStart = acc;
+  const controllerBase = acc + calleeSlots;
+  return {
+    n: blocks.length,
+    blocks,
+    base: (i) => bases[i],
+    size: (i) => 1 + blocks[i].dataSlots + blocks[i].events,
+    dataSlot: (i, d) => bases[i] + 1 + d,
+    eventSlot: (i, e) => bases[i] + 1 + blocks[i].dataSlots + e,
+    calleeBase: (k) => calleeStart + k,
+    calleeSlots,
+    controllerBase,
+    feeBase: controllerBase + 1,
+    totalSlots: controllerBase + 2,
+  };
+}
+
+/** Local data-slot index of each resource within its owner's block (resources of one owner get 0,1,2...). */
+function resourceLocalIndex(resources: ExecutionResource[]): number[] {
+  const perOwner = new Map<number, number>();
+  return resources.map((r) => {
+    const d = perOwner.get(r.owner) ?? 0;
+    perOwner.set(r.owner, d + 1);
+    return d;
+  });
+}
+
+/**
+ * The balanced membership body (audit P9). Reads each participant's lbc at its executor base, recomputes the
+ * framed execution root, binds the co-spent controller (exact category + lbc + commitment, preserved unless
+ * one-shot) at `controllerBase`, and asserts the whole balanced slot count so no output can be inserted or
+ * omitted to shift a later block's base (audit P9 criterion 7). Each owner pins and preserves its state NFTs
+ * (block-relative data slots); their commitments are bound by the generator (preserved or journal-flushed).
+ */
+export function balancedMemberBody(
+  layout: BalancedLayout, selfPos: number, invocations: ExecutionInvocation[],
+  controllerCategory: string, controllerLbc: string, events: ExecutionEvent[] = [], oneShot = false,
+  resources: ExecutionResource[] = [],
+): string[] {
+  if (selfPos < 0 || selfPos >= layout.n) throw new Error('layer3: selfPos out of range');
+  if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
+  if (!/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) throw new Error('layer3: controllerLbc must be hex bytes');
+  const body: string[] = [];
+  for (let i = 0; i < layout.n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${layout.base(i)}].lockingBytecode;`);
+  body.push(`bytes execRoot = ${framedRootExpr(layout.n, invocations, events, resources)};`);
+  const cb = layout.controllerBase;
+  const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
+  body.push(`require(tx.inputs[${cb}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
+  body.push(`require(tx.inputs[${cb}].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
+  body.push(`require(tx.inputs[${cb}].nftCommitment == execRoot);`);
+  if (!oneShot) {
+    body.push(`require(tx.outputs[${cb}].lockingBytecode == tx.inputs[${cb}].lockingBytecode);`);
+    body.push(`require(tx.outputs[${cb}].tokenCategory == tx.inputs[${cb}].tokenCategory);`);
+    body.push(`require(tx.outputs[${cb}].nftCommitment == tx.inputs[${cb}].nftCommitment);`);
+    body.push(`require(tx.outputs[${cb}].value == tx.inputs[${cb}].value);`);
+  }
+  body.push(`require(this.activeInputIndex == ${layout.base(selfPos)});`);
+  // Balanced closure: the transcript is a CLOSED block set (participants + controller + fee). Pinning the exact
+  // total prevents inserting or omitting any slot to shift a later block's base. Native-call callee blocks
+  // extend the layout total (see generateBalancedParticipant), so this stays exact under composition.
+  body.push(`require(tx.inputs.length == ${layout.totalSlots});`);
+  body.push(`require(tx.outputs.length == ${layout.totalSlots});`);
+  // P5: each owner pins + preserves its state NFTs (block-relative data slots). Category is committed in the
+  // same root; lbc + category are preserved input->output; the commitment is bound by the generator.
+  const local = resourceLocalIndex(resources);
+  resources.forEach((r, k) => {
+    if (r.owner === selfPos) {
+      const si = layout.dataSlot(selfPos, local[k]);
+      const resCatInternal = (r.categoryHex.toLowerCase().match(/../g) as string[]).reverse().join('');
+      body.push(`require(tx.inputs[${si}].tokenCategory.slice(0, 32) == hex"${resCatInternal}");`);
+      body.push(`require(tx.outputs[${si}].lockingBytecode == tx.inputs[${si}].lockingBytecode);`);
+      body.push(`require(tx.outputs[${si}].tokenCategory == tx.inputs[${si}].tokenCategory);`);
+    }
+  });
+  // P10: events are NFT slots INSIDE the emitter's own balanced block (block-relative), branded with the
+  // emitter's committed state category (provenance) and carrying the topic in the commitment. Exhaustiveness
+  // is structural - the block has exactly `events` event slots and the balanced closure pins the total - so no
+  // event can be added or omitted. No global OP_RETURN scan, no cross-protocol interference, spendable records.
+  const myEvents = events.filter((ev) => ev.emitter === selfPos);
+  if (myEvents.length !== layout.blocks[selfPos].events) {
+    throw new Error('layer3: block.events count disagrees with the events emitted by this participant');
+  }
+  if (myEvents.length > 0) {
+    const myRes = resources.find((r) => r.owner === selfPos);
+    if (!myRes) throw new Error('layer3: an event emitter must own a state NFT (minting) to brand its events');
+    const brandInternal = (myRes.categoryHex.toLowerCase().match(/../g) as string[]).reverse().join('');
+    myEvents.forEach((ev, e) => {
+      const eo = layout.eventSlot(selfPos, e);
+      body.push(`require(tx.outputs[${eo}].tokenCategory.slice(0, 32) == hex"${brandInternal}");`);
+      body.push(`require(tx.outputs[${eo}].nftCommitment == hex"${ev.topicHex.toLowerCase()}");`);
+    });
+  }
+  return body;
+}
+
+/** A balanced participant: its block shape is `blocks[selfPos]`; journal operates on its own master state. */
+export interface BalancedParticipantSpec {
+  contractName: string;
+  functionName: string;
+  functionParams?: string;
+  selfPos: number;
+  /** Block shape for EVERY participant (so every covenant computes the same bases). */
+  blocks: BalancedBlock[];
+  /** Native-call callee slots appended after the participant blocks (audit P8); shifts the controller base. */
+  calleeSlots?: number;
+  /** Source that precedes the contract (interface declarations for native `IContract(addr).method()` calls). */
+  preamble?: string;
+  /** Constructor params for the participant contract (e.g. `bytes calleeAddr` for a native call target). */
+  constructorParams?: string;
+  invocations: ExecutionInvocation[];
+  controllerCategory: string;
+  controllerLbc: string;
+  events?: ExecutionEvent[];
+  resources?: ExecutionResource[];
+  oneShot?: boolean;
+  appBody?: string[];
+  /**
+   * A state journal over one of this participant's co-spent state NFTs (`dataIndex` = which of its own data
+   * slots, default 0): apply every incoming edge in order (committed selector -> op), flush once to the
+   * recreated state NFT commitment. `emits` designates outgoing edges whose args must equal the flushed
+   * post-state (A->B->A authentic result). The state NFT must be listed in `resources` (owner == selfPos).
+   */
+  journal?: { ops: Record<string, 'add' | 'sub' | 'mul'>; emits?: number[]; dataIndex?: number };
+}
+
+/**
+ * Generate a full participant covenant on the balanced block layout (audit P8/P9). The participant is a
+ * one-shot covenant executor (block slot 0) that governs its co-spent state NFTs (data slots) - preserved or
+ * journal-flushed. Every slot is addressed by block base, so the covenant composes with native-call callee
+ * blocks and event slots without relocating references.
+ */
+export function generateBalancedParticipant(spec: BalancedParticipantSpec): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.contractName)) throw new Error('layer3: invalid contractName');
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.functionName)) throw new Error('layer3: invalid functionName');
+  const layout = balancedLayout(spec.blocks, spec.calleeSlots ?? 0);
+  const member = balancedMemberBody(
+    layout, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc,
+    spec.events, spec.oneShot, spec.resources,
+  );
+  const edgeVars: string[] = [];
+  spec.invocations.forEach((inv, j) => {
+    if (inv.callee === spec.selfPos) {
+      edgeVars.push(`bytes edgeArgs${j} = hex"${(inv.argsHex ?? '').toLowerCase()}";`);
+    }
+  });
+  const stateBody: string[] = [];
+  const journalDataIndex = spec.journal ? (spec.journal.dataIndex ?? 0) : -1;
+  if (spec.journal) {
+    const at = layout.dataSlot(spec.selfPos, journalDataIndex); // this participant's journaled state NFT
+    // The journal reads/flushes the co-spent state NFT commitment (lbc + category already preserved by member).
+    stateBody.push(`bigint jstate = int(tx.inputs[${at}].nftCommitment.slice(0, 8));`);
+    spec.invocations.forEach((inv, j) => {
+      if (inv.callee === spec.selfPos) {
+        const op = spec.journal!.ops[inv.selectorHex.toLowerCase()];
+        if (!op) throw new Error(`layer3: journal has no operation for edge ${j} selector ${inv.selectorHex}`);
+        const sym = op === 'add' ? '+' : op === 'sub' ? '-' : '*';
+        stateBody.push(`jstate = jstate ${sym} int(edgeArgs${j});`);
+      }
+    });
+    stateBody.push(`require(tx.outputs[${at}].nftCommitment.slice(0, 8) == bytes8(jstate));`);
+    (spec.journal.emits ?? []).forEach((e) => {
+      const out = spec.invocations[e];
+      if (!out || out.caller !== spec.selfPos) {
+        throw new Error(`layer3: journal emits[${e}] is not an outgoing edge of this participant`);
+      }
+      stateBody.push(`require(bytes8(jstate) == hex"${(out.argsHex ?? '').toLowerCase()}");`);
+    });
+  }
+  // Fail-closed: every OTHER state NFT this participant owns has its commitment preserved (only the journaled
+  // slot transitions). No owned state can drift unconstrained.
+  const owned = resourceLocalIndex(spec.resources ?? []);
+  (spec.resources ?? []).forEach((r, k) => {
+    if (r.owner === spec.selfPos && owned[k] !== journalDataIndex) {
+      const si = layout.dataSlot(spec.selfPos, owned[k]);
+      stateBody.push(`require(tx.outputs[${si}].nftCommitment == tx.inputs[${si}].nftCommitment);`);
+    }
+  });
+  const body = [...member, ...edgeVars, ...stateBody, ...(spec.appBody ?? [])];
+  const preamble = spec.preamble ? `${spec.preamble}\n` : '';
+  return `pragma solidcash >=0.8.0;\n${preamble}contract ${spec.contractName}(${spec.constructorParams ?? ''}) {\n`
+    + `  function ${spec.functionName}(${spec.functionParams ?? ''}) {\n    ${body.join('\n    ')}\n  }\n}`;
+}
+
 /** Generate the full `__layer3_bind` covenant source for a transcript spec, using the module's layout. */
 export function generateTranscriptCovenant(spec: TranscriptSpec): string {
   const n = spec.participants;

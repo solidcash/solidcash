@@ -39,20 +39,43 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
 | P5 | Resources disconnected from the root | CLOSED | `ExecutionResource {owner, categoryHex}` in the framed root; owner verifies the co-spent NFT; the journal writes that resource. `Layer3ResourceRoot`. |
 | P6 | Cross-edge ordering/dependency absent | CLOSED (journal model) | `Layer3Journal` ORDERING (25 != 30), `Layer3Cycle` (edge 2 observes edge 1's post-state). |
 | P7 | Callee exhaustiveness incorrect | CLOSED (journal rows) | Every incoming edge is folded into the flush; omit/add a row and it fails. Native-call-has-a-row is P8. |
-| P8 | Auto-wiring exercises no native calls | OPEN (deep) | `generateExecutionParticipant` still injects source snippets; it does not derive edges from compiler-native IContract call metadata, and native calls bring their own block-layout slots that conflict with the fixed exec layout (needs P9). |
-| P9 | Balanced block-layout composability | OPEN (deep) | The exec path uses fixed global indices (participants 0..n-1, controller n, resources n+1+k); the journal inherits them. Real artifact block layouts / paired funding slots are not integrated. |
-| P10 | Event exhaustiveness wrong transport | OPEN | Still a global OP_RETURN count loop, not compiler-assigned event-NFT slots within authenticated block bounds. |
+| P8 | Auto-wiring exercises no native calls | SUBSTANTIALLY CLOSED | `generateBalancedParticipant` composes with a REAL native `IContract(addr).ping(val)` call: the callee is co-spent in the layout's callee slot (audit `Layer3BalancedCall`), the controller shifts past it, the caller self-preserves, a wrong callee-base is rejected. Remaining: SDK auto-derivation of the co-spends from compiler metadata (vs. supplied witness). |
+| P9 | Balanced block-layout composability | CLOSED (core invariant) | `balancedLayout` gives every participant a contiguous block (executor + state NFTs + event slots) with equal input/output cardinality; blocks concatenate by computed bases; covenants address slots by BLOCK BASE, and the balanced closure rejects inserted/omitted slots (`Layer3Balanced` shows A's size-2 block shifting B's base to 2). Criteria 1,2,4,7,9,10 VM-proven; transitive/conditional/fee-invariance criteria (3,5,6,8) not yet exercised. |
+| P10 | Event exhaustiveness wrong transport | CLOSED | Events are NFT slots inside the emitter's balanced block (block-relative), branded with the emitter's committed state category, structurally exhaustive via the closure - no global OP_RETURN scan, spendable records (`Layer3BalancedEvents`). |
 | P11 | TypedTransition length disagreement | CLOSED | SDK and covenant both require `commitment.length == total`. `Layer3TypedTransition`. |
 | P12 | setRoot not set-once | CLOSED | `setRoot` requires an empty input commitment; one-shot controller replay policy available. `Layer3Replay`. |
 | P13 | Independent review + policy harness | PARTIAL | Committed standard-policy harness `test/regtest/standard-policy-harness.sh`; the external covenant review itself is external by definition. |
 
+## The balanced block layout (P8/P9/P10)
+
+`balancedLayout` / `balancedMemberBody` / `generateBalancedParticipant` implement the invariant from
+`balanced-block-layout-composability.md` for the transcript bus:
+
+- Every participant owns one contiguous block: executor (slot 0) + co-spent state NFTs + event slots, with
+  equal input and output cardinality. Blocks concatenate by computed bases (`base_{i+1} = base_i + size_i`),
+  so a later block's input base equals its output base regardless of earlier block contents.
+- Native-call callee slots follow the participant blocks; then the controller's 1-slot block; then the fee
+  tail (fee input paired with change output).
+- Covenants address every slot by BLOCK BASE, never a fixed global index. The balanced closure
+  (`tx.inputs.length == tx.outputs.length == totalSlots`) rejects any inserted or omitted slot.
+- Events are NFT slots inside the emitter's block, branded by its committed state category; exhaustiveness is
+  structural (fixed `block.events` + closure), replacing the global OP_RETURN count.
+- A participant can make a real native `IContract(addr).method()` call: the callee is co-spent in the callee
+  slot and the compiler's on-chain dispatch verification (`OP_UTXOBYTECODE == addr`, master preservation,
+  caller self-preservation) runs alongside the balanced membership.
+
+Tests (real BCH-2026 VM): `Layer3Balanced` (shifted bases + closure), `Layer3BalancedEvents` (event NFT
+slots), `Layer3BalancedCall` (native call under balanced bases).
+
 ## Honest scope of what remains
 
-P8/P9/P10 are one entangled program: real compiler-native IContract dispatch, balanced artifact block layouts
-with paired funding inputs, and event-NFT slots. The journal proves the EXECUTION SEMANTICS are real for a
-bounded arithmetic-op state machine over per-participant 8-byte state; it does not yet run arbitrary compiled
-method bodies through the compiler's external-call/block-layout machinery. Until P8/P9/P10 land and the
-external review (P13) is done, keep the feature experimental and default-off.
+- P8: the generator composes with a real native call (VM-proven), directly refuting the audit's "no-call
+  fixture" objection. The remaining depth is SDK auto-derivation of the composed co-spends from compiler
+  external-call metadata (today the callee-base is a supplied witness), and transitive A->B->C native chains.
+- P9: the core balanced invariant is implemented and VM-proven (criteria 1,2,4,7,9,10). The robustness
+  criteria not yet exercised: transitive composition (3), conditional-branch same-size blocks (5), fee-change
+  slot-invariance (6), and independently-compiled composition from artifact layouts alone (8).
+- P13: the standard-policy harness is committed; the external covenant review is external by definition.
 
 Known bounds of the journal model (documented, not hidden):
 
@@ -61,4 +84,6 @@ Known bounds of the journal model (documented, not hidden):
   of the tested domain.
 - Resource identity binds to a committed category; production soundness requires that category be genesised
   unique (same requirement as any stateful NFT).
-- Fixed global input/output indices (P9) are not yet balanced-block-layout composable with native calls.
+
+Keep the feature experimental and default-off until the remaining P8/P9 robustness items and the external
+review (P13) are done.

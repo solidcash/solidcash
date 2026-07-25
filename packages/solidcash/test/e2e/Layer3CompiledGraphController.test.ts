@@ -216,7 +216,10 @@ async function build(
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], graphInvocations);
-  let transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1], [null, null], ['', ''], [2, 3]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  let transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
   if (malformedGraph || aliasProjection) {
     const bytes = transcript.bytes.slice();
     let cursor = 10;
@@ -228,12 +231,14 @@ async function build(
       cursor += 2 + batchLength;
       const emissionsLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + emissionsLength;
+      const callersLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + callersLength;
       cursor += 2; // return output
       const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + resultVectorLength;
       if (aliasProjection && participant.participant === 1) {
-        bytes[cursor] = 2;
-        bytes[cursor + 1] = 0;
+        bytes[cursor] = layout.projectionInputs[0] & 0xff;
+        bytes[cursor + 1] = layout.projectionInputs[0] >> 8;
       }
       cursor += 2; // projection input
     }
@@ -247,11 +252,6 @@ async function build(
       root: binToHex(sha256.hash(bytes)),
     };
   }
-  const layout: layer3.CompiledGraphPhysicalLayout = {
-    participantInputs: [0, 1],
-    controllerInput: 4,
-    totalSlots: 6,
-  };
   const aUtxo = setupA.masterUtxo;
   const bUtxo = setupB.masterUtxo;
   const feeUtxo = randomUtxo({ satoshis: 50000n });
@@ -295,9 +295,12 @@ async function build(
   if (replaceProjection) {
     tx.addInput(fakeProjection, p2pkh.unlock.spend(alicePub, signature()));
   } else {
-    tx.addInput(projectionA, projection.unlock.verify(transcript.bytes, 4n, 0n));
+    tx.addInput(projectionA, projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n));
   }
-  tx.addInput(projectionB, projection.unlock.verify(transcript.bytes, 4n, 1n));
+  tx.addInput(
+    projectionB,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 1n),
+  );
   if (omitController) {
     tx.addInput(fakeControllerUtxo, p2pkh.unlock.spend(alicePub, signature()));
   } else {
@@ -355,18 +358,14 @@ async function buildReturning(tamperResult = false) {
     { parent: null, callee: 0, function: 'plusOne', args: [2n] },
     { parent: 0, callee: 1, function: 'twice', args: [2n] },
   ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(plan, {
     0: binToHex(scriptToBytecode([bigIntToVmNumber(5n)])),
     1: binToHex(scriptToBytecode([bigIntToVmNumber(4n)])),
-  }, [0, 2], [1, 3], [binToHex(packedResult(5n)), binToHex(packedResult(4n))], [4, 5]);
+  }, layout.participantInputs, layout.returnOutputs,
+  [binToHex(packedResult(5n)), binToHex(packedResult(4n))], layout.projectionInputs);
   const resultA = aggregateResult(5n);
   const resultB = aggregateResult(tamperResult ? 5n : 4n);
-  const layout: layer3.CompiledGraphPhysicalLayout = {
-    participantInputs: [0, 2],
-    controllerInput: 6,
-    totalSlots: 8,
-    returnOutputs: [1, 3],
-  };
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
@@ -391,16 +390,22 @@ async function buildReturning(tamperResult = false) {
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   tx.addInput(setupA.masterUtxo, routeA(
     ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
-    1n,
+    BigInt(layout.returnOutputs![0]!),
   ));
   tx.addInput(returnFundingA, p2pkh.unlock.spend(alicePub, signature()));
   tx.addInput(setupB.masterUtxo, routeB(
     ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
-    3n,
+    BigInt(layout.returnOutputs![1]!),
   ));
   tx.addInput(returnFundingB, p2pkh.unlock.spend(alicePub, signature()));
-  tx.addInput(projectionA, projection.unlock.verify(transcript.bytes, 6n, 0n));
-  tx.addInput(projectionB, projection.unlock.verify(transcript.bytes, 6n, 1n));
+  tx.addInput(
+    projectionA,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(
+    projectionB,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 1n),
+  );
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({
@@ -464,8 +469,9 @@ async function buildStateCycle(tamperState = false) {
     { parent: 0, callee: 1, function: 'step', args: commonArgs },
     { parent: 1, callee: 0, function: 'finish', args: commonArgs },
   ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
-    plan, {}, [0, 2], [null, null], ['', ''], [4, 5],
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
@@ -488,12 +494,30 @@ async function buildStateCycle(tamperState = false) {
   )[0];
   const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 1n })[0];
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
-  tx.addInput(setupA.masterUtxo, routeA(...layer3.compiledGraphRouteArgs(transcript, 0, 6) as any));
-  tx.addInput(setupA.dataNftUtxos[0], createDataNftUnlocker(a, 0, setupA.categoryId));
-  tx.addInput(setupB.masterUtxo, routeB(...layer3.compiledGraphRouteArgs(transcript, 1, 6) as any));
-  tx.addInput(setupB.dataNftUtxos[0], createDataNftUnlocker(b, 2, setupB.categoryId));
-  tx.addInput(projectionA, projection.unlock.verify(transcript.bytes, 6n, 0n));
-  tx.addInput(projectionB, projection.unlock.verify(transcript.bytes, 6n, 1n));
+  tx.addInput(
+    setupA.masterUtxo,
+    routeA(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupA.dataNftUtxos[0],
+    createDataNftUnlocker(a, layout.participantInputs[0], setupA.categoryId),
+  );
+  tx.addInput(
+    setupB.masterUtxo,
+    routeB(...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupB.dataNftUtxos[0],
+    createDataNftUnlocker(b, layout.participantInputs[1], setupB.categoryId),
+  );
+  tx.addInput(
+    projectionA,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(
+    projectionB,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 1n),
+  );
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({

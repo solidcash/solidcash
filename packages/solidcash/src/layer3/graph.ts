@@ -42,6 +42,8 @@ export interface CompiledParticipantExecution {
   batch: EncodedHiddenBatch;
   /** Global invocation indices, in the exact order executed by this owner's SCB1 route. */
   invocations: readonly number[];
+  /** Exact compiler-emitted balanced physical block for this owner's SCB1 route. */
+  blockLayout: NonNullable<Artifact['hiddenBatch']>['route']['blockLayout'];
 }
 
 export interface CompiledGraphPlan {
@@ -75,6 +77,10 @@ export interface CompiledGraphPhysicalLayout {
   participantInputs: readonly number[];
   /** One-shot controller NFT input carrying `FinalizedCompiledGraph.root`. */
   controllerInput: number;
+  /** One paired proof slot per participant. */
+  projectionInputs: readonly number[];
+  /** Final fee-funding input paired with final change. */
+  feeInput: number;
   /** Exact balanced transaction input/output count. */
   totalSlots: number;
   /**
@@ -82,6 +88,46 @@ export interface CompiledGraphPhysicalLayout {
    * The corresponding expected full NFT commitment is supplied in `resultCommitmentsHex`.
    */
   returnOutputs?: readonly (number | null)[];
+}
+
+/**
+ * Compose compiler-emitted participant blocks without diverging input/output bases.
+ *
+ * Each participant begins after the complete preceding SCB1 route block. Projection
+ * proofs, the one-shot controller, and the fee/change tail are each paired one-slot
+ * blocks, so the complete transaction has one shared input/output index space.
+ */
+export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGraphPhysicalLayout {
+  const participantInputs: number[] = [];
+  const returnOutputs: (number | null)[] = [];
+  let cursor = 0;
+  for (const participant of plan.participants) {
+    const layout = participant.blockLayout;
+    if (!layout || layout.blockSize < 1 || layout.slots[0]?.kind !== 'master') {
+      throw new Error(`layer3: participant ${participant.participant} lacks a balanced master block`);
+    }
+    participantInputs.push(cursor);
+    const returnSlots = layout.slots.filter((slot) => slot.kind === 'returnEvent');
+    if (returnSlots.length > 1) {
+      throw new Error(`layer3: participant ${participant.participant} has multiple return-event slots`);
+    }
+    returnOutputs.push(returnSlots.length === 0 ? null : cursor + returnSlots[0].offset);
+    cursor += layout.blockSize;
+  }
+  const projectionInputs = plan.participants.map((_participant, index) => cursor + index);
+  cursor += plan.participants.length;
+  const controllerInput = cursor;
+  cursor += 1;
+  const feeInput = cursor;
+  cursor += 1;
+  return Object.freeze({
+    participantInputs: Object.freeze(participantInputs),
+    projectionInputs: Object.freeze(projectionInputs),
+    controllerInput,
+    feeInput,
+    totalSlots: cursor,
+    returnOutputs: Object.freeze(returnOutputs),
+  });
 }
 
 const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');
@@ -729,6 +775,7 @@ export function planCompiledGraph(
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
       batch: encodeHiddenBatch(participant.artifact, perOwner[owner]),
       invocations: Object.freeze(globalByOwner[owner]),
+      blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,
     });
   });
 

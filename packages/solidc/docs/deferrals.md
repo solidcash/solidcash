@@ -1626,3 +1626,59 @@ entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
   OP_SHA256`) reflects a correct offset; the local path emits nothing/rolls the wrong item.
 - **The real fix** needs the entry-read to use a CORRECT stack offset for a local key (reconcile the tracker), or to
   capture the key value into the entry-read working area BEFORE the layout is set up. A focused C2-codegen change.
+
+---
+
+## Delegate mode: satoshi transfers and token-container operations — 2026-07-25
+
+**What.** A function that transfers satoshis (`this.transfer(...)`) or mutates a token container does not receive an
+inferred `delegateArtifact` entry. The exclusion applies to the whole function: combining a proxy-state write with a
+transfer is also ineligible. Ordinary state writes, events, and low-level calls remain eligible. The compiler and SDK
+fail closed before broadcast rather than producing a delegate spend that reverts at `OP_VERIFY`.
+
+**Why deferred.** Delegate mode currently skips `emitAddDynamicOutputsBeforeEntries`, so its output-index arithmetic
+does not reserve space for transfer outputs. Value preservation also accounts for the implementation input's value,
+whereas Ethereum-style `delegatecall` semantics would spend the proxy's balance. Supporting this is therefore a
+covenant-semantics change, not an inference fix: it must define which input funds the output and exactly what value
+change the proxy covenant authorizes.
+
+**What it'd take.** Specify proxy-funded value/token semantics; update delegate codegen to derive and reserve dynamic
+outputs; update proxy value and token preservation; teach SDK transaction derivation to construct those outputs; and
+add adversarial VM/on-chain tests for mixed state-write + transfer functions, value conservation, token conservation,
+and attempts to spend the implementation's own containers.
+
+**Revisit if.** A proxy implementation needs payable forwarding, withdrawals, or token movement rather than only
+proxy-state mutation.
+
+## Delegate mode: fallback-only proxies — 2026-07-25
+
+**What.** A proxy exposing only `fallback` fails on-chain with "Tried to read from an empty stack". Adding a second
+selector-dispatched entry point avoids the SDK's sole-function selector-less unlocker path. This reproduces with the
+old explicitly marked delegate artifact as well as an inferred one, so it predates delegate inference.
+
+**Why deferred.** The inference work does not own selector-less unlocking. The SDK optimizes a single-function
+contract by omitting its selector, but the delegatecall covenant expects forwarded calldata to identify the
+implementation function. Fixing only the inferred artifact would leave the underlying call protocol inconsistent.
+
+**What it'd take.** Define the fallback-only forwarding payload, then update the SDK unlocker/`withDelegatecall`
+construction and the delegate covenant's selector pinning to agree on that representation. Add real spends for
+fallback-only, receive-only where applicable, malformed payloads, and multi-function regression coverage.
+
+**Revisit if.** Minimal transparent proxies must support a fallback as their sole entry point.
+
+## Delegate deployment parity: one source, two addresses — 2026-07-25
+
+**What.** Keyword-free source parity is complete, but deployment parity with the EVM is not. An eligible contract has
+an ordinary artifact and a lazily generated `delegateArtifact`; deploying the latter through `asDelegate()` or proxy
+helpers creates a different locking bytecode/address from the standalone contract.
+
+**Why deferred.** One script that supports both execution modes measured roughly 2.2-2.4x the standalone bytecode.
+That cost is unacceptable against BCH's 10,000-byte script limit and would make realistic contracts undeployable.
+Keeping two single-mode artifacts preserves current script sizes and makes the deployment choice explicit in the SDK.
+
+**What it'd take.** A substantially cheaper dual-mode code-generation design, likely with extensive sharing between
+standalone and proxy covenant paths, followed by size measurements across the corpus and adversarial tests proving
+that a witness cannot select the wrong state context.
+
+**Revisit if.** A dual-mode encoding approaches single-mode size closely enough for real contracts, or a protocol
+change materially raises/removes the script-size constraint.

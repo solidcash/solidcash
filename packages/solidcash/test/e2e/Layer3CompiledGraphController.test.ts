@@ -27,9 +27,14 @@ contract ${name}(int brand) {
   }
 }`;
 
-async function build(tamperSecondBatch = false) {
+async function build(tamperSecondBatch = false, omitController = false) {
   const provider = createTestProvider();
-  const options = { forceStateful: true, experimentalHiddenBatch: true };
+  const controller = new Contract(compileString(layer3.generateGraphRootController()), [], { provider });
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+  };
   const artifactA = compileString(APP('CompiledGraphA'), options);
   const artifactB = compileString(APP('CompiledGraphB'), options);
   const baseA = new Contract(artifactA, [1n], { provider });
@@ -45,14 +50,12 @@ async function build(tamperSecondBatch = false) {
     { parent: null, callee: 0, function: 'ping', args: [1n] },
     { parent: 0, callee: 1, function: 'ping', args: [2n] },
   ]);
-  const transcript = layer3.finalizeCompiledGraph(plan);
+  const transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1]);
   const layout: layer3.CompiledGraphPhysicalLayout = {
     participantInputs: [0, 1],
     controllerInput: 2,
     totalSlots: 4,
   };
-  const controllerArtifact = compileString(layer3.generateCompiledGraphController(transcript, layout));
-  const controller = new Contract(controllerArtifact, [], { provider });
   const genesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
     address: controller.tokenAddress,
     satoshis: 3000n,
@@ -62,8 +65,10 @@ async function build(tamperSecondBatch = false) {
   const aUtxo = setupA.masterUtxo;
   const bUtxo = setupB.masterUtxo;
   const feeUtxo = randomUtxo({ satoshis: 20000n });
+  const fakeControllerUtxo = randomUtxo({ satoshis: 3000n });
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   await provider.addUtxo(p2pkh.address, feeUtxo);
+  if (omitController) await provider.addUtxo(p2pkh.address, fakeControllerUtxo);
 
   const routeA = a.createCompilerRouteUnlocker(
     artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
@@ -76,9 +81,16 @@ async function build(tamperSecondBatch = false) {
     : plan.participants[1].batch.blob;
 
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
-  tx.addInput(aUtxo, routeA(plan.participants[0].batch.blob));
-  tx.addInput(bUtxo, routeB(bBlob));
-  tx.addInput(genesis.utxos[0], controller.unlock.attest());
+  const argsA = layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput);
+  const argsB = [...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput)];
+  if (tamperSecondBatch) argsB[0] = bBlob;
+  tx.addInput(aUtxo, routeA(...argsA as any));
+  tx.addInput(bUtxo, routeB(...argsB as any));
+  if (omitController) {
+    tx.addInput(fakeControllerUtxo, p2pkh.unlock.spend(alicePub, signature()));
+  } else {
+    tx.addInput(genesis.utxos[0], controller.unlock.attest(transcript.bytes));
+  }
   tx.addInput(feeUtxo, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({
     to: a.tokenAddress, amount: aUtxo.satoshis,
@@ -103,7 +115,12 @@ const aggregateResult = (value: bigint): Uint8Array => {
 
 async function buildReturning(tamperResult = false) {
   const provider = createTestProvider();
-  const options = { forceStateful: true, experimentalHiddenBatch: true };
+  const controller = new Contract(compileString(layer3.generateGraphRootController()), [], { provider });
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+  };
   const artifactA = compileString(RETURNING_APP('CompiledReturningA'), options);
   const artifactB = compileString(RETURNING_APP('CompiledReturningB'), options);
   const baseA = new Contract(artifactA, [1n], { provider });
@@ -122,7 +139,7 @@ async function buildReturning(tamperResult = false) {
   const transcript = layer3.finalizeCompiledGraph(plan, {
     0: binToHex(bigIntToVmNumber(2n)),
     1: binToHex(bigIntToVmNumber(4n)),
-  });
+  }, [0, 2]);
   const resultA = aggregateResult(2n);
   const resultB = aggregateResult(tamperResult ? 5n : 4n);
   const layout: layer3.CompiledGraphPhysicalLayout = {
@@ -131,9 +148,6 @@ async function buildReturning(tamperResult = false) {
     totalSlots: 6,
     returnOutputs: [1, 3],
   };
-  const controller = new Contract(compileString(layer3.generateCompiledGraphController(
-    transcript, layout, [binToHex(aggregateResult(2n)), binToHex(aggregateResult(4n))],
-  )), [], { provider });
   const genesis = await (provider as any).addTokenUtxosDynamic((_category: string) => [{
     address: controller.tokenAddress,
     satoshis: 3000n,
@@ -154,11 +168,17 @@ async function buildReturning(tamperResult = false) {
   );
 
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
-  tx.addInput(setupA.masterUtxo, routeA(plan.participants[0].batch.blob, 1n));
+  tx.addInput(setupA.masterUtxo, routeA(
+    ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+    1n,
+  ));
   tx.addInput(returnFundingA, p2pkh.unlock.spend(alicePub, signature()));
-  tx.addInput(setupB.masterUtxo, routeB(plan.participants[1].batch.blob, 3n));
+  tx.addInput(setupB.masterUtxo, routeB(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+    3n,
+  ));
   tx.addInput(returnFundingB, p2pkh.unlock.spend(alicePub, signature()));
-  tx.addInput(genesis.utxos[0], controller.unlock.attest());
+  tx.addInput(genesis.utxos[0], controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   tx.addOutput({
     to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
@@ -195,6 +215,11 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects an application input executing a different locally-valid batch', async () => {
     const { provider, transaction } = await build(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects omitting the graph controller even when every local batch remains valid', async () => {
+    const { provider, transaction } = await build(false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

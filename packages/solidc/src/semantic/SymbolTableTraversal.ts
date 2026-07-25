@@ -1034,7 +1034,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    if (node.name.startsWith('__internal__') && !node.name.startsWith('__internal__c2CounterPerm_')) {
+    const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
+      || [
+        '__internal__graphTranscript',
+        '__internal__graphControllerIdx',
+        '__internal__graphParticipantOffset',
+      ].includes(node.name);
+    if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
     }
     const existing = this.symbolTables[0].get(node.name);

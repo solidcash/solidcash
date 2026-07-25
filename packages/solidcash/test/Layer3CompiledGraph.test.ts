@@ -93,22 +93,11 @@ describe('layer3.planCompiledGraph', () => {
     expect(() => layer3.finalizeCompiledGraph(plan, { 0: '51', 1: '52', 9: '53' }))
       .toThrow(/unknown invocation/);
 
-    const controller = layer3.generateCompiledGraphController(first, {
-      participantInputs: [0, 2],
-      controllerInput: 4,
-      totalSlots: 6,
-      returnOutputs: [1, 3],
-    }, ['0102', '0103']);
-    expect(controller).toContain(`nftCommitment == hex"${first.root}"`);
-    expect(controller).toContain(`lockingBytecode == hex"51"`);
-    expect(controller).toContain(`lockingBytecode == hex"52"`);
-    expect(controller).toContain('slice(0, 6) == hex"0453434231');
-    expect(controller).toContain('tx.outputs[1].nftCommitment == hex"0102"');
-    expect(controller).toContain('tx.outputs[3].nftCommitment == hex"0103"');
+    const controller = layer3.generateGraphRootController();
+    expect(controller).toContain('nftCommitment == sha256(transcript)');
+    expect(controller).toContain('participantInput > previousInput');
+    expect(controller).toContain('unlocking.slice(0, 5) == hex"0453434231"');
     expect(controller).toContain('outputCategory.slice(0, 32) != controllerCategory');
     expect(compileString(controller).bytecode.length).toBeGreaterThan(0);
-    expect(() => layer3.generateCompiledGraphController(first, {
-      participantInputs: [0, 0], controllerInput: 4, totalSlots: 6,
-    })).toThrow(/distinct/);
   });
 });

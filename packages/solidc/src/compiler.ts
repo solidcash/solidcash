@@ -186,6 +186,10 @@ const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
+  const graphControllerLbc = compilerOptions.experimentalMessageBusController?.toLowerCase();
+  if (graphControllerLbc !== undefined && !/^([0-9a-f]{2})+$/.test(graphControllerLbc)) {
+    throw new Error('experimentalMessageBusController must be hex-encoded locking bytecode');
+  }
   if (contract.functions.some((fn) => fn.functionSelector
     && binToHex(fn.functionSelector) === SCB1_SELECTOR_HEX)) {
     throw new Error('Source function selector collides with reserved hidden batch selector 0x53434231');
@@ -463,7 +467,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           `${witness.type.toString()} ${witness.name}_r${row}`)
         : [`${witness.type.toString()} ${witness.name}`];
     });
-  const routeParameters = ['bytes batchBlob', ...routeKeyParameters].join(', ');
+  const graphRouteParameters = graphControllerLbc === undefined ? [] : [
+    'bytes __internal__graphTranscript',
+    'bigint __internal__graphControllerIdx',
+    'bigint __internal__graphParticipantOffset',
+  ];
+  const routeParameters = ['bytes batchBlob', ...graphRouteParameters, ...routeKeyParameters].join(', ');
   const parseOneRow = (rowExpression: string, resultIndex?: number, rowIndex?: number): string => `
           require(cursor + 12 <= batchBlob.length);
           bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
@@ -502,6 +511,25 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     ? `return abi.encode(${Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
       `__scb_result_${row}`).join(', ')});`
     : '';
+  const graphPrologue = graphControllerLbc === undefined ? '' : `
+        require(__internal__graphControllerIdx >= 0
+          && __internal__graphControllerIdx < tx.inputs.length
+          && __internal__graphControllerIdx != this.activeInputIndex);
+        require(tx.inputs[__internal__graphControllerIdx].lockingBytecode == hex"${graphControllerLbc}");
+        require(tx.inputs[__internal__graphControllerIdx].nftCommitment == sha256(__internal__graphTranscript));
+        bytes __graph_owner_lbc = tx.inputs[this.activeInputIndex].lockingBytecode;
+        bytes __graph_owner_frame = bytes.concat(
+          bytes.concat(bytes2(this.activeInputIndex), bytes2(__graph_owner_lbc.length), __graph_owner_lbc),
+          bytes2(batchBlob.length),
+          batchBlob
+        );
+        require(__internal__graphParticipantOffset >= 0
+          && __internal__graphParticipantOffset + __graph_owner_frame.length <= __internal__graphTranscript.length);
+        require(__internal__graphTranscript.slice(
+          __internal__graphParticipantOffset,
+          __internal__graphParticipantOffset + __graph_owner_frame.length
+        ) == __graph_owner_frame);
+  `;
   const source = `pragma solidcash >=0.8.0;
     contract __HiddenBatchHost() {
       function __scb1(${routeParameters}) external${returnDeclaration} {
@@ -523,6 +551,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         require(batchBlob.slice(0, 4) == hex"53434231");
         require(batchBlob.slice(4, 5) == hex"01");
         require(batchBlob.slice(5, 6) == hex"00");
+        ${graphPrologue}
         bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
         require(${resourceShapedHandler
     ? `rowCount == ${routeMaximumRows}`
@@ -1009,6 +1038,9 @@ function compileResolvedAst(
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: hiddenBatchMaximumRows,
       maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
+      ...(mergedCompilerOptions.experimentalMessageBusController && {
+        graphControllerLockingBytecode: mergedCompilerOptions.experimentalMessageBusController.toLowerCase(),
+      }),
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,

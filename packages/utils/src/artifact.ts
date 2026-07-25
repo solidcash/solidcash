@@ -61,6 +61,12 @@ export interface CompilerOptions {
   // through SCB1. It emits no layer-3 artifact capability and is not a
   // production protocol switch.
   experimentalLayer3BindingSpike?: boolean;
+  /**
+   * Experimental integrated message-bus route. The compiler-owned SCB1 wrapper requires a co-spent controller
+   * at this exact locking bytecode, authenticates its transcript-root commitment, and proves the local owner
+   * batch is a framed member of that transcript.
+   */
+  experimentalMessageBusController?: string;
 }
 
 export interface AbiInput {
@@ -533,6 +539,7 @@ export interface Artifact {
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
+    graphControllerLockingBytecode?: string;
     route: AbiFunction;
     handlers: {
       name: string;

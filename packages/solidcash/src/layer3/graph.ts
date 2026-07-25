@@ -55,6 +55,9 @@ export interface FinalizedCompiledGraph {
   root: string;
   /** Canonical per-invocation result bytes, empty for void invocations. */
   resultsHex: readonly string[];
+  /** Byte offset of each participant's `lbc-frame || batch-frame` within `bytes`. */
+  participantOffsets: readonly number[];
+  participantInputs: readonly number[];
 }
 
 export interface CompiledGraphPhysicalLayout {
@@ -103,7 +106,13 @@ const framed = (bytes: Uint8Array): Uint8Array => concat(uint(bytes.length, 2), 
 export function finalizeCompiledGraph(
   plan: CompiledGraphPlan,
   results: Readonly<Record<number, string>> = {},
+  participantInputs: readonly number[] = plan.participants.map((_participant, index) => index),
 ): FinalizedCompiledGraph {
+  if (participantInputs.length !== plan.participants.length
+    || participantInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
+    || participantInputs.some((input, index) => index > 0 && input <= participantInputs[index - 1])) {
+    throw new Error('layer3: participant physical inputs must be strictly increasing uint16 values');
+  }
   const resultHex = plan.invocations.map((invocation) => {
     const supplied = results[invocation.index];
     if (invocation.resultTypes.length === 0) {
@@ -125,9 +134,17 @@ export function finalizeCompiledGraph(
   }
 
   const parts: Uint8Array[] = [GRAPH_DOMAIN, uint(plan.participants.length, 1)];
+  const participantOffsets: number[] = [];
+  let encodedLength = GRAPH_DOMAIN.length + 1;
   for (const participant of plan.participants) {
+    const participantIndex = participant.participant;
     const lbc = hexToBin(participant.lockingBytecode);
-    parts.push(framed(lbc), framed(participant.batch.blob));
+    participantOffsets.push(encodedLength);
+    const inputFrame = uint(participantInputs[participantIndex], 2);
+    const lbcFrame = framed(lbc);
+    const batchFrame = framed(participant.batch.blob);
+    parts.push(inputFrame, lbcFrame, batchFrame);
+    encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length;
   }
   parts.push(uint(plan.invocations.length, 2));
   plan.invocations.forEach((invocation, index) => {
@@ -149,95 +166,90 @@ export function finalizeCompiledGraph(
     bytes,
     root: binToHex(sha256.hash(bytes)),
     resultsHex: Object.freeze(resultHex),
+    participantOffsets: Object.freeze(participantOffsets),
+    participantInputs: Object.freeze([...participantInputs]),
   });
 }
 
-const positionalBlobChecks = (input: number, blobHex: string): string[] => {
-  const length = blobHex.length / 2;
-  if (length <= 75) {
-    return [
-      `require(tx.inputs[${input}].unlockingBytecode.slice(0, 6) == hex"0453434231${length.toString(16).padStart(2, '0')}");`,
-      `require(tx.inputs[${input}].unlockingBytecode.slice(6, ${6 + length}) == hex"${blobHex}");`,
-    ];
-  }
-  if (length <= 255) {
-    return [
-      `require(tx.inputs[${input}].unlockingBytecode.slice(0, 7) == hex"04534342314c${length.toString(16).padStart(2, '0')}");`,
-      `require(tx.inputs[${input}].unlockingBytecode.slice(7, ${7 + length}) == hex"${blobHex}");`,
-    ];
-  }
-  throw new Error('layer3: compiled participant blob exceeds the supported positional push bound');
-};
+/**
+ * Exact compiler-route arguments for one graph participant. Collection witnesses follow the compiler-owned
+ * graph context in route ABI order.
+ */
+export function compiledGraphRouteArgs(
+  transcript: FinalizedCompiledGraph,
+  participant: number,
+  controllerInput: number,
+): readonly (Uint8Array | bigint | FunctionArgument)[] {
+  const execution = transcript.plan.participants[participant];
+  const offset = transcript.participantOffsets[participant];
+  if (!execution || offset === undefined) throw new Error('layer3: graph participant is out of range');
+  return Object.freeze([
+    execution.batch.blob,
+    transcript.bytes,
+    BigInt(controllerInput),
+    BigInt(offset),
+    ...execution.batch.routeWitnesses,
+  ]);
+}
 
 /**
- * Generate the transaction-wide verifier which joins independently compiled SCB1 application covenants.
- *
- * The controller is one-shot and transcript-specific. Application participants still enforce their own
- * state transitions and result-event covenant; this controller proves that every named owner actually runs
- * the exact local batch committed by the global graph, at the agreed physical input, in one balanced
- * transaction. It therefore closes the otherwise-fatal gap between a root describing calls and application
- * inputs executing unrelated routes.
+ * Fixed-code one-shot graph-root controller. Its locking bytecode is independent of any transcript, so
+ * application artifacts can pin it at compile time. A mint-once mutable NFT supplies the root commitment;
+ * `attest` authenticates the complete transcript bytes and burns the unique category.
  */
-export function generateCompiledGraphController(
-  transcript: FinalizedCompiledGraph,
-  layout: CompiledGraphPhysicalLayout,
-  resultCommitmentsHex: readonly (string | null)[] = [],
-): string {
-  const n = transcript.plan.participants.length;
-  if (layout.participantInputs.length !== n) {
-    throw new Error('layer3: physical layout must assign every compiled participant exactly once');
-  }
-  if (new Set([...layout.participantInputs, layout.controllerInput]).size !== n + 1) {
-    throw new Error('layer3: physical participant/controller inputs must be distinct');
-  }
-  if (!Number.isInteger(layout.totalSlots) || layout.totalSlots <= layout.controllerInput
-    || layout.participantInputs.some((input) =>
-      !Number.isInteger(input) || input < 0 || input >= layout.totalSlots)) {
-    throw new Error('layer3: physical layout input is outside the balanced transaction');
-  }
-  const returns = layout.returnOutputs ?? Array.from({ length: n }, () => null);
-  if (returns.length !== n) throw new Error('layer3: returnOutputs must align with participants');
-
-  const body: string[] = [
-    `require(this.activeInputIndex == ${layout.controllerInput});`,
-    `require(tx.inputs.length == ${layout.totalSlots});`,
-    `require(tx.outputs.length == ${layout.totalSlots});`,
-    `require(tx.inputs[${layout.controllerInput}].nftCommitment == hex"${transcript.root}");`,
-  ];
-  transcript.plan.participants.forEach((participant, index) => {
-    const input = layout.participantInputs[index];
-    body.push(`require(tx.inputs[${input}].lockingBytecode == hex"${participant.lockingBytecode}");`);
-    body.push(...positionalBlobChecks(input, binToHex(participant.batch.blob)));
-    const needsResult = participant.batch.results.length > 0;
-    const output = returns[index];
-    const commitment = resultCommitmentsHex[index];
-    if (needsResult) {
-      if (output === null || output === undefined || !Number.isInteger(output)
-        || output < 0 || output >= layout.totalSlots) {
-        throw new Error(`layer3: returning participant ${index} lacks a physical return output`);
-      }
-      if (commitment === null || commitment === undefined || !/^([0-9a-fA-F]{2})+$/.test(commitment)) {
-        throw new Error(`layer3: returning participant ${index} lacks its authenticated result commitment`);
-      }
-      body.push(`require(tx.outputs[${output}].nftCommitment == hex"${commitment.toLowerCase()}");`);
-    } else if (output !== null && output !== undefined) {
-      throw new Error(`layer3: non-returning participant ${index} cannot reserve a return output`);
-    }
-  });
-  // Consume the unique controller NFT. With mint-once genesis (no minting capability survives), proving that
-  // no output retains its 32-byte category makes this transcript impossible to attest twice.
-  body.push(`bytes controllerCategory = tx.inputs[${layout.controllerInput}].tokenCategory.slice(0, 32);`);
-  body.push('for (bigint output = 0; output < tx.outputs.length; output = output + 1) {');
-  body.push('  bytes outputCategory = tx.outputs[output].tokenCategory;');
-  body.push('  if (outputCategory.length >= 32) {');
-  body.push('    require(outputCategory.slice(0, 32) != controllerCategory);');
-  body.push('  }');
-  body.push('}');
-  body.push('require(true);');
+export function generateGraphRootController(): string {
   return `pragma solidcash >=0.8.0;
-contract CompiledGraphController() {
-  function attest() {
-    ${body.join('\n    ')}
+contract GraphRootController() {
+  function attest(bytes transcript) {
+    require(tx.inputs[this.activeInputIndex].nftCommitment.length == 32);
+    require(tx.inputs[this.activeInputIndex].nftCommitment == sha256(transcript));
+    require(transcript.length >= 10);
+    require(transcript.slice(0, 9) == hex"4c3347524150483100");
+    bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
+    require(participantCount >= 1 && participantCount <= 8);
+    bigint cursor = 10;
+    bigint previousInput = -1;
+    for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
+      require(cursor + 2 <= transcript.length);
+      bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(participantInput > previousInput && participantInput < tx.inputs.length);
+      previousInput = participantInput;
+      require(cursor + 2 <= transcript.length);
+      bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(lbcLength > 0 && cursor + lbcLength <= transcript.length);
+      bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
+      cursor = cursor + lbcLength;
+      require(tx.inputs[participantInput].lockingBytecode == participantLbc);
+      require(cursor + 2 <= transcript.length);
+      bigint batchLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(batchLength >= 7 && batchLength <= 223 && cursor + batchLength <= transcript.length);
+      bytes batchBlob = transcript.slice(cursor, cursor + batchLength);
+      cursor = cursor + batchLength;
+      bytes unlocking = tx.inputs[participantInput].unlockingBytecode;
+      require(unlocking.slice(0, 5) == hex"0453434231");
+      if (batchLength <= 75) {
+        require(int(bytes.concat(unlocking.slice(5, 6), hex"00")) == batchLength);
+        require(unlocking.slice(6, 6 + batchLength) == batchBlob);
+      } else {
+        require(unlocking.slice(5, 6) == hex"4c");
+        require(int(bytes.concat(unlocking.slice(6, 7), hex"00")) == batchLength);
+        require(unlocking.slice(7, 7 + batchLength) == batchBlob);
+      }
+    }
+    require(cursor < transcript.length);
+    bytes controllerCategory = tx.inputs[this.activeInputIndex].tokenCategory;
+    require(controllerCategory.length >= 32);
+    controllerCategory = controllerCategory.slice(0, 32);
+    for (bigint output = 0; output < tx.outputs.length; output = output + 1) {
+      bytes outputCategory = tx.outputs[output].tokenCategory;
+      if (outputCategory.length >= 32) {
+        require(outputCategory.slice(0, 32) != controllerCategory);
+      }
+    }
+    require(true);
   }
 }`;
 }

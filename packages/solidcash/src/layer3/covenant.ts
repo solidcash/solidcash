@@ -155,7 +155,7 @@ export function bindingFrameworkBody(n: number, brandPrefix = CONTROLLER_BRAND_P
  */
 export function executionMemberBody(
   n: number, selfPos: number, invocations: ExecutionInvocation[], controllerCategory: string, controllerLbc: string,
-  events?: ExecutionEvent[],
+  events?: ExecutionEvent[], oneShot = false,
 ): string[] {
   if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
   if (selfPos < 0 || selfPos >= n) throw new Error('layer3: selfPos out of range');
@@ -185,10 +185,14 @@ export function executionMemberBody(
   body.push(`require(tx.inputs[${n}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
   body.push(`require(tx.inputs[${n}].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
   body.push(`require(tx.inputs[${n}].nftCommitment == execRoot);`);
-  body.push(`require(tx.outputs[${n}].lockingBytecode == tx.inputs[${n}].lockingBytecode);`);
-  body.push(`require(tx.outputs[${n}].tokenCategory == tx.inputs[${n}].tokenCategory);`);
-  body.push(`require(tx.outputs[${n}].nftCommitment == tx.inputs[${n}].nftCommitment);`);
-  body.push(`require(tx.outputs[${n}].value == tx.inputs[${n}].value);`);
+  if (!oneShot) {
+    // Reusable controller: preserved in place. (One-shot: the controller covenant BURNS itself instead, so
+    // preserving it here would contradict the burn - the replay policy lives in the controller.)
+    body.push(`require(tx.outputs[${n}].lockingBytecode == tx.inputs[${n}].lockingBytecode);`);
+    body.push(`require(tx.outputs[${n}].tokenCategory == tx.inputs[${n}].tokenCategory);`);
+    body.push(`require(tx.outputs[${n}].nftCommitment == tx.inputs[${n}].nftCommitment);`);
+    body.push(`require(tx.outputs[${n}].value == tx.inputs[${n}].value);`);
+  }
   body.push(`require(this.activeInputIndex == ${selfPos});`);
   // R4 EMITTER EXHAUSTIVENESS: each committed event record is present at its fixed output (n+1+j), AND the
   // total number of OP_RETURN outputs equals the committed event count - so no UNRECORDED record can be
@@ -309,6 +313,38 @@ contract Layer3Controller(bytes deployerPkh) {
     require(checkSig(s, pk));${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == newRoot);')}
   }
   function attest() {${preserve('require(tx.outputs[this.activeInputIndex].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);')}
+  }
+}`;
+}
+
+/**
+ * A ONE-SHOT controller variant (replay policy). Its `attest` CONSUMES the controller: no output may recreate
+ * its category, so - because the category is mint-once (one NFT, no minting NFT) - after the transcript it has
+ * ZERO tokens forever and the same execution root can NEVER be re-attested. Use with `executionMemberBody
+ * (..., { oneShot: true })`, which skips the controller output-preservation (the controller is burned, not
+ * recreated). `setRoot` still lets the deployer set the root once before the single execution.
+ */
+export function generateOneShotControllerCovenant(): string {
+  return `pragma solidcash >=0.8.0;
+contract Layer3OneShotController(bytes deployerPkh) {
+  function setRoot(bytes newRoot, pubkey pk, sig s) {
+    require(hash160(pk) == deployerPkh);
+    require(checkSig(s, pk));
+    require(tx.outputs[this.activeInputIndex].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+    require(tx.outputs[this.activeInputIndex].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+    require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value);
+    require(tx.outputs[this.activeInputIndex].nftCommitment == newRoot);
+  }
+  function attest() {
+    bytes myCat = tx.inputs[this.activeInputIndex].tokenCategory.slice(0, 32);
+    bigint recreated = 0;
+    for (bigint oi = 0; oi < tx.outputs.length; oi = oi + 1) {
+      bytes oc = tx.outputs[oi].tokenCategory;
+      if (oc.length >= 32) {
+        if (oc.slice(0, 32) == myCat) { recreated = recreated + 1; }
+      }
+    }
+    require(recreated == 0);
   }
 }`;
 }

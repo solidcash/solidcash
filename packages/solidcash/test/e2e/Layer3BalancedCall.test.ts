@@ -29,7 +29,7 @@ const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots
 
 async function run(
   calleeBaseWitness: bigint,
-  commitment: 'honest' | 'omitted' | 'wrong-selector' = 'honest',
+  commitment: 'honest' | 'omitted' | 'wrong-selector' | 'wrong-arg' = 'honest',
 ): Promise<{ provider: any; rawTx: string }> {
   const provider = createTestProvider();
   const controller = new Contract(compileString(layer3.generateControllerCovenant()), [alicePkh], { provider });
@@ -41,10 +41,12 @@ async function run(
   const sink = new Contract(compileString(SINK), [], { provider });
   // Finding 6: the native call is COMMITTED in the transcript root (caller 0 -> sink.ping) and the membership
   // pins the co-spent callee at the layout callee slot to this exact address.
+  const committedSelector = commitment === 'wrong-selector' ? 'deadbeef' : layer3.methodSelector('ping(int256)');
   const externalCalls: layer3.ExecutionExternalCall[] = commitment === 'omitted' ? [] : [{
     caller: 0,
     calleeAddrHex: sink.lockingBytecode,
-    selectorHex: commitment === 'wrong-selector' ? 'deadbeef' : layer3.methodSelector('ping(int256)'),
+    selectorHex: committedSelector,
+    callPrefixHex: `04${committedSelector}${commitment === 'wrong-arg' ? '58' : '57'}`,
   }];
   const common = {
     blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],
@@ -110,6 +112,11 @@ describe('P8: native IContract call composed under the balanced layout', () => {
 
   it('HOSTILE: rejects a false committed selector while dispatching ping(int)', async () => {
     const { provider, rawTx } = await run(2n, 'wrong-selector');
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+  });
+
+  it('HOSTILE: rejects argument substitution under the correct selector', async () => {
+    const { provider, rawTx } = await run(2n, 'wrong-arg');
     await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
   });
 });

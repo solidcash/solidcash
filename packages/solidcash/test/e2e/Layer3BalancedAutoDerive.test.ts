@@ -35,7 +35,10 @@ describe('P8: SDK auto-derives the balanced native-call co-spend', () => {
     const ctrlCat: string = gen.categoryId;
     const sink = new Contract(compileString(SINK), [], { provider });
     const externalCalls: layer3.ExecutionExternalCall[] = [
-      { caller: 0, calleeAddrHex: sink.lockingBytecode, selectorHex: layer3.methodSelector('ping(int256)') },
+      {
+        caller: 0, calleeAddrHex: sink.lockingBytecode, selectorHex: layer3.methodSelector('ping(int256)'),
+        callPrefixHex: `04${layer3.methodSelector('ping(int256)')}57`,
+      },
     ];
     const common = {
       blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],

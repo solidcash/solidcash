@@ -79,7 +79,11 @@ export function executionRoot(
     const addr = hexToBin(x.calleeAddrHex);
     const xsel = hexToBin(x.selectorHex);
     if (xsel.length !== 4) throw new Error('layer3: external-call selector must be exactly 4 bytes');
-    parts.push(u8(x.caller), u8(addr.length), addr, xsel); // callerIdx || len(addr) || addr || selector[4]
+    const prefix = hexToBin(x.callPrefixHex);
+    if (prefix.length < 5 || prefix[0] !== 4 || binToHex(prefix.slice(1, 5)) !== x.selectorHex.toLowerCase()) {
+      throw new Error('layer3: external-call prefix must begin with the minimally-pushed selector');
+    }
+    parts.push(u8(x.caller), u8(addr.length), addr, xsel, u8(prefix.length), prefix);
   }
   return binToHex(sha256.hash(concatBin(parts)));
 }

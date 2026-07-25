@@ -49,11 +49,17 @@ export interface ExecutionResource { owner: number; categoryHex: string }
  * balanced base; a transitive caller uses its callee-slot input index. Committing the physical caller and
  * callee in the root makes the edge part of the authenticated transcript.
  */
-export interface ExecutionExternalCall { caller: number; calleeAddrHex: string; selectorHex: string }
+export interface ExecutionExternalCall {
+  caller: number;
+  calleeAddrHex: string;
+  selectorHex: string;
+  /** Exact minimally-encoded unlocking prefix: selector push followed by all argument pushes. */
+  callPrefixHex: string;
+}
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
 export const EXEC_DOMAIN = '4c33455845433100';
 /** Version byte of the framed execution-root encoding (audit P1). Bump on any encoding change. */
-export const EXEC_VERSION = '02';
+export const EXEC_VERSION = '03';
 /** Fixed dust value (satoshis) of a balanced event-log NFT, so no value can be siphoned into a log output. */
 export const EVENT_DUST = 1000;
 
@@ -124,8 +130,13 @@ export function framedRootExpr(
     if (!/^([0-9a-f]{2})+$/.test(addr)) throw new Error('layer3: external-call address must be hex bytes');
     const xsel = x.selectorHex.toLowerCase();
     if (!/^[0-9a-f]{8}$/.test(xsel)) throw new Error('layer3: external-call selector must be exactly 4 bytes');
-    // framed row: callerIdx || len(addr) || addr || selector[4]
-    p = `bytes.concat(${p}, hex"${u8hex(x.caller)}${u8hex(addr.length / 2)}${addr}${xsel}")`;
+    const prefix = x.callPrefixHex.toLowerCase();
+    if (!/^([0-9a-f]{2})+$/.test(prefix) || !prefix.startsWith(`04${xsel}`)) {
+      throw new Error('layer3: external-call prefix must begin with the minimally-pushed selector');
+    }
+    // framed row: callerInput || len(addr) || addr || selector[4] || len(callPrefix) || callPrefix
+    p = `bytes.concat(${p}, hex"${u8hex(x.caller)}${u8hex(addr.length / 2)}${addr}${xsel}`
+      + `${u8hex(prefix.length / 2)}${prefix}")`;
   }
   return `sha256(${p})`;
 }
@@ -598,6 +609,7 @@ export function balancedMemberBody(
   externalCalls.forEach((x, k) => {
     const addr = x.calleeAddrHex.toLowerCase();
     const selector = x.selectorHex.toLowerCase();
+    const prefix = x.callPrefixHex.toLowerCase();
     const callee = layout.calleeBase(k);
     // A callee cannot call itself or a later, not-yet-authenticated slot. Requiring a preceding executor makes
     // the row table a topological physical-call chain; logical A->B->A cycles remain represented by participant
@@ -609,6 +621,7 @@ export function balancedMemberBody(
     // Match the compiler's native external-call verification exactly: a dispatched entry point begins with a
     // minimal 4-byte push (0x04), followed by the canonical ABI selector. Magic/content scanning is forbidden.
     body.push(`require(tx.inputs[${callee}].unlockingBytecode.slice(0, 5) == hex"04${selector}");`);
+    body.push(`require(tx.inputs[${callee}].unlockingBytecode.slice(0, ${prefix.length / 2}) == hex"${prefix}");`);
   });
   return body;
 }

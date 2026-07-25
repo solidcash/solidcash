@@ -43,8 +43,15 @@ async function run(nestedCalleeBase: bigint): Promise<{ provider: any; rawTx: st
   // Finding 6: commit every physical call edge in callee-slot order. B's locking bytecode also bakes C's
   // address, but that identity pin is not a substitute for committing and dispatch-binding the B->C edge.
   const externalCalls: layer3.ExecutionExternalCall[] = [
-    { caller: 0, calleeAddrHex: bFwd.lockingBytecode, selectorHex: layer3.methodSelector('relay(int256)') },
-    { caller: 2, calleeAddrHex: c.lockingBytecode, selectorHex: layer3.methodSelector('ping(int256)') },
+    {
+      caller: 0, calleeAddrHex: bFwd.lockingBytecode, selectorHex: layer3.methodSelector('relay(int256)'),
+      // relay's synthesized native-call input-base witness is stack-encoded before its visible `v` argument.
+      callPrefixHex: `04${layer3.methodSelector('relay(int256)')}5357`,
+    },
+    {
+      caller: 2, calleeAddrHex: c.lockingBytecode, selectorHex: layer3.methodSelector('ping(int256)'),
+      callPrefixHex: `04${layer3.methodSelector('ping(int256)')}57`,
+    },
   ];
   const common = {
     blocks: BLOCKS, calleeSlots: 2, invocations: [] as layer3.ExecutionInvocation[],

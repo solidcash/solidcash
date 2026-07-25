@@ -122,3 +122,19 @@ Evidence labels:
 The specification is complete only when every non-process row is **PROVEN**, every process gate has
 its required external evidence, and the experimental/default-off marker can be removed without
 weakening any invariant.
+
+## 9. Implementation log
+
+### 2026-07-25: canonical compiled-handler plan
+
+`layer3.encodeHiddenBatch(artifact, invocations)` now produces the exact canonical SCB1 blob and
+collection route witnesses without constructing a transaction. `StatefulContract.batch()` delegates
+to this shared implementation. This is deliberately a foundation, not a completion claim:
+
+- the graph planner can now commit the same bytes the real compiler-owned handler route executes;
+- selector choice, ABI argument encoding, row order, occurrence, limits, and collection witnesses
+  come from the artifact rather than a parallel Layer-3 application DSL;
+- the existing owner-local VM suite still proves ordered execution and one-flush behavior after the
+  refactor;
+- the next step is to bind this plan into each participant projection and authenticate its result
+  event, then replace the arithmetic-only `BalancedParticipantSpec.journal`.

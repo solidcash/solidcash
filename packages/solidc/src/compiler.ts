@@ -543,7 +543,47 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     ? 1
     : resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
   let resourceHandlerInvokeName: string | undefined;
+  let resourceHandlerTakesSenderKey = false;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
+
+  // A `msg.sender` mapping key blocks value-threaded journalling: the collection-journal lowering only accepts
+  // parameter-keyed entries, so without this the batched clone re-reads and re-flushes the same physical entry
+  // once per row, and two rows demand two different post-states from one output. Every msg.sender key witness is
+  // already required to equal `__scb_graph_caller` at each row, so the rows all agree on one spender - which
+  // means the clone can take it as an ordinary parameter fed by that same route witness. The direct entry point
+  // is untouched and keeps reading `msg.sender`.
+  const SENDER_KEY_PARAMETER = '__scb_msgsender_key';
+  const senderKeyBindingsFor = (fn: FunctionDefinitionNode): { name: string; type: Type }[] => {
+    const bindings = (fn.hiddenBatchKeyWitnesses ?? []).filter((binding) => binding.source === 'msgSender');
+    const witnesses = bindings.map((binding) => routeKeyWitnesses.get(binding.routeInput)?.[0])
+      .filter((witness): witness is { name: string; type: Type } => witness !== undefined);
+    if (witnesses.length !== bindings.length) return [];
+    // One shared parameter only holds when every spender key is the same value of the same type.
+    const [first] = witnesses;
+    if (!first || witnesses.some((witness) => witness.type.toString() !== first.type.toString())) return [];
+    return witnesses;
+  };
+  const bindSenderKeyParameter = (handler: FunctionDefinitionNode, type: Type): void => {
+    handler.parameters.push(Object.assign(
+      new ParameterNode(type, SENDER_KEY_PARAMETER, []), { location: handler.location },
+    ));
+    walkInvocationAst(handler.body, (node) => {
+      if (!(node instanceof MappingAccessNode || node instanceof MappingAssignNode
+        || node instanceof MappingDeleteNode)) return;
+      node.keys = node.keys.map((key) => (key instanceof NullaryOpNode
+        && key.operator === NullaryOperator.MSG_SENDER
+        ? Object.assign(new IdentifierNode(SENDER_KEY_PARAMETER), { location: key.location })
+        : key));
+    });
+    let stillReadsSender = false;
+    walkInvocationAst(handler.body, (node) => {
+      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) {
+        stillReadsSender = true;
+      }
+    });
+    // The graph handler prologue only threads the caller when the body still reads it.
+    handler.usesMsgSender = stillReadsSender;
+  };
   if (resourceShapedHandler) {
     const handler = cloneNode(resourceShapedHandler);
     handler.name = `__scb_resource_${resourceShapedHandler.name}`;
@@ -557,11 +597,16 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       handler.graphEmissionHandler = true;
       handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(resourceShapedHandler);
     }
+    const senderKeys = senderKeyBindingsFor(resourceShapedHandler);
+    if (senderKeys.length > 0) {
+      bindSenderKeyParameter(handler, senderKeys[0].type);
+      resourceHandlerTakesSenderKey = true;
+    }
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
   }
   for (const sourceHandler of graphTailHandlers) {
-    if (!eligible.includes(sourceHandler)) continue;
+    if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
     const handler = cloneNode(sourceHandler);
     handler.name = `__scb_graph_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -586,14 +631,21 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const invoke = (args: string): string => resultIndex === undefined
       ? `${invokeName}(${args});`
       : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
+    const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
+      binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
     if (fn.parameters.length === 0) {
-      return `${condition} { require(rowArgs.length == 0); ${invoke('')} }`;
+      const senderOnly = fn === resourceShapedHandler && resourceHandlerTakesSenderKey
+        ? (fn.hiddenBatchKeyWitnesses ?? [])
+          .filter((binding) => binding.source === 'msgSender')
+          .slice(0, 1).map((binding) => witnessName(binding))
+        : [];
+      const senderOnlyChecks = senderOnly
+        .map((witness) => `require(${witness} == __scb_graph_caller);`).join(' ');
+      return `${condition} { require(rowArgs.length == 0); ${senderOnlyChecks} ${invoke(senderOnly.join(', '))} }`;
     }
     const declarations = fn.parameters.map((parameter, i) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
     const schema = fn.parameters.map((parameter) => parameter.type.toString()).join(', ');
-    const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
-      binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
     const witnessByInput = new Map((fn.hiddenBatchKeyWitnesses ?? [])
       .filter((binding) => binding.source !== 'msgSender')
       .map((binding) => [binding.inputIndex, witnessName(binding)]));
@@ -601,8 +653,17 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       binding.source === 'msgSender'
         ? `require(${witnessName(binding)} == __scb_graph_caller);`
         : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
-    const callArgs = fn.parameters.map((_parameter, i) =>
-      witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`).join(', ');
+    // The clone's trailing spender parameter (when it has one) is fed by the same witness the row just checked
+    // against `__scb_graph_caller`, so the batched entry keys stay caller-authorized.
+    const senderKeyArgument = fn === resourceShapedHandler && resourceHandlerTakesSenderKey
+      ? (fn.hiddenBatchKeyWitnesses ?? [])
+        .filter((binding) => binding.source === 'msgSender')
+        .slice(0, 1).map((binding) => witnessName(binding))
+      : [];
+    const callArgs = [
+      ...fn.parameters.map((_parameter, i) => witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`),
+      ...senderKeyArgument,
+    ].join(', ');
     const decode = declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
       : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
@@ -630,38 +691,18 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   ];
   const routeParameters = ['bytes batchBlob', ...graphRouteParameters, ...routeKeyParameters].join(', ');
   const parseGraphCaller = graphControllerLbc === undefined ? '' : `
-          require(__scb_graph_caller_cursor + 2 <= __internal__graphCallers.length);
-          bigint __scb_graph_caller_length = int(bytes.concat(
-            __internal__graphCallers.slice(
-              __scb_graph_caller_cursor, __scb_graph_caller_cursor + 2
-            ),
-            hex"00"
-          ));
-          __scb_graph_caller_cursor = __scb_graph_caller_cursor + 2;
-          require(__scb_graph_caller_cursor + __scb_graph_caller_length
-            <= __internal__graphCallers.length);
-          bytes __scb_graph_caller = __internal__graphCallers.slice(
-            __scb_graph_caller_cursor,
-            __scb_graph_caller_cursor + __scb_graph_caller_length
+          address __scb_graph_caller;
+          (__scb_graph_caller, __scb_graph_caller_cursor) = __scb_parse_graph_caller(
+            __internal__graphCallers, __scb_graph_caller_cursor
           );
-          __scb_graph_caller_cursor = __scb_graph_caller_cursor + __scb_graph_caller_length;
   `;
   const parseOneRow = (rowExpression: string, resultIndex?: number, rowIndex?: number): string => `
           ${parseGraphCaller}
-          require(cursor + 12 <= batchBlob.length);
-          bytes4 rowSelector = bytes4(batchBlob.slice(cursor, cursor + 4));
-          cursor = cursor + 4;
-          bigint callsite = int(bytes.concat(batchBlob.slice(cursor, cursor + 4), hex"00"));
-          cursor = cursor + 4;
-          require(callsite == ${rowExpression});
-          bigint occurrence = int(bytes.concat(batchBlob.slice(cursor, cursor + 2), hex"00"));
-          cursor = cursor + 2;
-          require(occurrence == 0);
-          bigint argsLength = int(bytes.concat(batchBlob.slice(cursor, cursor + 2), hex"00"));
-          cursor = cursor + 2;
-          require(argsLength >= 0 && cursor + argsLength <= batchBlob.length);
-          bytes rowArgs = batchBlob.slice(cursor, cursor + argsLength);
-          cursor = cursor + argsLength;
+          bytes4 rowSelector;
+          bytes rowArgs;
+          (rowSelector, rowArgs, cursor) = __scb_parse_row(
+            batchBlob, cursor, ${rowExpression}
+          );
           bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
           ${buildDecodeAndCall(resultIndex, rowIndex)}
           else { revert("unknown batch selector"); }
@@ -719,6 +760,39 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   `;
   const source = `pragma solidcash >=0.8.0;
     contract __HiddenBatchHost() {
+      function __scb_parse_row(
+        bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite
+      ) internal pure returns (bytes4, bytes, bigint) {
+        require(__scb_at + 12 <= __scb_blob.length);
+        bytes4 __scb_parsed_selector = bytes4(__scb_blob.slice(__scb_at, __scb_at + 4));
+        __scb_at = __scb_at + 4;
+        bigint __scb_callsite = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 4), hex"00"));
+        __scb_at = __scb_at + 4;
+        require(__scb_callsite == __scb_expected_callsite);
+        bigint __scb_occurrence = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 2), hex"00"));
+        __scb_at = __scb_at + 2;
+        require(__scb_occurrence == 0);
+        bigint __scb_args_length = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 2), hex"00"));
+        __scb_at = __scb_at + 2;
+        require(__scb_args_length >= 0 && __scb_at + __scb_args_length <= __scb_blob.length);
+        bytes __scb_parsed_args = __scb_blob.slice(__scb_at, __scb_at + __scb_args_length);
+        return (__scb_parsed_selector, __scb_parsed_args, __scb_at + __scb_args_length);
+      }
+      ${graphControllerLbc === undefined ? '' : `
+      function __scb_parse_graph_caller(
+        bytes __scb_callers, bigint __scb_at
+      ) internal pure returns (address, bigint) {
+        require(__scb_at + 2 <= __scb_callers.length);
+        bigint __scb_caller_length = int(bytes.concat(
+          __scb_callers.slice(__scb_at, __scb_at + 2), hex"00"
+        ));
+        __scb_at = __scb_at + 2;
+        require(__scb_at + __scb_caller_length <= __scb_callers.length);
+        return (
+          address(__scb_callers.slice(__scb_at, __scb_at + __scb_caller_length)),
+          __scb_at + __scb_caller_length
+        );
+      }`}
       function __scb1(${routeParameters}) external${returnDeclaration} {
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
@@ -761,11 +835,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       }
     }`;
   const routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
-  const route = routeAst.contract.functions[0];
+  const route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
   route.hiddenBatchRoute = true;
   route.hiddenBatchMaximumRows = routeMaximumRows;
   route.location = contract.location;
-  contract.functions.push(route);
+  const helpers = routeAst.contract.functions.slice(0, -1);
+  for (const helper of helpers) helper.location = contract.location;
+  contract.functions.push(...helpers, route);
 }
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by

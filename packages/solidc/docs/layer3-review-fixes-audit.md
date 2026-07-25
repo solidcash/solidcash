@@ -3,7 +3,35 @@
 Date: 2026-07-25  
 Target: `e3ab7c26f7ee9ad31aed50909c4681b3b4f38714`  
 Reviewed commits: `c1a258e4`, `e3ab7c26`  
-Disposition: **direct covenant attacks fixed; native-call transcript claim remains open**
+Disposition at reviewed target: **direct covenant attacks fixed; native-call transcript claim remained open**
+
+## Subsequent resolution (2026-07-25)
+
+The accepted probes recorded by this audit were retained and flipped to rejection
+tests. Commits `2a8e98e8`, `6e160b5c`, and `11477b44` close the actionable
+findings as follows:
+
+- F1: `externalCalls.length` must equal `calleeSlots`; omission and surplus fail
+  during generation.
+- F2: every callee slot is bound to the exact committed locking bytecode and
+  the positional minimal selector push in its actual unlocking bytecode. Native
+  rows require a dispatched, multi-entry callee because a single-entry artifact
+  legitimately elides selector dispatch.
+- F3: the row commits the physical caller input, callee address, selector, and
+  exact minimally encoded selector/argument prefix. The covenant compares the
+  entire prefix with the actual callee unlocking bytecode. Physical callers
+  must precede their callee slot.
+- F4: the transitive fixture commits both A -> B and B -> C. B is named by its
+  physical callee-slot input, and both selectors, visible arguments, and
+  synthesized co-spend indices are bound.
+- F5: balanced event outputs now use SolidCash's standard category-branded
+  anonymous event-NFT covenant, including its 144-block CSV cleanup path,
+  rather than the participant master covenant.
+
+VM regressions now reject an omitted row, false selector, substituted argument,
+wrong callee index, and omitted/incorrect transitive execution. This resolution
+does not turn the bounded journal into a general VM or remove the documented
+manual-spec/compiler-auto-wiring boundary.
 
 ## Summary
 

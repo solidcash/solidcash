@@ -17,10 +17,11 @@ That review found VM-confirmed accepted attacks. All are now fixed at the covena
   and the FULL output commitment is bound, so no trailing state can drift.
 - Arithmetic domain specified: non-negative 8-byte counter; `require(jstate >= 0)` rejects underflow,
   `bytes8()` fails closed on overflow.
-- Finding 6 (native calls outside the transcript) - the native call is now COMMITTED in the framed root
-  (`ExecutionExternalCall`, root version bumped to `02`) and the balanced membership pins the co-spent callee
-  at the layout callee slot to the committed address, witness-independent (`Layer3BalancedCall`,
-  `Layer3BalancedTransitive`).
+- Finding 6 (native calls outside the transcript) - the native call is committed in framed-root version `03`.
+  `ExecutionExternalCall` exhaustively maps one row to every physical callee slot and binds the physical caller,
+  exact callee locking bytecode, actual dispatched selector, and exact minimally encoded selector/argument
+  prefix. `Layer3BalancedCall` rejects omitted rows, false selectors, and argument substitution;
+  `Layer3BalancedTransitive` commits both A -> B and B -> C.
 
 Documented bounds (acknowledged, not hidden - reviewer notes that remain by design):
 
@@ -66,7 +67,7 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
 | P5 | Resources disconnected from the root | CLOSED | `ExecutionResource {owner, categoryHex}` in the framed root; owner verifies the co-spent NFT; the journal writes that resource. `Layer3ResourceRoot`. |
 | P6 | Cross-edge ordering/dependency absent | CLOSED (journal model) | `Layer3Journal` ORDERING (25 != 30), `Layer3Cycle` (edge 2 observes edge 1's post-state). |
 | P7 | Callee exhaustiveness incorrect | CLOSED (journal rows) | Every incoming edge is folded into the flush; omit/add a row and it fails. Native-call-has-a-row is P8. |
-| P8 | Auto-wiring exercises no native calls | SUBSTANTIALLY CLOSED | `generateBalancedParticipant` composes with a REAL native `IContract(addr).method()` call: single call (`Layer3BalancedCall`) and a TRANSITIVE A->B->C chain (`Layer3BalancedTransitive`), callees co-spent in the layout callee slots, callers self-preserving, wrong callee-base rejected. Remaining: SDK auto-derivation of the co-spends from compiler metadata (vs. supplied witness). |
+| P8 | Auto-wiring exercises no native calls | SUBSTANTIALLY CLOSED | Real direct and transitive native calls are co-spent under balanced bases. Rows and slots are bijective; address, dispatched selector, exact argument prefix, physical caller, and both A -> B / B -> C edges are root-bound. Hostile omission, selector, argument, and callee-index cases reject. Remaining ergonomic boundary: derive the row/prefix automatically from compiler metadata rather than an explicit SDK spec. |
 | P9 | Balanced block-layout composability | CLOSED (core invariant) | `balancedLayout` gives every participant a contiguous block (executor + state NFTs + event slots) with equal input/output cardinality; blocks concatenate by computed bases; covenants address slots by BLOCK BASE, and the balanced closure rejects inserted/omitted slots (`Layer3Balanced` shows A's size-2 block shifting B's base to 2). Criteria 1,2,3,4,7,9,10 VM-proven (incl. transitive); conditional-same-size (5), fee-invariance (6), artifact-only auto-composition (8) not yet exercised. |
 | P10 | Event exhaustiveness wrong transport | CLOSED | Events are NFT slots inside the emitter's balanced block (block-relative), branded with the emitter's committed state category, structurally exhaustive via the closure - no global OP_RETURN scan, spendable records (`Layer3BalancedEvents`). |
 | P11 | TypedTransition length disagreement | CLOSED | SDK and covenant both require `commitment.length == total`. `Layer3TypedTransition`. |
@@ -85,8 +86,9 @@ Tests: `Layer3Journal.test.ts` (ordered multi-op, ordering-matters, hostile fina
   tail (fee input paired with change output).
 - Covenants address every slot by BLOCK BASE, never a fixed global index. The balanced closure
   (`tx.inputs.length == tx.outputs.length == totalSlots`) rejects any inserted or omitted slot.
-- Events are NFT slots inside the emitter's block, branded by its committed state category; exhaustiveness is
-  structural (fixed `block.events` + closure), replacing the global OP_RETURN count.
+- Events are NFT slots inside the emitter's block, branded by its committed state category and locked to the
+  standard anonymous event covenant (anyone-can-clean after 144 blocks); exhaustiveness is structural
+  (fixed `block.events` + closure), replacing the global OP_RETURN count.
 - A participant can make a real native `IContract(addr).method()` call: the callee is co-spent in the callee
   slot and the compiler's on-chain dispatch verification (`OP_UTXOBYTECODE == addr`, master preservation,
   caller self-preservation) runs alongside the balanced membership.

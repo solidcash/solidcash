@@ -591,7 +591,7 @@ export function balancedMemberBody(
     myEvents.forEach((ev, e) => {
       const eo = layout.eventSlot(selfPos, e);
       // FULLY authenticate the event NFT (audit): a log record is an IMMUTABLE (none-capability), zero-amount,
-      // dust NFT locked to the emitter. Comparing the WHOLE tokenCategory (32 bytes) forces none capability -
+      // dust NFT locked to the standard delayed-cleanup covenant. Comparing the WHOLE tokenCategory forces none -
       // a mutable/minting NFT carries a 33-byte category and fails, so no extra mint/mutate authority can be
       // smuggled into an event slot. Value is pinned to dust so satoshis cannot be siphoned into the log.
       body.push(`require(tx.outputs[${eo}].tokenCategory == hex"${brandInternal}");`);

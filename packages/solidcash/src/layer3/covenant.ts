@@ -8,6 +8,9 @@
 import { binToHex, hexToBin, sha256, utf8ToBin } from '@bitauth/libauth';
 import { buildAnonymousEventNftCovenantScript } from '@solidcash/utils';
 import { scriptToLockingBytecode } from '../utils.js';
+import {
+  compilerDerivedCallStatements, isCompilerDerivedExternalCalls, type DerivedExternalCallTable,
+} from './derive-native.js';
 
 /**
  * The canonical 4-byte selector of a participant METHOD (audit P3): first 4 bytes of sha256(signature). The
@@ -531,6 +534,9 @@ export function balancedMemberBody(
   if (selfPos < 0 || selfPos >= layout.n) throw new Error('layer3: selfPos out of range');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
   if (!/^([0-9a-fA-F]{2})+$/.test(controllerLbc)) throw new Error('layer3: controllerLbc must be hex bytes');
+  if (layout.calleeSlots > 0 && !isCompilerDerivedExternalCalls(externalCalls)) {
+    throw new Error('layer3: native external-call rows must be derived from compiler artifact metadata');
+  }
   if (externalCalls.length !== layout.calleeSlots) {
     throw new Error('layer3: every callee slot must have exactly one external-call row');
   }
@@ -617,6 +623,15 @@ export function balancedMemberBody(
     if (x.caller >= callee) {
       throw new Error('layer3: external-call caller must precede its callee slot');
     }
+    const participantCaller = layout.blocks.findIndex((_block, participant) => layout.base(participant) === x.caller);
+    if (participantCaller >= 0) {
+      body.push(`require(tx.inputs[${x.caller}].lockingBytecode == lbc${participantCaller});`);
+    } else {
+      const callerSlot = x.caller - layout.calleeBase(0);
+      const callerRow = externalCalls[callerSlot];
+      if (!callerRow) throw new Error('layer3: transitive caller is not a preceding committed callee');
+      body.push(`require(tx.inputs[${x.caller}].lockingBytecode == hex"${callerRow.calleeAddrHex.toLowerCase()}");`);
+    }
     body.push(`require(tx.inputs[${callee}].lockingBytecode == hex"${addr}");`);
     // Match the compiler's native external-call verification exactly: a dispatched entry point begins with a
     // minimal 4-byte push (0x04), followed by the canonical ABI selector. Magic/content scanning is forbidden.
@@ -646,7 +661,7 @@ export interface BalancedParticipantSpec {
   events?: ExecutionEvent[];
   resources?: ExecutionResource[];
   /** Committed native calls (finding 6): each pins the co-spent callee at a layout callee slot from the root. */
-  externalCalls?: ExecutionExternalCall[];
+  externalCalls?: DerivedExternalCallTable;
   oneShot?: boolean;
   appBody?: string[];
   /**
@@ -667,6 +682,9 @@ export interface BalancedParticipantSpec {
 export function generateBalancedParticipant(spec: BalancedParticipantSpec): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.contractName)) throw new Error('layer3: invalid contractName');
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.functionName)) throw new Error('layer3: invalid functionName');
+  if ((spec.calleeSlots ?? 0) > 0 && !isCompilerDerivedExternalCalls(spec.externalCalls ?? [])) {
+    throw new Error('layer3: native external-call rows must be derived from compiler artifact metadata');
+  }
   const layout = balancedLayout(spec.blocks, spec.calleeSlots ?? 0);
   const member = balancedMemberBody(
     layout, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc,
@@ -718,7 +736,9 @@ export function generateBalancedParticipant(spec: BalancedParticipantSpec): stri
       stateBody.push(`require(tx.outputs[${si}].nftCommitment == tx.inputs[${si}].nftCommitment);`);
     }
   });
-  const body = [...member, ...edgeVars, ...stateBody, ...(spec.appBody ?? [])];
+  const derivedCalls = spec.externalCalls
+    ? compilerDerivedCallStatements(spec.externalCalls, layout.base(spec.selfPos)) : [];
+  const body = [...member, ...edgeVars, ...stateBody, ...derivedCalls, ...(spec.appBody ?? [])];
   const preamble = spec.preamble ? `${spec.preamble}\n` : '';
   return `pragma solidcash >=0.8.0;\n${preamble}contract ${spec.contractName}(${spec.constructorParams ?? ''}) {\n`
     + `  function ${spec.functionName}(${spec.functionParams ?? ''}) {\n    ${body.join('\n    ')}\n  }\n}`;

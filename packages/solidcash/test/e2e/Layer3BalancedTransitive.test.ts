@@ -27,6 +27,11 @@ contract Fwd(bytes cAddr) {
   function relay(int v) { ISink(cAddr).ping(v); require(v >= 0); }
   function other(int v) { require(v >= 0); }
 }`;
+const CALLER_PROBE = `pragma solidcash >=0.8.0;
+interface IFwd { function relay(int v); }
+contract CallerProbe(bytes fwdAddr) {
+  function invoke(int val) { IFwd(fwdAddr).relay(val); require(val >= 0); }
+}`;
 
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 0, events: 0 }];
 
@@ -40,19 +45,13 @@ async function run(nestedCalleeBase: bigint): Promise<{ provider: any; rawTx: st
   const ctrlCat: string = gen.categoryId;
   const c = new Contract(compileString(SINK), [], { provider });               // leaf
   const bFwd = new Contract(compileString(FWD), [c.lockingBytecode], { provider }); // forwarder -> C
-  // Finding 6: commit every physical call edge in callee-slot order. B's locking bytecode also bakes C's
-  // address, but that identity pin is not a substitute for committing and dispatch-binding the B->C edge.
-  const externalCalls: layer3.ExecutionExternalCall[] = [
-    {
-      caller: 0, calleeAddrHex: bFwd.lockingBytecode, selectorHex: layer3.methodSelector('relay(int256)'),
-      // relay's synthesized native-call input-base witness is stack-encoded before its visible `v` argument.
-      callPrefixHex: `04${layer3.methodSelector('relay(int256)')}5357`,
-    },
-    {
-      caller: 2, calleeAddrHex: c.lockingBytecode, selectorHex: layer3.methodSelector('ping(int256)'),
-      callPrefixHex: `04${layer3.methodSelector('ping(int256)')}57`,
-    },
-  ];
+  const layout = layer3.balancedLayout(BLOCKS, 2);
+  const callerProbe = new Contract(compileString(CALLER_PROBE), [bFwd.lockingBytecode], { provider });
+  // The SDK walks CallerProbe.invoke -> Fwd.relay -> Sink.ping from compiler metadata, allocating both rows.
+  const externalCalls = layer3.deriveNativeExternalCalls({
+    caller: callerProbe, functionName: 'invoke', functionArgs: [7n],
+    callerInput: layout.base(0), layout, targets: { IFwd: bFwd, ISink: c },
+  });
   const common = {
     blocks: BLOCKS, calleeSlots: 2, invocations: [] as layer3.ExecutionInvocation[],
     controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[], externalCalls,
@@ -60,7 +59,7 @@ async function run(nestedCalleeBase: bigint): Promise<{ provider: any; rawTx: st
   const a = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Caller', functionName: 'invoke', selfPos: 0,
     preamble: 'interface IFwd { function relay(int v); }', constructorParams: 'bytes fwdAddr',
-    functionParams: 'int val', appBody: ['IFwd(fwdAddr).relay(val);'],
+    functionParams: 'int val',
   })), [bFwd.lockingBytecode], { provider });
   const passive = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Passive', functionName: 'noop', selfPos: 1,

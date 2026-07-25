@@ -23,6 +23,11 @@ contract Sink() is ISink {
   function ping(int x) { require(x >= 0); }
   function other(int x) { require(x >= 0); }
 }`;
+const CALLER_PROBE = `pragma solidcash >=0.8.0;
+interface ISink { function ping(int x); }
+contract CallerProbe(bytes sinkAddr) {
+  function invoke(int val) { ISink(sinkAddr).ping(val); require(val >= 0); }
+}`;
 
 // A(caller) + B(passive), one native-call callee slot. base(0)=0, base(1)=1, calleeBase=2, controller=3, fee=4.
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 0, events: 0 }];
@@ -39,15 +44,14 @@ async function run(
   ]);
   const ctrlCat: string = gen.categoryId;
   const sink = new Contract(compileString(SINK), [], { provider });
-  // Finding 6: the native call is COMMITTED in the transcript root (caller 0 -> sink.ping) and the membership
-  // pins the co-spent callee at the layout callee slot to this exact address.
-  const committedSelector = commitment === 'wrong-selector' ? 'deadbeef' : layer3.methodSelector('ping(int256)');
-  const externalCalls: layer3.ExecutionExternalCall[] = commitment === 'omitted' ? [] : [{
-    caller: 0,
-    calleeAddrHex: sink.lockingBytecode,
-    selectorHex: committedSelector,
-    callPrefixHex: `04${committedSelector}${commitment === 'wrong-arg' ? '58' : '57'}`,
-  }];
+  const callerProbe = new Contract(compileString(CALLER_PROBE), [sink.lockingBytecode], { provider });
+  const layout = layer3.balancedLayout(BLOCKS, 1);
+  const derived = layer3.deriveNativeExternalCalls({
+    caller: callerProbe, functionName: 'invoke', functionArgs: [7n],
+    callerInput: layout.base(0), layout, targets: { ISink: sink },
+  });
+  const externalCalls = commitment === 'omitted'
+    ? ([] as unknown as layer3.DerivedExternalCallTable) : derived;
   const common = {
     blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],
     controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[], externalCalls,
@@ -55,7 +59,7 @@ async function run(
   const a = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Caller', functionName: 'invoke', selfPos: 0,
     preamble: 'interface ISink { function ping(int x); }', constructorParams: 'bytes sinkAddr',
-    functionParams: 'int val', appBody: ['ISink(sinkAddr).ping(val);'],
+    functionParams: 'int val',
   })), [sink.lockingBytecode], { provider });
   const b = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Passive', functionName: 'noop', selfPos: 1,
@@ -80,7 +84,9 @@ async function run(
   const tx = new TransactionBuilder({ provider });
   tx.addInput(aU, a.unlock.invoke(7n, calleeBaseWitness)); // 0 caller (forwards 7 to the callee)
   tx.addInput(bU, b.unlock.noop());                        // 1 passive participant
-  tx.addInput(sinkU, sink.unlock.ping(7n));                // 2 callee (native-call target)
+  tx.addInput(sinkU, commitment === 'wrong-selector'
+    ? sink.unlock.other(7n)
+    : sink.unlock.ping(commitment === 'wrong-arg' ? 8n : 7n)); // 2 actual callee dispatch
   tx.addInput(ctrlUtxo, controller.unlock.attest());       // 3 controller
   tx.addInput(fee, p2.unlock.spend(alicePub, sig()));      // 4 fee
   // 0 caller self-preserved: a regular ext-call recreates the caller (lbc + value).
@@ -107,7 +113,7 @@ describe('P8: native IContract call composed under the balanced layout', () => {
   });
 
   it('HOSTILE: rejects a native call with no committed external-call row', async () => {
-    await expect(run(2n, 'omitted')).rejects.toThrow('every callee slot must have exactly one external-call row');
+    await expect(run(2n, 'omitted')).rejects.toThrow('must be derived from compiler artifact metadata');
   });
 
   it('HOSTILE: rejects a false committed selector while dispatching ping(int)', async () => {

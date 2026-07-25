@@ -21,6 +21,11 @@ contract Sink() is ISink {
   function ping(int x) { require(x >= 0); }
   function other(int x) { require(x >= 0); }
 }`;
+const CALLER_PROBE = `pragma solidcash >=0.8.0;
+interface ISink { function ping(int x); }
+contract CallerProbe(bytes sinkAddr) {
+  function invoke(int val) { ISink(sinkAddr).ping(val); require(val >= 0); }
+}`;
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 0, events: 0 }];
 
 describe('P8: SDK auto-derives the balanced native-call co-spend', () => {
@@ -34,12 +39,11 @@ describe('P8: SDK auto-derives the balanced native-call co-spend', () => {
     ]);
     const ctrlCat: string = gen.categoryId;
     const sink = new Contract(compileString(SINK), [], { provider });
-    const externalCalls: layer3.ExecutionExternalCall[] = [
-      {
-        caller: 0, calleeAddrHex: sink.lockingBytecode, selectorHex: layer3.methodSelector('ping(int256)'),
-        callPrefixHex: `04${layer3.methodSelector('ping(int256)')}57`,
-      },
-    ];
+    const callerProbe = new Contract(compileString(CALLER_PROBE), [sink.lockingBytecode], { provider });
+    const externalCalls = layer3.deriveNativeExternalCalls({
+      caller: callerProbe, functionName: 'invoke', functionArgs: [7n],
+      callerInput: layout.base(0), layout, targets: { ISink: sink },
+    });
     const common = {
       blocks: BLOCKS, calleeSlots: 1, invocations: [] as layer3.ExecutionInvocation[],
       controllerCategory: ctrlCat, controllerLbc: ctrlLbc, resources: [] as layer3.ExecutionResource[], externalCalls,
@@ -47,7 +51,7 @@ describe('P8: SDK auto-derives the balanced native-call co-spend', () => {
     const a = new Contract(compileString(layer3.generateBalancedParticipant({
       ...common, contractName: 'Caller', functionName: 'invoke', selfPos: 0,
       preamble: 'interface ISink { function ping(int x); }', constructorParams: 'bytes sinkAddr',
-      functionParams: 'int val', appBody: ['ISink(sinkAddr).ping(val);'],
+      functionParams: 'int val',
     })), [sink.lockingBytecode], { provider });
     const b = new Contract(compileString(layer3.generateBalancedParticipant({
       ...common, contractName: 'Passive', functionName: 'noop', selfPos: 1,

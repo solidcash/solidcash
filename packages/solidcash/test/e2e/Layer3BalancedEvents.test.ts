@@ -22,7 +22,9 @@ const DEPOSIT = layer3.methodSelector('deposit');
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 1, events: 1 }];
 const EDGES: layer3.ExecutionInvocation[] = [{ caller: 0, callee: 1, selectorHex: DEPOSIT, argsHex: binToHex(num8(5n)) }];
 
-async function run(topic: string): Promise<{ provider: any; rawTx: string }> {
+async function run(
+  topic: string, capability: 'none' | 'mutable' | 'minting' = 'none', siphonStateValue = false,
+): Promise<{ provider: any; rawTx: string }> {
   const provider = createTestProvider();
   const controller = new Contract(compileString(layer3.generateControllerCovenant()), [alicePkh], { provider });
   const ctrlLbc = controller.lockingBytecode;
@@ -75,18 +77,18 @@ async function run(topic: string): Promise<{ provider: any; rawTx: string }> {
   tx.addOutput({ to: p2.address, amount: 1000n });    // 0 A executor paired
   tx.addOutput({ to: p2.address, amount: 1000n });    // 1 B executor paired
   tx.addOutput({ // 2 B state' (minting preserved, deposit journaled 10->15)
-    to: p2.tokenAddress, amount: bState.satoshis,
+    to: p2.tokenAddress, amount: siphonStateValue ? 1000n : bState.satoshis,
     token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: binToHex(num8(15n)) } },
   });
   tx.addOutput({ // 3 B event NFT: same category (branded), none capability, topic in commitment
     to: p2.tokenAddress, amount: 1000n,
-    token: { category: catB, amount: 0n, nft: { capability: 'none', commitment: topic } },
+    token: { category: catB, amount: 0n, nft: { capability, commitment: topic } },
   });
   tx.addOutput({ // 4 controller preserved
     to: controller.tokenAddress, amount: ctrlUtxo.satoshis,
     token: { category: ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: root } },
   });
-  tx.addOutput({ to: p2.address, amount: 10000n });   // 5 change
+  tx.addOutput({ to: p2.address, amount: siphonStateValue ? 13000n : 10000n }); // 5 change
   return { provider, rawTx: raw(tx) };
 }
 
@@ -99,5 +101,15 @@ describe('P10: event NFT slots within balanced block bounds (no global OP_RETURN
   it('HOSTILE: an event NFT with the wrong topic is rejected', async () => {
     const { provider, rawTx } = await run('cafebabe');
     await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+  });
+
+  it('AUDIT: accepts a minting-capability NFT as an event output', async () => {
+    const { provider, rawTx } = await run(TOPIC, 'minting');
+    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+  });
+
+  it('AUDIT: accepts siphoning satoshis from the journaled state slot into change', async () => {
+    const { provider, rawTx } = await run(TOPIC, 'none', true);
+    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
   });
 });

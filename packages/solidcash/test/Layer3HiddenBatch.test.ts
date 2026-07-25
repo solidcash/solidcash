@@ -1,4 +1,5 @@
-import { binToHex } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
+import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { layer3 } from '../src/index.js';
@@ -52,6 +53,18 @@ describe('layer3.encodeHiddenBatch', () => {
       { row: 1, types: ['int256'] },
     ]);
     expect(returning.hiddenBatch!.route.outputs).toEqual([{ type: 'bytes' }]);
+
+    const commitment = scriptToBytecode([
+      bigIntToVmNumber(6n), bigIntToVmNumber(9n),
+      ...Array.from({ length: 6 }, () => bigIntToVmNumber(0n)),
+    ]);
+    expect(layer3.decodeHiddenBatchResults(returning, encoded, commitment)).toEqual([
+      { row: 0, type: 'int256', value: 6n },
+      { row: 1, type: 'int256', value: 9n },
+    ]);
+    expect(() => layer3.decodeHiddenBatchResults(
+      returning, encoded, Uint8Array.from([...commitment, 0]),
+    )).toThrow(/unchecked suffix/);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

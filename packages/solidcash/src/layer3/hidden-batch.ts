@@ -1,5 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { type Artifact, scriptToBytecode } from '@solidcash/utils';
+import {
+  decodePushdataValue, type Artifact, type StateValue, scriptToBytecode,
+} from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 
 export interface HiddenBatchInvocation {
@@ -20,6 +22,12 @@ export interface EncodedHiddenBatch {
    * before decoding it.
    */
   results: readonly { row: number; types: readonly string[] }[];
+}
+
+export interface DecodedHiddenBatchResult {
+  row: number;
+  type: string;
+  value: StateValue;
 }
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
@@ -135,4 +143,47 @@ export function encodeHiddenBatch(
     rowCount: invocations.length,
     results: Object.freeze(results),
   };
+}
+
+/**
+ * Decode and completely consume the aggregate return-event commitment produced by a returning SCB1 route.
+ *
+ * The current compiler route requires one common return type and encodes `maximumRows` fields, with inactive
+ * suffix fields left at the language default. We decode the complete commitment (including that suffix) so a
+ * consumer cannot authenticate a valid prefix while ignoring attacker-controlled trailing bytes, then expose
+ * only the rows actually reached by the plan.
+ */
+export function decodeHiddenBatchResults(
+  artifact: Artifact,
+  plan: EncodedHiddenBatch,
+  commitment: Uint8Array,
+): readonly DecodedHiddenBatchResult[] {
+  const capability = artifact.hiddenBatch;
+  if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+  if (plan.results.length === 0) {
+    if (commitment.length !== 0) throw new Error('Non-returning SCB1 plan has an unexpected result commitment');
+    return [];
+  }
+  const types = new Set(plan.results.flatMap((result) => result.types));
+  if (types.size !== 1 || plan.results.some((result) => result.types.length !== 1)) {
+    throw new Error('SCB1 result decoding requires the compiler route one-common-result invariant');
+  }
+  const [type] = [...types];
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  const all: StateValue[] = [];
+  let offset = 0;
+  for (let row = 0; row < capability.maximumRows; row += 1) {
+    if (offset >= commitment.length) throw new Error('SCB1 result commitment ended before every result slot');
+    const decoded = decodePushdataValue(commitment, offset, type, structs);
+    all.push(decoded.value);
+    offset += decoded.bytesConsumed;
+  }
+  if (offset !== commitment.length) {
+    throw new Error('SCB1 result commitment contains an unchecked suffix');
+  }
+  return Object.freeze(plan.results.map((result) => Object.freeze({
+    row: result.row,
+    type,
+    value: all[result.row],
+  })));
 }

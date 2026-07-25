@@ -4,26 +4,30 @@ This package is for the external covenant review the specification requires (gat
 covenants, the canonical encoding, the threat model, the trust assumptions, and the hostile test matrix, and
 gives an HONEST per-finding status. Independent review itself remains outstanding.
 
-## Correction after the required-path audit (`layer3-required-path-audit.md`, 0d7b065b)
+## Status after the required-path audit (`layer3-required-path-audit.md`, 0d7b065b)
 
-That audit (Decision 3) is ACCEPTED. The honest bottom line: what exists is a set of sound BUILDING BLOCKS
-and a now-CANONICAL commitment format, NOT a complete execution bus. Specifically:
+That audit (Decision 3) is ACCEPTED, and its findings have since been worked through. The authoritative,
+per-finding status is `layer3-required-path-resolution.md`; the summary for the reviewer:
 
-- FIXED after the audit (`e5be6df1`): P1 the execution-root encoding is now framed/versioned/collision-free
-  via one shared encoder; P11 typed-transition length agreement; P12 setRoot is set-once.
-- NOT FIXED (the load-bearing gap): the invocation EDGES and SELECTORS are LABELS hashed into the controller
-  commitment - they are NOT bound to the transaction's actual dispatched selectors or calls (audit P2/P3/P7).
-  So `Layer3Cycles` proves the participants AGREE ON a `[A->B, B->A]` label list, NOT that A calls B or B
-  calls A; the selectors `11111111/22222222` are arbitrary while the executed methods are `A.f()/B.g()`.
-  `Layer3RuntimeArgs` is a BESPOKE covenant, not the module protocol; `ExecutionInvocation` still carries only
-  `{caller, callee, selectorHex}` with no argument/result/resource rows (P4/P5). Cross-edge ordering (P6),
-  balanced block layouts (P9), and event-NFT slots (P10) are absent.
+- The load-bearing objection - invocation edges/selectors were LABELS hashed into the commitment, not bound to
+  execution - is closed by the CALLEE STATE JOURNAL (`generateBalancedParticipant({journal})`): a callee reads
+  its co-spent state, EXECUTES every incoming edge in order (committed selector -> op, applied with the edge's
+  args), and flushes once; a designated outgoing edge carries its authentic post-state (A->B->A). This makes
+  P2 (repeated callee / A->B->A), P3 (selector dispatch), P6 (ordering), P7 (row exhaustiveness) real state
+  transitions, VM-proven (`Layer3Journal`, `Layer3Cycle`).
+- BALANCED BLOCK LAYOUTS (P9) and EVENT-NFT SLOTS (P10) are implemented: `balancedLayout` /
+  `balancedMemberBody` / `generateBalancedParticipant` give every participant a contiguous block addressed by
+  BLOCK BASE, with the balanced closure rejecting inserted/omitted slots, event NFTs inside block bounds, and
+  all 10 acceptance criteria of `balanced-block-layout-composability.md` VM-proven.
+- NATIVE CALLS (P8): a generated participant makes real `IContract(addr).method()` calls (single + transitive
+  A->B->C), and the SDK auto-derives the co-spend index from the layout (`balancedCaller` /
+  `buildBalancedTranscriptTx`).
+- Earlier fixes stand: P1 framed/versioned/collision-free encoder; P4 args/results in the root; P5 resources;
+  P11 typed-transition length; P12 set-once controller.
 
-Binding labels to actual execution requires reading each participant's dispatched selector/args/result from
-its unlocking + native-call metadata and reconciling repeated rows via a callee journal - real compiler
-integration, not the source-string generation done so far. Until then, keep the feature experimental and
-default-off. The per-finding notes below predate this correction where they still say "CLOSED"; treat the
-label-vs-execution gap above as authoritative.
+What this review must still independently confirm: that the journal's bounded op-model, the balanced-layout
+covenants, and the native-call composition are SOUND as claimed. The per-component notes below are the
+covenants to review. Keep the feature experimental and default-off until this external review is complete.
 
 ## Components under review (SDK: `packages/solidcash/src/layer3/covenant.ts`)
 
@@ -42,6 +46,21 @@ label-vs-execution gap above as authoritative.
 5. `generateExecutionParticipant(spec)` - AUTO-WIRING. Generates a full participant covenant, injecting the
    transcript verification from a spec so the developer supplies only their appBody (+ optional `nativeCalls`
    for native IContract calls whose edge comes from the same declaration).
+6. `framedRootExpr` / `executionRoot` - the ONE authoritative framed/versioned/length-counted encoder
+   (covenant + SDK, byte-identical): `domain||version||n||(len||lbc)*||invCount||(caller||callee||sel[4]||
+   len||args||len||result)*||evCount||(emitter||len||topic)*||resCount||(owner||category[32])*`. Review for
+   preimage-collision resistance (audit P1).
+7. `generateExecutionParticipant({journal})` / `generateBalancedParticipant({journal})` - the CALLEE STATE
+   JOURNAL. Review that: incoming edges are applied in list order to the co-spent state; the flush is exactly
+   once; `emits` binds an outgoing edge's args to the flushed post-state; the op-map dispatch is sound.
+8. `balancedLayout` / `balancedMemberBody` / `generateBalancedParticipant` - BALANCED BLOCK LAYOUTS (P8/P9/P10).
+   Review that: every slot is addressed by block base; the balanced closure (`inputs.length ==
+   outputs.length == totalSlots`) forbids insertion/omission; state NFTs and event NFTs are pinned + preserved
+   in-block; a `regular` external call's caller self-preservation is respected; native-call callee slots do
+   not collide with the controller/fee tail.
+9. `balancedCaller` / `buildBalancedTranscriptTx` (SDK `transcript.ts`) - native-call co-spend auto-derivation.
+   Review that the derived `__internal__externalCallInputBase` witness always equals the actual co-spent
+   callee's physical index.
 
 ## Canonical execution root (R2)
 

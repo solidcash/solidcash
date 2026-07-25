@@ -9,8 +9,8 @@ import { Contract } from './../Contract.js';
 import { TransactionBuilder } from './../TransactionBuilder.js';
 import { randomUtxo } from './../utils.js';
 import {
-  EXEC_DOMAIN, EXEC_VERSION, type ExecutionEvent, type ExecutionInvocation, type InvocationSpec,
-  type TranscriptSpec, type TypedTransition, opReturnPrefix, transcriptLayout,
+  EXEC_DOMAIN, EXEC_VERSION, type ExecutionEvent, type ExecutionInvocation, type ExecutionResource,
+  type InvocationSpec, type TranscriptSpec, type TypedTransition, opReturnPrefix, transcriptLayout,
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 
@@ -57,6 +57,7 @@ const u8 = (n: number): Uint8Array => {
  */
 export function executionRoot(
   orderedLbcs: string[], invocations: ExecutionInvocation[], events: ExecutionEvent[] = [],
+  resources: ExecutionResource[] = [],
 ): string {
   const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), hexToBin(EXEC_VERSION), u8(orderedLbcs.length)];
   for (const l of orderedLbcs) { const b = hexToBin(l); parts.push(u8(b.length), b); }
@@ -70,6 +71,8 @@ export function executionRoot(
   }
   parts.push(u8(events.length));
   for (const ev of events) { const t = hexToBin(ev.topicHex); parts.push(u8(ev.emitter), u8(t.length), t); }
+  parts.push(u8(resources.length));
+  for (const r of resources) { parts.push(u8(r.owner), hexToBin(r.categoryHex)); } // ownerIdx || category(32)
   return binToHex(sha256.hash(concatBin(parts)));
 }
 

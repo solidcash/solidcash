@@ -34,6 +34,12 @@ export interface ExecutionInvocation {
 }
 /** An execution-transcript event: an authenticated OP_RETURN record (emitter identity + topic), committed by the root. */
 export interface ExecutionEvent { emitter: number; topicHex: string }
+/**
+ * An execution-transcript resource (audit P5): a co-spent state NFT of `categoryHex` OWNED by a participant,
+ * committed in the framed execution root. The owner participant verifies the resource input carries the
+ * committed category (its state is bound to the transcript). Resource k is co-spent at input `n+1+k`.
+ */
+export interface ExecutionResource { owner: number; categoryHex: string }
 /** Domain tag for the canonical execution root ("L3EXEC1\0"), separating it from any other sha256 usage. */
 export const EXEC_DOMAIN = '4c33455845433100';
 /** Version byte of the framed execution-root encoding (audit P1). Bump on any encoding change. */
@@ -52,7 +58,9 @@ const u8hex = (n: number): string => {
  * which the caller must have in scope. Length-counted tables + fixed 4-byte selectors make the preimage
  * collision-free.
  */
-export function framedRootExpr(n: number, invocations: ExecutionInvocation[], events: ExecutionEvent[]): string {
+export function framedRootExpr(
+  n: number, invocations: ExecutionInvocation[], events: ExecutionEvent[], resources: ExecutionResource[] = [],
+): string {
   let p = `bytes.concat(hex"${EXEC_DOMAIN}${EXEC_VERSION}${u8hex(n)}", bytes.concat(bytes1(lbc0.length), lbc0))`;
   for (let i = 1; i < n; i += 1) p = `bytes.concat(${p}, bytes.concat(bytes1(lbc${i}.length), lbc${i}))`;
   p = `bytes.concat(${p}, hex"${u8hex(invocations.length)}")`;
@@ -76,6 +84,13 @@ export function framedRootExpr(n: number, invocations: ExecutionInvocation[], ev
     const topic = ev.topicHex.toLowerCase();
     if (!/^([0-9a-f]{2})+$/.test(topic)) throw new Error('layer3: event topic must be hex bytes');
     p = `bytes.concat(${p}, hex"${u8hex(ev.emitter)}${u8hex(topic.length / 2)}${topic}")`;
+  }
+  p = `bytes.concat(${p}, hex"${u8hex(resources.length)}")`;
+  for (const r of resources) {
+    if (r.owner < 0 || r.owner >= n) throw new Error('layer3: execution resource owner out of range');
+    const cat = r.categoryHex.toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(cat)) throw new Error('layer3: resource category must be 32-byte hex');
+    p = `bytes.concat(${p}, hex"${u8hex(r.owner)}${cat}")`; // ownerIdx || category(32)
   }
   return `sha256(${p})`;
 }
@@ -215,7 +230,7 @@ export function bindingFrameworkBody(n: number, brandPrefix = CONTROLLER_BRAND_P
  */
 export function executionMemberBody(
   n: number, selfPos: number, invocations: ExecutionInvocation[], controllerCategory: string, controllerLbc: string,
-  events?: ExecutionEvent[], oneShot = false,
+  events?: ExecutionEvent[], oneShot = false, resources: ExecutionResource[] = [],
 ): string[] {
   if (!Number.isInteger(n) || n < 2) throw new Error('layer3: need >= 2 participants');
   if (selfPos < 0 || selfPos >= n) throw new Error('layer3: selfPos out of range');
@@ -228,7 +243,7 @@ export function executionMemberBody(
   });
   const body: string[] = [];
   for (let i = 0; i < n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${i}].lockingBytecode;`);
-  body.push(`bytes execRoot = ${framedRootExpr(n, invocations, evs)};`); // framed, collision-free (audit P1)
+  body.push(`bytes execRoot = ${framedRootExpr(n, invocations, evs, resources)};`); // framed, collision-free (audit P1)
   const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
   body.push(`require(tx.inputs[${n}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
   body.push(`require(tx.inputs[${n}].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
@@ -256,6 +271,14 @@ export function executionMemberBody(
     body.push('}');
     body.push(`require(opret == ${evs.length});`);
   }
+  // P5: the OWNER of each resource verifies its co-spent state NFT (at input n+1+k) carries the committed
+  // category - so the resource's state is bound into the same execution root, not a disconnected scaffold.
+  resources.forEach((r, k) => {
+    if (r.owner === selfPos) {
+      const resCatInternal = (r.categoryHex.toLowerCase().match(/../g) as string[]).reverse().join('');
+      body.push(`require(tx.inputs[${n + 1 + k}].tokenCategory.slice(0, 32) == hex"${resCatInternal}");`);
+    }
+  });
   return body;
 }
 
@@ -279,6 +302,7 @@ export interface ExecutionParticipantSpec {
   controllerLbc: string;
   events?: ExecutionEvent[];
   oneShot?: boolean;
+  resources?: ExecutionResource[];
   appBody?: string[];
   /** Native calls to emit for the edges this participant is the caller of (index-aligned to `invocations`). */
   nativeCalls?: Record<number, string>;
@@ -288,6 +312,7 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.functionName)) throw new Error('layer3: invalid functionName');
   const member = executionMemberBody(
     spec.n, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc, spec.events, spec.oneShot,
+    spec.resources,
   );
   // P3: this participant's method has a canonical selector; every edge naming it as callee must use that
   // selector, or the covenant is unspendable (an arbitrary selector can no longer pass). P4: expose each such

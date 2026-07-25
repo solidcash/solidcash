@@ -19,7 +19,7 @@ const concat = (...ps: Uint8Array[]): Uint8Array => {
 const rawOf = (b: any): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 
 describe('R6: typed, module-generated fail-closed resource transition', () => {
-  async function build(): Promise<any> {
+  async function build(extraTail = new Uint8Array(0)): Promise<any> {
     const provider = createTestProvider();
     const spec: layer3.TranscriptSpec = {
       participants: 2,
@@ -41,7 +41,11 @@ describe('R6: typed, module-generated fail-closed resource transition', () => {
     const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const state = randomUtxo({
       satoshis: 5000n,
-      token: { category: producerCat, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(concat(num8(10n), num8(20n))) } },
+      token: {
+        category: producerCat,
+        amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(concat(num8(10n), num8(20n), extraTail)) },
+      },
     });
     await provider.addUtxo(p2.address, state);
     const fee = await createFeeFunder(provider, 40000n);
@@ -73,5 +77,14 @@ describe('R6: typed, module-generated fail-closed resource transition', () => {
     const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
     forged.outputs[so].token!.nft!.commitment = concat(num8(16n), num8(20n)); // field0 = 16, not 15
     await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+  });
+
+  it('AUDIT: SDK/covenant disagree when the input commitment exceeds TypedTransition.total', async () => {
+    const { provider, builder, spec } = await build(Uint8Array.of(0xaa));
+    const so = layer3.transcriptLayout(spec).stateOutput(0);
+    const decoded = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
+    expect(decoded.inputs.length).toBeGreaterThan(0);
+    expect(decoded.outputs[so].token!.nft!.commitment.length).toBe(17);
+    await expect(provider.sendRawTransaction(rawOf(builder))).rejects.toThrow();
   });
 });

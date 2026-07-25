@@ -52,6 +52,28 @@ describe('layer3.participantArgs / encodeTranscriptBlob - SCB1 codec', () => {
   });
 });
 
+describe('layer3 execution-root audit probes', () => {
+  it('admits two semantic transcripts with the same unframed root preimage', () => {
+    const a = `aa20${'11'.repeat(32)}87`;
+    const b = `aa20${'22'.repeat(32)}87`;
+    const selector = 'aabbccdd';
+    const topic = 'deadbeef';
+    const selectorWithEventBytes = `${selector}${a}${topic}`;
+
+    const selectorTail = layer3.executionRoot(
+      [a, b],
+      [{ caller: 0, callee: 1, selectorHex: selectorWithEventBytes }],
+    );
+    const separateEvent = layer3.executionRoot(
+      [a, b],
+      [{ caller: 0, callee: 1, selectorHex: selector }],
+      [{ emitter: 0, topicHex: topic }],
+    );
+
+    expect(selectorTail).toBe(separateEvent);
+  });
+});
+
 describe('layer3.opReturnPrefix - authenticated-record push encoding', () => {
   it('uses a single-byte push up to 75 bytes and OP_PUSHDATA1 beyond', () => {
     expect(layer3.opReturnPrefix(35)).toBe('6a23'); // invocation record identity length

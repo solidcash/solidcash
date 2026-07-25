@@ -1039,6 +1039,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphTranscript',
         '__internal__graphControllerIdx',
         '__internal__graphParticipantOffset',
+        '__internal__graphBlockSize',
         '__internal__graphEmissions',
         '__internal__graphCallers',
       ].includes(node.name);

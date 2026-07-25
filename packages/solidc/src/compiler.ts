@@ -553,6 +553,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     'bytes __internal__graphTranscript',
     'bigint __internal__graphControllerIdx',
     'bigint __internal__graphParticipantOffset',
+    'bigint __internal__graphBlockSize',
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
   ];
@@ -625,7 +626,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         require(tx.inputs[__internal__graphControllerIdx].nftCommitment == sha256(__internal__graphTranscript));
         bytes __graph_owner_lbc = tx.inputs[this.activeInputIndex].lockingBytecode;
         bytes __graph_owner_frame = bytes.concat(
-          bytes.concat(bytes2(this.activeInputIndex), bytes2(__graph_owner_lbc.length), __graph_owner_lbc),
+          bytes.concat(
+            bytes2(this.activeInputIndex),
+            bytes2(__internal__graphBlockSize),
+            bytes2(__graph_owner_lbc.length),
+            __graph_owner_lbc
+          ),
           bytes2(batchBlob.length),
           batchBlob,
           bytes2(__internal__graphEmissions.length),

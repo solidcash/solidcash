@@ -161,6 +161,7 @@ async function build(
   senderAuth?: { forgeExpected: boolean },
   dataAuth = false,
   staticAuth = false,
+  tamperBlockSize = false,
 ) {
   const provider = createTestProvider();
   const {
@@ -220,11 +221,12 @@ async function build(
   let transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
-  if (malformedGraph || aliasProjection) {
+  if (malformedGraph || aliasProjection || tamperBlockSize) {
     const bytes = transcript.bytes.slice();
+    if (tamperBlockSize) bytes[12] += 1;
     let cursor = 10;
     for (const participant of plan.participants) {
-      cursor += 2;
+      cursor += 4; // participant input + compiler-bound block size
       const lbcLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + lbcLength;
       const batchLength = bytes[cursor] | (bytes[cursor + 1] << 8);
@@ -644,6 +646,14 @@ describe('Layer-3 compiled graph controller', () => {
       undefined, undefined, undefined, false, true,
     );
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a transcript block size that differs from the compiler-owned route', async () => {
+    const { provider, transaction } = await build(
+      false, false, false, false, false, false, 1n,
+      undefined, undefined, undefined, false, false, true,
+    );
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 
   it('authenticates compiler-produced return blobs in balanced owner slots', async () => {

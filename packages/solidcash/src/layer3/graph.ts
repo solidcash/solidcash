@@ -264,6 +264,7 @@ export function finalizeCompiledGraph(
     const lbc = hexToBin(participant.lockingBytecode);
     participantOffsets.push(encodedLength);
     const inputFrame = uint(participantInputs[participantIndex], 2);
+    const blockSizeFrame = uint(participant.blockLayout!.blockSize, 2);
     const lbcFrame = framed(lbc);
     const batchFrame = framed(participant.batch.blob);
     const emissionFrame = framed(participantEmissions[participantIndex]);
@@ -271,9 +272,9 @@ export function finalizeCompiledGraph(
     const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
     const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
     const projectionFrame = uint(projectionInputs[participantIndex], 2);
-    parts.push(inputFrame, lbcFrame, batchFrame, emissionFrame, callerFrame,
+    parts.push(inputFrame, blockSizeFrame, lbcFrame, batchFrame, emissionFrame, callerFrame,
       returnFrame, resultFrame, projectionFrame);
-    encodedLength += inputFrame.length + lbcFrame.length + batchFrame.length
+    encodedLength += inputFrame.length + blockSizeFrame.length + lbcFrame.length + batchFrame.length
       + emissionFrame.length + callerFrame.length
       + returnFrame.length + resultFrame.length + projectionFrame.length;
   }
@@ -332,6 +333,7 @@ export function compiledGraphRouteArgs(
     transcript.bytes,
     BigInt(controllerInput),
     BigInt(offset),
+    BigInt(execution.blockLayout!.blockSize),
     hexToBin(transcript.participantEmissionsHex[participant]),
     hexToBin(transcript.participantCallersHex[participant]),
     ...execution.batch.routeWitnesses,
@@ -384,15 +386,19 @@ contract GraphRootController(bytes20 initializer) {
     bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
     require(participantCount >= 1 && participantCount <= 8);
     bigint cursor = 10;
-    bigint previousInput = -1;
+    bigint expectedInput = 0;
     bigint previousReturnOutput = -1;
     bigint previousProjectionInput = -1;
+    bigint firstProjectionInput = -1;
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       require(cursor + 2 <= transcript.length);
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
-      require(participantInput > previousInput && participantInput < tx.inputs.length);
-      previousInput = participantInput;
+      require(participantInput == expectedInput && participantInput < tx.inputs.length);
+      bigint blockSize = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(blockSize >= 1 && participantInput + blockSize <= tx.inputs.length);
+      expectedInput = participantInput + blockSize;
       bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       require(lbcLength > 0 && cursor + lbcLength <= transcript.length);
@@ -432,6 +438,7 @@ contract GraphRootController(bytes20 initializer) {
       if (resultVectorLength == 0) {
         require(returnOutput == 65535);
       } else {
+        require(returnOutput >= participantInput && returnOutput < participantInput + blockSize);
         require(returnOutput > previousReturnOutput && returnOutput < tx.outputs.length);
         previousReturnOutput = returnOutput;
         bytes expectedCommitment;
@@ -445,9 +452,18 @@ contract GraphRootController(bytes20 initializer) {
       bigint projectionInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       require(projectionInput > previousProjectionInput && projectionInput < tx.inputs.length);
+      if (participant == 0) {
+        firstProjectionInput = projectionInput;
+      } else {
+        require(projectionInput == previousProjectionInput + 1);
+      }
       previousProjectionInput = projectionInput;
       require(tx.inputs[projectionInput].lockingBytecode == hex"${verifier}");
     }
+    require(firstProjectionInput == expectedInput);
+    require(this.activeInputIndex == expectedInput + participantCount);
+    require(tx.inputs.length == this.activeInputIndex + 2);
+    require(tx.outputs.length == tx.inputs.length);
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     cursor = cursor + 2;
     require(invocationCount >= 1 && invocationCount <= 24);
@@ -543,6 +559,9 @@ contract GraphProjectionVerifier() {
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      bigint blockSize = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      cursor = cursor + 2;
+      require(blockSize >= 1);
       bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);

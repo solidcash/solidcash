@@ -8166,6 +8166,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitIdentifier(node: IdentifierNode): Node {
+    if (node.name === '__internal__graphBlockSize') {
+      const blockSize = this.currentFunction.blockLayout?.blockSize;
+      if (!this.currentFunction.hiddenBatchRoute || blockSize === undefined) {
+        throw new Error('Compiler-owned graph block size used outside an SCB1 route');
+      }
+      this.emit(encodeInt(BigInt(blockSize)),
+        { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack('(value)');
+      return node;
+    }
     // Function pointer value: push the target's integer functionId (an indirect call OP_INVOKEs it).
     if (node.functionReference) {
       this.emit(encodeInt(BigInt(node.functionReference.functionId!)),

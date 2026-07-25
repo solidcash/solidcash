@@ -5,6 +5,17 @@
 // LAYOUT (see transcriptLayout): the spec is index-free, and the generator + the deriver both read indices
 // from the layout so covenant and transaction always agree. Every generated covenant runs on every
 // participant input and validates the whole transcript. Unrolled per shape; the generator is general.
+import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
+
+/**
+ * The canonical 4-byte selector of a participant METHOD (audit P3): first 4 bytes of sha256(methodName). The
+ * callee's generated covenant requires the edge selector to equal this, so an arbitrary selector makes the
+ * covenant unspendable - the selector is bound to the callee's declared method, not a free label. (True
+ * multi-method runtime dispatch binding within one contract remains further work.)
+ */
+export function methodSelector(methodName: string): string {
+  return binToHex(sha256.hash(utf8ToBin(methodName)).slice(0, 4));
+}
 
 /** The default controller brand: `L3B1CTRL` prologue (`<salt> OP_DROP` -> `084c3342314354524c75`). */
 export const CONTROLLER_BRAND_PREFIX = '084c3342314354524c75';
@@ -278,11 +289,14 @@ export function generateExecutionParticipant(spec: ExecutionParticipantSpec): st
   const member = executionMemberBody(
     spec.n, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc, spec.events, spec.oneShot,
   );
-  // P4: expose each edge's committed args/result (bound in the framed root) as locals for the edges this
-  // participant is the CALLEE of, so its appBody can authenticate result == f(args, state).
+  // P3: this participant's method has a canonical selector; every edge naming it as callee must use that
+  // selector, or the covenant is unspendable (an arbitrary selector can no longer pass). P4: expose each such
+  // edge's committed args/result (bound in the framed root) so the appBody can authenticate result==f(args,state).
+  const sel = methodSelector(spec.functionName);
   const edgeVars: string[] = [];
   spec.invocations.forEach((inv, j) => {
     if (inv.callee === spec.selfPos) {
+      edgeVars.push(`require(hex"${inv.selectorHex.toLowerCase()}" == hex"${sel}"); // P3: selector == method`);
       edgeVars.push(`bytes edgeArgs${j} = hex"${(inv.argsHex ?? '').toLowerCase()}";`);
       edgeVars.push(`bytes edgeResult${j} = hex"${(inv.resultHex ?? '').toLowerCase()}";`);
     }

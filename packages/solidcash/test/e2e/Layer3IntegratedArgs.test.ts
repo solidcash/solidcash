@@ -25,7 +25,8 @@ async function run(amount: bigint, result: bigint, rate: bigint): Promise<{ prov
   ]);
   const ctrlCat: string = genesis.categoryId;
   const inv: layer3.ExecutionInvocation = {
-    caller: 0, callee: 1, selectorHex: 'aabbccdd', argsHex: binToHex(num8(amount)), resultHex: binToHex(num8(result)),
+    caller: 0, callee: 1, selectorHex: layer3.methodSelector('serve'), // P3: selector == callee method
+    argsHex: binToHex(num8(amount)), resultHex: binToHex(num8(result)),
   };
   const common = { n: 2, invocations: [inv], controllerCategory: ctrlCat, controllerLbc: ctrlLbc };
   const callerSrc = layer3.generateExecutionParticipant({

@@ -13,7 +13,8 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 // same soundness as the hand-written Layer3Heterogeneous, but the transcript wiring is generated.
 const raw = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
-const INV = [{ caller: 0, callee: 1, selectorHex: 'aabbccdd' }];
+// P3: the edge selector must be the callee method's canonical selector (serve), not a free label.
+const INV = [{ caller: 0, callee: 1, selectorHex: layer3.methodSelector('serve') }];
 
 describe('refinement: module auto-wiring (generateExecutionParticipant)', () => {
   it('POSITIVE: two participants generated from specs (transcript auto-injected) mutually authenticate', async () => {

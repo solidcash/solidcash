@@ -237,3 +237,21 @@ describe('layer3 refinement generators (one-shot + auto-wiring)', () => {
     })).toThrow();
   });
 });
+
+describe('layer3.methodSelector - P3 selector-to-method binding', () => {
+  it('is a deterministic 4-byte selector of the method name', () => {
+    expect(layer3.methodSelector('serve')).toHaveLength(8); // 4 bytes
+    expect(layer3.methodSelector('serve')).toBe(layer3.methodSelector('serve'));
+    expect(layer3.methodSelector('serve')).not.toBe(layer3.methodSelector('deposit'));
+  });
+
+  it('generateExecutionParticipant requires each callee edge to use the method selector (arbitrary => unspendable)', () => {
+    const src = layer3.generateExecutionParticipant({
+      contractName: 'C', functionName: 'serve', n: 2, selfPos: 1,
+      invocations: [{ caller: 0, callee: 1, selectorHex: 'aabbccdd' }], // arbitrary, not methodSelector('serve')
+      controllerCategory: 'ab'.repeat(32), controllerLbc: 'aa20',
+    });
+    // the covenant compares the arbitrary edge selector to the real method selector -> false -> unspendable
+    expect(src).toContain(`require(hex"aabbccdd" == hex"${layer3.methodSelector('serve')}");`);
+  });
+});

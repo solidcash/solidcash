@@ -220,6 +220,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   ]);
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
+  const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
@@ -272,7 +273,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     });
     const graphTailCallEligible = graphControllerLbc !== undefined
       && methodCallCount >= 1
-      && (graphTailStatement || graphResultStatement);
+      && (graphTailStatement || graphResultStatement
+        || (fn.returnTypes.length === 0
+          && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
     const keyWitnesses: { routeInput: string; inputIndex: number; perRow?: boolean }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
@@ -382,6 +385,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
     if (!reason && graphTailCallEligible) graphTailHandlers.add(fn);
+    if (!reason && graphTailCallEligible && !graphTailStatement && !graphResultStatement) {
+      graphRuntimeHandlers.add(fn);
+    }
   }
   if (resourceShapedHandler?.hiddenBatchEligible) {
     for (const fn of eligible) {
@@ -480,6 +486,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.parameters = handler.parameters.filter((parameter) =>
       parameter.name !== '__internal__returnOutputIdx');
     handler.graphEmissionHandler = true;
+    handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }

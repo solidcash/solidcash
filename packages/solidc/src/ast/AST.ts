@@ -361,6 +361,8 @@ export class FunctionDefinitionNode extends Node implements Named {
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   graphEmissionHandler?: boolean;
+  /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
+  graphRuntimeEmissionHandler?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)

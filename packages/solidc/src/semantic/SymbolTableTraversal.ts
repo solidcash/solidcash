@@ -1821,6 +1821,13 @@ export default class SymbolTableTraversal extends AstTraversal {
               `Graph handler '${node.name}' requires regular straight-line calls and at most one returning call`,
             );
           }
+          if (node.graphRuntimeEmissionHandler
+            && logicalCallSlots.some((slot) => slot.hasReturnValues
+              || !node.parameters.some((parameter) => parameter.name === slot.addressParam))) {
+            throw new Error(
+              `Runtime graph handler '${node.name}' requires void calls with parameter-pinned targets`,
+            );
+          }
           for (const slot of logicalCallSlots) {
             if (!slot.addressParam) {
               throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);

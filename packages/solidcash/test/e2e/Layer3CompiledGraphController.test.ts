@@ -31,6 +31,19 @@ contract CompiledGraphA(int brand, address target) {
     ICompiledGraphTarget(target).ping(second);
     require(true);
   }
+  function maybe(address next, int alwaysN, int n, bool take) public {
+    ICompiledGraphTarget(next).ping(alwaysN);
+    if (take) {
+      ICompiledGraphTarget(next).ping(n);
+    }
+    require(n >= 0);
+  }
+  function repeat(address next, int n, int times) public {
+    for (int i = 0; i < times; i = i + 1) {
+      ICompiledGraphTarget(next).ping(n);
+    }
+    require(times >= 0);
+  }
 }`;
 const RETURNING_B = `pragma solidcash >=0.8.0;
 contract CompiledReturningB(int brand) {
@@ -123,6 +136,8 @@ async function build(
   aliasProjection = false,
   forgeControllerCategory = false,
   sourceChildArg = 1n,
+  conditional?: { take: boolean; includeChild: boolean },
+  loopCount?: number,
 ) {
   const provider = createTestProvider();
   const {
@@ -142,14 +157,27 @@ async function build(
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
-  const plan = layer3.planCompiledGraph([
-    { artifact: artifactA, lockingBytecode: a.lockingBytecode },
-    { artifact: artifactB, lockingBytecode: b.lockingBytecode },
-  ], [
+  const graphInvocations = loopCount !== undefined ? [
+    { parent: null, callee: 0, function: 'repeat', args: [b.lockingBytecode, 7n, BigInt(loopCount)] },
+    ...Array.from({ length: loopCount }, () =>
+      ({ parent: 0, callee: 1, function: 'ping', args: [7n] })),
+  ] : conditional ? [
+    {
+      parent: null, callee: 0, function: 'maybe',
+      args: [b.lockingBytecode, 0n, 3n, conditional.take],
+    },
+    { parent: 0, callee: 1, function: 'ping', args: [0n] },
+    ...(conditional.includeChild
+      ? [{ parent: 0, callee: 1, function: 'ping', args: [3n] }] : []),
+  ] : [
     { parent: null, callee: 0, function: 'start', args: [1n, 2n] },
     { parent: 0, callee: 1, function: 'ping', args: [sourceChildArg] },
     { parent: 0, callee: 1, function: 'ping', args: [2n] },
-  ]);
+  ];
+  const plan = layer3.planCompiledGraph([
+    { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+  ], graphInvocations);
   let transcript = layer3.finalizeCompiledGraph(plan, {}, [0, 1], [null, null], ['', ''], [2, 3]);
   if (malformedGraph || aliasProjection) {
     const bytes = transcript.bytes.slice();
@@ -473,6 +501,31 @@ describe('Layer-3 compiled graph controller', () => {
   it('rejects a canonical graph whose child arguments differ from the source-executed call', async () => {
     const { provider, transaction } = await build(false, false, false, false, false, false, 2n);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('binds conditional call reachability to the runtime emission cursor', async () => {
+    const taken = await build(false, false, false, false, false, false, 1n,
+      { take: true, includeChild: true });
+    await expect(taken.provider.sendRawTransaction(taken.transaction)).resolves.toBeTypeOf('string');
+
+    const skipped = await build(false, false, false, false, false, false, 1n,
+      { take: false, includeChild: false });
+    await expect(skipped.provider.sendRawTransaction(skipped.transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects omitted and injected conditional child rows', async () => {
+    const omitted = await build(false, false, false, false, false, false, 1n,
+      { take: true, includeChild: false });
+    await expect(omitted.provider.sendRawTransaction(omitted.transaction)).rejects.toThrow();
+
+    const injected = await build(false, false, false, false, false, false, 1n,
+      { take: false, includeChild: true });
+    await expect(injected.provider.sendRawTransaction(injected.transaction)).rejects.toThrow();
+  });
+
+  it('consumes one authenticated child row per reached loop iteration', async () => {
+    const repeated = await build(false, false, false, false, false, false, 1n, undefined, 2);
+    await expect(repeated.provider.sendRawTransaction(repeated.transaction)).resolves.toBeTypeOf('string');
   });
 
   it('rejects omitting the graph controller even when every local batch remains valid', async () => {

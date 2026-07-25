@@ -2336,6 +2336,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
     }
 
+    if (this.isDefineSubTraversal && node.graphRuntimeEmissionHandler) {
+      this.pushToStack('__internal__graphEmissions', true);
+    }
     if (this.isDefineSubTraversal && node.graphEmissionHandler) {
       const resultTypes = node.externalCalls?.[0]?.returnTypes ?? [];
       for (let i = 0; i < resultTypes.length; i++) {
@@ -2527,6 +2530,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal) {
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
       const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
+      if (node.graphRuntimeEmissionHandler) journalNames.add('__internal__graphEmissions');
       for (let i = 0; i < this.stack.length;) {
         if (journalNames.has(this.stack[i])) {
           i += 1;
@@ -5641,6 +5645,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const contextName = `(__journal_arg_${targetFunc.functionId}_${i})`;
       this.pushToStack(contextName);
     }
+    if (targetFunc.graphRuntimeEmissionHandler) {
+      const expected = '__internal__graphEmissions';
+      this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
+    }
 
     let hiddenContextCount = 0;
     if (targetJournalSlots.length > 0 && this.contractUsesMsgData) {
@@ -5676,7 +5686,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_sender_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if (targetFunc.graphEmissionHandler) {
+    if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
       const slots = targetFunc.externalCalls ?? [];
       if (slots.length === 0) throw new Error(`Graph handler '${targetFunc.name}' lacks call metadata`);
       if (slots.length === 1) {
@@ -5723,6 +5733,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
+    if (targetFunc.graphRuntimeEmissionHandler) {
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack();
+    }
     // The callee returns the journal copies in canonical order. Replace each
     // caller-owned slot at its original depth, consuming the returned copy and
     // leaving the surrounding frame byte-for-byte in its pre-call order.
@@ -10891,6 +10906,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
+    if (this.currentFunction.graphRuntimeEmissionHandler) {
+      if (!physicalSlot) throw new Error('Runtime graph call lacks compiler metadata');
+      this.consumeGraphRuntimeEmissionRow(physicalSlot, node.parameters, node, locationData);
+      return node;
+    }
     if (this.currentFunction.graphEmissionHandler) {
       const returnTypes = physicalSlot?.returnTypes ?? node.callInfo?.returnTypes ?? [];
       if (returnTypes.length > 0) {
@@ -11051,12 +11071,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     parameters: ExpressionNode[],
     locationData: SingleLocationData,
     compare = true,
+    parametersAreCallArguments = false,
   ): number {
     if (!slot.compileTimeSelector) throw new Error('Graph emission call lacks a fixed selector');
     if (slot.addressParam) {
       const parameterIndex = handler.parameters.findIndex((parameter) =>
         parameter.name === slot.addressParam);
-      if (parameterIndex >= 0) {
+      if (parametersAreCallArguments) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(slot.addressParam))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else if (parameterIndex >= 0) {
         const target = parameters[parameterIndex];
         if (!(target instanceof IdentifierNode)) {
           throw new Error('Graph target forwarding requires an identifier');
@@ -11090,7 +11114,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_selector)');
 
-    const argumentParameters = (slot.argSources ?? []).map((source) => {
+    const argumentParameters = parametersAreCallArguments ? parameters : (slot.argSources ?? []).map((source) => {
       if (source.kind !== 'forward' || source.paramIndex === undefined) {
         throw new Error('Graph argument source was not proven to be forwarded');
       }
@@ -11189,6 +11213,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.pushToStack(`(__graph_result_value_0)`);
     return 1;
+  }
+
+  /** Consume one reached conditional/loop call from the runtime graph emission vector. */
+  private consumeGraphRuntimeEmissionRow(
+    slot: ExternalCallSlot,
+    parameters: ExpressionNode[],
+    node: Node,
+    locationData: SingleLocationData,
+  ): void {
+    this.verifyGraphEmissionRow(slot, this.currentFunction, parameters, locationData, false, true);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.pushToStack('(__graph_runtime_row_length)');
+    const remainder = '__internal__graphEmissions';
+    this.emit(encodeInt(BigInt(this.getStackIndex(remainder))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__graph_runtime_emissions)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(3);
+    this.pushToStack('(__graph_runtime_remainder)');
+    this.emitReplace(this.getStackIndex(remainder), node);
+    this.popFromStack();
   }
 
   visitExternalOutputState(_node: ExternalOutputStateNode): Node {

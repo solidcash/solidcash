@@ -164,6 +164,13 @@ export function decodeHiddenBatchResults(
     if (commitment.length !== 0) throw new Error('Non-returning SCB1 plan has an unexpected result commitment');
     return [];
   }
+  // `__scb1` returns one `bytes`, so the ordinary return-event ABI wraps the route's packed per-row result
+  // vector in one outer bytes push. Authenticate/consume that outer field before interpreting the inner vector.
+  const outer = decodePushdataValue(commitment, 0, 'bytes');
+  if (outer.bytesConsumed !== commitment.length || !(outer.value instanceof Uint8Array)) {
+    throw new Error('SCB1 result commitment is not one canonical bytes field');
+  }
+  const packed = outer.value;
   const types = new Set(plan.results.flatMap((result) => result.types));
   if (types.size !== 1 || plan.results.some((result) => result.types.length !== 1)) {
     throw new Error('SCB1 result decoding requires the compiler route one-common-result invariant');
@@ -173,12 +180,12 @@ export function decodeHiddenBatchResults(
   const all: StateValue[] = [];
   let offset = 0;
   for (let row = 0; row < capability.maximumRows; row += 1) {
-    if (offset >= commitment.length) throw new Error('SCB1 result commitment ended before every result slot');
-    const decoded = decodePushdataValue(commitment, offset, type, structs);
+    if (offset >= packed.length) throw new Error('SCB1 result commitment ended before every result slot');
+    const decoded = decodePushdataValue(packed, offset, type, structs);
     all.push(decoded.value);
     offset += decoded.bytesConsumed;
   }
-  if (offset !== commitment.length) {
+  if (offset !== packed.length) {
     throw new Error('SCB1 result commitment contains an unchecked suffix');
   }
   return Object.freeze(plan.results.map((result) => Object.freeze({

@@ -54,16 +54,17 @@ describe('layer3.encodeHiddenBatch', () => {
     ]);
     expect(returning.hiddenBatch!.route.outputs).toEqual([{ type: 'bytes' }]);
 
-    const commitment = scriptToBytecode([
+    const packed = scriptToBytecode([
       bigIntToVmNumber(6n), bigIntToVmNumber(9n),
       ...Array.from({ length: 6 }, () => bigIntToVmNumber(0n)),
     ]);
+    const commitment = scriptToBytecode([packed]);
     expect(layer3.decodeHiddenBatchResults(returning, encoded, commitment)).toEqual([
       { row: 0, type: 'int256', value: 6n },
       { row: 1, type: 'int256', value: 9n },
     ]);
     expect(() => layer3.decodeHiddenBatchResults(
-      returning, encoded, Uint8Array.from([...commitment, 0]),
+      returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),
     )).toThrow(/unchecked suffix/);
   });
 

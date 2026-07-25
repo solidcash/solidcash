@@ -16,6 +16,12 @@ outstanding - this package exists to make it efficient, not to substitute for it
    and pins its own position.
 3. `generateExecutionBoundCovenant / bindingFrameworkBodyControllerBound` - the homogeneous-clone forms (R2
    participant-set + execution roots) used by the earlier N-party tests.
+4. `generateOneShotControllerCovenant()` - REPLAY policy. Its `attest` scans all outputs and rejects any
+   recreation of its category, so the mint-once controller is consumed and the root authorizes exactly one
+   execution. Pairs with `executionMemberBody(..., oneShot: true)` (skips controller preservation).
+5. `generateExecutionParticipant(spec)` - AUTO-WIRING. Generates a full participant covenant, injecting the
+   transcript verification from a spec so the developer supplies only their appBody (+ optional `nativeCalls`
+   for native IContract calls whose edge comes from the same declaration).
 
 ## Canonical execution root (R2)
 
@@ -65,27 +71,41 @@ root = sha256( EXEC_DOMAIN(4c33455845433100)
   re-ran the lifecycle against a BCHN node started with `-acceptnonstdtxn=0` (non-standard acceptance
   disabled); the p2sh32 + CashTokens + OP_RETURN transcript txs are accepted as standard.
 - R5: CLOSED for soundness. Runtime args/results are bound into the edge and the callee AUTHENTICATES the
-  result against its state (`Layer3RuntimeArgs.test.ts`: amount*rate; wrong result rejected). REMAINING: the
-  ergonomic auto-wiring of a native `IContract(addr).method()` call to the edge (compiler integration).
+  result against its state (`Layer3RuntimeArgs.test.ts`: amount*rate; wrong result rejected).
 - R6 typed transition: CLOSED for the common case. `TypedTransition {offset,width,total,delta}` generates the
   fail-closed output-commitment binding unconditionally and the module computes it (`Layer3TypedTransition`);
   raw `transition:true`/`appBody` remains a documented escape hatch for complex math.
-- R5 cycles (A->B->A, repeated one-callee): CLOSED. Investigated the mechanism (structural, not reentrant): a
-  cycle is the edge list [A->B, B->A] in the execution root, each participant runs once and verifies its
-  edges; repeated 1-callee is [A->B.f, A->B.g] (`Layer3Cycles.test.ts`, missing return edge rejected).
+- R5 cycles (A->B->A, repeated one-callee): CLOSED. Structural, not reentrant: a cycle is the edge list
+  [A->B, B->A] in the root, each participant runs once and verifies its edges (`Layer3Cycles.test.ts`).
   REMAINING: ordering ENFORCEMENT between edges (that B->A observes A->B's effect).
-- R4 exhaustiveness: PARTIAL. Transcript completeness (missing/extra edge changes the root -> rejected) and
-  participant substitution (position-bound root) are closed; unique state ownership + transition authority are
-  the scaffold's F1 (resource category == owner). REMAINING: native-call exhaustiveness (that no app-logic
-  IContract call escapes the transcript) - the same compiler integration as R5's auto-wiring.
-- Gate 5 independent review: this package is the deliverable; the external review itself is outstanding.
+- R4 exhaustiveness: CLOSED. Emitter exhaustiveness (`Layer3Exhaustiveness.test.ts`: exactly the committed
+  OP_RETURN records - extra rejected, omitted rejected); callee exhaustiveness inherent (edges bind to
+  participant positions); unique ownership + transition authority = scaffold F1.
+
+## Refinements (production readiness)
+
+- REPLAY policy: `generateOneShotControllerCovenant` (`Layer3Replay.test.ts`) - one execution then the
+  mint-once controller is consumed forever; reusable-vs-one-shot is an explicit deployer choice. Also, a
+  state-changing transcript is inherently non-replayable (input state NFTs are consumed).
+- AUTO-WIRING: `generateExecutionParticipant` (`Layer3AutoWire.test.ts`) - the transcript verification is
+  generated from a spec; the developer supplies only appBody (+ `nativeCalls`). MODULE-level; full
+  COMPILER-side derivation from `IContract(addr).method()` syntax is a further ergonomic step.
+
+## Still outstanding (external / further ergonomics, not soundness)
+
+- The external covenant review itself (this package is the deliverable).
+- Compiler-side auto-derivation of transcript edges from native `IContract` syntax (module-level auto-wiring
+  is delivered; soundness already proven with explicit edges).
+- Cross-edge ORDERING enforcement (that a later edge observes an earlier edge's on-chain effect).
 
 ## What a reviewer should attack first
 
 1. The mint-once uniqueness argument (does any genesis path leave a minting NFT of the controller category?).
 2. The position-bound root (can two different transcripts share a controller, or a participant be replayed
    across transcripts, given the controller commitment is fixed?).
-3. The absence of runtime arg/result binding (R5): a caller and callee agree on the selector but the covenant
-   does not yet force the args/results they exchanged to match the transcript.
-4. Replay: the controller root is fixed and preserved, so the SAME transcript can be re-run - is that intended
-   (idempotent attestation) or does it need a nonce/one-shot?
+3. The runtime arg/result binding (R5, now enforced): confirm the callee's authentication of
+   `result == f(args, state)` and the edge's arg/result commitment cannot be desynchronised.
+4. The one-shot controller's output scan (`generateOneShotControllerCovenant.attest`): confirm no output
+   shape (multi-category, mixed) lets the controller category slip past `oc.length >= 32 && slice(0,32)`.
+5. The reusable controller (default): two different transcripts cannot share one controller commitment (each
+   root is distinct); confirm a participant cannot be replayed across roots given the fixed commitment.

@@ -171,3 +171,39 @@ describe('layer3.generateControllerBoundCovenant - sound N-party mutual auth (au
     expect(() => layer3.generateControllerBoundCovenant(1, CAT)).toThrow();
   });
 });
+
+describe('layer3 refinement generators (one-shot + auto-wiring)', () => {
+  const CAT = 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+
+  it('generateOneShotControllerCovenant burns via an output scan (no attest preservation)', () => {
+    const src = layer3.generateOneShotControllerCovenant();
+    expect(src).toContain('for (bigint oi = 0; oi < tx.outputs.length');
+    expect(src).toContain('require(recreated == 0)');
+  });
+
+  it('executionMemberBody oneShot skips controller preservation; reusable keeps it', () => {
+    const reusable = layer3.executionMemberBody(2, 0, [], CAT, 'aa20').join('\n');
+    const oneShot = layer3.executionMemberBody(2, 0, [], CAT, 'aa20', undefined, true).join('\n');
+    expect(reusable).toContain('tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment');
+    expect(oneShot).not.toContain('tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment');
+  });
+
+  it('executionMemberBody events add OP_RETURN-count exhaustiveness', () => {
+    const src = layer3.executionMemberBody(2, 0, [], CAT, 'aa20', [{ emitter: 0, topicHex: 'aa' }]).join('\n');
+    expect(src).toContain('require(opret == 1)');
+  });
+
+  it('generateExecutionParticipant injects the transcript verification + appBody + validates the spec', () => {
+    const src = layer3.generateExecutionParticipant({
+      contractName: 'P', functionName: 'run', n: 2, selfPos: 0, invocations: [],
+      controllerCategory: CAT, controllerLbc: 'aa20', appBody: ['require(1 == 1);'],
+    });
+    expect(src).toContain('contract P()');
+    expect(src).toContain('function run()');
+    expect(src).toContain('bytes execRoot = sha256'); // transcript auto-injected
+    expect(src).toContain('require(1 == 1);'); // app body preserved
+    expect(() => layer3.generateExecutionParticipant({
+      contractName: '1bad', functionName: 'f', n: 2, selfPos: 0, invocations: [], controllerCategory: CAT, controllerLbc: 'aa20',
+    })).toThrow();
+  });
+});

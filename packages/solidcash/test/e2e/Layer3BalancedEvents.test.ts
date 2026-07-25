@@ -6,6 +6,7 @@ import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { getAnonymousEventNftAddress } from '../../src/stateful/covenant-helpers.js';
 
 // Audit P10: events are NFT slots INSIDE the emitter's balanced block, not a global OP_RETURN count. B emits
 // one event: its block is executor + state(minting) + event = size 3, so the event NFT lives at B's block-
@@ -49,6 +50,7 @@ async function run(
   const b = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Emitter', functionName: 'run', selfPos: 1, journal: { ops: { [DEPOSIT]: 'add' } },
   })), [], { provider });
+  const eventAddress = getAnonymousEventNftAddress(b, catB);
   const root = layer3.executionRoot([a.lockingBytecode, b.lockingBytecode], EDGES, events, resources);
   const setB = new TransactionBuilder({ provider });
   setB.addInput(gen.utxos[0], controller.unlock.setRoot(hexToBin(root), alicePub, sig()));
@@ -81,7 +83,7 @@ async function run(
     token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: binToHex(num8(15n)) } },
   });
   tx.addOutput({ // 3 B event NFT: branded category, authenticated (locked to the emitter, none-cap, dust)
-    to: b.tokenAddress, amount: 1000n,
+    to: eventAddress, amount: 1000n,
     token: { category: catB, amount: 0n, nft: { capability, commitment: topic } },
   });
   tx.addOutput({ // 4 controller preserved

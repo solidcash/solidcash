@@ -5,7 +5,9 @@
 // LAYOUT (see transcriptLayout): the spec is index-free, and the generator + the deriver both read indices
 // from the layout so covenant and transaction always agree. Every generated covenant runs on every
 // participant input and validates the whole transcript. Unrolled per shape; the generator is general.
-import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256, utf8ToBin } from '@bitauth/libauth';
+import { buildAnonymousEventNftCovenantScript } from '@solidcash/utils';
+import { scriptToLockingBytecode } from '../utils.js';
 
 /**
  * The canonical 4-byte selector of a participant METHOD (audit P3): first 4 bytes of sha256(signature). The
@@ -54,6 +56,16 @@ export const EXEC_DOMAIN = '4c33455845433100';
 export const EXEC_VERSION = '02';
 /** Fixed dust value (satoshis) of a balanced event-log NFT, so no value can be siphoned into a log output. */
 export const EVENT_DUST = 1000;
+
+/** P2SH32 locking bytecode of the standard 144-block anonymous event-NFT covenant for `categoryHex`. */
+export function eventNftLockingBytecode(categoryHex: string): string {
+  if (!/^[0-9a-fA-F]{64}$/.test(categoryHex)) {
+    throw new Error('layer3: event category must be 32-byte hex');
+  }
+  return binToHex(scriptToLockingBytecode(
+    buildAnonymousEventNftCovenantScript(hexToBin(categoryHex)), 'p2sh32',
+  ));
+}
 
 const u8hex = (n: number): string => {
   if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error('layer3: framed count/index out of byte range');
@@ -564,6 +576,7 @@ export function balancedMemberBody(
     const myRes = resources.find((r) => r.owner === selfPos);
     if (!myRes) throw new Error('layer3: an event emitter must own a state NFT (minting) to brand its events');
     const brandInternal = (myRes.categoryHex.toLowerCase().match(/../g) as string[]).reverse().join('');
+    const eventLbc = eventNftLockingBytecode(myRes.categoryHex);
     myEvents.forEach((ev, e) => {
       const eo = layout.eventSlot(selfPos, e);
       // FULLY authenticate the event NFT (audit): a log record is an IMMUTABLE (none-capability), zero-amount,
@@ -574,7 +587,9 @@ export function balancedMemberBody(
       body.push(`require(tx.outputs[${eo}].nftCommitment == hex"${ev.topicHex.toLowerCase()}");`);
       body.push(`require(tx.outputs[${eo}].tokenAmount == 0);`);
       body.push(`require(tx.outputs[${eo}].value == ${EVENT_DUST});`);
-      body.push(`require(tx.outputs[${eo}].lockingBytecode == lbc${selfPos});`);
+      // Use the platform event covenant, not the participant master covenant. The output is independently
+      // spendable by anyone after 144 blocks, while provenance/content remain authenticated by this emitter.
+      body.push(`require(tx.outputs[${eo}].lockingBytecode == hex"${eventLbc}");`);
     });
   }
   // Finding 6: pin each committed native call's callee to the layout callee slot, from the ROOT (not the

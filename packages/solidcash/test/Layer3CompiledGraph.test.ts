@@ -13,6 +13,42 @@ contract ${name}() {
 }`, { forceStateful: true, experimentalHiddenBatch: true });
 
 describe('layer3.planCompiledGraph', () => {
+  it('derives msg.sender-keyed collection witnesses from the authenticated parent owner', () => {
+    const graphOptions = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const caller = compileString(`contract Caller() {
+      function start() public { require(true); }
+    }`, graphOptions);
+    const token = compileString(`contract CallerAllowance() {
+      mapping(address => bigint) balances;
+      mapping(address => mapping(address => bigint)) allowance;
+      function spend(address from, address to, bigint amount) public {
+        require(this.allowance[from][msg.sender] >= amount);
+        require(this.balances[from] >= amount);
+        this.allowance[from][msg.sender] = this.allowance[from][msg.sender] - amount;
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+      }
+    }`, graphOptions);
+    const plan = layer3.planCompiledGraph([
+      { artifact: caller, lockingBytecode: '51' },
+      { artifact: token, lockingBytecode: '52' },
+    ], [
+      { parent: null, callee: 0, function: 'start', args: [] },
+      { parent: 0, callee: 1, function: 'spend', args: [new Uint8Array([0x53]), new Uint8Array([0x54]), 3n] },
+      { parent: 0, callee: 1, function: 'spend', args: [new Uint8Array([0x53]), new Uint8Array([0x55]), 2n] },
+    ]);
+    expect(plan.participants[1].batch.routeWitnesses).toContainEqual(new Uint8Array([0x51]));
+    expect(() => layer3.encodeHiddenBatch(token, [
+      { function: 'spend', args: [new Uint8Array([0x53]), new Uint8Array([0x54]), 3n] },
+      { function: 'spend', args: [new Uint8Array([0x53]), new Uint8Array([0x55]), 2n] },
+    ])).toThrow(/authenticated logical caller/);
+  });
+
   it('groups an A -> B -> A cycle into one ordered execution per physical owner', () => {
     const a = compile('GraphA');
     const b = compile('GraphB');
@@ -117,7 +153,7 @@ describe('layer3.planCompiledGraph', () => {
     const projection = layer3.generateGraphProjectionVerifier();
     const controller = layer3.generateGraphRootController('51');
     expect(controller).toContain('nftCommitment == sha256(transcript)');
-    expect(controller).toContain('participantInput > previousInput');
+    expect(controller).toContain('participantInput == expectedInput');
     expect(controller).toContain('unlocking.slice(0, 5) == hex"0453434231"');
     expect(controller).toContain('outputCategory.slice(0, 32) != controllerCategory');
     expect(projection).toContain('projectionInput == this.activeInputIndex');

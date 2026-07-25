@@ -184,6 +184,38 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
   });
 
+  it('binds an ERC-20 allowance key to the authenticated graph msg.sender', () => {
+    const artifact = compileString(`
+      contract CallerAuthorizedToken() {
+        mapping(address => bigint) balances;
+        mapping(address => mapping(address => bigint)) allowances;
+
+        function transferFrom(address from, address to, bigint amount) public {
+          require(this.allowances[from][msg.sender] >= amount);
+          require(this.balances[from] >= amount);
+          this.allowances[from][msg.sender] = this.allowances[from][msg.sender] - amount;
+          this.balances[from] = this.balances[from] - amount;
+          this.balances[to] = this.balances[to] + amount;
+        }
+      }
+    `, graphOptions);
+    expect(artifact.hiddenBatch?.handlers.find((handler) =>
+      handler.name === 'transferFrom')).toMatchObject({
+      eligible: true,
+      batchKeyWitnesses: expect.arrayContaining([
+        expect.objectContaining({
+          routeInput: '__scb_key_allowances_sender_1',
+          inputIndex: -1,
+          source: 'msgSender',
+        }),
+      ]),
+    });
+    expect(artifact.hiddenBatch?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__scb_key_allowances_sender_1',
+      type: 'address',
+    }));
+  });
+
   it('allocates one ordered conditional event slot per possible row', () => {
     const artifact = compileString(`contract EventBatch() {
       bigint current;

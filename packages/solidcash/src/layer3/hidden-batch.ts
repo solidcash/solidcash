@@ -7,6 +7,8 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 export interface HiddenBatchInvocation {
   function: string;
   args?: readonly FunctionArgument[];
+  /** Graph-authenticated logical caller locking bytecode for msg.sender-keyed resources. */
+  logicalCaller?: FunctionArgument;
 }
 
 export interface EncodedHiddenBatch {
@@ -109,8 +111,20 @@ export function encodeHiddenBatch(
       throw new Error(`Handler '${handler.name}' contains a signature-like argument and cannot use SCB1`);
     }
     for (const binding of handler.batchKeyWitnesses ?? []) {
-      const value = args[binding.inputIndex];
-      const encodedValue = encoded[binding.inputIndex] as Uint8Array;
+      const value = binding.source === 'msgSender'
+        ? invocation.logicalCaller
+        : args[binding.inputIndex];
+      if (value === undefined) {
+        throw new Error(
+          `SCB1 collection witness '${binding.routeInput}' requires an authenticated logical caller`,
+        );
+      }
+      const encodedValue = binding.source === 'msgSender'
+        ? encodeFunctionArgument(value, 'address', structs)
+        : encoded[binding.inputIndex] as Uint8Array;
+      if (!(encodedValue instanceof Uint8Array)) {
+        throw new Error(`SCB1 collection witness '${binding.routeInput}' is not byte-encodable`);
+      }
       const routeInput = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
       const prior = keyWitnessValues.get(routeInput);
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {

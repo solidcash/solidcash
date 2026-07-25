@@ -342,6 +342,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   hiddenBatchKeyWitnesses?: {
     routeInput: string;
     inputIndex: number;
+    source?: 'argument' | 'msgSender';
     perRow?: boolean;
   }[];
   isFreeFunction: boolean = false;

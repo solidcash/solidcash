@@ -297,7 +297,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       && (graphTailStatement || graphResultStatement
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
-    const keyWitnesses: { routeInput: string; inputIndex: number; perRow?: boolean }[] = [];
+    const keyWitnesses: {
+      routeInput: string;
+      inputIndex: number;
+      source?: 'argument' | 'msgSender';
+      perRow?: boolean;
+    }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
       const directKeys = new Map<string, number[][]>();
@@ -306,8 +311,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           || node instanceof MappingDeleteNode)) return;
         const collection = collectionByName.get(node.name);
         if (!collection) return;
-        const indices = node.keys.map((key) => key instanceof IdentifierNode
-          ? fn.parameters.findIndex((parameter) => parameter.name === key.name) : -1);
+        const indices = node.keys.map((key) => {
+          if (key instanceof IdentifierNode) {
+            return fn.parameters.findIndex((parameter) => parameter.name === key.name);
+          }
+          if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return -2;
+          return -1;
+        });
         const group = directKeys.get(node.name) ?? [];
         if (!group.some((prior) => prior.length === indices.length
           && prior.every((value, index) => value === indices[index]))) group.push(indices);
@@ -333,13 +343,31 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         const perRowInputs = new Set<number>();
         for (const [collectionName, alternatives] of directKeys) {
           const collection = collectionByName.get(collectionName)!;
-          if (alternatives.some((indices) => indices.some((index) => index < 0)
+          if (alternatives.some((indices) => indices.some((index) => index === -1)
             || indices.length !== collection.allKeyTypes.length)) {
             reason = 'collection-route-requires-parameter-keyed-resource-shape';
             break;
           }
-          alternatives[0].forEach((index) => globalInputs.add(index));
-          alternatives.slice(1).flat().forEach((index) => perRowInputs.add(index));
+          alternatives[0].forEach((inputIndex, keyIndex) => {
+            if (inputIndex === -2) {
+              if (graphControllerLbc === undefined
+                || alternatives.some((indices) => indices[keyIndex] !== -2)) {
+                reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
+                return;
+              }
+              const routeInput = `__scb_key_${collectionName.replace(/[^A-Za-z0-9_]/g, '_')}`
+                + `_sender_${keyIndex}`;
+              routeKeyWitnesses.set(routeInput, [{
+                name: routeInput,
+                type: collection.allKeyTypes[keyIndex],
+              }]);
+              keyWitnesses.push({ routeInput, inputIndex: -1, source: 'msgSender' });
+            } else {
+              globalInputs.add(inputIndex);
+            }
+          });
+          alternatives.slice(1).flat().filter((index) => index >= 0)
+            .forEach((index) => perRowInputs.add(index));
         }
         if (!reason && [...perRowInputs].some((index) => globalInputs.has(index))) {
           reason = 'collection-route-has-ambiguous-global-and-row-key';
@@ -362,7 +390,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       } else {
         for (const [collectionName, alternatives] of directKeys) {
           const collection = collectionByName.get(collectionName)!;
-          if (alternatives.length !== 1 || alternatives[0].some((index) => index < 0)
+          if (alternatives.length !== 1 || alternatives[0].some((index) => index === -1)
             || alternatives[0].length !== collection.allKeyTypes.length) {
             reason = 'collection-route-requires-one-parameter-keyed-entry-per-collection';
             break;
@@ -373,10 +401,27 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             type,
           }));
           routeKeyWitnesses.set(collectionName, witnesses);
-          alternatives[0].forEach((inputIndex, keyIndex) => keyWitnesses.push({
-            routeInput: witnesses[keyIndex].name,
-            inputIndex,
-          }));
+          alternatives[0].forEach((inputIndex, keyIndex) => {
+            if (inputIndex === -2) {
+              if (graphControllerLbc === undefined) {
+                reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
+                return;
+              }
+              const routeInput = `__scb_key_${collectionName.replace(/[^A-Za-z0-9_]/g, '_')}`
+                + `_sender_${keyIndex}`;
+              routeKeyWitnesses.set(routeInput, [{
+                name: routeInput,
+                type: collection.allKeyTypes[keyIndex],
+              }]);
+              keyWitnesses.push({ routeInput, inputIndex: -1, source: 'msgSender' });
+            } else {
+              keyWitnesses.push({
+                routeInput: witnesses[keyIndex].name,
+                inputIndex,
+                source: 'argument',
+              });
+            }
+          });
         }
       }
     }
@@ -508,6 +553,10 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.hiddenBatchEligible = undefined;
     handler.hiddenBatchRejectionReason = undefined;
     handler.hiddenBatchKeyWitnesses = undefined;
+    if (graphTailHandlers.has(resourceShapedHandler)) {
+      handler.graphEmissionHandler = true;
+      handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(resourceShapedHandler);
+    }
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
   }
@@ -546,9 +595,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
       binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
     const witnessByInput = new Map((fn.hiddenBatchKeyWitnesses ?? [])
+      .filter((binding) => binding.source !== 'msgSender')
       .map((binding) => [binding.inputIndex, witnessName(binding)]));
     const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
-      `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
+      binding.source === 'msgSender'
+        ? `require(${witnessName(binding)} == __scb_graph_caller);`
+        : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
     const callArgs = fn.parameters.map((_parameter, i) =>
       witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`).join(', ');
     const decode = declarations.length === 1

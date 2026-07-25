@@ -19674,7 +19674,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
+    if (this.stack.includes('__scb_graph_caller')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_caller'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     // Pick _msgSenderCategory from the stack
+    if (!this.stack.includes('__internal__msgSenderCategory')) {
+      throw new Error(
+        `Logical msg.sender context is unavailable while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+      );
+    }
     const catIdx = this.getStackIndex('__internal__msgSenderCategory');
     this.emit(encodeInt(BigInt(catIdx)), locationData);
     this.emit(Op.OP_PICK, locationData);

@@ -557,6 +557,7 @@ export interface Artifact {
       batchKeyWitnesses?: {
         routeInput: string;
         inputIndex: number;
+        source?: 'argument' | 'msgSender';
         perRow?: boolean;
       }[];
     }[];

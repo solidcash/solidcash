@@ -781,6 +781,9 @@ export function planCompiledGraph(
     perOwner[invocation.callee].push({
       function: invocation.function,
       args: invocation.args,
+      ...(invocation.parent !== null && {
+        logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode),
+      }),
     });
     globalByOwner[invocation.callee].push(index);
   });

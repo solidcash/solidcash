@@ -46,16 +46,16 @@ Evidence labels:
 
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
-| Direct wrapper and transcript wrapper invoke the same compiled business handler | PARTIAL | The compiled-graph path now executes the compiler-owned SCB1 route and original eligible handlers; handlers containing external call expressions remain ineligible. |
+| Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
 | Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
-| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | MISSING in Layer 3 | Available in direct compilation, not connected to transcript replay. |
+| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PARTIAL | `require`, conditionals, counted loops, and expression calls execute in the original compiled handler with exact reached-row exhaustion. Modifier/revert coverage and the full control-flow class remain. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
-| Producer-authenticated ABI return values | PARTIAL | Compiled SCB1 producer results are bound through return-event vectors and per-invocation transcript bytes; native external-call derivation still rejects returns. |
-| Result-dependent continuation and transitive result chains | PARTIAL | Compiled producer results are authenticated, but ordinary source external-call expressions do not yet resume from transcript results. |
-| Logical callbacks and `A -> B -> A` execute each handler exactly once | PARTIAL | Structural cycle and arithmetic-journal fixtures pass; general compiled callbacks do not. |
-| Staticcall snapshots and runtime-enforces no writes/effects | MISSING | No general dirty/effect cursor snapshot implementation. |
+| Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
+| Result-dependent continuation and transitive result chains | PROVEN for the admitted scalar class | The compiled `A.plusOne -> B.twice` fixture consumes authenticated `4`, resumes A, and authenticates A's derived `5`. General native worklist derivation still rejects returns. |
+| Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
+| Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
 | Existing pinned one-hop delegatecall semantics | MISSING from transcript mode | Transcript derivation rejects call modes. |
-| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Current generated paths cover only a subset; full compatibility table is not implemented. |
+| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, and single-invocation settled `msg.value` are VM-proven. `outState`, aggregate value attribution, and the full introspection table remain. |
 
 ## 4. Compiler analysis and automatic derivation
 
@@ -65,7 +65,7 @@ Evidence labels:
 | Impossible call/result cycles and duplicate authorities fail at compile time | PARTIAL | Existing physical resolver and supported Layer-3 shapes fail closed; no full SCC/result-dependency analysis. |
 | SDK expands a graph, reuses owners, stabilizes resources and acquires each input once | PARTIAL | Fixed-layout/preorder native derivation exists; no general symbolic worklist. |
 | Direct, repeated and transitive calls derive without hand-authored rows | PROVEN for admitted class | `deriveNativeExternalCalls` runtime-branded tables and VM tests. |
-| Expressions, dynamic targets, loops, function pointers and batches | MISSING | Explicitly rejected by `derive-native.ts`. |
+| Expressions, dynamic targets, loops, function pointers and batches | PARTIAL | Compiler-owned graph execution proves transformed expression arguments, conditionals, and counted-loop occurrence. `derive-native.ts` still rejects expressions, dynamic targets, loops, pointers, and batches. |
 | Returning, opaque, signature-bearing and low-level calls | MISSING | Explicitly rejected or not representable. |
 | Final complete VM probe for every input | PARTIAL | Individual builders/tests probe; no single production general-graph send gate. |
 
@@ -74,7 +74,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | MISSING from general Layer 3 | Current typed transition does not integrate arbitrary backend descriptors. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | One authenticated existing-entry transition composes in a balanced graph and forged post-state fails. Insertion/deletion, chunks, dynamic keys, and arbitrary descriptors remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | MISSING as a general handler property | Corpus-specific arithmetic examples are not general compiled execution. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven; arbitrary event arguments/counts are not. |
@@ -166,3 +166,25 @@ its parent's compiled external-call expression. Present SCB1 eligibility rejects
 the existing manually planned structural graphs are execution-mechanism evidence and MUST NOT be
 treated as full synchronous source-call semantics. Completion requires compiler-owned callsite
 exhaustiveness and suspension/resumption (including callbacks) over the shared journal.
+
+### 2026-07-25: logical context, balanced blocks, and reached source calls
+
+The compiled graph now authenticates substantially more than a structural participant tree:
+
+- participant frames commit compiler-owned block sizes, and the controller requires contiguous
+  balanced blocks followed by one projection per participant, the controller, and the fee/change pair;
+- parent identity supplies logical `msg.sender`; selector and canonical arguments supply `msg.sig` and
+  `msg.data`; a one-invocation route binds `msg.value` to its settled satoshi-container delta;
+- compiler-derived `call` versus read-only `staticcall` mode is committed in source emission and the row;
+- conditionals and counted loops consume rows only at reached callsites, and transformed arguments such
+  as `n + 1` are evaluated by the original handler and minimally encoded;
+- scalar producer results resume parent computation, and a stateful `A -> B -> A` cycle settles one
+  post-state per physical owner;
+- ordinary event NFTs, satoshi effects, and an existing mapping-entry transition compose inside
+  balanced blocks, with hostile substitution tests for each.
+
+These results do not make parameter-authorized allowance examples equivalent to ERC-20
+`msg.sender` authorization. The next bridge is a collection key derived from the graph-authenticated
+logical caller. Merely enabling the non-graph repeated-callee route would be unsound: it can prove a
+declared sender category is co-spent, but it does not independently prove that this owner emitted the
+callee's complete batch.

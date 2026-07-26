@@ -233,35 +233,38 @@ a magic marker plus `OP_DEPTH` at the upsert and reading it back out of the VM t
 The depths MATCH. There is no missing or extra tracked entry. So "the model holds one more entry than the real
 stack" is false, and any fix built on that idea would have been wrong.
 
-CAUTION on what follows: the ordering explanation below is REASONED, not measured, and a follow-up probe
-failed to confirm it. Reading the actual runtime elements at model indices 10-16 at the upsert gives:
+ORDERING REFUTED, AND THE REAL CAUSE FOUND. The paired probe was re-run correctly: each upsert emits a marker
+carrying a per-call tag, and the compiler stashes its model record under the same tag on `globalThis` (the
+compile runs in the test process), so a runtime frame is matched to exactly one model record with no guessing
+about which function was caught. For `fn=__scb1`, modelDepth 36 and runtimeDepth 36:
 
-    [10] 5727-byte SCB1 blob      model says `__scb_pushOpcode`      - does NOT correspond
-    [11] 05                        model says `__scb_unlock`          - does NOT correspond
-    [12] 51                        model says `__cj_cache_2`          - unidentified
-    [13] 55                        model says `__cj_cache_1`          - unidentified
-    [14] 00                        model says `__internal__state_write_moves` - plausible at genesis 0
-    [15] 1042-byte GRAPH1 blob     model says `__internal__graphTranscript`   - DOES correspond
-    [16] 08                        - unidentified
+    [9]  model=__scb_pushOpcode              runtime=4c                        (OP_PUSHDATA1)   MATCHES
+    [10] model=__scb_unlock                  runtime=<5771-byte SCB1 blob>                      MATCHES
+    [11] model=__cj_cache_2                  runtime=05
+    [12] model=__cj_cache_1                  runtime=51
+    [13] model=__cj_cache_0                  runtime=55
+    [14] model=__internal__state_write_moves runtime=00                        (genesis 0)      MATCHES
+    [15] model=__internal__graphTranscript   runtime=<1042-byte GRAPH1 blob>                    MATCHES
+    [16] model=__internal__graphControllerIdx runtime=08                       (controller idx) MATCHES
 
-One landmark aligns (index 15) and others clearly do not, which is consistent with a permuted region but does
-not establish it: the probe could not confirm WHICH compiled function's frame it caught, because the model-side
-log is emitted inside the test worker and was not captured alongside the runtime dump. Treat the paragraph
-below as the leading hypothesis with one supporting landmark, not as a demonstrated cause. Anyone continuing
-should first re-run the probe capturing BOTH sides in one place and confirm the frame is `__scb1`.
+The tracked stack model is CORRECT - both depth and ORDER. The ordering hypothesis is refuted, and the earlier
+"indices 10-16 do not correspond" note was an off-by-one in the probe's own index arithmetic, not a compiler
+fact. Three theories are now dead: per-row flush, missing block pop, depth divergence, plus this one.
 
-What that leaves is the only remaining way both facts can hold at once. The model says index 13 is
-`__cj_cache_1`; the runtime pick at that same index yields the scalar state-write element; and the total depths
-agree. Therefore the ORDER of elements diverges, not the count: the tracked model records the journal cache
-locals and the `__internal__state_write_*` locals in a different order than the emitted code actually pushes
-them. `getStackIndex` returns a model index that is used directly as the `OP_PICK` depth, so a permuted region
-mis-resolves every name inside it while leaving the depth arithmetic intact - which is exactly why this fails
-silently rather than crashing.
+The real cause is visible in the same dump. The cache locals hold:
 
-The remaining work is to compare the declaration/push order of `__cj_cache_*` against `__internal__state_write_*`
-in the `__scb1` wrapper prologue and make the tracked order match the emitted order. This must be done WITHOUT
-changing either journal's exit behaviour, without patching block scoping (checked, dead end), and without
-assuming a depth correction (checked, refuted).
+    __cj_cache_0 = 55 = 85   correct settled value for `shared`
+    __cj_cache_2 = 05 = 5    correct settled value for `second`
+    __cj_cache_1 = 51 = 81   WRONG - `first` should settle to 10
+
+So the stack lookup resolves correctly and `__cj_cache_1` simply CONTAINS the wrong value, which is the
+pushdata encoding of the scalar's post-row value. This is a VALUE-THREADING bug in the collection journal
+lowering, not stack indexing and not a codegen offset. It lives in `LowerCollectionJournalHelpers`, where the
+wrapper threads values into the per-entry cache locals: one entry's local receives the scalar journal's value
+instead of its own.
+
+That also explains cleanly why the leak is positional (it follows whichever scalar is threaded, per the
+second-scalar experiment) while depth and order are sound, which no previous theory managed to reconcile.
 
 Superseded next step (kept so the reasoning is auditable): compare the tracked `this.stack.length` at the upsert
 against the actual VM stack depth at the corresponding instruction pointer in a `vm.debug()` trace. If they

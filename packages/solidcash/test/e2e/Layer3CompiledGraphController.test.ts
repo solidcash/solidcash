@@ -344,10 +344,7 @@ async function build(
 }
 
 const packedResult = (value: bigint): Uint8Array =>
-  scriptToBytecode([
-    bigIntToVmNumber(value),
-    ...Array.from({ length: 7 }, () => bigIntToVmNumber(0n)),
-  ]);
+  scriptToBytecode([bigIntToVmNumber(value)]);
 const aggregateResult = (value: bigint): Uint8Array => scriptToBytecode([packedResult(value)]);
 
 async function buildReturning(tamperResult = false) {

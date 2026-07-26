@@ -212,7 +212,7 @@ describe('Release 4 ordered event batch SDK E2E', () => {
 });
 
 describe('Release 4 ordered result batch SDK E2E', () => {
-  it('commits reached row results in order and zeroes inactive suffix slots', async () => {
+  it('commits exactly the reached row results in order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract ResultBatchRelease4() {
@@ -247,14 +247,14 @@ describe('Release 4 ordered result batch SDK E2E', () => {
     ).value as Uint8Array;
     const values: bigint[] = [];
     let offset = 0;
-    for (let index = 0; index < 8; index++) {
+    for (let index = 0; index < 3; index++) {
       const decoded = decodePushdataValue(
         packed, offset, 'bigint',
       );
       values.push(decoded.value as bigint);
       offset += decoded.bytesConsumed;
     }
-    expect(values).toEqual([2n, 5n, 10n, 0n, 0n, 0n, 0n, 0n]);
+    expect(values).toEqual([2n, 5n, 10n]);
     expect(layer3.decodeHiddenBatchResults(
       artifact, plan, hexToBin(returnOutput!.token!.nft!.commitment),
     )).toEqual([
@@ -262,6 +262,47 @@ describe('Release 4 ordered result batch SDK E2E', () => {
       { row: 1, type: 'bigint', value: 5n },
       { row: 2, type: 'bigint', value: 10n },
     ]);
+  });
+
+  it('executes and decodes heterogeneous scalar and tuple result rows', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract HeterogeneousResultBatch() {
+        function number(bigint n) public pure returns (bigint) { return n + 1; }
+        function flag(bigint n) public pure returns (bool) { return n > 0; }
+        function pair(bigint n) public pure returns (bigint, bool) { return (n * 2, n != 0); }
+        function raw(bytes value) public pure returns (bytes) { return bytes.concat(value, hex"ff"); }
+        function text(string value) public pure returns (string) { return string.concat(value, "!"); }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const invocations = [
+      { function: 'number', args: [4n] },
+      { function: 'flag', args: [0n] },
+      { function: 'pair', args: [3n] },
+      { function: 'raw', args: [hexToBin('aabb')] },
+      { function: 'text', args: ['hello'] },
+    ];
+    const plan = layer3.encodeHiddenBatch(artifact, invocations);
+    const transaction = await contract.batch(invocations).emitReturn().send();
+    const returnOutput = getTxOutputs(transaction).find((output) =>
+      output.token?.category === categoryId && output.token.nft?.capability === 'none');
+    expect(returnOutput).toBeDefined();
+    const commitment = hexToBin(returnOutput!.token!.nft!.commitment);
+    expect(layer3.decodeHiddenBatchResults(artifact, plan, commitment)).toEqual([
+      { row: 0, type: 'bigint', value: 5n },
+      { row: 1, type: 'bool', value: false },
+      { row: 2, type: '(bigint,bool)', value: [6n, true] },
+      { row: 3, type: 'bytes', value: hexToBin('aabbff') },
+      { row: 4, type: 'string', value: 'hello!' },
+    ]);
+    expect(() => layer3.decodeHiddenBatchResults(
+      artifact, plan, Uint8Array.from([...commitment, 0]),
+    )).toThrow();
   });
 });
 

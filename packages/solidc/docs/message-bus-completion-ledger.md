@@ -950,3 +950,25 @@ local state. This proves external state settlement does not depend on an unrelat
 This moves fixed arrays from unimplemented to PROVEN for the named same-entry repeated-call class.
 It does not close the broader resource row: per-row array entries, dynamic chunks/arrays, token
 containers, and runtime-varying aliases remain.
+
+### 2026-07-26: Release D start — heterogeneous canonical result vectors
+
+The compiler-owned SCB1 route no longer requires every eligible handler to return one common scalar
+type. Each reached returning row appends its canonical `abi.encode` fields to one authenticated
+result vector; void rows append nothing. The SDK decodes that vector against the compiler-authored
+per-row type schema and requires exact byte consumption, so omission, truncation, and unchecked
+suffixes fail closed.
+
+`HiddenBatchRelease4.test.ts` executes one physical route containing `bigint`, `bool`,
+`(bigint,bool)`, `bytes`, and `string` results on the BCH-2026 VM and decodes the authenticated
+return-event commitment. `Layer3CompiledGraphController.test.ts` separately proves that the graph
+controller binds the resulting participant vector and rejects a forged result.
+
+SCB1 remains experimental and its version-1 format has not been frozen or enabled by default; this
+change replaces the earlier inactive-default suffix representation before that freeze. Immutable
+version interoperability remains a Release I requirement and this evidence MUST NOT be read as
+support for silently changing a deployed protocol.
+
+The Release D row remains PARTIAL. Struct results, producer-to-consumer use of heterogeneous fields,
+general nested/transitive chains, and SCC rejection of unavailable-future-result cycles still need
+their own VM and compiler evidence.

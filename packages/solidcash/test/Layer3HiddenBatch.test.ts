@@ -14,7 +14,8 @@ contract Layer3HiddenBatch() {
 const RETURN_SOURCE = `pragma solidcash >=0.8.0;
 contract Layer3ReturningBatch() {
   function twice(int n) public pure returns (int) { return n * 2; }
-  function plusOne(int n) public pure returns (int) { return n + 1; }
+  function positive(int n) public pure returns (bool) { return n > 0; }
+  function pair(int n) public pure returns (int, bool) { return (n + 1, n > 0); }
 }`;
 
 const artifact = compileString(SOURCE, {
@@ -50,22 +51,24 @@ describe('layer3.encodeHiddenBatch', () => {
     });
     const encoded = layer3.encodeHiddenBatch(returning, [
       { function: 'twice', args: [3n] },
-      { function: 'plusOne', args: [8n] },
+      { function: 'positive', args: [8n] },
+      { function: 'pair', args: [4n] },
     ]);
     expect(encoded.results).toEqual([
       { row: 0, types: ['int256'] },
-      { row: 1, types: ['int256'] },
+      { row: 1, types: ['bool'] },
+      { row: 2, types: ['int256', 'bool'] },
     ]);
     expect(returning.hiddenBatch!.route.outputs).toEqual([{ type: 'bytes' }]);
 
     const packed = scriptToBytecode([
-      bigIntToVmNumber(6n), bigIntToVmNumber(9n),
-      ...Array.from({ length: 6 }, () => bigIntToVmNumber(0n)),
+      bigIntToVmNumber(6n), Uint8Array.of(1), bigIntToVmNumber(5n), Uint8Array.of(1),
     ]);
     const commitment = scriptToBytecode([packed]);
     expect(layer3.decodeHiddenBatchResults(returning, encoded, commitment)).toEqual([
       { row: 0, type: 'int256', value: 6n },
-      { row: 1, type: 'int256', value: 9n },
+      { row: 1, type: 'bool', value: true },
+      { row: 2, type: '(int256,bool)', value: [5n, true] },
     ]);
     expect(() => layer3.decodeHiddenBatchResults(
       returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),

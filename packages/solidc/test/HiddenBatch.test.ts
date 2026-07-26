@@ -316,7 +316,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
   });
 
-  it('aggregates one common return value per row into the route return event', () => {
+  it('aggregates typed return fields per reached row into the route return event', () => {
     const artifact = compileString(`contract ResultBatch() {
       bigint total;
       function add(bigint amount) public returns (bigint) {
@@ -331,6 +331,27 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.hiddenBatch?.route.blockLayout?.slots
       .filter((slot) => slot.kind === 'returnEvent')).toHaveLength(1);
     expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
+  });
+
+  it('admits heterogeneous and tuple return schemas on one route', () => {
+    const artifact = compileString(`contract HeterogeneousResults() {
+      function number(bigint n) public pure returns (bigint) { return n + 1; }
+      function flag(bool value) public pure returns (bool) { return !value; }
+      function pair(bigint n) public pure returns (bigint, bool) { return (n, n > 0); }
+      function touch() public pure { require(true); }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.map((handler) => ({
+      name: handler.name, eligible: handler.eligible, outputs: handler.outputs,
+    }))).toEqual([
+      { name: 'number', eligible: true, outputs: [{ type: 'bigint' }] },
+      { name: 'flag', eligible: true, outputs: [{ type: 'bool' }] },
+      {
+        name: 'pair', eligible: true,
+        outputs: [{ type: 'bigint' }, { type: 'bool' }],
+      },
+      { name: 'touch', eligible: true, outputs: undefined },
+    ]);
+    expect(artifact.hiddenBatch?.route.outputs).toEqual([{ type: 'bytes' }]);
   });
 
   it('allocates one ordered conditional value-transfer slot per possible row', () => {

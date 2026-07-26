@@ -193,10 +193,9 @@ export function encodeHiddenBatch(
 /**
  * Decode and completely consume the aggregate return-event commitment produced by a returning SCB1 route.
  *
- * The current compiler route requires one common return type and encodes `maximumRows` fields, with inactive
- * suffix fields left at the language default. We decode the complete commitment (including that suffix) so a
- * consumer cannot authenticate a valid prefix while ignoring attacker-controlled trailing bytes, then expose
- * only the rows actually reached by the plan.
+ * The compiler route concatenates the canonical ABI fields returned by each reached returning row. The plan
+ * supplies the exact ordered type vector, so decoding is deterministic even when rows return different types
+ * or tuples. Complete consumption rejects both omitted fields and attacker-controlled suffixes.
  */
 export function decodeHiddenBatchResults(
   artifact: Artifact,
@@ -216,26 +215,24 @@ export function decodeHiddenBatchResults(
     throw new Error('SCB1 result commitment is not one canonical bytes field');
   }
   const packed = outer.value;
-  const types = new Set(plan.results.flatMap((result) => result.types));
-  if (types.size !== 1 || plan.results.some((result) => result.types.length !== 1)) {
-    throw new Error('SCB1 result decoding requires the compiler route one-common-result invariant');
-  }
-  const [type] = [...types];
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
-  const all: StateValue[] = [];
   let offset = 0;
-  for (let row = 0; row < capability.maximumRows; row += 1) {
-    if (offset >= packed.length) throw new Error('SCB1 result commitment ended before every result slot');
-    const decoded = decodePushdataValue(packed, offset, type, structs);
-    all.push(decoded.value);
-    offset += decoded.bytesConsumed;
-  }
+  const decodedRows = plan.results.map((result) => {
+    const values: StateValue[] = [];
+    for (const type of result.types) {
+      if (offset >= packed.length) throw new Error('SCB1 result commitment ended before every result field');
+      const decoded = decodePushdataValue(packed, offset, type, structs);
+      values.push(decoded.value);
+      offset += decoded.bytesConsumed;
+    }
+    return Object.freeze({
+      row: result.row,
+      type: result.types.length === 1 ? result.types[0] : `(${result.types.join(',')})`,
+      value: result.types.length === 1 ? values[0] : values,
+    });
+  });
   if (offset !== packed.length) {
     throw new Error('SCB1 result commitment contains an unchecked suffix');
   }
-  return Object.freeze(plan.results.map((result) => Object.freeze({
-    row: result.row,
-    type,
-    value: all[result.row],
-  })));
+  return Object.freeze(decodedRows);
 }

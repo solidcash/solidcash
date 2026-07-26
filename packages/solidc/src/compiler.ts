@@ -525,15 +525,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     });
     return found;
   });
-  let resultType: Type | undefined;
   if (resultMode) {
-    resultType = eligible.find((fn) => fn.returnTypes.length > 0)?.returnTypes[0];
     for (const fn of eligible) {
-      if (eventMode || fn.returnTypes.length !== 1
-        || fn.returnTypes[0].toString() !== resultType?.toString()
-        || eligibleFootprint(fn).effects.length > 0) {
+      if (eventMode || eligibleFootprint(fn).effects.length > 0) {
         fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'result-route-requires-one-common-effect-free-return';
+        fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
       }
     }
     eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
@@ -762,16 +758,26 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
-  const buildDecodeAndCall = (resultIndex?: number, rowIndex?: number): string =>
+  const buildDecodeAndCall = (captureResults = false, rowIndex?: number): string =>
     eligible.map((fn, handlerIndex) => {
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
     const invokeName = fn === resourceShapedHandler
       ? resourceHandlerInvokeName!
       : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
-    const invoke = (args: string): string => resultIndex === undefined
-      ? `${invokeName}(${args});`
-      : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
+    const invoke = (args: string): string => {
+      if (!captureResults || fn.returnTypes.length === 0) return `${invokeName}(${args});`;
+      const names = fn.returnTypes.map((_type, index) =>
+        `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
+      const declarations = fn.returnTypes.map((type, index) =>
+        `${type.toString()} ${names[index]};`).join(' ');
+      const assignment = fn.returnTypes.length === 1
+        ? `${names[0]} = ${invokeName}(${args});`
+        : `(${names.join(', ')}) = ${invokeName}(${args});`;
+      return `${declarations} ${assignment} __scb_results = bytes.concat(
+        __scb_results, abi.encode(${names.join(', ')})
+      );`;
+    };
     const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
       binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
     const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
@@ -845,7 +851,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             __internal__graphCallers, __scb_graph_caller_cursor
           );
   `;
-  const parseOneRow = (rowExpression: string, resultIndex?: number, rowIndex?: number): string => `
+  const parseOneRow = (rowExpression: string, captureResults = false, rowIndex?: number): string => `
           ${parseGraphCaller}
           bytes4 rowSelector;
           bytes rowArgs;
@@ -853,7 +859,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             batchBlob, cursor, ${rowExpression}
           );
           bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
-          ${buildDecodeAndCall(resultIndex, rowIndex)}
+          ${buildDecodeAndCall(captureResults, rowIndex)}
           else { revert("unknown batch selector"); }
   `;
   const parser = resourceShapedHandler
@@ -861,20 +867,16 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       `{ ${parseOneRow(String(row), undefined, row)} }`).join(' ')
     : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
-        `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode ? row : undefined, row)} }`).join(' ')
+        `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
     : `for (bigint row = 0; row < rowCount; row = row + 1) {
         ${parseOneRow('row')}
       }`;
-  const resultDeclarations = resultMode
-    ? Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
-      `${resultType!.toString()} __scb_result_${row};`).join(' ')
-    : '';
+  const resultDeclarations = resultMode ? 'bytes __scb_results = hex\"\";' : '';
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';
   const returnStatement = resultMode
-    ? `return abi.encode(${Array.from({ length: MAX_HIDDEN_BATCH_ROWS }, (_unused, row) =>
-      `__scb_result_${row}`).join(', ')});`
+    ? 'return __scb_results;'
     : '';
   const graphPrologue = graphControllerLbc === undefined ? '' : `
         require(__internal__graphControllerIdx >= 0

@@ -157,6 +157,15 @@ per-variable chunk region (or another equally explicit relocatable-span rule), n
 mock provider's relaxed input, transaction-size, and operation limits may be used to choose a generous initial
 bound; optimizing that bound is a later deployment task.
 
+A second measured probe rules out treating fixed arrays as one scalar data-NFT value. In the current storage
+model `T[N]` is a collection with one authenticated entry NFT per index. A route with runtime index `i` therefore
+needs a per-row physical entry descriptor and canonical alias/dedup across equal indices. Cloning the handler
+through the existing single-entry journal correctly removes the original missing-descriptor crash, but the
+generic parser loop then attempts a write at a runtime-discovered entry slot and fails closed. The correct
+implementation is the same descriptor-union mechanism as mappings, extended from the current
+shared-plus-row-local two-entry shape to a bounded per-row key table; scalarizing the whole array would change
+the established storage authority and is rejected.
+
 ### 2026-07-26: scalar-plus-collection cloned handlers fixed
 
 The previously guarded shape is now admitted and VM-proven. The callee returned the correct stack:

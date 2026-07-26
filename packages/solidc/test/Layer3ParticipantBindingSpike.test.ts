@@ -37,12 +37,14 @@ contract Participant() {
 `;
 
 describe('layer-3 participant-binding spike', () => {
-  it('keeps transaction introspection rejected by the production SCB1 surface', () => {
+  it('admits the owner-stable transaction projection on the production SCB1 surface', () => {
     const artifact = compileString(PARTICIPANT, {
       forceStateful: true,
       experimentalHiddenBatch: true,
     });
-    expect(artifact.hiddenBatch).toBeUndefined();
+    expect(artifact.hiddenBatch?.handlers).toContainEqual(
+      expect.objectContaining({ name: '__layer3_bind', eligible: true }),
+    );
   });
 
   it('admits only the reserved spike handler without advertising layer-3 metadata', () => {

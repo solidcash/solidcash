@@ -300,7 +300,8 @@ describe('Release 4 compiler-hidden local batch', () => {
     const cloneNames = (artifact.invocationAnalysis?.functions ?? [])
       .map((fn) => fn.name)
       .filter((name) => name.startsWith('__scb_resource_') || name.startsWith('__scb_graph_'));
-    expect(cloneNames).toEqual(['__scb_resource_move']);
+    // The exact-alias route has distinct stack arity and intentionally receives one compiler-owned clone.
+    expect(cloneNames).toEqual(['__scb_resource_move', '__scb_resource_move_self_alias']);
   });
 
   it('keeps SCB1 row parsing exact once the parser is factored into helpers', () => {

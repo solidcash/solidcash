@@ -60,7 +60,7 @@ Evidence labels:
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
 | Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
 | Existing pinned one-hop delegatecall semantics | MISSING from transcript mode | Transcript derivation rejects call modes. |
-| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, physical `activeInputIndex`, and scalar `outState` at final owner settlement are VM-proven. `activeBytecode` and `tx.origin` remain rejected because measurement confirms route divergence; collection/chunk `outState` and the remaining transaction table remain. |
+| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, physical `activeInputIndex`, scalar `outState` at final owner settlement, and the complete physical transaction input/output table are BCH-2026 VM-proven. The table fixture pins version, locktime, lengths, values, locking and unlocking bytecode, prevout hash/index, sequence, token category/commitment/amount, and output equivalents; a committed prevout substitution rejects. `activeBytecode` and `tx.origin` remain rejected because measurement confirms route divergence; collection/chunk `outState` remains. |
 
 ## 4. Compiler analysis and automatic derivation
 
@@ -1198,3 +1198,18 @@ count of nine is rejected by the BCH-2026 VM.
 The projection parser is currently correctness-first and exceeds the standard 10,000-byte input
 limit under the relaxed mock consensus profile. Its measured size remains recorded under the
 Release-J optimization gate; this increment closes semantics, not deployability.
+
+### 2026-07-26: Release E — complete physical transaction table
+
+The transcript route now has a BCH-2026 VM fixture that observes the complete native transaction
+table without substituting logical values. It pins transaction version and locktime; input and
+output counts; input value, locking and unlocking bytecode, prevout hash/index, sequence number,
+token category, NFT commitment and fungible amount; and the equivalent output fields. A transcript
+argument carrying a different prevout hash is rejected by the executing covenant.
+
+The fixture also records two representation details which are load-bearing for SDK construction:
+`OP_UTXOTXID` and CashToken category introspection expose the VM's internal byte order, so the
+human-facing transaction ID and category ID are reversed before comparison. The builder's normal
+unlocked sequence is `0xfffffffe`. This proves the physical semantics required by the
+specification; logical `activeBytecode`/`tx.origin` substitution remains deliberately rejected,
+and collection/chunk `outState` is tracked separately.

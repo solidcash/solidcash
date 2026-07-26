@@ -215,6 +215,25 @@ contract CombinedB() {
     require(true);
   }
 }`;
+const INTROSPECTION_APP = `pragma solidcash >=0.8.0;
+contract GraphIntrospection() {
+  function inspect(bytes self, bytes32 category, bytes32 outpointHash, bytes feeLock) public {
+    require(tx.version == 2 && tx.locktime == 0);
+    require(tx.inputs.length == 4 && tx.outputs.length == 4);
+    require(tx.inputs[0].value == 10000);
+    require(tx.inputs[0].lockingBytecode == self);
+    require(tx.inputs[0].unlockingBytecode.slice(0, 5) == hex"0453434231");
+    require(tx.inputs[0].outpointTransactionHash == outpointHash);
+    require(tx.inputs[0].outpointIndex == 0);
+    require(tx.inputs[0].sequenceNumber == 4294967294);
+    require(tx.inputs[0].tokenCategory.slice(0, 32) == category);
+    require(tx.inputs[0].nftCommitment.length == 0 && tx.inputs[0].tokenAmount == 0);
+    require(tx.inputs[3].lockingBytecode == feeLock);
+    require(tx.outputs[0].value == 10000 && tx.outputs[0].lockingBytecode == self);
+    require(tx.outputs[0].tokenCategory.slice(0, 32) == category);
+    require(tx.outputs[0].nftCommitment.length == 0 && tx.outputs[0].tokenAmount == 0);
+  }
+}`;
 
 async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>) {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -673,6 +692,68 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10_000n });
   return { provider, transaction: raw(tx), plan };
+}
+
+async function buildIntrospectionGraph(tamper = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const artifact = compileString(INTROSPECTION_APP, {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  });
+  const base = new Contract(artifact, [], { provider });
+  const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
+  const contract = base.withCategory(hexToBin(setup.categoryId));
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const outpointHash = hexToBin(setup.masterUtxo.txid).reverse();
+  if (tamper) outpointHash[0] ^= 1;
+  const plan = layer3.planCompiledGraph([
+    { artifact, lockingBytecode: contract.lockingBytecode },
+  ], [{
+    parent: null,
+    callee: 0,
+    function: 'inspect',
+    args: [
+      contract.lockingBytecode, hexToBin(setup.categoryId).reverse(), outpointHash, p2pkh.lockingBytecode,
+    ],
+  }]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
+  );
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projectionUtxo = randomUtxo({ satoshis: 1000n });
+  const fee = randomUtxo({ satoshis: 50_000n });
+  await provider.addUtxo(projection.address, projectionUtxo);
+  await provider.addUtxo(p2pkh.address, fee);
+  const route = contract.createCompilerRouteUnlocker(
+    artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setup.masterUtxo,
+    route(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    projectionUtxo,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: contract.tokenAddress, amount: setup.masterUtxo.satoshis,
+    token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx) };
 }
 
 const packedResult = (value: bigint): Uint8Array =>
@@ -2219,6 +2300,16 @@ describe('Layer-3 compiled graph controller', () => {
       await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
     },
   );
+
+  it('preserves the complete transaction input/output table in transcript mode', async () => {
+    const { provider, transaction } = await buildIntrospectionGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a transcript row whose expected outpoint differs from the finalized transaction', async () => {
+    const { provider, transaction } = await buildIntrospectionGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
 
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();

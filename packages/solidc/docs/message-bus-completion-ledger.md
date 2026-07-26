@@ -10,6 +10,11 @@ contracts as previously scoped. Although `invocation-transcript-v1.md` was origi
 deferred candidate, completing the full specification adopts its semantic requirements as the
 implementation target. Wire bytes remain revisable until the measurement and review gates pass.
 
+The implementation-grade continuation order, code anchors, invariants, and
+definition of done are maintained in `message-bus-opus-completion-handoff.md`.
+External review and product-demand evidence are graduation gates, not reasons
+to stop the remaining technical implementation.
+
 Evidence labels:
 
 - **PROVEN**: implemented and covered by a hostile BCH-2026 VM test.

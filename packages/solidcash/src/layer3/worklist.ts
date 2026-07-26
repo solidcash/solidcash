@@ -21,6 +21,16 @@ export interface DeriveCompiledGraphOptions {
   targets: WorklistTargetRegistry;
   /** Correctness bound for source recursion and runtime-sized shapes. The transcript v1 ceiling is 24. */
   maximumInvocations?: number;
+  /**
+   * Runtime occurrence supplied by the same derivation probe which evaluated the root call. It selects only
+   * how many rows the SDK constructs; source emission and participant projections authenticate the count.
+   */
+  occurrence?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    callsiteId: number;
+    kind: 'conditional' | 'loop';
+  }) => number;
 }
 
 const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
@@ -136,19 +146,38 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     active.add(key);
     for (const call of fn.externalCalls ?? []) {
-      if (call.occurrence !== 'once' || call.loopArrayVar || call.selectorArrayVar
+      if (call.loopArrayVar || call.selectorArrayVar
         || call.fnPtrCall || call.batchInvocations || call.opaqueReturn) {
         throw new Error(
           `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
         );
       }
-      const target = takeTarget(call);
-      expand(
-        target,
-        call.functionName,
-        resolveArguments(participant, args, call),
-        invocation,
-      );
+      const occurrenceKind = call.occurrence ?? 'once';
+      let count = 1;
+      if (occurrenceKind !== 'once') {
+        count = options.occurrence?.({
+          participant,
+          function: functionName,
+          callsiteId: call.callsiteId!,
+          kind: occurrenceKind,
+        }) ?? -1;
+        const valid = Number.isInteger(count) && count >= 0
+          && (occurrenceKind === 'loop' || count <= 1);
+        if (!valid) {
+          throw new Error(
+            `layer3: callsite ${call.callsiteId} lacks a valid ${occurrenceKind} occurrence proof`,
+          );
+        }
+      }
+      for (let reached = 0; reached < count; reached += 1) {
+        const target = takeTarget(call);
+        expand(
+          target,
+          call.functionName,
+          resolveArguments(participant, args, call),
+          invocation,
+        );
+      }
     }
     active.delete(key);
   };

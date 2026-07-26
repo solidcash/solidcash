@@ -90,7 +90,37 @@ describe('layer3.planCompiledGraph', () => {
       function: 'run',
       args: [new Uint8Array([0x51]), true],
       targets: { IPeer: participant },
-    })).toThrow(/not a singular statically resolvable/);
+    })).toThrow(/lacks a valid conditional occurrence proof/);
+    const leaf = compileString(`pragma solidcash >=0.8.0;
+      contract ConditionalLeaf() {
+        function run(address peer, bool take) public { require(!take || peer.length > 0); }
+      }`, options);
+    const leafParticipant = { artifact: leaf, lockingBytecode: '53' };
+    const reached = layer3.deriveCompiledGraphPlan({
+      root: participant,
+      function: 'run',
+      args: [new Uint8Array([0x53]), true],
+      targets: { IPeer: leafParticipant },
+      occurrence: ({ kind }) => kind === 'conditional' ? 1 : 0,
+    });
+    expect(reached.participants.map((owner) => owner.invocations)).toEqual([[0], [1]]);
+    const loop = compileString(`pragma solidcash >=0.8.0;
+      interface IPeer { function run(address peer, bool take); }
+      contract LoopGraph() {
+        function repeat(address peer, bool take, int times) public {
+          for (int i = 0; i < times; i = i + 1) { IPeer(peer).run(peer, take); }
+          require(times >= 0);
+        }
+      }`, options);
+    const loopParticipant = { artifact: loop, lockingBytecode: '54' };
+    const repeated = layer3.deriveCompiledGraphPlan({
+      root: loopParticipant,
+      function: 'repeat',
+      args: [new Uint8Array([0x53]), false, 2n],
+      targets: { IPeer: [leafParticipant, leafParticipant] },
+      occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+    });
+    expect(repeated.participants.map((owner) => owner.invocations)).toEqual([[0], [1, 2]]);
 
     const recursive = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function again(address peer); }

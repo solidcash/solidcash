@@ -1170,7 +1170,9 @@ async function buildCallerAuthorizedTransferGraph(
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10000n });
   const tokenInputBytes = tx.buildLibauthTransaction().inputs[1].unlockingBytecode.length;
-  return { provider, transaction: raw(tx), layout, tokenInputBytes };
+  return {
+    provider, transaction: raw(tx), layout, tokenInputBytes, builder: tx,
+  };
 }
 
 async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
@@ -2193,6 +2195,22 @@ describe('Layer-3 compiled graph controller', () => {
       false, undefined, 'false-sentinel',
     );
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(/mandatory-script-verify/);
+  });
+
+  it('preflights every input of the final compiled graph transaction', async () => {
+    const { builder } = await buildCallerAuthorizedTransferGraph(false, 'shared-first');
+    expect(() => layer3.preflightLayer3Transaction(builder)).not.toThrow();
+  });
+
+  it('reports the exact failing input from the final graph preflight gate', async () => {
+    const { builder } = await buildCallerAuthorizedTransferGraph(false, undefined, 'false-sentinel');
+    expect(() => layer3.preflightLayer3Transaction(builder))
+      .toThrow(/preflight failed at input 1/);
+  });
+
+  it('broadcasts exactly the all-input-preflighted graph transaction', async () => {
+    const { builder } = await buildCallerAuthorizedTransferGraph(false, 'shared-first');
+    await expect(layer3.sendPreflightedLayer3Transaction(builder)).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('settles two caller-keyed ERC-20 transfers with no spender parameter', async () => {

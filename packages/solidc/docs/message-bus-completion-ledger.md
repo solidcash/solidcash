@@ -72,7 +72,7 @@ Evidence labels:
 | Direct, repeated and transitive calls derive without hand-authored rows | PROVEN for admitted class | `deriveNativeExternalCalls` runtime-branded tables and VM tests. |
 | Expressions, dynamic targets, loops, function pointers and batches | PARTIAL | Compiler-owned graph execution proves transformed expression arguments, conditionals, and counted-loop occurrence. `derive-native.ts` still rejects expressions, dynamic targets, loops, pointers, and batches. |
 | Returning, opaque, signature-bearing and low-level calls | MISSING | Explicitly rejected or not representable. |
-| Final complete VM probe for every input | PARTIAL | Individual builders/tests probe; no single production general-graph send gate. |
+| Final complete VM probe for every input | PROVEN | `preflightLayer3Transaction` evaluates every input of the exact finalized transaction with the provider's BCH-2026 consensus limits before broadcast; the compiled-graph suite proves both an all-input success and an exact failing-input diagnostic. `sendPreflightedLayer3Transaction` makes the gate mandatory for the production Layer-3 send path. |
 
 ## 5. State, resources, effects and events
 
@@ -1138,3 +1138,16 @@ the compiler-tracked frame; the non-alias arm separately proves exact equality.
 recipient repeated across both invocations. It also rejects a duplicate identity without the alias
 sentinel and a sentinel attached to distinct identities. The complete 52-test compiled-graph suite
 and the hidden-batch resource-shape regressions pass on the BCH-2026 VM.
+
+### 2026-07-26: Release G — final all-input VM gate
+
+The production Layer-3 module now exposes `preflightLayer3Transaction`, which builds the final
+signed transaction, generates its real source outputs, and evaluates every physical input under
+the provider's BCH-2026 consensus configuration. Any failure identifies its exact input and
+prevents broadcast. `sendPreflightedLayer3Transaction` composes this mandatory check with the
+ordinary SDK send path.
+
+The compiled graph suite preflights a complete shared-alias ERC-20 settlement successfully and
+proves that a false alias declaration fails specifically at participant input 1. This closes the
+previous gap where individual fixtures exercised the VM but no production general-graph API
+required a complete final probe.

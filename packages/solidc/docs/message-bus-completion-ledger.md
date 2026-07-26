@@ -224,9 +224,27 @@ journal's cache-local read resolves ONE SLOT SHORT and picks up whichever `__int
 happens to sit at that position. It is a positional mis-resolution, not a mis-binding to a particular variable,
 and not anything to do with `moves` specifically.
 
-This closes the diagnosis. The remaining work is to find where the tracked stack model and the real VM stack
-diverge by one entry in the `__scb1` path, between the cache local and the top of the working area, and correct
-that - WITHOUT changing either journal's exit behaviour, and without patching block scoping (checked, dead end).
+The follow-up measurement was then run, and it REFUTES the depth-divergence explanation offered here. Emitting
+a magic marker plus `OP_DEPTH` at the upsert and reading it back out of the VM trace gives:
+
+    compiler model depth at the upsert : 36
+    OP_DEPTH from the running VM       : 37  ->  36 excluding the marker
+
+The depths MATCH. There is no missing or extra tracked entry. So "the model holds one more entry than the real
+stack" is false, and any fix built on that idea would have been wrong.
+
+What that leaves is the only remaining way both facts can hold at once. The model says index 13 is
+`__cj_cache_1`; the runtime pick at that same index yields the scalar state-write element; and the total depths
+agree. Therefore the ORDER of elements diverges, not the count: the tracked model records the journal cache
+locals and the `__internal__state_write_*` locals in a different order than the emitted code actually pushes
+them. `getStackIndex` returns a model index that is used directly as the `OP_PICK` depth, so a permuted region
+mis-resolves every name inside it while leaving the depth arithmetic intact - which is exactly why this fails
+silently rather than crashing.
+
+The remaining work is to compare the declaration/push order of `__cj_cache_*` against `__internal__state_write_*`
+in the `__scb1` wrapper prologue and make the tracked order match the emitted order. This must be done WITHOUT
+changing either journal's exit behaviour, without patching block scoping (checked, dead end), and without
+assuming a depth correction (checked, refuted).
 
 Superseded next step (kept so the reasoning is auditable): compare the tracked `this.stack.length` at the upsert
 against the actual VM stack depth at the corresponding instruction pointer in a `vm.debug()` trace. If they

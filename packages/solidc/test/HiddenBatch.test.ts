@@ -37,6 +37,32 @@ describe('Release 4 compiler-hidden local batch', () => {
     });
   });
 
+  it('admits a uniform multi-event row width and rejects ambiguous heterogeneous widths', () => {
+    const uniform = compileString(`contract Events() {
+      event E(bytes payload);
+      function publish(bytes payload) public {
+        emit E(payload);
+        emit E(payload);
+        require(payload.length > 0);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(uniform.hiddenBatch?.handlers.find((handler) => handler.name === 'publish')).toMatchObject({
+      eligible: true,
+      emits: [{ emitIndex: 0 }, { emitIndex: 1 }],
+    });
+
+    const heterogeneous = compileString(`contract Events() {
+      event E(bytes payload);
+      function once(bytes payload) public { emit E(payload); require(payload.length > 0); }
+      function twice(bytes payload) public {
+        emit E(payload);
+        emit E(payload);
+        require(payload.length > 0);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(heterogeneous.hiddenBatch).toBeUndefined();
+  });
+
   it('leaves artifacts byte-identical when the experimental capability is disabled', () => {
     const baseline = compileString(SOURCE, { forceStateful: true });
     const explicitOff = compileString(SOURCE, {

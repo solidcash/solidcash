@@ -1331,6 +1331,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const reachedNftTransfers = reachedHandlers.reduce((sum, handler) =>
       sum + (handler.tokenContainerAccesses ?? []).reduce((inner, access) =>
         inner + (access.transferNftCount ?? (access.operations.includes('transferNft') ? 1 : 0)), 0), 0);
+    const reachedEventOutputs = reachedHandlers.reduce(
+      (sum, handler) => sum + (handler.emits?.length ?? 0),
+      0,
+    );
     const effectiveTokenAccesses = capability.route.tokenContainerAccesses?.map((access, index) => ({
       ...access,
       // The current compiler route admits one canonical token-category witness. Preserve that explicit
@@ -1348,7 +1352,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         transferCount: Math.min(capability.route.transferCount, rowCount),
       }),
       ...(capability.route.emits && {
-        emits: capability.route.emits.slice(0, rowCount),
+        emits: capability.route.emits.slice(0, reachedEventOutputs),
       }),
       ...(effectiveTokenAccesses && { tokenContainerAccesses: effectiveTokenAccesses }),
     };

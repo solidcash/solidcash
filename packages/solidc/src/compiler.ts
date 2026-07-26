@@ -559,18 +559,29 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
   }
   if (eventMode) {
+    const eventWidths = new Set<number>();
     for (const fn of eligible) {
       let directEmits = 0;
       walkInvocationAst(fn.body, (node) => {
         if (node instanceof EmitStatementNode) directEmits += 1;
       });
       const effects = eligibleFootprint(fn).effects;
-      if (directEmits !== 1 || effects.length !== 1 || effects[0] !== 'events') {
+      if (directEmits < 1 || effects.length === 0 || effects.some((effect) => effect !== 'events')) {
         fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'event-route-requires-one-direct-event-per-handler';
+        fn.hiddenBatchRejectionReason = 'event-route-requires-direct-event-only-handlers';
+      } else {
+        eventWidths.add(directEmits);
       }
     }
     eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
+    if (eventWidths.size > 1) {
+      for (const fn of eligible) {
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-per-handler';
+      }
+      eligible = [];
+    }
+    if (eligible.length === 0) return;
   }
   if (valueEffectMode) {
     for (const fn of eligible) {
@@ -1722,6 +1733,7 @@ function compileResolvedAst(
           const sourceAbi = artifact.abi.find((candidate) =>
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
           return {
+            ...(sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
             ...(sourceAbi?.tokenContainerAccesses?.length
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),

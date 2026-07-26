@@ -525,6 +525,48 @@ describe('Release C bounded dynamic-resource batch', () => {
 });
 
 describe('Release 4 output-substitution adversarial gate', () => {
+  it('authenticates multiple non-scalar events per reached handler row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ComplexEventBatchRelease4() {
+        event Complex(bytes payload, string label);
+        function publish(bytes payload, string label) public {
+          emit Complex(payload, label);
+          emit Complex(payload, label);
+          require(payload.length > 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.batch([
+        { function: 'publish', args: [hexToBin('aabb'), 'first'] },
+        { function: 'publish', args: [hexToBin('ccdd'), 'second'] },
+      ]).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+    const transaction = decodeTransactionUnsafe(hexToBin(captured));
+    const events = transaction.outputs.filter((output) =>
+      output.token?.nft?.capability === 'none'
+      && binToHex(output.token.category) === categoryId);
+    expect(events).toHaveLength(4);
+
+    events[2].token!.nft!.commitment[events[2].token!.nft!.commitment.length - 1] ^= 1;
+    await expect(originalSend(binToHex(encodeTransaction(transaction)))).rejects.toThrow();
+    await expect(originalSend(captured)).resolves.toBeTypeOf('string');
+  });
+
   it('rejects a forged ordered-result commitment while accepting the untouched transaction', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;

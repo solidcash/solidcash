@@ -28,7 +28,7 @@ Evidence labels:
 | Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PARTIAL | Supported shapes pass; dynamic cold keys and runtime-varying aliases remain conservative. |
 | Canonical local batch with exact row consumption | PROVEN for R4 eligibility | SCB1 positive and hostile VM tests. |
 | One repeated external owner consumed once | PROVEN for R5 eligibility | Whole-blob positional binding and caller/callee tests. |
-| Standard `msg.sender`-authorized ERC-20 allowance behavior | MISSING | Existing R5 route rejects route-sensitive `msg.sender`; parameter-authorized spender is not equivalent. |
+| Standard `msg.sender`-authorized ERC-20 allowance behavior | PROVEN for the admitted two-row class | `transferFrom` debits `allowance[from][msg.sender]` and `transfer` debits `balances[msg.sender]`, both keyed by the graph-authenticated caller with no spender parameter; substituting either witness fails in the BCH-2026 VM. Wider row counts and handler shapes remain out of the admitted class. |
 
 ## 2. General transcript agreement and authority
 
@@ -48,7 +48,7 @@ Evidence labels:
 |---|---|---|
 | Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
 | Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
-| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PARTIAL | `require`, conditionals, counted loops, and expression calls execute in the original compiled handler with exact reached-row exhaustion. Modifier/revert coverage and the full control-flow class remain. |
+| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PARTIAL | `require`, conditionals, counted loops, and expression calls execute in the original compiled handler with exact reached-row exhaustion. Modifiers, `revert` with a string or a custom error, and `while` loops are admitted with compiler regressions, but none of those four has a hostile VM negative yet, and the full control-flow class remains. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
 | Result-dependent continuation and transitive result chains | PROVEN for the admitted scalar class | The compiled `A.plusOne -> B.twice` fixture consumes authenticated `4`, resumes A, and authenticates A's derived `5`. General native worklist derivation still rejects returns. |
@@ -74,10 +74,10 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | One authenticated existing-entry transition composes in a balanced graph and forged post-state fails. Insertion/deletion, chunks, dynamic keys, and arbitrary descriptors remain. |
-| Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | MISSING as a general handler property | Corpus-specific arithmetic examples are not general compiled execution. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | One authenticated existing-entry transition composes in a balanced graph and forged post-state fails. A batched `delete m[k]` now fails closed with the designed C2 error instead of aborting code generation, but insertion/deletion, chunks, dynamic keys, and arbitrary descriptors remain unimplemented. |
+| Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PARTIAL | `transfer` and `transferFrom` settle two caller-authorized rows through the compiled graph with hostile VM negatives. `approve` (nested collection), `mint` and `burn` are admitted by SCB1 eligibility with compiler regressions, but are not yet VM-settled through a graph, and ordering across a mixed handler batch is unproven. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
-| Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven; arbitrary event arguments/counts are not. |
+| Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven. Multi-argument events are admitted with a compiler regression; arbitrary argument types and per-handler counts are not proven. |
 | Event NFT is a standard 1,000-satoshi balanced output and permissionlessly spendable after 144 blocks | PROVEN | Standard-policy and event lifecycle VM tests. |
 | No OP_RETURN is required for journal transport | PROVEN as design/implementation choice | Balanced event-NFT layout. |
 
@@ -97,7 +97,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | BCH-2026 only and standard-policy compliant | PROVEN for current fixtures | BCHN regtest standard-policy suite. |
-| Concrete parser/covenant overhead and realistic corpus fit measured | PARTIAL | Fixed generators have pinned costs; the candidate variable transcript parser has not been built or measured. |
+| Concrete parser/covenant overhead and realistic corpus fit measured | PARTIAL | Fixed generators have pinned costs, and cross-function outlining brought the caller-authorized token to 4,506 redeem bytes and the five-function corpus ERC-20 inside the 10,000-byte limit at 4,494. Op-cost density is now the closer constraint (N=8 participants sit at 36.5% of budget). The candidate variable transcript parser has still not been built or measured. |
 | Participant-count contention/retry behavior measured | MISSING | No empirical stale-outpoint study. |
 | Corpus demand justifies freezing the general protocol | MISSING/PROCESS | Requires product evidence, not only tests. |
 | Independent covenant review | PROCESS | Review package exists; independent sign-off is absent. |
@@ -124,6 +124,39 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: caller-keyed ERC-20 handlers and cross-function outlining
+
+Two blockers closed the standard `msg.sender`-authorized ERC-20 class.
+
+Structurally, a `msg.sender` mapping key kept `LowerCollectionJournalHelpers` from journalling the
+batched clone, so it re-read and re-flushed one physical allowance entry per row: two rows demanded
+two different post-states from one output, which no transaction can satisfy. Every caller key
+witness is already required to equal `__scb_graph_caller` at each row, so the clone now takes the
+spender as an ordinary parameter fed by that same witness. Authorization is unchanged and the direct
+entry point still reads `msg.sender`.
+
+Three eligibility/codegen gaps were found by probing the admitted frontier rather than reading the
+eligibility source, each of which blocked a normative handler:
+
+- `balances[msg.sender]` beside `balances[to]` was rejected outright, so plain ERC-20 `transfer`
+  produced no hidden batch at all. Key alternatives map to distinct physical entries; only a
+  *row-local* caller key is genuinely unsupported and it now has its own rejection reason.
+- a nested collection under the dynamic `for row < rowCount` parser failed code generation, because a
+  composite key is only resolvable against a statically known row. Nested-collection handlers now
+  unroll their rows, which admits `approve`.
+- `delete m[k]` aborted code generation with an internal stack assertion; it now fails closed with
+  the designed C2 error.
+
+Size was the other blocker, and it was not where the previous handoff predicted: the value-threaded
+journal handler is about 64 bytes of arithmetic, while roughly 40% of the artifact was byte-identical
+repeats of per-entry C2 covenant machinery. Cross-function outlining shares those spans behind
+`OP_INVOKE`, taking the token from 10,511 to 4,506 redeem bytes and the honest graph input to 6,024.
+
+Both ERC-20 shapes now have hostile BCH-2026 negatives. `approve`, `mint` and `burn` are admitted
+with compiler regressions but are NOT VM-settled through a graph, so section 5's ERC-20 row is
+PARTIAL rather than PROVEN. Modifiers, `revert` (string and custom error), `while` loops and
+multi-argument events are likewise admitted-and-regressed but lack VM negatives.
 
 ### 2026-07-25: canonical compiled-handler plan
 

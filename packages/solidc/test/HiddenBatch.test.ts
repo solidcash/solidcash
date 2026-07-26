@@ -361,4 +361,129 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'pay')?.eligible)
       .toBe(true);
   });
+
+  it('admits the caller-authorized ERC-20 handler set', () => {
+    // Each of these is a normative ERC-20 handler. `transfer` and `approve` were rejected outright before the
+    // caller-keyed-alternative and nested-collection fixes, so the batch surface could not express standard
+    // ERC-20 semantics at all without a spender parameter.
+    const admits = (source: string, name: string) => {
+      const artifact = compileString(source, graphOptions);
+      return artifact.hiddenBatch?.handlers.find((handler) => handler.name === name);
+    };
+
+    expect(admits(`contract Erc20Transfer() {
+      mapping(address => bigint) balances;
+      function transfer(address to, bigint amount) public {
+        require(this.balances[msg.sender] >= amount);
+        this.balances[msg.sender] = this.balances[msg.sender] - amount;
+        this.balances[to] = this.balances[to] + amount;
+      }
+    }`, 'transfer')).toMatchObject({
+      eligible: true,
+      batchKeyWitnesses: [
+        { routeInput: '__scb_key_balances_sender_0', inputIndex: -1, source: 'msgSender' },
+        { routeInput: '__scb_key_transfer_to_row', inputIndex: 0, perRow: true },
+      ],
+    });
+
+    expect(admits(`contract Erc20Approve() {
+      mapping(address => mapping(address => bigint)) allowance;
+      function approve(address spender, bigint amount) public {
+        this.allowance[msg.sender][spender] = amount;
+        require(amount >= 0);
+      }
+    }`, 'approve')?.eligible).toBe(true);
+
+    expect(admits(`contract Erc20Mint() {
+      mapping(address => bigint) balances;
+      bigint supply;
+      function mint(address to, bigint amount) public {
+        this.balances[to] = this.balances[to] + amount;
+        this.supply = this.supply + amount;
+        require(amount >= 0);
+      }
+    }`, 'mint')?.eligible).toBe(true);
+
+    expect(admits(`contract Erc20Burn() {
+      mapping(address => bigint) balances;
+      bigint supply;
+      function burn(address from, bigint amount) public {
+        require(this.balances[from] >= amount);
+        this.balances[from] = this.balances[from] - amount;
+        this.supply = this.supply - amount;
+      }
+    }`, 'burn')?.eligible).toBe(true);
+  });
+
+  it('rejects a row-local caller-keyed collection instead of mis-binding it', () => {
+    // Only the shared alternative can be caller-keyed; a row-local one would need a witness per row. This must
+    // fail closed with its own reason rather than be swept up by the check that used to catch `transfer`.
+    const artifact = compileString(`contract RowLocalSender() {
+      mapping(address => bigint) balances;
+      function drain(address from, bigint amount) public {
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[msg.sender] = this.balances[msg.sender] + amount;
+      }
+    }`, graphOptions);
+    const handler = artifact.hiddenBatch?.handlers.find((entry) => entry.name === 'drain');
+    expect(handler?.eligible ?? false).toBe(false);
+    if (handler?.rejectionReason !== undefined) {
+      expect(handler.rejectionReason).toBe('row-local-msg-sender-collection-key-not-enabled');
+    }
+  });
+
+  it('admits modifiers, reverts, custom errors, while loops and multi-argument events', () => {
+    const eligible = (source: string, name: string): boolean | undefined =>
+      compileString(source, graphOptions).hiddenBatch?.handlers
+        .find((handler) => handler.name === name)?.eligible;
+
+    expect(eligible(`contract WithModifier() {
+      bigint total;
+      modifier onlyPositive(bigint n) { require(n >= 0); _; }
+      function act(bigint n) public onlyPositive(n) { this.total = this.total + n; require(true); }
+    }`, 'act')).toBe(true);
+
+    expect(eligible(`contract WithRevert() {
+      bigint total;
+      function act(bigint n) public {
+        if (n < 0) { revert("negative"); }
+        this.total = this.total + n;
+        require(true);
+      }
+    }`, 'act')).toBe(true);
+
+    expect(eligible(`contract WithCustomError() {
+      bigint total;
+      error TooSmall(bigint n);
+      function act(bigint n) public {
+        if (n < 0) { revert TooSmall(n); }
+        this.total = this.total + n;
+        require(true);
+      }
+    }`, 'act')).toBe(true);
+
+    expect(eligible(`contract WithWhile() {
+      bigint total;
+      function act(bigint n) public {
+        bigint i = 0;
+        while (i < n) { this.total = this.total + 1; i = i + 1; }
+        require(n >= 0);
+      }
+    }`, 'act')).toBe(true);
+
+    expect(eligible(`contract WithEvent() {
+      bigint total;
+      event Moved(bigint a, bigint b);
+      function go(bigint a, bigint b) public { this.total = a + b; emit Moved(a, b); require(a >= 0); }
+    }`, 'go')).toBe(true);
+  });
+
+  it('fails closed rather than crashing on an unrepresentable collection delete', () => {
+    // This used to abort code generation with an internal stack assertion. Fail-closed is the contract for a
+    // shape the C2 backend cannot represent; a crash is never acceptable.
+    expect(() => compileString(`contract DeleteEntry() {
+      mapping(address => bigint) values;
+      function clear(address key) public { delete this.values[key]; require(true); }
+    }`, graphOptions)).toThrow(/cannot be represented by the C2 linked-list/);
+  });
 });

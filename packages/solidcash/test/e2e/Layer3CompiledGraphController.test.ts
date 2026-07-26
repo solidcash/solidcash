@@ -1607,6 +1607,174 @@ async function buildMixedHandlerBatchGraph(mode: 'honest' | 'forge-second-row' =
   return { provider, transaction: raw(tx), layout };
 }
 
+async function buildScalarPlusEntryBatchGraph() {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  // A resource-shaped handler that ALSO writes scalar state, so one batch drives both the scalar journal and
+  // the collection journal. This is the shape `scalar-write-with-collection-delete-not-enabled` was suspected
+  // of really covering; if it settles, that boundary is delete-specific rather than a general two-journal fault.
+  const tokenArtifact = compileString(`pragma solidcash >=0.8.0;
+    contract ScalarPlusEntryToken() {
+      bigint moves;
+      mapping(address => bigint) balances;
+      function move(address from, address to, bigint amount) public {
+        this.moves = this.moves + 1;
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+        require(amount >= 0);
+      }
+    }`, options);
+  const tokenBase = new Contract(tokenArtifact, [], { provider });
+  const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, { moves: 0n });
+  const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
+  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+    interface IScalarPlusEntryToken { function move(address from, address to, bigint amount); }
+    contract ScalarPlusEntryRouter(int brand, address token) {
+      function route(address shared, address first, address second, bigint a, bigint b) public {
+        IScalarPlusEntryToken(token).move(shared, first, a);
+        IScalarPlusEntryToken(token).move(shared, second, b);
+        require(true);
+      }
+    }`, options);
+  const callerBase = new Contract(callerArtifact, [1n, token.lockingBytecode], { provider });
+  const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
+  const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
+
+  const shared = hexToBin(`aa20${'91'.repeat(32)}87`);
+  const first = hexToBin(`aa20${'92'.repeat(32)}87`);
+  const second = hexToBin(`aa20${'93'.repeat(32)}87`);
+  const rows = [
+    { key: shared, value: 100n }, { key: first, value: 0n }, { key: second, value: 0n },
+  ].map((row) => ({ ...row, slot: keyToSlot(row.key) }))
+    .sort((left, right) => Number(bytesToSlotValue(left.slot) - bytesToSlotValue(right.slot)));
+  const commitments = new Map(rows.map((row, index) => [
+    binToHex(row.slot),
+    encodeEntryCommitment(row.slot, rows[index + 1]?.slot ?? new Uint8Array(32), bigIntToVmNumber(row.value)),
+  ]));
+  const entryKeys = [shared, first, second];
+  const entries = entryKeys.map((key) => randomUtxo({
+    satoshis: 10000n,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable' as const,
+        commitment: binToHex(commitments.get(binToHex(keyToSlot(key)))!),
+      },
+    },
+  }));
+  for (const entry of entries) {
+    await provider.addUtxo(getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entry);
+  }
+  const plan = layer3.planCompiledGraph([
+    { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
+    { artifact: tokenArtifact, lockingBytecode: token.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'route', args: [shared, first, second, 10n, 5n] },
+    { parent: 0, callee: 1, function: 'move', args: [shared, first, 10n] },
+    { parent: 0, callee: 1, function: 'move', args: [shared, second, 5n] },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projectionUtxos = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50000n });
+  for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const callerRoute = caller.createCompilerRouteUnlocker(
+    callerArtifact.hiddenBatch!.route, hexToBin(callerArtifact.hiddenBatch!.selector),
+  );
+  const tokenRoute = token.createCompilerRouteUnlocker(
+    tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
+  );
+  const tokenRouteArgs = [
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
+  ] as FunctionArgument[];
+  entries.forEach((entry, slotIndex) => {
+    const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
+  });
+  tokenRouteArgs.push(0n);
+  const settled = new Map([
+    [binToHex(keyToSlot(shared)), 85n], [binToHex(keyToSlot(first)), 10n], [binToHex(keyToSlot(second)), 5n],
+  ]);
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    callerSetup.masterUtxo,
+    callerRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(tokenSetup.masterUtxo, tokenRoute(...tokenRouteArgs as any));
+  tx.addInput(
+    tokenSetup.dataNftUtxos[0],
+    createDataNftUnlocker(token, layout.participantInputs[1], tokenSetup.categoryId),
+  );
+  entries.forEach((entry) =>
+    tx.addInput(entry, createEntryNftUnlocker(token, 1, tokenSetup.categoryId, 'balances')));
+  projectionUtxos.forEach((proof, participant) =>
+    tx.addInput(proof, projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    )));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: caller.tokenAddress,
+    amount: callerSetup.masterUtxo.satoshis,
+    token: { category: callerSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: token.tokenAddress,
+    amount: tokenSetup.masterUtxo.satoshis,
+    token: { category: tokenSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(token, tokenSetup.categoryId),
+    amount: tokenSetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(tokenArtifact.stateLayout!, { moves: 2n })[0],
+      },
+    },
+  });
+  for (const entry of entries) {
+    const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+    tx.addOutput({
+      to: getEntryNftAddress(token, tokenSetup.categoryId, 'balances'),
+      amount: entry.satoshis,
+      token: {
+        category: tokenSetup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(
+            decoded.slot, decoded.nextKey, bigIntToVmNumber(settled.get(binToHex(decoded.slot))!),
+          )),
+        },
+      },
+    });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  return { provider, transaction: raw(tx), layout };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -1854,6 +2022,14 @@ describe('Layer-3 compiled graph controller', () => {
     const { provider, transaction } = await buildMixedHandlerBatchGraph('forge-second-row');
     await expect(provider.sendRawTransaction(transaction))
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  });
+
+  it('refuses to batch a cloned handler that writes both scalar state and a collection', async () => {
+    // The scalar journal and the collection journal disagree at their exit for a CLONED handler, so the
+    // settled entry is rejected by the covenant. Rejecting at construction is the fail-closed behaviour; an
+    // un-cloned handler (Release A's mint/burn) still settles both writes together.
+    await expect(buildScalarPlusEntryBatchGraph())
+      .rejects.toThrow(/does not advertise the compiler-hidden SCB1 batch route|hiddenBatch/);
   });
 
 });

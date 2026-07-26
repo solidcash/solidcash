@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. A delete beside a scalar state write is rejected at compile time (`scalar-write-with-collection-delete-not-enabled`) - the two journals disagree on the settled entry. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. A CLONED handler that writes both scalar state and a collection is rejected at compile time (`cloned-handler-scalar-and-collection-journal-not-enabled`) - the scalar and collection journals disagree at their exit. Un-cloned handlers settle both together, which is why `mint`/`burn` work. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -129,6 +129,25 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: the delete boundary was mis-scoped, and admitted a failing shape
+
+The two-row composer built for the mixed-batch proof answered the question the previous attempt could not.
+
+A resource-shaped `move` that also increments a counter - no `delete` anywhere - settles no better than the
+delete case: the covenant rejects it. So `scalar-write-with-collection-delete-not-enabled` was not describing
+the real fault. It was too NARROW, and admitted handlers that compile but produce a transaction that cannot
+settle. Delete was simply where the fault happened to be noticed first.
+
+The rule is now `cloned-handler-scalar-and-collection-journal-not-enabled`: a handler that reaches its
+collection through a batch clone runs those writes on the value-threaded collection journal while its scalar
+writes stay on the scalar journal, and the two disagree at their exit. Handlers that are not cloned settle both
+together, which is exactly why Release A's `mint` and `burn` write a supply counter beside a balance entry and
+settle. Sharing one exit between the journals lifts the restriction.
+
+Both the old and the new rule are fail-closed at the VM - the worst case is a transaction that will not
+validate, never forged state accepted - but the old one let a user build that transaction believing it would
+settle.
 
 ### 2026-07-26: Release B mixed batch settles on the VM
 

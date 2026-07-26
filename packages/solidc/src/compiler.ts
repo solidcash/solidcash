@@ -464,19 +464,6 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     } else if (!reason && [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
       reason = 'dynamic-state-batch-journal-not-enabled';
-    } else if (!reason && footprint.writes.some((resource) => resource.startsWith('state:'))
-      && (() => {
-        let deletes = false;
-        walkInvocationAst(fn.body, (node) => {
-          if (node instanceof MappingDeleteNode && collectionByName.has(node.name)) deletes = true;
-        });
-        return deletes;
-      })()) {
-      // A collection delete settles on its own and beside a scalar write expressed as `m[k] = 0`, but the two
-      // journals disagree when the delete keeps its `delete` form alongside a scalar write: the settled entry
-      // is rejected by the covenant. Until the scalar and collection journals share one exit, reject the
-      // combination rather than emit a transaction that cannot settle.
-      reason = 'scalar-write-with-collection-delete-not-enabled';
     }
     fn.hiddenBatchEligible = reason === undefined;
     fn.hiddenBatchRejectionReason = reason;
@@ -569,6 +556,44 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
     eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
   }
+  if (eligible.length === 0) return;
+
+  // A handler that reaches its collection through a batch CLONE runs those writes on the value-threaded
+  // collection journal while its scalar writes stay on the separate scalar journal, and the two disagree at
+  // their exit: the settled entry is rejected by the covenant. Demonstrated with a resource-shaped `move` that
+  // also increments a counter, so it is not specific to `delete`, which is how it was first noticed.
+  //
+  // Handlers that are NOT cloned settle scalar and entry writes together and are unaffected - Release A's
+  // `mint` and `burn` both write a supply counter beside a balance entry and settle. Sharing one exit between
+  // the two journals removes this restriction.
+  const deletesCollectionEntry = (fn: FunctionDefinitionNode): boolean => {
+    let deletes = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof MappingDeleteNode && collectionByName.has(node.name)) deletes = true;
+    });
+    return deletes;
+  };
+  const touchesCollection = (fn: FunctionDefinitionNode): boolean => {
+    let touches = false;
+    walkInvocationAst(fn.body, (node) => {
+      if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
+        || node instanceof MappingDeleteNode) && collectionByName.has(node.name)) touches = true;
+    });
+    return touches;
+  };
+  const clonedByRoute = (fn: FunctionDefinitionNode): boolean =>
+    fn === resourceShapedHandler
+    || graphTailHandlers.has(fn)
+    || deletesCollectionEntry(fn)
+    || (resourceShapedHandler !== undefined && eligible.length > 1);
+  for (const fn of eligible) {
+    if (!clonedByRoute(fn) || !touchesCollection(fn)) continue;
+    if (!analyseFunctionFootprint(fn, byName).writes.some((resource) => resource.startsWith('state:'))) continue;
+    fn.hiddenBatchEligible = false;
+    fn.hiddenBatchRejectionReason = 'cloned-handler-scalar-and-collection-journal-not-enabled';
+  }
+  eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
+  if (resourceShapedHandler && !eligible.includes(resourceShapedHandler)) resourceShapedHandler = undefined;
   if (eligible.length === 0) return;
 
   const selector = (fn: FunctionDefinitionNode): string => binToHex(computeFunctionSelector(

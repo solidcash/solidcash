@@ -547,4 +547,77 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
         .rejects.toThrow(/mandatory-script-verify-flag-failed/);
     });
   });
+
+  describe('control flow', () => {
+    const router = ROUTER('function act(bigint n);', 'ITarget(target).act(n);', 'bigint n');
+    const cases: [string, string, bigint, bigint][] = [
+      ['do/while runs its body once even at zero', `pragma solidcash >=0.8.0;
+      contract DoWhileTarget() {
+        bigint total;
+        function act(bigint n) public {
+          bigint i = 0;
+          do { this.total = this.total + 1; i = i + 1; } while (i < n);
+          require(n >= 0);
+        }
+      }`, 0n, 1n],
+      ['break stops the loop at the guard', `pragma solidcash >=0.8.0;
+      contract BreakTarget() {
+        bigint total;
+        function act(bigint n) public {
+          for (bigint i = 0; i < 8; i = i + 1) {
+            if (i >= n) { break; }
+            this.total = this.total + 1;
+          }
+          require(n >= 0);
+        }
+      }`, 3n, 3n],
+      ['continue skips exactly one iteration', `pragma solidcash >=0.8.0;
+      contract ContinueTarget() {
+        bigint total;
+        function act(bigint n) public {
+          for (bigint i = 0; i < 4; i = i + 1) {
+            if (i == 2) { continue; }
+            this.total = this.total + 1;
+          }
+          require(n >= 0);
+        }
+      }`, 0n, 3n],
+      ['early return leaves state untouched', `pragma solidcash >=0.8.0;
+      contract EarlyReturnTarget() {
+        bigint total;
+        function act(bigint n) public {
+          if (n == 0) { return; }
+          this.total = this.total + n;
+          require(true);
+        }
+      }`, 0n, 0n],
+    ];
+
+    it.each(cases)('%s', async (_label, target, argument, expected) => {
+      const { provider, transaction } = await buildScalarGraph({
+        target,
+        router,
+        state: { total: 0n },
+        settled: { total: expected },
+        routeArgs: () => [argument] as FunctionArgument[],
+        callName: 'act',
+        callArgs: () => [argument] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    });
+
+    it.each(cases)('%s rejects an off-by-one settlement', async (_label, target, argument, expected) => {
+      const { provider, transaction } = await buildScalarGraph({
+        target,
+        router,
+        state: { total: 0n },
+        settled: { total: expected + 1n },
+        routeArgs: () => [argument] as FunctionArgument[],
+        callName: 'act',
+        callArgs: () => [argument] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    });
+  });
 });

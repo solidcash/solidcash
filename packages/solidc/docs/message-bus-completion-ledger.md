@@ -53,7 +53,7 @@ Evidence labels:
 |---|---|---|
 | Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | `Layer3ReleaseA.test.ts` also pins state-layout equivalence between the direct and hidden-batch compilations of one contract.  The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
 | Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
-| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PARTIAL | `require`, conditionals, counted loops, and expression calls execute in the original compiled handler with exact reached-row exhaustion. `Layer3ReleaseA.test.ts` adds hostile BCH-2026 negatives for a `msg.sender`-authorizing modifier, string and custom-error `revert`, and exact `while` iteration counts, each against an honest positive control of identical shape. `do/while`, `break`, `continue` and early-return journal shapes remain uncovered. |
+| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PROVEN for the admitted handler class | `Layer3ReleaseA.test.ts` settles a `msg.sender`-authorizing modifier, string and custom-error `revert`, `while`, `do/while`, `break`, `continue` and early return on the BCH-2026 VM, each paired with a hostile case of identical transaction shape - a different authorized caller, a reached revert, or an off-by-one settlement. Handler shapes outside SCB1 eligibility are unchanged and still fail closed. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
 | Result-dependent continuation and transitive result chains | PROVEN for the admitted scalar class | The compiled `A.plusOne -> B.twice` fixture consumes authenticated `4`, resumes A, and authenticates A's derived `5`. General native worklist derivation still rejects returns. |
@@ -82,7 +82,7 @@ Evidence labels:
 | Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | One authenticated existing-entry transition composes in a balanced graph and forged post-state fails. A batched `delete m[k]` now fails closed with the designed C2 error instead of aborting code generation, but insertion/deletion, chunks, dynamic keys, and arbitrary descriptors remain unimplemented. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PARTIAL | All five handlers now settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. What remains is the word *ordered*: a resource-shaped route admits exactly one handler (`resource-shaped-route-requires-one-handler`), so a single batch cannot interleave them. Release B lifts that restriction. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
-| Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven. Multi-argument events are admitted with a compiler regression; arbitrary argument types and per-handler counts are not proven. |
+| Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
 | Event NFT is a standard 1,000-satoshi balanced output and permissionlessly spendable after 144 blocks | PROVEN | Standard-policy and event lifecycle VM tests. |
 | No OP_RETURN is required for journal transport | PROVEN as design/implementation choice | Balanced event-NFT layout. |
 
@@ -129,6 +129,21 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: Release A - control flow and multi-argument events
+
+`while`, `do/while`, `break`, `continue` and early return each settle their exact effect through the compiled
+graph, and each is paired with an off-by-one settlement that the covenant rejects. `do/while` is the
+interesting one: it must run its body once even when the guard is false at entry, which the fixture pins at
+argument zero.
+
+A three-argument event is authenticated per argument: reordering two of them keeps the payload length and the
+topic identical and is still rejected, and publishing under a second declared event of identical arity is
+rejected on topic. The first attempt at that second case used an undeclared signature and was refused by the
+SDK during construction rather than by the VM, which would not have been covenant evidence.
+
+Release A is complete apart from the deliberately excluded early-return journal shapes, which remain
+fail-closed rather than exit-aware.
 
 ### 2026-07-26: Release A - mint and burn through balanced settlement
 

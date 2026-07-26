@@ -1328,6 +1328,113 @@ async function buildCallerKeyedApproveGraph(forgeCallerWitness = false) {
   return { provider, transaction: raw(tx), layout };
 }
 
+async function buildMultiArgEventGraph(mode: 'honest' | 'swapped' | 'foreign-topic' = 'honest') {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const artifact = compileString(`pragma solidcash >=0.8.0;
+    contract MultiArgEvent() {
+      bigint total;
+      event Moved(bigint from, bigint to, bigint amount);
+      // A second declared event of identical arity: publishing under its topic keeps the payload and the NFT
+      // shape valid, so only the covenant's topic binding can reject it.
+      event Shadowed(bigint from, bigint to, bigint amount);
+      function go(bigint from, bigint to, bigint amount) public {
+        this.total = this.total + amount;
+        emit Moved(from, to, amount);
+        require(amount >= 0);
+      }
+    }`, {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  });
+  const base = new Contract(artifact, [], { provider });
+  const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, { total: 0n });
+  const contract = base.withCategory(hexToBin(setup.categoryId));
+  const args = [3n, 4n, 5n];
+  const plan = layer3.planCompiledGraph([
+    { artifact, lockingBytecode: contract.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'go', args },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const eventFunding = Array.from({ length: 8 }, () => randomUtxo({ satoshis: 1000n }));
+  const projectionUtxo = randomUtxo({ satoshis: 1000n });
+  const fee = randomUtxo({ satoshis: 50000n });
+  for (const funding of eventFunding) await provider.addUtxo(p2pkh.address, funding);
+  await provider.addUtxo(projection.address, projectionUtxo);
+  await provider.addUtxo(p2pkh.address, fee);
+  const route = contract.createCompilerRouteUnlocker(
+    artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setup.masterUtxo,
+    route(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setup.dataNftUtxos[0],
+    createDataNftUnlocker(contract, layout.participantInputs[0], setup.categoryId),
+  );
+  eventFunding.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
+  tx.addInput(
+    projectionUtxo,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: contract.tokenAddress,
+    amount: setup.masterUtxo.satoshis,
+    token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(contract, setup.categoryId),
+    amount: setup.dataNftUtxos[0].satoshis,
+    token: {
+      category: setup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(artifact.stateLayout!, { total: 5n })[0],
+      },
+    },
+  });
+  // The three arguments are one ordered data payload; swapping two of them keeps the length and the topic
+  // identical, so only exact per-argument binding can reject it.
+  const payload = mode === 'swapped' ? [4n, 3n, 5n] : args;
+  const eventSignature = artifact.events![0].signature;
+  tx.addOutput({
+    to: mode === 'foreign-topic'
+      ? getEventNftAddress(contract, setup.categoryId, artifact.events![1].signature)
+      : getEventNftAddress(contract, setup.categoryId, eventSignature),
+    amount: 1000n,
+    token: {
+      category: setup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'none',
+        commitment: binToHex(scriptToBytecode(payload.map((value) => bigIntToVmNumber(value)))),
+      },
+    },
+  });
+  for (let slot = 3; slot < 10; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  return { provider, transaction: raw(tx), layout };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -1545,6 +1652,23 @@ describe('Layer-3 compiled graph controller', () => {
   it('rejects substituting the allowance owner key for the authenticated caller', async () => {
     const { provider, transaction } = await buildCallerKeyedApproveGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('authenticates every argument of a multi-argument event', async () => {
+    const { provider, transaction } = await buildMultiArgEventGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a multi-argument event whose arguments are reordered', async () => {
+    const { provider, transaction } = await buildMultiArgEventGraph('swapped');
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  });
+
+  it('rejects a multi-argument event published under a different topic', async () => {
+    const { provider, transaction } = await buildMultiArgEventGraph('foreign-topic');
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   });
 
 });

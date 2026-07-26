@@ -1202,6 +1202,132 @@ async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
   return { provider, transaction: raw(tx), layout, tokenInputBytes };
 }
 
+async function buildCallerKeyedApproveGraph(forgeCallerWitness = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  // Standard ERC-20 `approve`: a write-only nested collection keyed by the caller. This shape used to fail code
+  // generation outright, because the dynamic row parser cannot resolve a composite key against a runtime row.
+  const tokenArtifact = compileString(`pragma solidcash >=0.8.0;
+    contract GraphApproveToken() {
+      mapping(address => mapping(address => bigint)) allowance;
+      function approve(address spender, bigint amount) public {
+        this.allowance[msg.sender][spender] = amount;
+        require(amount >= 0);
+      }
+    }`, options);
+  const tokenBase = new Contract(tokenArtifact, [], { provider });
+  const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, {});
+  const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
+  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+    interface IGraphApproveToken { function approve(address spender, bigint amount); }
+    contract GraphApproveRouter(int brand, address token) {
+      function route(address spender, bigint amount) public {
+        IGraphApproveToken(token).approve(spender, amount);
+        require(true);
+      }
+    }`, options);
+  const callerBase = new Contract(callerArtifact, [1n, token.lockingBytecode], { provider });
+  const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
+  const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
+  const spender = hexToBin(`aa20${'44'.repeat(32)}87`);
+  // The router is both the graph caller and the allowance owner, so the entry slot is only derivable once its
+  // branded locking bytecode exists - hence the entry is seeded after both contracts are branded.
+  const slot = keyToSlotMulti([hexToBin(caller.lockingBytecode), spender]);
+  const entryAddress = getEntryNftAddress(token, tokenSetup.categoryId, 'allowance');
+  const entry = randomUtxo({
+    satoshis: 10000n,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable' as const,
+        commitment: binToHex(encodeEntryCommitment(slot, new Uint8Array(32), bigIntToVmNumber(0n))),
+      },
+    },
+  });
+  await provider.addUtxo(entryAddress, entry);
+  const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+  const plan = layer3.planCompiledGraph([
+    { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
+    { artifact: tokenArtifact, lockingBytecode: token.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'route', args: [spender, 25n] },
+    { parent: 0, callee: 1, function: 'approve', args: [spender, 25n] },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projectionUtxos = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50000n });
+  for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const callerRoute = caller.createCompilerRouteUnlocker(
+    callerArtifact.hiddenBatch!.route, hexToBin(callerArtifact.hiddenBatch!.selector),
+  );
+  const tokenRoute = token.createCompilerRouteUnlocker(
+    tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
+  );
+  const tokenRouteArgs = [
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
+  ] as FunctionArgument[];
+  // Route inputs 7 and 8 are `__scb_key_allowance_1` (the spender argument) and
+  // `__scb_key_allowance_sender_0` (the owner key the route ties to the authenticated caller).
+  if (forgeCallerWitness) tokenRouteArgs[8] = hexToBin(token.lockingBytecode);
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    callerSetup.masterUtxo,
+    callerRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(tokenSetup.masterUtxo, tokenRoute(...tokenRouteArgs as any));
+  tx.addInput(entry, createEntryNftUnlocker(token, 1, tokenSetup.categoryId, 'allowance'));
+  projectionUtxos.forEach((proof, participant) =>
+    tx.addInput(proof, projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    )));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: caller.tokenAddress,
+    amount: callerSetup.masterUtxo.satoshis,
+    token: { category: callerSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: token.tokenAddress,
+    amount: tokenSetup.masterUtxo.satoshis,
+    token: { category: tokenSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: entryAddress,
+    amount: entry.satoshis,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: binToHex(encodeEntryCommitment(decoded.slot, decoded.nextKey, bigIntToVmNumber(25n))),
+      },
+    },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  return { provider, transaction: raw(tx), layout };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -1408,6 +1534,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the holder key for the authenticated caller in a transfer', async () => {
     const { provider, transaction } = await buildCallerKeyedTransferGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('settles a caller-keyed ERC-20 approve into a nested collection entry', async () => {
+    const { provider, transaction } = await buildCallerKeyedApproveGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects substituting the allowance owner key for the authenticated caller', async () => {
+    const { provider, transaction } = await buildCallerKeyedApproveGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

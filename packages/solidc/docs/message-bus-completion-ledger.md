@@ -75,7 +75,7 @@ Evidence labels:
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
 | Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | One authenticated existing-entry transition composes in a balanced graph and forged post-state fails. A batched `delete m[k]` now fails closed with the designed C2 error instead of aborting code generation, but insertion/deletion, chunks, dynamic keys, and arbitrary descriptors remain unimplemented. |
-| Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PARTIAL | `transfer` and `transferFrom` settle two caller-authorized rows through the compiled graph with hostile VM negatives. `approve` (nested collection), `mint` and `burn` are admitted by SCB1 eligibility with compiler regressions, but are not yet VM-settled through a graph, and ordering across a mixed handler batch is unproven. |
+| Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PARTIAL | `transfer`, `transferFrom` and `approve` settle through the compiled graph with hostile VM negatives on the caller key. `mint` and `burn` are admitted by SCB1 eligibility with compiler regressions but are not VM-settled. Ordering across a *mixed* handler batch stays unproven and is currently unreachable: a resource-shaped route admits exactly one handler. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven. Multi-argument events are admitted with a compiler regression; arbitrary argument types and per-handler counts are not proven. |
 | Event NFT is a standard 1,000-satoshi balanced output and permissionlessly spendable after 144 blocks | PROVEN | Standard-policy and event lifecycle VM tests. |
@@ -153,10 +153,15 @@ journal handler is about 64 bytes of arithmetic, while roughly 40% of the artifa
 repeats of per-entry C2 covenant machinery. Cross-function outlining shares those spans behind
 `OP_INVOKE`, taking the token from 10,511 to 4,506 redeem bytes and the honest graph input to 6,024.
 
-Both ERC-20 shapes now have hostile BCH-2026 negatives. `approve`, `mint` and `burn` are admitted
-with compiler regressions but are NOT VM-settled through a graph, so section 5's ERC-20 row is
-PARTIAL rather than PROVEN. Modifiers, `revert` (string and custom error), `while` loops and
-multi-argument events are likewise admitted-and-regressed but lack VM negatives.
+`transfer`, `transferFrom` and `approve` now have hostile BCH-2026 negatives on the caller key.
+`mint` and `burn` are admitted with compiler regressions but are NOT VM-settled, so section 5's
+ERC-20 row is PARTIAL rather than PROVEN. Modifiers, `revert` (string and custom error), `while`
+loops and multi-argument events are likewise admitted-and-regressed but lack VM negatives.
+
+Ordering across a mixed ERC-20 batch is not merely untested: a resource-shaped route admits exactly
+one handler (`resource-shaped-route-requires-one-handler`), so a single batch cannot interleave
+`transfer` with `approve` today. That is a structural limit of the current route shape, not a gap in
+coverage, and closing it means lifting the one-handler restriction rather than writing a fixture.
 
 ### 2026-07-25: canonical compiled-handler plan
 

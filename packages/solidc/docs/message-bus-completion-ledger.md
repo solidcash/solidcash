@@ -988,3 +988,17 @@ future-result cycles are not.
 The Release D row remains PARTIAL. General nested/transitive heterogeneous chains and compiler
 emission of dependencies beyond the currently derived parent/returning-child edges still need VM
 evidence.
+
+### 2026-07-26: Release E start — graph `outState` settlement boundary
+
+The stateful compiled A→B→A fixture now reads `IStateB(next).outState.count` after emitting the
+logical call to B and requires the value to equal B's final authenticated state. It passes with one
+physical input and one final flush per owner, while the existing forged post-state case still fails.
+The out-state read shares the graph call's authenticated owner rather than allocating or trusting a
+second B authority.
+
+This pins the semantic boundary: graph `outState` is the co-spent owner's final transaction
+settlement, not an intermediate state after one logical row. That is the only physical value BCH
+introspection can soundly expose when an owner executes several journaled invocations atomically.
+The wider context row remains PARTIAL for collection/chunk out-state reads, aggregate/per-invocation
+`msg.value`, and the remaining transaction-introspection table.

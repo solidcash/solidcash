@@ -94,14 +94,18 @@ contract CompiledReturningA(int brand, address target) {
   }
 }`;
 const STATE_A = `pragma solidcash >=0.8.0;
-interface IStateB { function step(address next, address callback, int n); }
+interface IStateB {
+  public int count;
+  function step(address next, address callback, int n);
+}
 contract CompiledStateA(int brand) {
   int count;
   function start(address next, address callback, int n) public {
     this.count = this.count + n;
     require(n >= 0);
     IStateB(next).step(next, callback, n);
-    require(true);
+    int settledB = IStateB(next).outState.count;
+    require(settledB == n);
   }
   function finish(address next, address callback, int n) public {
     this.count = this.count + n;
@@ -1920,7 +1924,7 @@ describe('Layer-3 compiled graph controller', () => {
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 
-  it('executes an authentic stateful A -> B -> A cycle with one flush per owner', async () => {
+  it('executes A -> B -> A once per owner and reads B outState at final settlement', async () => {
     const { provider, transaction } = await buildStateCycle();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });

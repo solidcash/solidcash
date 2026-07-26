@@ -15,6 +15,7 @@ import {
 } from './covenant.js';
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 import type { DerivedExternalCallTable } from './derive-native.js';
+import { protocolVersionHex } from './protocol.js';
 
 /** Apply a TypedTransition to a commitment hex: add delta to the width-byte LE field at offset, preserving the rest. */
 export function applyTypedTransition(commitmentHex: string, t: TypedTransition): string {
@@ -60,8 +61,11 @@ const u8 = (n: number): Uint8Array => {
 export function executionRoot(
   orderedLbcs: string[], invocations: ExecutionInvocation[], events: ExecutionEvent[] = [],
   resources: ExecutionResource[] = [], externalCalls: ExecutionExternalCall[] = [],
+  protocolVersion: number = Number.parseInt(EXEC_VERSION, 16),
 ): string {
-  const parts: Uint8Array[] = [hexToBin(EXEC_DOMAIN), hexToBin(EXEC_VERSION), u8(orderedLbcs.length)];
+  const parts: Uint8Array[] = [
+    hexToBin(EXEC_DOMAIN), hexToBin(protocolVersionHex(protocolVersion)), u8(orderedLbcs.length),
+  ];
   for (const l of orderedLbcs) { const b = hexToBin(l); parts.push(u8(b.length), b); }
   parts.push(u8(invocations.length));
   for (const inv of invocations) {

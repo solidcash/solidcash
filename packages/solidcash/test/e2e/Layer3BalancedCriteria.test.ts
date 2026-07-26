@@ -17,7 +17,10 @@ const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 // Two executor-only participants; A carries a conditional so both branches keep the same 4-slot balanced shape.
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 0, events: 0 }];
 
-async function run(val: bigint, feeSats: bigint, changeSats: bigint): Promise<{ provider: any; rawTx: string }> {
+async function run(
+  val: bigint, feeSats: bigint, changeSats: bigint,
+  protocolVersion = 3, versionsA: readonly number[] = [3], versionsB: readonly number[] = [3],
+): Promise<{ provider: any; rawTx: string; participantBytes: [number, number] }> {
   const provider = createTestProvider();
   const controller = new Contract(compileString(layer3.generateControllerCovenant()), [alicePkh], { provider });
   const ctrlLbc = controller.lockingBytecode;
@@ -32,13 +35,17 @@ async function run(val: bigint, feeSats: bigint, changeSats: bigint): Promise<{ 
   // Criterion 5: the conditional's two branches are pure requires - identical block topology on either path.
   const a = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Cond', functionName: 'act', selfPos: 0, functionParams: 'int val',
+    protocolVersions: versionsA,
     appBody: ['if (val > 5) { require(val > 5); } else { require(val <= 5); }'],
   })), [], { provider });
   // Criterion 8: B is compiled from a SEPARATE source and composes only via the shared layout indices.
   const b = new Contract(compileString(layer3.generateBalancedParticipant({
     ...common, contractName: 'Plain', functionName: 'noop', selfPos: 1,
+    protocolVersions: versionsB,
   })), [], { provider });
-  const root = layer3.executionRoot([a.lockingBytecode, b.lockingBytecode], [], [], []);
+  const root = layer3.executionRoot(
+    [a.lockingBytecode, b.lockingBytecode], [], [], [], [], protocolVersion,
+  );
   const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const setB = new TransactionBuilder({ provider });
   setB.addInput(gen.utxos[0], controller.unlock.setRoot(hexToBin(root), alicePub, sig()));
@@ -67,7 +74,11 @@ async function run(val: bigint, feeSats: bigint, changeSats: bigint): Promise<{ 
     token: { category: ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: root } },
   });
   tx.addOutput({ to: p2.address, amount: changeSats });
-  return { provider, rawTx: raw(tx) };
+  return {
+    provider,
+    rawTx: raw(tx),
+    participantBytes: [a.bytecode.length / 2, b.bytecode.length / 2],
+  };
 }
 
 describe('P9 balanced-layout acceptance criteria 5, 6, 8', () => {
@@ -89,5 +100,18 @@ describe('P9 balanced-layout acceptance criteria 5, 6, 8', () => {
   it('criterion 8: independently compiled A and B compose via the shared layout (positive path)', async () => {
     const { provider, rawTx } = await run(7n, 50000n, 40000n);
     await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+  });
+
+  it('composes immutable artifacts on their highest common retained protocol', async () => {
+    expect(layer3.negotiateProtocolVersion([[3, 4], [4]])).toBe(4);
+    const { provider, rawTx, participantBytes } = await run(7n, 50000n, 40000n, 4, [3, 4], [4]);
+    expect(participantBytes[0]).toBeLessThan(10_000);
+    expect(participantBytes[1]).toBeLessThan(10_000);
+    await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a controller root outside one participant artifact protocol set', async () => {
+    const { provider, rawTx } = await run(7n, 50000n, 40000n, 3, [3, 4], [4]);
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(/mandatory-script-verify/);
   });
 });

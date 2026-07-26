@@ -45,7 +45,7 @@ Evidence labels:
 | Authenticated parent-derived `msg.sender` | PROVEN for peer mode and current transcript rows | Co-spent caller-master VM tests. |
 | Invocation/resource/effect/event exhaustiveness | PARTIAL | Current fixed layouts are exhaustive; the candidate's general tables and streaming parser are not implemented. |
 | Exact participant-table, resource-table and row structural validation | PARTIAL | Generated fixed-shape covenants replace general parsing; no variable-table implementation exists. |
-| Version negotiation and bounded immutable compatibility | MISSING | No deployed-version interoperability mechanism or measured retention bound. |
+| Version negotiation and bounded immutable compatibility | PROVEN | Artifacts declare one or two retained protocol bytes; composition selects the highest intersection and rejects no-intersection sets. The execution root domain-separates the selected byte, while generated balanced covenants accept only their retained roots. BCH-2026 tests cover v1-only, v2-only, common-version execution, unsupported-root rejection, and the two-version/deployability bound. |
 
 ## 3. Handler execution semantics
 
@@ -1164,3 +1164,18 @@ CI exercises 100,000 deterministic trials against the exact `(1-p)^N` result, co
 eight participants, and proves bounded retries improve liveness. Real deployment telemetry may
 refine the activity inputs later, but the implementation/review gate is now reproducible rather
 than an undocumented qualitative warning.
+
+### 2026-07-26: Release I — bounded immutable protocol interoperability
+
+Layer-3 artifacts can now retain one protocol or the current/previous pair, with
+`MAX_BATCH_PROTOCOLS_PER_ARTIFACT = 2` enforced by the SDK and covenant generator. Composition
+chooses the highest version supported by every participant and fails before construction when the
+intersection is empty. The selected byte is part of the framed execution-root preimage, so roots
+from different versions cannot be substituted.
+
+Generated balanced participants independently reconstruct every root they explicitly retain and
+accept the controller commitment only if it equals one of them. Unit tests cover v1-only,
+v2-only, common-version, no-intersection, retention overflow, and root domain separation. A real
+BCH-2026 balanced transaction composes a `[3,4]` artifact with a `[4]` artifact under version 4;
+the same physical shape under version 3 is rejected by the v4-only participant. Both retained
+artifacts remain below the 10,000-byte covenant limit.

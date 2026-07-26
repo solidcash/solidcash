@@ -7,4 +7,5 @@ export * from './derive-native.js';
 export * from './graph.js';
 export * from './hidden-batch.js';
 export * from './preflight.js';
+export * from './protocol.js';
 export * from './transcript.js';

@@ -11,6 +11,7 @@ import { scriptToLockingBytecode } from '../utils.js';
 import {
   compilerDerivedCallStatements, isCompilerDerivedExternalCalls, type DerivedExternalCallTable,
 } from './derive-native.js';
+import { normalizeProtocolVersions, protocolVersionHex } from './protocol.js';
 
 /**
  * The canonical 4-byte selector of a participant METHOD (audit P3): first 4 bytes of sha256(signature). The
@@ -92,8 +93,10 @@ const u8hex = (n: number): string => {
 export function framedRootExpr(
   n: number, invocations: ExecutionInvocation[], events: ExecutionEvent[], resources: ExecutionResource[] = [],
   externalCalls: ExecutionExternalCall[] = [],
+  protocolVersion: number = Number.parseInt(EXEC_VERSION, 16),
 ): string {
-  let p = `bytes.concat(hex"${EXEC_DOMAIN}${EXEC_VERSION}${u8hex(n)}", bytes.concat(bytes1(lbc0.length), lbc0))`;
+  let p = `bytes.concat(hex"${EXEC_DOMAIN}${protocolVersionHex(protocolVersion)}${u8hex(n)}", `
+    + 'bytes.concat(bytes1(lbc0.length), lbc0))';
   for (let i = 1; i < n; i += 1) p = `bytes.concat(${p}, bytes.concat(bytes1(lbc${i}.length), lbc${i}))`;
   p = `bytes.concat(${p}, hex"${u8hex(invocations.length)}")`;
   for (const inv of invocations) {
@@ -530,6 +533,7 @@ export function balancedMemberBody(
   layout: BalancedLayout, selfPos: number, invocations: ExecutionInvocation[],
   controllerCategory: string, controllerLbc: string, events: ExecutionEvent[] = [], oneShot = false,
   resources: ExecutionResource[] = [], externalCalls: ExecutionExternalCall[] = [],
+  protocolVersions: readonly number[] = [Number.parseInt(EXEC_VERSION, 16)],
 ): string[] {
   if (selfPos < 0 || selfPos >= layout.n) throw new Error('layer3: selfPos out of range');
   if (!/^[0-9a-fA-F]{64}$/.test(controllerCategory)) throw new Error('layer3: controllerCategory must be 32-byte hex');
@@ -547,12 +551,21 @@ export function balancedMemberBody(
   });
   const body: string[] = [];
   for (let i = 0; i < layout.n; i += 1) body.push(`bytes lbc${i} = tx.inputs[${layout.base(i)}].lockingBytecode;`);
-  body.push(`bytes execRoot = ${framedRootExpr(layout.n, invocations, events, resources, externalCalls)};`);
+  const versions = normalizeProtocolVersions(protocolVersions);
+  versions.forEach((version, index) => {
+    body.push(
+      `bytes execRoot${index} = ${
+        framedRootExpr(layout.n, invocations, events, resources, externalCalls, version)
+      };`,
+    );
+  });
   const cb = layout.controllerBase;
   const catInternal = (controllerCategory.toLowerCase().match(/../g) as string[]).reverse().join('');
   body.push(`require(tx.inputs[${cb}].tokenCategory.slice(0, 32) == hex"${catInternal}");`);
   body.push(`require(tx.inputs[${cb}].lockingBytecode == hex"${controllerLbc.toLowerCase()}");`);
-  body.push(`require(tx.inputs[${cb}].nftCommitment == execRoot);`);
+  body.push(`require(${
+    versions.map((_version, index) => `tx.inputs[${cb}].nftCommitment == execRoot${index}`).join(' || ')
+  });`);
   if (!oneShot) {
     body.push(`require(tx.outputs[${cb}].lockingBytecode == tx.inputs[${cb}].lockingBytecode);`);
     body.push(`require(tx.outputs[${cb}].tokenCategory == tx.inputs[${cb}].tokenCategory);`);
@@ -663,6 +676,8 @@ export interface BalancedParticipantSpec {
   /** Committed native calls (finding 6): each pins the co-spent callee at a layout callee slot from the root. */
   externalCalls?: DerivedExternalCallTable;
   oneShot?: boolean;
+  /** Immutable transcript protocols retained by this artifact (maximum two). */
+  protocolVersions?: readonly number[];
   appBody?: string[];
   /**
    * A state journal over one of this participant's co-spent state NFTs (`dataIndex` = which of its own data
@@ -688,7 +703,7 @@ export function generateBalancedParticipant(spec: BalancedParticipantSpec): stri
   const layout = balancedLayout(spec.blocks, spec.calleeSlots ?? 0);
   const member = balancedMemberBody(
     layout, spec.selfPos, spec.invocations, spec.controllerCategory, spec.controllerLbc,
-    spec.events, spec.oneShot, spec.resources, spec.externalCalls,
+    spec.events, spec.oneShot, spec.resources, spec.externalCalls, spec.protocolVersions,
   );
   const edgeVars: string[] = [];
   spec.invocations.forEach((inv, j) => {

@@ -266,6 +266,23 @@ instead of its own.
 That also explains cleanly why the leak is positional (it follows whichever scalar is threaded, per the
 second-scalar experiment) while depth and order are sound, which no previous theory managed to reconcile.
 
+Two further pointers for the fix, both from the same dump:
+
+1. The WRONG local is specifically the entry touched only in ROW 0. `shared` is written by both rows and
+   settles correctly (85); `second` is written by row 1 only and settles correctly (5); `first` is written by
+   row 0 only and is the one carrying the scalar's value. So the fault is row-0-specific, not generic to
+   single-row entries, and any fix should be checked against a 3+ row batch where several entries are
+   row-0-only.
+2. The rewrite site is `LowerCollectionJournalHelpers` around the `currentMulti && statement instanceof
+   MappingAssignNode` branch, which rewrites an entry write to `AssignNode(entry.journalName, expr)` with the
+   entry resolved by `multiEntry(statement.name, statement.keys)`. The scalar write is a state assign and
+   should never resolve to a journal entry there, so the two things to check first are whether `multiEntry`
+   can return an entry for a non-matching statement, and whether the wrapper's capture of row 0's results is
+   aligned with the locals it assigns into.
+
+The fix is NOT attempted. The remaining step is small in surface area but sits on the settlement path, so it
+needs a hostile VM test alongside it, not just a green suite.
+
 Superseded next step (kept so the reasoning is auditable): compare the tracked `this.stack.length` at the upsert
 against the actual VM stack depth at the corresponding instruction pointer in a `vm.debug()` trace. If they
 differ by one, the divergence point is the bug. Do not patch scoping on the strength of the duplicate frame

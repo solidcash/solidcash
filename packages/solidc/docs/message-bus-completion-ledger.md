@@ -978,5 +978,13 @@ field. The graph verifier parses the complete result frame, parks prefix fields 
 stack while decoding the remainder, then restores the language's first-result-on-top tuple order.
 The honest transaction and forged-result rejection both run on the BCH-2026 VM.
 
-The Release D row remains PARTIAL. General nested/transitive heterogeneous chains and SCC rejection
-of unavailable-future-result cycles still need their own VM and compiler evidence.
+The planner now records invocation-level result dependencies separately from structural execution
+and owner edges. It runs a complete directed-cycle check before returning a plan: duplicate/self,
+out-of-range, and cyclic producer dependencies fail with an unavailable-future-result diagnostic.
+The returning A→B fixture derives `A depends on B`, while the structural A→B→A owner-reuse fixture
+has no artificial value cycle. This distinction is essential: physical-owner cycles are legal,
+future-result cycles are not.
+
+The Release D row remains PARTIAL. General nested/transitive heterogeneous chains and compiler
+emission of dependencies beyond the currently derived parent/returning-child edges still need VM
+evidence.

@@ -13,6 +13,16 @@ contract ${name}() {
 }`, { forceStateful: true, experimentalHiddenBatch: true });
 
 describe('layer3.planCompiledGraph', () => {
+  it('separates resolvable result dependencies from structural owner cycles', () => {
+    expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], []])).not.toThrow();
+    expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], [0]]))
+      .toThrow(/unavailable future result/);
+    expect(() => layer3.assertResolvableResultDependencies(2, [[1, 1], []]))
+      .toThrow(/duplicate/);
+    expect(() => layer3.assertResolvableResultDependencies(2, [[2], []]))
+      .toThrow(/out-of-range/);
+  });
+
   it('derives msg.sender-keyed collection witnesses from the authenticated parent owner', () => {
     const graphOptions = {
       forceStateful: true,
@@ -72,6 +82,8 @@ describe('layer3.planCompiledGraph', () => {
     ]);
     expect(plan.invocations.every((invocation) =>
       invocation.selectorHex.length === 8 && invocation.resultTypes[0] === 'int256')).toBe(true);
+    // Reusing owner A does not itself create a value cycle.
+    expect(plan.invocations.map((invocation) => invocation.resultDependencies)).toEqual([[], [], []]);
   });
 
   it('rejects ambiguous owners, missing roots, idle participants, and invalid endpoints', () => {

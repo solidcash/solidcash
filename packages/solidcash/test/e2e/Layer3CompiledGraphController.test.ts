@@ -1910,6 +1910,7 @@ describe('Layer-3 compiled graph controller', () => {
       provider, transaction, artifactA, plan, resultA,
     } = await buildReturning();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    expect(plan.invocations.map((invocation) => invocation.resultDependencies)).toEqual([[1], []]);
     expect(layer3.decodeHiddenBatchResults(artifactA, plan.participants[0].batch, resultA))
       .toEqual([{ row: 0, type: 'int256', value: 5n }]);
   });

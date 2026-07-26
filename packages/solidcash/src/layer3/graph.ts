@@ -41,6 +41,8 @@ export interface PlannedGraphInvocation {
   callMode: 'call' | 'staticcall';
   argsHex: string;
   resultTypes: readonly string[];
+  /** Child invocation results which must exist before this invocation can resume. */
+  resultDependencies: readonly number[];
 }
 
 export interface CompiledParticipantExecution {
@@ -56,6 +58,44 @@ export interface CompiledParticipantExecution {
 export interface CompiledGraphPlan {
   participants: readonly CompiledParticipantExecution[];
   invocations: readonly PlannedGraphInvocation[];
+}
+
+/**
+ * Reject a result-dependency graph which requires an invocation to consume an unavailable future value.
+ * Structural execution/owner edges are intentionally absent: A -> B -> A is valid when its invocation-level
+ * result dependencies still have a topological order.
+ */
+export function assertResolvableResultDependencies(
+  invocationCount: number,
+  dependencies: readonly (readonly number[])[],
+): void {
+  if (!Number.isInteger(invocationCount) || invocationCount < 0
+    || dependencies.length !== invocationCount) {
+    throw new Error('layer3: result dependency table has the wrong invocation count');
+  }
+  dependencies.forEach((outgoing, consumer) => {
+    const unique = new Set<number>();
+    for (const producer of outgoing) {
+      if (!Number.isInteger(producer) || producer < 0 || producer >= invocationCount) {
+        throw new Error(`layer3: invocation ${consumer} names an out-of-range result producer`);
+      }
+      if (producer === consumer || unique.has(producer)) {
+        throw new Error(`layer3: invocation ${consumer} has an invalid duplicate/self result dependency`);
+      }
+      unique.add(producer);
+    }
+  });
+  const state = new Uint8Array(invocationCount);
+  const visit = (consumer: number): void => {
+    if (state[consumer] === 2) return;
+    if (state[consumer] === 1) {
+      throw new Error('layer3: result dependency cycle requires an unavailable future result');
+    }
+    state[consumer] = 1;
+    for (const producer of dependencies[consumer]) visit(producer);
+    state[consumer] = 2;
+  };
+  for (let invocation = 0; invocation < invocationCount; invocation += 1) visit(invocation);
 }
 
 export interface FinalizedCompiledGraph {
@@ -814,7 +854,7 @@ export function planCompiledGraph(
     depths[index] = depths[invocations[index].parent!] + 1;
     if (depths[index] > 7) throw new Error('layer3: compiled graph exceeds maximum depth 7');
   }
-  const planned = invocations.map((invocation, index) => {
+  const plannedBase = invocations.map((invocation, index) => {
     const execution = executions[invocation.callee];
     const localRow = localCursor[invocation.callee];
     localCursor[invocation.callee] += 1;
@@ -861,6 +901,28 @@ export function planCompiledGraph(
       resultTypes: Object.freeze([...(result?.types ?? [])]),
     });
   });
+  const resultDependencies: number[][] = invocations.map(() => []);
+  for (let child = 1; child < plannedBase.length; child += 1) {
+    const parent = invocations[child].parent!;
+    const parentInvocation = invocations[parent];
+    const parentFunction = participants[parentInvocation.callee].artifact.abi.find((candidate) =>
+      candidate.name === parentInvocation.function);
+    const matchingCallsites = parentFunction?.externalCalls?.filter((call) =>
+      call.functionName === invocations[child].function) ?? [];
+    if (matchingCallsites.some((call) => call.hasReturnValues)) {
+      if (plannedBase[child].resultTypes.length === 0) {
+        throw new Error(
+          `layer3: invocation ${parent} consumes a result from void invocation ${child}`,
+        );
+      }
+      resultDependencies[parent].push(child);
+    }
+  }
+  assertResolvableResultDependencies(invocations.length, resultDependencies);
+  const planned = plannedBase.map((invocation, index) => Object.freeze({
+    ...invocation,
+    resultDependencies: Object.freeze(resultDependencies[index]),
+  }));
 
   return Object.freeze({
     participants: Object.freeze(executions),

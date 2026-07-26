@@ -517,6 +517,21 @@ export interface InvocationAnalysisFunction {
   writes: readonly string[];
   effects: readonly string[];
   unknown: boolean;
+  /** ABI result schema produced by this handler, in canonical tuple order. */
+  outputs?: readonly AbiOutput[];
+  /** Calls whose authenticated result must be available before this handler can resume. */
+  resultDependencies?: readonly {
+    callsiteId: number;
+    returnTypes: readonly string[];
+    opaque: boolean;
+  }[];
+  /**
+   * True only when every external-call occurrence is statically singular. Conditional and loop callsites
+   * require a runtime occurrence proof and therefore remain explicitly unbounded in this summary.
+   */
+  bounded: boolean;
+  /** Maximum direct external invocations when `bounded` is true. */
+  maximumDirectInvocations?: number;
   /** Ordered compiler-resolved external callsites used by graph expansion. */
   externalCalls?: readonly ExternalCallAbi[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
@@ -534,7 +549,9 @@ export interface InvocationAnalysisFunction {
 }
 
 export interface InvocationAnalysisArtifact {
-  version: 1;
+  version: 2;
+  /** Immutable transcript protocols this compiler can summarize. */
+  protocolVersions: readonly number[];
   functions: readonly InvocationAnalysisFunction[];
   components: readonly {
     id: number;

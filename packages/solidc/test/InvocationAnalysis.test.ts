@@ -21,7 +21,8 @@ describe('Release 0 shared invocation analysis', () => {
     expect(first.invocationAnalysis).toEqual(second.invocationAnalysis);
 
     const analysis = first.invocationAnalysis!;
-    expect(analysis.version).toBe(1);
+    expect(analysis.version).toBe(2);
+    expect(analysis.protocolVersions).toEqual([1]);
     const run = analysis.functions.find((fn) => fn.name === 'run')!;
     const flat = analysis.functions.find((fn) => fn.name === 'flat')!;
     expect(run.recursive).toBe(true);
@@ -57,6 +58,14 @@ describe('Release 0 shared invocation analysis', () => {
     const abi = artifact.abi.find((fn) => fn.name === 'run')!;
     const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!;
     expect(summary.externalCalls).toEqual(abi.externalCalls);
+    expect(summary.outputs).toEqual([{ type: 'bigint' }, { type: 'bool' }]);
+    expect(summary.resultDependencies).toEqual([{
+      callsiteId: 0,
+      returnTypes: ['bigint', 'bool'],
+      opaque: false,
+    }]);
+    expect(summary.bounded).toBe(true);
+    expect(summary.maximumDirectInvocations).toBe(1);
     expect(summary.externalOutStateReads).toEqual(abi.externalOutStateReads);
     expect(summary.emits).toEqual(abi.emits);
     expect(summary.transferCount).toBe(abi.transferCount);
@@ -101,5 +110,11 @@ describe('Release 0 shared invocation analysis', () => {
     expect(occurrence('once')).toBe('once');
     expect(occurrence('maybe')).toBe('conditional');
     expect(occurrence('repeated')).toBe('loop');
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'once'))
+      .toMatchObject({ bounded: true, maximumDirectInvocations: 1 });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe'))
+      .toMatchObject({ bounded: false });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated'))
+      .toMatchObject({ bounded: false });
   });
 });

@@ -1643,9 +1643,13 @@ function compileResolvedAst(
     return [id, abi] as const;
   }));
   artifact.invocationAnalysis = {
-    version: 1,
+    version: 2,
+    protocolVersions: [1],
     functions: invocationAnalysis.functions.map((summary) => {
       const abi = abiByFunctionId.get(summary.id);
+      const externalCalls = abi?.externalCalls ?? [];
+      const bounded = !summary.footprint.unknown
+        && externalCalls.every((call) => call.occurrence === 'once');
       return ({
       id: summary.id,
       name: summary.name,
@@ -1660,7 +1664,19 @@ function compileResolvedAst(
       writes: summary.footprint.writes,
       effects: summary.footprint.effects,
       unknown: summary.footprint.unknown,
-      ...(abi?.externalCalls?.length && { externalCalls: abi.externalCalls }),
+      ...(abi?.outputs?.length && { outputs: abi.outputs }),
+      ...(externalCalls.some((call) => call.hasReturnValues || call.opaqueReturn) && {
+        resultDependencies: externalCalls
+          .filter((call) => call.hasReturnValues || call.opaqueReturn)
+          .map((call) => ({
+            callsiteId: call.callsiteId!,
+            returnTypes: call.returnTypes ?? [],
+            opaque: !!call.opaqueReturn,
+          })),
+      }),
+      bounded,
+      ...(bounded && { maximumDirectInvocations: externalCalls.length }),
+      ...(externalCalls.length && { externalCalls }),
       ...(abi?.externalOutStateReads?.length && { externalOutStateReads: abi.externalOutStateReads }),
       ...(abi?.emits?.length && { emits: abi.emits }),
       ...(abi?.transferCount !== undefined && { transferCount: abi.transferCount }),

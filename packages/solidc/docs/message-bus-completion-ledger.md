@@ -66,7 +66,7 @@ Evidence labels:
 
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
-| Compiler emits handler IDs, state regions, calls, result dependencies, effects and boundedness | PARTIAL | Existing ABI metadata covers calls/arg sources and state footprints, not the complete transcript summary. |
+| Compiler emits handler IDs, state regions, calls, result dependencies, effects and boundedness | PARTIAL | Invocation-analysis v2 now emits stable function IDs/selectors, ABI result schemas, result-producing callsite dependencies, state/resource/effect footprints, call modes, occurrence classes, and conservative direct-call boundedness. Possible dynamic target sets, loop maxima, and cross-handler result consumers remain to be summarized. |
 | Impossible call/result cycles and duplicate authorities fail at compile time | PARTIAL | Existing physical resolver and supported Layer-3 shapes fail closed; no full SCC/result-dependency analysis. |
 | SDK expands a graph, reuses owners, stabilizes resources and acquires each input once | PARTIAL | Fixed-layout/preorder native derivation exists; no general symbolic worklist. |
 | Direct, repeated and transitive calls derive without hand-authored rows | PROVEN for admitted class | `deriveNativeExternalCalls` runtime-branded tables and VM tests. |
@@ -102,7 +102,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | BCH-2026 only and standard-policy compliant | PROVEN for current fixtures | BCHN regtest standard-policy suite. |
-| Concrete parser/covenant overhead and realistic corpus fit measured | PARTIAL | Fixed generators have pinned costs, and cross-function outlining brought the caller-authorized token to 4,506 redeem bytes and the five-function corpus ERC-20 inside the 10,000-byte limit at 4,494. Op-cost density is now the closer constraint (N=8 participants sit at 36.5% of budget). The candidate variable transcript parser has still not been built or measured. |
+| Concrete parser/covenant overhead and realistic corpus fit measured | PARTIAL | Fixed generators have pinned costs, and cross-function outlining brought the caller-authorized token to 4,506 redeem bytes and the five-function corpus ERC-20 inside the 10,000-byte limit at 4,494. Op-cost density is now the closer constraint (N=8 participants sit at 36.5% of budget). The bounded variable `L3GRAPH1` controller and projection parser are built and test-pinned at 1,897 and 7,025 redeem-script bytes respectively, both below 10,000. Corpus-wide composed transaction and operation-density measurements remain incomplete. |
 | Participant-count contention/retry behavior measured | PROVEN as reproducible engineering model | `simulateLayer3Contention` measures the multiplicative N-owner stale-outpoint probability with deterministic Monte Carlo evidence, exact theoretical comparison, and bounded retry-window backoff. CI pins N=2/N=8 degradation and retry improvement. Production telemetry remains a graduation input, not an implementation dependency. |
 | Corpus demand justifies freezing the general protocol | MISSING/PROCESS | Requires product evidence, not only tests. |
 | Independent covenant review | PROCESS | Review package exists; independent sign-off is absent. |

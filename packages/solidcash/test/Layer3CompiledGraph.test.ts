@@ -171,8 +171,10 @@ describe('layer3.planCompiledGraph', () => {
     expect(projection).toContain('projectionInput == this.activeInputIndex');
     const controllerArtifact = compileString(controller);
     const projectionArtifact = compileString(projection);
-    expect(controllerArtifact.debug.bytecode.length / 2).toBeLessThanOrEqual(10_000);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    // Freeze the actual redeem-script cost of the variable-table parsers. `Artifact.bytecode` is ASM text;
+    // `debug.bytecode` is the hex-encoded script and is the consensus/deployment size.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_897);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(7_025);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

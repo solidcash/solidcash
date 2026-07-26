@@ -145,17 +145,14 @@ async function deployFixedArray() {
   const callerArtifact = compileString(`pragma solidcash >=0.8.0;
     interface IFixedArrayTarget { function set(bigint index, bigint value); }
     contract FixedArrayCaller(bytes target) {
-      bigint runs;
       function setSame(bigint index, bigint first, bigint second) public {
         IFixedArrayTarget(target).set(index, first);
         IFixedArrayTarget(target).set(index, second);
-        this.runs = this.runs + 1;
         require(true);
       }
       function setDifferent(bigint firstIndex, bigint secondIndex) public {
         IFixedArrayTarget(target).set(firstIndex, 7);
         IFixedArrayTarget(target).set(secondIndex, 11);
-        this.runs = this.runs + 1;
         require(true);
       }
     }`, { forceStateful: true, experimentalRepeatedExternalBatch: true });
@@ -163,7 +160,7 @@ async function deployFixedArray() {
     callerArtifact, [calleeInner.withCategory(hexToBin(calleeCategory)).lockingBytecode], { provider },
   );
   const { categoryId: callerCategory } = await setupStatefulUtxos(
-    provider, callerInner, callerArtifact.stateLayout!, { runs: 0n }, { saltContract: true },
+    provider, callerInner, callerArtifact.stateLayout!, {}, { saltContract: true },
   );
   const caller = StatefulContract.withCategory(callerInner, callerCategory, {
     externals: { IFixedArrayTarget: callee },

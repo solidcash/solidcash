@@ -9271,7 +9271,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && (abiFunction?.entryLoopWrites?.length ?? 0) === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
-      && (derivTokenOps?.length ?? 0) === 0;
+      && (derivTokenOps?.length ?? 0) === 0
+      && externalCallUtxoGroups.length === 0
+      && externalOutStateUtxoGroups.length === 0;
 
     // A provably read-only getter (compiler writesState=false) produces output state == input state, so the
     // builder reproduces the input commitments (empty stateUpdates) and the multi-pass derivation probe is pure

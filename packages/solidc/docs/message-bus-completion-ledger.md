@@ -176,6 +176,14 @@ This also finally settles `0x51`, which two earlier entries guessed at: it is 81
 push, and the ambiguity was real because the leaked value is script-encoded. Both readings were describing the
 same byte from different ends.
 
+SECOND TRAP, worse than the first, and worth reading before any similar investigation: commit a6d602cc was
+intended to be docs-only but ran `git add -A` while the guard was still temporarily lifted for probing. It
+committed a 38-line REMOVAL of the guard from `compiler.ts` under a documentation message. The next commit then
+ran `git checkout -- packages/solidc/src`, which reverted TO that state and made the removal permanent. The
+suite stayed green throughout, because the fixture still fails to build for an unrelated reason, so nothing
+signalled it. Restored in the following commit. Revert temporary source edits BEFORE staging, and never trust a
+green suite to catch an unintended compiler change.
+
 REPRODUCTION: lift the boundary in `synthesizeHiddenBatchRoute`, set `buildScalarPlusEntryBatchGraph`'s entry
 offset to `slotIndex + 2`, send the transaction, then diff the operands at the failing state.
 

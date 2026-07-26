@@ -1633,7 +1633,7 @@ async function buildScalarPlusEntryBatchGraph() {
       }
     }`, options);
   const tokenBase = new Contract(tokenArtifact, [], { provider });
-  const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, { moves: 7n });
+  const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, { moves: 0n });
   const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
   const callerArtifact = compileString(`pragma solidcash >=0.8.0;
     interface IScalarPlusEntryToken { function move(address from, address to, bigint amount); }
@@ -1705,7 +1705,7 @@ async function buildScalarPlusEntryBatchGraph() {
   ] as FunctionArgument[];
   entries.forEach((entry, slotIndex) => {
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 2), decoded.nextKey, -1n);
+    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
   });
   tokenRouteArgs.push(0n);
   const settled = new Map([
@@ -1747,7 +1747,7 @@ async function buildScalarPlusEntryBatchGraph() {
       amount: 0n,
       nft: {
         capability: 'mutable',
-        commitment: buildInitialStateCommitments(tokenArtifact.stateLayout!, { moves: 9n })[0],
+        commitment: buildInitialStateCommitments(tokenArtifact.stateLayout!, { moves: 2n })[0],
       },
     },
   });
@@ -1772,17 +1772,7 @@ async function buildScalarPlusEntryBatchGraph() {
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10000n });
-  const { cashAddressToLockingBytecode } = await import('@bitauth/libauth');
-  const lbOf = (addr: string): Uint8Array => {
-    const r: any = cashAddressToLockingBytecode(addr);
-    return typeof r === 'string' ? new Uint8Array(0) : r.bytecode;
-  };
-  return { provider, transaction: raw(tx), layout, tx,
-    knownAddrs: {
-      entryNft: lbOf(getEntryNftAddress(token, tokenSetup.categoryId, 'balances')),
-      dataNft: lbOf(getDataNftAddress(token, tokenSetup.categoryId)),
-      slotShared: keyToSlot(shared), slotFirst: keyToSlot(first), slotSecond: keyToSlot(second),
-    } };
+  return { provider, transaction: raw(tx), layout };
 }
 
 describe('Layer-3 compiled graph controller', () => {
@@ -2038,54 +2028,8 @@ describe('Layer-3 compiled graph controller', () => {
     // The scalar journal and the collection journal disagree at their exit for a CLONED handler, so the
     // settled entry is rejected by the covenant. Rejecting at construction is the fail-closed behaviour; an
     // un-cloned handler (Release A's mint/burn) still settles both writes together.
-    const b: any = await buildScalarPlusEntryBatchGraph();
-    const fsx = await import('fs');
-    const outPath = '/tmp/claude-0/-Code-cashscript/97db2cb3-5b7a-49a1-82fd-6dd1634533cf/scratchpad/probe.txt';
-    try {
-      await b.provider.sendRawTransaction(b.transaction);
-      fsx.writeFileSync(outPath, 'SETTLED\n');
-      expect(true).toBe(true);
-      return;
-    } catch (e: any) { fsx.writeFileSync(outPath, `FAILED: ${String(e.message).slice(0, 120)}\n`); }
-    const { createVirtualMachineBch2026 } = await import('@bitauth/libauth');
-    const { generateLibauthSourceOutputs } = await import('../../src/utils.js');
-    const txl = b.tx.buildLibauthTransaction(true);
-    const so = generateLibauthSourceOutputs(b.tx.inputs);
-    const vm: any = createVirtualMachineBch2026();
-    let out = fsx.readFileSync(outPath, 'utf8');
-    for (let i = 0; i < b.tx.inputs.length; i++) {
-      const states: any[] = vm.debug({ inputIndex: i, sourceOutputs: so, transaction: txl });
-      const bad = states.findIndex((st: any) => st.error);
-      if (bad < 0) continue;
-      const hx = (x: any): string => (x instanceof Uint8Array ? binToHex(x) : '');
-      const known = new Map<string, string>();
-      so.forEach((sout: any, k: number) => {
-        const h = hx(sout?.lockingBytecode);
-        if (h && !known.has(h)) known.set(h, `sourceOutput[${k}]`);
-      });
-      for (const [k, v] of [['entryNft', 'ENTRY-NFT'], ['dataNft', 'DATA-NFT']] as any) {
-        const h = hx(b.knownAddrs[k]);
-        if (h) known.set(h, `${known.get(h) ?? ''} = ${v}`);
-      }
-      const idf = (x: any): string => known.get(hx(x)) ?? `unknown(${hx(x).slice(0, 20)}..)`;
-      const tp = (states[bad - 1].stack || []).slice(-2);
-      out += `INPUT ${i} state ${bad}/${states.length}\n`;
-      out += `  operandA(below) = ${idf(tp[0])}\n  operandB(top)   = ${idf(tp[1])}\n`;
-      const ha = hx(tp[0]); const hb = hx(tp[1]);
-      out += `  A(${tp[0]?.length}B) = ${ha}\n  B(${tp[1]?.length}B) = ${hb}\n`;
-      for (let z = 0; z < Math.max(ha.length, hb.length); z += 2) {
-        if (ha.slice(z, z + 2) !== hb.slice(z, z + 2)) {
-          out += `  FIRST DIFF at byte ${z / 2}: A=${ha.slice(z, z + 2)} B=${hb.slice(z, z + 2)}\n`;
-          break;
-        }
-      }
-      const slotsDump = [['shared', b.knownAddrs.slotShared], ['first', b.knownAddrs.slotFirst],
-        ['second', b.knownAddrs.slotSecond]] as any;
-      for (const [n, v] of slotsDump) out += `  slot ${n} = ${hx(v)}\n`;
-      break;
-    }
-    fsx.writeFileSync(outPath, out);
-    expect(true).toBe(true);
+    await expect(buildScalarPlusEntryBatchGraph())
+      .rejects.toThrow(/does not advertise the compiler-hidden SCB1 batch route|hiddenBatch/);
   });
 
 });

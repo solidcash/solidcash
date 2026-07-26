@@ -1643,7 +1643,7 @@ function compileResolvedAst(
     return [id, abi] as const;
   }));
   artifact.invocationAnalysis = {
-    version: 2,
+    version: 1,
     protocolVersions: [1],
     functions: invocationAnalysis.functions.map((summary) => {
       const abi = abiByFunctionId.get(summary.id);

@@ -549,7 +549,7 @@ export interface InvocationAnalysisFunction {
 }
 
 export interface InvocationAnalysisArtifact {
-  version: 2;
+  version: 1;
   /** Immutable transcript protocols this compiler can summarize. */
   protocolVersions: readonly number[];
   functions: readonly InvocationAnalysisFunction[];

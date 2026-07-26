@@ -21,7 +21,7 @@ describe('Release 0 shared invocation analysis', () => {
     expect(first.invocationAnalysis).toEqual(second.invocationAnalysis);
 
     const analysis = first.invocationAnalysis!;
-    expect(analysis.version).toBe(2);
+    expect(analysis.version).toBe(1);
     expect(analysis.protocolVersions).toEqual([1]);
     const run = analysis.functions.find((fn) => fn.name === 'run')!;
     const flat = analysis.functions.find((fn) => fn.name === 'flat')!;

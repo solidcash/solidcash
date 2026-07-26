@@ -130,6 +130,41 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: two-journal bug located to a single call-site sequence
+
+`GenerateTargetTraversal.ts:5920`, the caller's post-`OP_INVOKE` sequence:
+
+```
+// The callee returns the journal copies in canonical order. Replace each
+// caller-owned slot at its original depth ...
+for (const originalName of targetJournalContextNames) {
+  this.emitReplace(this.getStackIndex(originalName), node);
+  this.popFromStack();
+}
+for (let i = 0; i < targetFunc.returnTypes.length; i++) this.pushToStack('(value)');
+```
+
+This is correct while a clone returns ONLY scalar journal copies: the caller consumes each copy from the top
+and replaces its own slot, then accounts for declared return values. It stops being correct once the collection
+journal is involved, because `LowerCollectionJournalHelpers` sets `returnTypes` to the ENTRY value types - so
+the callee now returns entry values as well, the two kinds are interleaved on the stack, and the replace loop
+consumes from the top without accounting for the entry values sitting there. The caller writes entry values
+into its scalar journal slots.
+
+That matches every observation: void clones settle (Release A's modifier fixture is a clone with a scalar
+write and no collection), un-cloned handlers settle (Release A's `mint`/`burn`), and only a clone that returns
+collection values while threading scalar slots fails.
+
+The fix is to make the two kinds of returned value unambiguous at this call site - either by consuming the
+entry values first and the scalar copies beneath them, or by giving the callee one canonical return order the
+caller decodes explicitly rather than by stack position. Both need the callee's actual push order confirmed
+first; the tracker and the physical stack must agree, and this code reasons about depth through
+`getStackIndex`, so an off-by-N here is silent.
+
+`cloned-handler-scalar-and-collection-journal-not-enabled` stays until that lands. Three hypotheses eliminated
+across the passes: the `delete` node type, subroutine-versus-inline settlement, and (now) any theory that the
+scalar journal simply fails to reach the caller - it reaches it, carrying the wrong value.
+
 ### 2026-07-26: the two-journal bug, characterised
 
 Third pass on `cloned-handler-scalar-and-collection-journal-not-enabled`, this time with a mechanism rather

@@ -214,7 +214,7 @@ function buildFunctionAbiMetadata(
     consumerCallsiteId: number; argument: number; producerCallsiteId: number;
   }[] => {
     const slots = func.externalCalls ?? [];
-    const slotByCall = new Map(slots
+    const slotByCall = new Map<Node, number>(slots
       .filter((slot) => !!slot.sourceCallNode)
       .map((slot) => [slot.sourceCallNode!, slot.slotIndex] as const));
     const producerByDefinition = new Map<Node, number>();
@@ -243,7 +243,7 @@ function buildFunctionAbiMetadata(
       });
       if (producer === undefined) return;
       if (node instanceof VariableDefinitionNode) producerByDefinition.set(node, producer);
-      else {
+      else if (node instanceof TupleAssignmentNode) {
         node.elements.filter((element) => !element.skip && !!element.name)
           .forEach((element) => producerByTupleName.set(element.name!, producer!));
       }

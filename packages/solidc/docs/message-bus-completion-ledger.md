@@ -130,6 +130,33 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: Release C dynamic-state authority path measured
+
+The `dynamic-state-batch-journal-not-enabled` boundary was tested by temporarily admitting a two-row
+`string` replacement and driving it through the repeated-external-callee SDK on the BCH-2026 VM. Merely
+removing the eligibility check is not correct.
+
+Cloning the handler before `LowerDynamicStateJournalHelpers` successfully routes execution through the
+existing value-threaded journal, but settlement still fails because an external callee group currently carries
+only its master and data-NFT inputs/outputs. A dynamic write additionally requires:
+
+- every old chunk input in canonical order;
+- funding inputs for output-only chunk slots;
+- the derived new chunk outputs;
+- unused balanced slots returned as ordinary 1,000-satoshi change;
+- all of those slots included in the callee block's relocation and input/output-base arithmetic.
+
+The failure is covenant-side and fail-closed: the SDK's master/data-only candidate is rejected before it can
+publish an incomplete dynamic state. The experiment was reverted rather than advertising an eligible route
+which cannot settle.
+
+This also exposes a specification interaction that the next implementation must resolve explicitly. Existing
+dynamic storage uses a runtime-variable chunk run immediately after the core block, while balanced composability
+requires a block with equal, independently relocatable input/output extent. Release C therefore needs a bounded
+per-variable chunk region (or another equally explicit relocatable-span rule), not only an SDK fetch loop. The
+mock provider's relaxed input, transaction-size, and operation limits may be used to choose a generous initial
+bound; optimizing that bound is a later deployment task.
+
 ### 2026-07-26: scalar-plus-collection cloned handlers fixed
 
 The previously guarded shape is now admitted and VM-proven. The callee returned the correct stack:

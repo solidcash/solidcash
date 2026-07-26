@@ -267,12 +267,14 @@ describe('Release 4 ordered result batch SDK E2E', () => {
   it('executes and decodes heterogeneous scalar and tuple result rows', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;
+      struct Pair { bigint n; bool ok; }
       contract HeterogeneousResultBatch() {
         function number(bigint n) public pure returns (bigint) { return n + 1; }
         function flag(bigint n) public pure returns (bool) { return n > 0; }
         function pair(bigint n) public pure returns (bigint, bool) { return (n * 2, n != 0); }
         function raw(bytes value) public pure returns (bytes) { return bytes.concat(value, hex"ff"); }
         function text(string value) public pure returns (string) { return string.concat(value, "!"); }
+        function record(bigint n) public pure returns (Pair) { return Pair(n, n > 0); }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
@@ -286,6 +288,7 @@ describe('Release 4 ordered result batch SDK E2E', () => {
       { function: 'pair', args: [3n] },
       { function: 'raw', args: [hexToBin('aabb')] },
       { function: 'text', args: ['hello'] },
+      { function: 'record', args: [9n] },
     ];
     const plan = layer3.encodeHiddenBatch(artifact, invocations);
     const transaction = await contract.batch(invocations).emitReturn().send();
@@ -299,6 +302,7 @@ describe('Release 4 ordered result batch SDK E2E', () => {
       { row: 2, type: '(bigint,bool)', value: [6n, true] },
       { row: 3, type: 'bytes', value: hexToBin('aabbff') },
       { row: 4, type: 'string', value: 'hello!' },
+      { row: 5, type: 'Pair', value: { n: 9n, ok: true } },
     ]);
     expect(() => layer3.decodeHiddenBatchResults(
       artifact, plan, Uint8Array.from([...commitment, 0]),

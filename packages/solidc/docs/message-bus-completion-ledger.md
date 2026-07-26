@@ -960,8 +960,10 @@ per-row type schema and requires exact byte consumption, so omission, truncation
 suffixes fail closed.
 
 `HiddenBatchRelease4.test.ts` executes one physical route containing `bigint`, `bool`,
-`(bigint,bool)`, `bytes`, and `string` results on the BCH-2026 VM and decodes the authenticated
-return-event commitment. `Layer3CompiledGraphController.test.ts` separately proves that the graph
+`(bigint,bool)`, `bytes`, `string`, and a named struct result on the BCH-2026 VM and decodes the
+authenticated return-event commitment. Synthesized routes carry the source and contract struct
+declarations needed to type their capture locals; treating a named struct as an address placeholder
+is no longer possible. `Layer3CompiledGraphController.test.ts` separately proves that the graph
 controller binds the resulting participant vector and rejects a forged result.
 
 SCB1 remains experimental and its version-1 format has not been frozen or enabled by default; this
@@ -969,6 +971,6 @@ change replaces the earlier inactive-default suffix representation before that f
 version interoperability remains a Release I requirement and this evidence MUST NOT be read as
 support for silently changing a deployed protocol.
 
-The Release D row remains PARTIAL. Struct results, producer-to-consumer use of heterogeneous fields,
-general nested/transitive chains, and SCC rejection of unavailable-future-result cycles still need
-their own VM and compiler evidence.
+The Release D row remains PARTIAL. Producer-to-consumer use of heterogeneous fields, general
+nested/transitive chains, and SCC rejection of unavailable-future-result cycles still need their own
+VM and compiler evidence.

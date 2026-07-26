@@ -909,7 +909,15 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           __internal__graphParticipantOffset + __graph_owner_frame.length
         ) == __graph_owner_frame);
   `;
+  const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
+    .filter((definition, index, all) =>
+      all.findIndex((candidate) => candidate.name === definition.name) === index)
+    .map((definition) => `struct ${definition.name} { ${
+      definition.fields.map((field) => `${field.type.toString()} ${field.name};`).join(' ')
+    } }`)
+    .join('\n');
   const source = `pragma solidcash >=0.8.0;
+    ${routeStructs}
     contract __HiddenBatchHost() {
       function __scb_parse_row(
         bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite

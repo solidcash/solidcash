@@ -9,7 +9,7 @@ import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
-  BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode,
+  BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode, TupleAssignmentNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -210,6 +210,84 @@ function buildFunctionAbiMetadata(
       })
       .sort((left, right) => left.selector.localeCompare(right.selector));
   };
+  const resultConsumers = (): readonly {
+    consumerCallsiteId: number; argument: number; producerCallsiteId: number;
+  }[] => {
+    const slots = func.externalCalls ?? [];
+    const slotByCall = new Map(slots
+      .filter((slot) => !!slot.sourceCallNode)
+      .map((slot) => [slot.sourceCallNode!, slot.slotIndex] as const));
+    const producerByDefinition = new Map<Node, number>();
+    const producerByTupleName = new Map<string, number>();
+    const visit = (value: unknown, action: (node: Node) => void, seen = new Set<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      action(value);
+      for (const [key, child] of Object.entries(value)) {
+        if ([
+          'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection',
+        ].includes(key)) continue;
+        if (child instanceof Node) visit(child, action, seen);
+        else if (Array.isArray(child)) for (const item of child) visit(item, action, seen);
+      }
+    };
+    visit(func.body, (node) => {
+      const expression = node instanceof VariableDefinitionNode
+        ? node.expression : node instanceof TupleAssignmentNode ? node.tuple : undefined;
+      if (!expression) return;
+      let producer: number | undefined;
+      visit(expression, (candidate) => {
+        const slot = slotByCall.get(candidate);
+        if (slot !== undefined) producer = slot;
+      });
+      if (producer === undefined) return;
+      if (node instanceof VariableDefinitionNode) producerByDefinition.set(node, producer);
+      else {
+        node.elements.filter((element) => !element.skip && !!element.name)
+          .forEach((element) => producerByTupleName.set(element.name!, producer!));
+      }
+    });
+    const result: {
+      consumerCallsiteId: number; argument: number; producerCallsiteId: number;
+    }[] = [];
+    for (const slot of slots) {
+      slot.sourceCallNode?.parameters.forEach((parameter, argument) => {
+        const producers = new Set<number>();
+        visit(parameter, (candidate) => {
+          if (!(candidate instanceof IdentifierNode)) return;
+          const definition = candidate.definition?.definition;
+          if (definition instanceof Node) {
+            let producer = producerByDefinition.get(definition);
+            // Tuple declarations are represented in the symbol table by synthetic VariableDefinitionNodes
+            // whose initializer is the shared tuple call, rather than as children of the function body.
+            if (producer === undefined && definition instanceof VariableDefinitionNode
+              && definition.expression) {
+              visit(definition.expression, (expression) => {
+                const slotIndex = slotByCall.get(expression);
+                if (slotIndex !== undefined) producer = slotIndex;
+              });
+            }
+            if (producer !== undefined) producers.add(producer);
+          }
+          const tupleProducer = producerByTupleName.get(candidate.name);
+          if (tupleProducer !== undefined) producers.add(tupleProducer);
+        });
+        for (const producerCallsiteId of producers) {
+          result.push({
+            consumerCallsiteId: slot.slotIndex,
+            argument,
+            producerCallsiteId,
+          });
+        }
+      });
+    }
+    return result.sort((left, right) =>
+      left.consumerCallsiteId - right.consumerCallsiteId
+      || left.argument - right.argument
+      || left.producerCallsiteId - right.producerCallsiteId);
+  };
+  const consumers = resultConsumers();
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -309,6 +387,7 @@ function buildFunctionAbiMetadata(
         }),
       })),
     }),
+    ...(consumers.length > 0 && { resultConsumers: consumers }),
     ...(func.externalOutStateReads && func.externalOutStateReads.length > 0 && {
       externalOutStateReads: func.externalOutStateReads.map((os) => ({
         interfaceName: os.interfaceName,

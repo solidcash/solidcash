@@ -136,4 +136,43 @@ describe('Release 0 shared invocation analysis', () => {
     });
     expect(summary).toMatchObject({ bounded: true, maximumDirectInvocations: 3 });
   });
+
+  it('links a produced call result to a later external-call argument consumer', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      contract ResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          bigint quoted = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(quoted);
+          require(quoted >= 0);
+        }
+      }`, { forceStateful: true });
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!;
+    expect(summary.resultConsumers).toEqual([{
+      consumerCallsiteId: 1,
+      argument: 0,
+      producerCallsiteId: 0,
+    }]);
+    expect(artifact.abi.find((fn) => fn.name === 'run')!.resultConsumers)
+      .toEqual(summary.resultConsumers);
+  });
+
+  it('links each used tuple result through its synthetic local definition', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint, bool); }
+      interface IConsumer { function settle(bigint quoted, bool accepted); }
+      contract TupleResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          bigint quoted, bool accepted = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(quoted, accepted);
+          require(accepted);
+        }
+      }`, { forceStateful: true });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
+      .toEqual([
+        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 },
+        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0 },
+      ]);
+  });
 });

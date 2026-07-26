@@ -1692,6 +1692,7 @@ function compileResolvedAst(
             opaque: !!call.opaqueReturn,
           })),
       }),
+      ...(abi?.resultConsumers?.length && { resultConsumers: abi.resultConsumers }),
       bounded,
       ...(bounded && {
         maximumDirectInvocations: externalCalls.reduce(

@@ -161,6 +161,12 @@ export interface AbiFunction {
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
+  /** Local call-result values forwarded as arguments into later external callsites. */
+  resultConsumers?: readonly {
+    consumerCallsiteId: number;
+    argument: number;
+    producerCallsiteId: number;
+  }[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
@@ -528,6 +534,11 @@ export interface InvocationAnalysisFunction {
     callsiteId: number;
     returnTypes: readonly string[];
     opaque: boolean;
+  }[];
+  resultConsumers?: readonly {
+    consumerCallsiteId: number;
+    argument: number;
+    producerCallsiteId: number;
   }[];
   /**
    * True only when every external-call occurrence is statically singular. Conditional and loop callsites

@@ -130,6 +130,20 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: Release B scoping - the one-handler restriction is an aliasing problem
+
+Removing `resource-shaped-route-requires-one-handler` experimentally is not enough. A two-handler contract over
+one collection (`move(from,to,amount)` beside `bump(who,amount)`) does compile with the guard disabled, but the
+route allocates FOUR entry slots where three physical entries exist: `move`'s resource-shaped witnesses
+(`__scb_key_move_from_global`, `__scb_key_move_to_row`) and `bump`'s non-resource-shaped witness
+(`__scb_key_balances_0`) name the same physical entries under different route inputs, so a batch that moved
+from A and then bumped A would address A's single entry NFT through two independent slots.
+
+Release B is therefore not "delete the guard": it needs canonical structural identity for entry descriptors,
+a union across reached handlers, and alias resolution to one pending journal value per physical entry, exactly
+as the handoff specifies. The guard stays until that exists - it is currently the only thing preventing an
+unsound double-addressing of one entry.
+
 ### 2026-07-26: Release A - control flow and multi-argument events
 
 `while`, `do/while`, `break`, `continue` and early return each settle their exact effect through the compiled

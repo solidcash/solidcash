@@ -76,9 +76,9 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
     }).toEqual({
       directBytes: 3047,
-      batchBytes: 3949,
-      covenantDeltaBytes: 902,
-      routeBodyBytes: 1271,
+      batchBytes: 3947,
+      covenantDeltaBytes: 900,
+      routeBodyBytes: 1272,
     });
   }, 15_000);
 

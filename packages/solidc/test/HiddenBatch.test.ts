@@ -140,8 +140,10 @@ describe('Release 4 compiler-hidden local batch', () => {
       .toMatchObject({
         eligible: true,
         batchKeyWitnesses: [
-          { routeInput: '__scb_key_move_from_global', inputIndex: 0 },
-          { routeInput: '__scb_key_move_to_row', inputIndex: 1, perRow: true },
+          // Witnesses name the physical entry (collection, key position, shared-versus-row-local), never the
+          // handler, so a second handler over the same entry resolves to the same route input.
+          { routeInput: '__scb_key_values_0', inputIndex: 0 },
+          { routeInput: '__scb_key_values_0_row', inputIndex: 1, perRow: true },
         ],
       });
     expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(3);
@@ -175,9 +177,10 @@ describe('Release 4 compiler-hidden local batch', () => {
       name: 'transferFrom',
       eligible: true,
       batchKeyWitnesses: [
-        { routeInput: '__scb_key_transferFrom_from_global', inputIndex: 0 },
-        { routeInput: '__scb_key_transferFrom_to_row', inputIndex: 1, perRow: true },
-        { routeInput: '__scb_key_transferFrom_spender_global', inputIndex: 2 },
+        { routeInput: '__scb_key_allowances_0', inputIndex: 0 },
+        { routeInput: '__scb_key_allowances_1', inputIndex: 2 },
+        { routeInput: '__scb_key_balances_0', inputIndex: 0 },
+        { routeInput: '__scb_key_balances_0_row', inputIndex: 1, perRow: true },
       ],
     });
     expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(4);
@@ -384,7 +387,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       eligible: true,
       batchKeyWitnesses: [
         { routeInput: '__scb_key_balances_sender_0', inputIndex: -1, source: 'msgSender' },
-        { routeInput: '__scb_key_transfer_to_row', inputIndex: 0, perRow: true },
+        { routeInput: '__scb_key_balances_0_row', inputIndex: 0, perRow: true },
       ],
     });
 
@@ -487,5 +490,64 @@ describe('Release 4 compiler-hidden local batch', () => {
       mapping(address => bigint) values;
       function clear(address key) public { delete this.values[key]; require(true); }
     }`, graphOptions)).toThrow(/cannot be represented by the C2 linked-list/);
+  });
+
+  it('unions two handlers over one collection onto one set of entry slots', () => {
+    const artifact = compileString(`contract MixedCollection() {
+      mapping(address => bigint) balances;
+      function move(address from, address to, bigint amount) public {
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+        require(amount >= 0);
+      }
+      function bump(address who, bigint amount) public {
+        this.balances[who] = this.balances[who] + amount;
+        require(amount >= 0);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+
+    // Both handlers are admitted, and `bump` resolves onto the entry `move` already owns rather than
+    // allocating a second slot for it. Naming witnesses per handler is what used to force the duplicate.
+    expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['move', true], ['bump', true]]);
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(3);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bump'))
+      .toMatchObject({
+        batchKeyWitnesses: [{ routeInput: '__scb_key_balances_0', inputIndex: 0 }],
+      });
+    expect(artifact.hiddenBatch?.route.inputs.filter((input) => input.name.startsWith('__scb_key'))
+      .map((input) => input.name))
+      .toEqual(['__scb_key_balances_0', '__scb_key_balances_0_row_r0', '__scb_key_balances_0_row_r1']);
+  });
+
+  it('keeps one handler when a handler cross-keys two collections from one parameter', () => {
+    // `from` addresses both allowances[from][spender] and balances[from]. One parameter cannot carry two
+    // different canonical witness names, and the journal identifies a pending value by the key expression at
+    // the call site, so siblings cannot share entries with this handler yet. Fail closed rather than allocate
+    // one entry twice.
+    const artifact = compileString(`contract CrossKeyedToken() {
+      mapping(bytes20 => bigint) balances;
+      mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
+      function mint(bytes20 to, bigint amount) public {
+        this.balances[to] = this.balances[to] + amount;
+        require(amount >= 0);
+      }
+      function transferFrom(bytes20 from, bytes20 to, bytes20 spender, bigint amount) public {
+        require(this.allowances[from][spender] >= amount);
+        require(this.balances[from] >= amount);
+        this.allowances[from][spender] = this.allowances[from][spender] - amount;
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'transferFrom')?.eligible)
+      .toBe(true);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'mint'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'cross-keyed-collection-route-requires-one-handler',
+      });
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(4);
   });
 });

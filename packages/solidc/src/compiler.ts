@@ -378,19 +378,30 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         if (!reason && [...perRowInputs].some((index) => globalInputs.has(index))) {
           reason = 'collection-route-has-ambiguous-global-and-row-key';
         }
-        if (!reason && resourceShapedHandler && resourceShapedHandler !== fn) {
-          reason = 'resource-shaped-route-requires-one-handler';
-        }
         if (!reason) {
-          resourceShapedHandler = fn;
-          const keyInputs = [...new Set([...globalInputs, ...perRowInputs])].sort((a, b) => a - b);
-          for (const inputIndex of keyInputs) {
-            const parameter = fn.parameters[inputIndex];
-            const perRow = perRowInputs.has(inputIndex);
-            const routeInput = `__scb_key_${fn.name.replace(/[^A-Za-z0-9_]/g, '_')}`
-              + `_${parameter.name.replace(/[^A-Za-z0-9_]/g, '_')}_${perRow ? 'row' : 'global'}`;
-            keyWitnesses.push({ routeInput, inputIndex, ...(perRow && { perRow: true }) });
-            routeKeyWitnesses.set(routeInput, [{ name: routeInput, type: parameter.type }]);
+          resourceShapedHandler ??= fn;
+          // Witnesses are named by the physical entry they address - collection, key position, and whether the
+          // entry is shared by every row or row-local - never by the handler or its parameter names. Two
+          // handlers that touch the same entry then resolve to the same route input and the same C2 slot. Naming
+          // them per function is what made a second handler allocate a duplicate slot for one entry NFT.
+          for (const [collectionName, alternatives] of directKeys) {
+            const collection = collectionByName.get(collectionName)!;
+            const safeName = collectionName.replace(/[^A-Za-z0-9_]/g, '_');
+            alternatives.forEach((indices, alternativeIndex) => {
+              const perRow = alternativeIndex > 0;
+              indices.forEach((inputIndex, keyIndex) => {
+                if (inputIndex < 0) return;
+                const routeInput = perRow
+                  ? `__scb_key_${safeName}_${keyIndex}_row`
+                  : `__scb_key_${safeName}_${keyIndex}`;
+                routeKeyWitnesses.set(routeInput, [{
+                  name: routeInput, type: collection.allKeyTypes[keyIndex],
+                }]);
+                if (keyWitnesses.some((binding) =>
+                  binding.routeInput === routeInput && binding.inputIndex === inputIndex)) return;
+                keyWitnesses.push({ routeInput, inputIndex, ...(perRow && { perRow: true }) });
+              });
+            });
           }
         }
       } else {
@@ -401,12 +412,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             reason = 'collection-route-requires-one-parameter-keyed-entry-per-collection';
             break;
           }
-          const prior = routeKeyWitnesses.get(collectionName);
-          const witnesses = prior ?? collection.allKeyTypes.map((type, keyIndex) => ({
-            name: `__scb_key_${collectionName.replace(/[^A-Za-z0-9_]/g, '_')}_${keyIndex}`,
+          const safeName = collectionName.replace(/[^A-Za-z0-9_]/g, '_');
+          const witnesses = collection.allKeyTypes.map((type, keyIndex) => ({
+            name: `__scb_key_${safeName}_${keyIndex}`,
             type,
           }));
-          routeKeyWitnesses.set(collectionName, witnesses);
+          for (const witness of witnesses) routeKeyWitnesses.set(witness.name, [witness]);
           alternatives[0].forEach((inputIndex, keyIndex) => {
             if (inputIndex === -2) {
               if (graphControllerLbc === undefined) {
@@ -476,14 +487,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       graphRuntimeHandlers.add(fn);
     }
   }
-  if (resourceShapedHandler?.hiddenBatchEligible) {
-    for (const fn of eligible) {
-      if (fn === resourceShapedHandler) continue;
-      fn.hiddenBatchEligible = false;
-      fn.hiddenBatchRejectionReason = 'resource-shaped-route-requires-one-handler';
-    }
-    eligible = [resourceShapedHandler];
-  }
+
   if (eligible.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
     for (const fn of eligible) {
       if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
@@ -564,6 +568,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   let resourceHandlerInvokeName: string | undefined;
   let resourceHandlerTakesSenderKey = false;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
+  const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
 
   // A `msg.sender` mapping key blocks value-threaded journalling: the collection-journal lowering only accepts
   // parameter-keyed entries, so without this the batched clone re-reads and re-flushes the same physical entry
@@ -616,6 +621,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       handler.graphEmissionHandler = true;
       handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(resourceShapedHandler);
     }
+    if (eligible.length > 1) handler.forceCollectionJournalPool = true;
     const senderKeys = senderKeyBindingsFor(resourceShapedHandler);
     if (senderKeys.length > 0) {
       bindSenderKeyParameter(handler, senderKeys[0].type);
@@ -623,6 +629,52 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
+  }
+  // A handler that keys two different collections from ONE parameter (ERC-20 `transferFrom`, whose `from`
+  // addresses both `allowances[from][spender]` and `balances[from]`) cannot share canonical per-entry witnesses
+  // with siblings that key those collections independently: the journal identifies a pending value by the key
+  // EXPRESSION passed at the call site, and one parameter cannot carry two different witness names. Until the
+  // journal takes an explicit compiler-supplied entry identity, admit siblings only when no handler
+  // cross-keys collections, and keep the single-handler route otherwise.
+  const crossKeyedHandler = eligible.find((fn) => {
+    const collectionsByInput = new Map<number, Set<string>>();
+    for (const binding of fn.hiddenBatchKeyWitnesses ?? []) {
+      if (binding.inputIndex < 0) continue;
+      const collection = binding.routeInput.replace(/^__scb_key_/, '').replace(/_\d+(_row)?$/, '');
+      const seen = collectionsByInput.get(binding.inputIndex) ?? new Set<string>();
+      seen.add(collection);
+      collectionsByInput.set(binding.inputIndex, seen);
+    }
+    return [...collectionsByInput.values()].some((collections) => collections.size > 1);
+  });
+  if (resourceShapedHandler && crossKeyedHandler && eligible.length > 1) {
+    for (const fn of eligible) {
+      if (fn === resourceShapedHandler) continue;
+      fn.hiddenBatchEligible = false;
+      fn.hiddenBatchRejectionReason = 'cross-keyed-collection-route-requires-one-handler';
+    }
+    eligible = [resourceShapedHandler];
+  }
+
+  // When a resource-shaped handler shares the route with others, every handler must reach its entries through
+  // the same journal path. The resource-shaped one is invoked as an internal clone whose accesses the collection
+  // journal hoists into wrapper caches; a sibling invoked as its public self bypasses that and allocates its own
+  // C2 slot for an entry the clone already owns. Cloning the siblings too puts them in one shared pool.
+  if (resourceShapedHandler && eligible.length > 1) {
+    for (const sourceHandler of eligible) {
+      if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)) continue;
+      const handler = cloneNode(sourceHandler);
+      handler.name = `__scb_handler_${sourceHandler.name}`;
+      handler.modifiers = [FunctionModifier.INTERNAL];
+      handler.functionId = undefined;
+      handler.functionSelector = undefined;
+      handler.hiddenBatchEligible = undefined;
+      handler.hiddenBatchRejectionReason = undefined;
+      handler.hiddenBatchKeyWitnesses = undefined;
+      handler.forceCollectionJournalPool = true;
+      siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+      contract.functions.push(handler);
+    }
   }
   for (const sourceHandler of graphTailHandlers) {
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
@@ -646,7 +698,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
     const invokeName = fn === resourceShapedHandler
       ? resourceHandlerInvokeName!
-      : (graphHandlerInvokeNames.get(fn) ?? fn.name);
+      : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn) ?? fn.name);
     const invoke = (args: string): string => resultIndex === undefined
       ? `${invokeName}(${args});`
       : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
@@ -690,8 +742,14 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }).join(' ');
   const usedRouteInputs = new Set(eligible.flatMap((fn) =>
     (fn.hiddenBatchKeyWitnesses ?? []).map((binding) => binding.routeInput)));
+  const declaredWitnessNames = new Set<string>();
   const routeKeyParameters = [...routeKeyWitnesses.values()].flat()
     .filter((witness) => usedRouteInputs.has(witness.name))
+    .filter((witness) => {
+      if (declaredWitnessNames.has(witness.name)) return false;
+      declaredWitnessNames.add(witness.name);
+      return true;
+    })
     .flatMap((witness) => {
       const perRow = eligible.some((fn) => fn.hiddenBatchKeyWitnesses?.some((binding) =>
         binding.routeInput === witness.name && binding.perRow));

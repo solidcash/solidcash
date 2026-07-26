@@ -130,10 +130,13 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
     expect(tokenArtifact.hiddenBatch?.handlers.find((handler) =>
       handler.name === 'transferFrom')).toMatchObject({
       eligible: true,
+      // Witnesses are named by the physical entry they address, not by the handler, so several handlers over
+      // one collection resolve to one route input and one C2 slot.
       batchKeyWitnesses: [
-        { routeInput: '__scb_key_transferFrom_from_global', inputIndex: 0 },
-        { routeInput: '__scb_key_transferFrom_to_row', inputIndex: 1, perRow: true },
-        { routeInput: '__scb_key_transferFrom_spender_global', inputIndex: 2 },
+        { routeInput: '__scb_key_allowances_0', inputIndex: 0 },
+        { routeInput: '__scb_key_allowances_1', inputIndex: 2 },
+        { routeInput: '__scb_key_balances_0', inputIndex: 0 },
+        { routeInput: '__scb_key_balances_0_row', inputIndex: 1, perRow: true },
       ],
     });
 

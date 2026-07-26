@@ -162,7 +162,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         }
       }
       if (unsupported || distinct.size === 0) continue;
-      if (distinct.size > 1) {
+      if (distinct.size > 1 || fn.forceCollectionJournalPool) {
         this.multiCandidates.set(`${fn.name}/${fn.parameters.length}`, {
           fn, entries: [...distinct.values()],
         });
@@ -498,6 +498,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         ...originalArgs,
       ],
     ), call);
+    // A pooled handler that touches one entry still returns a single value, not a one-element tuple.
+    if (callLocals.length === 1) {
+      return [this.at(new AssignNode(
+        this.at(new IdentifierNode(callLocals[0].name), call), invoked,
+      ), call)];
+    }
     const capture = this.at(new TupleAssignmentNode(
       callLocals.map(({ entry, name }) => ({
         name, type: entry.valueType, existing: true,
@@ -513,6 +519,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     wrapperParameters: Set<string>,
   ): Map<string, ActiveMultiCache> {
     const caches = new Map<string, ActiveMultiCache>();
+    // One physical entry gets one pending journal value per wrapper, however many different handlers touch it.
+    // Keeping a pool per callee was enough while a route admitted a single handler; with several handlers over
+    // one collection it allocated a separate cache local - and therefore a separate C2 slot - per handler for
+    // the same entry, which the SDK reports as a duplicate upsert slot.
+    const sharedLocals: ActiveMultiCache['locals'] = [];
     const calls: FunctionCallStatementNode[] = [];
     this.walk(body, (node) => {
       if (node instanceof FunctionCallStatementNode) calls.push(node);
@@ -538,7 +549,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
       const cache = caches.get(candidateKey) ?? {
         target,
-        locals: [],
+        locals: sharedLocals,
         calls: new WeakMap(),
       };
       if (!caches.has(candidateKey)) caches.set(candidateKey, cache);
@@ -553,7 +564,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (prior) return prior;
         const local = {
           entry,
-          name: `__cj_cache_${target.fn.name}_${cache.locals.length}`,
+          // Pool-scoped, not callee-scoped: the name identifies the entry inside this wrapper.
+          name: `__cj_cache_${sharedLocals.length}`,
           keys,
           keyIdentity,
         };
@@ -587,7 +599,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   }
 
   private installMultiCaches(body: BlockNode): void {
-    const caches = [...this.activeMultiCaches.values()];
+    // Every cache shares one locals pool, so collapse to the distinct locals before emitting reads/write-backs.
+    const pooled = [...new Set([...this.activeMultiCaches.values()].flatMap((cache) => cache.locals))];
+    const caches = [{ locals: pooled }];
     const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) =>
       this.at(new VariableDefinitionNode(
         entry.valueType, [], name,

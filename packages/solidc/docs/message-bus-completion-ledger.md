@@ -52,7 +52,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | `Layer3ReleaseA.test.ts` also pins state-layout equivalence between the direct and hidden-batch compilations of one contract.  The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
-| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
+| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection now share one entry-slot union and one journal pool (`Layer3 Release B`), bounded by `cross-keyed-collection-route-requires-one-handler`. | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
 | Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PROVEN for the admitted handler class | `Layer3ReleaseA.test.ts` settles a `msg.sender`-authorizing modifier, string and custom-error `revert`, `while`, `do/while`, `break`, `continue` and early return on the BCH-2026 VM, each paired with a hostile case of identical transaction shape - a different authorized caller, a reached revert, or an off-by-one settlement. Handler shapes outside SCB1 eligibility are unchanged and still fail closed. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
@@ -129,6 +129,35 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: Release B - entry-identity witnesses and a bounded multi-handler lift
+
+`resource-shaped-route-requires-one-handler` is gone. Route key witnesses are now named by the physical entry
+they address - collection, key position, and whether the entry is shared by every row or row-local - instead of
+by the handler and its parameter names. Two handlers that touch one entry therefore resolve to one route input
+and one C2 slot. `move(from,to,amount)` beside `bump(who,amount)` admits both handlers and keeps three entry
+slots, where naively deleting the guard produced four for three physical entries.
+
+Three layers had to agree, not one:
+
+1. witness naming (compiler) - canonical per entry rather than per handler;
+2. the collection journal's cache pool - it was per callee, so two handlers over one entry still allocated two
+   locals and the SDK reported "C2 batch upsert contains a duplicate slot". The pool is now per wrapper, and a
+   pooled handler touching a single entry captures a plain value rather than a one-element tuple;
+3. invocation shape - the resource-shaped handler runs as an internal clone whose accesses the journal hoists,
+   while a sibling invoked as its public self bypassed that entirely. Siblings are now cloned too.
+
+The lift is deliberately bounded. A handler that keys two different collections from ONE parameter - ERC-20
+`transferFrom`, whose `from` addresses both `allowances[from][spender]` and `balances[from]` - cannot share
+canonical witnesses with siblings that key those collections independently: one parameter cannot carry two
+witness names, and the journal identifies a pending value by the key expression at the call site. Those
+contracts keep the single-handler route under the new reason
+`cross-keyed-collection-route-requires-one-handler`. Lifting that last case needs the journal to take an
+explicit compiler-supplied entry identity rather than inferring one from expressions.
+
+Compiler regressions cover the union, the canonical witness list, and the fail-closed boundary. A mixed batch
+has NOT been settled on the VM yet, so the ordered-ERC-20 row stays PARTIAL: this is compiler admission, not
+execution proof.
 
 ### 2026-07-26: Release B scoping - the one-handler restriction is an aliasing problem
 

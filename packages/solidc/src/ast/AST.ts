@@ -330,6 +330,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   scalarJournalRecursive?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
+  /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
+   * single entry, so sibling handlers over the same entry resolve to one pending value and one C2 slot. */
+  forceCollectionJournalPool?: boolean;
   // Compiler-only SCB1 physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   hiddenBatchRoute?: boolean;

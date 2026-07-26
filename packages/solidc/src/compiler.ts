@@ -348,10 +348,16 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             reason = 'collection-route-requires-parameter-keyed-resource-shape';
             break;
           }
+          // Only the shared (first) alternative can be caller-keyed: its witness is a single global route input
+          // checked against `__scb_graph_caller`. A row-local alternative would need one such witness per row,
+          // which the row-key encoding does not carry.
+          if (alternatives.slice(1).some((indices) => indices.includes(-2))) {
+            reason = 'row-local-msg-sender-collection-key-not-enabled';
+            break;
+          }
           alternatives[0].forEach((inputIndex, keyIndex) => {
             if (inputIndex === -2) {
-              if (graphControllerLbc === undefined
-                || alternatives.some((indices) => indices[keyIndex] !== -2)) {
+              if (graphControllerLbc === undefined) {
                 reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
                 return;
               }
@@ -491,6 +497,19 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const eventMode = eligible.some((fn) => eligibleFootprint(fn).effects.includes('events'));
   const resultMode = eligible.some((fn) => fn.returnTypes.length > 0);
   const valueEffectMode = eligible.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+  // A nested collection needs one fixed C2 entry slot per row: the composite key is only resolvable against a
+  // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
+  // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
+  // other multi-key handler batchable.
+  const nestedCollectionMode = eligible.some((fn) => {
+    let nested = false;
+    walkInvocationAst(fn.body, (node) => {
+      if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
+        || node instanceof MappingDeleteNode)
+        && (collectionByName.get(node.name)?.allKeyTypes.length ?? 0) > 1) nested = true;
+    });
+    return nested;
+  });
   let resultType: Type | undefined;
   if (resultMode) {
     resultType = eligible.find((fn) => fn.returnTypes.length > 0)?.returnTypes[0];
@@ -710,7 +729,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const parser = resourceShapedHandler
     ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
       `{ ${parseOneRow(String(row), undefined, row)} }`).join(' ')
-    : eventMode || resultMode || valueEffectMode
+    : eventMode || resultMode || valueEffectMode || nestedCollectionMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode ? row : undefined, row)} }`).join(' ')
     : `for (bigint row = 0; row < rowCount; row = row + 1) {

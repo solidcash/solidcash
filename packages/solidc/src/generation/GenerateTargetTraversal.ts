@@ -3435,6 +3435,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Conditional mapping deletes -> existence-gated soft-delete writes (see preAllocateCondDeleteWrite).
     for (const slotIndex of mappingDeleteSlots) {
+      // An enclosing loop that already registered this slot owns the delete. Seeding a soft-delete here would
+      // push its key/value encodings inside the loop body, where they cannot survive to the epilogue - the
+      // epilogue would then look for a stack slot that no longer exists. The SCB1 row loop dispatches every
+      // handler through exactly this branch shape, so without the guard a `delete m[k]` handler aborted code
+      // generation outright.
+      if (this.pendingEntryDeletes.has(slotIndex)) continue;
       this.preAllocateCondDeleteWrite(slotIndex, locationData);
     }
 
@@ -3567,9 +3573,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     block: BlockNode,
     writeSlots: Set<number>,
     deleteSlots: Set<number>,
+    seenCallees: Set<FunctionDefinitionNode> = new Set(),
   ): void {
     if (!block.statements) return;
     for (const stmt of block.statements) {
+      // A branch that only *invokes* a handler still reaches that handler's mapping slots. The SCB1 route is
+      // exactly this shape - every row dispatches `if (rowSelector == ...) { handler(...); }` - so without
+      // following the call, a `delete` inside the handler is never pre-allocated and its key/value encodings are
+      // dropped when the branch closes, leaving the epilogue looking for a stack slot that no longer exists.
+      const callee = stmt instanceof FunctionCallStatementNode
+        ? stmt.call.resolvedFunction
+        : stmt instanceof TupleAssignmentNode && stmt.tuple instanceof FunctionCallNode
+          ? stmt.tuple.resolvedFunction
+          : undefined;
+      if (callee?.body && !seenCallees.has(callee)) {
+        seenCallees.add(callee);
+        this.collectMappingSlots(callee.body, writeSlots, deleteSlots, seenCallees);
+      }
       if (stmt instanceof MappingAssignNode && stmt.entrySlotIndex >= 0) {
         writeSlots.add(stmt.entrySlotIndex);
       } else if (stmt instanceof MappingFieldAssignNode && stmt.entrySlotIndex >= 0) {
@@ -3577,19 +3597,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (stmt instanceof MappingDeleteNode && stmt.entrySlotIndex >= 0) {
         deleteSlots.add(stmt.entrySlotIndex);
       } else if (stmt instanceof BranchNode) {
-        this.collectMappingSlots(stmt.ifBlock, writeSlots, deleteSlots);
-        if (stmt.elseBlock) this.collectMappingSlots(stmt.elseBlock, writeSlots, deleteSlots);
+        this.collectMappingSlots(stmt.ifBlock, writeSlots, deleteSlots, seenCallees);
+        if (stmt.elseBlock) this.collectMappingSlots(stmt.elseBlock, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof TryCatchNode) {
-        this.collectMappingSlots(stmt.tryBlock, writeSlots, deleteSlots);
+        this.collectMappingSlots(stmt.tryBlock, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof DoWhileNode || stmt instanceof WhileNode) {
-        this.collectMappingSlots(stmt.block, writeSlots, deleteSlots);
+        this.collectMappingSlots(stmt.block, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof CollectionIterationNode) {
-        this.collectMappingSlots(stmt.body, writeSlots, deleteSlots);
+        this.collectMappingSlots(stmt.body, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof UncheckedNode) {
-        this.collectMappingSlots(stmt.block, writeSlots, deleteSlots);
+        this.collectMappingSlots(stmt.block, writeSlots, deleteSlots, seenCallees);
       } else if (stmt instanceof SwitchNode) {
-        for (const c of stmt.cases) this.collectMappingSlots(c.body, writeSlots, deleteSlots);
-        if (stmt.defaultCase) this.collectMappingSlots(stmt.defaultCase, writeSlots, deleteSlots);
+        for (const c of stmt.cases) this.collectMappingSlots(c.body, writeSlots, deleteSlots, seenCallees);
+        if (stmt.defaultCase) this.collectMappingSlots(stmt.defaultCase, writeSlots, deleteSlots, seenCallees);
       }
     }
   }

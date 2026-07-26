@@ -280,8 +280,29 @@ Two further pointers for the fix, both from the same dump:
    can return an entry for a non-matching statement, and whether the wrapper's capture of row 0's results is
    aligned with the locals it assigns into.
 
-3. UNVERIFIED LEAD (flagged as such deliberately - two hypotheses were asserted before measurement today and
-   both were wrong). `multiEntry` matches an entry by collection name plus KEY PARAMETER NAMES:
+3. LEAD REFUTED BY MEASUREMENT (recorded so it is not chased again). The `multiEntry` name-collision idea is
+   WRONG. Instrumenting the rewrite shows the two entry writes resolve to DISTINCT journal entries:
+
+       balances[__scb_ek___scb_key_balances_0]      -> __cj___scb_resource_move_0
+       balances[__scb_ek___scb_key_balances_0_row]  -> __cj___scb_resource_move_1
+
+   `from` binds to the non-row-local key (the same address in both rows) and `to` binds to the row-local key,
+   which is exactly right. No collision.
+
+   The same probe surfaces the real asymmetry: the CALLEE has TWO journal entries while the WRAPPER allocates
+   THREE cache locals (shared, first, second - deduped by key identity across both call sites). `rewriteMultiCall`
+   maps them per call site, with `callLocals` ordered by `target.entries` and passed BOTH as leading arguments
+   and as the tuple-assignment targets, so the per-call-site mapping is structurally sound.
+
+   That leaves the callee's RETURN ordering as the next thing to measure: when a cloned handler threads scalar
+   state ALONGSIDE its journal entries, does its returned tuple stay [entry_0, entry_1], or does the scalar
+   value enter that tuple and shift one target? A returned [scalar, entry_0, entry_1] against two capture
+   targets would put a scalar into a cache local, which is the observed symptom. MEASURE the returned tuple
+   before patching - this is the fourth hypothesis in this investigation and three of the previous ones were
+   wrong.
+
+   Superseded text (the refuted idea, kept for auditability): `multiEntry` matches an entry by collection name
+   plus KEY PARAMETER NAMES:
 
        entry.collection === collection
        && entry.keyParameters.length === keys.length

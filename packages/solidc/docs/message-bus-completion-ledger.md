@@ -147,12 +147,20 @@ chased to ground before the instrumentation was reverted. What it does mean is t
 `cloned-handler-scalar-and-collection-journal-not-enabled` was derived from a fixture that could never have
 passed for reasons unrelated to journalling, so the boundary is SUSPECT.
 
-Concretely, before that boundary is trusted or removed:
+Step 1 has since been run: with the corrected offset the fixture STILL fails, at state 5481 of 5483. So the
+offset was one real bug in the fixture and there is a second, separate reason the shape does not settle. The
+boundary is therefore not disproven - but it is also not established, because the evidence originally offered
+for it was a transaction that could never have validated.
 
-1. rebuild the fixture with the corrected offset and chase the remaining rejection at state 5481;
-2. if it settles, remove the boundary and the four eliminated hypotheses become moot - there was no
-   two-journal bug, only a mis-built transaction;
-3. if it still fails for a real reason, re-derive the boundary from that reason rather than this one.
+Remaining, for whoever picks this up:
+
+1. chase the rejection at state 5481 with the corrected fixture. The stack there holds a `move` row blob, the
+   value `0x51`, a slot, an entry address and a next-key - i.e. an entry commitment comparison, not an address
+   or index check like the offset bug produced;
+2. `0x51` is 81, which matches none of the fixture's intended settled values (85, 10, 5) or the counter (2).
+   Identifying what 81 is should locate the fault quickly;
+3. if the shape then settles, remove the boundary; if it fails for a real reason, re-derive the boundary from
+   that reason rather than from the offset bug.
 
 The boundary is fail-closed, so leaving it in place while suspect costs expressiveness, not soundness. But it
 should not be described as a known compiler limitation until step 1 is done. Recorded because I asserted the

@@ -1,131 +1,298 @@
 ---
-title: Global Functions
+title: Functions
 ---
 
-SolidCash has several built-in functions for things like cryptographic and arithmetic applications, and it includes many common arithmetic and other operators that you would expect in a programming language.
+Functions are the main construct in a SolidCash contract. Externally callable functions are the entry points
+for spending from a contract: each one is a branch of the redeem script, selected by a 4-byte selector.
+Internal functions are ordinary reusable helpers.
 
-## Arithmetic functions
-### abs()
+For the catalogue of built-in functions like `sha256` and `checkSig`, see
+[Built-in Functions](/docs/language/builtin-functions).
+
+## Declaring a function
+
 ```solidity
-int abs(int a)
+pragma solidcash ^0.13.0;
+
+contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
+    function transfer(sig recipientSig) {
+        require(checkSig(recipientSig, recipient));
+    }
+
+    function timeout(sig senderSig) {
+        require(checkSig(senderSig, sender));
+        require(tx.time >= timeout);
+    }
+}
 ```
 
-Returns the absolute value of argument `a`.
+At its core, the result of an externally callable function is a yes-or-no answer to "can money be sent out of
+this contract?". Covenants let you go further and constrain *where* the money goes. See the
+[Covenants guide](/docs/guides/covenants).
 
-### min()
+### Function arguments
+
+Arguments to externally callable functions are supplied by the spender in the unlocking script. Because the
+spender chooses them, they are **untrusted**: anyone can craft them to probe your contract logic.
+
 ```solidity
-int min(int a, int b)
+function spend(pubkey pk, sig s, int amount) {
+    require(amount > 0);
+    require(checkSig(s, pk));
+}
 ```
 
-Returns the minimum value of arguments `a` and `b`.
-
-### max()
-```solidity
-int max(int a, int b)
-```
-
-Returns the maximum value of arguments `a` and `b`.
-
-### within()
-```solidity
-bool within(int x, int lower, int upper)
-```
-
-Returns `true` if and only if `x >= lower && x < upper`.
-
-## Hashing functions
-### ripemd160()
-```solidity
-bytes20 ripemd160(any x)
-```
-
-Returns the RIPEMD-160 hash of argument `x`.
-
-### sha1()
-```solidity
-bytes20 sha1(any x)
-```
-
-Returns the SHA-1 hash of argument `x`.
-
-### sha256()
-```solidity
-bytes32 sha256(any x)
-```
-
-Returns the SHA-256 hash of argument `x`.
-
-### hash160()
-```solidity
-bytes20 hash160(any x)
-```
-
-Returns the RIPEMD-160 hash of the SHA-256 hash of argument `x`.
-
-### hash256()
-```solidity
-bytes32 hash256(any x)
-```
-
-Returns the double SHA-256 hash of argument `x`.
-
-## Signature checking functions
 :::caution
-All signature checking functions must comply with the [NULLFAIL][bip146] rule which only allows `0x` as an invalid signature — any other invalid signature will **immediately fail** the entire script.
+Type annotations on entry-point arguments are **semantic only**. The length of a bounded type like `bytes20` is
+not automatically contract-enforced; the SDK uses the annotation to encode arguments correctly. If the length
+matters to your logic, check it explicitly with `require(item.length == 20)`.
 :::
-
-#### Nullfail example
-
-The `NULLFAIL` rule means passing an invalid signature to `checkSig()` does not return `false` — it fails the script. To safely return `false` on a signature check, use an empty `0x` signature instead, as shown below:
-
-```solidity
-// this script will immediately fail
-// because userSig will be invalid for either the 'seller' or the 'referee'
-require(checkSig(userSig, seller) || checkSig(userSig, referee));
-
-// instead, use 2 different signatures
-// set the unused signature to 0x so 'checkSig' returns false
-require(checkSig(sellerSig, seller) || checkSig(userSig, referee));
-```
-
-### checkSig()
-```solidity
-bool checkSig(sig s, pubkey pk)
-```
-
-Checks that transaction signature `s` is valid for the current transaction and matches with public key `pk`.
-
-### checkMultiSig()
-```solidity
-bool checkMultiSig(sig[] sigs, pubkey[] pks)
-```
-
-Performs a multi-signature check using a list of transaction signatures and public keys.
 
 :::note
-While this function can be used inside your smart contracts, it is not supported by the TypeScript SDK, so it is recommended not to use it. Instead a `checkMultiSig()` call can be simulated using multiple `checkSig()` calls.
+Function parameters are passed in the reverse order of their declaration. This matters when debugging,
+optimising, or constructing transactions by hand.
 :::
 
-### checkDataSig()
+Function arguments are variables and can be reassigned inside the body.
+
+## Visibility
+
+| Modifier | Meaning |
+| --- | --- |
+| `external` | Callable only from outside, via a function selector |
+| `public` | Callable from outside and from within the contract |
+| `internal` | Callable within the contract and inheriting contracts |
+| `private` | Callable only within the declaring contract |
+
 ```solidity
-bool checkDataSig(datasig s, bytes msg, pubkey pk)
+contract Example(pubkey owner) {
+    function publicFunc(sig s) public { require(checkSig(s, owner)); }
+    function externalFunc(sig s) external { require(checkSig(s, owner)); }
+    function helper(int a) internal returns (int) { return a * 2; }
+    function secret(int a) private returns (int) { return a + 1; }
+}
 ```
 
-Checks that sig `s` is a valid signature for message `msg` and matches with public key `pk`.
+`public` and `external` functions become unlock paths in the redeem script and get a 4-byte selector.
+`internal` and `private` functions are not unlock paths: they are compiled as reusable subroutines (or inlined
+where that is cheaper).
 
-## Other functions
-
-### toPaddedBytes()
-```solidity
-bytes toPaddedBytes(int value, int length)
-```
-
-Pads the integer `value` with zeros to the specified `length`. This is most useful when storing integer values in local state (see [local state guide][local-state-guide]).
-
-:::tip
-Using `bytes20 placeholderPkh = toPaddedBytes(0, 20)` will generate a 20 byte zero-array at runtime, whereas
-`bytes20 placeholderPkh = 0x0000000000000000000000000000000000000000` will actually take 20 bytes of space in your contract.
+:::note
+Selectors are derived with sha256 by default, so they differ from an EVM contract's. The `evmCompat` compiler
+option switches selector derivation to real keccak256.
 :::
 
-[bip146]: https://github.com/bitcoin/bips/blob/master/bip-0146.mediawiki
-[local-state-guide]: /docs/guides/covenants#keeping-local-state-in-nfts
+## Mutability
+
+| Modifier | Meaning |
+| --- | --- |
+| `pure` | Declares no state access |
+| `view` | Declares read-only state access |
+| `payable` | Function can receive BCH; enables `msg.value` |
+
+```solidity
+function compute(int a, int b) internal pure returns (int) {
+    return a + b;
+}
+
+receive() external payable { }
+```
+
+:::caution
+`pure` and `view` are **accepted but not enforced**. Unlike solc, the compiler does not currently reject a
+`view` function that writes state. Treat them as documentation and as porting affordances, not as guarantees.
+:::
+
+`payable` is largely cosmetic: every BCH address can receive value. It is accepted so Solidity sources compile,
+and it enables `msg.value` in the body.
+
+## Return values
+
+Functions can return one value, several values, or named values.
+
+```solidity
+function single(int a) internal returns (int) {
+    return a * 2;
+}
+
+function multiple(int a, int b) internal returns (int, int) {
+    return (a + b, a - b);
+}
+
+function named(int a, int b) internal returns (int total, int diff) {
+    total = a + b;
+    diff = a - b;
+    return;
+}
+```
+
+Named returns are initialised to their type's default and returned by a bare `return;`, which is required.
+Multi-return values are consumed by destructuring:
+
+```solidity
+contract Consumer() {
+    function _stats(int a, int b) internal returns (int total, int diff) {
+        total = a + b;
+        diff = a - b;
+        return;
+    }
+
+    function use() {
+        (int total, int diff) = _stats(10, 4);
+        (, int onlyDiff) = _stats(10, 4);      // skip a slot
+        require(total == 14 && diff == onlyDiff);
+    }
+}
+```
+
+## Calling functions
+
+Internal and private functions are called by name. Arguments may be positional or named:
+
+```solidity
+contract Caller() {
+    function helper(int a) internal returns (int) { return a * 2; }
+    function compute(int a, int b) internal returns (int) { return a - b; }
+
+    function run() {
+        int doubled = helper(21);
+        int result = compute({ b: 1, a: 5 });   // named arguments, any order
+        require(doubled == 42 && result == 4);
+    }
+}
+```
+
+### Overloading
+
+Functions may be overloaded on arity and parameter types:
+
+```solidity
+function _sum(int a, int b) internal returns (int) { return a + b; }
+function _sum(int a, int b, int c) internal returns (int) { return a + b + c; }
+```
+
+:::note
+Named arguments cannot be used with an overloaded function, because the call would be ambiguous.
+:::
+
+### Recursion and loops
+
+Internal functions compile to real subroutines using the BCH 2026 VM's `OP_DEFINE` / `OP_INVOKE`, so they can
+be called from loops and can call each other. The practical limit is the VM's control stack depth.
+
+## Free functions
+
+Functions can be declared at file level, outside any contract. They are importable and behave like internal
+helpers at every call site.
+
+```solidity
+pragma solidcash ^0.13.0;
+
+function double(int v) returns (int) {
+    return v * 2;
+}
+
+contract Calculator() {
+    function run(int a) {
+        require(double(a) == a * 2);
+    }
+}
+```
+
+## Function types
+
+Functions are first-class values. A function type names its parameter types, visibility and returns, and a
+function name in value position produces such a value.
+
+```solidity
+contract Strategy() {
+    function _add(int a, int b) internal returns (int) { return a + b; }
+    function _mul(int a, int b) internal returns (int) { return a * b; }
+
+    function apply(int a, bool useAdd) {
+        function(int, int) internal returns (int) op = useAdd ? _add : _mul;
+        require(op(a, 2) > 0);
+    }
+}
+```
+
+A function value is the target's integer function id, and an indirect call reuses the same `OP_INVOKE`
+dispatch as a direct one. Function pointers can be stored in arrays and state mappings to build dispatch
+tables.
+
+:::note
+Targets must be `internal`, `private` or `public`. External function types have no ABI representation on BCH,
+so entry-point parameters and returns of function type are rejected. Function-pointer state is also rejected in
+`upgrade` contracts and proxy implementation builds, because positional ids would remap.
+:::
+
+## Modifiers
+
+Custom modifiers wrap a function body at the `_` placeholder:
+
+```solidity
+contract Token(pubkey owner) {
+    modifier onlyOwner(sig s) {
+        require(checkSig(s, owner));
+        _;
+    }
+
+    function transfer(bytes20 to, int amount, sig s) onlyOwner(s) {
+        require(amount > 0);
+        require(to.length == 20);
+    }
+}
+```
+
+See [Function Modifiers](/docs/language/modifiers) for the full reference, including the covenant-control
+modifiers `unsafe`, `upgrade`, `selfdestruct`, `split` and `merge`.
+
+## Fallback and receive
+
+Two special functions handle calls that match no selector:
+
+```solidity
+contract Flexible(bytes20 admin) {
+    int counter;
+
+    fallback(bytes input) external {
+        require(input.length >= 0);
+        this.counter += 1;
+    }
+
+    receive() external payable { }
+}
+```
+
+- `fallback`: at most one per contract; receives the raw calldata as `bytes`.
+- `receive`: at most one per contract; must be `external payable` and take no parameters.
+- Both support `virtual` and `override`.
+
+An empty `receive()` or `fallback()` body synthesises a state-preserving no-op spend path, with a warning.
+
+## Constructors
+
+Non-stateful contracts take their immutable parameters on the contract definition itself. Stateful contracts
+can additionally define an explicit `constructor()` body to initialise state at deployment:
+
+```solidity
+contract Token(pubkey admin) {
+    int totalSupply;
+
+    constructor() {
+        this.totalSupply = 1_000_000;
+    }
+}
+```
+
+:::caution
+Mappings and token containers cannot be accessed in the constructor: no UTXO commitment exists yet at
+deployment time.
+:::
+
+## See also
+
+- [Built-in Functions](/docs/language/builtin-functions) - the global function catalogue
+- [Function Modifiers](/docs/language/modifiers) - visibility, mutability and covenant control
+- [Libraries & Using-For](/docs/language/libraries) - sharing functions across contracts
+- [Inheritance](/docs/language/inheritance) - `virtual`, `override`, `super` and C3 linearization

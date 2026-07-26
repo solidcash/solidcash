@@ -247,6 +247,107 @@ Creates new OP_RETURN locking bytecode with `chunks` as its OP_RETURN data.
 `LockingBytecodeNullData` outputs are provably unspendable, so any BCH sent there would be burned. For these outputs no dust-minimum is enforced so often `LockingBytecodeNullData` outputs have 0 BCH on them.
 :::
 
+## Message and origin variables
+
+These are the Solidity-compatible caller globals, reinterpreted for the UTXO model.
+
+| Global | Type | Description |
+| --- | --- | --- |
+| `msg.sender` | `address` | Locking bytecode of the calling contract, falling back to `tx.origin` for a direct spend |
+| `msg.value` | `int` | Net satoshi change in the contract's satoshi container (sum of matching outputs minus sum of matching inputs) |
+| `msg.sig` | `bytes4` | The 4-byte selector of the current function (a compile-time constant) |
+| `msg.data` | `bytes` | The unlocking bytecode, with the redeem script stripped |
+| `tx.origin` | `address` | P2PKH locking bytecode of the first non-token input |
+
+:::caution
+On Bitcoin Cash, sender identification is weaker than on an account-based chain: `msg.sender` is derived from
+the co-spent input set rather than an authenticated call frame. Prefer `checkSig` / `checkMultiSig` for
+authentication and authorization. The compiler warns on every use of `msg.sender` and `tx.origin`.
+:::
+
+## Block properties
+
+Bitcoin Cash Script has no opcode for block metadata, so `block.*` reads are served by a **per-contract,
+master-bound oracle register**: the values are committed into the contract's state and refreshed by an update
+function the compiler synthesizes. Reads themselves are cheap.
+
+| Global | Type | Source | Notes |
+| --- | --- | --- | --- |
+| `block.number` | `uint32` | oracle (native floor) | A `>=` comparison lowers to a native `nLocktime` floor |
+| `block.timestamp` | `uint32` | oracle (native floor) | Matches the BCH header `nTime`; beats the ~1h median-time-past lag |
+| `block.chainid` | `bytes1` | baked constant | From the `chainId` compiler option; no oracle needed |
+| `block.difficulty` | `uint32` | oracle | The raw `nBits` value. **Not randomness** |
+| `block.coinbase` | `address` | oracle | Full locking bytecode of coinbase output 0 |
+| `block.basefee` | `uint32` | derived | `Floor(1000 * block.totalFees / block.size)`, i.e. the block's realized fee rate in sat/KB |
+| `block.size` | `uint32` | oracle | Block size in bytes. A BCH-native extension |
+| `block.totalFees` | `uint32` | oracle | Sum of transaction fees in satoshis. A BCH-native extension |
+| `block.gaslimit` | `uint` | fixed shim | Always `1000000`. Compiler-warned |
+| `block.blobbasefee` | `uint32` | alias | Aliases `block.basefee`; BCH has no EIP-4844 blobs. Compiler-warned |
+| `block.prevrandao` | `uint256` | transaction-local shim | `abs(int(sha256(input[0] prevout txid)))`. Compiler-warned |
+| `tx.gasprice` | `int` | derived | The current transaction's realized fee rate in sat/KB |
+
+:::caution
+`block.prevrandao` is **not secure randomness**. The transaction builder chooses which UTXO sits at input 0,
+so it fully controls the value. Use commit-reveal or a `checkDataSig` oracle instead.
+
+`block.gaslimit` and `gasleft()` are meaningless constants that exist so ported gas-budget checks keep
+running. Do not branch on their values.
+:::
+
+#### Example
+```solidity
+contract TimeGated() {
+    int lastSeen;
+
+    function act() public {
+        require(block.number > 0);
+        require(block.timestamp > 0);
+        this.lastSeen = block.timestamp;
+    }
+}
+```
+
+:::note
+Non-oracle alternatives for time and height are usually preferable when they suffice:
+`require(tx.time >= ...)` (absolute, `OP_CHECKLOCKTIMEVERIFY`) and `require(this.age >= ...)` (relative,
+`OP_CHECKSEQUENCEVERIFY`). They need no oracle state and no co-spend.
+:::
+
+### blockhash and blobhash
+
+```solidity
+bytes32 blockhash(int blockNumber)
+bytes32 blobhash(int index)
+```
+
+`blockhash(n)` reads a per-pair `(n -> hash)` oracle. `blobhash(i)` always returns zero: Bitcoin Cash has no
+EIP-4844 blobs, so it is a porting shim.
+
+## ABI encoding and decoding
+
+| Expression | Description |
+| --- | --- |
+| `abi.encode(...)` | ABI-encode the arguments |
+| `abi.encodePacked(...)` | Encode without padding |
+| `abi.encodeWithSelector(selector, ...)` | Encode with an explicit 4-byte selector prefix |
+| `abi.encodeWithSignature("f(uint)", ...)` | Encode with a selector derived from a signature string |
+| `abi.encodeCall(IFoo.bar, (a, b))` | Type-safe encode against an interface function |
+| `abi.decode(data, (T1, T2))` | Decode into the given types |
+| `abi.decodeAt(data, (T), offset)` | Decode at a byte offset |
+| `bytes.concat(...)` | Concatenate byte values |
+| `string.concat(...)` | Concatenate strings |
+
+:::caution
+`abi.encodeWithSignature` and `abi.encodeCall` derive their selector with **sha256**, not Ethereum's
+`keccak256`, so encoded calldata is **not** cross-VM compatible by default. Use them for
+SolidCash-to-SolidCash calls, or enable the `evmCompat` compiler option for real keccak256 selectors.
+:::
+
+## Type introspection
+
+`type(T).member` exposes compile-time information. See
+[Types & Operators](/docs/language/types#type-introspection) for the full table.
+
 ## Globally available units
 
 An integer literal can take a suffix of either monetary or temporary units to add semantic value to these integers and to simplify arithmetic. When these units are used, the underlying integer is automatically multiplied by the value of the unit.
@@ -262,6 +363,24 @@ require(1 finney == 10);
 require(1 bits == 100);
 require(1 bitcoin == 1e8);
 ```
+
+### Ethereum Units
+
+The Solidity units `wei`, `gwei` and `ether` are accepted so ported sources compile, with their standard
+values (`1 ether == 1e18`, `1 gwei == 1e9`, `1 wei == 1`).
+
+#### Example
+```solidity
+require(1 wei == 1);
+require(1 gwei == 1000000000);
+require(1 ether == 1000000000000000000);
+```
+
+:::caution
+These denominate **ether**, not Bitcoin Cash. Bitcoin Cash is denominated in satoshis, where
+`1 bitcoin == 1e8 sats`, so an `ether`-denominated amount ported unchanged from Solidity will be off by ten
+orders of magnitude. Use `sats` / `bitcoin` for BCH amounts.
+:::
 
 ### Time Units
 

@@ -55,7 +55,7 @@ contract Token() {
     mapping(bytes20 => int) balances;
 
     function transfer(bytes20 to, int amount) {
-        bytes20 sender = hash160(msg.sender);
+        bytes20 sender = hash160(bytes(msg.sender));
         require(this.balances[sender] >= amount);
 
         this.balances[sender] = this.balances[sender] - amount;
@@ -124,11 +124,19 @@ Errors are included in the contract's ABI, allowing callers to decode failure re
 Use `revert` to abort execution with an error:
 
 ```solidity
-function transfer(bytes20 to, int amount) {
-    if (this.balances[hash160(msg.sender)] < amount) {
-        revert InsufficientBalance(amount, this.balances[hash160(msg.sender)]);
+error InsufficientBalance(int requested, int available);
+
+contract Ledger() {
+    mapping(bytes20 => int) balances;
+
+    function transfer(bytes20 to, int amount) public {
+        bytes20 sender = hash160(bytes(msg.sender));
+        if (this.balances[sender] < amount) {
+            revert InsufficientBalance(amount, this.balances[sender]);
+        }
+        this.balances[sender] -= amount;
+        this.balances[to] += amount;
     }
-    // ...
 }
 ```
 

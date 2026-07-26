@@ -38,7 +38,7 @@ contract Config() {
     bytes20 immutable deployer;                   // set in constructor, read-only after
 
     constructor() {
-        this.deployer = hash160(msg.sender);
+        this.deployer = hash160(bytes(msg.sender));
     }
 }
 ```
@@ -53,7 +53,7 @@ State variables are accessed and modified using the `this.` prefix.
 ```solidity
 function increment() {
     this.counter = this.counter + 1;
-    this.owner = hash160(msg.sender);
+    this.owner = hash160(bytes(msg.sender));
 }
 ```
 
@@ -127,38 +127,47 @@ This removes the entry NFT for the given key.
 
 ## Mapping Iteration
 
-SolidCash can iterate over mappings - something **impossible in Solidity**. Three iteration modes are supported:
-
-### Iterate Values
+As in Solidity, a mapping is **not iterable** by default. Declaring it `enumerable` opts into iteration,
+which SolidCash supports in three modes:
 
 ```solidity
-function totalBalance() returns (int) {
-    int sum = 0;
-    for (int balance of this.balances) {
-        sum = sum + balance;
-    }
-    return sum;
-}
+enumerable mapping(bytes20 => int) public balances;
 ```
 
-### Iterate Keys
+:::note
+Iterating a plain (non-`enumerable`) mapping is a compile error that names the fix.
+:::
+
 
 ```solidity
-function countHolders() returns (int) {
-    int count = 0;
-    for (bytes20 holder in this.balances) {
-        count = count + 1;
+contract Ledger() {
+    enumerable mapping(bytes20 => int) public balances;
+    int total;
+
+    // Iterate values
+    function totalBalance() public {
+        int sum = 0;
+        for (int balance of this.balances) {
+            sum = sum + balance;
+        }
+        this.total = sum;
     }
-    return count;
-}
-```
 
-### Iterate Entries (Key-Value Pairs)
+    // Iterate keys
+    function countHolders() public {
+        int count = 0;
+        for (bytes20 holder in this.balances) {
+            count = count + 1;
+        }
+        this.total = count;
+    }
 
-```solidity
-function audit() {
-    for (bytes20 holder, int balance of this.balances.entries) {
-        require(balance >= 0);
+    // Iterate entries (key-value pairs)
+    function audit() public {
+        for (bytes20 holder, int balance of this.balances.entries) {
+            require(balance >= 0);
+        }
+        this.total += 1;
     }
 }
 ```
@@ -207,25 +216,26 @@ Packed arrays are only supported for types with a known fixed byte width (e.g., 
 
 ## Token Containers
 
-Token containers manage CashToken fungible tokens (FTs) and NFTs held by the contract.
+Token containers manage CashToken fungible tokens (FTs) and NFTs held by the contract. They are only
+available on stateful contracts, so the contract needs at least one state variable.
 
 ```solidity
 contract Vault() {
-    function checkBalance(bytes32 tokenCategory) returns (int) {
-        return this.tokens[tokenCategory].tokenAmount;
-    }
+    int withdrawals;
 
-    function withdrawFT(bytes32 tokenCategory, bytes20 recipient, int amount) {
+    function withdrawFT(bytes32 tokenCategory, bytes20 recipient, int amount) public {
         require(this.tokens[tokenCategory].tokenAmount >= amount);
         this.tokens[tokenCategory].transfer(
             new LockingBytecodeP2PKH(recipient), amount
         );
+        this.withdrawals += 1;
     }
 
-    function withdrawNFT(bytes32 nftCategory, bytes20 recipient, bytes commitment) {
+    function withdrawNFT(bytes32 nftCategory, bytes20 recipient, bytes commitment) public {
         this.tokens[nftCategory].transferNft(
-            new LockingBytecodeP2PKH(recipient), commitment
+            new LockingBytecodeP2PKH(recipient), commitment, 0
         );
+        this.withdrawals += 1;
     }
 }
 ```
@@ -243,7 +253,7 @@ contract Vault() {
 | Method | Description |
 |--------|-------------|
 | `.transfer(lockingBytecode, amount)` | Send fungible tokens to a recipient |
-| `.transferNft(lockingBytecode, commitment)` | Send an NFT to a recipient |
+| `.transferNft(lockingBytecode, commitment, capability)` | Send an NFT to a recipient. `capability` is `0` (none), `1` (mutable) or `2` (minting) |
 
 :::note
 Token container keys (`bytes32 tokenCategory`) must be function parameters, not arbitrary expressions. This ensures the covenant can verify the category at compile time.

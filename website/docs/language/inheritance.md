@@ -72,6 +72,10 @@ Inherited functions, modifiers, state variables, and types are all available in 
 ### Multiple Inheritance
 
 ```solidity
+contract Ownable(pubkey owner) {
+    modifier onlyOwner(sig s) { require(checkSig(s, owner)); _; }
+}
+
 contract Pausable() {
     bool paused;
     modifier whenNotPaused() { require(!this.paused); _; }
@@ -104,13 +108,22 @@ contract Child() is Base {
 }
 ```
 
-Both `virtual` and `override` can be combined to allow further overriding down the chain:
+`virtual` is enforced: overriding a function the base did not mark `virtual` is a compile error.
+
+Both keywords can be combined to allow further overriding down the chain. An intermediate contract must mark
+its own implementation `virtual` as well as `override`:
 
 ```solidity
+contract Base() {
+    function getValue() virtual returns (int) { return 1; }
+}
+
+contract Child() is Base {
+    function getValue() virtual override returns (int) { return 2; }
+}
+
 contract GrandChild() is Child {
-    function getValue() override returns (int) {
-        return 3;
-    }
+    function getValue() override returns (int) { return 3; }
 }
 ```
 
@@ -157,18 +170,24 @@ abstract contract Pausable() {
 }
 
 contract PausableToken(pubkey admin) is Pausable {
-    function pause() internal {
+    function pause() internal override {
         this.paused = true;
     }
 
-    function unpause() internal {
+    function unpause() internal override {
         this.paused = false;
+    }
+
+    function act(sig s) public {
+        require(checkSig(s, admin));
+        pause();
     }
 }
 ```
 
 - Abstract contracts cannot be compiled to artifacts directly.
 - All abstract functions must be implemented in any non-abstract child.
+- An implementing child must mark the function `override`. Abstract functions are implicitly `virtual`.
 
 ## Interfaces
 
@@ -178,8 +197,8 @@ Interfaces define a contract's public API without implementation. They are used 
 interface IERC20 {
     event Transfer(bytes20 indexed from, bytes20 to, int amount);
 
-    int public totalSupply;
-    mapping(bytes20 => int) public balances;
+    public int totalSupply;
+    public mapping(bytes20 => int) balances;
 
     function transfer(bytes20 to, int amount) external;
     function balanceOf(bytes20 account) external returns (int);
@@ -189,7 +208,7 @@ interface IERC20 {
 ### Interface Features
 
 - Function signatures (no body)
-- State variable declarations (visibility markers only)
+- State variable declarations, with the **visibility keyword first** (`public int counter;`)
 - Mapping declarations
 - Event declarations
 - Enum and struct definitions
@@ -198,10 +217,22 @@ interface IERC20 {
 ### Interface ID (EIP-165 Style)
 
 ```solidity
-bytes4 id = type(IERC20).interfaceId;
-// XOR of all 4-byte function selectors - EIP-165 style (bytes4, like Solidity).
-// Note: SolidCash selectors are sha256-based, not keccak256, so the value differs from an EVM contract.
+interface IERC20 {
+    function transfer(bytes20 to, int amount) external;
+}
+
+contract Probe() {
+    function check() {
+        // XOR of all 4-byte function selectors - EIP-165 style (bytes4, like Solidity).
+        bytes4 id = type(IERC20).interfaceId;
+        require(id.length == 4);
+    }
+}
 ```
+
+:::note
+SolidCash selectors are sha256-based, not keccak256, so the value differs from an EVM contract's.
+:::
 
 ### External State Reads
 
@@ -209,17 +240,26 @@ Interfaces enable reading another contract's state:
 
 ```solidity
 interface ICounter {
-    int public counter;
+    public int counter;
 }
 
 contract Reader(bytes32 counterCategory) {
-    function readCounter() returns (int) {
-        return ICounter(counterCategory).counter;
+    int lastSeen;
+
+    function readCounter() public {
+        this.lastSeen = ICounter(counterCategory).counter;
     }
 }
 ```
 
-See [Advanced Features](/docs/language/advanced-features) for more on external calls.
+:::note
+The reading contract must be **stateful** (it needs at least one state variable). The read is compiled as a
+covenant that co-spends the target's state UTXOs, which requires a block layout to place them in.
+:::
+
+See [Imports & Interfaces](/docs/language/imports-interfaces) and
+[Advanced Features](/docs/language/advanced-features#external-contract-interaction) for more on external
+reads and calls.
 
 ## Libraries
 

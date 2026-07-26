@@ -69,6 +69,29 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
     await contract.check(7n).send();
   });
 
+  it('preserves the owner-stable physical input index for every logical row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract StableOwnerContextBatch() {
+        bigint calls;
+        function inspect(bigint expectedInput) public {
+          require(this.activeInputIndex == expectedInput);
+          this.calls = this.calls + 1;
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.batch([
+      { function: 'inspect', args: [0n] },
+      { function: 'inspect', args: [0n] },
+    ]).send();
+    expect((await contract.getState()).calls).toBe(2n);
+  });
+
   it('rolls back every prior row when a later row fails', async () => {
     const contract = await deploy();
     await expect(contract.batch([

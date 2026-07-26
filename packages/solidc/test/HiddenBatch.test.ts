@@ -74,6 +74,34 @@ describe('Release 4 compiler-hidden local batch', () => {
     });
   });
 
+  it('admits the owner-stable input index while rejecting active bytecode and tx.origin', () => {
+    const artifact = compileString(`
+      contract StableOwnerContext() {
+        function stable(int expectedInput) public {
+          require(this.activeInputIndex == expectedInput);
+        }
+        function bytecodeBound(bytes expectedBytecode) public {
+          require(this.activeBytecode == expectedBytecode);
+        }
+        function originBound(address expected) public {
+          require(tx.origin == expected);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'stable'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bytecodeBound'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'direct-versus-batch-introspection-divergence',
+      });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'originBound'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'direct-versus-batch-introspection-divergence',
+      });
+  });
+
   it('authenticates forwarded and compiler-evaluated graph call arguments', () => {
     const exact = compileString(`
       interface IB { function ping(int n); }

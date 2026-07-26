@@ -60,7 +60,7 @@ Evidence labels:
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
 | Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
 | Existing pinned one-hop delegatecall semantics | MISSING from transcript mode | Transcript derivation rejects call modes. |
-| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, and scalar `outState` at final owner settlement are VM-proven. Collection/chunk `outState` and the remaining introspection table remain. |
+| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, physical `activeInputIndex`, and scalar `outState` at final owner settlement are VM-proven. `activeBytecode` and `tx.origin` remain rejected because measurement confirms route divergence; collection/chunk `outState` and the remaining transaction table remain. |
 
 ## 4. Compiler analysis and automatic derivation
 
@@ -1104,3 +1104,15 @@ variants. Their exact decoded values are asserted, and hostile producer outputs 
 either struct field while the canonical transcript remains unchanged; every mutation fails in the
 BCH-2026 VM. Together with the existing owner-local heterogeneous-result fixture, the admitted
 typed return encodings are no longer restricted to one common scalar schema.
+
+### 2026-07-26: Release E — measured owner introspection boundary
+
+`this.activeInputIndex` is invariant across logical rows because the participant still executes one
+physical input. It is now admitted by SCB1, and a two-row BCH-2026 fixture requires the physical
+index in both handler executions while settling state once.
+
+`this.activeBytecode` is deliberately not grouped with it. Measurement showed `OP_ACTIVEBYTECODE`
+inside the invoked route observes the active invoked body rather than the direct wrapper's whole
+execution context, so admitting it would create direct-versus-batch divergence. The compiler
+continues to reject both active-bytecode and `tx.origin` handlers. This is a measured fail-closed
+boundary, not an assumed equivalence.

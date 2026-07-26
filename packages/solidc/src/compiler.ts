@@ -235,6 +235,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     let routeUsesMsgData = false;
     let routeUsesMsgSig = false;
     let routeUsesMsgValue = false;
+    let routeUsesStableOwnerIntrospection = false;
     let routeUsesOtherIntrospection = false;
     let signatureCheck = false;
     let statefulExternalCall = false;
@@ -253,6 +254,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             else if (node.operator === NullaryOperator.MSG_DATA) routeUsesMsgData = true;
             else if (node.operator === NullaryOperator.MSG_SIG) routeUsesMsgSig = true;
             else if (node.operator === NullaryOperator.MSG_VALUE) routeUsesMsgValue = true;
+            else if (node.operator === NullaryOperator.INPUT_INDEX) {
+              routeUsesStableOwnerIntrospection = true;
+            }
             else routeUsesOtherIntrospection = true;
           }
           if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
@@ -460,11 +464,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
-      && !((graphControllerLbc !== undefined
-          && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue)
-          && !routeUsesOtherIntrospection)
-        || (routeUsesMsgValue && !routeUsesMsgSender && !routeUsesMsgData
-          && !routeUsesMsgSig && !routeUsesOtherIntrospection)
+      && !((!routeUsesOtherIntrospection
+          && (!(routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)
+            || graphControllerLbc !== undefined)
+          && (!routeUsesMsgValue || graphControllerLbc !== undefined
+            || (!routeUsesMsgSender && !routeUsesMsgData && !routeUsesMsgSig))
+          && (routeUsesStableOwnerIntrospection || routeUsesMsgSender || routeUsesMsgData
+            || routeUsesMsgSig || routeUsesMsgValue))
         || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {

@@ -150,9 +150,9 @@ no-option form parses as a namespaced function call; the `{value:}`/`{gas:}` for
 The `delegate` modifier marks a function on the implementation (delegate) contract that runs against a
 proxy's state. The proxy holds the state and a minting NFT; the delegate holds the logic.
 
-- The proxy's master input index is passed as `_proxyMasterIndex`, saved to the altstack at function entry.
-  `emitMasterInputIndex` (GenerateTargetTraversal ~10261) reads it back with `FROMALTSTACK DUP TOALTSTACK`
-  in delegate mode (so all ~20 state-access ops target the proxy's index), versus `OP_INPUTINDEX` otherwise.
+- The proxy's master input index is passed as `_proxyMasterIndex`. The delegate covenant validates it against
+  the relocatable physical relation `delegateInputIndex - (1 + dataNftCount)`; state access derives the same
+  index directly, avoiding a fragile long-lived deep-stack or altstack value.
   The delegate's own self-preservation uses the real `OP_INPUTINDEX`.
 - `emitDelegateSelfPreservation` verifies the delegate's own locking bytecode, value, category, capability,
   commitment, and FT amount are preserved (the delegate is co-spent but must survive unchanged).

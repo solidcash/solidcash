@@ -277,6 +277,34 @@ contract GraphRawTarget() {
     return value;
   }
 }`;
+const GRAPH_DELEGATE_PROXY = `pragma solidcash >=0.8.0;
+contract GraphDelegateProxy(address impl) {
+  bigint counter;
+  function run(bytes input) public {
+    impl.delegatecall(input);
+    require(input.length > 0);
+  }
+}`;
+const GRAPH_DELEGATE_IMPL = `pragma solidcash >=0.8.0;
+contract GraphDelegateImpl() {
+  bigint counter;
+  function ping() delegate {
+    this.counter = this.counter + 1;
+    require(true);
+  }
+  function pong() delegate {
+    this.counter = this.counter + 2;
+    require(true);
+  }
+}`;
+const GRAPH_DELEGATE_CALLER = `pragma solidcash >=0.8.0;
+interface IGraphDelegateProxy { function run(bytes input); }
+contract GraphDelegateCaller(address target) {
+  function start(bytes input) public {
+    IGraphDelegateProxy(target).run(input);
+    require(true);
+  }
+}`;
 
 async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>) {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -1055,6 +1083,226 @@ async function buildRawCallGraph(tamperResult = false, staticCall = false) {
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10_000n });
   return { provider, transaction: raw(tx) };
+}
+
+async function buildDelegateGraph(wrongSelector = false, tamperState = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const implementationArtifact = compileString(GRAPH_DELEGATE_IMPL, options);
+  const implementationBase = new Contract(implementationArtifact, [], { provider });
+  const implementationSetup = await setupStatefulUtxos(
+    provider, implementationBase, implementationArtifact.stateLayout!, { counter: 0n },
+  );
+  const implementation = implementationBase.withCategory(hexToBin(implementationSetup.categoryId));
+  const proxyArtifact = compileString(GRAPH_DELEGATE_PROXY, options);
+  const proxyBase = new Contract(proxyArtifact, [implementation.lockingBytecode], { provider });
+  const proxySetup = await setupStatefulUtxos(
+    provider, proxyBase, proxyArtifact.stateLayout!, { counter: 0n },
+  );
+  const proxy = proxyBase.withCategory(hexToBin(proxySetup.categoryId));
+  const selectedFunction = wrongSelector ? 'pong' : 'ping';
+  const committedSelector = implementationArtifact.abi.find((fn) => fn.name === 'ping')!.selector!;
+  const payload = hexToBin(committedSelector);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: proxyArtifact, lockingBytecode: proxy.lockingBytecode },
+    function: 'run',
+    args: [payload],
+    targets: {},
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const proof = randomUtxo({ satoshis: 1000n });
+  const fee = randomUtxo({ satoshis: 50_000n });
+  await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const route = proxy.createCompilerRouteUnlocker(
+    proxyArtifact.hiddenBatch!.route, hexToBin(proxyArtifact.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    proxySetup.masterUtxo,
+    route(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    proxySetup.dataNftUtxos[0],
+    createDataNftUnlocker(proxy, layout.participantInputs[0], proxySetup.categoryId),
+  );
+  tx.addInput(
+    implementationSetup.masterUtxo,
+    (implementation.unlock as any)[selectedFunction](0n),
+  );
+  tx.addInput(
+    proof,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: proxy.tokenAddress, amount: proxySetup.masterUtxo.satoshis,
+    token: {
+      category: proxySetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(proxy, proxySetup.categoryId),
+    amount: proxySetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: proxySetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(
+          proxyArtifact.stateLayout!, { counter: tamperState ? 2n : 1n },
+        )[0],
+      },
+    },
+  });
+  tx.addOutput({
+    to: implementation.tokenAddress, amount: implementationSetup.masterUtxo.satoshis,
+    token: {
+      category: implementationSetup.categoryId,
+      amount: 0n,
+      nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx), proxyArtifact };
+}
+
+async function buildRelocatedDelegateGraph(wrongProxyIndex = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const implementationArtifact = compileString(GRAPH_DELEGATE_IMPL, options);
+  const implementationBase = new Contract(implementationArtifact, [], { provider });
+  const implementationSetup = await setupStatefulUtxos(
+    provider, implementationBase, implementationArtifact.stateLayout!, { counter: 0n },
+  );
+  const implementation = implementationBase.withCategory(hexToBin(implementationSetup.categoryId));
+  const proxyArtifact = compileString(GRAPH_DELEGATE_PROXY, options);
+  const proxyBase = new Contract(proxyArtifact, [implementation.lockingBytecode], { provider });
+  const proxySetup = await setupStatefulUtxos(
+    provider, proxyBase, proxyArtifact.stateLayout!, { counter: 0n },
+  );
+  const proxy = proxyBase.withCategory(hexToBin(proxySetup.categoryId));
+  const callerArtifact = compileString(GRAPH_DELEGATE_CALLER, options);
+  const callerBase = new Contract(callerArtifact, [proxy.lockingBytecode], { provider });
+  const callerSetup = await setupStatefulUtxos(
+    provider, callerBase, callerArtifact.stateLayout!, {},
+  );
+  const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
+  const payload = hexToBin(implementationArtifact.abi.find((fn) => fn.name === 'ping')!.selector!);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
+    function: 'start',
+    args: [payload],
+    targets: {
+      IGraphDelegateProxy: { artifact: proxyArtifact, lockingBytecode: proxy.lockingBytecode },
+    },
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const proofs = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50_000n });
+  for (const proof of proofs) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const callerRoute = caller.createCompilerRouteUnlocker(
+    callerArtifact.hiddenBatch!.route, hexToBin(callerArtifact.hiddenBatch!.selector),
+  );
+  const proxyRoute = proxy.createCompilerRouteUnlocker(
+    proxyArtifact.hiddenBatch!.route, hexToBin(proxyArtifact.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    callerSetup.masterUtxo,
+    callerRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    proxySetup.masterUtxo,
+    proxyRoute(...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    proxySetup.dataNftUtxos[0],
+    createDataNftUnlocker(proxy, layout.participantInputs[1], proxySetup.categoryId),
+  );
+  tx.addInput(
+    implementationSetup.masterUtxo,
+    implementation.unlock.ping(wrongProxyIndex ? 0n : 1n),
+  );
+  proofs.forEach((proof, participant) => tx.addInput(
+    proof,
+    projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    ),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: caller.tokenAddress, amount: callerSetup.masterUtxo.satoshis,
+    token: {
+      category: callerSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({
+    to: proxy.tokenAddress, amount: proxySetup.masterUtxo.satoshis,
+    token: {
+      category: proxySetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(proxy, proxySetup.categoryId),
+    amount: proxySetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: proxySetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(proxyArtifact.stateLayout!, { counter: 1n })[0],
+      },
+    },
+  });
+  tx.addOutput({
+    to: implementation.tokenAddress, amount: implementationSetup.masterUtxo.satoshis,
+    token: {
+      category: implementationSetup.categoryId,
+      amount: 0n,
+      nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx), layout };
 }
 
 const packedResult = (value: bigint): Uint8Array =>
@@ -2659,6 +2907,34 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the authenticated result of a low-level staticcall edge', async () => {
     const { provider, transaction } = await buildRawCallGraph(true, true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('executes a pinned delegate covenant in the proxy balanced block', async () => {
+    const { provider, transaction, proxyArtifact } = await buildDelegateGraph();
+    expect(proxyArtifact.hiddenBatch!.route.blockLayout!.slots)
+      .toContainEqual({ kind: 'lowLevelCall', offset: 2, slotIndex: 0 });
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a delegate input selecting calldata other than the transcript-bound payload', async () => {
+    const { provider, transaction } = await buildDelegateGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects a forged proxy post-state computed outside the delegate covenant', async () => {
+    const { provider, transaction } = await buildDelegateGraph(false, true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('relocates a delegate proxy behind an independently compiled caller block', async () => {
+    const { provider, transaction, layout } = await buildRelocatedDelegateGraph();
+    expect(layout.participantInputs).toEqual([0, 1]);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a delegate witness pointing outside its adjacent proxy block', async () => {
+    const { provider, transaction } = await buildRelocatedDelegateGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

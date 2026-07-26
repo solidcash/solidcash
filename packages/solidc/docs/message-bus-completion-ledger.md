@@ -59,7 +59,7 @@ Evidence labels:
 | Result-dependent continuation and transitive result chains | PROVEN for the admitted scalar class | The compiled `A.plusOne -> B.twice` fixture consumes authenticated `4`, resumes A, and authenticates A's derived `5`. General native worklist derivation still rejects returns. |
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
 | Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
-| Existing pinned one-hop delegatecall semantics | MISSING from transcript mode | Transcript derivation rejects call modes. |
+| Existing pinned one-hop delegatecall semantics | PROVEN for one block-local delegate | The proxy SCB1 block reserves the real implementation covenant after its master/data region. The transcript-bound proxy handler pins implementation LBC and exact calldata; the delegate binds its proxy-index witness to the adjacent relocatable block, mutates proxy state, and preserves itself. BCH-2026 tests cover base zero and non-zero placement, wrong selector, wrong proxy index, and forged proxy post-state. Nested/general delegate graphs remain outside this one-hop requirement. |
 | Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, physical `activeInputIndex`, scalar `outState` at final owner settlement, and the complete physical transaction input/output table are BCH-2026 VM-proven. The table fixture pins version, locktime, lengths, values, locking and unlocking bytecode, prevout hash/index, sequence, token category/commitment/amount, and output equivalents; a committed prevout substitution rejects. `activeBytecode` and `tx.origin` remain rejected because measurement confirms route divergence; collection/chunk `outState` remains. |
 
 ## 4. Compiler analysis and automatic derivation
@@ -1255,5 +1255,26 @@ compiler-authored edge mode directly; this is required for raw calls because the
 child function name differs from the caller's `__raw__` ABI callsite name.
 
 This proof covers singular, option-free `address.call(bytes)` and `address.staticcall(bytes)`.
-Low-level call options, `delegatecall`, and other dynamic/iterated shapes remain fail-closed and
-keep the ledger row PARTIAL.
+Low-level call options, general delegate-participant edges, and other dynamic/iterated shapes
+remain fail-closed and keep the ledger row PARTIAL; the pinned block-local one-hop delegate class
+is proven below.
+
+### 2026-07-26: Release E — relocatable one-hop delegate blocks
+
+The existing pinned delegate mechanism now composes inside a transcript participant without
+misrepresenting the implementation as an SCB1 participant. The compiler reserves the
+implementation master as a balanced `lowLevelCall` slot immediately after the proxy master/data
+region. The proxy row commits `impl` and calldata, then verifies the actual slot's locking
+bytecode and unlocking prefix. The implementation executes its ordinary `delegate` function,
+updates the proxy data NFT, and preserves its own master.
+
+Delegate state addressing is no longer hard-coded to transaction input zero. The implementation
+derives the proxy master as `activeInputIndex - (1 + dataNftCount)` and requires the explicit
+proxy-index ABI witness to equal that physical relation. This keeps blocks relocatable without a
+deep-stack index whose position changes during state codegen.
+
+BCH-2026 fixtures execute the proxy at base zero and behind an independently compiled caller
+block. They reject a different delegate selector, a proxy-index witness outside the adjacent
+block, and a forged proxy post-state. The existing 26-test direct delegatecall suite remains
+green. This closes the specified pinned one-hop class; nested delegatecalls and arbitrary
+delegate graphs remain separate unsupported shapes.

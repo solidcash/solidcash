@@ -2607,12 +2607,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // Stateful delegatecall composition places the proxy block first, so its
-      // master is input/output 0. The synthetic argument remains an explicit
-      // witness and is validated above, but must not be carried through large
-      // inlined bodies: covenant helpers use transient stack items which make
-      // a long-lived PICK depth unsafe.
-      this.emit(Op.OP_0, loc);
+      // The delegate slot immediately follows the proxy's master and data-NFT
+      // region. Bind the explicit ABI witness to that relocatable physical
+      // relation, avoiding a long-lived deep-stack PICK during the body.
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
+      this.emit(Op.OP_SUB, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
 
@@ -11826,9 +11826,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.currentFunction.pinsDelegateCoSpend) {
         // (a) IDENTITY: the delegate at delegateInputIndex is the contract at impl.
         this.visit(node.targetExpression);           // [impl]
-        const idx = this.getStackIndex('__internal__delegateInputIndex');
-        this.emit(encodeInt(BigInt(idx)), locationData);
-        this.emit(Op.OP_PICK, locationData);         // [impl, delegateIdx]
+        if (this.currentFunction.graphEmissionHandler) {
+          const nftCount = this.currentFunction.requiredNftIndices?.length
+            ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
+          this.emitMasterInputIndex(locationData);
+          this.emit(encodeInt(BigInt(1 + nftCount + node.callIndex)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        } else {
+          const idx = this.getStackIndex('__internal__delegateInputIndex');
+          this.emit(encodeInt(BigInt(idx)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        }                                           // [impl, delegateIdx]
         this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
         this.emit(Op.OP_EQUALVERIFY, locationData);  // []
         this.popFromStack();                         // untrack impl
@@ -11837,9 +11845,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // co-spent-but-wrong delegate FUNCTION can't slip past the identity pin. Mirrors emitLowLevelCall-
         // Verification: skip the push-opcode byte, then compare the next |input| bytes against `input`.
         this.visit(node.data);                       // [input]
-        const idx2 = this.getStackIndex('__internal__delegateInputIndex');
-        this.emit(encodeInt(BigInt(idx2)), locationData);
-        this.emit(Op.OP_PICK, locationData);         // [input, delegateIdx]
+        if (this.currentFunction.graphEmissionHandler) {
+          const nftCount = this.currentFunction.requiredNftIndices?.length
+            ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
+          this.emitMasterInputIndex(locationData);
+          this.emit(encodeInt(BigInt(1 + nftCount + node.callIndex)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        } else {
+          const idx = this.getStackIndex('__internal__delegateInputIndex');
+          this.emit(encodeInt(BigInt(idx)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        }                                           // [input, delegateIdx]
         this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
         this.emit(encodeInt(1n), locationData);
         this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
@@ -18762,12 +18778,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Emit the master input index for state access paths.
-   * Delegatecall transactions place the proxy state block at input/output 0.
-   * In normal functions, uses OP_INPUTINDEX.
+   * Delegate functions use their already-authenticated proxy-master parameter;
+   * normal functions use OP_INPUTINDEX.
    */
   private emitMasterInputIndex(locationData: SingleLocationData): void {
     if (this.currentFunctionIsDelegate) {
-      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
+      this.emit(Op.OP_SUB, locationData);
     } else {
       this.emit(Op.OP_INPUTINDEX, locationData);
     }

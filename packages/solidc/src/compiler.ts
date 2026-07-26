@@ -242,6 +242,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     let statefulExternalCall = false;
     let methodCallCount = 0;
     let graphHasComputedCallArguments = false;
+    let graphHasDelegatecall = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         walkInvocationAst(candidate.body, (node) => {
@@ -261,6 +262,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             else routeUsesOtherIntrospection = true;
           }
           if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
+          if (node instanceof LowLevelCallStatementNode) {
+            statefulExternalCall = true;
+            methodCallCount += 1;
+            if (node.callMode === 'delegatecall') graphHasDelegatecall = true;
+          }
           // Method calls are resolved into external/internal/builtin forms only
           // during the following semantic pass. The initial frozen route does
           // not attempt to predict that resolution: reject them conservatively
@@ -268,6 +274,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           if (node instanceof MethodCallNode) {
             statefulExternalCall = true;
             methodCallCount += 1;
+            if (node.methodName === 'delegatecall') graphHasDelegatecall = true;
             if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
               graphHasComputedCallArguments = true;
             }
@@ -278,6 +285,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name)) {
             statefulExternalCall = true;
             methodCallCount += 1;
+            if (node.identifier.name.endsWith('.delegatecall')) graphHasDelegatecall = true;
           }
         });
       }
@@ -518,7 +526,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     // site. Besides making conditional/loop reachability exact, this preserves
     // the source expression which computes each argument (rather than reducing
     // it to a forwarded handler parameter in the wrapper epilogue).
-    if (!reason && graphTailCallEligible && !graphResultStatement
+    if (!reason && graphTailCallEligible && !graphResultStatement && !graphHasDelegatecall
       && (!graphTailStatement || graphHasComputedCallArguments)) {
       graphRuntimeHandlers.add(fn);
     }
@@ -836,9 +844,19 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.parameters = handler.parameters.filter((parameter) =>
       parameter.name !== '__internal__returnOutputIdx'
       && !parameter.name.startsWith('__internal__externalCallInput')
-      && !parameter.name.startsWith('__internal__externalReturnOutput'));
+      && !parameter.name.startsWith('__internal__externalReturnOutput')
+      && parameter.name !== '__internal__delegateInputIndex');
     handler.graphEmissionHandler = true;
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
+    const delegateSlots: { slotIndex: number }[] = [];
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall') {
+        delegateSlots.push({ slotIndex: node.callIndex });
+      }
+    });
+    if (delegateSlots.length > 0) {
+      handler.graphDelegateSlotCount = delegateSlots.length;
+    }
     bindEntryKeyParameters(handler, sourceHandler);
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
@@ -1231,6 +1249,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
   const route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
   route.hiddenBatchRoute = true;
+  route.graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
+    let count = 0;
+    walkInvocationAst(handler.body, (node) => {
+      if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall') count += 1;
+    });
+    return Math.max(maximum, count);
+  }, 0);
   route.hiddenBatchMaximumRows = routeMaximumRows;
   route.location = contract.location;
   const helpers = routeAst.contract.functions.slice(0, -1);

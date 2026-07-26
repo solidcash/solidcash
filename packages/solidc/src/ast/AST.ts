@@ -353,6 +353,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   }[];
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
+  /** Block-local delegate covenants reserved by an SCB1 graph clone/route. */
+  graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;

@@ -2190,13 +2190,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
     if (this.hasExplicitDelegatecall(node.body) && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
       node.pinsDelegateCoSpend = true;
-      const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
-      idxParam.location = node.location;
-      node.parameters.push(idxParam);
-      this.symbolTables[0].set(Symbol.variable(idxParam));
-      const s = this.symbolTables[0].get('__internal__delegateInputIndex');
-      if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
-      this.pushToStack(idxParam);
+      if (!node.graphEmissionHandler && !node.hiddenBatchRoute) {
+        const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
+        idxParam.location = node.location;
+        node.parameters.push(idxParam);
+        this.symbolTables[0].set(Symbol.variable(idxParam));
+        const s = this.symbolTables[0].get('__internal__delegateInputIndex');
+        if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
+        this.pushToStack(idxParam);
+      }
     }
 
     // C1/B: a delegatecall function skips its own state covenant (emitAutoCovenantVerification is gated
@@ -8642,10 +8644,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'returnEvent', offset: offset++ });
     }
 
-    // Low-level call slots (one per non-delegatecall call)
+    // Low-level call slots. In a balanced SCB1 block, a delegate is a real
+    // co-spent covenant paired with its preserved output just like other
+    // low-level callees; direct wrappers continue to use their positional
+    // delegate-input witness.
     if (node.lowLevelCalls) {
       for (let i = 0; i < node.lowLevelCalls.length; i++) {
-        if (node.lowLevelCalls[i].callMode === 'delegatecall') continue;
+        if (node.lowLevelCalls[i].callMode === 'delegatecall'
+          && !node.graphEmissionHandler && !node.hiddenBatchRoute) continue;
+        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
+      }
+    }
+    if (node.hiddenBatchRoute && (node.graphDelegateSlotCount ?? 0) > 0) {
+      for (let i = 0; i < node.graphDelegateSlotCount!; i++) {
         slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
       }
     }

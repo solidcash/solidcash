@@ -1666,7 +1666,8 @@ function compileResolvedAst(
       const abi = abiByFunctionId.get(summary.id);
       const externalCalls = abi?.externalCalls ?? [];
       const bounded = !summary.footprint.unknown
-        && externalCalls.every((call) => call.occurrence === 'once');
+        && externalCalls.every((call) =>
+          call.occurrence === 'once' || call.maximumOccurrences !== undefined);
       return ({
       id: summary.id,
       name: summary.name,
@@ -1692,7 +1693,11 @@ function compileResolvedAst(
           })),
       }),
       bounded,
-      ...(bounded && { maximumDirectInvocations: externalCalls.length }),
+      ...(bounded && {
+        maximumDirectInvocations: externalCalls.reduce(
+          (total, call) => total + (call.maximumOccurrences ?? 1), 0,
+        ),
+      }),
       ...(externalCalls.length && { externalCalls }),
       ...(abi?.externalOutStateReads?.length && { externalOutStateReads: abi.externalOutStateReads }),
       ...(abi?.emits?.length && { emits: abi.emits }),

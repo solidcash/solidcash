@@ -8,8 +8,10 @@ import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
-  ExpressionNode, TransferStatementNode,
+  ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
+  BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode,
 } from '../ast/AST.js';
+import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
@@ -33,17 +35,58 @@ const STATE_WRITING_MODIFIERS = [
   FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
 ];
 
-const occurrenceOf = (
+const fixedForMaximum = (
+  initializer: Node | undefined, loop: WhileNode,
+): number | undefined => {
+  if (!(initializer instanceof VariableDefinitionNode) || !initializer.isLoopVariable
+    || !(initializer.expression instanceof IntLiteralNode)
+    || !(loop.condition instanceof BinaryOpNode)
+    || !(loop.condition.left instanceof IdentifierNode)
+    || loop.condition.left.name !== initializer.name
+    || !(loop.condition.right instanceof IntLiteralNode)
+    || ![BinaryOperator.LT, BinaryOperator.LE].includes(loop.condition.operator)
+    || loop.forLoopUpdateCount !== 1) return undefined;
+  const update = loop.block.statements?.[loop.block.statements.length - 1];
+  if (!(update instanceof AssignNode) || update.identifier.name !== initializer.name
+    || !(update.expression instanceof BinaryOpNode)
+    || update.expression.operator !== BinaryOperator.PLUS
+    || !(update.expression.left instanceof IdentifierNode)
+    || update.expression.left.name !== initializer.name
+    || !(update.expression.right instanceof IntLiteralNode)
+    || update.expression.right.value !== 1n) return undefined;
+  const start = initializer.expression.value;
+  const end = loop.condition.right.value;
+  const count = end - start + (loop.condition.operator === BinaryOperator.LE ? 1n : 0n);
+  if (count < 0n || count > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+  return Number(count);
+};
+
+const occurrenceInfoOf = (
   fn: FunctionDefinitionNode, target: Node | undefined,
-): 'once' | 'conditional' | 'loop' => {
-  if (!target) return 'once';
+): { occurrence: 'once' | 'conditional' | 'loop'; maximumOccurrences?: number } => {
+  if (!target) return { occurrence: 'once' };
   let found: 'once' | 'conditional' | 'loop' = 'once';
+  let maximumOccurrences: number | undefined;
   const seen = new Set<object>();
-  const visit = (value: unknown, context: 'once' | 'conditional' | 'loop'): void => {
+  const visit = (
+    value: unknown, context: 'once' | 'conditional' | 'loop', loopMaximum?: number,
+  ): void => {
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
     if (value === target) {
       found = context;
+      maximumOccurrences = context === 'loop' ? loopMaximum : context === 'once' ? 1 : undefined;
+      return;
+    }
+    if (value instanceof BlockNode) {
+      const statements = value.statements ?? [];
+      statements.forEach((statement, index) => {
+        if (statement instanceof WhileNode) {
+          visit(statement, 'loop', fixedForMaximum(statements[index - 1], statement));
+        } else {
+          visit(statement, context, loopMaximum);
+        }
+      });
       return;
     }
     const kind = value.constructor.name;
@@ -57,12 +100,15 @@ const occurrenceOf = (
         'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection',
       ].includes(key)) continue;
-      if (child instanceof Node) visit(child, nested);
-      else if (Array.isArray(child)) for (const item of child) visit(item, nested);
+      if (child instanceof Node) visit(child, nested, loopMaximum);
+      else if (Array.isArray(child)) for (const item of child) visit(item, nested, loopMaximum);
     }
   };
   visit(fn.body, 'once');
-  return found;
+  return {
+    occurrence: found,
+    ...(maximumOccurrences !== undefined && { maximumOccurrences }),
+  };
 };
 
 const expressionSource = (
@@ -208,7 +254,7 @@ function buildFunctionAbiMetadata(
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => ({
         callsiteId: ec.slotIndex,
-        occurrence: occurrenceOf(func, ec.sourceCallNode),
+        ...occurrenceInfoOf(func, ec.sourceCallNode),
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
         ...(ec.addressParam && { addressParam: ec.addressParam }),

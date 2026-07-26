@@ -117,4 +117,23 @@ describe('Release 0 shared invocation analysis', () => {
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated'))
       .toMatchObject({ bounded: false });
   });
+
+  it('emits a conservative direct-call ceiling for a canonical literal loop', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint n); }
+      contract LiteralLoop() {
+        function repeated(address target, bigint n) public {
+          for (bigint i = 0; i < 3; i = i + 1) {
+            ITarget(target).step(n);
+          }
+          require(n >= 0);
+        }
+      }`, { forceStateful: true });
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated')!;
+    expect(summary.externalCalls?.[0]).toMatchObject({
+      occurrence: 'loop',
+      maximumOccurrences: 3,
+    });
+    expect(summary).toMatchObject({ bounded: true, maximumDirectInvocations: 3 });
+  });
 });

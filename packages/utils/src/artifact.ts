@@ -391,6 +391,8 @@ export interface ExternalCallAbi {
   callsiteId?: number;
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
   occurrence?: 'once' | 'conditional' | 'loop';
+  /** Exact reached-row ceiling for a compiler-proven canonical literal loop. */
+  maximumOccurrences?: number;
   interfaceName: string;
   functionName: string;
   addressParam?: string;

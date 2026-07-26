@@ -262,6 +262,22 @@ describe('layer3.planCompiledGraph', () => {
     });
     expect(repeated.participants.map((owner) => owner.invocations)).toEqual([[0], [1, 2]]);
 
+    const literalLoop = compileString(`pragma solidcash >=0.8.0;
+      interface IPeer { function run(address peer, bool take); }
+      contract LiteralLoopGraph() {
+        function repeat(address peer, bool take) public {
+          for (int i = 0; i < 2; i = i + 1) { IPeer(peer).run(peer, take); }
+          require(true);
+        }
+      }`, options);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: { artifact: literalLoop, lockingBytecode: '55' },
+      function: 'repeat',
+      args: [new Uint8Array([0x53]), false],
+      targets: { IPeer: [leafParticipant, leafParticipant, leafParticipant] },
+      occurrence: () => 3,
+    })).toThrow(/lacks a valid loop occurrence proof/);
+
     const recursive = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function again(address peer); }
       contract RecursiveGraph() {

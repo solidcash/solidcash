@@ -230,7 +230,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           kind: occurrenceKind,
         }) ?? -1;
         const valid = Number.isInteger(count) && count >= 0
-          && (occurrenceKind === 'loop' || count <= 1);
+          && (occurrenceKind === 'loop' || count <= 1)
+          && (call.maximumOccurrences === undefined || count <= call.maximumOccurrences);
         if (!valid) {
           throw new Error(
             `layer3: callsite ${call.callsiteId} lacks a valid ${occurrenceKind} occurrence proof`,

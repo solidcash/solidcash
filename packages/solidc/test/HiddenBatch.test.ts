@@ -483,13 +483,32 @@ describe('Release 4 compiler-hidden local batch', () => {
     }`, 'go')).toBe(true);
   });
 
-  it('fails closed rather than crashing on an unrepresentable collection delete', () => {
-    // This used to abort code generation with an internal stack assertion. Fail-closed is the contract for a
-    // shape the C2 backend cannot represent; a crash is never acceptable.
-    expect(() => compileString(`contract DeleteEntry() {
+  it('admits a collection delete by journalling it as a write of the default', () => {
+    // `delete m[k]` reached code generation raw and the C2 backend failed closed. The value-threaded journal
+    // can represent it - as a write of the collection's default - but that lowering only applies to internal
+    // handlers, so a delete-bearing handler is cloned even when nothing else on the route needs a clone.
+    const artifact = compileString(`contract DeleteEntry() {
       mapping(address => bigint) values;
       function clear(address key) public { delete this.values[key]; require(true); }
-    }`, graphOptions)).toThrow(/cannot be represented by the C2 linked-list/);
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'clear')?.eligible).toBe(true);
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(1);
+  });
+
+  it('shares one entry between a delete handler and a resource-shaped sibling', () => {
+    const artifact = compileString(`contract DeleteBeside() {
+      mapping(address => bigint) values;
+      function move(address from, address to, bigint amount) public {
+        this.values[from] = this.values[from] - amount;
+        this.values[to] = this.values[to] + amount;
+        require(amount >= 0);
+      }
+      function clear(address key) public { delete this.values[key]; require(true); }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['move', true], ['clear', true]]);
+    // The delete resolves onto the shared entry `move` already owns rather than adding a fourth slot.
+    expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(3);
   });
 
   it('unions two handlers over one collection onto one set of entry slots', () => {

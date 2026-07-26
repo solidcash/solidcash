@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | One authenticated existing-entry transition composes in a balanced graph and forged post-state fails. A batched `delete m[k]` now fails closed with the designed C2 error instead of aborting code generation, but insertion/deletion, chunks, dynamic keys, and arbitrary descriptors remain unimplemented. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. A delete beside a scalar state write is rejected at compile time (`scalar-write-with-collection-delete-not-enabled`) - the two journals disagree on the settled entry. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PARTIAL | All five handlers now settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. What remains is the word *ordered*: a resource-shaped route admits exactly one handler (`resource-shaped-route-requires-one-handler`), so a single batch cannot interleave them. Release B lifts that restriction. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -129,6 +129,28 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: Release C - collection delete settles through the journal
+
+`delete m[k]` reached code generation raw, and the C2 backend failed closed on a shape the value-threaded
+journal can in fact represent: it rewrites a delete to a write of the collection's default. That lowering only
+applies to internal handlers, so a delete-bearing handler is now cloned even when nothing else on the route
+needs a clone. Delete settles on the VM and a settlement that leaves the old value in place is rejected.
+
+Bisecting the failure was worth the time. Four shapes, one variable at a time:
+
+| shape | result |
+|---|---|
+| `delete m[k]` alone | settles |
+| `m[k] = 0` alone | settles |
+| scalar write beside `m[k] = 0` | settles |
+| scalar write beside `delete m[k]` | REJECTED by the covenant |
+
+Since `m[k] = 0` is semantically the delete and settles fine beside a scalar write, the fault is in how the two
+journals exit together when the delete keeps its `delete` form - not in delete itself. That combination is now
+rejected at compile time under `scalar-write-with-collection-delete-not-enabled` rather than producing a
+transaction that cannot settle. Sharing one exit between the scalar and collection journals removes the
+restriction; that is the remaining work, and it is a real fix rather than a widened test.
 
 ### 2026-07-26: Release C start - resource backend frontier, measured
 

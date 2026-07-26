@@ -464,6 +464,19 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     } else if (!reason && [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
       reason = 'dynamic-state-batch-journal-not-enabled';
+    } else if (!reason && footprint.writes.some((resource) => resource.startsWith('state:'))
+      && (() => {
+        let deletes = false;
+        walkInvocationAst(fn.body, (node) => {
+          if (node instanceof MappingDeleteNode && collectionByName.has(node.name)) deletes = true;
+        });
+        return deletes;
+      })()) {
+      // A collection delete settles on its own and beside a scalar write expressed as `m[k] = 0`, but the two
+      // journals disagree when the delete keeps its `delete` form alongside a scalar write: the settled entry
+      // is rejected by the covenant. Until the scalar and collection journals share one exit, reject the
+      // combination rather than emit a transaction that cannot settle.
+      reason = 'scalar-write-with-collection-delete-not-enabled';
     }
     fn.hiddenBatchEligible = reason === undefined;
     fn.hiddenBatchRejectionReason = reason;
@@ -682,6 +695,32 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       siblingHandlerInvokeNames.set(sourceHandler, handler.name);
       contract.functions.push(handler);
     }
+  }
+  // `delete m[k]` is only settleable through the value-threaded journal, which rewrites it to a write of the
+  // collection's default. That lowering only applies to internal handlers, so a delete-bearing handler is cloned
+  // even when nothing else on the route needs a clone; otherwise code generation reaches the raw delete and the
+  // C2 backend fails closed on a shape the journal can in fact represent.
+  for (const sourceHandler of eligible) {
+    if (sourceHandler === resourceShapedHandler
+      || graphTailHandlers.has(sourceHandler)
+      || siblingHandlerInvokeNames.has(sourceHandler)) continue;
+    let deletesEntry = false;
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if (node instanceof MappingDeleteNode && collectionByName.has(node.name)) deletesEntry = true;
+    });
+    if (!deletesEntry) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_handler_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.forceCollectionJournalPool = true;
+    bindEntryKeyParameters(handler, sourceHandler);
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
   }
   for (const sourceHandler of graphTailHandlers) {
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;

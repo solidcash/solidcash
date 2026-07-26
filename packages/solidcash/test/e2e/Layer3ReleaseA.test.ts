@@ -81,6 +81,8 @@ interface ScalarGraphCase {
     key: (target: Contract, router: Contract) => Uint8Array;
     value: bigint;
     settled: bigint;
+    /** Raw settled value bytes, when the encoding under test is not the minimal VM number for `settled`. */
+    settledRaw?: Uint8Array;
   };
 }
 
@@ -245,7 +247,7 @@ async function buildScalarGraph(testCase: ScalarGraphCase) {
         nft: {
           capability: 'mutable',
           commitment: binToHex(encodeEntryCommitment(
-            decoded.slot, decoded.nextKey, bigIntToVmNumber(entrySpec!.settled),
+            decoded.slot, decoded.nextKey, entrySpec!.settledRaw ?? bigIntToVmNumber(entrySpec!.settled),
           )),
         },
       },
@@ -615,6 +617,49 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
         routeArgs: () => [argument] as FunctionArgument[],
         callName: 'act',
         callArgs: () => [argument] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    });
+  });
+
+  describe('collection delete', () => {
+    const TARGET = `pragma solidcash >=0.8.0;
+    contract DeleteTarget() {
+      mapping(address => bigint) balances;
+      function clear(address who) public {
+        delete this.balances[who];
+        require(true);
+      }
+    }`;
+    const router = ROUTER('function clear(address who);', 'ITarget(target).clear(who);', 'address who');
+    const holder = hexToBin(`aa20${'66'.repeat(32)}87`);
+
+    it('settles a collection delete as the entry default', async () => {
+      const { provider, transaction } = await buildScalarGraph({
+        target: TARGET,
+        router,
+        state: {},
+        settled: {},
+        entry: { collection: 'balances', key: () => holder, value: 42n, settled: 0n },
+        routeArgs: () => [holder] as FunctionArgument[],
+        callName: 'clear',
+        callArgs: () => [holder] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    });
+
+    it('rejects a delete that leaves the entry value in place', async () => {
+      const { provider, transaction } = await buildScalarGraph({
+        target: TARGET,
+        router,
+        state: {},
+        settled: {},
+        // Identical shape; only the entry keeps its pre-delete value.
+        entry: { collection: 'balances', key: () => holder, value: 42n, settled: 42n },
+        routeArgs: () => [holder] as FunctionArgument[],
+        callName: 'clear',
+        callArgs: () => [holder] as FunctionArgument[],
       });
       await expect(provider.sendRawTransaction(transaction))
         .rejects.toThrow(/mandatory-script-verify-flag-failed/);

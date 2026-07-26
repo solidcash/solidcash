@@ -130,6 +130,33 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: the two-journal bug, characterised
+
+Third pass on `cloned-handler-scalar-and-collection-journal-not-enabled`, this time with a mechanism rather
+than another hypothesis.
+
+Scalar journal slots are threaded to a clone as parameters and mutated IN PLACE on the shared stack -
+`visitStateAssign`/`visitDeleteState` call `emitReplace(getStackIndex('__internal__state_write_<name>'))`, and
+because BCH-2026 `OP_INVOKE` does not reset the stack, the caller observes the mutation and writes it back in
+its epilogue. The clone itself never settles anything.
+
+That is sound for a VOID clone, and the existing evidence agrees: Release A's modifier fixture is a graph clone
+with a scalar write and no collection, and it settles. What the collection journal changes is that it makes the
+clone RETURN its journalled entry values. So the failing combination is precisely:
+
+> a clone that RETURNS collection journal values while also relying on in-place mutation of threaded scalar
+> journal slots surviving that return.
+
+Two fixes follow from this, and both are real work rather than a guard:
+
+1. exclude threaded scalar journal slots from whatever the returning subroutine's return path does to the
+   stack, so the in-place mutation still reaches the caller; or
+2. widen the collection journal's value threading to carry scalar writes too, so one return carries both and
+   nothing depends on in-place mutation.
+
+Eliminated by the two earlier attempts, recorded above: the `delete` node type, and subroutine-versus-inline
+settlement. The boundary stays fail-closed until one of the two fixes lands.
+
 ### 2026-07-26: second unsuccessful attempt at the two-journal exit (recorded)
 
 Hypothesis: `InlineReturningStateHelpers` deliberately exempts `collectionJournal` helpers from inlining

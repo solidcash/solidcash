@@ -233,6 +233,23 @@ a magic marker plus `OP_DEPTH` at the upsert and reading it back out of the VM t
 The depths MATCH. There is no missing or extra tracked entry. So "the model holds one more entry than the real
 stack" is false, and any fix built on that idea would have been wrong.
 
+CAUTION on what follows: the ordering explanation below is REASONED, not measured, and a follow-up probe
+failed to confirm it. Reading the actual runtime elements at model indices 10-16 at the upsert gives:
+
+    [10] 5727-byte SCB1 blob      model says `__scb_pushOpcode`      - does NOT correspond
+    [11] 05                        model says `__scb_unlock`          - does NOT correspond
+    [12] 51                        model says `__cj_cache_2`          - unidentified
+    [13] 55                        model says `__cj_cache_1`          - unidentified
+    [14] 00                        model says `__internal__state_write_moves` - plausible at genesis 0
+    [15] 1042-byte GRAPH1 blob     model says `__internal__graphTranscript`   - DOES correspond
+    [16] 08                        - unidentified
+
+One landmark aligns (index 15) and others clearly do not, which is consistent with a permuted region but does
+not establish it: the probe could not confirm WHICH compiled function's frame it caught, because the model-side
+log is emitted inside the test worker and was not captured alongside the runtime dump. Treat the paragraph
+below as the leading hypothesis with one supporting landmark, not as a demonstrated cause. Anyone continuing
+should first re-run the probe capturing BOTH sides in one place and confirm the frame is `__scb1`.
+
 What that leaves is the only remaining way both facts can hold at once. The model says index 13 is
 `__cj_cache_1`; the runtime pick at that same index yields the scalar state-write element; and the total depths
 agree. Therefore the ORDER of elements diverges, not the count: the tracked model records the journal cache

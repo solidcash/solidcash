@@ -5,13 +5,13 @@ import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, TransactionBuilder, encodeFunctionArgument, layer3,
+  Contract, SignatureAlgorithm, SignatureTemplate, TransactionBuilder, encodeFunctionArgument, layer3,
 } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {
-  alicePkh, alicePriv, alicePub, bobPriv,
+  alicePkh, alicePriv, alicePub, bobPriv, bobPub, carolPub,
 } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
@@ -240,6 +240,14 @@ const SIGNED_APP = `pragma solidcash >=0.8.0;
 contract GraphSigned() {
   function signed(sig authorization, pubkey owner) public {
     require(checkSig(authorization, owner));
+  }
+}`;
+const MULTISIG_APP = `pragma solidcash >=0.8.0;
+contract GraphMultiSigned() {
+  function signed2of3(
+    sig first, sig second, pubkey one, pubkey two, pubkey three
+  ) public {
+    require(checkMultiSig([first, second], [one, two, three]));
   }
 }`;
 const FORWARDED_SIGNED_CALLER = `pragma solidcash >=0.8.0;
@@ -774,12 +782,12 @@ async function buildIntrospectionGraph(tamper = false) {
   return { provider, transaction: raw(tx) };
 }
 
-async function buildSignedGraph(tamper = false) {
+async function buildSignedGraph(tamper = false, multisig = false) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
   } = await createGraphAuthority(provider);
-  const artifact = compileString(SIGNED_APP, {
+  const artifact = compileString(multisig ? MULTISIG_APP : SIGNED_APP, {
     forceStateful: true,
     experimentalHiddenBatch: true,
     experimentalMessageBusController: controller.lockingBytecode,
@@ -790,19 +798,28 @@ async function buildSignedGraph(tamper = false) {
   const contract = base.withCategory(hexToBin(setup.categoryId));
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const authorization = new SignatureTemplate(tamper ? bobPriv : alicePriv);
+  const args: FunctionArgument[] = multisig ? [
+    new SignatureTemplate(alicePriv, undefined, SignatureAlgorithm.ECDSA),
+    new SignatureTemplate(
+      tamper ? new Uint8Array(32).fill(7) : bobPriv,
+      undefined,
+      SignatureAlgorithm.ECDSA,
+    ),
+    alicePub, bobPub, carolPub,
+  ] : [authorization, alicePub];
   const plan = layer3.planCompiledGraph([
     { artifact, lockingBytecode: contract.lockingBytecode },
   ], [{
     parent: null,
     callee: 0,
-    function: 'signed',
-    args: [authorization, alicePub],
+    function: multisig ? 'signed2of3' : 'signed',
+    args,
   }]);
   // The canonical row commits the public key but deliberately excludes the
   // transaction signature, which is finalized only after the root exists.
-  expect(plan.participants[0].batch.rows[0].argsHex).toBe(
-    binToHex(scriptToBytecode([alicePub])),
-  );
+  expect(plan.participants[0].batch.rows[0].argsHex).toBe(binToHex(
+    scriptToBytecode(multisig ? [alicePub, bobPub, carolPub] : [alicePub]),
+  ));
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
@@ -2484,6 +2501,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a transaction-signature witness from a key other than the transcript-bound owner', async () => {
     const { provider, transaction } = await buildSignedGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('verifies two root-excluded ECDSA witnesses in checkMultiSig', async () => {
+    const { provider, transaction } = await buildSignedGraph(false, true);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a multisig route witness whose key is absent from the rooted key set', async () => {
+    const { provider, transaction } = await buildSignedGraph(true, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

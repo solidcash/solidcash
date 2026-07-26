@@ -388,7 +388,12 @@ export class Contract<
         const handler = this.artifact.hiddenBatch?.handlers[Number(match[1])];
         const handlerBody = handler?.signatureBytecode;
         if (!handlerBody) {
-          throw new Error(`Missing invoked handler body for signature witness '${inputName}'`);
+          // A signature parameter may only be forwarded by this participant;
+          // its child owns the CHECKSIG and receives its own per-input
+          // signature. The forwarding route still needs a well-typed 65-byte
+          // witness, so sign its ordinary route body. If this participant
+          // performs CHECKSIG, the compiler always publishes signatureBytecode.
+          return signingBytecode;
         }
         return hexToBin(handlerBody);
       };

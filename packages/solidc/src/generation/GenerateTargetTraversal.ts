@@ -11446,15 +11446,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return parameters[source.paramIndex];
     });
-    if (argumentParameters.length === 0) {
+    // Transaction signatures are positional SCB1 route witnesses rather than
+    // rooted invocation bytes (rooting them creates a signing fixed point).
+    // Both caller emission and callee row projection therefore omit the same
+    // typed fields while the callee's original checkSig remains authoritative.
+    const transcriptArgumentParameters = argumentParameters.filter((parameter) =>
+      parameter.type !== PrimitiveType.SIG);
+    if (transcriptArgumentParameters.length === 0) {
       this.emit(new Uint8Array(), locationData);
       this.pushToStack('(__graph_args)');
     } else {
-      for (let i = 0; i < argumentParameters.length; i++) {
-        let parameter = argumentParameters[i];
+      for (let i = 0; i < transcriptArgumentParameters.length; i++) {
+        let parameter = transcriptArgumentParameters[i];
         if (parametersAreCallArguments) {
           parameter = this.visit(parameter);
-          argumentParameters[i] = parameter;
+          transcriptArgumentParameters[i] = parameter;
         } else {
           if (!(parameter instanceof IdentifierNode)) {
             throw new Error('Graph argument forwarding requires identifiers');

@@ -31,6 +31,17 @@ export interface DeriveCompiledGraphOptions {
     callsiteId: number;
     kind: 'conditional' | 'loop';
   }) => number;
+  /**
+   * Values of compiler-labelled non-trivial argument expressions, obtained from the derivation VM trace.
+   * The generated caller covenant independently emits and compares the canonical argument bytes.
+   */
+  expressionArgument?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    callsiteId: number;
+    argument: number;
+    occurrence: number;
+  }) => FunctionArgument;
 }
 
 const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
@@ -56,7 +67,10 @@ const resolveArguments = (
   sourceParticipant: WorklistParticipant,
   visibleArgs: readonly FunctionArgument[],
   call: ExternalCallAbi,
-): FunctionArgument[] => (call.argSources ?? []).map((source) => {
+  functionName: string,
+  occurrence: number,
+  expressionArgument: DeriveCompiledGraphOptions['expressionArgument'],
+): FunctionArgument[] => (call.argSources ?? []).map((source, argument) => {
   if (source.kind === 'forward' && source.paramIndex !== undefined) {
     const value = visibleArgs[source.paramIndex];
     if (value === undefined) {
@@ -74,6 +88,16 @@ const resolveArguments = (
     return value;
   }
   if (source.kind === 'literal') return literal(source);
+  if (source.kind === 'expression') {
+    const value = expressionArgument?.({
+      participant: sourceParticipant,
+      function: functionName,
+      callsiteId: call.callsiteId!,
+      argument,
+      occurrence,
+    });
+    if (value !== undefined) return value;
+  }
   throw new Error(
     `layer3: callsite ${call.callsiteId} argument expression is not symbolically resolvable`,
   );
@@ -174,7 +198,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         expand(
           target,
           call.functionName,
-          resolveArguments(participant, args, call),
+          resolveArguments(
+            participant, args, call, functionName, reached, options.expressionArgument,
+          ),
           invocation,
         );
       }

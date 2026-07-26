@@ -139,6 +139,46 @@ describe('layer3.planCompiledGraph', () => {
     })).toThrow(/explicit bounded occurrence proof/);
   });
 
+  it('uses VM-probed expression values while leaving argument authentication on-chain', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const caller = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function finish(int n); }
+      contract ExpressionCaller() {
+        function run(address target, int n) public {
+          ITarget(target).finish(n * 2 + 1);
+          require(n >= 0);
+        }
+      }`, options);
+    const target = compileString(`pragma solidcash >=0.8.0;
+      contract ExpressionTarget() {
+        function finish(int n) public { require(n >= 0); }
+      }`, options);
+    const root = { artifact: caller, lockingBytecode: '51' };
+    const peer = { artifact: target, lockingBytecode: '52' };
+    const base = {
+      root,
+      function: 'run',
+      args: [new Uint8Array([0x52]), 2n],
+      targets: { ITarget: peer },
+    };
+    expect(() => layer3.deriveCompiledGraphPlan(base)).toThrow(/not symbolically resolvable/);
+    const plan = layer3.deriveCompiledGraphPlan({
+      ...base,
+      expressionArgument: ({ callsiteId, argument, occurrence }) => {
+        expect({ callsiteId, argument, occurrence }).toEqual({
+          callsiteId: 0, argument: 0, occurrence: 0,
+        });
+        return 5n;
+      },
+    });
+    expect(plan.invocations[1].argsHex).toBe('55');
+  });
+
   it('separates resolvable result dependencies from structural owner cycles', () => {
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], []])).not.toThrow();
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], [0]]))

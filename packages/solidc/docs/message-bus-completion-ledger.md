@@ -152,15 +152,22 @@ offset was one real bug in the fixture and there is a second, separate reason th
 boundary is therefore not disproven - but it is also not established, because the evidence originally offered
 for it was a transaction that could never have validated.
 
-Remaining, for whoever picks this up:
+`0x51` has since been decoded, and it identifies a REAL fault - so the boundary is justified, though not for
+the reason first written.
 
-1. chase the rejection at state 5481 with the corrected fixture. The stack there holds a `move` row blob, the
-   value `0x51`, a slot, an entry address and a next-key - i.e. an entry commitment comparison, not an address
-   or index check like the offset bug produced;
-2. `0x51` is 81, which matches none of the fixture's intended settled values (85, 10, 5) or the counter (2).
-   Identifying what 81 is should locate the fault quickly;
-3. if the shape then settles, remove the boundary; if it fails for a real reason, re-derive the boundary from
-   that reason rather than from the offset bug.
+Dumping the encoded batch rows shows arguments are minimal SCRIPT pushes, not raw VM numbers: the amounts 10
+and 5 appear as `0x5a` and `0x55`, which are `OP_10` and `OP_5`. By the same encoding `0x51` is `OP_1`, the
+number 1 - and 1 is the `moves` counter after the FIRST row only. The batch runs two rows and must settle
+`moves = 2`.
+
+So a cloned handler flushes its SCALAR journal per row instead of once after the whole batch, while its
+collection journal correctly settles once. That is the same class of fault as the original allowance bug: two
+rows demanding two different post-states from one output. It is a genuine compiler defect, and
+`cloned-handler-scalar-and-collection-journal-not-enabled` is the correct fail-closed response until the scalar
+journal flushes once per owner like the collection journal does.
+
+Note the method: three rounds of reasoning about stack structure produced two retracted diagnoses, while two
+rounds of dumping actual values produced first the offset bug and then this. Trace values.
 
 The boundary is fail-closed, so leaving it in place while suspect costs expressiveness, not soundness. But it
 should not be described as a known compiler limitation until step 1 is done. Recorded because I asserted the

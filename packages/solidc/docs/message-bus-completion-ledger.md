@@ -176,6 +176,36 @@ This also finally settles `0x51`, which two earlier entries guessed at: it is 81
 push, and the ambiguity was real because the leaked value is script-encoded. Both readings were describing the
 same byte from different ends.
 
+LOCALISED FURTHER (same day): instrumenting `emitSortedValueUpsert` to dump the tracked stack right after
+`emitValue()` shows the two paths diverge, and shows an adjacency that explains the leaked byte exactly.
+
+Direct handler (`fn=move`), stack top-first:
+
+    ["(value)", "(__upsert_hk)", "__internal__state_write_moves", "from", "to", "amount"]     depth 14 -> 15
+
+Batch route (`fn=__scb1`):
+
+    ["(value)", "(__upsert_hk)", "__scb_graph_msg_data", "rowArgs", "__scb_graph_caller",
+     "__scb_graph_msg_data", "rowArgs", "rowSelector", "__scb_graph_caller", "__graph_owner_frame",
+     "__scb_pushOpcode", "__scb_unlock", "__cj_cache_2", "__cj_cache_1",
+     "__internal__state_write_moves", "__internal__graphTranscript", ...]                     depth 36 -> 36
+
+Two facts fall out:
+
+1. `__scb_graph_msg_data`, `rowArgs` and `__scb_graph_caller` each appear TWICE (indices 2/5, 3/6, 4/8). The
+   route unrolls two rows and the per-row locals are never popped, so row 0's frame is still live while row 1
+   runs. `getStackIndex` returns the FIRST match, so any consumer using a computed offset from these names is
+   working against a frame one row deeper than it assumes.
+2. `__cj_cache_1` sits at index 13 and `__internal__state_write_moves` at index 14 - ADJACENT. An off-by-one
+   resolving the collection journal's cache local lands exactly on the scalar state-write local, which is
+   pushdata-encoded. That is precisely the observed leak, and it explains why the value is the whole scalar RHS
+   rather than a corrupted collection value.
+
+So the defect is a stack-frame accounting bug in the unrolled batch route, not a journal-exit design problem.
+The fix is to scope/pop the per-row locals (or make the cache-local resolution immune to the duplicate frame);
+it is NOT to change either journal's exit behaviour. Not yet attempted - the per-row scoping needs care, since
+the duplicate frame may be load-bearing for row-local key witnesses.
+
 SECOND TRAP, worse than the first, and worth reading before any similar investigation: commit a6d602cc was
 intended to be docs-only but ran `git add -A` while the guard was still temporarily lifted for probing. It
 committed a 38-line REMOVAL of the guard from `compiler.ts` under a documentation message. The next commit then

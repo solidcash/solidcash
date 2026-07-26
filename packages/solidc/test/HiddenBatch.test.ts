@@ -520,16 +520,20 @@ describe('Release 4 compiler-hidden local batch', () => {
       .toEqual(['__scb_key_balances_0', '__scb_key_balances_0_row_r0', '__scb_key_balances_0_row_r1']);
   });
 
-  it('keeps one handler when a handler cross-keys two collections from one parameter', () => {
-    // `from` addresses both allowances[from][spender] and balances[from]. One parameter cannot carry two
-    // different canonical witness names, and the journal identifies a pending value by the key expression at
-    // the call site, so siblings cannot share entries with this handler yet. Fail closed rather than allocate
-    // one entry twice.
+  it('unions a cross-keyed handler with its siblings onto one entry set', () => {
+    // `transferFrom`'s `from` addresses both allowances[from][spender] and balances[from]. One source parameter
+    // cannot carry two canonical witness names, so identity cannot come from the call-site key expression;
+    // each batch clone instead takes one synthetic parameter per physical entry key, named after that entry's
+    // canonical route input. Every handler then resolves to the same four entries.
     const artifact = compileString(`contract CrossKeyedToken() {
       mapping(bytes20 => bigint) balances;
       mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
       function mint(bytes20 to, bigint amount) public {
         this.balances[to] = this.balances[to] + amount;
+        require(amount >= 0);
+      }
+      function approve(bytes20 owner, bytes20 spender, bigint amount) public {
+        this.allowances[owner][spender] = amount;
         require(amount >= 0);
       }
       function transferFrom(bytes20 from, bytes20 to, bytes20 spender, bigint amount) public {
@@ -539,15 +543,27 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.balances[from] = this.balances[from] - amount;
         this.balances[to] = this.balances[to] + amount;
       }
+      function checkBalance(bytes20 owner, bigint expected) public {
+        require(this.balances[owner] == expected);
+      }
+      function checkAllowance(bytes20 owner, bytes20 spender, bigint expected) public {
+        require(this.allowances[owner][spender] == expected);
+      }
     }`, { forceStateful: true, experimentalHiddenBatch: true });
 
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'transferFrom')?.eligible)
-      .toBe(true);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'mint'))
-      .toMatchObject({
-        eligible: false,
-        rejectionReason: 'cross-keyed-collection-route-requires-one-handler',
-      });
+    expect(artifact.hiddenBatch?.handlers.every((handler) => handler.eligible)).toBe(true);
+    expect(artifact.hiddenBatch?.handlers.map((handler) => handler.name))
+      .toEqual(['mint', 'approve', 'transferFrom', 'checkBalance', 'checkAllowance']);
+    // balances shared, allowances shared, balances row 0, balances row 1 - and nothing duplicated.
     expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(4);
+    expect(artifact.hiddenBatch?.route.inputs.filter((input) => input.name.startsWith('__scb_key'))
+      .map((input) => input.name))
+      .toEqual([
+        '__scb_key_balances_0',
+        '__scb_key_allowances_0',
+        '__scb_key_allowances_1',
+        '__scb_key_balances_0_row_r0',
+        '__scb_key_balances_0_row_r1',
+      ]);
   });
 });

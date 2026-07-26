@@ -566,7 +566,6 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     ? 1
     : resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
   let resourceHandlerInvokeName: string | undefined;
-  let resourceHandlerTakesSenderKey = false;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
 
@@ -576,37 +575,74 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   // already required to equal `__scb_graph_caller` at each row, so the rows all agree on one spender - which
   // means the clone can take it as an ordinary parameter fed by that same route witness. The direct entry point
   // is untouched and keeps reading `msg.sender`.
-  const SENDER_KEY_PARAMETER = '__scb_msgsender_key';
-  const senderKeyBindingsFor = (fn: FunctionDefinitionNode): { name: string; type: Type }[] => {
-    const bindings = (fn.hiddenBatchKeyWitnesses ?? []).filter((binding) => binding.source === 'msgSender');
-    const witnesses = bindings.map((binding) => routeKeyWitnesses.get(binding.routeInput)?.[0])
-      .filter((witness): witness is { name: string; type: Type } => witness !== undefined);
-    if (witnesses.length !== bindings.length) return [];
-    // One shared parameter only holds when every spender key is the same value of the same type.
-    const [first] = witnesses;
-    if (!first || witnesses.some((witness) => witness.type.toString() !== first.type.toString())) return [];
-    return witnesses;
-  };
-  const bindSenderKeyParameter = (handler: FunctionDefinitionNode, type: Type): void => {
-    handler.parameters.push(Object.assign(
-      new ParameterNode(type, SENDER_KEY_PARAMETER, []), { location: handler.location },
-    ));
+  // Explicit compiler-supplied entry identity.
+  //
+  // The collection journal identifies a pending value by the key EXPRESSION at the call site. That is fine while
+  // one parameter keys one entry, but ERC-20 `transferFrom` keys `allowances[from][spender]` and
+  // `balances[from]` from the same `from`, and one parameter cannot carry two different canonical witness
+  // names - so two handlers over one of those entries produced two journal locals and two C2 slots for one
+  // entry NFT. Instead of inferring identity, each batch clone takes one synthetic parameter per physical
+  // entry key, named after that entry's canonical route input, and its mapping keys are rewritten to those
+  // parameters. The key expression at every call site is then the entry's identity by construction, whatever
+  // source parameter originally supplied the value. `msg.sender` keys are just another entry key here; the
+  // route still requires each one to equal `__scb_graph_caller`.
+  const ENTRY_KEY_PREFIX = '__scb_ek_';
+  const handlerEntryKeys = new Map<FunctionDefinitionNode, { base: string; perRow: boolean }[]>();
+  const isMappingNode = (node: Node): node is MappingAccessNode | MappingAssignNode | MappingDeleteNode =>
+    node instanceof MappingAccessNode || node instanceof MappingAssignNode || node instanceof MappingDeleteNode;
+  const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode): string =>
+    node.keys.map((key) => {
+      if (key instanceof IdentifierNode) return `p:${key.name}`;
+      if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
+      return 'other';
+    }).join('|');
+  const bindEntryKeyParameters = (
+    handler: FunctionDefinitionNode, source: FunctionDefinitionNode,
+  ): void => {
+    // Alternative order per collection decides which entry is shared by every row and which is row-local; it
+    // must match the witness naming above exactly, so it is derived the same way from encounter order.
+    const alternatives = new Map<string, string[]>();
     walkInvocationAst(handler.body, (node) => {
-      if (!(node instanceof MappingAccessNode || node instanceof MappingAssignNode
-        || node instanceof MappingDeleteNode)) return;
-      node.keys = node.keys.map((key) => (key instanceof NullaryOpNode
-        && key.operator === NullaryOperator.MSG_SENDER
-        ? Object.assign(new IdentifierNode(SENDER_KEY_PARAMETER), { location: key.location })
-        : key));
+      if (!isMappingNode(node) || !collectionByName.has(node.name)) return;
+      const list = alternatives.get(node.name) ?? [];
+      const signature = keySignature(node);
+      if (!list.includes(signature)) list.push(signature);
+      alternatives.set(node.name, list);
+    });
+    const ordered: { base: string; perRow: boolean }[] = [];
+    const declared = new Set<string>();
+    walkInvocationAst(handler.body, (node) => {
+      if (!isMappingNode(node)) return;
+      const collection = collectionByName.get(node.name);
+      if (!collection || node.keys.length !== collection.allKeyTypes.length) return;
+      const safeName = node.name.replace(/[^A-Za-z0-9_]/g, '_');
+      const rowLocal = (alternatives.get(node.name) ?? []).indexOf(keySignature(node)) > 0;
+      node.keys = node.keys.map((key, keyIndex) => {
+        const isSender = key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER;
+        const base = isSender
+          ? `__scb_key_${safeName}_sender_${keyIndex}`
+          : rowLocal
+            ? `__scb_key_${safeName}_${keyIndex}_row`
+            : `__scb_key_${safeName}_${keyIndex}`;
+        const parameterName = `${ENTRY_KEY_PREFIX}${base}`;
+        if (!declared.has(base)) {
+          declared.add(base);
+          ordered.push({ base, perRow: rowLocal && !isSender });
+          handler.parameters.push(Object.assign(
+            new ParameterNode(collection.allKeyTypes[keyIndex], parameterName, []),
+            { location: handler.location },
+          ));
+        }
+        return Object.assign(new IdentifierNode(parameterName), { location: key.location });
+      });
     });
     let stillReadsSender = false;
     walkInvocationAst(handler.body, (node) => {
-      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) {
-        stillReadsSender = true;
-      }
+      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) stillReadsSender = true;
     });
     // The graph handler prologue only threads the caller when the body still reads it.
     handler.usesMsgSender = stillReadsSender;
+    handlerEntryKeys.set(source, ordered);
   };
   if (resourceShapedHandler) {
     const handler = cloneNode(resourceShapedHandler);
@@ -622,40 +658,10 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(resourceShapedHandler);
     }
     if (eligible.length > 1) handler.forceCollectionJournalPool = true;
-    const senderKeys = senderKeyBindingsFor(resourceShapedHandler);
-    if (senderKeys.length > 0) {
-      bindSenderKeyParameter(handler, senderKeys[0].type);
-      resourceHandlerTakesSenderKey = true;
-    }
+    bindEntryKeyParameters(handler, resourceShapedHandler);
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
   }
-  // A handler that keys two different collections from ONE parameter (ERC-20 `transferFrom`, whose `from`
-  // addresses both `allowances[from][spender]` and `balances[from]`) cannot share canonical per-entry witnesses
-  // with siblings that key those collections independently: the journal identifies a pending value by the key
-  // EXPRESSION passed at the call site, and one parameter cannot carry two different witness names. Until the
-  // journal takes an explicit compiler-supplied entry identity, admit siblings only when no handler
-  // cross-keys collections, and keep the single-handler route otherwise.
-  const crossKeyedHandler = eligible.find((fn) => {
-    const collectionsByInput = new Map<number, Set<string>>();
-    for (const binding of fn.hiddenBatchKeyWitnesses ?? []) {
-      if (binding.inputIndex < 0) continue;
-      const collection = binding.routeInput.replace(/^__scb_key_/, '').replace(/_\d+(_row)?$/, '');
-      const seen = collectionsByInput.get(binding.inputIndex) ?? new Set<string>();
-      seen.add(collection);
-      collectionsByInput.set(binding.inputIndex, seen);
-    }
-    return [...collectionsByInput.values()].some((collections) => collections.size > 1);
-  });
-  if (resourceShapedHandler && crossKeyedHandler && eligible.length > 1) {
-    for (const fn of eligible) {
-      if (fn === resourceShapedHandler) continue;
-      fn.hiddenBatchEligible = false;
-      fn.hiddenBatchRejectionReason = 'cross-keyed-collection-route-requires-one-handler';
-    }
-    eligible = [resourceShapedHandler];
-  }
-
   // When a resource-shaped handler shares the route with others, every handler must reach its entries through
   // the same journal path. The resource-shaped one is invoked as an internal clone whose accesses the collection
   // journal hoists into wrapper caches; a sibling invoked as its public self bypasses that and allocates its own
@@ -672,6 +678,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       handler.hiddenBatchRejectionReason = undefined;
       handler.hiddenBatchKeyWitnesses = undefined;
       handler.forceCollectionJournalPool = true;
+      bindEntryKeyParameters(handler, sourceHandler);
       siblingHandlerInvokeNames.set(sourceHandler, handler.name);
       contract.functions.push(handler);
     }
@@ -690,6 +697,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       parameter.name !== '__internal__returnOutputIdx');
     handler.graphEmissionHandler = true;
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
+    bindEntryKeyParameters(handler, sourceHandler);
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
@@ -704,36 +712,38 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
     const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
       binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+    const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
+      (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
+        (perRow ? `${base}_r${rowIndex}` : base));
     if (fn.parameters.length === 0) {
-      const senderOnly = fn === resourceShapedHandler && resourceHandlerTakesSenderKey
-        ? (fn.hiddenBatchKeyWitnesses ?? [])
-          .filter((binding) => binding.source === 'msgSender')
-          .slice(0, 1).map((binding) => witnessName(binding))
-        : [];
-      const senderOnlyChecks = senderOnly
-        .map((witness) => `require(${witness} == __scb_graph_caller);`).join(' ');
-      return `${condition} { require(rowArgs.length == 0); ${senderOnlyChecks} ${invoke(senderOnly.join(', '))} }`;
+      const entryOnly = entryKeyArguments(fn);
+      const senderChecks = (fn.hiddenBatchKeyWitnesses ?? [])
+        .filter((binding) => binding.source === 'msgSender')
+        .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
+      return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))} }`;
     }
     const declarations = fn.parameters.map((parameter, i) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
     const schema = fn.parameters.map((parameter) => parameter.type.toString()).join(', ');
-    const witnessByInput = new Map((fn.hiddenBatchKeyWitnesses ?? [])
-      .filter((binding) => binding.source !== 'msgSender')
-      .map((binding) => [binding.inputIndex, witnessName(binding)]));
     const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
       binding.source === 'msgSender'
         ? `require(${witnessName(binding)} == __scb_graph_caller);`
         : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
-    // The clone's trailing spender parameter (when it has one) is fed by the same witness the row just checked
-    // against `__scb_graph_caller`, so the batched entry keys stay caller-authorized.
-    const senderKeyArgument = fn === resourceShapedHandler && resourceHandlerTakesSenderKey
+    // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
+    // checked, so the journal sees one identity per physical entry however the handler names its parameters.
+    //
+    // A handler with no batch clone has no entry-key parameters, and the journal hoists its entry reads to the
+    // top of the wrapper - above the dispatch branch where `__scb_arg_*` is declared. Those key positions must
+    // still be passed as route witnesses, which are wrapper parameters and therefore always in scope.
+    const substituteKeyWitnesses = !handlerEntryKeys.has(fn);
+    const witnessByInput = new Map(substituteKeyWitnesses
       ? (fn.hiddenBatchKeyWitnesses ?? [])
-        .filter((binding) => binding.source === 'msgSender')
-        .slice(0, 1).map((binding) => witnessName(binding))
-      : [];
+        .filter((binding) => binding.source !== 'msgSender')
+        .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
+      : []);
     const callArgs = [
       ...fn.parameters.map((_parameter, i) => witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`),
-      ...senderKeyArgument,
+      ...entryKeyArguments(fn),
     ].join(', ');
     const decode = declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`

@@ -52,7 +52,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | `Layer3ReleaseA.test.ts` also pins state-layout equivalence between the direct and hidden-batch compilations of one contract.  The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
-| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection now share one entry-slot union and one journal pool (`Layer3 Release B`), bounded by `cross-keyed-collection-route-requires-one-handler`. | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
+| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection now share one entry-slot union and one journal pool (`Layer3 Release B`), with compiler-supplied entry identity, so a cross-keyed handler such as `transferFrom` unions with its siblings. | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
 | Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PROVEN for the admitted handler class | `Layer3ReleaseA.test.ts` settles a `msg.sender`-authorizing modifier, string and custom-error `revert`, `while`, `do/while`, `break`, `continue` and early return on the BCH-2026 VM, each paired with a hostile case of identical transaction shape - a different authorized caller, a reached revert, or an off-by-one settlement. Handler shapes outside SCB1 eligibility are unchanged and still fail closed. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
@@ -129,6 +129,35 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: Release B complete - explicit entry identity lifts the cross-keyed boundary
+
+The bounded lift recorded above is now unbounded. `cross-keyed-collection-route-requires-one-handler` is gone.
+
+The obstacle was that the collection journal identified a pending value by the key EXPRESSION at the call
+site. ERC-20 `transferFrom` keys `allowances[from][spender]` and `balances[from]` from one `from`, and one
+parameter cannot carry two different canonical witness names, so a sibling handler over either entry produced
+a second journal local and a second C2 slot for one entry NFT. Every fix that stayed with expression-derived
+identity moved the duplicate rather than removing it.
+
+Identity is now supplied by the compiler rather than inferred. Each batch clone takes one synthetic parameter
+per physical entry key, named after that entry's canonical route input, and the clone's mapping keys are
+rewritten to those parameters. The key expression at every call site is then the entry's identity by
+construction, whatever source parameter originally carried the value. `msg.sender` keys are ordinary entry keys
+in this scheme; the route still requires each to equal `__scb_graph_caller`.
+
+The five-handler ERC-20 corpus token - `mint`, `approve`, `transferFrom`, `checkBalance`, `checkAllowance` -
+now admits every handler in one route over exactly four entries: balances shared, allowances shared, and
+balances row-local per row. Route body 1,272 -> 1,293 bytes and batch artifact 3,947 -> 4,003 for five handlers
+instead of one.
+
+One subtlety worth keeping: a handler with no batch clone has no entry-key parameters, and the journal hoists
+its entry reads above the dispatch branch that declares `__scb_arg_*`. Those key positions must still be passed
+as route witnesses, which are wrapper parameters and always in scope. Removing that substitution wholesale
+produced `Undefined reference to symbol __scb_arg_0_0`.
+
+A mixed batch still has no BCH-2026 settlement fixture, so the ordered-ERC-20 row remains PARTIAL on execution
+evidence even though the structural restriction is lifted.
 
 ### 2026-07-26: Release B - entry-identity witnesses and a bounded multi-handler lift
 

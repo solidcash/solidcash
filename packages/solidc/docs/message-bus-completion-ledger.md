@@ -51,9 +51,9 @@ Evidence labels:
 
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
-| Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
+| Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | `Layer3ReleaseA.test.ts` also pins state-layout equivalence between the direct and hidden-batch compilations of one contract.  The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
 | Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
-| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PARTIAL | `require`, conditionals, counted loops, and expression calls execute in the original compiled handler with exact reached-row exhaustion. Modifiers, `revert` with a string or a custom error, and `while` loops are admitted with compiler regressions, but none of those four has a hostile VM negative yet, and the full control-flow class remains. |
+| Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PARTIAL | `require`, conditionals, counted loops, and expression calls execute in the original compiled handler with exact reached-row exhaustion. `Layer3ReleaseA.test.ts` adds hostile BCH-2026 negatives for a `msg.sender`-authorizing modifier, string and custom-error `revert`, and exact `while` iteration counts, each against an honest positive control of identical shape. `do/while`, `break`, `continue` and early-return journal shapes remain uncovered. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
 | Result-dependent continuation and transitive result chains | PROVEN for the admitted scalar class | The compiled `A.plusOne -> B.twice` fixture consumes authenticated `4`, resumes A, and authenticates A's derived `5`. General native worklist derivation still rejects returns. |
@@ -129,6 +129,28 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: Release A - admitted handler semantics, and a corrupt graph handler frame
+
+`Layer3ReleaseA.test.ts` composes a router that forwards one call into a scalar-state callee, and uses that
+one shape to prove four handler classes on the BCH-2026 VM, each hostile case sharing the honest case's exact
+transaction shape and claimed settlement so the rejection can only come from the covenant:
+
+- a modifier whose `msg.sender` authorization holds, and the same graph rejected when the modifier names a
+  different authorized caller;
+- string and custom-error `revert`, both the non-reverting path and an argument that reaches the revert;
+- a `while` loop settling its exact iteration count, and a settlement claiming one iteration too many.
+
+Building it surfaced a real code-generation bug rather than a test problem. A handler that both reads
+`msg.sender` and writes scalar state declared the hidden invocation context twice: once because it is a graph
+emission handler, and again because it has journal slots. Callers push each context value exactly once, so the
+handler frame sat one item deeper than reality and every later read was off by one, surfacing as an `OP_SPLIT`
+on an empty stack item. Modifiers were never implicated - an inline `require(msg.sender == expected)` with a
+state write failed identically. The journal branch now declares that context only when the graph branch has
+not already done so.
+
+Still open in Release A: `do/while`, `break`, `continue`, early-return journal shapes, multi-argument event
+identity/count, and `mint`/`burn` through real balanced settlement.
 
 ### 2026-07-26: caller-keyed ERC-20 handlers and cross-function outlining
 

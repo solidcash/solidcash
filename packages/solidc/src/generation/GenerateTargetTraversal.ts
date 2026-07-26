@@ -2476,9 +2476,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Hidden invocation context follows declared parameters and precedes
         // journal slots in the handler frame. It is supplied by every caller
         // and discarded by the handler epilogue rather than returned.
-        if (node.usesMsgSender) this.pushToStack('__internal__handlerMsgSender', true);
-        if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
-        if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
+        //
+        // A graph handler already declared this context above. Declaring it again here - which is what happens
+        // when a handler both reads msg.sender and writes scalar state - leaves the frame one item deeper than
+        // the caller actually pushes, and every subsequent read is off by one (observed as an OP_SPLIT on an
+        // empty item). The caller pushes each context value exactly once, so the frame must too.
+        if (!node.graphEmissionHandler) {
+          if (node.usesMsgSender) this.pushToStack('__internal__handlerMsgSender', true);
+          if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
+          if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
+        }
         for (const sv of activeJournalSlots) {
           const key = `${sv.nftIndex}:${sv.fieldIndex}`;
           const stackName = `__internal__state_write_${sv.name}`;

@@ -60,6 +60,12 @@ describe('Release 0 shared invocation analysis', () => {
     expect(summary.externalOutStateReads).toEqual(abi.externalOutStateReads);
     expect(summary.emits).toEqual(abi.emits);
     expect(summary.transferCount).toBe(abi.transferCount);
+    expect(summary.transfers).toEqual([{
+      transferIndex: 0,
+      recipient: { kind: 'forward', paramIndex: 1 },
+      amount: { kind: 'forward', paramIndex: 0 },
+    }]);
+    expect(summary.transfers).toEqual(abi.transfers);
     expect(summary.dynamicWrites).toEqual(abi.dynamicWrites);
     expect(summary.blockLayout).toEqual(abi.blockLayout);
     expect(summary.externalCalls?.[0]).toMatchObject({

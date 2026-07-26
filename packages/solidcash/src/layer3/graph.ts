@@ -644,6 +644,8 @@ contract GraphProjectionVerifier() {
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     cursor = cursor + 2;
     bigint batchCursor = 7;
+    bigint ownerValueMode = int(bytes.concat(ownerBatch.slice(5, 6), hex"00"));
+    require(ownerValueMode == 0 || ownerValueMode == 1);
     bigint resultCursor = 0;
     bigint emissionCursor = 0;
     bigint callerCursor = 0;
@@ -740,6 +742,13 @@ contract GraphProjectionVerifier() {
         require(occurrence == 0);
         bigint localArgsLength = int(bytes.concat(ownerBatch.slice(batchCursor, batchCursor + 2), hex"00"));
         batchCursor = batchCursor + 2;
+        if (ownerValueMode == 1) {
+          bigint valueNegative = int(bytes.concat(
+            ownerBatch.slice(batchCursor, batchCursor + 1), hex"00"
+          ));
+          require(valueNegative == 0 || valueNegative == 1);
+          batchCursor = batchCursor + 9;
+        }
         require(localArgsLength == argsLength);
         require(ownerBatch.slice(batchCursor, batchCursor + localArgsLength) == args);
         batchCursor = batchCursor + localArgsLength;

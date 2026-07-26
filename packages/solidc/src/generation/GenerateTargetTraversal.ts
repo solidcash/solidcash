@@ -5808,7 +5808,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let hiddenContextCount = 0;
     if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      this.emitMsgValue(contextLoc);
+      if (!this.stack.includes('__scb_graph_msg_value')) {
+        throw new Error(`Missing authenticated logical msg.value while invoking '${targetFunc.name}'`);
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_msg_value'))), contextLoc);
+      this.emit(Op.OP_PICK, contextLoc);
       this.pushToStack(`(__handler_msg_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
@@ -19872,7 +19876,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., value]
    */
   private emitMsgValue(locationData: SingleLocationData): void {
-    if (this.stack.includes('__internal__handlerMsgValue')) {
+    if (this.currentFunction.graphEmissionHandler) {
+      if (!this.stack.includes('__internal__handlerMsgValue')) {
+        throw new Error(
+          `Missing logical msg.value context in graph handler '${this.currentFunction.name}'`,
+        );
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgValue'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;

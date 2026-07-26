@@ -360,6 +360,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
+  usesMsgValue?: boolean;
   /**
    * Compiler-owned SCB1 clone whose one supported tail external call is verified against the authenticated
    * participant emission frame instead of performing ordinary physical-call settlement.

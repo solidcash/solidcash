@@ -7,6 +7,8 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 export interface HiddenBatchInvocation {
   function: string;
   args?: readonly FunctionArgument[];
+  /** Logical per-invocation satoshi delta when compiler-authored effects cannot derive it. */
+  msgValue?: bigint;
   /** Graph-authenticated logical caller locking bytecode for msg.sender-keyed resources. */
   logicalCaller?: FunctionArgument;
 }
@@ -63,6 +65,14 @@ const uintLe = (value: bigint, width: number): Uint8Array => {
   return result;
 };
 
+const signedValue = (value: bigint): Uint8Array => {
+  const magnitude = value < 0n ? -value : value;
+  if (magnitude > 0x7fff_ffff_ffff_ffffn) {
+    throw new Error('SCB1 logical msg.value exceeds the signed 64-bit satoshi envelope');
+  }
+  return concat(Uint8Array.of(value < 0n ? 1 : 0), uintLe(magnitude, 8));
+};
+
 /**
  * Canonically encode real compiler-generated SCB1 handlers without constructing a transaction.
  *
@@ -92,6 +102,7 @@ export function encodeHiddenBatch(
   }
 
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
   const results: { row: number; types: readonly string[] }[] = [];
   const projectedRows: {
@@ -149,18 +160,45 @@ export function encodeHiddenBatch(
       selectorHex: handler.selector,
       argsHex: binToHex(argsBlob),
     });
+    let logicalValue = invocation.msgValue ?? 0n;
+    if (handler.usesMsgValue && (handler.transfers?.length ?? 0) > 0) {
+      let outgoing = 0n;
+      for (const transfer of handler.transfers!) {
+        const source = transfer.amount;
+        let amount: bigint;
+        if (source.kind === 'forward' && source.paramIndex !== undefined
+          && typeof args[source.paramIndex] === 'bigint') {
+          amount = args[source.paramIndex] as bigint;
+        } else if (source.kind === 'literal' && source.value !== undefined) {
+          amount = BigInt(source.value);
+        } else {
+          throw new Error(
+            `SCB1 msg.value for '${handler.name}' has a non-derivable transfer amount expression`,
+          );
+        }
+        outgoing += amount;
+      }
+      const derived = -outgoing;
+      if (invocation.msgValue !== undefined && invocation.msgValue !== derived) {
+        throw new Error(`SCB1 msg.value for '${handler.name}' disagrees with compiler-derived effects`);
+      }
+      logicalValue = derived;
+    } else if (handler.usesMsgValue && invocation.msgValue === undefined) {
+      throw new Error(`SCB1 msg.value for '${handler.name}' requires an explicit logical value`);
+    }
     return concat(
       hexToBin(handler.selector),
       uintLe(BigInt(rowIndex), 4),
       uintLe(0n, 2),
       uintLe(BigInt(argsBlob.length), 2),
+      ...(valueMode ? [signedValue(logicalValue)] : []),
       argsBlob,
     );
   });
 
   const blob = concat(
     hexToBin('53434231'),
-    Uint8Array.from([1, 0, invocations.length]),
+    Uint8Array.from([1, valueMode ? 1 : 0, invocations.length]),
     ...rows,
   );
   if (blob.length > capability.maximumBlobBytes) {

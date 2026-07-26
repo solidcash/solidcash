@@ -7,7 +7,8 @@ import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
-  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node,
+  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
+  ExpressionNode, TransferStatementNode,
 } from '../ast/AST.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 
@@ -64,6 +65,64 @@ const occurrenceOf = (
   return found;
 };
 
+const expressionSource = (
+  expression: ExpressionNode, fn: FunctionDefinitionNode, contract: ContractNode,
+): { kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  paramIndex?: number; paramName?: string; value?: string; type?: string } => {
+  const shaped = expression as unknown as { name?: string; value?: unknown; type?: Type };
+  if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
+    const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const parameterIndex = visible.findIndex((parameter) => parameter.name === shaped.name);
+    if (parameterIndex >= 0) return { kind: 'forward', paramIndex: parameterIndex };
+    if (contract.parameters.some((parameter) => parameter.name === shaped.name)) {
+      return { kind: 'constructorArg', paramName: shaped.name };
+    }
+  }
+  const kind = expression.constructor.name;
+  if (kind === 'BoolLiteralNode') {
+    return { kind: 'literal', value: String(shaped.value), type: 'bool' };
+  }
+  if (kind === 'IntLiteralNode') {
+    return { kind: 'literal', value: String(shaped.value), type: shaped.type?.toString() ?? 'bigint' };
+  }
+  if (kind === 'StringLiteralNode') {
+    return { kind: 'literal', value: String(shaped.value), type: 'string' };
+  }
+  if (kind === 'HexLiteralNode' && shaped.value instanceof Uint8Array) {
+    return {
+      kind: 'literal', value: binToHex(shaped.value), type: shaped.type?.toString() ?? 'bytes',
+    };
+  }
+  return { kind: 'expression' };
+};
+
+const transferEffects = (
+  fn: FunctionDefinitionNode, contract: ContractNode,
+): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
+  amount: ReturnType<typeof expressionSource> }[] => {
+  const transfers: TransferStatementNode[] = [];
+  const seen = new Set<object>();
+  const visit = (value: unknown): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof TransferStatementNode) transfers.push(value);
+    for (const [key, child] of Object.entries(value)) {
+      if ([
+        'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection',
+      ].includes(key)) continue;
+      if (child instanceof Node) visit(child);
+      else if (Array.isArray(child)) for (const item of child) visit(item);
+    }
+  };
+  visit(fn.body);
+  return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => ({
+    transferIndex: transfer.transferIndex,
+    recipient: expressionSource(transfer.lockingBytecode, fn, contract),
+    amount: expressionSource(transfer.amount, fn, contract),
+  }));
+};
+
 /**
  * Conservatively decide whether a function mutates any covenant-derived state. Returns false ONLY when the body
  * has no stateful statement (state/array/mapping write, delete, emit, transfer, low-level/token-container op)
@@ -85,7 +144,9 @@ function computeWritesState(func: FunctionDefinitionNode): boolean {
 }
 
 /** Build the common metadata fields for an ABI function entry. */
-function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = false): Partial<AbiFunction> {
+function buildFunctionAbiMetadata(
+  func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
+): Partial<AbiFunction> {
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -122,6 +183,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
+      ...(contract && { transfers: transferEffects(func, contract) }),
     }),
     ...(func.deployTargets && func.deployTargets.length > 0 && {
       deployTargets: func.deployTargets.map((dt) => ({
@@ -388,7 +450,7 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
-    ...buildFunctionAbiMetadata(func, isStateful),
+    ...buildFunctionAbiMetadata(func, isStateful, contract),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));
@@ -407,7 +469,7 @@ export function generateArtifact(
       ...(contract.constructorDef.modifiers.length > 0 && {
         modifiers: contract.constructorDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.constructorDef),
+      ...buildFunctionAbiMetadata(contract.constructorDef, false, contract),
     });
   }
 
@@ -420,7 +482,7 @@ export function generateArtifact(
       ...(contract.fallbackDef.modifiers.length > 0 && {
         modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.fallbackDef),
+      ...buildFunctionAbiMetadata(contract.fallbackDef, false, contract),
     });
   }
 
@@ -431,7 +493,7 @@ export function generateArtifact(
       inputs: [],
       isReceive: true,
       modifiers: ['payable'],
-      ...buildFunctionAbiMetadata(contract.receiveDef),
+      ...buildFunctionAbiMetadata(contract.receiveDef, false, contract),
     });
   }
 

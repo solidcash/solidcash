@@ -159,6 +159,11 @@ export interface AbiFunction {
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
+  transfers?: readonly {
+    transferIndex: number;
+    recipient: ArgSource;
+    amount: ArgSource;
+  }[];
   deployTargets?: readonly {
     contractName: string; dataNftCount: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
@@ -511,6 +516,11 @@ export interface InvocationAnalysisFunction {
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
+  transfers?: readonly {
+    transferIndex: number;
+    recipient: ArgSource;
+    amount: ArgSource;
+  }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   dynamicReads?: readonly string[];
   dynamicWrites?: readonly string[];
@@ -565,6 +575,12 @@ export interface Artifact {
       selector: string;
       inputs: AbiInput[];
       outputs?: AbiOutput[];
+      usesMsgValue?: boolean;
+      transfers?: readonly {
+        transferIndex: number;
+        recipient: ArgSource;
+        amount: ArgSource;
+      }[];
       eligible: boolean;
       rejectionReason?: string;
       batchKeyWitnesses?: {

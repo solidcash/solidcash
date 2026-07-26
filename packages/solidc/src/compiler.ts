@@ -276,6 +276,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     // when the surface member access has already been lowered away from its
     // NullaryOp representation.
     if (fn.usesMsgSender) routeUsesMsgSender = true;
+    fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
     const bodyStatements = fn.body.statements ?? [];
     const directMethodCallCount = bodyStatements.filter((statement) =>
@@ -455,6 +456,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       && !((graphControllerLbc !== undefined
           && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue)
           && !routeUsesOtherIntrospection)
+        || (routeUsesMsgValue && !routeUsesMsgSender && !routeUsesMsgData
+          && !routeUsesMsgSig && !routeUsesOtherIntrospection)
         || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
@@ -475,10 +478,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     if (!reason) eligible.push(fn);
     if (!reason && (graphTailCallEligible
       || (graphControllerLbc !== undefined
-        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue)))) {
+        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
+      || routeUsesMsgValue)) {
       graphTailHandlers.add(fn);
     }
-    if (!reason && graphControllerLbc !== undefined && routeUsesMsgValue) {
+    if (!reason && routeUsesMsgValue) {
       graphMsgValueHandlers.add(fn);
     }
     // Void graph handlers authenticate emissions at the actual external-call
@@ -572,6 +576,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const routeMaximumRows = graphMsgValueHandlers.size > 0
     ? 1
     : resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  const logicalValueMode = graphMsgValueHandlers.size > 0;
   let resourceHandlerInvokeName: string | undefined;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
@@ -855,7 +860,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           ${parseGraphCaller}
           bytes4 rowSelector;
           bytes rowArgs;
-          (rowSelector, rowArgs, cursor) = __scb_parse_row(
+          bigint __scb_graph_msg_value;
+          (rowSelector, rowArgs, __scb_graph_msg_value, cursor) = __scb_parse_row(
             batchBlob, cursor, ${rowExpression}
           );
           bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
@@ -921,8 +927,8 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     contract __HiddenBatchHost() {
       function __scb_parse_row(
         bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite
-      ) internal pure returns (bytes4, bytes, bigint) {
-        require(__scb_at + 12 <= __scb_blob.length);
+      ) internal pure returns (bytes4, bytes, bigint, bigint) {
+        require(__scb_at + ${logicalValueMode ? 21 : 12} <= __scb_blob.length);
         bytes4 __scb_parsed_selector = bytes4(__scb_blob.slice(__scb_at, __scb_at + 4));
         __scb_at = __scb_at + 4;
         bigint __scb_callsite = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 4), hex"00"));
@@ -933,9 +939,24 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         require(__scb_occurrence == 0);
         bigint __scb_args_length = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 2), hex"00"));
         __scb_at = __scb_at + 2;
+        bigint __scb_logical_value = 0;
+        ${logicalValueMode ? `
+        bigint __scb_value_negative = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 1), hex"00"));
+        require(__scb_value_negative == 0 || __scb_value_negative == 1);
+        __scb_at = __scb_at + 1;
+        bigint __scb_value_magnitude = int(bytes.concat(
+          __scb_blob.slice(__scb_at, __scb_at + 8), hex"00"
+        ));
+        __scb_at = __scb_at + 8;
+        __scb_logical_value = __scb_value_negative == 1
+          ? -__scb_value_magnitude : __scb_value_magnitude;
+        ` : ''}
         require(__scb_args_length >= 0 && __scb_at + __scb_args_length <= __scb_blob.length);
         bytes __scb_parsed_args = __scb_blob.slice(__scb_at, __scb_at + __scb_args_length);
-        return (__scb_parsed_selector, __scb_parsed_args, __scb_at + __scb_args_length);
+        return (
+          __scb_parsed_selector, __scb_parsed_args, __scb_logical_value,
+          __scb_at + __scb_args_length
+        );
       }
       ${graphControllerLbc === undefined ? '' : `
       function __scb_parse_graph_caller(
@@ -970,7 +991,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         }
         require(batchBlob.slice(0, 4) == hex"53434231");
         require(batchBlob.slice(4, 5) == hex"01");
-        require(batchBlob.slice(5, 6) == hex"00");
+        require(batchBlob.slice(5, 6) == hex"${logicalValueMode ? '01' : '00'}");
         ${graphPrologue}
         bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
         require(${resourceShapedHandler
@@ -1471,6 +1492,7 @@ function compileResolvedAst(
       ...(abi?.externalOutStateReads?.length && { externalOutStateReads: abi.externalOutStateReads }),
       ...(abi?.emits?.length && { emits: abi.emits }),
       ...(abi?.transferCount !== undefined && { transferCount: abi.transferCount }),
+      ...(abi?.transfers?.length && { transfers: abi.transfers }),
       ...(abi?.tokenContainerAccesses?.length && { tokenContainerAccesses: abi.tokenContainerAccesses }),
       ...(abi?.dynamicReads?.length && { dynamicReads: abi.dynamicReads }),
       ...(abi?.dynamicWrites?.length && { dynamicWrites: abi.dynamicWrites }),
@@ -1507,6 +1529,12 @@ function compileResolvedAst(
             type: type.toString().replace(/address payable/g, 'address'),
           })),
         }),
+        ...(fn.usesMsgValue && { usesMsgValue: true }),
+        ...(() => {
+          const sourceAbi = artifact.abi.find((candidate) =>
+            candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
+          return sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {};
+        })(),
         eligible: fn.hiddenBatchEligible === true,
         ...(fn.hiddenBatchRejectionReason && { rejectionReason: fn.hiddenBatchRejectionReason }),
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),

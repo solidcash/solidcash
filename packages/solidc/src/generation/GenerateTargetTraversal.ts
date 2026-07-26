@@ -15265,6 +15265,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. Verify output commitments for WRITTEN (non-deleted) entries
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
+      // A pending write with no entry descriptor means the resource is not an entry NFT the journal can settle
+      // (a state array element reached through a batch route is the known case). Silently skipping it would
+      // drop the write's covenant check, so fail closed with something a user can act on rather than a
+      // TypeError from reading `.collection` of undefined.
+      if (this.entrySlots[slotIdx] === undefined) {
+        throw new Error(
+          `Function '${node.name}' writes a resource at entry slot ${slotIdx} that has no entry descriptor; `
+          + 'this resource shape is not supported by the hidden-batch journal',
+        );
+      }
       if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
       if (this.isAliasCondWrite(slotIdx)) continue; // gated separately below

@@ -130,6 +130,32 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: Release C start - resource backend frontier, measured
+
+Probing each backend shape against the graph route rather than reading eligibility source gives the real
+frontier:
+
+| shape | status |
+|---|---|
+| mapping insert on a cold key | admitted |
+| nested mapping with dynamic keys | admitted |
+| `bytes32` overwrite | admitted |
+| satoshi/token effect | admitted |
+| mapping delete | fails closed (`SortedMappingCodegenPendingError`) |
+| `string` state | rejected (`dynamic-state-batch-journal-not-enabled`) |
+| dynamic array push | rejected |
+| fixed array element | ABORTED code generation |
+
+The fixed-array abort was a genuine crash, present at the Release A baseline and not introduced by the
+multi-handler work: a state array element has no entry descriptor, so `emitEntryCovenantVerification` read
+`.collection` of undefined. Two eligibility guards were tried first and neither fired - the shape is neither an
+array-typed state variable nor an ArrayAccess on a named collection by the time the route is synthesized - so
+the check now lives where the descriptor is actually consumed and names the function and slot. Skipping the
+slot silently was rejected as an option: it would drop the write's covenant check.
+
+Remaining Release C work is unchanged: insertion/deletion, chunked values, dynamic arrays, token containers,
+and runtime-varying aliases still need real journal support rather than a fail-closed boundary.
+
 ### 2026-07-26: Release B complete - explicit entry identity lifts the cross-keyed boundary
 
 The bounded lift recorded above is now unbounded. `cross-keyed-collection-route-requires-one-handler` is gone.

@@ -566,4 +566,14 @@ describe('Release 4 compiler-hidden local batch', () => {
         '__scb_key_balances_0_row_r1',
       ]);
   });
+
+  it('fails closed with a nameable error on a resource the journal cannot settle', () => {
+    // A state array element is not an entry NFT, so no entry descriptor exists for it. Code generation used to
+    // abort with "Cannot read properties of undefined (reading 'collection')"; a user cannot act on that.
+    expect(() => compileString(`contract ArrayState() {
+      bigint[3] slots;
+      function set(bigint index, bigint value) public { this.slots[index] = value; require(value >= 0); }
+    }`, { forceStateful: true, experimentalHiddenBatch: true }))
+      .toThrow(/has no entry descriptor; this resource shape is not supported by the hidden-batch journal/);
+  });
 });

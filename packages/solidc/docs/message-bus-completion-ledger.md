@@ -130,6 +130,28 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: attempted lift of the scalar-write + collection-delete boundary (unsuccessful)
+
+Recorded so the next attempt does not repeat it.
+
+Hypothesis: since `m[k] = 0` settles beside a scalar write and `delete m[k]` does not, rewriting the delete to
+a default-write *inside the batch clone only* should settle while leaving the direct entry point's real delete
+(and therefore C2 list semantics) untouched.
+
+Result: no change. The route body stayed 408 bytes against the assign form's 385, so the rewrite never reached
+the delete node - at the point the batch route is synthesized the statement is evidently not the
+`MappingDeleteNode` the eligibility walk matches later, or it is not reached as a direct child of a visited
+block. The change was reverted rather than left in as dead code.
+
+What this does establish: the fault is NOT the delete node type alone. The two candidate explanations left are
+(a) the clone plus scalar-journal plus collection-journal combination, independent of delete, and (b) the
+delete's condDelete/soft-delete slot allocation. Distinguishing them needs a fixture that puts a *resource-shaped*
+handler beside a scalar write; the single-invocation composer cannot build one, because a resource-shaped route
+requires exactly two rows. Building a two-row composer is the prerequisite for the next attempt.
+
+`scalar-write-with-collection-delete-not-enabled` therefore stands. It is fail-closed: the worst case is a
+transaction that will not validate, never forged state accepted.
+
 ### 2026-07-26: Release C - collection delete settles through the journal
 
 `delete m[k]` reached code generation raw, and the C2 backend failed closed on a shape the value-threaded

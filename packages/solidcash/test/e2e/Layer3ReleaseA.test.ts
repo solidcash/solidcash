@@ -1,4 +1,4 @@
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { buildInitialStateCommitments } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
@@ -10,7 +10,10 @@ import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
+} from '../../src/stateful/covenant-helpers.js';
+import { decodeEntryCommitment, encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
@@ -72,6 +75,13 @@ interface ScalarGraphCase {
   callArgs: (target: Contract, router: Contract) => FunctionArgument[];
   /** Callee state written by the target contract before the graph runs (e.g. an owner address). */
   genesisState?: (router: Contract) => Record<string, unknown>;
+  /** Optional single collection entry the handler reads and settles, seeded after both contracts are branded. */
+  entry?: {
+    collection: string;
+    key: (target: Contract, router: Contract) => Uint8Array;
+    value: bigint;
+    settled: bigint;
+  };
 }
 
 /**
@@ -124,6 +134,29 @@ async function buildScalarGraph(testCase: ScalarGraphCase) {
     }
   }
 
+  // One collection entry, seeded once both identities exist so its key can name either contract.
+  const entrySpec = testCase.entry;
+  let entryUtxo: any;
+  if (entrySpec !== undefined) {
+    const slot = keyToSlot(entrySpec.key(target, router));
+    entryUtxo = randomUtxo({
+      satoshis: 10_000n,
+      token: {
+        category: targetSetup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: 'mutable' as const,
+          commitment: binToHex(encodeEntryCommitment(
+            slot, new Uint8Array(32), bigIntToVmNumber(entrySpec.value),
+          )),
+        },
+      },
+    });
+    await provider.addUtxo(
+      getEntryNftAddress(target, targetSetup.categoryId, entrySpec.collection), entryUtxo,
+    );
+  }
+
   const plan = layer3.planCompiledGraph([
     { artifact: routerArtifact, lockingBytecode: router.lockingBytecode },
     { artifact: targetArtifact, lockingBytecode: target.lockingBytecode },
@@ -169,6 +202,11 @@ async function buildScalarGraph(testCase: ScalarGraphCase) {
   );
   dataNftUtxos.forEach((utxo: any) =>
     tx.addInput(utxo, createDataNftUnlocker(target, layout.participantInputs[1], targetSetup.categoryId)));
+  if (entryUtxo !== undefined) {
+    tx.addInput(entryUtxo, createEntryNftUnlocker(
+      target, layout.participantInputs[1], targetSetup.categoryId, entrySpec!.collection,
+    ));
+  }
   projectionUtxos.forEach((proof, participant) =>
     tx.addInput(proof, projection.unlock.verify(
       transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
@@ -196,6 +234,23 @@ async function buildScalarGraph(testCase: ScalarGraphCase) {
         nft: { capability: 'mutable', commitment: settledCommitments[index] },
       },
     }));
+  if (entryUtxo !== undefined) {
+    const decoded = decodeEntryCommitment(hexToBin(entryUtxo.token.nft.commitment));
+    tx.addOutput({
+      to: getEntryNftAddress(target, targetSetup.categoryId, entrySpec!.collection),
+      amount: entryUtxo.satoshis,
+      token: {
+        category: targetSetup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(
+            decoded.slot, decoded.nextKey, bigIntToVmNumber(entrySpec!.settled),
+          )),
+        },
+      },
+    });
+  }
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -402,6 +457,94 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
       expect(directContract.artifact.stateLayout).toEqual(
         compileString(target, { forceStateful: true, experimentalHiddenBatch: true }).stateLayout,
       );
+    });
+  });
+
+  describe('mint and burn', () => {
+    const MINT = `pragma solidcash >=0.8.0;
+    contract MintTarget() {
+      mapping(address => bigint) balances;
+      bigint supply;
+      function mint(address to, bigint amount) public {
+        this.balances[to] = this.balances[to] + amount;
+        this.supply = this.supply + amount;
+        require(amount >= 0);
+      }
+    }`;
+    const BURN = `pragma solidcash >=0.8.0;
+    contract BurnTarget() {
+      mapping(address => bigint) balances;
+      bigint supply;
+      function burn(address from, bigint amount) public {
+        require(this.balances[from] >= amount);
+        this.balances[from] = this.balances[from] - amount;
+        this.supply = this.supply - amount;
+      }
+    }`;
+    const holder = hexToBin(`aa20${'55'.repeat(32)}87`);
+
+    it('settles mint against both the holder balance and total supply', async () => {
+      const { provider, transaction } = await buildScalarGraph({
+        target: MINT,
+        router: ROUTER('function mint(address to, bigint amount);', 'ITarget(target).mint(to, amount);',
+          'address to, bigint amount'),
+        state: { supply: 0n },
+        settled: { supply: 40n },
+        entry: { collection: 'balances', key: () => holder, value: 0n, settled: 40n },
+        routeArgs: () => [holder, 40n] as FunctionArgument[],
+        callName: 'mint',
+        callArgs: () => [holder, 40n] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    });
+
+    it('rejects a mint whose supply does not match the minted balance', async () => {
+      const { provider, transaction } = await buildScalarGraph({
+        target: MINT,
+        router: ROUTER('function mint(address to, bigint amount);', 'ITarget(target).mint(to, amount);',
+          'address to, bigint amount'),
+        state: { supply: 0n },
+        // Balance settles the honest 40 while supply claims 41: the two writes must agree in one flush.
+        settled: { supply: 41n },
+        entry: { collection: 'balances', key: () => holder, value: 0n, settled: 40n },
+        routeArgs: () => [holder, 40n] as FunctionArgument[],
+        callName: 'mint',
+        callArgs: () => [holder, 40n] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    });
+
+    it('settles burn against both the holder balance and total supply', async () => {
+      const { provider, transaction } = await buildScalarGraph({
+        target: BURN,
+        router: ROUTER('function burn(address from, bigint amount);', 'ITarget(target).burn(from, amount);',
+          'address from, bigint amount'),
+        state: { supply: 100n },
+        settled: { supply: 70n },
+        entry: { collection: 'balances', key: () => holder, value: 100n, settled: 70n },
+        routeArgs: () => [holder, 30n] as FunctionArgument[],
+        callName: 'burn',
+        callArgs: () => [holder, 30n] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    });
+
+    it('rejects burning more than the holder balance', async () => {
+      const { provider, transaction } = await buildScalarGraph({
+        target: BURN,
+        router: ROUTER('function burn(address from, bigint amount);', 'ITarget(target).burn(from, amount);',
+          'address from, bigint amount'),
+        state: { supply: 100n },
+        settled: { supply: 90n },
+        // The holder only has 5; the handler's own require must reject the 10 the transcript commits.
+        entry: { collection: 'balances', key: () => holder, value: 5n, settled: -5n },
+        routeArgs: () => [holder, 10n] as FunctionArgument[],
+        callName: 'burn',
+        callArgs: () => [holder, 10n] as FunctionArgument[],
+      });
+      await expect(provider.sendRawTransaction(transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
     });
   });
 });

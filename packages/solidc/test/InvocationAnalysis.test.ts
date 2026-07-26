@@ -34,4 +34,40 @@ describe('Release 0 shared invocation analysis', () => {
     expect(analysis.components.some((component) => component.recursive
       && component.functions.length === 2)).toBe(true);
   });
+
+  it('emits the complete compiler-resolved graph footprint per callsite', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget {
+        public bigint counter;
+        function step(bigint n) returns (bigint, bool);
+      }
+      contract GraphSummary(address target) {
+        string note;
+        event Seen(bigint value);
+        function run(bigint n, bytes recipient) public returns (bigint, bool) {
+          bigint value, bool ok = ITarget(target).step(n);
+          bigint settled = ITarget(target).outState.counter;
+          this.note = "done";
+          this.transfer(recipient, n);
+          emit Seen(settled);
+          require(ok);
+          return (value, ok);
+        }
+      }`, { forceStateful: true });
+    const abi = artifact.abi.find((fn) => fn.name === 'run')!;
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!;
+    expect(summary.externalCalls).toEqual(abi.externalCalls);
+    expect(summary.externalOutStateReads).toEqual(abi.externalOutStateReads);
+    expect(summary.emits).toEqual(abi.emits);
+    expect(summary.transferCount).toBe(abi.transferCount);
+    expect(summary.dynamicWrites).toEqual(abi.dynamicWrites);
+    expect(summary.blockLayout).toEqual(abi.blockLayout);
+    expect(summary.externalCalls?.[0]).toMatchObject({
+      interfaceName: 'ITarget',
+      functionName: 'step',
+      hasReturnValues: true,
+      returnTypes: ['bigint', 'bool'],
+      argSources: [{ kind: 'forward', paramIndex: 0 }],
+    });
+  });
 });

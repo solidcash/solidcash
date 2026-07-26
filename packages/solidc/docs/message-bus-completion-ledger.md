@@ -1002,3 +1002,20 @@ settlement, not an intermediate state after one logical row. That is the only ph
 introspection can soundly expose when an owner executes several journaled invocations atomically.
 The wider context row remains PARTIAL for collection/chunk out-state reads, aggregate/per-invocation
 `msg.value`, and the remaining transaction-introspection table.
+
+### 2026-07-26: Release F start — unified compiler invocation footprint
+
+`artifact.invocationAnalysis.functions[]` now carries the resolved ABI graph footprint alongside the
+existing internal-call SCC and state read/write closure: ordered external callsites with target and
+argument sources, call mode and return schema; external `outState` reads; events; satoshi-transfer
+count; token-container accesses; dynamic reads/writes; and the compiler-owned balanced block layout.
+The fields are copied from the same resolved ABI objects used by code generation, not reconstructed
+by an SDK parser.
+
+`InvocationAnalysis.test.ts` locks a function combining a tuple-returning external call, final
+`outState`, dynamic state, a satoshi effect, and an event, and byte-compares each emitted summary
+section with its ABI authority. This is the common input required by the general graph worklist and
+per-invocation value attribution.
+
+The compiler-summary row remains PARTIAL. Stable explicit callsite IDs, target alternative sets,
+occurrence/bounded-loop rules, result producer/consumer IDs, and value-expression metadata remain.

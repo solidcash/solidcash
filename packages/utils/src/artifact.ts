@@ -502,6 +502,15 @@ export interface InvocationAnalysisFunction {
   writes: readonly string[];
   effects: readonly string[];
   unknown: boolean;
+  /** Ordered compiler-resolved external callsites used by graph expansion. */
+  externalCalls?: readonly ExternalCallAbi[];
+  externalOutStateReads?: readonly ExternalOutStateAbi[];
+  emits?: readonly EmitAbi[];
+  transferCount?: number;
+  tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+  dynamicReads?: readonly string[];
+  dynamicWrites?: readonly string[];
+  blockLayout?: FunctionBlockLayout;
 }
 
 export interface InvocationAnalysisArtifact {

@@ -1440,9 +1440,20 @@ function compileResolvedAst(
       .filter((fn): fn is FunctionDefinitionNode => !!fn && fn.functionId !== undefined)
       .map((fn) => [fn.functionId!, fn.functionSelector ? binToHex(fn.functionSelector) : undefined]),
   );
+  const abiByFunctionId = new Map([...invocationFunctionById].map(([id, fn]) => {
+    const selector = selectorById.get(id);
+    const abi = selector
+      ? artifact.abi.find((candidate) => candidate.selector === selector)
+      : artifact.abi.find((candidate) => candidate.name === fn.name
+        && candidate.inputs.filter((input) => !input.name.startsWith('__internal__')).length
+          === fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length);
+    return [id, abi] as const;
+  }));
   artifact.invocationAnalysis = {
     version: 1,
-    functions: invocationAnalysis.functions.map((summary) => ({
+    functions: invocationAnalysis.functions.map((summary) => {
+      const abi = abiByFunctionId.get(summary.id);
+      return ({
       id: summary.id,
       name: summary.name,
       arity: summary.arity + (invocationFunctionById.get(summary.id)?.journalContextArity ?? 0),
@@ -1456,7 +1467,16 @@ function compileResolvedAst(
       writes: summary.footprint.writes,
       effects: summary.footprint.effects,
       unknown: summary.footprint.unknown,
-    })),
+      ...(abi?.externalCalls?.length && { externalCalls: abi.externalCalls }),
+      ...(abi?.externalOutStateReads?.length && { externalOutStateReads: abi.externalOutStateReads }),
+      ...(abi?.emits?.length && { emits: abi.emits }),
+      ...(abi?.transferCount !== undefined && { transferCount: abi.transferCount }),
+      ...(abi?.tokenContainerAccesses?.length && { tokenContainerAccesses: abi.tokenContainerAccesses }),
+      ...(abi?.dynamicReads?.length && { dynamicReads: abi.dynamicReads }),
+      ...(abi?.dynamicWrites?.length && { dynamicWrites: abi.dynamicWrites }),
+      ...(abi?.blockLayout && { blockLayout: abi.blockLayout }),
+    });
+    }),
     components: invocationAnalysis.components,
   };
   if (mergedCompilerOptions.experimentalHiddenBatch

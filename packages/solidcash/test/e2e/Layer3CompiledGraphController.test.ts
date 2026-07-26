@@ -229,6 +229,7 @@ async function build(
   staticAuth = false,
   tamperBlockSize = false,
   transformedChildArg?: bigint,
+  oversizedParticipantCount = false,
 ) {
   const provider = createTestProvider();
   const {
@@ -291,8 +292,9 @@ async function build(
   let transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
-  if (malformedGraph || aliasProjection || tamperBlockSize) {
+  if (malformedGraph || aliasProjection || tamperBlockSize || oversizedParticipantCount) {
     const bytes = transcript.bytes.slice();
+    if (oversizedParticipantCount) bytes[9] = 9;
     if (tamperBlockSize) bytes[12] += 1;
     let cursor = 10;
     for (const participant of plan.participants) {
@@ -1977,6 +1979,14 @@ describe('Layer-3 compiled graph controller', () => {
   it('rejects a root-committed but structurally invalid invocation tree', async () => {
     const { provider, transaction } = await build(false, false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects a root-committed participant table above the deployed parser bound', async () => {
+    const { provider, transaction } = await build(
+      false, false, false, false, false, false, 1n,
+      undefined, undefined, undefined, false, false, false, undefined, true,
+    );
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(/mandatory-script-verify/);
   });
 
   it('rejects replacing a participant projection proof with an ordinary funding input', async () => {

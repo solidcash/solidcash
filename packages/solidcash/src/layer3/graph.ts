@@ -513,7 +513,7 @@ contract GraphRootController(bytes20 initializer) {
     require(tx.outputs.length == tx.inputs.length);
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     cursor = cursor + 2;
-    require(invocationCount >= 1 && invocationCount <= 24);
+    require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
     ${activeFrames}
     bigint previousDepth = -1;
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
@@ -574,6 +574,17 @@ export function generateGraphProjectionVerifier(): string {
       }`).join('\n      ');
   const activeCallees = Array.from({ length: MAX_GRAPH_DEPTH + 1 }, (_unused, depth) =>
     `bigint activeCallee${depth} = -1;`).join('\n    ');
+  const participantUsed = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `bool participantUsed${index} = false;`).join('\n    ');
+  const markParticipantUsed = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `${index === 0 ? 'if' : 'else if'} (callee == ${index}) {
+        participantUsed${index} = true;
+      }`).join('\n      ');
+  const requireParticipantUsed = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
+    `${index === 0 ? 'if' : 'else if'} (participantCount == ${index + 1}) {
+        require(${Array.from({ length: index + 1 }, (_unused2, used) =>
+    `participantUsed${used}`).join(' && ')});
+      }`).join('\n      ');
   const callerDispatch = Array.from({ length: MAX_GRAPH_DEPTH }, (_unused, offset) => {
     const depth = offset + 1;
     return `${depth === 1 ? 'if' : 'else if'} (depth == ${depth}) {
@@ -596,42 +607,59 @@ contract GraphProjectionVerifier() {
     require(tx.inputs[controllerInput].nftCommitment == sha256(transcript));
     require(transcript.length >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
     bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
+    require(participantCount >= 1 && participantCount <= ${MAX_GRAPH_PARTICIPANTS});
     require(participantIndex >= 0 && participantIndex < participantCount);
     bigint cursor = 10;
+    bigint expectedParticipantInput = 0;
+    bigint previousProjectionInput = -1;
     bytes ownerBatch;
     bytes ownerEmissions;
     bytes ownerCallers;
     bytes resultVector;
     ${lbcDeclarations}
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
+      require(cursor + 6 <= transcript.length);
       bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint blockSize = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
-      require(blockSize >= 1);
+      require(blockSize >= 1 && participantInput == expectedParticipantInput);
+      expectedParticipantInput = expectedParticipantInput + blockSize;
+      require(participantInput < controllerInput && expectedParticipantInput <= controllerInput);
       bigint lbcLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(lbcLength > 0 && cursor + lbcLength <= transcript.length);
       bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
       cursor = cursor + lbcLength;
+      require(tx.inputs[participantInput].lockingBytecode == participantLbc);
       ${lbcAssignments}
+      require(cursor + 2 <= transcript.length);
       bigint batchLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(batchLength >= 7 && cursor + batchLength <= transcript.length);
       bytes batchBlob = transcript.slice(cursor, cursor + batchLength);
       cursor = cursor + batchLength;
+      require(cursor + 2 <= transcript.length);
       bigint emissionsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(cursor + emissionsLength <= transcript.length);
       bytes emissions = transcript.slice(cursor, cursor + emissionsLength);
       cursor = cursor + emissionsLength;
+      require(cursor + 2 <= transcript.length);
       bigint callersLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(cursor + callersLength + 4 <= transcript.length);
       bytes callers = transcript.slice(cursor, cursor + callersLength);
       cursor = cursor + callersLength + 2;
       bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(cursor + resultLength + 2 <= transcript.length);
       bytes results = transcript.slice(cursor, cursor + resultLength);
       cursor = cursor + resultLength;
       bigint projectionInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(projectionInput > previousProjectionInput && projectionInput < controllerInput);
+      previousProjectionInput = projectionInput;
       if (participant == participantIndex) {
         require(projectionInput == this.activeInputIndex);
         require(participantInput < tx.inputs.length);
@@ -643,6 +671,7 @@ contract GraphProjectionVerifier() {
     }
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     cursor = cursor + 2;
+    require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
     bigint batchCursor = 7;
     bigint ownerValueMode = int(bytes.concat(ownerBatch.slice(5, 6), hex"00"));
     require(ownerValueMode == 0 || ownerValueMode == 1);
@@ -651,7 +680,9 @@ contract GraphProjectionVerifier() {
     bigint callerCursor = 0;
     bigint localRow = 0;
     ${activeCallees}
+    ${participantUsed}
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
+      require(cursor + 12 <= transcript.length);
       bigint parent = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
       bigint callee = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
@@ -667,13 +698,17 @@ contract GraphProjectionVerifier() {
       require(callMode == 0 || callMode == 1);
       bigint argsLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(cursor + argsLength + 2 <= transcript.length);
       bytes args = transcript.slice(cursor, cursor + argsLength);
       cursor = cursor + argsLength;
       bigint resultLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
       cursor = cursor + 2;
+      require(cursor + resultLength <= transcript.length);
       bytes result = transcript.slice(cursor, cursor + resultLength);
       cursor = cursor + resultLength;
       bigint caller = -1;
+      ${markParticipantUsed}
+      else { revert("callee out of range"); }
       if (invocation == 0) {
         require(parent == 65535 && depth == 0);
         activeCallee0 = callee;
@@ -759,6 +794,8 @@ contract GraphProjectionVerifier() {
       }
     }
     require(cursor == transcript.length);
+    ${requireParticipantUsed}
+    else { revert("participant count out of range"); }
     require(localRow > 0 && batchCursor == ownerBatch.length);
     require(emissionCursor == ownerEmissions.length);
     require(callerCursor == ownerCallers.length);

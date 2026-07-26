@@ -43,8 +43,8 @@ Evidence labels:
 | Owner input LBC/category/capability and exact executor are transaction-bound | PROVEN for current generators | Participant/controller hostile VM suites. |
 | One physical owner input and settlement authority per logical owner | PROVEN for current generators | Duplicate/injected participant negatives. Must remain invariant under the general graph builder. |
 | Authenticated parent-derived `msg.sender` | PROVEN for peer mode and current transcript rows | Co-spent caller-master VM tests. |
-| Invocation/resource/effect/event exhaustiveness | PARTIAL | Current fixed layouts are exhaustive; the candidate's general tables and streaming parser are not implemented. |
-| Exact participant-table, resource-table and row structural validation | PARTIAL | Generated fixed-shape covenants replace general parsing; no variable-table implementation exists. |
+| Invocation/resource/effect/event exhaustiveness | PROVEN for the bounded variable graph format | The front-consuming `L3GRAPH1` controller parser authenticates the complete participant and invocation tables with exact trailing-byte rejection; one projection verifier per participant exhaustively equates global rows with its SCB1 calls, callers, emissions, and results. Resource/effect/event slots remain compiler-owned inside each balanced block. |
+| Exact participant-table, resource-table and row structural validation | PROVEN for the bounded variable graph format | Controller and projection covenants enforce 1–8 participants, 1–24 invocations, contiguous block bases, actual input LBC, positional minimal SCB1 blobs, consecutive exact projection covenants, bounded frame lengths, tree structure, exact cursor exhaustion, and use of every declared participant. Hostile bounds/tree/projection mutations fail in the BCH-2026 VM. |
 | Version negotiation and bounded immutable compatibility | PROVEN | Artifacts declare one or two retained protocol bytes; composition selects the highest intersection and rejects no-intersection sets. The execution root domain-separates the selected byte, while generated balanced covenants accept only their retained roots. BCH-2026 tests cover v1-only, v2-only, common-version execution, unsupported-root rejection, and the two-version/deployability bound. |
 
 ## 3. Handler execution semantics
@@ -1179,3 +1179,22 @@ v2-only, common-version, no-intersection, retention overflow, and root domain se
 BCH-2026 balanced transaction composes a `[3,4]` artifact with a `[4]` artifact under version 4;
 the same physical shape under version 3 is rejected by the v4-only participant. Both retained
 artifacts remain below the 10,000-byte covenant limit.
+
+### 2026-07-26: Release I — bounded variable transcript validation
+
+The existing `L3GRAPH1` controller was already a front-consuming variable-table parser rather
+than a fixed-shape stand-in: it binds 1–8 participant frames to contiguous real input blocks,
+minimal positional SCB1 blobs, exact consecutive projection covenants, and a 1–24-row invocation
+tree before requiring complete byte consumption. The projection covenant now independently
+enforces the same deployed bounds, every frame boundary, actual participant input LBC, strictly
+ordered projection inputs, bounded invocation fields, and use of every declared participant.
+
+Each projection then streaming-compares all global rows involving its owner against the owner's
+complete local batch, caller, emission, and result vectors, with exact exhaustion of every vector.
+This closes omission, injection, trailing-data, and disjoint-participant cases without trusting the
+SDK. Existing hostile tree/projection tests remain green, and a newly root-committed participant
+count of nine is rejected by the BCH-2026 VM.
+
+The projection parser is currently correctness-first and exceeds the standard 10,000-byte input
+limit under the relaxed mock consensus profile. Its measured size remains recorded under the
+Release-J optimization gate; this increment closes semantics, not deployability.

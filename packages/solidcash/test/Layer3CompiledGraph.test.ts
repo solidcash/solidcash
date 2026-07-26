@@ -292,6 +292,58 @@ describe('layer3.planCompiledGraph', () => {
     ])).toThrow(/completed subtree/);
   });
 
+  it('validates each independently relocatable local block before assigning global bases', () => {
+    const a = compile('RelocatableA');
+    const b = compile('RelocatableB');
+    const plan = layer3.planCompiledGraph([
+      { artifact: a, lockingBytecode: '51' },
+      { artifact: b, lockingBytecode: '52' },
+    ], [
+      { parent: null, callee: 0, function: 'add', args: [1n] },
+      { parent: 0, callee: 1, function: 'add', args: [2n] },
+    ]);
+    const layout = layer3.compiledGraphPhysicalLayout(plan);
+    expect(layout.participantInputs).toEqual([
+      0,
+      plan.participants[0].blockLayout.blockSize,
+    ]);
+
+    const duplicateOffset = {
+      ...plan,
+      participants: [
+        {
+          ...plan.participants[0],
+          blockLayout: {
+            ...plan.participants[0].blockLayout,
+            slots: [
+              ...plan.participants[0].blockLayout.slots,
+              { kind: 'event' as const, offset: 0, slotIndex: 99 },
+            ],
+          },
+        },
+        plan.participants[1],
+      ],
+    };
+    expect(() => layer3.compiledGraphPhysicalLayout(duplicateOffset))
+      .toThrow(/malformed local block descriptor/);
+
+    const incomplete = {
+      ...plan,
+      participants: [
+        {
+          ...plan.participants[0],
+          blockLayout: {
+            ...plan.participants[0].blockLayout,
+            blockSize: plan.participants[0].blockLayout.blockSize + 1,
+          },
+        },
+        plan.participants[1],
+      ],
+    };
+    expect(() => layer3.compiledGraphPhysicalLayout(incomplete))
+      .toThrow(/not a complete balanced span/);
+  });
+
   it('frames the global tree, local owner batches, and authenticated results into one root', () => {
     const a = compile('GraphCommitA');
     const b = compile('GraphCommitB');

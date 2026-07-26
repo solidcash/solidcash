@@ -153,6 +153,33 @@ export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGr
     if (!layout || layout.blockSize < 1 || layout.slots[0]?.kind !== 'master') {
       throw new Error(`layer3: participant ${participant.participant} lacks a balanced master block`);
     }
+    const offsets = new Set<number>();
+    for (const slot of layout.slots) {
+      if (!Number.isInteger(slot.offset) || slot.offset < 0 || slot.offset >= layout.blockSize
+        || offsets.has(slot.offset)) {
+        throw new Error(
+          `layer3: participant ${participant.participant} has a malformed local block descriptor`,
+        );
+      }
+      offsets.add(slot.offset);
+    }
+    if (layout.slots.filter((slot) => slot.kind === 'master').length !== 1
+      || layout.slots.find((slot) => slot.kind === 'master')?.offset !== 0
+      || offsets.size !== layout.blockSize) {
+      throw new Error(
+        `layer3: participant ${participant.participant} local block is not a complete balanced span`,
+      );
+    }
+    if (layout.trailingBase !== undefined) {
+      const capacity = layout.trailingCapacity ?? -1;
+      const trailing = layout.slots.filter((slot) => slot.kind === 'trailing');
+      if (!Number.isInteger(capacity) || capacity < 1 || trailing.length !== capacity
+        || trailing.some((slot, index) => slot.offset !== layout.trailingBase! + index)) {
+        throw new Error(
+          `layer3: participant ${participant.participant} has a malformed trailing region`,
+        );
+      }
+    }
     participantInputs.push(cursor);
     const returnSlots = layout.slots.filter((slot) => slot.kind === 'returnEvent');
     if (returnSlots.length > 1) {

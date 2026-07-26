@@ -1017,5 +1017,10 @@ by an SDK parser.
 section with its ABI authority. This is the common input required by the general graph worklist and
 per-invocation value attribution.
 
-The compiler-summary row remains PARTIAL. Stable explicit callsite IDs, target alternative sets,
-occurrence/bounded-loop rules, result producer/consumer IDs, and value-expression metadata remain.
+Every resolved external-call record now also carries the compiler's stable physical `callsiteId`;
+grouped logical rows retain their existing `logicalIndex`. This removes array-position inference
+from downstream planners while preserving the distinction between one physical callee slot and its
+logical occurrences.
+
+The compiler-summary row remains PARTIAL. Target alternative sets, occurrence/bounded-loop rules,
+result producer/consumer IDs, and value-expression metadata remain.

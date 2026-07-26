@@ -376,6 +376,8 @@ export interface ArgSource {
 }
 
 export interface ExternalCallAbi {
+  /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
+  callsiteId?: number;
   interfaceName: string;
   functionName: string;
   addressParam?: string;

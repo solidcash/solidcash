@@ -111,6 +111,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => ({
+        callsiteId: ec.slotIndex,
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
         ...(ec.addressParam && { addressParam: ec.addressParam }),

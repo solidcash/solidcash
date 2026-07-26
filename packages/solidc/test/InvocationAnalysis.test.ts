@@ -63,6 +63,7 @@ describe('Release 0 shared invocation analysis', () => {
     expect(summary.dynamicWrites).toEqual(abi.dynamicWrites);
     expect(summary.blockLayout).toEqual(abi.blockLayout);
     expect(summary.externalCalls?.[0]).toMatchObject({
+      callsiteId: 0,
       interfaceName: 'ITarget',
       functionName: 'step',
       hasReturnValues: true,

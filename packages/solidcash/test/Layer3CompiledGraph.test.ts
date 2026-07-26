@@ -179,6 +179,39 @@ describe('layer3.planCompiledGraph', () => {
     expect(plan.invocations[1].argsHex).toBe('55');
   });
 
+  it('expands a fixed-method state-array target run from its authenticated runtime probe', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const caller = compileString(`pragma solidcash >=0.8.0;
+      interface IFoo { function ping(uint value); }
+      contract ArrayTargetCaller() {
+        function(uint) external[] targets;
+        function register(address target) public { this.targets.push(IFoo(target).ping); }
+        function fire(uint value) public {
+          for (uint i = 0; i < 2; i = i + 1) { targets[i](value); }
+          require(true);
+        }
+      }`, options);
+    const target = compileString(`pragma solidcash >=0.8.0;
+      contract ArrayTarget() { function ping(uint value) public { require(value > 0); } }
+    `, options);
+    const root = { artifact: caller, lockingBytecode: '51' };
+    const peer = { artifact: target, lockingBytecode: '52' };
+    const plan = layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fire',
+      args: [7n],
+      targets: { IFoo: [peer, peer] },
+      occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+    });
+    expect(plan.participants.map((owner) => owner.invocations)).toEqual([[0], [1, 2]]);
+    expect(plan.invocations.slice(1).map((row) => row.argsHex)).toEqual(['57', '57']);
+  });
+
   it('separates resolvable result dependencies from structural owner cycles', () => {
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], []])).not.toThrow();
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], [0]]))

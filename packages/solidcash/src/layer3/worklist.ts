@@ -170,8 +170,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     active.add(key);
     for (const call of fn.externalCalls ?? []) {
-      if (call.loopArrayVar || call.selectorArrayVar
-        || call.fnPtrCall || call.batchInvocations || call.opaqueReturn) {
+      if (call.selectorArrayVar || call.fnPtrCall || call.batchInvocations || call.opaqueReturn) {
         throw new Error(
           `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
         );

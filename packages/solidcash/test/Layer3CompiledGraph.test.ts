@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { layer3 } from '../src/index.js';
 
@@ -228,6 +229,48 @@ describe('layer3.planCompiledGraph', () => {
       { parent: 0, callee: 1, name: 'dec', argsHex: '54' },
     ]);
     expect(() => derive(false)).toThrow(/lacks a dynamic call proof/);
+  });
+
+  it('resolves canonical low-level calldata into one authenticated typed edge', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const caller = compileString(`pragma solidcash >=0.8.0;
+      contract RawCaller() {
+        function run(address target, bytes payload) public {
+          (bool ok, bytes result) = target.call(payload);
+          require(ok && result.length >= 0);
+        }
+      }`, options);
+    const target = compileString(`pragma solidcash >=0.8.0;
+      contract RawTarget() {
+        function echo(int value) public returns (int) { require(value >= 0); return value; }
+      }`, options);
+    const root = { artifact: caller, lockingBytecode: '51' };
+    const peer = { artifact: target, lockingBytecode: '52' };
+    const selector = target.abi.find((fn) => fn.name === 'echo')!.selector!;
+    const payload = Uint8Array.from([...hexToBin(selector), 0x53]);
+    const derive = (decoded: bigint, participant = peer) => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'run',
+      args: [hexToBin('52'), payload],
+      targets: {},
+      dynamicCall: ({ kind }) => {
+        expect(kind).toBe('low-level');
+        return { participant, function: 'echo', args: [decoded] };
+      },
+    });
+    expect(derive(3n).invocations.map(({ callee, function: name, argsHex }) =>
+      ({ callee, name, argsHex }))).toEqual([
+      { callee: 0, name: 'run', argsHex: `015205${selector}53` },
+      { callee: 1, name: 'echo', argsHex: '53' },
+    ]);
+    expect(() => derive(4n)).toThrow(/decoded calldata is not canonical/);
+    expect(() => derive(3n, { ...peer, lockingBytecode: '53' }))
+      .toThrow(/target proof disagrees/);
   });
 
   it('fails the symbolic worklist closed on runtime occurrence and recursive expansion', () => {

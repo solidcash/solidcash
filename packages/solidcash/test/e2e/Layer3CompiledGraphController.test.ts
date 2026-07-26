@@ -260,6 +260,20 @@ contract GraphSignedCaller() {
     require(true);
   }
 }`;
+const RAW_CALLER = `pragma solidcash >=0.8.0;
+contract GraphRawCaller() {
+  function run(address target, bytes payload) public {
+    (bool ok, bytes result) = target.call(payload);
+    require(ok && result == hex"53");
+  }
+}`;
+const RAW_TARGET = `pragma solidcash >=0.8.0;
+contract GraphRawTarget() {
+  function echo(int value) public returns (int) {
+    require(value >= 0);
+    return value;
+  }
+}`;
 
 async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>) {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -932,6 +946,107 @@ async function buildForwardedSignedGraph(tamper = false) {
       token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
     });
   }
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx) };
+}
+
+async function buildRawCallGraph(tamperResult = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const artifactB = compileString(RAW_TARGET, options);
+  const baseB = new Contract(artifactB, [], { provider });
+  const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const artifactA = compileString(RAW_CALLER, options);
+  const baseA = new Contract(artifactA, [], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const selector = artifactB.abi.find((fn) => fn.name === 'echo')!.selector!;
+  const payload = Uint8Array.from([...hexToBin(selector), ...packedResult(3n)]);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    function: 'run',
+    args: [b.lockingBytecode, payload],
+    targets: {},
+    dynamicCall: ({ kind }) => {
+      expect(kind).toBe('low-level');
+      return {
+        participant: { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+        function: 'echo',
+        args: [3n],
+      };
+    },
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const result = packedResult(3n);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, { 1: binToHex(result) },
+    layout.participantInputs, layout.returnOutputs,
+    ['', binToHex(result)], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const returnFunding = randomUtxo({ satoshis: 1000n });
+  const projections = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50_000n });
+  await provider.addUtxo(p2pkh.address, returnFunding);
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setupA.masterUtxo,
+    routeA(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupB.masterUtxo,
+    routeB(
+      ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+      BigInt(layout.returnOutputs[1]!),
+    ),
+  );
+  tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
+  projections.forEach((proof, participant) => tx.addInput(
+    proof,
+    projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    ),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: hexToBin('51'), amount: 1000n,
+    token: {
+      category: setupB.categoryId, amount: 0n,
+      nft: { capability: 'none', commitment: binToHex(aggregateResult(tamperResult ? 4n : 3n)) },
+    },
+  });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -2521,6 +2636,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forwarded graph signature from a key other than the child-row owner', async () => {
     const { provider, transaction } = await buildForwardedSignedGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('executes canonical low-level calldata as an authenticated typed graph edge', async () => {
+    const { provider, transaction } = await buildRawCallGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects substituting the typed result of a low-level graph edge', async () => {
+    const { provider, transaction } = await buildRawCallGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

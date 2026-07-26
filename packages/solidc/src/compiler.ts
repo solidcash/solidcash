@@ -274,6 +274,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           }
           if (node instanceof FunctionCallNode
             && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
+          if (node instanceof FunctionCallNode
+            && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name)) {
+            statefulExternalCall = true;
+            methodCallCount += 1;
+          }
         });
       }
     }
@@ -297,7 +302,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       if (!(statement instanceof VariableDefinitionNode || statement instanceof TupleAssignmentNode)) return false;
       let containsCall = false;
       walkInvocationAst(statement, (candidate) => {
-        if (candidate instanceof MethodCallNode) containsCall = true;
+        if (candidate instanceof MethodCallNode
+          || (candidate instanceof FunctionCallNode
+            && /\.(call|staticcall|delegatecall)$/.test(candidate.identifier.name))) {
+          containsCall = true;
+        }
       });
       return containsCall;
     });
@@ -825,7 +834,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.hiddenBatchRejectionReason = undefined;
     handler.hiddenBatchKeyWitnesses = undefined;
     handler.parameters = handler.parameters.filter((parameter) =>
-      parameter.name !== '__internal__returnOutputIdx');
+      parameter.name !== '__internal__returnOutputIdx'
+      && !parameter.name.startsWith('__internal__externalCallInput')
+      && !parameter.name.startsWith('__internal__externalReturnOutput'));
     handler.graphEmissionHandler = true;
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
     bindEntryKeyParameters(handler, sourceHandler);

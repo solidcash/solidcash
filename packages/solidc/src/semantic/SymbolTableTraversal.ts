@@ -1812,6 +1812,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (slot.addressParam && !slot.addressIsMsgSender) {
             node.opRolls.delete(slot.addressParam);
           }
+          // Graph emission may read a forwarded argument more than once
+          // (raw calldata is split once for its selector and once for its ABI
+          // tail). Keep every compiler-declared forwarded source PICK-only;
+          // the ordinary function epilogue removes the retained parameter.
+          for (const source of slot.argSources ?? []) {
+            if (source.kind !== 'forward' || source.paramIndex === undefined) continue;
+            const parameter = node.parameters[source.paramIndex];
+            if (parameter) node.opRolls.delete(parameter.name);
+          }
           for (const row of slot.batchInvocations ?? []) {
             for (const parameter of row.parameters) {
               if (parameter instanceof IdentifierNode) node.opRolls.delete(parameter.name);
@@ -1860,6 +1869,17 @@ export default class SymbolTableTraversal extends AstTraversal {
             // companion. Both are read from the caller's covenant-bound state by the graph row generator;
             // there is intentionally no compile-time method selector for this shape.
             if (slot.fnPtrCall) continue;
+            // A raw call carries selector||canonical-args in its one bytes
+            // payload. Graph codegen splits and authenticates those bytes
+            // directly; there is intentionally no interface method to resolve.
+            if (slot.interfaceName === '__raw__' && slot.functionName === '__raw__') {
+              if (slot.argSources?.length !== 1
+                || slot.argSources[0].kind !== 'forward'
+                || slot.argSources[0].paramIndex === undefined) {
+                throw new Error(`Graph handler '${node.name}' requires one forwarded raw calldata argument`);
+              }
+              continue;
+            }
             const iface = this.interfaceMap.get(slot.interfaceName);
             const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
               .filter((candidate) => candidate.name === slot.functionName);

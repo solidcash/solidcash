@@ -1,6 +1,6 @@
-import { hexToBin } from '@bitauth/libauth';
-import type { AbiFunction, ArgSource, ExternalCallAbi } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { scriptToBytecode, type AbiFunction, type ArgSource, type ExternalCallAbi } from '@solidcash/utils';
+import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
   planCompiledGraph, type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
@@ -52,8 +52,8 @@ export interface DeriveCompiledGraphOptions {
     function: string;
     callsiteId: number;
     occurrence: number;
-    kind: 'function-pointer' | 'selector-table';
-  }) => { participant: WorklistParticipant; function: string };
+    kind: 'function-pointer' | 'selector-table' | 'low-level';
+  }) => { participant: WorklistParticipant; function: string; args?: readonly FunctionArgument[] };
 }
 
 const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
@@ -183,9 +183,59 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     active.add(key);
     for (const call of fn.externalCalls ?? []) {
       if (call.opaqueReturn) {
-        throw new Error(
-          `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
-        );
+        if (call.interfaceName !== '__raw__' || call.functionName !== '__raw__') {
+          throw new Error(
+            `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
+          );
+        }
+        const resolved = options.dynamicCall?.({
+          participant,
+          function: functionName,
+          callsiteId: call.callsiteId!,
+          occurrence: 0,
+          kind: 'low-level',
+        });
+        if (!resolved?.args) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} lacks a decoded calldata proof`);
+        }
+        const targetFunction = functionAbi(resolved.participant, resolved.function);
+        if (!targetFunction.selector) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} resolved to a selectorless function`);
+        }
+        const payload = resolveArguments(
+          participant, args, call, functionName, 0, options.expressionArgument,
+        )[0];
+        if (!(payload instanceof Uint8Array)) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} calldata is not bytes`);
+        }
+        const structs = resolved.participant.artifact.structs
+          ?? resolved.participant.artifact.stateLayout?.structs;
+        if (resolved.args.length !== targetFunction.inputs.filter((input) =>
+          !input.name.startsWith('__internal__')).length) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} decoded argument count is wrong`);
+        }
+        const encoded = resolved.args.map((argument, index) =>
+          encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
+        if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} contains a transaction signature`);
+        }
+        const canonicalPayload = new Uint8Array([
+          ...hexToBin(targetFunction.selector),
+          ...scriptToBytecode(encoded as Uint8Array[]),
+        ]);
+        if (binToHex(canonicalPayload) !== binToHex(payload)) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} decoded calldata is not canonical`);
+        }
+        const targetInput = fn.inputs.findIndex((input) => input.name === call.addressParam);
+        const targetValue = targetInput >= 0 ? args[targetInput] : undefined;
+        const encodedTarget = targetValue === undefined
+          ? undefined : encodeFunctionArgument(targetValue, 'address', structs);
+        if (!(encodedTarget instanceof Uint8Array)
+          || binToHex(encodedTarget) !== resolved.participant.lockingBytecode.toLowerCase()) {
+          throw new Error(`layer3: raw callsite ${call.callsiteId} target proof disagrees with calldata owner`);
+        }
+        expand(resolved.participant, resolved.function, resolved.args, invocation);
+        continue;
       }
       if (call.batchInvocations) {
         if ((call.occurrence ?? 'once') !== 'once') {

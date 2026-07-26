@@ -11215,6 +11215,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (this.currentFunction.graphEmissionHandler) {
       const returnTypes = physicalSlot?.returnTypes ?? node.callInfo?.returnTypes ?? [];
+      if (node.opaqueReturn) {
+        // The graph subroutine receives one authenticated opaque blob. Rebuild
+        // the source-level `(success, data)` tuple locally; a failed child
+        // covenant aborts the transaction, so a reached edge is successful.
+        this.emit(Op.OP_1, locationData);
+        this.pushToStack('(success)');
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphResult0'))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(returnData)');
+        return node;
+      }
       if (returnTypes.length > 0) {
         for (let i = 0; i < returnTypes.length; i++) {
           const resultName = `__internal__graphResult${i}`;
@@ -11375,7 +11386,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     compare = true,
     parametersAreCallArguments = false,
   ): number {
-    if (!slot.compileTimeSelector && !slot.runtimeSelector) {
+    const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
+    if (!rawCall && !slot.compileTimeSelector && !slot.runtimeSelector) {
       throw new Error('Graph emission call lacks an authenticated selector');
     }
     if (slot.addressParam) {
@@ -11422,7 +11434,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_mode)');
 
-    if (slot.runtimeSelector) {
+    if (rawCall) {
+      const source = slot.argSources?.[0];
+      const payload = parametersAreCallArguments
+        ? parameters[0]
+        : source?.paramIndex === undefined ? undefined : parameters[source.paramIndex];
+      if (!payload) throw new Error('Raw graph call lacks its canonical calldata parameter');
+      this.visit(payload);
+      this.emit(encodeInt(4n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.popFromStack();
+      this.pushToStack('(__graph_selector)');
+      this.pushToStack('(__graph_args)');
+      // Derive selector and arguments from one copy of the canonical payload.
+      // Stashing the tail also keeps it out of the target||mode||selector CAT.
+      this.emit(Op.OP_TOALTSTACK, locationData);
+      this.popFromStack();
+    } else if (slot.runtimeSelector) {
       // Function-pointer lowerings bind this expression to the caller's selector companion
       // (`__fnsel_<pointer>`). Copy it rather than consuming it: ordinary external-call verification
       // later reads the same covenant-authenticated value to pin the co-spent callee's dispatcher.
@@ -11435,7 +11463,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emit(slot.compileTimeSelector!, locationData);
     }
-    this.pushToStack('(__graph_selector)');
+    // The raw branch already models both OP_SPLIT results above (and moves the
+    // argument tail to the alt stack). Other branches push only the selector.
+    if (!rawCall) this.pushToStack('(__graph_selector)');
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(__graph_target_selector)');
@@ -11452,7 +11482,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // typed fields while the callee's original checkSig remains authoritative.
     const transcriptArgumentParameters = argumentParameters.filter((parameter) =>
       parameter.type !== PrimitiveType.SIG);
-    if (transcriptArgumentParameters.length === 0) {
+    if (rawCall) {
+      if (!transcriptArgumentParameters[0]) {
+        throw new Error('Raw graph call lacks its canonical calldata argument');
+      }
+      this.emit(Op.OP_FROMALTSTACK, locationData);
+      this.pushToStack('(__graph_args)');
+    } else if (transcriptArgumentParameters.length === 0) {
       this.emit(new Uint8Array(), locationData);
       this.pushToStack('(__graph_args)');
     } else {
@@ -11555,6 +11591,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_result_blob)');
+    if (slot.opaqueReturn) {
+      // The graph subroutine receives this one exact blob and reconstructs the
+      // source-level `(success, data)` tuple at the callsite.
+      return 1;
+    }
     // Decode the complete producer-authenticated ABI vector. This mirrors ordinary external-return decoding:
     // each non-final field leaves the exact remainder for the next declared type, and the final decoder
     // consumes the whole remainder. The enclosing result-length equality above prevents prefix acceptance.

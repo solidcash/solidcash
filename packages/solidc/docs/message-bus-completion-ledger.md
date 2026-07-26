@@ -52,7 +52,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | `Layer3ReleaseA.test.ts` also pins state-layout equivalence between the direct and hidden-batch compilations of one contract.  The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
-| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection now share one entry-slot union and one journal pool (`Layer3 Release B`), with compiler-supplied entry identity, so a cross-keyed handler such as `transferFrom` unions with its siblings. | Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
+| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection now share one entry-slot union and one journal pool (`Layer3 Release B`), with compiler-supplied entry identity, so a cross-keyed handler such as `transferFrom` unions with its siblings. Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
 | Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PROVEN for the admitted handler class | `Layer3ReleaseA.test.ts` settles a `msg.sender`-authorizing modifier, string and custom-error `revert`, `while`, `do/while`, `break`, `continue` and early return on the BCH-2026 VM, each paired with a hostile case of identical transaction shape - a different authorized caller, a reached revert, or an off-by-one settlement. Handler shapes outside SCB1 eligibility are unchanged and still fail closed. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. `cloned-handler-scalar-and-collection-journal-not-enabled` currently rejects a cloned handler that writes both scalar state and a collection, but see the 2026-07-26 correction below: the fixture that motivated it had a wrong entry offset, so that boundary is SUSPECT and must be re-validated before it is trusted. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. `cloned-handler-scalar-and-collection-journal-not-enabled` rejects a cloned handler that writes both scalar state and a collection. That rejection is OPERATIONALLY JUSTIFIED: with the boundary lifted and the fixture's entry offset corrected, the shape still fails BCH-2026 validation, so admitting it would produce unusable transactions. The MECHANISM is not established, and this is NOT a demonstrated platform boundary - see the current-state block opening section 9. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -130,7 +130,36 @@ weakening any invariant.
 
 ## 9. Implementation log
 
-### 2026-07-26: CORRECTION - the two-journal boundary rests on a broken fixture
+**CURRENT STATE (read this before any entry below).** Entries are append-only and several were later
+retracted, so an individual entry is NOT authoritative on its own. As of 2026-07-26:
+
+- `cloned-handler-scalar-and-collection-journal-not-enabled` is OPERATIONALLY JUSTIFIED, not explained.
+  With the guard lifted and the fixture's entry offset corrected to `slotIndex + 2`, the shape still fails
+  BCH-2026 with `mandatory-script-verify-flag-failed` / OP_VERIFY. Admitting it would emit unusable
+  transactions, so the rejection is correct to keep.
+- The failure is traced to the ROUTER's FIRST external-call verification (`tx.debug()` attributes it to
+  `ScalarPlusEntryRouter.scash:3`), NOT conclusively to journal settlement. Calling this a two-journal
+  limitation is unsupported by the evidence.
+- It is therefore a compiler/codegen defect or an unsupported interaction awaiting investigation. It is NOT
+  a fundamental BCH or platform limit, and must not be described as one.
+- Recommended next step: trace the router's whole-blob / callee-binding operands before changing either
+  journal's exit behaviour. Do not modify journal code on the strength of any diagnosis below.
+- Retracted diagnoses are marked `[RETRACTED]` in their headings and preserved for the reasoning trail only.
+
+**Release accounting** (against `message-bus-opus-completion-handoff.md`, which defines exactly ten releases
+A-J): A and B are complete with hostile BCH-2026 evidence; C is partial; **D, E, F, G, H, I and J - SEVEN
+releases - are unstarted.** An earlier session repeatedly reported "five unstarted", which was a miscount that
+understated the remaining work. Some of D-J have partial foundations in the codebase, but none has been carried
+to the ledger's PROVEN bar. Row totals as of this entry: 30 PROVEN / 14 PARTIAL / 6 MISSING, of which three
+MISSING rows are PROCESS-labelled and cannot be closed by implementation at all.
+
+The remaining work is unfinished but FINISHABLE. Nothing in this ledger establishes that D-J are blocked;
+they are substantial engineering that has not been attempted.
+
+### 2026-07-26: [SUPERSEDED] CORRECTION - the two-journal boundary rests on a broken fixture
+
+Superseded: the fixture bug was real, but fixing it did NOT admit the shape. The boundary is justified.
+See the current-state block above.
 
 Tracing the VALUE the covenant rejects, instead of reasoning about structure for a fourth time, found the fault
 in my own fixture rather than the compiler.
@@ -218,7 +247,7 @@ The boundary is fail-closed, so leaving it in place while suspect costs expressi
 should not be described as a known compiler limitation until step 1 is done. Recorded because I asserted the
 opposite twice.
 
-### 2026-07-26: CORRECTION - the call-site ordering diagnosis was wrong
+### 2026-07-26: [RETRACTED DIAGNOSIS] the call-site ordering diagnosis was wrong
 
 The entry above claimed the caller's post-`OP_INVOKE` sequence
 (`GenerateTargetTraversal.ts:5920`) consumes returned scalar journal copies from the top without accounting for
@@ -249,7 +278,9 @@ settled entry commitment the covenant rejects against the one the journal intend
 stack layout again - three of the four dead ends above came from reasoning about structure instead of
 observing values.
 
-### 2026-07-26: the two-journal bug, characterised
+### 2026-07-26: [RETRACTED] the two-journal bug, "characterised"
+
+Retracted: this entry names a mechanism the evidence does not support. Kept for the reasoning trail.
 
 Third pass on `cloned-handler-scalar-and-collection-journal-not-enabled`, this time with a mechanism rather
 than another hypothesis.

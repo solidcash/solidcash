@@ -130,40 +130,36 @@ weakening any invariant.
 
 ## 9. Implementation log
 
-### 2026-07-26: two-journal bug located to a single call-site sequence
+### 2026-07-26: CORRECTION - the call-site ordering diagnosis was wrong
 
-`GenerateTargetTraversal.ts:5920`, the caller's post-`OP_INVOKE` sequence:
+The entry above claimed the caller's post-`OP_INVOKE` sequence
+(`GenerateTargetTraversal.ts:5920`) consumes returned scalar journal copies from the top without accounting for
+interleaved entry values. That is NOT what happens, and the claim is retracted.
+
+Instrumenting the returning clone's stack at its return point shows:
 
 ```
-// The callee returns the journal copies in canonical order. Replace each
-// caller-owned slot at its original depth ...
-for (const originalName of targetJournalContextNames) {
-  this.emitReplace(this.getStackIndex(originalName), node);
-  this.popFromStack();
-}
-for (let i = 0; i < targetFunc.returnTypes.length; i++) this.pushToStack('(value)');
+__scb_resource_move  journalNames ["__internal__state_write_moves"]
+stack (index 0 = top) ["__internal__state_write_moves", "(value)", "(value)"]
 ```
 
-This is correct while a clone returns ONLY scalar journal copies: the caller consumes each copy from the top
-and replaces its own slot, then accounts for declared return values. It stops being correct once the collection
-journal is involved, because `LowerCollectionJournalHelpers` sets `returnTypes` to the ENTRY value types - so
-the callee now returns entry values as well, the two kinds are interleaved on the stack, and the replace loop
-consumes from the top without accounting for the entry values sitting there. The caller writes entry values
-into its scalar journal slots.
+The scalar journal slot is already on top, with the two returned entry values beneath it - exactly the layout
+the caller consumes. Callee and caller agree. A patch written against the wrong diagnosis (extending the
+returning-subroutine path to "restore" that layout) dropped a real return value instead: route body 1,413 ->
+1,362 bytes with the suite still green, which is precisely the silent off-by-N this code invites. Reverted.
 
-That matches every observation: void clones settle (Release A's modifier fixture is a clone with a scalar
-write and no collection), un-cloned handlers settle (Release A's `mint`/`burn`), and only a clone that returns
-collection values while threading scalar slots fails.
+Four hypotheses are now eliminated for `cloned-handler-scalar-and-collection-journal-not-enabled`:
 
-The fix is to make the two kinds of returned value unambiguous at this call site - either by consuming the
-entry values first and the scalar copies beneath them, or by giving the callee one canonical return order the
-caller decodes explicitly rather than by stack position. Both need the callee's actual push order confirmed
-first; the tracker and the physical stack must agree, and this code reasons about depth through
-`getStackIndex`, so an off-by-N here is silent.
+1. the `delete` node type - a resource-shaped `move` with a counter fails identically;
+2. subroutine-versus-inline settlement - relaxing the inlining exemption changed nothing;
+3. the scalar journal failing to reach the caller - it reaches it;
+4. return-value/journal-slot ordering at the call site - callee and caller already agree.
 
-`cloned-handler-scalar-and-collection-journal-not-enabled` stays until that lands. Three hypotheses eliminated
-across the passes: the `delete` node type, subroutine-versus-inline settlement, and (now) any theory that the
-scalar journal simply fails to reach the caller - it reaches it, carrying the wrong value.
+What remains unexamined is the VALUE, not the plumbing: which entry value the collection journal computes and
+writes back when the same clone also mutates a threaded scalar slot in place. The next step is to trace the
+settled entry commitment the covenant rejects against the one the journal intended, rather than to reason about
+stack layout again - three of the four dead ends above came from reasoning about structure instead of
+observing values.
 
 ### 2026-07-26: the two-journal bug, characterised
 

@@ -172,6 +172,22 @@ An earlier version of this section asserted reading (3) as OP_1 and concluded th
 That conclusion was retracted: the args decode in (2) is solid, but extending it to the stack item in (3) assumed
 the item's provenance instead of checking it.
 
+A later probe LOCATED the failure, which is a better starting point than the state number:
+
+    built.tx.debug()  ->  ScalarPlusEntryRouter.scash:3, input 0, OP_VERIFY
+                          IScalarPlusEntryToken(token).move(shared, first, a);
+
+So the rejection is attributed to the ROUTER's verification of its FIRST external `move` call, not to the
+token's scalar settle. Note `sendRawTransaction` reports input index 1 while `debug()` attributes input 0;
+`debug()` raises on the first input it evaluates, so treat the index as unreliable and the SOURCE LINE as the
+signal. This weakens the retracted per-row-flush story further: the first call is already unsatisfied, before
+any second row could have flushed anything.
+
+Two readings remain, and they are distinguishable by a cheap experiment: either the router's call-binding check
+is itself wrong for this shape, or the callee settles a state the router then correctly refuses. Running the
+SAME fixture with a ONE-row batch separates them - if one row also fails, the fault is in the binding for a
+scalar-plus-collection callee and has nothing to do with batching at all.
+
 Also worth recording as a trap, because it briefly produced a wrong "it settles" result: the fixture BUILDS a
 transaction and returns it; VM validation only happens at `sendRawTransaction`. Wrapping the builder alone in a
 try/catch passes while proving nothing. This is the construction-versus-validation confusion the handoff warns

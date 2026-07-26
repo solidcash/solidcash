@@ -334,6 +334,15 @@ class MsgValueUsageCollector extends AstTraversal {
   }
 }
 
+class IdentifierUsageCollector extends AstTraversal {
+  names = new Set<string>();
+
+  visitIdentifier(node: IdentifierNode): Node {
+    this.names.add(node.name);
+    return node;
+  }
+}
+
 class NftIndexCollector extends AstTraversal {
   indices = new Set<number>();
 
@@ -397,6 +406,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private scopeDepth = 0;
   private currentFunction: FunctionDefinitionNode;
   private constructorParameterCount: number;
+  private contractParameters: ParameterNode[] = [];
+  private contractFunctionKeys: Set<string> = new Set();
   private contractUsesMsgData: boolean = false;
   private contractUsesMsgSig: boolean = false;
   private contractUsesMsgSender: boolean = false;
@@ -749,6 +760,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return index;
   }
 
+  private constructorCaptures(func: FunctionDefinitionNode): ParameterNode[] {
+    if (!func.body || func.functionId === undefined
+      || !this.contractFunctionKeys.has(`${func.functionId}:${func.name}`)) return [];
+    const collector = new IdentifierUsageCollector();
+    collector.visit(func.body);
+    return this.contractParameters.filter((param) => collector.names.has(param.name));
+  }
+
   /**
    * Get the compile-time offset for a block layout slot.
    */
@@ -906,6 +925,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractEmitsEvent = node.emitsEvent;
+    this.contractParameters = node.parameters;
+    this.contractFunctionKeys = new Set(node.functions
+      .filter((fn) => fn.functionId !== undefined)
+      .map((fn) => `${fn.functionId}:${fn.name}`));
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -1790,9 +1813,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
     subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
     subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
-
-    // Start with EMPTY stack -- visitFunctionDefinition will push params
-    // via visitParameter (pushToStack with pushToBottom=true)
+    subTraversal.contractParameters = this.contractParameters;
+    subTraversal.contractFunctionKeys = this.contractFunctionKeys;
 
     // Visit the function definition to generate its body bytecode
     subTraversal.currentFunction = func;
@@ -2036,6 +2058,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
     subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
     subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
+    subTraversal.contractParameters = this.contractParameters;
+    subTraversal.contractFunctionKeys = this.contractFunctionKeys;
 
     // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
     // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -2455,6 +2479,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (p.name === '__internal__returnOutputIdx') continue;
         this.visit(p);
       }
+      for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
     }
@@ -5914,6 +5939,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // subroutine's declared params line up on the stack. Other synthetic params (msgSenderCategory, ...) ARE
     // consumed by the subroutine, so they are still pushed.
     const skipArg = (i: number): boolean => targetFunc.parameters[i]?.name === '__internal__returnOutputIdx';
+
+    // Capture immutable constructor values before evaluating declared
+    // arguments: an argument expression may itself move one of these values.
+    // The declared arguments are pushed afterward and therefore remain above
+    // this explicit immutable frame, matching visitFunctionDefinition.
+    const constructorCaptures = this.constructorCaptures(targetFunc);
+    if (constructorCaptures.length > 0) {
+      for (let i = constructorCaptures.length - 1; i >= 0; i--) {
+        const name = constructorCaptures[i].name;
+        this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack(`(__constructor_arg_${targetFunc.functionId}_${i})`);
+        hiddenContextCount += 1;
+      }
+    }
 
     // Evaluate arguments in REVERSE order so first param ends up on top
     // (matches the SDK's [...encodedArgs].reverse() convention)

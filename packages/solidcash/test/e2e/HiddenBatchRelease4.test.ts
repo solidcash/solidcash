@@ -70,12 +70,12 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
     await contract.check(7n).send();
   });
 
-  it('executes and authenticates data-signature arguments in reached rows', async () => {
+  it('captures constructor authority and authenticates data-signature row arguments', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;
-      contract DataSignatureBatch() {
+      contract DataSignatureBatch(pubkey oraclePk) {
         int accepted;
-        function accept(datasig proof, bytes message, pubkey oraclePk) public {
+        function accept(datasig proof, bytes message) public {
           require(checkDataSig(proof, message, oraclePk));
           this.accepted = this.accepted + 1;
           require(message.length > 0);
@@ -83,21 +83,21 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
         function check(int expected) public { require(this.accepted == expected); }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
-    const inner = new Contract(artifact, [], { provider });
+    const inner = new Contract(artifact, [oraclePub], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { accepted: 0n }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
     const first = hexToBin('01020304');
     await contract.batch([
-      { function: 'accept', args: [oracle.signMessage(first), first, oraclePub] },
+      { function: 'accept', args: [oracle.signMessage(first), first] },
     ]).send();
     await contract.check(1n).send();
 
     const forged = oracle.signMessage(first).slice();
     forged[0] ^= 1;
     await expect(contract.batch([
-      { function: 'accept', args: [forged, first, oraclePub] },
+      { function: 'accept', args: [forged, first] },
     ]).send()).rejects.toThrow();
   });
 

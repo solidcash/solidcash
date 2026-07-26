@@ -462,11 +462,15 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
     // controller commitment, while that commitment would in turn commit the
-    // signature. Keep this fail-closed until the protocol specifies a typed,
-    // root-excluded signature witness which the participant binds separately.
+    // signature. In authenticated graph mode a scalar `sig` is instead a
+    // positional, per-row route witness (generated below) and is verified by
+    // the original handler against the final transaction. Arrays/multisig keep
+    // failing closed until they have an equally canonical witness encoding.
     else if (!reason && (
-      signatureCheck || fn.parameters.some((parameter) =>
-        ['sig', 'sig[]'].includes(parameter.type.toString()))
+      (signatureCheck || fn.parameters.some((parameter) =>
+        ['sig', 'sig[]'].includes(parameter.type.toString())))
+      && (graphControllerLbc === undefined
+        || fn.parameters.some((parameter) => parameter.type.toString() === 'sig[]'))
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
@@ -616,6 +620,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
   const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  const signatureMode = eligible.some((fn) =>
+    fn.parameters.some((parameter) => parameter.type.toString() === 'sig'));
+  const signatureWitnessName = (
+    handlerIndex: number, parameterIndex: number, row: number,
+  ): string => `__scb_sig_${handlerIndex}_${parameterIndex}_r${row}`;
   const logicalValueMode = graphMsgValueHandlers.size > 0;
   let resourceHandlerInvokeName: string | undefined;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
@@ -927,9 +936,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
       return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))} }`;
     }
-    const declarations = fn.parameters.map((parameter, i) =>
-      `${parameter.type.toString()} __scb_arg_${handlerIndex}_${i}`);
-    const schema = fn.parameters.map((parameter) => parameter.type.toString()).join(', ');
+    const decodedParameters = fn.parameters
+      .map((parameter, index) => ({ parameter, index }))
+      .filter(({ parameter }) => parameter.type.toString() !== 'sig');
+    const declarations = decodedParameters.map(({ parameter, index }) =>
+      `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
+    const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
     const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
       binding.source === 'msgSender'
         ? `require(${witnessName(binding)} == __scb_graph_caller);`
@@ -947,8 +959,10 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
       : []);
     const sourceCallArgs = [
-      ...fn.parameters.map((_parameter, i) =>
-        i === tokenCategoryInputByHandler.get(fn)
+      ...fn.parameters.map((parameter, i) =>
+        parameter.type.toString() === 'sig'
+          ? signatureWitnessName(handlerIndex, i, rowIndex ?? 0)
+          : i === tokenCategoryInputByHandler.get(fn)
           ? '__scb_token_category'
           : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
     ];
@@ -961,7 +975,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         !entry.perRow && `${entry.base}_row` === varyingEntry.base)
       : -1;
     const callArgs = [...sourceCallArgs, ...physicalEntryArgs].join(', ');
-    const decode = declarations.length === 1
+    const decode = declarations.length === 0
+      ? 'require(rowArgs.length == 0);'
+      : declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
       : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
     // Canonicalize the measured two-row, one-shared/one-varying resource shape before the collection journal
@@ -1019,6 +1035,12 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
           `${witness.type.toString()} ${witness.name}_r${row}`)
         : [`${witness.type.toString()} ${witness.name}`];
     });
+  const routeSignatureParameters = eligible.flatMap((fn, handlerIndex) =>
+    fn.parameters.flatMap((parameter, parameterIndex) =>
+      parameter.type.toString() === 'sig'
+        ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
+          `sig ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
+        : []));
   const graphRouteParameters = graphControllerLbc === undefined ? [] : [
     'bytes __internal__graphTranscript',
     'bigint __internal__graphControllerIdx',
@@ -1027,7 +1049,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
   ];
-  const routeParameters = ['bytes batchBlob', ...graphRouteParameters, ...routeKeyParameters].join(', ');
+  const routeParameters = [
+    'bytes batchBlob', ...graphRouteParameters, ...routeSignatureParameters, ...routeKeyParameters,
+  ].join(', ');
   const parseGraphCaller = graphControllerLbc === undefined ? '' : `
           address __scb_graph_caller;
           (__scb_graph_caller, __scb_graph_caller_cursor) = __scb_parse_graph_caller(
@@ -1049,7 +1073,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const parser = resourceShapedHandler
     ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
       `{ ${parseOneRow(String(row), undefined, row)} }`).join(' ')
-    : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
+    : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode || signatureMode
       || tokenContainerMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
@@ -1740,6 +1764,11 @@ function compileResolvedAst(
           name: parameter.name,
           type: parameter.type.toString().replace(/address payable/g, 'address'),
         })),
+        ...(fn.parameters.some((parameter) => parameter.type.toString() === 'sig')
+          && fn.functionId !== undefined
+          && traversal.invokedFunctionBytecodes.has(fn.functionId) && {
+          signatureBytecode: binToHex(traversal.invokedFunctionBytecodes.get(fn.functionId)!),
+        }),
         ...(fn.returnTypes.length > 0 && {
           outputs: fn.returnTypes.map((type) => ({
             type: type.toString().replace(/address payable/g, 'address'),

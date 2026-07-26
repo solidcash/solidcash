@@ -71,7 +71,7 @@ Evidence labels:
 | SDK expands a graph, reuses owners, stabilizes resources and acquires each input once | PARTIAL | `deriveCompiledGraphPlan` now expands the compiler-authored singular/static call closure, interns exact owner locking bytecodes, emits repeated logical invocations against one physical owner block, and fails closed on runtime occurrence or recursive expansion without a bound. Dynamic occurrence proofs and resource/effect fixed-point stabilization remain. |
 | Direct, repeated and transitive calls derive without hand-authored rows | PROVEN for admitted class | `deriveNativeExternalCalls` runtime-branded tables and VM tests. |
 | Expressions, dynamic targets, loops, function pointers and batches | PARTIAL | The owner-reusing worklist accepts VM-probed expression values, conditional/loop occurrence counts, fixed-method and varying-selector state-array target runs, received single function pointers, and compiler-collapsed repeated-call batches. Dynamic calls require an explicit resolver result for every reached occurrence and validate the selected function against the target ABI; absence fails closed. For received pointers, the compiler-authored graph row copies the covenant-bound address and selector companion rather than accepting either from the SDK. A complete BCH-2026 transaction now executes the received-pointer row and rejects independent target and selector substitutions. Batch logical indices and selectors are canonicalized against the target ABI, producing two ordered logical rows over one physical owner. General higher-order pointers and a spend-level hostile proof for varying-selector arrays remain open. |
-| Returning, opaque, signature-bearing and low-level calls | PARTIAL | Typed scalar/tuple/bytes/string/struct returns and transitive result consumption are proven above. A compiler-hidden row now verifies an authentic `datasig`, mutates journaled state, rejects a byte-substituted proof, and settles on the BCH-2026 VM. Transaction-signature arguments remain fail-closed for a protocol reason: embedding a signature in the controller-rooted SCB1 vector creates a fixed point because the signature commits the transaction containing the root while the root would commit the signature. Support requires a typed root-excluded witness independently bound by the participant. Opaque low-level returns and general low-level call rows also remain fail-closed. |
+| Returning, opaque, signature-bearing and low-level calls | PARTIAL | Typed scalar/tuple/bytes/string/struct returns and transitive result consumption are proven above. A compiler-hidden row verifies an authentic `datasig`, mutates journaled state, rejects a byte-substituted proof, and settles on the BCH-2026 VM. Scalar transaction signatures are now admitted in controller mode as typed, per-handler/per-row route witnesses excluded from the rooted SCB1 argument vector, removing the root/signature fixed point. The SDK signs the compiler-published internal `OP_INVOKE` body actually covered by `checkSig`; an honest final-transaction signature passes and a different key rejects in the VM while the owner pubkey remains transcript-bound. Forwarded signature call arguments, `sig[]`/multisig, opaque low-level returns, and general low-level call rows remain fail-closed. |
 | Final complete VM probe for every input | PROVEN | `preflightLayer3Transaction` evaluates every input of the exact finalized transaction with the provider's BCH-2026 consensus limits before broadcast; the compiled-graph suite proves both an all-input success and an exact failing-input diagnostic. `sendPreflightedLayer3Transaction` makes the gate mandatory for the production Layer-3 send path. |
 
 ## 5. State, resources, effects and events
@@ -1213,3 +1213,20 @@ human-facing transaction ID and category ID are reversed before comparison. The 
 unlocked sequence is `0xfffffffe`. This proves the physical semantics required by the
 specification; logical `activeBytecode`/`tx.origin` substitution remains deliberately rejected,
 and collection/chunk `outState` is tracked separately.
+
+### 2026-07-26: Release E — root-excluded transaction signatures
+
+Scalar transaction signatures no longer have to be embedded in the canonical invocation bytes.
+For a controller-authenticated handler, the compiler allocates one typed `sig` witness per handler
+parameter and bounded row, removes that field from the rooted ABI argument vector, and invokes the
+ordinary source handler with the positional witness. All non-signature fields remain byte-equal to
+the transcript. Local batches without a controller, signature arrays, and multisig remain
+fail-closed.
+
+`checkSig` inside an SCB1 call executes in the handler's internal `OP_INVOKE` body. This body is
+neither the public selector body nor the outer route body. The compiler therefore publishes the
+post-outlining invoked body for each signature handler, and the SDK uses exactly those bytes as the
+signing serialization's covered bytecode. A final BCH-2026 graph transaction signed by the
+transcript-bound owner succeeds; rebuilding the same graph witness with another private key fails
+under NULLFAIL. This closes the fixed-point-free root-handler case. Forwarding a signature across a
+graph edge still requires emission canonicalization which omits the signature field on both sides.

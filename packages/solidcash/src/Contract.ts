@@ -382,6 +382,16 @@ export class Contract<
       const signingBytecode = (selectorHex && this.artifact.functionBodies?.[selectorHex])
         ? hexToBin(this.artifact.functionBodies[selectorHex])
         : bytecode;
+      const signingBytecodeForArgument = (inputName: string): Uint8Array => {
+        const match = /^__scb_sig_(\d+)_\d+_r\d+$/.exec(inputName);
+        if (!match) return signingBytecode;
+        const handler = this.artifact.hiddenBatch?.handlers[Number(match[1])];
+        const handlerBody = handler?.signatureBytecode;
+        if (!handlerBody) {
+          throw new Error(`Missing invoked handler body for signature witness '${inputName}'`);
+        }
+        return hexToBin(handlerBody);
+      };
 
       const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
       const encodedArgs = args
@@ -390,11 +400,14 @@ export class Contract<
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
-        const completeArgs = encodedArgs.map((arg) => {
+        const completeArgs = encodedArgs.map((arg, index) => {
           if (!(arg instanceof SignatureTemplate)) return arg;
 
           // Generate transaction signature from SignatureTemplate
-          const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, signingBytecode, arg.getHashType());
+          const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
+          const preimage = createSighashPreimage(
+            transaction, sourceOutputs, inputIndex, coveredBytecode, arg.getHashType(),
+          );
           const sighash = hash256(preimage);
           return arg.generateSignature(sighash);
         });

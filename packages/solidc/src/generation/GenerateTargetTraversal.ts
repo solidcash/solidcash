@@ -692,6 +692,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   compiledBytecodes: Map<string, Uint8Array> = new Map();
   entryPointDebugInfo: Map<string, FunctionDebugInformation> = new Map();  // selector hex -> debug info
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
+  invokedFunctionBytecodes: Map<number, Uint8Array> = new Map(); // function id -> internal OP_INVOKE body
 
   // Every OP_DEFINE'd body emitted at contract level, kept in Script form so cross-function outlining can share
   // repeated spans between them before the dispatcher is emitted. `outputIndex` is the body's data push.
@@ -700,6 +701,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     script: Script;
     locationData: FullLocationData;
     selectorHex?: string;
+    functionId?: number;
   }> = [];
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
@@ -1833,7 +1835,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       outputIndex: this.output.length,
       script: bodyScript,
       locationData: new Array(bodyScript.length).fill(locationData),
+      functionId: func.functionId!,
     });
+    this.invokedFunctionBytecodes.set(func.functionId!, scriptToBytecode(bodyScript));
     this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
     this.emit(Op.OP_DEFINE, locationData);
@@ -2178,6 +2182,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           })),
           sourceMap: generateSourceMap(body.locationData),
         });
+      }
+    });
+    result.bodies.forEach((body, index) => {
+      const functionId = this.definedBodyRecords[index].functionId;
+      if (functionId !== undefined) {
+        this.invokedFunctionBytecodes.set(functionId, scriptToBytecode(body.script));
       }
     });
 

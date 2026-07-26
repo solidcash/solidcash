@@ -35,6 +35,17 @@ describe('Release 4 compiler-hidden local batch', () => {
       eligible: false,
       rejectionReason: 'transaction-signature-route-binding-required',
     });
+
+    const graphArtifact = compileString(SOURCE, graphOptions);
+    expect(graphArtifact.hiddenBatch?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
+      eligible: true,
+    });
+    expect(graphArtifact.hiddenBatch?.handlers.find((handler) => handler.name === 'signed')
+      ?.signatureBytecode).toMatch(/^[0-9a-f]+$/);
+    expect(graphArtifact.hiddenBatch?.route.inputs.filter((input) =>
+      input.name.startsWith('__scb_sig_')).map((input) => input.name)).toEqual(
+      Array.from({ length: 8 }, (_unused, row) => `__scb_sig_2_0_r${row}`),
+    );
   });
 
   it('admits a uniform multi-event row width and rejects ambiguous heterogeneous widths', () => {

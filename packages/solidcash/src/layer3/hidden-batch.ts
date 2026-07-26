@@ -3,6 +3,7 @@ import {
   decodePushdataValue, type Artifact, type StateValue, scriptToBytecode,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import SignatureTemplate from '../SignatureTemplate.js';
 
 export interface HiddenBatchInvocation {
   function: string;
@@ -104,6 +105,7 @@ export function encodeHiddenBatch(
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
+  const signatureWitnessValues = new Map<string, FunctionArgument>();
   const results: { row: number; types: readonly string[] }[] = [];
   const projectedRows: {
     row: number; function: string; selectorHex: string; argsHex: string;
@@ -123,11 +125,20 @@ export function encodeHiddenBatch(
         `Incorrect number of arguments for batched '${handler.name}': expected ${handler.inputs.length}, got ${args.length}`,
       );
     }
+    const handlerIndex = capability.handlers.indexOf(handler);
     const encoded = args.map((arg, index) =>
       encodeFunctionArgument(arg, handler.inputs[index].type, structs));
-    if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
-      throw new Error(`Handler '${handler.name}' contains a signature-like argument and cannot use SCB1`);
-    }
+    const rowEncoded: Uint8Array[] = [];
+    encoded.forEach((argument, index) => {
+      if (argument instanceof Uint8Array) {
+        rowEncoded.push(argument);
+        return;
+      }
+      if (handler.inputs[index].type !== 'sig' || !(argument instanceof SignatureTemplate)) {
+        throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
+      }
+      signatureWitnessValues.set(`__scb_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
+    });
     for (const binding of handler.batchKeyWitnesses ?? []) {
       const value = binding.source === 'msgSender'
         ? invocation.logicalCaller
@@ -150,7 +161,7 @@ export function encodeHiddenBatch(
       }
       if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
     }
-    const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
+    const argsBlob = scriptToBytecode(rowEncoded);
     if (argsBlob.length > 0xffff) {
       throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
     }
@@ -210,6 +221,17 @@ export function encodeHiddenBatch(
     .map((input) => {
       const witness = keyWitnessValues.get(input.name);
       if (witness) return witness.value;
+      const signatureWitness = signatureWitnessValues.get(input.name);
+      if (signatureWitness) return signatureWitness;
+      // Signature slots are allocated for the route's full bounded row width.
+      // Unreached rows are never executed, but their ABI positions must still
+      // receive a valid template so transaction construction remains typed.
+      if (/^__scb_sig_\d+_\d+_r\d+$/.test(input.name)) {
+        const sameParameter = input.name.replace(/_r\d+$/, '');
+        const fallback = [...signatureWitnessValues].find(([name]) =>
+          name.replace(/_r\d+$/, '') === sameParameter)?.[1];
+        if (fallback) return fallback;
+      }
       const supplied = unboundRouteWitnesses[input.name];
       if (supplied === undefined) {
         throw new Error(

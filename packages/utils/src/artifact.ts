@@ -623,6 +623,8 @@ export interface Artifact {
       }[];
       eligible: boolean;
       rejectionReason?: string;
+      /** OP_INVOKE body covered by CHECKSIG when this handler is called from SCB1. */
+      signatureBytecode?: string;
       batchKeyWitnesses?: {
         routeInput: string;
         inputIndex: number;

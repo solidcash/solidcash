@@ -10,7 +10,9 @@ import {
 import type { FunctionArgument } from '../../src/Argument.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import {
+  alicePkh, alicePriv, alicePub, bobPriv,
+} from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, createSatoshiContainerUnlocker,
@@ -232,6 +234,12 @@ contract GraphIntrospection() {
     require(tx.outputs[0].value == 10000 && tx.outputs[0].lockingBytecode == self);
     require(tx.outputs[0].tokenCategory.slice(0, 32) == category);
     require(tx.outputs[0].nftCommitment.length == 0 && tx.outputs[0].tokenAmount == 0);
+  }
+}`;
+const SIGNED_APP = `pragma solidcash >=0.8.0;
+contract GraphSigned() {
+  function signed(sig authorization, pubkey owner) public {
+    require(checkSig(authorization, owner));
   }
 }`;
 
@@ -721,6 +729,70 @@ async function buildIntrospectionGraph(tamper = false) {
       contract.lockingBytecode, hexToBin(setup.categoryId).reverse(), outpointHash, p2pkh.lockingBytecode,
     ],
   }]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
+  );
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projectionUtxo = randomUtxo({ satoshis: 1000n });
+  const fee = randomUtxo({ satoshis: 50_000n });
+  await provider.addUtxo(projection.address, projectionUtxo);
+  await provider.addUtxo(p2pkh.address, fee);
+  const route = contract.createCompilerRouteUnlocker(
+    artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setup.masterUtxo,
+    route(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    projectionUtxo,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: contract.tokenAddress, amount: setup.masterUtxo.satoshis,
+    token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx) };
+}
+
+async function buildSignedGraph(tamper = false) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const artifact = compileString(SIGNED_APP, {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  });
+  const base = new Contract(artifact, [], { provider });
+  const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
+  const contract = base.withCategory(hexToBin(setup.categoryId));
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const authorization = new SignatureTemplate(tamper ? bobPriv : alicePriv);
+  const plan = layer3.planCompiledGraph([
+    { artifact, lockingBytecode: contract.lockingBytecode },
+  ], [{
+    parent: null,
+    callee: 0,
+    function: 'signed',
+    args: [authorization, alicePub],
+  }]);
+  // The canonical row commits the public key but deliberately excludes the
+  // transaction signature, which is finalized only after the root exists.
+  expect(plan.participants[0].batch.rows[0].argsHex).toBe(
+    binToHex(scriptToBytecode([alicePub])),
+  );
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, [''], layout.projectionInputs,
@@ -2308,6 +2380,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a transcript row whose expected outpoint differs from the finalized transaction', async () => {
     const { provider, transaction } = await buildIntrospectionGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('verifies a root-excluded transaction-signature witness on the final graph transaction', async () => {
+    const { provider, transaction } = await buildSignedGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a transaction-signature witness from a key other than the transcript-bound owner', async () => {
+    const { provider, transaction } = await buildSignedGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

@@ -192,7 +192,24 @@ function computeWritesState(func: FunctionDefinitionNode): boolean {
 /** Build the common metadata fields for an ABI function entry. */
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
+  interfaces: readonly InterfaceNode[] = [],
 ): Partial<AbiFunction> {
+  const possibleSelectorTargets = (
+    interfaceName: string, parameters: readonly ExpressionNode[],
+  ): readonly { functionName: string; selector: string }[] => {
+    const iface = interfaces.find((candidate) => candidate.name === interfaceName);
+    if (!iface) return [];
+    const types = parameters.map((parameter) => parameter.type?.toString());
+    return iface.functions.filter((candidate) =>
+      candidate.parameters.length === types.length
+      && candidate.parameters.every((parameter, index) => parameter.type.toString() === types[index]))
+      .map((candidate) => {
+        const signature = `${candidate.name}(${candidate.parameters
+          .map((parameter) => abiTypeString(parameter.type)).join(',')})`;
+        return { functionName: candidate.name, selector: computeFunctionSelectorHex(signature) };
+      })
+      .sort((left, right) => left.selector.localeCompare(right.selector));
+  };
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -262,6 +279,9 @@ function buildFunctionAbiMetadata(
         ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
         ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
         ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
+        ...(ec.selectorArrayVar && ec.sourceCallNode && {
+          possibleTargets: possibleSelectorTargets(ec.interfaceName, ec.sourceCallNode.parameters),
+        }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
         // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
@@ -498,7 +518,7 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
-    ...buildFunctionAbiMetadata(func, isStateful, contract),
+    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));
@@ -517,7 +537,7 @@ export function generateArtifact(
       ...(contract.constructorDef.modifiers.length > 0 && {
         modifiers: contract.constructorDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.constructorDef, false, contract),
+      ...buildFunctionAbiMetadata(contract.constructorDef, false, contract, ast.interfaceDefinitions),
     });
   }
 
@@ -530,7 +550,7 @@ export function generateArtifact(
       ...(contract.fallbackDef.modifiers.length > 0 && {
         modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.fallbackDef, false, contract),
+      ...buildFunctionAbiMetadata(contract.fallbackDef, false, contract, ast.interfaceDefinitions),
     });
   }
 
@@ -541,7 +561,7 @@ export function generateArtifact(
       inputs: [],
       isReceive: true,
       modifiers: ['payable'],
-      ...buildFunctionAbiMetadata(contract.receiveDef, false, contract),
+      ...buildFunctionAbiMetadata(contract.receiveDef, false, contract, ast.interfaceDefinitions),
     });
   }
 

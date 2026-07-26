@@ -250,7 +250,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           if (!resolved) {
             throw new Error(`layer3: callsite ${call.callsiteId} lacks a dynamic call proof`);
           }
-          functionAbi(resolved.participant, resolved.function);
+          const resolvedFunction = functionAbi(resolved.participant, resolved.function);
+          if (call.possibleTargets?.length && !call.possibleTargets.some((candidate) =>
+            candidate.functionName === resolved.function
+            && candidate.selector.toLowerCase() === resolvedFunction.selector?.toLowerCase())) {
+            throw new Error(
+              `layer3: callsite ${call.callsiteId} resolved outside its compiler-bounded target set`,
+            );
+          }
           expand(
             resolved.participant,
             resolved.function,

@@ -402,6 +402,8 @@ export interface ExternalCallAbi {
   // varying-method dispatch table: parallel `bytes[]` state array of per-element selectors. The covenant reads
   // sel[i] from it (not a witness), so the SDK resolves each element's method from its selector + skips the witness.
   selectorArrayVar?: string;
+  /** Compiler-bounded method alternatives for a varying-selector table with a declared interface. */
+  possibleTargets?: readonly { functionName: string; selector: string }[];
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
   // Foreign fn-ptr call: the SDK fills a per-call master-index witness.
   fnPtrCall?: boolean;

@@ -136,6 +136,7 @@ describe('layer3.planCompiledGraph', () => {
         int count;
         function inc(uint value) public { this.count = this.count + int(value); require(value >= 0); }
         function dec(uint value) public { this.count = this.count - int(value); require(value >= 0); }
+        function other(uint value) public { this.count = int(value); require(value >= 0); }
       }`, options);
     const root = { artifact: table, lockingBytecode: '51' };
     const first = { artifact: handler, lockingBytecode: '52' };
@@ -159,6 +160,18 @@ describe('layer3.planCompiledGraph', () => {
       { parent: 0, callee: 1, name: 'inc', argsHex: '53' },
       { parent: 0, callee: 2, name: 'dec', argsHex: '53' },
     ]);
+    const dynamicCall = table.invocationAnalysis!.functions.find((fn) =>
+      fn.name === 'fireAll')!.externalCalls![0];
+    expect(dynamicCall.possibleTargets).toEqual([
+      {
+        functionName: 'dec',
+        selector: handler.abi.find((fn) => fn.name === 'dec')!.selector,
+      },
+      {
+        functionName: 'inc',
+        selector: handler.abi.find((fn) => fn.name === 'inc')!.selector,
+      },
+    ].sort((left, right) => left.selector!.localeCompare(right.selector!)));
     expect(() => layer3.deriveCompiledGraphPlan({
       root,
       function: 'fireAll',
@@ -166,6 +179,14 @@ describe('layer3.planCompiledGraph', () => {
       targets: {},
       occurrence: () => 2,
     })).toThrow(/lacks a dynamic call proof/);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fireAll',
+      args: [3n],
+      targets: {},
+      occurrence: () => 2,
+      dynamicCall: () => ({ participant: first, function: 'other' }),
+    })).toThrow(/outside its compiler-bounded target set/);
   });
 
   it('expands a VM-resolved foreign function pointer and rejects an absent proof', () => {

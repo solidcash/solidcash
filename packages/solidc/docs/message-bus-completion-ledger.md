@@ -188,6 +188,24 @@ is itself wrong for this shape, or the callee settles a state the router then co
 SAME fixture with a ONE-row batch separates them - if one row also fails, the fault is in the binding for a
 scalar-plus-collection callee and has nothing to do with batching at all.
 
+The one-row experiment proposed above was ATTEMPTED and is NOT RUNNABLE on this fixture. Two build-time
+constraints bound the shape, and both are worth recording because they narrow where the fault can live:
+
+1. `SCB1 batch row count must be between 2 and 2`. This token's route is unrolled for exactly two rows, so a
+   one-row control cannot be built at all. The proposed experiment is therefore dead as written, and any future
+   version of it needs a token whose route admits a variable row count.
+2. `SCB1 collection witness '__scb_key_balances_0' must identify one physical entry`. The fallback experiment -
+   two rows touching DISJOINT entries, to separate journal accumulation from call binding - is also not
+   runnable, because row-varying keys at the same key position are themselves an unsupported shape that fails
+   closed at build time. This is the row-local key limitation, hit from a new direction.
+
+So within what this fixture can express, the two-row shared-key case is the ONLY runnable shape, and it is the
+one that fails at VM. Separating accumulation from binding needs a different fixture, not a different argument.
+
+Not evidence: while running the above I also broke the two-row branch's router arity, which produced
+`Incorrect number of arguments passed to function __scb1`. That line is an artifact of my own patch, not a
+finding about the compiler. Recorded so nobody mines it later as a result.
+
 Also worth recording as a trap, because it briefly produced a wrong "it settles" result: the fixture BUILDS a
 transaction and returns it; VM validation only happens at `sendRawTransaction`. Wrapping the builder alone in a
 try/catch passes while proving nothing. This is the construction-versus-validation confusion the handoff warns

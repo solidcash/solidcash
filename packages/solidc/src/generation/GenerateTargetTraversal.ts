@@ -604,6 +604,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopRepointName: string = '(sorted_upsert_repoint)';
   private sortedUpsertMergeDebitSlot: number = -1; // the debit entry's FIXED block slot index (-1 = no merge possible)
   private sortedUpsertPendingRepoint: boolean = false; // a merge-capable upsert loop left a re-point register on the stack
+  // Runtime-alias routes preserve their C2 topology witnesses on the altstack across OP_INVOKE handler calls.
+  // They are restored lazily at the first wrapper-level collection flush, before any deep witness lookup.
+  private c2WitnessSnapshotsRestored: boolean = false;
   // CASE (b) PENDING-DEFER: a new recipient whose bracketing predecessor is ANOTHER credited recipient (not the debit).
   // Each UPDATE iteration co-spends its entry but DEFERS the mint into these registers; the NEXT iteration flushes them,
   // re-pointing the pending entry to the current key iff it lands in the pending's gap (proving it a new node right
@@ -2640,6 +2643,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       scan(node.body);
     }
 
+    this.c2WitnessSnapshotsRestored = false;
+    this.emitRuntimeAliasWitnessPreflight(node);
     node.body = this.visit(node.body) as BlockNode;
 
     // Drop the function-level deploy counter (roll it up from wherever it sits - the body is depth-balanced, so
@@ -12425,6 +12430,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
     const slotIndex = node.entrySlotIndex;
+    if (!this.c2WitnessSnapshotsRestored
+      && (this.currentFunction.sortedBatchInfo ?? []).some((batch) =>
+        batch.slotIndices.some((slot) =>
+          (this.entrySlots[slot]?.runtimeAliasPriorSlots?.length ?? 0) > 0))) {
+      this.restoreC2WitnessSnapshots(this.currentFunction, loc);
+    }
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
@@ -12449,17 +12460,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(__upsert_hk)');
     const aliasOwner = this.entrySlots[slotIndex]?.aliasCondDeleteSlot;
+    const runtimeAliasOwners = this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? [];
     if (aliasOwner !== undefined) {
       // Bind H(lastKey) before deciding whether swap-remove aliases its later delete. On the alias arm the upsert
       // must be a true no-op (including not evaluating its value); the owner delete remains independently proven.
       this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__c2BatchSlot_${slotIndex}`) + 1)), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(
+        this.c2WitnessName(`__internal__c2BatchSlot_${slotIndex}`),
+      ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__c2BatchSlot_${aliasOwner}`) + 1)), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(
+        this.c2WitnessName(`__internal__c2BatchSlot_${aliasOwner}`),
+      ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_ELSE, loc);
+    } else if (runtimeAliasOwners.length > 0) {
+      // Runtime aliases occupy funding slots in the balanced block. Gate the physical upsert using the slot's
+      // actual locking bytecode rather than a deep handler-frame PICK: an active slot must be the exact collection
+      // covenant, while an inactive slot is authenticated later by predOut=-2 iff its slot hash duplicates an
+      // allowed prior identity.
+      const trackedBeforeGate = [...this.stack];
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitSortedEntryAddress(collectionHash, loc);
+      this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.stack = [...trackedBeforeGate];
+      // The physical upsert must be emitted inside the true arm, so reopen the same structural predicate.
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitSortedEntryAddress(collectionHash, loc);
+      this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
+      this.stack = [...trackedBeforeGate];
     }
 
     // 2. New value v at the bottom of the working area - kept tracked, consumed at the end. An int is BIN2NUM-
@@ -12482,7 +12519,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Bind the SDK-planned full-width slot witness to the actual runtime key hash.
       this.emit(Op.OP_DUP, loc);
       const slotWitness = `__internal__c2BatchSlot_${slotIndex}`;
-      this.emit(encodeInt(BigInt(this.getStackIndex(slotWitness) + 2)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(slotWitness)) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
 
       // Collection-specific entry address -> [v, Hk, addr].
@@ -12507,7 +12545,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);
         const plannedNext = `__internal__c2BatchNext_${slotIndex}`;
-        this.emit(encodeInt(BigInt(this.getStackIndex(plannedNext) + 6)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(plannedNext)) + 6)), loc);
+        this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_EQUALVERIFY, loc);
       }
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
@@ -12529,12 +12568,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // at the logical fixed output: H(k) || plannedNext || computedValue.
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
       const nextWitness = `__internal__c2BatchNext_${slotIndex}`;
-      this.emit(encodeInt(BigInt(this.getStackIndex(nextWitness) + 2)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(nextWitness)) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
       this.emitEntryOutputIndex(slotIndex, loc, 4);
       this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // next, addr, H
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
-      if (aliasOwner !== undefined) this.emit(Op.OP_ENDIF, loc);
+      if (aliasOwner !== undefined || runtimeAliasOwners.length > 0) this.emit(Op.OP_ENDIF, loc);
       return node;
     }
 
@@ -13613,24 +13653,143 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
     )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
     const loc = { location: node.location, positionHint: PositionHint.END } as SingleLocationData;
+    this.restoreC2WitnessSnapshots(node, loc);
+    const runtimeAliasSlots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices)
+      .filter((slot) => (this.entrySlots[slot]?.runtimeAliasPriorSlots?.length ?? 0) > 0);
+    if (runtimeAliasSlots.length > 0) {
+      // The self-alias journal clone has the same declared tuple arity as the ordinary clone, but OP_INVOKE
+      // retains one empty route-frame item on an alias arm. Authenticate that this is the only stack-shape
+      // divergence, then remove the bottom item before normal covenant settlement. This is deliberately not a
+      // permissive "clean whatever remains" operation: both arms assert their exact expected depth first.
+      runtimeAliasSlots.forEach((slot, index) => {
+        const name = this.c2WitnessName(`__internal__c2BatchPredOut_${slot}`);
+        this.emit(encodeInt(BigInt(this.getStackIndex(name) + (index === 0 ? 0 : 1))), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
+        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+      });
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DEPTH, loc); this.emit(encodeInt(BigInt(this.stack.length + 1)), loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      this.emit(Op.OP_DEPTH, loc); this.emit(Op.OP_1SUB, loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DEPTH, loc); this.emit(encodeInt(BigInt(this.stack.length)), loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
     if (guard?.slotIndex !== undefined) {
       this.emitBlockSlotIndex('entry', guard.slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
       this.emit(encodeInt(64n), loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_IF, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__c2BatchSlot_${guard.slotIndex}`) + 1)), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(
+        this.c2WitnessName(`__internal__c2BatchSlot_${guard.slotIndex}`),
+      ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_IF, loc);
     }
     this.emitSortedBatchTransitionVerification(node);
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
+    const snapshots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
+      `__c2_snapshot___internal__c2BatchSlot_${slot}`,
+      `__c2_snapshot___internal__c2BatchProof_${slot}`,
+      `__c2_snapshot___internal__c2BatchNext_${slot}`,
+      `__c2_snapshot___internal__c2BatchPredOut_${slot}`,
+    ]));
+    for (const name of snapshots.reverse()) {
+      const depth = this.getStackIndex(name, true);
+      if (depth < 0) continue;
+      this.emit(encodeInt(BigInt(depth)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(depth);
+    }
+    for (const name of [...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
+      .filter((candidate) => this.getStackIndex(candidate, true) >= 0).reverse()) {
+      const depth = this.getStackIndex(name, true);
+      if (depth < 0) continue;
+      this.emit(encodeInt(BigInt(depth)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(depth);
+    }
+  }
+
+  /**
+   * Bind runtime-alias sentinels before executing the handler, while the stack contains only the canonical
+   * function frame. Each comparison is staged through the altstack so no deep PICK index depends on temporary
+   * operands. Later settlement may safely use the physical-slot covenant as its active/inactive gate.
+   */
+  private emitRuntimeAliasWitnessPreflight(node: FunctionDefinitionNode): void {
+    const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
+    const copy = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc); this.emit(Op.OP_PICK, loc);
+    };
+    for (const batch of node.sortedBatchInfo ?? []) {
+      for (const slot of batch.slotIndices) {
+        const priors = (this.entrySlots[slot]?.runtimeAliasPriorSlots ?? [])
+          .filter((prior) => batch.slotIndices.includes(prior));
+        if (priors.length === 0) continue;
+        for (let i = 0; i < priors.length; i++) {
+          copy(`__internal__c2BatchSlot_${slot}`); this.emit(Op.OP_TOALTSTACK, loc);
+          copy(`__internal__c2BatchSlot_${priors[i]}`); this.emit(Op.OP_FROMALTSTACK, loc);
+          this.emit(Op.OP_EQUAL, loc);
+          if (i === 0) this.emit(Op.OP_TOALTSTACK, loc);
+          else {
+            this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_TOALTSTACK, loc);
+          }
+        }
+        copy(`__internal__c2BatchPredOut_${slot}`);
+        this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      }
+    }
+    // Keep an untouched copy of every topology witness above the mutable handler frame. Internal handler calls
+    // may legally reorder the original parameter cells while preserving stack depth; all post-body C2 work reads
+    // these snapshots instead.
+    const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
+      `__internal__c2BatchSlot_${slot}`,
+      `__internal__c2BatchProof_${slot}`,
+      `__internal__c2BatchNext_${slot}`,
+      `__internal__c2BatchPredOut_${slot}`,
+    ]));
+    const names = [
+      ...topologyNames,
+      ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
+        .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
+    ];
+    for (const name of names) {
+      copy(name);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    }
+  }
+
+  private restoreC2WitnessSnapshots(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    if (this.c2WitnessSnapshotsRestored) return;
+    const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
+      `__internal__c2BatchSlot_${slot}`,
+      `__internal__c2BatchProof_${slot}`,
+      `__internal__c2BatchNext_${slot}`,
+      `__internal__c2BatchPredOut_${slot}`,
+    ]));
+    const names = [
+      ...topologyNames,
+      ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
+        .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
+    ];
+    for (const name of names.reverse()) {
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.pushToStack(topologyNames.includes(name) ? `__c2_snapshot_${name}` : name);
+    }
+    this.c2WitnessSnapshotsRestored = true;
+  }
+
+  private c2WitnessName(name: string): string {
+    const snapshot = `__c2_snapshot_${name}`;
+    return this.getStackIndex(snapshot, true) >= 0 ? snapshot : name;
   }
 
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const arg = (name: string, extra = 0): void => {
-      this.emit(encodeInt(BigInt(this.getStackIndex(name) + extra)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(name)) + extra)), loc);
+      this.emit(Op.OP_PICK, loc);
     };
     const proofIndex = (slot: number, extra = 0): void => {
       arg(`__internal__c2BatchProof_${slot}`, extra);
@@ -13672,6 +13831,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const batch of node.sortedBatchInfo ?? []) {
       const collectionHash = computeCollectionHash(this.entrySlots[batch.slotIndices[0]].collectionSignature);
       const targets = batch.slotIndices;
+      const runtimeAliases = targets.filter(
+        (slot) => (this.entrySlots[slot]?.runtimeAliasPriorSlots?.length ?? 0) > 0,
+      );
       const aliasWrite = targets.find((slot) => {
         const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
         return owner !== undefined && targets.includes(owner);
@@ -13744,6 +13906,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
 
       for (const slot of targets) {
+        // Runtime aliases have no proof input or target output. Their sentinel/hash equivalence was authenticated
+        // above; all remaining topology checks operate on the canonical first occurrence.
+        arg(`__internal__c2BatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
+        bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
         arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
         proofIndex(slot); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); bin(Op.OP_TOALTSTACK);
 
@@ -13771,6 +13937,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Every target lying in this original proof gap is at or after plannedNext (so none can be skipped).
         for (const other of targets) {
           if (other === slot) continue;
+          arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
           batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
           bin(Op.OP_LESSTHAN); // h < other
           proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
@@ -13783,6 +13951,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
           batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
           bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLAND); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
+          bin(Op.OP_ENDIF);
         }
 
         // proofIsTarget: existing targets are recreated at their fixed target output; absent targets additionally
@@ -13819,6 +13988,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         bin(Op.OP_VERIFY);
         for (const other of targets) {
+          arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
           proofField(slot, 'slot'); bin(Op.OP_BIN2NUM);
           batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
           proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
@@ -13830,11 +14001,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           outputField(slot, 'next', 1); bin(Op.OP_BIN2NUM);
           batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
           bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
+          bin(Op.OP_ENDIF);
         }
         bin(Op.OP_ENDIF);
 
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
+        bin(Op.OP_ENDIF);
       }
       bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
       }
@@ -13846,7 +14019,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         arg(`__internal__c2BatchSlot_${aliasWrite}`); arg(`__internal__c2BatchSlot_${aliasOwner}`, 1);
         bin(Op.OP_EQUAL); bin(Op.OP_IF); this.emit(encodeInt(BigInt(targets.length - 1)), loc);
         bin(Op.OP_ELSE); this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ENDIF);
-      } else this.emit(encodeInt(BigInt(targets.length)), loc);
+      } else {
+        this.emit(encodeInt(BigInt(targets.length)), loc);
+        for (const slot of runtimeAliases) {
+          arg(`__internal__c2BatchPredOut_${slot}`, 1);
+          this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
+        }
+      }
       this.pushToStack(expected);
       for (let i = 0; i < targets.length; i++) {
         const slot = targets[i];
@@ -13901,7 +14080,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
       const name = `__internal__c2BatchProof_${slotIndex}`;
-      const depth = this.getStackIndex(name, true);
+      const depth = this.getStackIndex(this.c2WitnessName(name), true);
       if (depth >= 0) {
         this.emitMasterInputIndex(locationData);
         this.emit(encodeInt(BigInt(depth + extraStackOffset + 1)), locationData);
@@ -15427,7 +15606,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // True for a write slot marked alias-conditional (verified via a runtime key-inequality gate, not the main loops).
   private isAliasCondWrite(slotIdx: number): boolean {
-    return this.entrySlots[slotIdx]?.aliasCondDeleteSlot !== undefined
+    return (this.entrySlots[slotIdx]?.aliasCondDeleteSlot !== undefined
+      || (this.entrySlots[slotIdx]?.runtimeAliasPriorSlots?.length ?? 0) > 0)
       && this.pendingEntryWrites.has(slotIdx)
       && !this.pendingEntryDeletes.has(slotIdx) && !this.condDeleteSlots.has(slotIdx);
   }
@@ -15440,22 +15620,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitAliasConditionalWriteVerification(loc: SingleLocationData): void {
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
       if (!this.isAliasCondWrite(slotIdx)) continue;
-      const aliasKeyName = `__entry_key_enc_${this.entrySlots[slotIdx].aliasCondDeleteSlot}`;
-      if (this.getStackIndex(aliasKeyName) < 0) continue; // aliasing delete's key not on stack -> cannot gate
+      const aliasSlots = [
+        ...(this.entrySlots[slotIdx].aliasCondDeleteSlot === undefined
+          ? [] : [this.entrySlots[slotIdx].aliasCondDeleteSlot!]),
+        ...(this.entrySlots[slotIdx].runtimeAliasPriorSlots ?? []),
+      ];
+      const runtimeStructuralGate = (this.entrySlots[slotIdx].runtimeAliasPriorSlots?.length ?? 0) > 0
+        && this.entrySlots[slotIdx].aliasCondDeleteSlot === undefined;
+      const aliasKeyNames = aliasSlots.map((slot) => `__entry_key_enc_${slot}`)
+        .filter((name) => this.getStackIndex(name) >= 0);
+      if (!runtimeStructuralGate && aliasKeyNames.length === 0) continue;
 
-      // gate = (write key_enc != alias delete key_enc)
-      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.pushToStack('(aliaschk)');
-      this.emit(encodeInt(BigInt(this.getStackIndex(aliasKeyName))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.pushToStack('(aliaschk)');
-      this.emit(Op.OP_EQUAL, loc);
-      this.popFromStack(2);
-      this.pushToStack('(aliaschk)');
-      this.emit(Op.OP_NOT, loc);
-      this.emit(Op.OP_IF, loc);
-      this.popFromStack();
+      if (runtimeStructuralGate) {
+        const tracked = [...this.stack];
+        const collectionHash = computeCollectionHash(this.entrySlots[slotIdx].collectionSignature);
+        this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+        this.emitSortedEntryAddress(collectionHash, loc);
+        this.emitBlockSlotIndex('entry', slotIdx, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
+        this.stack = tracked;
+      } else {
+        // gate = current key differs from EVERY canonical prior key
+        aliasKeyNames.forEach((aliasKeyName, aliasIndex) => {
+          this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);
+          this.emit(Op.OP_PICK, loc); this.pushToStack('(aliaschk)');
+          this.emit(encodeInt(BigInt(this.getStackIndex(aliasKeyName))), loc);
+          this.emit(Op.OP_PICK, loc); this.pushToStack('(aliaschk)');
+          this.emit(Op.OP_EQUAL, loc); this.popFromStack(2); this.pushToStack('(aliaschk)');
+          if (aliasIndex > 0) {
+            this.emit(Op.OP_BOOLOR, loc); this.popFromStack(2); this.pushToStack('(aliaschk)');
+          }
+        });
+        this.emit(Op.OP_NOT, loc); this.emit(Op.OP_IF, loc); this.popFromStack();
+      }
 
       // (a) commitment: output[slot] == key_enc ++ value_enc
       this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);

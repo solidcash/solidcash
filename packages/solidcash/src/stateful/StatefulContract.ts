@@ -6562,14 +6562,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       const batchAliasSkips = new Set<number>();
+      const batchAliasOwners = new Map<number, number>();
       for (const entry of entryNfts) {
-        const ownerSlot = entryAccesses[entry.slotIndex]?.aliasCondDeleteSlot;
-        const owner = ownerSlot === undefined ? undefined
-          : entryNfts.find((candidate) => candidate.slotIndex === ownerSlot);
         const entrySlot = batchTargetSlots.get(entry.slotIndex);
-        const ownerTarget = ownerSlot === undefined ? undefined : batchTargetSlots.get(ownerSlot);
-        if (owner && entry.collection === owner.collection && entrySlot && ownerTarget
-          && binToHex(entrySlot) === binToHex(ownerTarget)) batchAliasSkips.add(entry.slotIndex);
+        const candidates = [
+          ...(entryAccesses[entry.slotIndex]?.aliasCondDeleteSlot === undefined
+            ? [] : [entryAccesses[entry.slotIndex].aliasCondDeleteSlot!]),
+          ...(entryAccesses[entry.slotIndex]?.runtimeAliasPriorSlots ?? []),
+        ];
+        for (const ownerSlot of candidates) {
+          const owner = entryNfts.find((candidate) => candidate.slotIndex === ownerSlot);
+          const ownerTarget = batchTargetSlots.get(ownerSlot);
+          if (owner && entry.collection === owner.collection && entrySlot && ownerTarget
+            && binToHex(entrySlot) === binToHex(ownerTarget)) {
+            batchAliasSkips.add(entry.slotIndex);
+            batchAliasOwners.set(entry.slotIndex, ownerSlot);
+            break;
+          }
+        }
       }
       const batchGuardSlot = entryAbiFunction?.blockLayout?.slots.find(
         (slot) => slot.kind === 'entry' && slot.softDelete,
@@ -6629,7 +6639,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
           if (batchAliasSkips.has(slotIndex)) {
-            const ownerSlot = entryAccesses[slotIndex].aliasCondDeleteSlot!;
+            const ownerSlot = batchAliasOwners.get(slotIndex);
+            if (ownerSlot === undefined) throw new Error(`C2 alias slot has no canonical owner ${slotIndex}`);
             const ownerOffset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === ownerSlot,
             )?.offset;

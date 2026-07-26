@@ -171,6 +171,8 @@ function buildFunctionAbiMetadata(
         }),
         operations: ea.operations,
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
+        ...(ea.runtimeAliasPriorSlots?.length
+          && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
       })),
     }),

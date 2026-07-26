@@ -30,7 +30,7 @@ Evidence labels:
 | Read-your-writes and exactly one final flush | PROVEN for shipped journal shapes | Scalar and collection journal suites. |
 | Stateful helpers are callable without forced body duplication | PROVEN | Releases 1-3 compiler tests and size regressions. |
 | Bounded direct/mutual recursion fails closed when unsupported or over budget | PROVEN | Release 2 compiler/VM diagnostics. |
-| Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PARTIAL | Mapping/fixed-array shapes, bounded bytes/string/dynamic-array batches, and repeated FT-container effects pass with one final flush. Runtime-varying aliases remain. |
+| Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PROVEN for the admitted bounded classes | Mapping/fixed-array shapes, bounded bytes/string/dynamic-array batches, repeated FT-container effects, and the two-row runtime-alias class pass with one final flush. Shared-debit and repeated-recipient aliases canonicalize to one physical entry; false and omitted alias sentinels fail in the BCH-2026 VM. |
 | Canonical local batch with exact row consumption | PROVEN for R4 eligibility | SCB1 positive and hostile VM tests. |
 | One repeated external owner consumed once | PROVEN for R5 eligibility | Whole-blob positional binding and caller/callee tests. |
 | Standard `msg.sender`-authorized ERC-20 allowance behavior | PROVEN for the admitted two-row class | `transferFrom` debits `allowance[from][msg.sender]` and `transfer` debits `balances[msg.sender]`, both keyed by the graph-authenticated caller with no spender parameter; substituting either witness fails in the BCH-2026 VM. Wider row counts and handler shapes remain out of the admitted class. |
@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, `delete m[k]`, bounded string replacement, dynamic-array append, and repeated FT-container transfer settle through their existing C2/chunk/token covenants. Chunk and token-output substitutions fail in the VM. Runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PROVEN for the admitted bounded classes | Insertion on a cold key, nested mappings with dynamic keys, `delete m[k]`, bounded string replacement, dynamic-array append, repeated FT-container transfer, and two-row runtime-varying aliases settle through their existing C2/chunk/token covenants. Chunk/token substitutions and false/omitted alias declarations fail in the VM. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -1116,3 +1116,25 @@ inside the invoked route observes the active invoked body rather than the direct
 execution context, so admitting it would create direct-versus-batch divergence. The compiler
 continues to reject both active-bytecode and `tx.origin` handlers. This is a measured fail-closed
 boundary, not an assumed equivalence.
+
+### 2026-07-26: Release C — runtime structural alias canonicalization
+
+The two-row resource route now records, for each row-local C2 entry, the earlier logical slots it
+may alias. The SDK emits a neutral balanced funding slot for a duplicate logical identity and
+points its proof witness at the first physical owner. The covenant authenticates `predOut == -2`
+if and only if the row's full slot hash equals one of those compiler-declared earlier identities;
+the inactive physical slot cannot execute an entry transition or contribute to topology
+cardinality.
+
+Internal value-threaded handlers may reorder their route frame while preserving stack depth.
+Therefore the route snapshots immutable C2 topology and entry-key witnesses before invoking any
+handler, restores them before the first wrapper flush, and uses only those copies for settlement.
+The self-alias handler rewrites both debit and credit to one journal cell while retaining identical
+static tuple arity. Its one measured empty-frame residue is removed only after the covenant proves
+both that an authenticated alias arm ran and that the physical depth is exactly one greater than
+the compiler-tracked frame; the non-alias arm separately proves exact equality.
+
+`Layer3CompiledGraphController.test.ts` proves a recipient equal to the shared debit owner and a
+recipient repeated across both invocations. It also rejects a duplicate identity without the alias
+sentinel and a sentinel attached to distinct identities. The complete 52-test compiled-graph suite
+and the hidden-batch resource-shape regressions pass on the BCH-2026 VM.

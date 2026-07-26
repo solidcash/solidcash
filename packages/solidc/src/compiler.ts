@@ -3,7 +3,8 @@ import { binToHex } from '@bitauth/libauth';
 import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
-  Ast, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  ExpressionNode,
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
@@ -86,7 +87,7 @@ import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
-import { NullaryOperator } from './ast/Operator.js';
+import { BinaryOperator, NullaryOperator } from './ast/Operator.js';
 import { cloneNode } from './ast/clone.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
@@ -618,7 +619,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   // source parameter originally supplied the value. `msg.sender` keys are just another entry key here; the
   // route still requires each one to equal `__scb_graph_caller`.
   const ENTRY_KEY_PREFIX = '__scb_ek_';
-  const handlerEntryKeys = new Map<FunctionDefinitionNode, { base: string; perRow: boolean }[]>();
+  const handlerEntryKeys = new Map<FunctionDefinitionNode, {
+    base: string; perRow: boolean; collection: string;
+  }[]>();
   const isMappingNode = (node: Node): node is MappingAccessNode | MappingAssignNode | MappingDeleteNode =>
     node instanceof MappingAccessNode || node instanceof MappingAssignNode || node instanceof MappingDeleteNode;
   const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode): string =>
@@ -640,7 +643,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       if (!list.includes(signature)) list.push(signature);
       alternatives.set(node.name, list);
     });
-    const ordered: { base: string; perRow: boolean }[] = [];
+    const ordered: { base: string; perRow: boolean; collection: string }[] = [];
     const declared = new Set<string>();
     walkInvocationAst(handler.body, (node) => {
       if (!isMappingNode(node)) return;
@@ -658,7 +661,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         const parameterName = `${ENTRY_KEY_PREFIX}${base}`;
         if (!declared.has(base)) {
           declared.add(base);
-          ordered.push({ base, perRow: rowLocal && !isSender });
+          ordered.push({ base, perRow: rowLocal && !isSender, collection: node.name });
           handler.parameters.push(Object.assign(
             new ParameterNode(collection.allKeyTypes[keyIndex], parameterName, []),
             { location: handler.location },
@@ -675,6 +678,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.usesMsgSender = stillReadsSender;
     handlerEntryKeys.set(source, ordered);
   };
+  let resourceSelfAliasHandlerInvokeName: string | undefined;
   if (resourceShapedHandler) {
     const handler = cloneNode(resourceShapedHandler);
     handler.name = `__scb_resource_${resourceShapedHandler.name}`;
@@ -692,6 +696,45 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     bindEntryKeyParameters(handler, resourceShapedHandler);
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
+    const resourceEntryShape = handlerEntryKeys.get(resourceShapedHandler) ?? [];
+    const varyingResourceEntry = resourceEntryShape.find((entry) => entry.perRow);
+    const sharedResourceEntry = varyingResourceEntry && resourceEntryShape.find((entry) =>
+      !entry.perRow && entry.collection === varyingResourceEntry.collection
+      && `${entry.base}_row` === varyingResourceEntry.base);
+    if (varyingResourceEntry && sharedResourceEntry) {
+      const aliasHandler = cloneNode(handler);
+      aliasHandler.name = `${handler.name}_self_alias`;
+      let retainedVaryingRead: MappingAccessNode | undefined;
+      walkInvocationAst(aliasHandler.body, (node) => {
+        if (!isMappingNode(node) || node.name !== varyingResourceEntry.collection) return;
+        if (node.keys.some((key) =>
+          key instanceof IdentifierNode
+          && key.name === `${ENTRY_KEY_PREFIX}${varyingResourceEntry.base}`)) {
+          retainedVaryingRead ??= Object.assign(new MappingAccessNode(
+            node.name, node.keys.map((key) => cloneNode(key) as ExpressionNode),
+          ), { location: node.location });
+          node.keys = node.keys.map((key) =>
+            key instanceof IdentifierNode
+              && key.name === `${ENTRY_KEY_PREFIX}${varyingResourceEntry.base}`
+              ? Object.assign(
+                new IdentifierNode(`${ENTRY_KEY_PREFIX}${sharedResourceEntry.base}`),
+                { location: key.location },
+              ) : key);
+        }
+      });
+      if (retainedVaryingRead) {
+        aliasHandler.body!.statements ??= [];
+        aliasHandler.body!.statements.push(Object.assign(new RequireNode(
+          Object.assign(new BinaryOpNode(
+            retainedVaryingRead,
+            BinaryOperator.EQ,
+            cloneNode(retainedVaryingRead) as MappingAccessNode,
+          ), { location: handler.location }),
+        ), { location: handler.location }));
+      }
+      resourceSelfAliasHandlerInvokeName = aliasHandler.name;
+      contract.functions.push(aliasHandler);
+    }
   }
   // When a resource-shaped handler shares the route with others, every handler must reach its entries through
   // the same journal path. The resource-shaped one is invoked as an internal clone whose accesses the collection
@@ -837,15 +880,15 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       ? resourceHandlerInvokeName!
       : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
-    const invoke = (args: string): string => {
-      if (!captureResults || fn.returnTypes.length === 0) return `${invokeName}(${args});`;
+    const invoke = (args: string, selectedInvokeName = invokeName): string => {
+      if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
       const names = fn.returnTypes.map((_type, index) =>
         `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
       const declarations = fn.returnTypes.map((type, index) =>
         `${type.toString()} ${names[index]};`).join(' ');
       const assignment = fn.returnTypes.length === 1
-        ? `${names[0]} = ${invokeName}(${args});`
-        : `(${names.join(', ')}) = ${invokeName}(${args});`;
+        ? `${names[0]} = ${selectedInvokeName}(${args});`
+        : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
       return `${declarations} ${assignment} __scb_results = bytes.concat(
         __scb_results, abi.encode(${names.join(', ')})
       );`;
@@ -881,16 +924,59 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         .filter((binding) => binding.source !== 'msgSender')
         .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
       : []);
-    const callArgs = [
+    const sourceCallArgs = [
       ...fn.parameters.map((_parameter, i) =>
         i === tokenCategoryInputByHandler.get(fn)
           ? '__scb_token_category'
           : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
-      ...entryKeyArguments(fn),
-    ].join(', ');
+    ];
+    const physicalEntryArgs = entryKeyArguments(fn);
+    const entryShape = handlerEntryKeys.get(fn);
+    const varyingEntryIndex = entryShape?.findIndex((entry) => entry.perRow) ?? -1;
+    const varyingEntry = varyingEntryIndex >= 0 ? entryShape![varyingEntryIndex] : undefined;
+    const sharedEntryIndex = varyingEntry
+      ? entryShape!.findIndex((entry) =>
+        !entry.perRow && `${entry.base}_row` === varyingEntry.base)
+      : -1;
+    const callArgs = [...sourceCallArgs, ...physicalEntryArgs].join(', ');
     const decode = declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
       : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
+    // Canonicalize the measured two-row, one-shared/one-varying resource shape before the collection journal
+    // sees the callsite. A varying key which aliases the shared key or an earlier row is passed as that earlier
+    // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
+    // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
+    // off when one of these equality arms is taken.
+    if (fn === resourceShapedHandler && rowIndex !== undefined
+      && entryShape && entryShape.filter((entry) => entry.perRow).length === 1
+      && sharedEntryIndex >= 0 && varyingEntry) {
+      const shared = entryShape[sharedEntryIndex].base;
+      const varying = `${varyingEntry.base}_r${rowIndex}`;
+      // Shared-self aliasing is handled inside the clone so its call/return frame remains statically identical.
+      // Only an alias to a prior row needs wrapper-level cache redirection.
+      const prior = [
+        shared,
+        ...Array.from({ length: rowIndex }, (_unused, priorRow) =>
+          `${varyingEntry.base}_r${priorRow}`),
+      ];
+      let dispatch = invoke(callArgs);
+      for (let candidateIndex = prior.length - 1; candidateIndex >= 0; candidateIndex--) {
+        const candidate = prior[candidateIndex];
+        const aliasedEntryArgs = [...physicalEntryArgs];
+        aliasedEntryArgs[varyingEntryIndex] = candidate;
+        // Keep the shared-self case on two distinct wrapper cache locals. The handler's internal equality branch
+        // canonicalizes the actual lvalue, while the untouched varying cache occupies its own return/capture slot.
+        // Passing the shared IDENTIFIER twice would make the wrapper pool capture two return fields into one local,
+        // corrupting the surrounding stack frame. Cross-row aliases have no within-handler collision and may safely
+        // reuse the earlier row's cache directly.
+        const aliasedArgs = candidate === shared
+          ? callArgs : [...sourceCallArgs, ...aliasedEntryArgs].join(', ');
+        const selectedInvoke = candidate === shared && resourceSelfAliasHandlerInvokeName
+          ? resourceSelfAliasHandlerInvokeName : invokeName;
+        dispatch = `if (${varying} == ${candidate}) { ${invoke(aliasedArgs, selectedInvoke)} } else { ${dispatch} }`;
+      }
+      return `${condition} { ${decode} ${keyChecks} ${dispatch} }`;
+    }
     return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
     }).join(' ');
   const usedRouteInputs = new Set(eligible.flatMap((fn) =>
@@ -1444,6 +1530,21 @@ function compileResolvedAst(
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+  // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.
+  // Record the corresponding physical-slot alternatives after entry slots have been assigned, but before
+  // covenant generation. The code generator uses this to skip the duplicate slot completely; the SDK funds it
+  // rather than attempting to co-spend one entry NFT twice.
+  for (const fn of ast.contract.functions) {
+    if (!fn.hiddenBatchRoute || !fn.entryAccesses) continue;
+    for (const entry of fn.entryAccesses) {
+      if (!entry.keyParams.some((key) => /_r\d+$/.test(key))) continue;
+      entry.runtimeAliasPriorSlots = fn.entryAccesses
+        .filter((prior) => prior.slotIndex < entry.slotIndex
+          && prior.collection === entry.collection
+          && prior.keyParams.length === entry.keyParams.length)
+        .map((prior) => prior.slotIndex);
+    }
+  }
   ast = ast.accept(new TypeCheckTraversal()) as Ast;
   ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.enforceFinalRequire)) as Ast;
 

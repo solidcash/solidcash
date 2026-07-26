@@ -927,7 +927,11 @@ async function buildMappingGraph(tamperValue = false) {
   return { provider, transaction: raw(tx), layout };
 }
 
-async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
+async function buildCallerAuthorizedTransferGraph(
+  forgeCallerWitness = false,
+  aliasMode?: 'shared-first' | 'repeated-recipient',
+  forgeAliasWitness?: 'omit-sentinel' | 'false-sentinel',
+) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -972,15 +976,14 @@ async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
   const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
   const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
   const from = hexToBin('31'.repeat(20));
-  const first = hexToBin('32'.repeat(20));
-  const second = hexToBin('33'.repeat(20));
-  const balanceRows = [
-    { slot: keyToSlot(from), value: 100n },
-    { slot: keyToSlot(first), value: 0n },
-    { slot: keyToSlot(second), value: 0n },
+  const first = aliasMode === 'shared-first' ? from : hexToBin('32'.repeat(20));
+  const second = aliasMode === 'repeated-recipient' ? first : hexToBin('33'.repeat(20));
+  const balanceRows = [...new Map([from, first, second].map((key) => [
+    binToHex(keyToSlot(key)), { slot: keyToSlot(key), value: binToHex(key) === binToHex(from) ? 100n : 0n },
     // The covenant orders slots with OP_BIN2NUM + OP_LESSTHAN, i.e. as little-endian VM numbers. Sorting the
     // bytes lexicographically would build a linked list the sorted-list invariant rejects.
-  ].sort((left, right) => Number(bytesToSlotValue(left.slot) - bytesToSlotValue(right.slot)));
+  ] as const)).values()]
+    .sort((left, right) => Number(bytesToSlotValue(left.slot) - bytesToSlotValue(right.slot)));
   const balanceCommitments = new Map(balanceRows.map((row, index) => [
     binToHex(row.slot),
     encodeEntryCommitment(
@@ -995,50 +998,48 @@ async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
   const allowanceCommitment = encodeEntryCommitment(
     allowanceSlot, new Uint8Array(32), bigIntToVmNumber(50n),
   );
-  const entries = [
-      {
-        satoshis: 10000n,
-        token: {
-          category: tokenSetup.categoryId,
-          amount: 0n,
-          nft: {
-            capability: 'mutable',
-            commitment: binToHex(balanceCommitments.get(binToHex(keyToSlot(from)))!),
-          },
-        },
+  const balanceEntryByKey = new Map([from, first, second].map((key) => [binToHex(key), randomUtxo({
+    satoshis: 10000n,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable' as const,
+        commitment: binToHex(balanceCommitments.get(binToHex(keyToSlot(key)))!),
       },
-      {
+    },
+  })]));
+  const allowanceEntry = randomUtxo({
         satoshis: 10000n,
         token: {
           category: tokenSetup.categoryId,
           amount: 0n,
           nft: { capability: 'mutable', commitment: binToHex(allowanceCommitment) },
         },
-      },
-      ...[first, second].map((recipient) => ({
-        satoshis: 10000n,
-        token: {
-          category: tokenSetup.categoryId,
-          amount: 0n,
-          nft: {
-            capability: 'mutable' as const,
-            commitment: binToHex(balanceCommitments.get(binToHex(keyToSlot(recipient)))!),
-          },
-        },
-      })),
-  ].map((entry) => randomUtxo(entry));
+      });
+  // Logical journal order remains [from-balance, allowance, row0-recipient, row1-recipient]. Duplicate logical
+  // identities occupy balanced funding slots; only their first occurrence co-spends the physical entry NFT.
+  const logicalKeys = [from, undefined, first, second] as const;
+  const firstLogicalSlot = new Map<string, number>();
+  const entries = logicalKeys.map((key, slot) => {
+    if (key === undefined) return allowanceEntry;
+    const hex = binToHex(key);
+    if (!firstLogicalSlot.has(hex)) {
+      firstLogicalSlot.set(hex, slot);
+      return balanceEntryByKey.get(hex)!;
+    }
+    return randomUtxo({ satoshis: 1000n });
+  });
   await provider.addUtxo(
-    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entries[0],
+    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), balanceEntryByKey.get(binToHex(from))!,
   );
   await provider.addUtxo(
-    getEntryNftAddress(token, tokenSetup.categoryId, 'allowance'), entries[1],
+    getEntryNftAddress(token, tokenSetup.categoryId, 'allowance'), allowanceEntry,
   );
-  await provider.addUtxo(
-    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entries[2],
-  );
-  await provider.addUtxo(
-    getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entries[3],
-  );
+  for (const [key, entry] of balanceEntryByKey) {
+    if (key === binToHex(from)) continue;
+    await provider.addUtxo(getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entry);
+  }
   const plan = layer3.planCompiledGraph([
     { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
     { artifact: tokenArtifact, lockingBytecode: token.lockingBytecode },
@@ -1058,6 +1059,7 @@ async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
   const projectionUtxos = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
   const fee = randomUtxo({ satoshis: 50000n });
   for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
+  for (const entry of entries) if (!entry.token) await provider.addUtxo(p2pkh.address, entry);
   await provider.addUtxo(p2pkh.address, fee);
   const callerRoute = caller.createCompilerRouteUnlocker(
     callerArtifact.hiddenBatch!.route, hexToBin(callerArtifact.hiddenBatch!.selector),
@@ -1078,14 +1080,31 @@ async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
   const journalOrder = [1, 0, 2, 3];
   for (const routeSlot of journalOrder) {
     const entry = entries[routeSlot];
+    if (!entry.token) {
+      const key = logicalKeys[routeSlot]!;
+      const ownerSlot = firstLogicalSlot.get(binToHex(key))!;
+      tokenRouteArgs.push(
+        keyToSlot(key), BigInt(journalOrder.indexOf(ownerSlot) + 1), new Uint8Array(32),
+        forgeAliasWitness === 'omit-sentinel' ? -1n : -2n,
+      );
+      continue;
+    }
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(routeSlot + 1), decoded.nextKey, -1n);
+    tokenRouteArgs.push(
+      decoded.slot, BigInt(journalOrder.indexOf(routeSlot) + 1), decoded.nextKey,
+      forgeAliasWitness === 'false-sentinel' && routeSlot === 2 ? -2n : -1n,
+    );
   }
   tokenRouteArgs.push(0n);
-  const nextValues = [70n, 10n, 20n];
-  const nextBalances = new Map([from, first, second].map((key, index) => [
-    binToHex(keyToSlot(key)),
-    bigIntToVmNumber(nextValues[index]),
+  const logicalBalances = new Map([[binToHex(from), 100n]]);
+  for (const [recipient, amount] of [[first, 10n], [second, 20n]] as const) {
+    const fromKey = binToHex(from);
+    const recipientKey = binToHex(recipient);
+    logicalBalances.set(fromKey, logicalBalances.get(fromKey)! - amount);
+    logicalBalances.set(recipientKey, (logicalBalances.get(recipientKey) ?? 0n) + amount);
+  }
+  const nextBalances = new Map([...logicalBalances].map(([key, value]) => [
+    binToHex(keyToSlot(hexToBin(key))), bigIntToVmNumber(value),
   ]));
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   tx.addInput(
@@ -1097,10 +1116,13 @@ async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
     tokenRoute(...tokenRouteArgs as any),
   );
   // Every entry is authorized by co-spending the token master, which this graph places at input 1.
-  entries.forEach((entry, slotIndex) =>
-    tx.addInput(entry, createEntryNftUnlocker(
+  journalOrder.forEach((slotIndex) => {
+    const entry = entries[slotIndex];
+    if (!entry.token) tx.addInput(entry, p2pkh.unlock.spend(alicePub, signature()));
+    else tx.addInput(entry, createEntryNftUnlocker(
       token, 1, tokenSetup.categoryId, slotIndex === 1 ? 'allowance' : 'balances',
-    )));
+    ));
+  });
   projectionUtxos.forEach((proof, participant) =>
     tx.addInput(proof, projection.unlock.verify(
       transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
@@ -1123,6 +1145,10 @@ async function buildCallerAuthorizedTransferGraph(forgeCallerWitness = false) {
   });
   for (const slotIndex of journalOrder) {
     const entry = entries[slotIndex];
+    if (!entry.token) {
+      tx.addOutput({ to: p2pkh.address, amount: entry.satoshis });
+      continue;
+    }
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
     const value = slotIndex === 1
       ? bigIntToVmNumber(20n)
@@ -2143,6 +2169,30 @@ describe('Layer-3 compiled graph controller', () => {
   it('rejects substituting the allowance spender witness for the authenticated caller', async () => {
     const { provider, transaction } = await buildCallerAuthorizedTransferGraph(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('canonicalizes a row-local recipient which aliases the shared debit entry', async () => {
+    const { provider, transaction } = await buildCallerAuthorizedTransferGraph(false, 'shared-first');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('canonicalizes the same row-local recipient across repeated invocations', async () => {
+    const { provider, transaction } = await buildCallerAuthorizedTransferGraph(false, 'repeated-recipient');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects an aliased recipient without the authenticated alias sentinel', async () => {
+    const { provider, transaction } = await buildCallerAuthorizedTransferGraph(
+      false, 'shared-first', 'omit-sentinel',
+    );
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(/mandatory-script-verify/);
+  });
+
+  it('rejects an alias sentinel for two distinct recipient identities', async () => {
+    const { provider, transaction } = await buildCallerAuthorizedTransferGraph(
+      false, undefined, 'false-sentinel',
+    );
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(/mandatory-script-verify/);
   });
 
   it('settles two caller-keyed ERC-20 transfers with no spender parameter', async () => {

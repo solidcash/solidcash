@@ -185,6 +185,36 @@ contract CompiledPointerTarget(int brand) {
   function inc(uint value) public pure { require(value > 0); }
   function dec(uint value) public pure { require(value > 0); }
 }`;
+const COMBINED_A = `pragma solidcash >=0.8.0;
+interface ICombinedB { function step(address callback, bytes recipient, bigint amount); }
+contract CombinedA() {
+  bigint count;
+  event Seen(bigint amount);
+  function start(address peer, address callback, bytes recipient, bigint amount) public {
+    this.count = this.count + amount;
+    emit Seen(amount);
+    this.transfer(recipient, amount);
+    ICombinedB(peer).step(callback, recipient, amount);
+    require(true);
+  }
+  function finish(address callback, bytes recipient, bigint amount) public {
+    this.count = this.count + amount;
+    emit Seen(amount);
+    require(callback.length > 0 && recipient.length > 0);
+  }
+}`;
+const COMBINED_B = `pragma solidcash >=0.8.0;
+interface ICombinedA { function finish(address callback, bytes recipient, bigint amount); }
+contract CombinedB() {
+  bigint count;
+  event Stepped(bigint amount);
+  function step(address callback, bytes recipient, bigint amount) public {
+    this.count = this.count + amount;
+    emit Stepped(amount);
+    ICombinedA(callback).finish(callback, recipient, amount);
+    require(true);
+  }
+}`;
 
 async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>) {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -499,6 +529,150 @@ async function buildPointerGraph(
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10_000n });
   return { provider, transaction: raw(tx) };
+}
+
+async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' = 'none') {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const artifactA = compileString(COMBINED_A, options);
+  const artifactB = compileString(COMBINED_B, options);
+  const baseA = new Contract(artifactA, [], { provider });
+  const baseB = new Contract(artifactB, [], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, { count: 0n });
+  const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, { count: 0n });
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const recipient = Uint8Array.of(0x51);
+  const args = [b.lockingBytecode, a.lockingBytecode, recipient, 5n] as const;
+  const callbackArgs = [a.lockingBytecode, recipient, 5n] as const;
+  const plan = layer3.planCompiledGraph([
+    { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'start', args },
+    { parent: 0, callee: 1, function: 'step', args: callbackArgs },
+    { parent: 1, callee: 0, function: 'finish', args: callbackArgs },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const fundingA = Array.from({ length: 16 }, () => randomUtxo({ satoshis: 1000n }));
+  const fundingB = Array.from({ length: 8 }, () => randomUtxo({ satoshis: 1000n }));
+  const container = randomUtxo({ satoshis: 5000n });
+  const projectionA = randomUtxo({ satoshis: 1000n });
+  const projectionB = randomUtxo({ satoshis: 1000n });
+  const fee = randomUtxo({ satoshis: 50_000n });
+  await provider.addUtxo(getSatoshiContainerAddress(a, setupA.categoryId), container);
+  for (const funding of [...fundingA, ...fundingB, fee]) {
+    await provider.addUtxo(p2pkh.address, funding);
+  }
+  await provider.addUtxo(projection.address, projectionA);
+  await provider.addUtxo(projection.address, projectionB);
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setupA.masterUtxo,
+    routeA(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupA.dataNftUtxos[0],
+    createDataNftUnlocker(a, layout.participantInputs[0], setupA.categoryId),
+  );
+  tx.addInput(container, createSatoshiContainerUnlocker(a, layout.participantInputs[0], setupA.categoryId));
+  fundingA.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
+  tx.addInput(
+    setupB.masterUtxo,
+    routeB(...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupB.dataNftUtxos[0],
+    createDataNftUnlocker(b, layout.participantInputs[1], setupB.categoryId),
+  );
+  fundingB.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
+  tx.addInput(
+    projectionA,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(
+    projectionB,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 1n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  const nextA = buildInitialStateCommitments(
+    artifactA.stateLayout!, { count: tamper === 'state' ? 11n : 10n },
+  )[0];
+  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 5n })[0];
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(a, setupA.categoryId), amount: setupA.dataNftUtxos[0].satoshis,
+    token: {
+      category: setupA.categoryId, amount: 0n,
+      nft: { capability: 'mutable', commitment: nextA },
+    },
+  });
+  tx.addOutput({ to: getSatoshiContainerAddress(a, setupA.categoryId), amount: 4995n });
+  tx.addOutput({ to: recipient, amount: tamper === 'value' ? 6n : 5n });
+  for (let slot = 4; slot < 11; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(5n)]));
+  const eventA = getEventNftAddress(a, setupA.categoryId, artifactA.events![0].signature);
+  for (let slot = 11; slot < 19; slot += 1) {
+    const reached = slot === 11 || slot === 12;
+    tx.addOutput(reached ? {
+      to: tamper === 'event' && slot === 12 ? a.tokenAddress : eventA,
+      amount: 1000n,
+      token: {
+        category: setupA.categoryId, amount: 0n,
+        nft: { capability: 'none', commitment: eventCommitment },
+      },
+    } : { to: p2pkh.address, amount: 1000n });
+  }
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(b, setupB.categoryId), amount: setupB.dataNftUtxos[0].satoshis,
+    token: {
+      category: setupB.categoryId, amount: 0n,
+      nft: { capability: 'mutable', commitment: nextB },
+    },
+  });
+  const eventB = getEventNftAddress(b, setupB.categoryId, artifactB.events![0].signature);
+  tx.addOutput({
+    to: eventB, amount: 1000n,
+    token: {
+      category: setupB.categoryId, amount: 0n,
+      nft: { capability: 'none', commitment: eventCommitment },
+    },
+  });
+  for (let slot = 22; slot < 29; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx), plan };
 }
 
 const packedResult = (value: bigint): Uint8Array =>
@@ -2028,6 +2202,20 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a function-pointer %s choice which disagrees with the canonical child row',
     async (tamper) => {
       const { provider, transaction } = await buildPointerGraph(tamper);
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    },
+  );
+
+  it('composes a heterogeneous callback cycle with state, value, and event effects', async () => {
+    const { provider, transaction, plan } = await buildCombinedGraph();
+    expect(plan.participants.map((participant) => participant.invocations)).toEqual([[0, 2], [1]]);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it.each(['state', 'event', 'value'] as const)(
+    'rejects a combined callback graph with a forged %s effect',
+    async (tamper) => {
+      const { provider, transaction } = await buildCombinedGraph(tamper);
       await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
     },
   );

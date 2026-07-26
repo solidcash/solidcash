@@ -95,7 +95,7 @@ Evidence labels:
 | Input-only proof slots pair with 1,000-satoshi change outputs | PROVEN for admitted slots | Balanced layout tests. |
 | Final funding input covers the remaining fee and final output is change | PROVEN in fixtures | Standard-policy/regtest harness. |
 | Blocks relocate and compose without global hard-coded indices | PROVEN for compiler-owned bounded blocks | Every artifact declares only local offsets; codegen computes physical references from its active master/block base, and `compiledGraphPhysicalLayout` concatenates independently compiled spans. The composer now rejects duplicate, missing, out-of-range, or malformed trailing slots before assigning bases. `Layer3Balanced` VM-proves A -> B -> A across shifted bases and the compiled-graph controller suite proves heterogeneous non-zero-base participants. |
-| Multiple heterogeneous blocks, cycles, resources, effects and events compose together | PARTIAL | Separate fixtures exist; no general builder proves arbitrary admitted combinations. |
+| Multiple heterogeneous blocks, cycles, resources, effects and events compose together | PROVEN for the admitted bounded blocks | One compiler-planned BCH-2026 transaction composes independently compiled A and B blocks as A -> B -> A, reuses A's physical owner, journals both scalar states, settles a satoshi transfer, and authenticates three event NFTs. Independent post-state, event-address, and transfer-value substitutions reject. The compiler admits a uniform event width together with a sparse one-transfer row while effect-free sibling rows retain balanced funding/change slots. |
 
 ## 7. Limits, deployment and review
 

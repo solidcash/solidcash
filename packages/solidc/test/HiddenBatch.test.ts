@@ -675,4 +675,37 @@ describe('Release 4 compiler-hidden local batch', () => {
     });
     expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(1);
   });
+
+  it('admits a uniform event route with a sparse value-transfer effect', () => {
+    const artifact = compileString(`interface IPeer {
+      function step(address callback, bytes recipient, bigint amount);
+    }
+    contract CombinedEffects() {
+      bigint count;
+      event Seen(bigint amount);
+      function start(address peer, address callback, bytes recipient, bigint amount) public {
+        this.count = this.count + amount;
+        emit Seen(amount);
+        this.transfer(recipient, amount);
+        IPeer(peer).step(callback, recipient, amount);
+        require(true);
+      }
+      function finish(address callback, bytes recipient, bigint amount) public {
+        this.count = this.count + amount;
+        emit Seen(amount);
+        require(callback.length > 0 && recipient.length > 0);
+      }
+    }`, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    });
+    expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['start', true], ['finish', true]]);
+    const slots = artifact.hiddenBatch!.route.blockLayout!.slots;
+    expect(slots.filter((slot) => slot.kind === 'transfer')).toHaveLength(8);
+    expect(slots.filter((slot) => slot.kind === 'event')).toHaveLength(8);
+    expect(slots.find((slot) => slot.kind === 'satoshiContainer')).toBeDefined();
+  });
 });

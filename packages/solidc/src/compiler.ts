@@ -562,13 +562,18 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     const eventWidths = new Set<number>();
     for (const fn of eligible) {
       let directEmits = 0;
+      let directTransfers = 0;
       walkInvocationAst(fn.body, (node) => {
         if (node instanceof EmitStatementNode) directEmits += 1;
+        if (node instanceof TransferStatementNode) directTransfers += 1;
       });
       const effects = eligibleFootprint(fn).effects;
-      if (directEmits < 1 || effects.length === 0 || effects.some((effect) => effect !== 'events')) {
+      const hasValue = effects.includes('value');
+      if (directEmits < 1 || effects.length === 0
+        || effects.some((effect) => !['events', 'value'].includes(effect))
+        || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
         fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'event-route-requires-direct-event-only-handlers';
+        fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
       } else {
         eventWidths.add(directEmits);
       }
@@ -590,10 +595,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         if (node instanceof TransferStatementNode) directTransfers += 1;
       });
       const effects = eligibleFootprint(fn).effects;
-      if (eventMode || resultMode || directTransfers !== 1
-        || effects.length !== 1 || effects[0] !== 'value') {
+      const hasValue = effects.includes('value');
+      if (resultMode || effects.some((effect) => !['events', 'value'].includes(effect))
+        || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
         fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'value-route-requires-one-direct-transfer-per-handler';
+        fn.hiddenBatchRejectionReason = 'value-route-requires-at-most-one-direct-transfer-per-handler';
       }
     }
     eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);

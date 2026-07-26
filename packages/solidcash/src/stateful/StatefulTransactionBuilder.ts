@@ -502,7 +502,8 @@ export class StatefulTransactionBuilder {
           default: break;
         }
       }
-      if (trailingIdx !== trailingInputs.length) {
+      if (this.blockLayout.trailingCapacity !== undefined
+        && trailingIdx !== trailingInputs.length) {
         throw new Error(
           `Runtime resource inputs exceed balanced trailing capacity `
           + `(${trailingInputs.length} > ${this.blockLayout.trailingCapacity ?? 0})`,
@@ -528,6 +529,10 @@ export class StatefulTransactionBuilder {
         ...gapInputs.slice(gapIdx),
         // Remaining low-level call inputs not already positioned in block layout slots
         ...lowLevelCallInputs.slice(llcIdx), ...this.lowLevelCallRawInputs,
+        // Legacy balanced layouts predate reserved trailing regions. Preserve their established dynamic
+        // resource run immediately after the fixed block; only a layout declaring trailingCapacity consumes
+        // these inputs positionally above.
+        ...trailingInputs.slice(trailingIdx),
         // Leftover funders not consumed by block layout slots (fee-only inputs)
         ...funderPool,
       ];

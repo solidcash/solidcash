@@ -213,7 +213,22 @@ the real VM stack at that point, which would make a name-based lookup resolve on
 measure the real runtime depth against the model depth, so this remains a hypothesis with a mechanism, not a
 demonstrated cause.
 
-The next step is therefore a MEASUREMENT, not a patch: compare the tracked `this.stack.length` at the upsert
+MEASUREMENT DONE - the leak is POSITIONAL, and this is now demonstrated rather than hypothesized. Adding a
+SECOND scalar state variable to the same handler moves the leak to it:
+
+    scalars: `moves` only        moves 20 -> +1 = 21   leaked `0115` (21)
+    scalars: `moves` + `other`   other 40 -> +5 = 45   leaked `012d` (45)
+
+The leaked value followed the newly adjacent scalar rather than staying bound to `moves`. So the collection
+journal's cache-local read resolves ONE SLOT SHORT and picks up whichever `__internal__state_write_*` element
+happens to sit at that position. It is a positional mis-resolution, not a mis-binding to a particular variable,
+and not anything to do with `moves` specifically.
+
+This closes the diagnosis. The remaining work is to find where the tracked stack model and the real VM stack
+diverge by one entry in the `__scb1` path, between the cache local and the top of the working area, and correct
+that - WITHOUT changing either journal's exit behaviour, and without patching block scoping (checked, dead end).
+
+Superseded next step (kept so the reasoning is auditable): compare the tracked `this.stack.length` at the upsert
 against the actual VM stack depth at the corresponding instruction pointer in a `vm.debug()` trace. If they
 differ by one, the divergence point is the bug. Do not patch scoping on the strength of the duplicate frame
 alone - that path is now checked and it is a dead end.

@@ -13,6 +13,102 @@ contract ${name}() {
 }`, { forceStateful: true, experimentalHiddenBatch: true });
 
 describe('layer3.planCompiledGraph', () => {
+  it('expands a compiler-authored worklist while acquiring each physical owner once', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const a = compileString(`pragma solidcash >=0.8.0;
+      interface IB { function step(address c, int n); }
+      contract WorklistA() {
+        function run(address b, address c, int first, int second) public {
+          IB(b).step(c, first);
+          IB(b).step(c, second);
+          require(first >= 0 && second >= 0);
+        }
+      }`, options);
+    const b = compileString(`pragma solidcash >=0.8.0;
+      interface IC { function finish(int n); }
+      contract WorklistB() {
+        function step(address c, int n) public {
+          IC(c).finish(n);
+          require(n >= 0);
+        }
+      }`, options);
+    const c = compileString(`pragma solidcash >=0.8.0;
+      contract WorklistC() {
+        int total;
+        function finish(int n) public {
+          this.total = this.total + n;
+          require(n >= 0);
+        }
+      }`, options);
+    const pa = { artifact: a, lockingBytecode: '51' };
+    const pb = { artifact: b, lockingBytecode: '52' };
+    const pc = { artifact: c, lockingBytecode: '53' };
+    const plan = layer3.deriveCompiledGraphPlan({
+      root: pa,
+      function: 'run',
+      args: [new Uint8Array([0x52]), new Uint8Array([0x53]), 2n, 3n],
+      targets: { IB: [pb, pb], IC: [pc, pc] },
+    });
+
+    expect(plan.participants.map((participant) => participant.lockingBytecode))
+      .toEqual(['51', '52', '53']);
+    expect(plan.participants.map((participant) => participant.invocations))
+      .toEqual([[0], [1, 3], [2, 4]]);
+    expect(plan.invocations.map(({ parent, caller, callee, argsHex }) =>
+      ({ parent, caller, callee, argsHex }))).toEqual([
+      { parent: null, caller: null, callee: 0, argsHex: '015201535253' },
+      { parent: 0, caller: 0, callee: 1, argsHex: '015352' },
+      { parent: 1, caller: 1, callee: 2, argsHex: '52' },
+      { parent: 0, caller: 0, callee: 1, argsHex: '015353' },
+      { parent: 3, caller: 1, callee: 2, argsHex: '53' },
+    ]);
+  });
+
+  it('fails the symbolic worklist closed on runtime occurrence and recursive expansion', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const conditional = compileString(`pragma solidcash >=0.8.0;
+      interface IPeer { function run(address peer, bool take); }
+      contract ConditionalGraph() {
+        function run(address peer, bool take) public {
+          if (take) { IPeer(peer).run(peer, false); }
+          require(true);
+        }
+      }`, options);
+    const participant = { artifact: conditional, lockingBytecode: '51' };
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: participant,
+      function: 'run',
+      args: [new Uint8Array([0x51]), true],
+      targets: { IPeer: participant },
+    })).toThrow(/not a singular statically resolvable/);
+
+    const recursive = compileString(`pragma solidcash >=0.8.0;
+      interface IPeer { function again(address peer); }
+      contract RecursiveGraph() {
+        function again(address peer) public {
+          IPeer(peer).again(peer);
+          require(true);
+        }
+      }`, options);
+    const recursiveParticipant = { artifact: recursive, lockingBytecode: '52' };
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: recursiveParticipant,
+      function: 'again',
+      args: [new Uint8Array([0x52])],
+      targets: { IPeer: recursiveParticipant },
+    })).toThrow(/explicit bounded occurrence proof/);
+  });
+
   it('separates resolvable result dependencies from structural owner cycles', () => {
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], []])).not.toThrow();
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], [0]]))

@@ -9,3 +9,4 @@ export * from './hidden-batch.js';
 export * from './preflight.js';
 export * from './protocol.js';
 export * from './transcript.js';
+export * from './worklist.js';

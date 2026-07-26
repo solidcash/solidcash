@@ -405,6 +405,12 @@ export class StatefulTransactionBuilder {
       let bhIdx = 0; // blockhash co-spend index
       let kIdx = 0; // keccak256 compute side-car index
       let erIdx = 0; // ecrecover recovery-pair side-car index (flat A0,B0,A1,B1..)
+      const trailingInputs = [
+        ...this.iterationEntryInputs,
+        ...this.insertLoopPredecessorInputs,
+        ...this.dynamicChunkInputs,
+      ];
+      let trailingIdx = 0;
       // Each entry slot gets ITS OWN existing entry input (by slotIndex), or a funder if absent. Not a dense
       // pull from entryInputs: an absent lower slot must not shift a higher slot's entry into the gap (the
       // covenant reads each slot at its fixed offset).
@@ -484,8 +490,23 @@ export class StatefulTransactionBuilder {
             if (f) positioned[slot.offset] = f;
             break;
           }
+          case 'trailing': {
+            if (trailingIdx < trailingInputs.length) {
+              positioned[slot.offset] = trailingInputs[trailingIdx++];
+            } else {
+              const f = funderPool.shift();
+              if (f) positioned[slot.offset] = f;
+            }
+            break;
+          }
           default: break;
         }
+      }
+      if (trailingIdx !== trailingInputs.length) {
+        throw new Error(
+          `Runtime resource inputs exceed balanced trailing capacity `
+          + `(${trailingInputs.length} > ${this.blockLayout.trailingCapacity ?? 0})`,
+        );
       }
 
       // Fill the reserved gap (offsets between last readOnly and first entry/SC/TC)
@@ -507,10 +528,6 @@ export class StatefulTransactionBuilder {
         ...gapInputs.slice(gapIdx),
         // Remaining low-level call inputs not already positioned in block layout slots
         ...lowLevelCallInputs.slice(llcIdx), ...this.lowLevelCallRawInputs,
-        ...this.iterationEntryInputs,
-        ...this.insertLoopPredecessorInputs,
-        // Old chunk UTXOs being consumed (destroyed) on a dynamic-storage write
-        ...this.dynamicChunkInputs,
         // Leftover funders not consumed by block layout slots (fee-only inputs)
         ...funderPool,
       ];
@@ -980,12 +997,15 @@ export class StatefulTransactionBuilder {
   getChunkOutputBase(): number {
     // New write chunks come AFTER the preserved iteration-entry outputs (read-only co-spent chunks /
     // collection-iter entries), which occupy [blockSize, blockSize+count) to match their input indices.
-    let base = this.blockLayout?.blockSize ?? this.getEventOutputBase() + this.getEventOutputCount();
+    let base = this.blockLayout?.trailingBase
+      ?? this.blockLayout?.blockSize
+      ?? this.getEventOutputBase() + this.getEventOutputCount();
     // blockSize reserves the returnEvent slot, but a plain send does NOT materialize it (only .emitReturn(), which
     // populates pendingReturnEventOutputs), so the trailing chunks sit one output lower. Match the covenant's
     // runtime returnOutputIdx<0 adjustment in emitDynamicWriteVerification.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
-    if (hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0) base -= 1;
+    if (this.blockLayout?.trailingBase === undefined
+      && hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0) base -= 1;
     // build() preserves low-level-call UTXOs before the trailing dynamic region.
     // Delegate bytecode likewise anchors trailing storage after its own co-spent
     // implementation block rather than overlapping that block's outputs.
@@ -1914,6 +1934,14 @@ export class StatefulTransactionBuilder {
         },
       });
     }
+    if (!this.delegateEntriesAfterLowLevel
+      && (this.blockLayout?.trailingCapacity ?? 0) > 0
+      && this.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')
+      && this.pendingReturnEventOutputs.length === 0) {
+      // A balanced block cannot collapse an inactive return slot: doing so
+      // shifts the bounded trailing region one position left.
+      builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+    }
 
     // Create low-level call outputs (after A's block slots, matching block layout ordering)
     for (const group of this.lowLevelCallUtxoGroups) {
@@ -2075,15 +2103,33 @@ export class StatefulTransactionBuilder {
       }
     }
 
+    const trailingCapacity = this.blockLayout?.trailingCapacity ?? 0;
+    if (trailingCapacity > 0) {
+      const trailingOutputCount = this.iterationEntryInputs.length
+        + this._dynamicChunkOutputCount()
+        + this._loopEntryOutputCount()
+        + this.valueChunkOutputs.length
+        + [...this.getValueChunkVars()].reduce(
+          (sum, value) => sum + (this.valueChunkRawCommitments.get(value.collection) ?? []).length,
+          0,
+        );
+      if (trailingOutputCount > trailingCapacity) {
+        throw new Error(
+          `Runtime resource outputs exceed balanced trailing capacity `
+          + `(${trailingOutputCount} > ${trailingCapacity})`,
+        );
+      }
+      for (let i = trailingOutputCount; i < trailingCapacity; i++) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+    }
+
     // Append any extra outputs buffered via addOutput()
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
     }
-
-    // No change output - adding outputs past the block range changes
-    // OP_TXOUTPUTCOUNT, which the covenant's bounds checks rely on.
-    // Instead, funder UTXOs are sized to exactly cover the fee (see
-    // sizeFunderForFee()) so no change is needed.
+    // The final unused funder input of a bounded balanced layout remains after
+    // the owner block; the outer transaction builder pairs it with change.
 
     return builder;
   }

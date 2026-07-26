@@ -120,7 +120,8 @@ export type BlockSlotKind =
   | 'event'
   | 'returnEvent'
   | 'deploy'
-  | 'lowLevelCall';
+  | 'lowLevelCall'
+  | 'trailing';
 
 /** A single slot in the function's block layout. */
 export interface BlockLayoutSlot {
@@ -137,6 +138,10 @@ export interface BlockLayoutSlot {
 export interface FunctionBlockLayout {
   blockSize: number;         // total number of slots in this contract's block
   slots: readonly BlockLayoutSlot[];
+  /** First local slot of the bounded runtime-variable resource region. */
+  trailingBase?: number;
+  /** Number of balanced slots reserved for chunks, loop entries, and loop sidecars. */
+  trailingCapacity?: number;
 }
 
 export interface AbiFunction {

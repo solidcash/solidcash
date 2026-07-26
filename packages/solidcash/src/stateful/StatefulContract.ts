@@ -9118,6 +9118,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'tokenContainer' && !tcInfos.some((c) => c.tokenContainerSlotIndex === s.slotIndex && c.exists),
       ).length;
+      const trailingCapacity = effectiveBlockLayout.trailingCapacity ?? 0;
+      if (trailingCapacity > 0) {
+        const existingTrailingInputs = iterationEntryInputs.length
+          + insertLoopPredecessors.length + dynamicChunkInputs.length;
+        if (existingTrailingInputs > trailingCapacity) {
+          throw new Error(
+            `Runtime resource inputs exceed balanced trailing capacity `
+            + `(${existingTrailingInputs} > ${trailingCapacity})`,
+          );
+        }
+        // One additional input sits after the balanced owner block and funds
+        // the fee; the transaction builder pairs it with the final change output.
+        neededFunders += trailingCapacity - existingTrailingInputs + 1;
+      }
       // ANY msg.sender / tx.origin use needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
       // resolves to it (the sender IS tx.origin), even when the write's fees would otherwise come from the contract.
       // This covers a stored/compared value (`this.owner = msg.sender`, `require(msg.sender == x)`) as well as a
@@ -9172,7 +9186,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const dummyFunders: UnlockableUtxo[] = [];
           for (let i = 0; i < neededFunders; i++) {
             const dummy: Utxo = {
-              txid: '00'.repeat(31) + (0xf0 + i).toString(16), vout: 0, satoshis: 3000n,
+              txid: '00'.repeat(28) + (0xf0 + i).toString(16).padStart(8, '0'),
+              vout: 0,
+              satoshis: 3000n,
             };
             await (this.inner.provider as any).addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
             dummyFunders.push({

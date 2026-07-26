@@ -373,6 +373,75 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
   });
 });
 
+describe('Release C bounded dynamic-resource batch', () => {
+  it('threads two string replacements and flushes only the final chunk set', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract DynamicBatchReleaseC() {
+        string text;
+        function replace(string next) public {
+          this.text = next;
+          require(next.length >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.route.blockLayout?.trailingCapacity).toBe(64);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { text: '' }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const finalValue = 'second-'.repeat(25);
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.batch([
+        { function: 'replace', args: ['first'] },
+        { function: 'replace', args: [finalValue] },
+      ]).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+    const forged = decodeTransactionUnsafe(hexToBin(captured));
+    expect(forged.inputs.length).toBe(forged.outputs.length);
+    const mutableOutputs = forged.outputs.filter((output) =>
+      output.token?.nft?.capability === 'mutable');
+    expect(mutableOutputs.length).toBeGreaterThan(1);
+    mutableOutputs[mutableOutputs.length - 1].token!.nft!.commitment[0] ^= 1;
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(captured)).resolves.toBeTypeOf('string');
+    expect((await contract.getState()).text).toBe(finalValue);
+  });
+
+  it('journals ordered dynamic-array appends into one bounded chunk region', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract DynamicArrayBatchReleaseC() {
+        bigint[] values;
+        function append(bigint value) public {
+          this.values.push(value);
+          require(value >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { values: [] }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.batch([
+      { function: 'append', args: [11n] },
+      { function: 'append', args: [22n] },
+      { function: 'append', args: [33n] },
+    ]).send();
+    expect((await contract.getState()).values).toEqual([11n, 22n, 33n]);
+  });
+});
+
 describe('Release 4 output-substitution adversarial gate', () => {
   it('rejects a forged ordered-result commitment while accepting the untouched transaction', async () => {
     const provider = createTestProvider();

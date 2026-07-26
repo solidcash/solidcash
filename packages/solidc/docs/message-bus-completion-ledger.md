@@ -30,7 +30,7 @@ Evidence labels:
 | Read-your-writes and exactly one final flush | PROVEN for shipped journal shapes | Scalar and collection journal suites. |
 | Stateful helpers are callable without forced body duplication | PROVEN | Releases 1-3 compiler tests and size regressions. |
 | Bounded direct/mutual recursion fails closed when unsupported or over budget | PROVEN | Release 2 compiler/VM diagnostics. |
-| Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PARTIAL | Supported shapes pass; dynamic cold keys and runtime-varying aliases remain conservative. |
+| Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PARTIAL | Mapping/fixed-array shapes and bounded bytes/string/dynamic-array batches pass with one final flush. Token containers and runtime-varying aliases remain. |
 | Canonical local batch with exact row consumption | PROVEN for R4 eligibility | SCB1 positive and hostile VM tests. |
 | One repeated external owner consumed once | PROVEN for R5 eligibility | Whole-blob positional binding and caller/callee tests. |
 | Standard `msg.sender`-authorized ERC-20 allowance behavior | PROVEN for the admitted two-row class | `transferFrom` debits `allowance[from][msg.sender]` and `transfer` debits `balances[msg.sender]`, both keyed by the graph-authenticated caller with no spender parameter; substituting either witness fails in the BCH-2026 VM. Wider row counts and handler shapes remain out of the admitted class. |
@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. Scalar-plus-collection cloned handlers now settle with independent hostile checks for both post-state classes. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, `delete m[k]`, bounded string replacement, and dynamic-array append are settled through their existing C2/chunk covenants. Chunk substitution fails in the VM. Token containers and runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -1048,3 +1048,23 @@ whose first row claims `-101` while its authenticated transfer argument remains 
 
 This closes aggregate/per-invocation value attribution for compiler-authored satoshi transfers.
 The row remains PARTIAL only for the other introspection fields and collection/chunk `outState`.
+
+### 2026-07-26: Release C — bounded relocatable chunk journal
+
+Dynamic resources no longer append an unbalanced runtime run after an SCB1 owner block. A hidden
+batch route that reaches chunk-backed state declares a 64-slot correctness-first trailing region in
+its local block layout. The covenant indexes runtime chunks from `blockBase + trailingBase`; the SDK
+places old chunks or ordinary funding inputs in the same input slots, emits the final chunks first,
+and fills every unused output slot with an ordinary 1,000-satoshi change output. Input and output
+overflow both fail before construction. Direct non-batch functions retain their established
+variable-run layout, avoiding an unrelated transaction-size regression.
+
+Dynamic handlers are cloned before `LowerDynamicStateJournalHelpers`, so the existing chunk backend
+value-threads one pending string/bytes/array value across logical rows and flushes once. The
+BCH-2026 fixtures prove two string replacements (including a two-chunk final value), three ordered
+dynamic-array appends, equal whole-transaction input/output counts, exact reconstructed post-state,
+and rejection after mutating a final chunk commitment.
+
+The capacity is intentionally generous for the relaxed mock consensus configuration. It is an
+artifact ABI bound, not an assumed network constant; Release J may tune it after byte/op-density
+measurement without changing the local-slot semantics.

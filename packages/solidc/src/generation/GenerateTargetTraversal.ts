@@ -2393,7 +2393,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ...origSlot, offset: blOffset++, ...(conditional && { conditional }), ...(softDelete && { softDelete }),
         });
       }
-      node.blockLayout = { blockSize: blOffset, slots };
+      const trailingBase = slots.find((slot) => slot.kind === 'trailing')?.offset;
+      const trailingCapacity = slots.filter((slot) => slot.kind === 'trailing').length;
+      node.blockLayout = {
+        blockSize: blOffset,
+        slots,
+        ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
+      };
     }
 
     // Copy entry access info from semantic analysis
@@ -12326,7 +12332,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // TXOUTPUTCOUNT-nNew). Adjust down 1 when the reserved returnEvent slot is not materialized (a plain send),
     // then +isInsert (the INSERT's NEW node precedes the chunks). Matches emitDynamicWriteVerification's family.
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
+    const hasReturnEventSlot = this.currentFunction.blockLayout?.trailingBase === undefined
+      && (this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false);
     this.emitTrailingBlockBase(blockSize, loc);
     if (hasReturnEventSlot) {
       const roiIdx = this.getStackIndex('__internal__returnOutputIdx', true);
@@ -18456,14 +18463,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Push the first trailing input/output index after all fixed covenant blocks. */
   private emitTrailingBlockBase(blockSize: number, locationData: SingleLocationData): void {
+    const localBase = this.currentFunction.blockLayout?.trailingBase ?? blockSize;
     if (this.currentFunctionIsDelegate || this.currentFunction.modifiers.includes(FunctionModifier.DELEGATE)) {
       // Delegate trailing storage follows the complete co-spent implementation block. Output-only slots such
       // as events are implementation-relative too, so using only master/data/entry slots overlaps their outputs.
       this.emit(Op.OP_INPUTINDEX, locationData);
-      this.emit(encodeInt(BigInt(blockSize)), locationData);
+      this.emit(encodeInt(BigInt(localBase)), locationData);
     } else {
       this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(blockSize)), locationData);
+      this.emit(encodeInt(BigInt(localBase)), locationData);
     }
     this.emit(Op.OP_ADD, locationData);
   }

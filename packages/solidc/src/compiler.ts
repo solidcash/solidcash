@@ -328,7 +328,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         directKeys.set(node.name, group);
       });
       const closure = collectNamedFunctionClosure(fn, byName);
-      if (directKeys.size === 0 || [...closure].some((name) => name !== fn.name
+      const dynamicCollectionOnly = directKeys.size === 0
+        && [...footprint.reads, ...footprint.writes]
+          .filter((resource) => resource.startsWith('collection:'))
+          .every((resource) => dynamicState.has(resource.split(':')[1]));
+      if ((!dynamicCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => {
           let touches = false;
           walkInvocationAst(candidate.body, (node) => {
@@ -467,9 +471,6 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     } else if (!reason && (footprint.unknown
       || (!graphTailCallEligible && footprint.effects.some((effect) => effect === 'external-call')))) {
       reason = 'unresolved-or-effectful-handler';
-    } else if (!reason && [...footprint.reads, ...footprint.writes].some((resource) =>
-      resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
-      reason = 'dynamic-state-batch-journal-not-enabled';
     }
     fn.hiddenBatchEligible = reason === undefined;
     fn.hiddenBatchRejectionReason = reason;
@@ -736,6 +737,24 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
     bindEntryKeyParameters(handler, sourceHandler);
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
+  for (const sourceHandler of eligible) {
+    if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
+      || siblingHandlerInvokeNames.has(sourceHandler)) continue;
+    const footprint = analyseFunctionFootprint(sourceHandler, byName);
+    const touchesDynamic = [...footprint.reads, ...footprint.writes].some((resource) =>
+      resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
+    if (!touchesDynamic) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_dynamic_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
   for (const sourceHandler of eligible) {

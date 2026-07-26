@@ -195,6 +195,10 @@ import {
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
+// Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
+// Deployment-oriented density tuning may lower this per artifact after measurement.
+const BALANCED_TRAILING_CAPACITY = 64;
+
 // Counts identifier occurrences in an expression subtree (structural children only, no definition backrefs).
 class IdentifierNameCounter extends AstTraversal {
   counts: Map<string, number> = new Map();
@@ -8628,7 +8632,53 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    return { blockSize: offset, slots };
+    const dynamicNames = new Set(stateVars.filter((state) =>
+      state.isDynamic || isDynamicStorageType(state.type)).map((state) => state.name));
+    let touchesDynamicState = false;
+    const scanDynamicState = (value: unknown, seen = new Set<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value) || touchesDynamicState) return;
+      seen.add(value);
+      if ((value instanceof StateAccessNode || value instanceof StateAssignNode
+        || value instanceof DeleteStateNode) && dynamicNames.has(value.name)) {
+        touchesDynamicState = true;
+        return;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['resolvedFunction', 'definition', 'symbolTable', 'stateVariable'].includes(key)) continue;
+        if (child instanceof Node) scanDynamicState(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => scanDynamicState(item, seen));
+      }
+    };
+    scanDynamicState(node.body);
+    if (node.name === '__scb1' && !touchesDynamicState) {
+      const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__scb_dynamic_'));
+      if (dynamicHelpers.length > 0) touchesDynamicState = true;
+      for (const helper of dynamicHelpers) {
+        scanDynamicState(helper.body);
+        if (touchesDynamicState) break;
+      }
+    }
+    const needsTrailingRegion = node.name === '__scb1' && (touchesDynamicState
+      || (node.dynamicReads?.length ?? 0) > 0
+      || (node.dynamicWrites?.length ?? 0) > 0
+      || (node.entryLoopWrites?.length ?? 0) > 0
+      || (node.entryAccesses?.some((entry) => entry.inLoop) ?? false)
+      || (node.sortedInsertLoops?.length ?? 0) > 0
+      || node.keccakInLoop === true
+      || node.keccakLoopReads === true
+      || node.ecrecoverLoopReads === true);
+    if (!needsTrailingRegion) return { blockSize: offset, slots };
+
+    const trailingBase = offset;
+    for (let i = 0; i < BALANCED_TRAILING_CAPACITY; i++) {
+      slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
+    }
+    return {
+      blockSize: offset,
+      slots,
+      trailingBase,
+      trailingCapacity: BALANCED_TRAILING_CAPACITY,
+    };
   }
 
   // Number of `new C(...)` sites in a function body (each needs its own genesis funding input/slot).

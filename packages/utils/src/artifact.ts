@@ -581,6 +581,7 @@ export interface Artifact {
       inputs: AbiInput[];
       outputs?: AbiOutput[];
       usesMsgValue?: boolean;
+      tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
       transfers?: readonly {
         transferIndex: number;
         recipient: ArgSource;

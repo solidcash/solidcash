@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
-import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import {
+  createTestProvider, genesisFtContainer, getTxOutputs, setupStatefulUtxos,
+} from '../test-util.js';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
@@ -439,6 +441,63 @@ describe('Release C bounded dynamic-resource batch', () => {
       { function: 'append', args: [33n] },
     ]).send();
     expect((await contract.getState()).values).toEqual([11n, 22n, 33n]);
+  });
+
+  it('settles repeated fungible-token container effects under one owner', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract TokenContainerBatchReleaseC() {
+        bigint calls;
+        function send(bytes32 category, bytes20 recipient, bigint amount) public {
+          require(this.tokens[category].tokenAmount >= amount);
+          this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
+          this.calls = this.calls + 1;
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const token = await genesisFtContainer(provider, inner, categoryId, [1000n]);
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const recipient = hexToBin('11'.repeat(20));
+    const originalSend = provider.sendRawTransaction.bind(provider);
+    let captured = '';
+    (provider as any).sendRawTransaction = async (transactionHex: string): Promise<string> => {
+      captured = transactionHex;
+      throw new Error('capture-only');
+    };
+    try {
+      await expect(contract.batch([
+        { function: 'send', args: [hexToBin(token.category), recipient, 100n] },
+        { function: 'send', args: [hexToBin(token.category), recipient, 200n] },
+      ]).send()).rejects.toThrow('capture-only');
+    } finally {
+      (provider as any).sendRawTransaction = originalSend;
+    }
+
+    // Preserve aggregate supply while substituting one row amount and the container remainder: both the
+    // per-row transfer covenant and the container equation must reject the otherwise-balanced forgery.
+    const amountForged = decodeTransactionUnsafe(hexToBin(captured));
+    const firstTransfer = amountForged.outputs.find((output) => output.token?.amount === 100n);
+    const remainder = amountForged.outputs.find((output) => output.token?.amount === 700n);
+    expect(firstTransfer).toBeDefined();
+    expect(remainder).toBeDefined();
+    firstTransfer!.token!.amount = 101n;
+    remainder!.token!.amount = 699n;
+    await expect(originalSend(binToHex(encodeTransaction(amountForged)))).rejects.toThrow();
+
+    const recipientForged = decodeTransactionUnsafe(hexToBin(captured));
+    const secondTransfer = recipientForged.outputs.find((output) => output.token?.amount === 200n);
+    expect(secondTransfer).toBeDefined();
+    secondTransfer!.lockingBytecode[3] ^= 1;
+    await expect(originalSend(binToHex(encodeTransaction(recipientForged)))).rejects.toThrow();
+
+    await expect(originalSend(captured)).resolves.toBeTypeOf('string');
+    expect((await contract.getState()).calls).toBe(2n);
+    const outputs = await provider.getUtxos(token.address);
+    expect(outputs.reduce((sum, output) => sum + (output.token?.amount ?? 0n), 0n)).toBe(700n);
   });
 });
 

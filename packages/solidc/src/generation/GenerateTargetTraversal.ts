@@ -3384,7 +3384,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Token container transfers: push OP_0 dummies for category + args
       const tcTransferStartIndex = this.pendingTokenContainerTransfers.length;
-      for (let i = 0; i < ops.tokenContainerTransferCount; i++) {
+      // Like ordinary transfers, an enclosing branch already reserves the maximum-path slots for every nested
+      // arm. Reserving again in the selector-dispatch branch would create dummy slot N+1 while the operation
+      // itself is semantically numbered N, then discard the duplicate at OP_ENDIF and desynchronise later rows.
+      for (let i = 0; this.transferPreallocDepth === 0 && i < ops.tokenContainerTransferCount; i++) {
         const globalIdx = tcTransferStartIndex + i;
         if (!this.preAllocatedTokenContainerTransfers.has(globalIdx)) {
           const catName = `__tc_cat_${globalIdx}`;
@@ -21255,16 +21258,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // Clean up pending token container transfer values from the stack
-    for (const transfer of this.pendingTokenContainerTransfers) {
-      for (const stackName of transfer.argStackNames) {
-        const idx = this.getStackIndex(stackName);
-        this.emit(encodeInt(BigInt(idx)), locationData);
-        this.emit(Op.OP_ROLL, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.removeFromStack(idx);
-      }
-    }
+    // Transfer values remain live until container preservation. The preservation equation consumes their
+    // authenticated amount witnesses directly, allowing inactive conditional suffix slots to contribute zero
+    // without introspecting transaction outputs which intentionally do not exist.
   }
 
   /**
@@ -21335,9 +21331,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         (s) => s.tokenContainerSlotIndex === i && s.method === 'transfer',
       );
       for (const transfer of transfersForSlot) {
-        // Read the transferred amount from the verified transfer output
-        this.emitBlockSlotIndex('tcTransfer', transfer.transferIndex, locationData);
-        this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
+        // Active transfers already proved output amount == this witness; inactive conditional transfers retain
+        // their preallocated zero. Using the witness keeps preservation valid when inactive suffix outputs are
+        // omitted by the builder.
+        const amountStackName = transfer.argStackNames[2];
+        const amountIdx = this.getStackIndex(amountStackName) + 1; // adjusted input is temporarily above it
+        this.emit(encodeInt(BigInt(amountIdx)), locationData);
+        this.emit(Op.OP_PICK, locationData);
         this.emit(Op.OP_SUB, locationData);
         // still 1 untracked (adjusted_input)
       }
@@ -21378,6 +21378,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 0 untracked
 
       this.emit(Op.OP_ENDIF, locationData);
+    }
+
+    // All transfer verification and container accounting is complete; discard the compiler-owned witnesses.
+    for (const transfer of this.pendingTokenContainerTransfers) {
+      for (const stackName of transfer.argStackNames) {
+        const idx = this.getStackIndex(stackName);
+        this.emit(encodeInt(BigInt(idx)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(idx);
+      }
     }
   }
 }

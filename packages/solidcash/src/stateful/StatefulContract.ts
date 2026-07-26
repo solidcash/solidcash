@@ -1311,6 +1311,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const routeArgs = [blob, ...routeWitnesses];
     const rowCount = blob.length > 6 ? blob[6] : 0;
+    // Recover the reached selectors from the canonical blob so conditional token-transfer slots are derived only
+    // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
+    // would silently debit the container even though the covenant correctly skipped those slots.
+    const reachedHandlers: typeof capability.handlers = [];
+    let cursor = 7;
+    const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
+    for (let row = 0; row < rowCount && cursor + (valueMode ? 21 : 12) <= blob.length; row++) {
+      const selector = binToHex(blob.slice(cursor, cursor + 4));
+      const handler = capability.handlers.find((candidate) => candidate.selector === selector);
+      if (handler) reachedHandlers.push(handler);
+      const argsLengthOffset = cursor + 10;
+      const argsLength = blob[argsLengthOffset] | (blob[argsLengthOffset + 1] << 8);
+      cursor += (valueMode ? 21 : 12) + argsLength;
+    }
+    const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>
+      sum + (handler.tokenContainerAccesses ?? []).reduce((inner, access) =>
+        inner + (access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0)), 0), 0);
+    const reachedNftTransfers = reachedHandlers.reduce((sum, handler) =>
+      sum + (handler.tokenContainerAccesses ?? []).reduce((inner, access) =>
+        inner + (access.transferNftCount ?? (access.operations.includes('transferNft') ? 1 : 0)), 0), 0);
+    const effectiveTokenAccesses = capability.route.tokenContainerAccesses?.map((access, index) => ({
+      ...access,
+      // The current compiler route admits one canonical token-category witness. Preserve that explicit
+      // restriction in metadata rather than guessing how to distribute effects across multiple containers.
+      transferCount: index === 0 ? reachedFtTransfers : 0,
+      transferNftCount: index === 0 ? reachedNftTransfers : 0,
+    }));
     // Effect routes reserve eight conditional covenant slots, but the SDK
     // materializes only the prefix reached by this canonical blob. The
     // compiler route bytecode and block offsets remain unchanged; the sliced
@@ -1323,6 +1350,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(capability.route.emits && {
         emits: capability.route.emits.slice(0, rowCount),
       }),
+      ...(effectiveTokenAccesses && { tokenContainerAccesses: effectiveTokenAccesses }),
     };
     const routeSelector = hexToBin(capability.selector);
     return new StatefulFunctionCall(

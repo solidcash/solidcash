@@ -328,11 +328,14 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         directKeys.set(node.name, group);
       });
       const closure = collectNamedFunctionClosure(fn, byName);
-      const dynamicCollectionOnly = directKeys.size === 0
+      const nonEntryCollectionOnly = directKeys.size === 0
         && [...footprint.reads, ...footprint.writes]
           .filter((resource) => resource.startsWith('collection:'))
-          .every((resource) => dynamicState.has(resource.split(':')[1]));
-      if ((!dynamicCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
+          .every((resource) => {
+            const name = resource.split(':')[1];
+            return dynamicState.has(name) || name === 'tokens';
+          });
+      if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => {
           let touches = false;
           walkInvocationAst(candidate.body, (node) => {
@@ -530,6 +533,15 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     });
     return found;
   });
+  // Token transfers reserve one concrete output slot per reached row. Keep each bounded row as a distinct AST
+  // call site so semantic analysis and code generation allocate and populate every transfer slot; a runtime
+  // parser loop has only one syntactic transfer and cannot safely materialize N independently authenticated
+  // outputs.
+  const tokenContainerMode = eligible.some((fn) => {
+    const footprint = eligibleFootprint(fn);
+    return [...footprint.reads, ...footprint.writes]
+      .some((resource) => resource.startsWith('collection:tokens:'));
+  });
   if (resultMode) {
     for (const fn of eligible) {
       if (eventMode || eligibleFootprint(fn).effects.length > 0) {
@@ -580,6 +592,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const fixedArrayHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
+  const tokenCategoryInputByHandler = new Map<FunctionDefinitionNode, number>();
 
   // A `msg.sender` mapping key blocks value-threaded journalling: the collection-journal lowering only accepts
   // parameter-keyed entries, so without this the batched clone re-reads and re-flushes the same physical entry
@@ -739,6 +752,37 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
+  // Token-container categories must remain function parameters: the token covenant uses the parameter's stack
+  // identity to bind the consumed container. Decode the row argument and compare it to one canonical route
+  // witness, then invoke the ordinary handler with that witness in the category position. This keeps both the
+  // direct handler and the inlined batch body on the normal token-covenant path; a synthetic internal clone
+  // would incorrectly try to emit a second, context-free token covenant.
+  for (const sourceHandler of eligible) {
+    const footprint = analyseFunctionFootprint(sourceHandler, byName);
+    const touchesTokenContainer = [...footprint.reads, ...footprint.writes]
+      .some((resource) => resource.startsWith('collection:tokens:'));
+    if (!touchesTokenContainer) continue;
+    let categoryInput = -1;
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if (!(node instanceof MappingAccessNode) || node.name !== 'tokens' || node.keys.length !== 1) return;
+      const key = node.keys[0];
+      if (!(key instanceof IdentifierNode)) return;
+      const input = sourceHandler.parameters.findIndex((parameter) => parameter.name === key.name);
+      if (input < 0 || (categoryInput >= 0 && categoryInput !== input)) return;
+      categoryInput = input;
+    });
+    if (categoryInput < 0) continue;
+    const routeInput = '__scb_token_category';
+    routeKeyWitnesses.set(routeInput, [{
+      name: routeInput,
+      type: new BytesType(32),
+    }]);
+    sourceHandler.hiddenBatchKeyWitnesses = [
+      ...(sourceHandler.hiddenBatchKeyWitnesses ?? []),
+      { routeInput, inputIndex: categoryInput, source: 'argument' },
+    ];
+    tokenCategoryInputByHandler.set(sourceHandler, categoryInput);
+  }
   for (const sourceHandler of eligible) {
     if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
@@ -832,7 +876,10 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
       : []);
     const callArgs = [
-      ...fn.parameters.map((_parameter, i) => witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`),
+      ...fn.parameters.map((_parameter, i) =>
+        i === tokenCategoryInputByHandler.get(fn)
+          ? '__scb_token_category'
+          : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
       ...entryKeyArguments(fn),
     ].join(', ');
     const decode = declarations.length === 1
@@ -889,6 +936,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
       `{ ${parseOneRow(String(row), undefined, row)} }`).join(' ')
     : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
+      || tokenContainerMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
     : `for (bigint row = 0; row < rowCount; row = row + 1) {
@@ -1550,7 +1598,11 @@ function compileResolvedAst(
         ...(() => {
           const sourceAbi = artifact.abi.find((candidate) =>
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
-          return sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {};
+          return {
+            ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
+            ...(sourceAbi?.tokenContainerAccesses?.length
+              ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),
+          };
         })(),
         eligible: fn.hiddenBatchEligible === true,
         ...(fn.hiddenBatchRejectionReason && { rejectionReason: fn.hiddenBatchRejectionReason }),

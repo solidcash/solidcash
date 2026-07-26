@@ -30,7 +30,7 @@ Evidence labels:
 | Read-your-writes and exactly one final flush | PROVEN for shipped journal shapes | Scalar and collection journal suites. |
 | Stateful helpers are callable without forced body duplication | PROVEN | Releases 1-3 compiler tests and size regressions. |
 | Bounded direct/mutual recursion fails closed when unsupported or over budget | PROVEN | Release 2 compiler/VM diagnostics. |
-| Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PARTIAL | Mapping/fixed-array shapes and bounded bytes/string/dynamic-array batches pass with one final flush. Token containers and runtime-varying aliases remain. |
+| Mapping, fixed-array, bytes/string, dynamic-array and token-effect journal behavior | PARTIAL | Mapping/fixed-array shapes, bounded bytes/string/dynamic-array batches, and repeated FT-container effects pass with one final flush. Runtime-varying aliases remain. |
 | Canonical local batch with exact row consumption | PROVEN for R4 eligibility | SCB1 positive and hostile VM tests. |
 | One repeated external owner consumed once | PROVEN for R5 eligibility | Whole-blob positional binding and caller/callee tests. |
 | Standard `msg.sender`-authorized ERC-20 allowance behavior | PROVEN for the admitted two-row class | `transferFrom` debits `allowance[from][msg.sender]` and `transfer` debits `balances[msg.sender]`, both keyed by the graph-authenticated caller with no spender parameter; substituting either witness fails in the BCH-2026 VM. Wider row counts and handler shapes remain out of the admitted class. |
@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, `delete m[k]`, bounded string replacement, and dynamic-array append are settled through their existing C2/chunk covenants. Chunk substitution fails in the VM. Token containers and runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, `delete m[k]`, bounded string replacement, dynamic-array append, and repeated FT-container transfer settle through their existing C2/chunk/token covenants. Chunk and token-output substitutions fail in the VM. Runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -1068,3 +1068,26 @@ and rejection after mutating a final chunk commitment.
 The capacity is intentionally generous for the relaxed mock consensus configuration. It is an
 artifact ABI bound, not an assumed network constant; Release J may tune it after byte/op-density
 measurement without changing the local-slot semantics.
+
+### 2026-07-26: Release C — repeated fungible-token container effects
+
+The hidden route now admits a token-container handler by binding its decoded category argument to
+one compiler-owned route parameter and invoking the normal handler with that authenticated
+parameter. It does not synthesize a second token covenant. Token-effect routes use bounded
+row-unrolling because each reached transfer needs a distinct output slot; a runtime parser loop has
+only one syntactic transfer site and cannot represent that output authority.
+
+Two code-generation defects exposed by this path are regression-closed. Nested dispatch branches
+no longer reserve token-transfer temporaries twice, and container conservation subtracts the
+already-authenticated amount witness rather than introspecting an absent inactive-suffix output.
+The SDK derives only effects belonging to selectors actually reached by the canonical SCB1 blob,
+so inactive probe placeholders cannot debit the container.
+
+`HiddenBatchRelease4.test.ts` settles two rows transferring 100 and 200 units from one 1,000-unit
+container, increments scalar state twice, and preserves exactly 700 units. A forged 101/699
+aggregate-preserving substitution and a recipient-bytecode substitution both fail on BCH-2026;
+the untouched captured transaction succeeds. The direct token-container suite remains green.
+
+This proves the repeated FT-transfer class under one canonical category witness. NFT transfers,
+multiple independent token categories in one route, and runtime-varying resource aliases are not
+claimed by this increment.

@@ -153,6 +153,25 @@ as OP_N, instead of the collection journal's value. This is genuine two-journal 
 handler. Note it is NOT the "flushes per row" story retracted earlier - nothing is flushed twice; the wrong
 journal's value is written into the commitment.
 
+The leak is SCRIPT-PUSH ENCODED, which localises it further. A third data point separates the encodings,
+because minimal push encoding diverges from VM-number encoding above 16:
+
+    moves after row 0 = 1   ->  `51`    (OP_1, one byte)
+    moves after row 0 = 8   ->  `58`    (OP_8, one byte)
+    moves after row 0 = 21  ->  `0115`  (push length 1, then 0x15 - commitment grows 65 -> 66 bytes)
+
+A VM number 21 would be the single byte `15`; the observed `0115` is a minimal script push. That is the SAME
+encoding SCB1 row arguments use. So the commitment's value field is concatenating a PUSH-ENCODED element, not
+a numeric one.
+
+It is also necessarily a RUNTIME mis-resolution rather than a compile-time literal: the leaked value tracks the
+fixture's genesis counter, which the compiler cannot know. Something in the cloned handler's stack layout
+resolves the entry value to a push-encoded scalar/journal element.
+
+Where to look next: `emitSortedValueUpsert` in `GenerateTargetTraversal.ts` and its `emitValue` callback, which
+visits the assignment RHS. In a cloned handler carrying BOTH journals, that read appears to resolve to the
+wrong stack slot. The fix is not yet attempted, so this is a located defect, not a closed one.
+
 This also finally settles `0x51`, which two earlier entries guessed at: it is 81 as a VM number AND OP_1 as a
 push, and the ambiguity was real because the leaked value is script-encoded. Both readings were describing the
 same byte from different ends.

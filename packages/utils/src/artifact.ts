@@ -378,6 +378,8 @@ export interface ArgSource {
 export interface ExternalCallAbi {
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
+  /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
+  occurrence?: 'once' | 'conditional' | 'loop';
   interfaceName: string;
   functionName: string;
   addressParam?: string;

@@ -1022,5 +1022,11 @@ grouped logical rows retain their existing `logicalIndex`. This removes array-po
 from downstream planners while preserving the distinction between one physical callee slot and its
 logical occurrences.
 
-The compiler-summary row remains PARTIAL. Target alternative sets, occurrence/bounded-loop rules,
+Callsites additionally carry a compiler-derived reachability class: `once`, `conditional`, or
+`loop`. It is derived from the resolved AST after control-flow lowering, and regressions cover one
+of each. A downstream worklist can no longer silently treat a conditional or repeated call as one
+unconditional row; it must obtain the runtime occurrence evidence already enforced by the compiled
+graph handler.
+
+The compiler-summary row remains PARTIAL. Exact loop-bound expressions, target alternative sets,
 result producer/consumer IDs, and value-expression metadata remain.

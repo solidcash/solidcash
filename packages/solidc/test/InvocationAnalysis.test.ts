@@ -64,11 +64,36 @@ describe('Release 0 shared invocation analysis', () => {
     expect(summary.blockLayout).toEqual(abi.blockLayout);
     expect(summary.externalCalls?.[0]).toMatchObject({
       callsiteId: 0,
+      occurrence: 'once',
       interfaceName: 'ITarget',
       functionName: 'step',
       hasReturnValues: true,
       returnTypes: ['bigint', 'bool'],
       argSources: [{ kind: 'forward', paramIndex: 0 }],
     });
+  });
+
+  it('classifies callsite occurrence without treating control-dependent rows as unconditional', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint n); }
+      contract Occurrences() {
+        function once(address target, bigint n) public {
+          ITarget(target).step(n);
+          require(true);
+        }
+        function maybe(address target, bigint n, bool take) public {
+          if (take) { ITarget(target).step(n); }
+          require(true);
+        }
+        function repeated(address target, bigint n, bigint count) public {
+          for (bigint i = 0; i < count; i = i + 1) { ITarget(target).step(n); }
+          require(count >= 0);
+        }
+      }`, { forceStateful: true });
+    const occurrence = (name: string) => artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === name)!.externalCalls![0].occurrence;
+    expect(occurrence('once')).toBe('once');
+    expect(occurrence('maybe')).toBe('conditional');
+    expect(occurrence('repeated')).toBe('loop');
   });
 });

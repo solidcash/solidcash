@@ -7,7 +7,7 @@ import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
-  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier,
+  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node,
 } from '../ast/AST.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 
@@ -31,6 +31,38 @@ function abiTypeString(type: Type | undefined): string {
 const STATE_WRITING_MODIFIERS = [
   FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
 ];
+
+const occurrenceOf = (
+  fn: FunctionDefinitionNode, target: Node | undefined,
+): 'once' | 'conditional' | 'loop' => {
+  if (!target) return 'once';
+  let found: 'once' | 'conditional' | 'loop' = 'once';
+  const seen = new Set<object>();
+  const visit = (value: unknown, context: 'once' | 'conditional' | 'loop'): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value === target) {
+      found = context;
+      return;
+    }
+    const kind = value.constructor.name;
+    const nested = /^(WhileNode|DoWhileNode)$/.test(kind)
+      ? 'loop'
+      : /^(BranchNode|SwitchNode|SwitchCaseNode)$/.test(kind) && context === 'once'
+        ? 'conditional'
+        : context;
+    for (const [key, child] of Object.entries(value)) {
+      if ([
+        'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection',
+      ].includes(key)) continue;
+      if (child instanceof Node) visit(child, nested);
+      else if (Array.isArray(child)) for (const item of child) visit(item, nested);
+    }
+  };
+  visit(fn.body, 'once');
+  return found;
+};
 
 /**
  * Conservatively decide whether a function mutates any covenant-derived state. Returns false ONLY when the body
@@ -112,6 +144,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => ({
         callsiteId: ec.slotIndex,
+        occurrence: occurrenceOf(func, ec.sourceCallNode),
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
         ...(ec.addressParam && { addressParam: ec.addressParam }),

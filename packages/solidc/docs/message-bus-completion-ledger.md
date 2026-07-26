@@ -280,8 +280,23 @@ Two further pointers for the fix, both from the same dump:
    can return an entry for a non-matching statement, and whether the wrapper's capture of row 0's results is
    aligned with the locals it assigns into.
 
+3. UNVERIFIED LEAD (flagged as such deliberately - two hypotheses were asserted before measurement today and
+   both were wrong). `multiEntry` matches an entry by collection name plus KEY PARAMETER NAMES:
+
+       entry.collection === collection
+       && entry.keyParameters.length === keys.length
+       && keys.every((key, i) => key instanceof IdentifierNode && key.name === entry.keyParameters[i])
+
+   In a cloned handler the keys are the synthetic `__scb_ek_*` parameters introduced by
+   `bindEntryKeyParameters`. If two distinct entry writes in one handler bind to the SAME synthetic parameter
+   name, both resolve to the same `JournalEntry` and one entry's local never receives its own value. Checking
+   this costs one instrumented compile: dump the cloned handler's parameter list and the resolved
+   `entry.journalName` for each `MappingAssignNode`. DO NOT patch on this without running that check first.
+
 The fix is NOT attempted. The remaining step is small in surface area but sits on the settlement path, so it
-needs a hostile VM test alongside it, not just a green suite.
+needs a hostile VM test alongside it, not just a green suite. Note the concrete reason that matters here: this
+session committed a 38-line guard removal under a docs message and 62 green tests reported nothing, so a green
+suite is not evidence that a settlement-path change is sound.
 
 Superseded next step (kept so the reasoning is auditable): compare the tracked `this.stack.length` at the upsert
 against the actual VM stack depth at the corresponding instruction pointer in a `vm.debug()` trace. If they

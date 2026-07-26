@@ -80,7 +80,7 @@ Evidence labels:
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
 | Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. A delete beside a scalar state write is rejected at compile time (`scalar-write-with-collection-delete-not-enabled`) - the two journals disagree on the settled entry. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
-| Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PARTIAL | All five handlers now settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. What remains is the word *ordered*: a resource-shaped route admits exactly one handler (`resource-shaped-route-requires-one-handler`), so a single batch cannot interleave them. Release B lifts that restriction. |
+| Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
 | Event NFT is a standard 1,000-satoshi balanced output and permissionlessly spendable after 144 blocks | PROVEN | Standard-policy and event lifecycle VM tests. |
@@ -129,6 +129,20 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: Release B mixed batch settles on the VM
+
+Two different handlers over one collection - `move(from,to,amount)` and `bump(who,amount)` - now settle in one
+owner batch, and a batch whose shared entry settles as if only `move` had run is rejected. That was the last
+piece of execution evidence Release B was missing, so the ordered-ERC-20 row moves from PARTIAL to PROVEN for
+the admitted class.
+
+Building it exposed a real SDK gap rather than a fixture problem. A handler with a single mapping access binds
+only the shared entry, so an ordered mix leaves the other row's row-local slot unbound by construction - the
+route still declares that slot and the covenant still requires it to address a real entry, but no invocation
+names it. `encodeHiddenBatch` failed with "Missing SCB1 route witness". The SDK cannot derive that entry
+because no row touches it, so `CompiledGraphParticipant` now takes `unboundRouteWitnesses` for exactly this
+case. The entry is authenticated like any other; the caller only chooses which one it is.
 
 ### 2026-07-26: attempted lift of the scalar-write + collection-delete boundary (unsuccessful)
 

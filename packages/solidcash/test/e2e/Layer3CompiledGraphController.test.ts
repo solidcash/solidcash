@@ -1435,6 +1435,178 @@ async function buildMultiArgEventGraph(mode: 'honest' | 'swapped' | 'foreign-top
   return { provider, transaction: raw(tx), layout };
 }
 
+async function buildMixedHandlerBatchGraph(mode: 'honest' | 'forge-second-row' = 'honest') {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  // Two DIFFERENT handlers over one collection in one owner batch: the ordered mix Release B admits. `move` is
+  // resource-shaped (shared `from`, row-local `to`); `bump` keys only the shared entry. Both must resolve onto
+  // the same three physical entries.
+  const tokenArtifact = compileString(`pragma solidcash >=0.8.0;
+    contract MixedBatchToken() {
+      mapping(address => bigint) balances;
+      function move(address from, address to, bigint amount) public {
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+        require(amount >= 0);
+      }
+      function bump(address who, bigint amount) public {
+        this.balances[who] = this.balances[who] + amount;
+        require(amount >= 0);
+      }
+    }`, options);
+  const tokenBase = new Contract(tokenArtifact, [], { provider });
+  const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, {});
+  const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
+  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+    interface IMixedBatchToken {
+      function move(address from, address to, bigint amount);
+      function bump(address who, bigint amount);
+    }
+    contract MixedBatchRouter(int brand, address token) {
+      function route(address shared, address recipient, bigint moved, bigint bumped) public {
+        IMixedBatchToken(token).move(shared, recipient, moved);
+        IMixedBatchToken(token).bump(shared, bumped);
+        require(true);
+      }
+    }`, options);
+  const callerBase = new Contract(callerArtifact, [1n, token.lockingBytecode], { provider });
+  const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
+  const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
+
+  const shared = hexToBin(`aa20${'81'.repeat(32)}87`);
+  const recipient = hexToBin(`aa20${'82'.repeat(32)}87`);
+  const spare = hexToBin(`aa20${'83'.repeat(32)}87`);
+  const rows = [
+    { key: shared, value: 100n },
+    { key: recipient, value: 0n },
+    { key: spare, value: 7n },
+  ].map((row) => ({ ...row, slot: keyToSlot(row.key) }))
+    .sort((left, right) => Number(bytesToSlotValue(left.slot) - bytesToSlotValue(right.slot)));
+  const commitments = new Map(rows.map((row, index) => [
+    binToHex(row.slot),
+    encodeEntryCommitment(
+      row.slot, rows[index + 1]?.slot ?? new Uint8Array(32), bigIntToVmNumber(row.value),
+    ),
+  ]));
+  // Journal order: the shared entry, then the row-local entry per row. Row 1 is `bump`, which has no row-local
+  // key, so the third slot is an entry no row touches and must settle unchanged.
+  const entryKeys = [shared, recipient, spare];
+  const entries = entryKeys.map((key) => randomUtxo({
+    satoshis: 10000n,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable' as const,
+        commitment: binToHex(commitments.get(binToHex(keyToSlot(key)))!),
+      },
+    },
+  }));
+  for (const entry of entries) {
+    await provider.addUtxo(getEntryNftAddress(token, tokenSetup.categoryId, 'balances'), entry);
+  }
+  const plan = layer3.planCompiledGraph([
+    { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
+    {
+      artifact: tokenArtifact,
+      lockingBytecode: token.lockingBytecode,
+      // Row 1 is `bump`, which binds only the shared entry, so the row-local slot for that row names an entry
+      // no row touches. It still has to address a real entry and settle unchanged.
+      unboundRouteWitnesses: { __scb_key_balances_0_row_r1: spare },
+    },
+  ], [
+    { parent: null, callee: 0, function: 'route', args: [shared, recipient, 10n, 5n] },
+    { parent: 0, callee: 1, function: 'move', args: [shared, recipient, 10n] },
+    { parent: 0, callee: 1, function: 'bump', args: [shared, 5n] },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projectionUtxos = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50000n });
+  for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const callerRoute = caller.createCompilerRouteUnlocker(
+    callerArtifact.hiddenBatch!.route, hexToBin(callerArtifact.hiddenBatch!.selector),
+  );
+  const tokenRoute = token.createCompilerRouteUnlocker(
+    tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
+  );
+  const tokenRouteArgs = [
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
+  ] as FunctionArgument[];
+  entries.forEach((entry, slotIndex) => {
+    const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
+  });
+  tokenRouteArgs.push(0n);
+  // shared: 100 - 10 (move) + 5 (bump) = 95; recipient: 0 + 10 = 10; spare untouched.
+  const settled = new Map([
+    [binToHex(keyToSlot(shared)), mode === 'forge-second-row' ? 100n - 10n : 95n],
+    [binToHex(keyToSlot(recipient)), 10n],
+    [binToHex(keyToSlot(spare)), 7n],
+  ]);
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    callerSetup.masterUtxo,
+    callerRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(tokenSetup.masterUtxo, tokenRoute(...tokenRouteArgs as any));
+  entries.forEach((entry) =>
+    tx.addInput(entry, createEntryNftUnlocker(token, 1, tokenSetup.categoryId, 'balances')));
+  projectionUtxos.forEach((proof, participant) =>
+    tx.addInput(proof, projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    )));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: caller.tokenAddress,
+    amount: callerSetup.masterUtxo.satoshis,
+    token: { category: callerSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: token.tokenAddress,
+    amount: tokenSetup.masterUtxo.satoshis,
+    token: { category: tokenSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  for (const entry of entries) {
+    const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
+    tx.addOutput({
+      to: getEntryNftAddress(token, tokenSetup.categoryId, 'balances'),
+      amount: entry.satoshis,
+      token: {
+        category: tokenSetup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(
+            decoded.slot, decoded.nextKey, bigIntToVmNumber(settled.get(binToHex(decoded.slot))!),
+          )),
+        },
+      },
+    });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10000n });
+  return { provider, transaction: raw(tx), layout };
+}
+
 describe('Layer-3 compiled graph controller', () => {
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
@@ -1667,6 +1839,19 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a multi-argument event published under a different topic', async () => {
     const { provider, transaction } = await buildMultiArgEventGraph('foreign-topic');
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  });
+
+  it('settles two different handlers over one collection in one owner batch', async () => {
+    const { provider, transaction } = await buildMixedHandlerBatchGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a mixed batch that omits the second handler\'s effect', async () => {
+    // Identical shape and identical rows; the shared entry settles as if only `move` had run, so the
+    // rejection can only come from `bump`'s journal write being authenticated too.
+    const { provider, transaction } = await buildMixedHandlerBatchGraph('forge-second-row');
     await expect(provider.sendRawTransaction(transaction))
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   });

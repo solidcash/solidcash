@@ -7,6 +7,13 @@ import {
 export interface CompiledGraphParticipant {
   artifact: Artifact;
   lockingBytecode: string;
+  /**
+   * Values for route key witnesses no invocation binds. An ordered mix of handlers produces these by
+   * construction: a handler with a single mapping access binds only the shared entry, so another row's
+   * row-local slot stays unbound while the route still declares it. The caller names that entry - the SDK
+   * cannot derive it, because no row touches it - and the covenant still authenticates it like any other.
+   */
+  unboundRouteWitnesses?: Readonly<Record<string, FunctionArgument>>;
 }
 
 export interface CompiledGraphInvocation {
@@ -795,7 +802,7 @@ export function planCompiledGraph(
     return Object.freeze({
       participant: owner,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
-      batch: encodeHiddenBatch(participant.artifact, perOwner[owner]),
+      batch: encodeHiddenBatch(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
       invocations: Object.freeze(globalByOwner[owner]),
       blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,
     });

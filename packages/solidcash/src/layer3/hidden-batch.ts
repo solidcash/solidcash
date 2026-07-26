@@ -74,6 +74,13 @@ const uintLe = (value: bigint, width: number): Uint8Array => {
 export function encodeHiddenBatch(
   artifact: Artifact,
   invocations: readonly HiddenBatchInvocation[],
+  /**
+   * Values for route key witnesses no invocation binds. A mixed batch produces these by construction: a handler
+   * with a single mapping access binds only the shared entry, so the other row's row-local slot stays unbound
+   * even though the route still declares it and the covenant still requires it to address a real entry. The
+   * caller names that entry; the SDK cannot derive it, because no row touches it.
+   */
+  unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
 ): EncodedHiddenBatch {
   const capability = artifact.hiddenBatch;
   if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
@@ -164,8 +171,14 @@ export function encodeHiddenBatch(
     .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
     .map((input) => {
       const witness = keyWitnessValues.get(input.name);
-      if (!witness) throw new Error(`Missing SCB1 route witness '${input.name}'`);
-      return witness.value;
+      if (witness) return witness.value;
+      const supplied = unboundRouteWitnesses[input.name];
+      if (supplied === undefined) {
+        throw new Error(
+          `Missing SCB1 route witness '${input.name}'; no invocation binds it, so it must be supplied`,
+        );
+      }
+      return supplied;
     });
 
   return {

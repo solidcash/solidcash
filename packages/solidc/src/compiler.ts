@@ -459,6 +459,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       }
     }
     if (!reason && fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
+    // A transaction signature cannot be placed in the controller-rooted SCB1
+    // argument vector: the signature commits the transaction containing the
+    // controller commitment, while that commitment would in turn commit the
+    // signature. Keep this fail-closed until the protocol specifies a typed,
+    // root-excluded signature witness which the participant binds separately.
     else if (!reason && (
       signatureCheck || fn.parameters.some((parameter) =>
         ['sig', 'sig[]'].includes(parameter.type.toString()))

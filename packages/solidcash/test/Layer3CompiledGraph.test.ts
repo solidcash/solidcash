@@ -113,6 +113,102 @@ describe('layer3.planCompiledGraph', () => {
     ]);
   });
 
+  it('expands a VM-resolved varying-selector table without trusting the SDK choice', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const table = compileString(`pragma solidcash >=0.8.0;
+      interface IH { function inc(uint value); function dec(uint value); }
+      contract DispatchTable() {
+        function(uint) external[] handlers;
+        function registerInc(address target) public { this.handlers.push(IH(target).inc); require(true); }
+        function registerDec(address target) public { this.handlers.push(IH(target).dec); require(true); }
+        function fireAll(uint value) public {
+          for (int i = 0; i < 2; i = i + 1) { handlers[i](value); }
+          require(value >= 0);
+        }
+      }`, options);
+    const handler = compileString(`pragma solidcash >=0.8.0;
+      contract Handler() {
+        int count;
+        function inc(uint value) public { this.count = this.count + int(value); require(value >= 0); }
+        function dec(uint value) public { this.count = this.count - int(value); require(value >= 0); }
+      }`, options);
+    const root = { artifact: table, lockingBytecode: '51' };
+    const first = { artifact: handler, lockingBytecode: '52' };
+    const second = { artifact: handler, lockingBytecode: '53' };
+    const plan = layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fireAll',
+      args: [3n],
+      targets: {},
+      occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+      dynamicCall: ({ occurrence }) => occurrence === 0
+        ? { participant: first, function: 'inc' }
+        : { participant: second, function: 'dec' },
+    });
+
+    expect(plan.participants.map((participant) => participant.lockingBytecode))
+      .toEqual(['51', '52', '53']);
+    expect(plan.invocations.map(({ parent, callee, function: name, argsHex }) =>
+      ({ parent, callee, name, argsHex }))).toEqual([
+      { parent: null, callee: 0, name: 'fireAll', argsHex: '53' },
+      { parent: 0, callee: 1, name: 'inc', argsHex: '53' },
+      { parent: 0, callee: 2, name: 'dec', argsHex: '53' },
+    ]);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fireAll',
+      args: [3n],
+      targets: {},
+      occurrence: () => 2,
+    })).toThrow(/lacks a dynamic call proof/);
+  });
+
+  it('expands a VM-resolved foreign function pointer and rejects an absent proof', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      solidityImportCompat: true,
+    };
+    const caller = compileString(`pragma solidcash >=0.8.0;
+      interface IH { function inc(uint value); function dec(uint value); }
+      contract PointerCaller() {
+        function(uint) external handler;
+        function set(function(uint) external next) public { this.handler = next; require(true); }
+        function fire(uint value) public { handler(value); require(value >= 0); }
+      }`, options);
+    const handler = compileString(`pragma solidcash >=0.8.0;
+      contract PointerHandler() {
+        int count;
+        function inc(uint value) public { this.count = this.count + int(value); require(value >= 0); }
+        function dec(uint value) public { this.count = this.count - int(value); require(value >= 0); }
+      }`, options);
+    const root = { artifact: caller, lockingBytecode: '51' };
+    const target = { artifact: handler, lockingBytecode: '52' };
+    const derive = (withProof: boolean) => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fire',
+      args: [4n],
+      targets: {},
+      ...(withProof && {
+        dynamicCall: () => ({ participant: target, function: 'dec' }),
+      }),
+    });
+    const plan = derive(true);
+    expect(plan.invocations.map(({ parent, callee, function: name, argsHex }) =>
+      ({ parent, callee, name, argsHex }))).toEqual([
+      { parent: null, callee: 0, name: 'fire', argsHex: '54' },
+      { parent: 0, callee: 1, name: 'dec', argsHex: '54' },
+    ]);
+    expect(() => derive(false)).toThrow(/lacks a dynamic call proof/);
+  });
+
   it('fails the symbolic worklist closed on runtime occurrence and recursive expansion', () => {
     const options = {
       forceStateful: true,

@@ -42,6 +42,18 @@ export interface DeriveCompiledGraphOptions {
     argument: number;
     occurrence: number;
   }) => FunctionArgument;
+  /**
+   * Runtime-resolved target and method for compiler-labelled function-pointer
+   * and varying-selector callsites. The derivation probe supplies the concrete
+   * choice; the caller's graph-emission covenant remains authoritative.
+   */
+  dynamicCall?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    callsiteId: number;
+    occurrence: number;
+    kind: 'function-pointer' | 'selector-table';
+  }) => { participant: WorklistParticipant; function: string };
 }
 
 const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
@@ -170,7 +182,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     active.add(key);
     for (const call of fn.externalCalls ?? []) {
-      if (call.selectorArrayVar || call.fnPtrCall || call.opaqueReturn) {
+      if (call.opaqueReturn) {
         throw new Error(
           `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
         );
@@ -224,6 +236,35 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             `layer3: callsite ${call.callsiteId} lacks a valid ${occurrenceKind} occurrence proof`,
           );
         }
+      }
+      if (call.selectorArrayVar || call.fnPtrCall) {
+        for (let reached = 0; reached < count; reached += 1) {
+          const resolved = options.dynamicCall?.({
+            participant,
+            function: functionName,
+            callsiteId: call.callsiteId!,
+            occurrence: reached,
+            kind: call.selectorArrayVar ? 'selector-table' : 'function-pointer',
+          });
+          if (!resolved) {
+            throw new Error(`layer3: callsite ${call.callsiteId} lacks a dynamic call proof`);
+          }
+          functionAbi(resolved.participant, resolved.function);
+          expand(
+            resolved.participant,
+            resolved.function,
+            resolveArguments(
+              participant,
+              args,
+              { ...call, functionName: resolved.function },
+              functionName,
+              reached,
+              options.expressionArgument,
+            ),
+            invocation,
+          );
+        }
+        continue;
       }
       for (let reached = 0; reached < count; reached += 1) {
         const target = takeTarget(call);

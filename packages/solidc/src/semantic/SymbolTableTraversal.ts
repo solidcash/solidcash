@@ -1825,7 +1825,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (node.graphEmissionHandler) {
           if (logicalCallSlots.length < 1
             || logicalCallSlots.some((slot) =>
-              slot.loopArrayVar || slot.fnPtrCall
+              slot.loopArrayVar
+              || (slot.fnPtrCall && !slot.runtimeSelector)
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
             || (logicalCallSlots.length > 1 && logicalCallSlots.some((slot) => slot.hasReturnValues))) {
@@ -1835,9 +1836,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           if (node.graphRuntimeEmissionHandler
             && logicalCallSlots.some((slot) => slot.hasReturnValues
-              || !node.parameters.some((parameter) => parameter.name === slot.addressParam))) {
+              || (!slot.fnPtrCall
+                && !node.parameters.some((parameter) => parameter.name === slot.addressParam)))) {
             throw new Error(
-              `Runtime graph handler '${node.name}' requires void calls with parameter-pinned targets`,
+              `Runtime graph handler '${node.name}' requires void calls with parameter- or state-pinned targets`,
             );
           }
           for (const slot of logicalCallSlots) {
@@ -1854,6 +1856,10 @@ export default class SymbolTableTraversal extends AstTraversal {
                 `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
               );
             }
+            // A received function pointer is lowered to an authenticated address plus a bytes4 selector
+            // companion. Both are read from the caller's covenant-bound state by the graph row generator;
+            // there is intentionally no compile-time method selector for this shape.
+            if (slot.fnPtrCall) continue;
             const iface = this.interfaceMap.get(slot.interfaceName);
             const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
               .filter((candidate) => candidate.name === slot.functionName);

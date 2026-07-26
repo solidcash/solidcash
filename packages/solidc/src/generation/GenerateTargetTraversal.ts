@@ -11365,7 +11365,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     compare = true,
     parametersAreCallArguments = false,
   ): number {
-    if (!slot.compileTimeSelector) throw new Error('Graph emission call lacks a fixed selector');
+    if (!slot.compileTimeSelector && !slot.runtimeSelector) {
+      throw new Error('Graph emission call lacks an authenticated selector');
+    }
     if (slot.addressParam) {
       const parameterIndex = handler.parameters.findIndex((parameter) =>
         parameter.name === slot.addressParam);
@@ -11410,7 +11412,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_mode)');
 
-    this.emit(slot.compileTimeSelector, locationData);
+    if (slot.runtimeSelector) {
+      // Function-pointer lowerings bind this expression to the caller's selector companion
+      // (`__fnsel_<pointer>`). Copy it rather than consuming it: ordinary external-call verification
+      // later reads the same covenant-authenticated value to pin the co-spent callee's dispatcher.
+      if (slot.runtimeSelector instanceof IdentifierNode) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(slot.runtimeSelector.name))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else {
+        this.visit(slot.runtimeSelector);
+      }
+    } else {
+      this.emit(slot.compileTimeSelector!, locationData);
+    }
     this.pushToStack('(__graph_selector)');
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);

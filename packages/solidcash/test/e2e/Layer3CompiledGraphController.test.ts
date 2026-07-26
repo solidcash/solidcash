@@ -173,6 +173,18 @@ contract CompiledStateB(int brand) {
     require(true);
   }
 }`;
+const POINTER_CALLER = `pragma solidcash >=0.8.0;
+contract CompiledPointerCaller(int brand) {
+  function fire(function(uint) external handler, uint value) public {
+    handler(value);
+    require(value >= 0);
+  }
+}`;
+const POINTER_TARGET = `pragma solidcash >=0.8.0;
+contract CompiledPointerTarget(int brand) {
+  function inc(uint value) public pure { require(value > 0); }
+  function dec(uint value) public pure { require(value > 0); }
+}`;
 
 async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>) {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -397,6 +409,96 @@ async function build(
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10000n });
   return { provider, transaction: raw(tx), builder: tx, transcript };
+}
+
+async function buildPointerGraph(
+  tamper: 'none' | 'selector' | 'target' = 'none',
+) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+    solidityImportCompat: true,
+  };
+  const artifactB = compileString(POINTER_TARGET, options);
+  const baseB = new Contract(artifactB, [2n], { provider });
+  const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const artifactA = compileString(POINTER_CALLER, options);
+  const baseA = new Contract(artifactA, [1n], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const decSelector = artifactB.abi.find((fn) => fn.name === 'dec')!.selector!;
+  const incSelector = artifactB.abi.find((fn) => fn.name === 'inc')!.selector!;
+  const pointerTarget = tamper === 'target' ? hexToBin(`aa20${'44'.repeat(32)}87`) : b.lockingBytecode;
+  const pointerSelector = hexToBin(tamper === 'selector' ? incSelector : decSelector);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: {
+      artifact: artifactA, lockingBytecode: a.lockingBytecode, constructorArgs: [1n],
+    },
+    function: 'fire',
+    args: [pointerTarget, pointerSelector, 4n],
+    targets: {},
+    dynamicCall: () => ({
+      participant: { artifact: artifactB, lockingBytecode: b.lockingBytecode, constructorArgs: [2n] },
+      function: 'dec',
+    }),
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const feeUtxo = randomUtxo({ satoshis: 50_000n });
+  const projectionA = randomUtxo({ satoshis: 1000n });
+  const projectionB = randomUtxo({ satoshis: 1000n });
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  await provider.addUtxo(p2pkh.address, feeUtxo);
+  await provider.addUtxo(projection.address, projectionA);
+  await provider.addUtxo(projection.address, projectionB);
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(setupA.masterUtxo, routeA(
+    ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+  ));
+  tx.addInput(setupB.masterUtxo, routeB(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+  ));
+  tx.addInput(
+    projectionA,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
+  );
+  tx.addInput(
+    projectionB,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 1n),
+  );
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(feeUtxo, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx) };
 }
 
 const packedResult = (value: bigint): Uint8Array =>
@@ -1917,6 +2019,19 @@ async function buildScalarPlusEntryBatchGraph(
 }
 
 describe('Layer-3 compiled graph controller', () => {
+  it('executes a compiler-authenticated received function pointer', async () => {
+    const { provider, transaction } = await buildPointerGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it.each(['selector', 'target'] as const)(
+    'rejects a function-pointer %s choice which disagrees with the canonical child row',
+    async (tamper) => {
+      const { provider, transaction } = await buildPointerGraph(tamper);
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    },
+  );
+
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
     const { provider, transaction } = await build();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');

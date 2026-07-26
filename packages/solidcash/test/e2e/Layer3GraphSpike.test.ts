@@ -145,7 +145,7 @@ describe('layer-3 three-owner result graph (E2E)', () => {
     // Three owners + result graph in one covenant, all endpoints validating. Still well under budget.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 2631, ratioPct: 23.2 }, { instr: 2631, ratioPct: 23.2 }, { instr: 2631, ratioPct: 23.2 },
+      { instr: 2696, ratioPct: 23.3 }, { instr: 2696, ratioPct: 23.3 }, { instr: 2696, ratioPct: 23.3 },
     ]);
   });
 

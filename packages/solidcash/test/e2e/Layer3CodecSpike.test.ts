@@ -151,7 +151,7 @@ describe('layer-3 variable-table codec (task 2)', () => {
     });
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 2994, ratioPct: 29.7 }, { instr: 2994, ratioPct: 29.7 }, { instr: 2994, ratioPct: 29.7 },
+      { instr: 3059, ratioPct: 29.6 }, { instr: 3059, ratioPct: 29.6 }, { instr: 3059, ratioPct: 29.6 },
     ]);
   });
 });

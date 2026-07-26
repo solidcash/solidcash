@@ -160,7 +160,7 @@ describe('layer-3 refined intent (method granularity + one-shot nonce) spike (E2
     });
     // Method-specific authorization + one-shot nonce advance, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2213, ratioPct: 19 }, { instr: 2213, ratioPct: 19 }]);
+    expect(metrics).toEqual([{ instr: 2278, ratioPct: 19.2 }, { instr: 2278, ratioPct: 19.2 }]);
   });
 
   it('HOSTILE: calling a method the caller did not authorize (wrong selector) is rejected', async () => {

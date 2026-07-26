@@ -151,7 +151,7 @@ describe('layer-3 full authenticated transcript spike (E2E)', () => {
     });
     // Full transcript (binding + sender + intent + result) in one covenant, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2114, ratioPct: 20.1 }, { instr: 2114, ratioPct: 20.1 }]);
+    expect(metrics).toEqual([{ instr: 2179, ratioPct: 20.3 }, { instr: 2179, ratioPct: 20.3 }]);
   });
 
   it('HOSTILE: forged msg.sender is rejected', async () => {

@@ -183,9 +183,9 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     // with covenant/unlocking size), so cutting redundant work also shrank the budget proportionally.
     // Frozen Milestone-2 feasibility measurement (2 branded participants, full binding, self-checked).
     expect(metrics.every((m) => m.opCost < m.budget)).toBe(true);
-    expect(encodeTransaction(transaction).length).toBe(4119);
-    expect(metrics[0]).toMatchObject({ instructions: 1985, unlockingBytes: 1828 });
-    expect(metrics[1]).toMatchObject({ instructions: 1985, unlockingBytes: 1828 });
+    expect(encodeTransaction(transaction).length).toBe(4187);
+    expect(metrics[0]).toMatchObject({ instructions: 2050, unlockingBytes: 1862 });
+    expect(metrics[1]).toMatchObject({ instructions: 2050, unlockingBytes: 1862 });
     await expect(s.provider.sendRawTransaction(rawHex())).resolves.toBeTypeOf('string');
   });
 

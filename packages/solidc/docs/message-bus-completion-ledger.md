@@ -55,7 +55,7 @@ Evidence labels:
 | Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection share one entry-slot union and journal pool (`Layer3 Release B`), with compiler-supplied entry identity. A cloned handler now threads scalar state and multiple collection values through one call without cross-journal corruption. Dynamic/chunked resource classes remain narrower than the normative class. |
 | Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PROVEN for the admitted handler class | `Layer3ReleaseA.test.ts` settles a `msg.sender`-authorizing modifier, string and custom-error `revert`, `while`, `do/while`, `break`, `continue` and early return on the BCH-2026 VM, each paired with a hostile case of identical transaction shape - a different authorized caller, a reached revert, or an off-by-one settlement. Handler shapes outside SCB1 eligibility are unchanged and still fail closed. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
-| Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
+| Producer-authenticated ABI return values | PROVEN for scalar and static tuple returns | Compiled producer results are bound through return-event vectors and invocation bytes. The graph VM fixture decodes `(int256,int256)` and rejects substitution of either the leading or non-leading tuple field. Dynamic bytes/string and struct results remain. |
 | Result-dependent continuation and transitive result chains | PROVEN for the admitted scalar class | The compiled `A.plusOne -> B.twice` fixture consumes authenticated `4`, resumes A, and authenticates A's derived `5`. General native worklist derivation still rejects returns. |
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
 | Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
@@ -1091,3 +1091,13 @@ the untouched captured transaction succeeds. The direct token-container suite re
 This proves the repeated FT-transfer class under one canonical category witness. NFT transfers,
 multiple independent token categories in one route, and runtime-varying resource aliases are not
 claimed by this increment.
+
+### 2026-07-26: Release D — tuple result authentication
+
+The compiled A→B result-dependency fixture now asserts the callee's decoded
+`(int256,int256)` result vector, rather than checking only the parent's derived scalar. Separate
+hostile transactions substitute the first and second tuple fields while retaining a well-formed
+result NFT; both are rejected by the BCH-2026 VM. This moves static tuple results into the proven
+class without changing the existing dependency ordering.
+
+Dynamic bytes/string results and structs remain Release D work; no broader claim is made here.

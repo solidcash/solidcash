@@ -355,7 +355,7 @@ const aggregateResult = (value: bigint): Uint8Array => scriptToBytecode([packedR
 const aggregatePairResult = (value: bigint, witness: bigint): Uint8Array =>
   scriptToBytecode([packedPairResult(value, witness)]);
 
-async function buildReturning(tamperResult = false) {
+async function buildReturning(tamperResult = false, tamperTupleField = false) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -388,7 +388,7 @@ async function buildReturning(tamperResult = false) {
   }, layout.participantInputs, layout.returnOutputs,
   [binToHex(packedResult(5n)), binToHex(packedPairResult(4n, 12n))], layout.projectionInputs);
   const resultA = aggregateResult(5n);
-  const resultB = aggregatePairResult(tamperResult ? 5n : 4n, 12n);
+  const resultB = aggregatePairResult(tamperResult ? 5n : 4n, tamperTupleField ? 13n : 12n);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
@@ -457,7 +457,9 @@ async function buildReturning(tamperResult = false) {
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10000n });
-  return { provider, transaction: raw(tx), artifactA, plan, resultA };
+  return {
+    provider, transaction: raw(tx), artifactA, artifactB, plan, resultA, resultB,
+  };
 }
 
 async function buildStateCycle(tamperState = false) {
@@ -1911,16 +1913,25 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('authenticates compiler-produced return blobs in balanced owner slots', async () => {
     const {
-      provider, transaction, artifactA, plan, resultA,
+      provider, transaction, artifactA, artifactB, plan, resultA, resultB,
     } = await buildReturning();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
     expect(plan.invocations.map((invocation) => invocation.resultDependencies)).toEqual([[1], []]);
     expect(layer3.decodeHiddenBatchResults(artifactA, plan.participants[0].batch, resultA))
       .toEqual([{ row: 0, type: 'int256', value: 5n }]);
+    expect(layer3.decodeHiddenBatchResults(artifactB, plan.participants[1].batch, resultB))
+      .toEqual([
+        { row: 0, type: '(int256,int256)', value: [4n, 12n] },
+      ]);
   });
 
   it('rejects a forged return commitment even when the result NFT is otherwise well formed', async () => {
     const { provider, transaction } = await buildReturning(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('rejects substitution of a non-leading tuple result field', async () => {
+    const { provider, transaction } = await buildReturning(false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

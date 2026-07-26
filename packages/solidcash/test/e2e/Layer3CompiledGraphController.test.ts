@@ -79,17 +79,17 @@ contract CompiledGraphA(int brand, address target) {
 }`;
 const RETURNING_B = `pragma solidcash >=0.8.0;
 contract CompiledReturningB(int brand) {
-  function twice(int n) public pure returns (int) {
+  function twice(int n) public pure returns (int, int) {
     require(n >= 0);
-    return n * 2;
+    return (n * 2, n + 10);
   }
 }`;
 const RETURNING_A = `pragma solidcash >=0.8.0;
-interface IReturningB { function twice(int n) returns (int); }
+interface IReturningB { function twice(int n) returns (int, int); }
 contract CompiledReturningA(int brand, address target) {
   function plusOne(int n) public pure returns (int) {
-    int child = IReturningB(target).twice(n);
-    require(child >= 0);
+    int child, int witness = IReturningB(target).twice(n);
+    require(child >= 0 && witness == n + 10);
     return child + 1;
   }
 }`;
@@ -345,7 +345,11 @@ async function build(
 
 const packedResult = (value: bigint): Uint8Array =>
   scriptToBytecode([bigIntToVmNumber(value)]);
+const packedPairResult = (value: bigint, witness: bigint): Uint8Array =>
+  scriptToBytecode([bigIntToVmNumber(value), bigIntToVmNumber(witness)]);
 const aggregateResult = (value: bigint): Uint8Array => scriptToBytecode([packedResult(value)]);
+const aggregatePairResult = (value: bigint, witness: bigint): Uint8Array =>
+  scriptToBytecode([packedPairResult(value, witness)]);
 
 async function buildReturning(tamperResult = false) {
   const provider = createTestProvider();
@@ -376,11 +380,11 @@ async function buildReturning(tamperResult = false) {
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(plan, {
     0: binToHex(scriptToBytecode([bigIntToVmNumber(5n)])),
-    1: binToHex(scriptToBytecode([bigIntToVmNumber(4n)])),
+    1: binToHex(packedPairResult(4n, 12n)),
   }, layout.participantInputs, layout.returnOutputs,
-  [binToHex(packedResult(5n)), binToHex(packedResult(4n))], layout.projectionInputs);
+  [binToHex(packedResult(5n)), binToHex(packedPairResult(4n, 12n))], layout.projectionInputs);
   const resultA = aggregateResult(5n);
-  const resultB = aggregateResult(tamperResult ? 5n : 4n);
+  const resultB = aggregatePairResult(tamperResult ? 5n : 4n, 12n);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,

@@ -1821,13 +1821,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (node.graphEmissionHandler) {
           if (logicalCallSlots.length < 1
             || logicalCallSlots.some((slot) =>
-              (slot.returnTypes?.length ?? 0) > 1
-              || slot.loopArrayVar || slot.fnPtrCall
+              slot.loopArrayVar || slot.fnPtrCall
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
             || (logicalCallSlots.length > 1 && logicalCallSlots.some((slot) => slot.hasReturnValues))) {
             throw new Error(
-              `Graph handler '${node.name}' requires typed call/staticcall edges and at most one returning call`,
+              `Graph handler '${node.name}' requires call/staticcall edges and at most one returning call`,
             );
           }
           if (node.graphRuntimeEmissionHandler

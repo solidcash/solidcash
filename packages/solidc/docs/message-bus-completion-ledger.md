@@ -971,6 +971,12 @@ change replaces the earlier inactive-default suffix representation before that f
 version interoperability remains a Release I requirement and this evidence MUST NOT be read as
 support for silently changing a deployed protocol.
 
-The Release D row remains PARTIAL. Producer-to-consumer use of heterogeneous fields, general
-nested/transitive chains, and SCC rejection of unavailable-future-result cycles still need their own
-VM and compiler evidence.
+The compiled graph path now also consumes a producer-authenticated two-field return in its parent:
+`CompiledReturningB.twice` returns `(int,int)`, the graph emission binds both canonical fields, and
+`CompiledReturningA.plusOne` resumes only after tuple destructuring and an assertion over the second
+field. The graph verifier parses the complete result frame, parks prefix fields on the alternate
+stack while decoding the remainder, then restores the language's first-result-on-top tuple order.
+The honest transaction and forged-result rejection both run on the BCH-2026 VM.
+
+The Release D row remains PARTIAL. General nested/transitive heterogeneous chains and SCC rejection
+of unavailable-future-result cycles still need their own VM and compiler evidence.

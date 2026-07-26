@@ -11429,8 +11429,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return 0;
     }
     const returnTypes = slot.returnTypes ?? [];
-    if (returnTypes.length !== 1) {
-      throw new Error('Graph result lowering currently requires exactly one return value');
+    if (returnTypes.length === 0) {
+      throw new Error('Graph result metadata declares a return without a result type');
     }
     // Split the authenticated emission at the compiler-constructed target/selector/args prefix.
     this.emit(Op.OP_DUP, locationData);
@@ -11467,10 +11467,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_result_blob)');
-    this.emitPushdataDecodeLastField(returnTypes[0], locationData);
+    // Decode the complete producer-authenticated ABI vector. This mirrors ordinary external-return decoding:
+    // each non-final field leaves the exact remainder for the next declared type, and the final decoder
+    // consumes the whole remainder. The enclosing result-length equality above prevents prefix acceptance.
     this.popFromStack();
-    this.pushToStack(`(__graph_result_value_0)`);
-    return 1;
+    for (let i = 0; i < returnTypes.length; i++) {
+      if (i === returnTypes.length - 1) {
+        this.emitPushdataDecodeLastField(returnTypes[i], locationData);
+        this.pushToStack(`(__graph_result_value_${i})`);
+      } else {
+        this.emitPushdataDecode(returnTypes[i], locationData);
+        // Keep the remainder on the main stack and park the decoded prefix field. Function-call tuples are
+        // represented with their first declared result on top, so after the final field is decoded we restore
+        // these saved fields in reverse order.
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_TOALTSTACK, locationData);
+      }
+    }
+    for (let i = returnTypes.length - 2; i >= 0; i--) {
+      this.emit(Op.OP_FROMALTSTACK, locationData);
+      this.pushToStack(`(__graph_result_value_${i})`);
+    }
+    return returnTypes.length;
   }
 
   /** Consume one reached conditional/loop call from the runtime graph emission vector. */

@@ -8,7 +8,7 @@ import {
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
-  NullaryOpNode, VariableDefinitionNode,
+  NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -288,7 +288,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       && ((bodyStatements[bodyStatements.length - 1] as RequireNode)
         .expression as BoolLiteralNode).value === true;
     const graphResultStatement = bodyStatements.some((statement) => {
-      if (!(statement instanceof VariableDefinitionNode)) return false;
+      if (!(statement instanceof VariableDefinitionNode || statement instanceof TupleAssignmentNode)) return false;
       let containsCall = false;
       walkInvocationAst(statement, (candidate) => {
         if (candidate instanceof MethodCallNode) containsCall = true;

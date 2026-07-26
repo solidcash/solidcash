@@ -1,11 +1,11 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
+  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256, utf8ToBin,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, TransactionBuilder, layer3,
+  Contract, SignatureTemplate, TransactionBuilder, encodeFunctionArgument, layer3,
 } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { randomUtxo } from '../../src/utils.js';
@@ -91,6 +91,56 @@ contract CompiledReturningA(int brand, address target) {
     int child, int witness = IReturningB(target).twice(n);
     require(child >= 0 && witness == n + 10);
     return child + 1;
+  }
+}`;
+const DYNAMIC_RETURNING_B = `pragma solidcash >=0.8.0;
+contract CompiledDynamicReturningB(int brand) {
+  function append(bytes value) public pure returns (bytes) {
+    require(value.length > 0);
+    return bytes.concat(value, hex"ff");
+  }
+}`;
+const DYNAMIC_RETURNING_A = `pragma solidcash >=0.8.0;
+interface IDynamicReturningB { function append(bytes value) returns (bytes); }
+contract CompiledDynamicReturningA(int brand, address target) {
+  function forward(bytes value) public pure returns (bytes) {
+    bytes child = IDynamicReturningB(target).append(value);
+    require(child.length == value.length + 1);
+    return child;
+  }
+}`;
+const STRING_RETURNING_B = `pragma solidcash >=0.8.0;
+contract CompiledStringReturningB(int brand) {
+  function append(string value) public pure returns (string) {
+    require(value.length > 0);
+    return string.concat(value, "!");
+  }
+}`;
+const STRING_RETURNING_A = `pragma solidcash >=0.8.0;
+interface IStringReturningB { function append(string value) returns (string); }
+contract CompiledStringReturningA(int brand, address target) {
+  function forward(string value) public pure returns (string) {
+    string child = IStringReturningB(target).append(value);
+    require(child.length == value.length + 1);
+    return child;
+  }
+}`;
+const STRUCT_RETURNING_B = `pragma solidcash >=0.8.0;
+struct PairResult { int n; bool ok; }
+contract CompiledStructReturningB(int brand) {
+  function make(int value) public pure returns (PairResult) {
+    require(value >= 0);
+    return PairResult(value + 1, true);
+  }
+}`;
+const STRUCT_RETURNING_A = `pragma solidcash >=0.8.0;
+struct PairResult { int n; bool ok; }
+interface IStructReturningB { function make(int value) returns (PairResult); }
+contract CompiledStructReturningA(int brand, address target) {
+  function forward(int value) public pure returns (PairResult) {
+    PairResult child = IStructReturningB(target).make(value);
+    require(child.n == value + 1 && child.ok);
+    return child;
   }
 }`;
 const STATE_A = `pragma solidcash >=0.8.0;
@@ -355,7 +405,10 @@ const aggregateResult = (value: bigint): Uint8Array => scriptToBytecode([packedR
 const aggregatePairResult = (value: bigint, witness: bigint): Uint8Array =>
   scriptToBytecode([packedPairResult(value, witness)]);
 
-async function buildReturning(tamperResult = false, tamperTupleField = false) {
+async function buildReturning(
+  tamperResult = false, tamperTupleField = false,
+  resultKind: 'tuple' | 'bytes' | 'string' | 'struct' = 'tuple',
+) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -366,29 +419,70 @@ async function buildReturning(tamperResult = false, tamperTupleField = false) {
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const artifactB = compileString(RETURNING_B, options);
+  const artifactB = compileString(
+    resultKind === 'bytes' ? DYNAMIC_RETURNING_B : resultKind === 'string' ? STRING_RETURNING_B
+      : resultKind === 'struct' ? STRUCT_RETURNING_B : RETURNING_B,
+    options,
+  );
   const baseB = new Contract(artifactB, [2n], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
-  const artifactA = compileString(RETURNING_A, options);
+  const artifactA = compileString(
+    resultKind === 'bytes' ? DYNAMIC_RETURNING_A : resultKind === 'string' ? STRING_RETURNING_A
+      : resultKind === 'struct' ? STRUCT_RETURNING_A : RETURNING_A,
+    options,
+  );
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const dynamicArgument = hexToBin('aabb');
   const plan = layer3.planCompiledGraph([
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'plusOne', args: [2n] },
-    { parent: 0, callee: 1, function: 'twice', args: [2n] },
+    {
+      parent: null, callee: 0, function: resultKind === 'tuple' ? 'plusOne' : 'forward',
+      args: resultKind === 'bytes' ? [dynamicArgument] : resultKind === 'string' ? ['hello'] : [2n],
+    },
+    {
+      parent: 0, callee: 1,
+      function: resultKind === 'bytes' || resultKind === 'string'
+        ? 'append' : resultKind === 'struct' ? 'make' : 'twice',
+      args: resultKind === 'bytes' ? [dynamicArgument] : resultKind === 'string' ? ['hello'] : [2n],
+    },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const dynamicValue = hexToBin(tamperResult ? 'aabbee' : 'aabbff');
+  const structValue = resultKind === 'struct' ? encodeFunctionArgument(
+    { n: tamperResult ? 4n : 3n, ok: !tamperTupleField },
+    'PairResult', artifactB.structs,
+  ) as Uint8Array : new Uint8Array();
+  const correctStructValue = resultKind === 'struct' ? encodeFunctionArgument(
+    { n: 3n, ok: true }, 'PairResult', artifactB.structs,
+  ) as Uint8Array : new Uint8Array();
+  const stringValue = utf8ToBin(tamperResult ? 'hello?' : 'hello!');
+  const correctStringValue = utf8ToBin('hello!');
+  const invocationResultA = resultKind === 'bytes'
+    ? scriptToBytecode([hexToBin('aabbff')])
+    : resultKind === 'string' ? scriptToBytecode([correctStringValue])
+    : resultKind === 'struct' ? correctStructValue : packedResult(5n);
+  const invocationResultB = resultKind === 'bytes'
+    ? scriptToBytecode([dynamicValue])
+    : resultKind === 'string' ? scriptToBytecode([stringValue])
+    : resultKind === 'struct' ? structValue : packedPairResult(4n, 12n);
+  const correctInvocationResultB = resultKind === 'bytes'
+    ? scriptToBytecode([hexToBin('aabbff')])
+    : resultKind === 'string' ? scriptToBytecode([correctStringValue])
+    : resultKind === 'struct' ? correctStructValue : packedPairResult(4n, 12n);
   const transcript = layer3.finalizeCompiledGraph(plan, {
-    0: binToHex(scriptToBytecode([bigIntToVmNumber(5n)])),
-    1: binToHex(packedPairResult(4n, 12n)),
+    0: binToHex(invocationResultA),
+    1: binToHex(correctInvocationResultB),
   }, layout.participantInputs, layout.returnOutputs,
-  [binToHex(packedResult(5n)), binToHex(packedPairResult(4n, 12n))], layout.projectionInputs);
-  const resultA = aggregateResult(5n);
-  const resultB = aggregatePairResult(tamperResult ? 5n : 4n, tamperTupleField ? 13n : 12n);
+  [binToHex(invocationResultA), binToHex(correctInvocationResultB)], layout.projectionInputs);
+  const resultA = resultKind === 'tuple' ? aggregateResult(5n) : scriptToBytecode([invocationResultA]);
+  const resultB = resultKind === 'tuple'
+    ? aggregatePairResult(tamperResult ? 5n : 4n, tamperTupleField ? 13n : 12n)
+    : scriptToBytecode([invocationResultB]);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
@@ -1933,6 +2027,57 @@ describe('Layer-3 compiled graph controller', () => {
   it('rejects substitution of a non-leading tuple result field', async () => {
     const { provider, transaction } = await buildReturning(false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('authenticates a dynamic bytes result consumed by its parent', async () => {
+    const {
+      provider, transaction, artifactA, artifactB, plan, resultA, resultB,
+    } = await buildReturning(false, false, 'bytes');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    expect(plan.invocations.map((invocation) => invocation.resultDependencies)).toEqual([[1], []]);
+    expect(layer3.decodeHiddenBatchResults(artifactA, plan.participants[0].batch, resultA))
+      .toEqual([{ row: 0, type: 'bytes', value: hexToBin('aabbff') }]);
+    expect(layer3.decodeHiddenBatchResults(artifactB, plan.participants[1].batch, resultB))
+      .toEqual([{ row: 0, type: 'bytes', value: hexToBin('aabbff') }]);
+  });
+
+  it('rejects substitution of a dynamic bytes producer result', async () => {
+    const { provider, transaction } = await buildReturning(true, false, 'bytes');
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('authenticates a dynamic string result consumed by its parent', async () => {
+    const {
+      provider, transaction, artifactA, artifactB, plan, resultA, resultB,
+    } = await buildReturning(false, false, 'string');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    expect(layer3.decodeHiddenBatchResults(artifactA, plan.participants[0].batch, resultA))
+      .toEqual([{ row: 0, type: 'string', value: 'hello!' }]);
+    expect(layer3.decodeHiddenBatchResults(artifactB, plan.participants[1].batch, resultB))
+      .toEqual([{ row: 0, type: 'string', value: 'hello!' }]);
+  });
+
+  it('rejects substitution of a dynamic string producer result', async () => {
+    const { provider, transaction } = await buildReturning(true, false, 'string');
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('authenticates a struct result consumed by its parent', async () => {
+    const {
+      provider, transaction, artifactA, artifactB, plan, resultA, resultB,
+    } = await buildReturning(false, false, 'struct');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+    expect(layer3.decodeHiddenBatchResults(artifactA, plan.participants[0].batch, resultA))
+      .toEqual([{ row: 0, type: 'PairResult', value: { n: 3n, ok: true } }]);
+    expect(layer3.decodeHiddenBatchResults(artifactB, plan.participants[1].batch, resultB))
+      .toEqual([{ row: 0, type: 'PairResult', value: { n: 3n, ok: true } }]);
+  });
+
+  it('rejects substitution of either struct result field', async () => {
+    const numeric = await buildReturning(true, false, 'struct');
+    await expect(numeric.provider.sendRawTransaction(numeric.transaction)).rejects.toThrow();
+    const boolean = await buildReturning(false, true, 'struct');
+    await expect(boolean.provider.sendRawTransaction(boolean.transaction)).rejects.toThrow();
   });
 
   it('executes A -> B -> A once per owner and reads B outState at final settlement', async () => {

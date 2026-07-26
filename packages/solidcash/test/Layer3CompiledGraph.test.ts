@@ -13,6 +13,50 @@ contract ${name}() {
 }`, { forceStateful: true, experimentalHiddenBatch: true });
 
 describe('layer3.planCompiledGraph', () => {
+  it('expands compiler-collapsed repeated calls into one owner-reusing worklist', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalRepeatedExternalBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const caller = compileString(`pragma solidcash >=0.8.0;
+      interface ICounter { function add(int amount); }
+      contract BatchCaller() {
+        function run(address counter, int first, int second) public {
+          ICounter(counter).add(first);
+          ICounter(counter).add(second);
+          require(first >= 0 && second >= 0);
+        }
+      }`, options);
+    const callee = compileString(`pragma solidcash >=0.8.0;
+      contract BatchCounter() {
+        int count;
+        function add(int amount) public {
+          this.count = this.count + amount;
+          require(amount >= 0);
+        }
+      }`, options);
+    const root = { artifact: caller, lockingBytecode: '51' };
+    const target = { artifact: callee, lockingBytecode: '52' };
+    const plan = layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'run',
+      args: [new Uint8Array([0x52]), 2n, 3n],
+      targets: { ICounter: target },
+    });
+
+    expect(plan.participants.map((participant) => participant.lockingBytecode)).toEqual(['51', '52']);
+    expect(plan.participants.map((participant) => participant.invocations)).toEqual([[0], [1, 2]]);
+    expect(plan.invocations.map(({ parent, callee, function: name, argsHex }) =>
+      ({ parent, callee, name, argsHex }))).toEqual([
+      { parent: null, callee: 0, name: 'run', argsHex: '01525253' },
+      { parent: 0, callee: 1, name: 'add', argsHex: '52' },
+      { parent: 0, callee: 1, name: 'add', argsHex: '53' },
+    ]);
+  });
+
   it('expands a compiler-authored worklist while acquiring each physical owner once', () => {
     const options = {
       forceStateful: true,

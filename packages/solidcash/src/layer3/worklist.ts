@@ -170,10 +170,43 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     active.add(key);
     for (const call of fn.externalCalls ?? []) {
-      if (call.selectorArrayVar || call.fnPtrCall || call.batchInvocations || call.opaqueReturn) {
+      if (call.selectorArrayVar || call.fnPtrCall || call.opaqueReturn) {
         throw new Error(
           `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
         );
+      }
+      if (call.batchInvocations) {
+        if ((call.occurrence ?? 'once') !== 'once') {
+          throw new Error(`layer3: batched callsite ${call.callsiteId} must be straight-line`);
+        }
+        const target = takeTarget(call);
+        const rows = [...call.batchInvocations].sort((a, b) => a.logicalIndex - b.logicalIndex);
+        rows.forEach((row, index) => {
+          if (row.logicalIndex !== index) {
+            throw new Error(`layer3: batched callsite ${call.callsiteId} has non-canonical logical indices`);
+          }
+          const targetFunction = target.artifact.abi.find((candidate) =>
+            candidate.selector?.toLowerCase() === row.selector.toLowerCase());
+          if (!targetFunction) {
+            throw new Error(
+              `layer3: batched callsite ${call.callsiteId} selector ${row.selector} is absent from its target`,
+            );
+          }
+          expand(
+            target,
+            targetFunction.name,
+            resolveArguments(
+              participant,
+              args,
+              { ...call, functionName: targetFunction.name, argSources: row.argSources },
+              functionName,
+              row.logicalIndex,
+              options.expressionArgument,
+            ),
+            invocation,
+          );
+        });
+        continue;
       }
       const occurrenceKind = call.occurrence ?? 'once';
       let count = 1;

@@ -60,7 +60,7 @@ Evidence labels:
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
 | Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
 | Existing pinned one-hop delegatecall semantics | MISSING from transcript mode | Transcript derivation rejects call modes. |
-| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, and single-invocation settled `msg.value` are VM-proven. `outState`, aggregate value attribution, and the full introspection table remain. |
+| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, and scalar `outState` at final owner settlement are VM-proven. Collection/chunk `outState` and the remaining introspection table remain. |
 
 ## 4. Compiler analysis and automatic derivation
 
@@ -1030,3 +1030,21 @@ graph handler.
 
 The compiler-summary row remains PARTIAL. Exact loop-bound expressions, target alternative sets,
 result producer/consumer IDs, and value-expression metadata remain.
+
+### 2026-07-26: Release E — per-invocation `msg.value` is value-threaded
+
+SCB1 value routes now carry a flagged, signed 64-bit logical satoshi delta in every row. The
+compiler emits the transfer recipient/amount sources from the same resolved transfer statements
+used by code generation; both the owner-local encoder and repeated-external builder derive the row
+value from literal or forwarded amounts and reject non-derivable expressions or disagreement.
+Participant execution and the graph projection parser consume the same flagged layout.
+
+The important implementation fix is in code generation rather than the encoding. An SCB1 handler
+may be outlined into an `OP_DEFINE` frame or inlined into `__scb1`. The latter must read the parsed
+`__scb_graph_msg_value` local directly; falling through to physical `msg.value` exposes the
+container's aggregate transaction delta. `HiddenBatchRelease4.test.ts` proves three rows observe
+`-100`, `-200`, and `-300` while the physical container transition is `-600`, and rejects a blob
+whose first row claims `-101` while its authenticated transfer argument remains `100`.
+
+This closes aggregate/per-invocation value attribution for compiler-authored satoshi transfers.
+The row remains PARTIAL only for the other introspection fields and collection/chunk `outState`.

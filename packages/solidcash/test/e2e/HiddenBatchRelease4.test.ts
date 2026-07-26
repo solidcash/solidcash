@@ -317,7 +317,9 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
       contract ValueBatchRelease4() {
         function pay(bytes recipient, bigint amount) public {
           this.transfer(recipient, amount);
-          require(amount >= 0);
+          // Each logical call sees its own effect, while the physical
+          // container observes the aggregate -600 satoshi transition.
+          require(msg.value == -amount && amount >= 0);
         }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
@@ -336,6 +338,38 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
     ]).send();
     const amounts = getTxOutputs(transaction).map((output) => output.amount);
     expect(amounts).toEqual(expect.arrayContaining([100n, 200n, 300n, 4400n]));
+  });
+
+  it('rejects a row value that differs from its compiler-authored transfer effect', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ValueBatchRelease4Hostile() {
+        function pay(bytes recipient, bigint amount) public {
+          this.transfer(recipient, amount);
+          require(msg.value == -amount && amount >= 0);
+        }
+      }
+    `, { forceStateful: true, experimentalHiddenBatch: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await provider.addUtxo(contract.getSatoshiContainerAddress(), {
+      txid: '76'.repeat(32), vout: 0, satoshis: 5000n,
+    });
+    const encoded = layer3.encodeHiddenBatch(artifact, [
+      { function: 'pay', args: [Uint8Array.of(0x51), 100n] },
+      { function: 'pay', args: [Uint8Array.of(0x52), 200n] },
+    ]);
+    const forged = encoded.blob.slice();
+    // Header(7) + selector/callsite/occurrence/args-length(12) + sign(1):
+    // change row 0's authenticated magnitude from 100 to 101 without changing args.
+    forged[20] = 101;
+    await expect(contract._batchRaw(forged)
+      .transfer(Uint8Array.of(0x51), 100n)
+      .transfer(Uint8Array.of(0x52), 200n)
+      .send()).rejects.toThrow();
   });
 });
 

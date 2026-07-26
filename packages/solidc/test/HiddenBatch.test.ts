@@ -369,7 +369,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
   });
 
-  it('limits graph msg.value to one effect-attributed invocation', () => {
+  it('admits bounded multi-row graph msg.value with compiler-authored effects', () => {
     const artifact = compileString(`contract ValueContext() {
       function pay(bytes recipient, bigint amount) public {
         this.transfer(recipient, amount);
@@ -381,9 +381,11 @@ describe('Release 4 compiler-hidden local batch', () => {
       experimentalMessageBusController: 'aa',
       experimentalMessageBusControllerCategory: '00'.repeat(32),
     });
-    expect(artifact.hiddenBatch?.maximumRows).toBe(1);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'pay')?.eligible)
-      .toBe(true);
+    expect(artifact.hiddenBatch?.maximumRows).toBe(8);
+    const handler = artifact.hiddenBatch?.handlers.find((candidate) => candidate.name === 'pay');
+    expect(handler?.eligible).toBe(true);
+    expect(handler?.usesMsgValue).toBe(true);
+    expect(handler?.transfers?.[0].amount).toEqual({ kind: 'forward', paramIndex: 1 });
   });
 
   it('admits the caller-authorized ERC-20 handler set', () => {

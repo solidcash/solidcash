@@ -1949,8 +1949,8 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('settles a compiler-authenticated satoshi effect inside a balanced graph block', async () => {
     const { provider, transaction, layout } = await buildValueEffectGraph();
-    expect(layout.controllerInput).toBe(4);
-    expect(layout.totalSlots).toBe(6);
+    expect(layout.controllerInput).toBe(11);
+    expect(layout.totalSlots).toBe(13);
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 

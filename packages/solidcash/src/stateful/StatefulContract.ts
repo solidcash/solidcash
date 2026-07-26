@@ -1356,6 +1356,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return result;
   }
 
+  private static _signedLogicalValue(value: bigint): Uint8Array {
+    const magnitude = value < 0n ? -value : value;
+    if (magnitude > 0x7fff_ffff_ffff_ffffn) {
+      throw new Error('SCB1 logical msg.value exceeds the signed 64-bit satoshi envelope');
+    }
+    return StatefulContract._concatBytes(
+      Uint8Array.of(value < 0n ? 1 : 0),
+      StatefulContract._uintLe(magnitude, 8),
+    );
+  }
+
   /**
    * Lean attach (ethers-v6 `new Contract(address, abi, runner)`). Resolve a deployed stateful contract from its
    * ADDRESS or category id + artifact + runner: a NetworkProvider is read-only (state / view reads), a Signer is
@@ -9596,6 +9607,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       value: FunctionArgument;
       encoded: Uint8Array;
     }>();
+    const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
         throw new Error('Repeated external SCB1 rows must use canonical contiguous callsite indices');
@@ -9634,16 +9646,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
       if (argsBlob.length > 0xffff) throw new Error(`External SCB1 row ${rowIndex} exceeds 65535 bytes`);
+      let logicalValue = 0n;
+      if (handler.usesMsgValue) {
+        if ((handler.transfers?.length ?? 0) === 0) {
+          throw new Error(
+            `External SCB1 msg.value for '${handler.name}' has no compiler-authored transfer`,
+          );
+        }
+        for (const transfer of handler.transfers!) {
+          const source = transfer.amount;
+          let amount: bigint;
+          if (source.kind === 'forward' && source.paramIndex !== undefined
+            && typeof args[source.paramIndex] === 'bigint') {
+            amount = args[source.paramIndex] as bigint;
+          } else if (source.kind === 'literal' && source.value !== undefined) {
+            amount = BigInt(source.value);
+          } else {
+            throw new Error(
+              `External SCB1 msg.value for '${handler.name}' has a non-derivable transfer amount`,
+            );
+          }
+          logicalValue -= amount;
+        }
+      }
       return StatefulContract._concatBytes(
         hexToBin(row.selector),
         StatefulContract._uintLe(BigInt(row.logicalIndex), 4),
         StatefulContract._uintLe(0n, 2),
         StatefulContract._uintLe(BigInt(argsBlob.length), 2),
+        ...(valueMode ? [StatefulContract._signedLogicalValue(logicalValue)] : []),
         argsBlob,
       );
     });
     const blob = StatefulContract._concatBytes(
-      hexToBin('53434231'), Uint8Array.from([1, 0, rows.length]), ...encodedRows,
+      hexToBin('53434231'), Uint8Array.from([1, valueMode ? 1 : 0, rows.length]), ...encodedRows,
     );
     if (blob.length > capability.maximumBlobBytes) {
       throw new Error(

@@ -19876,6 +19876,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., value]
    */
   private emitMsgValue(locationData: SingleLocationData): void {
+    // Inlined SCB1 handlers execute in the wrapper traversal, where the parsed
+    // row value is an ordinary local rather than an OP_DEFINE frame argument.
+    if (this.stack.includes('__scb_graph_msg_value')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_msg_value'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     if (this.currentFunction.graphEmissionHandler) {
       if (!this.stack.includes('__internal__handlerMsgValue')) {
         throw new Error(

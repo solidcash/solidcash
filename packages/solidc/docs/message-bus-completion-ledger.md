@@ -152,19 +152,30 @@ offset was one real bug in the fixture and there is a second, separate reason th
 boundary is therefore not disproven - but it is also not established, because the evidence originally offered
 for it was a transaction that could never have validated.
 
-`0x51` has since been decoded, and it identifies a REAL fault - so the boundary is justified, though not for
-the reason first written.
+`0x51` was investigated further. The result CORRECTS the paragraph previously written here, which claimed a
+specific mechanism on evidence that did not support it.
 
-Dumping the encoded batch rows shows arguments are minimal SCRIPT pushes, not raw VM numbers: the amounts 10
-and 5 appear as `0x5a` and `0x55`, which are `OP_10` and `OP_5`. By the same encoding `0x51` is `OP_1`, the
-number 1 - and 1 is the `moves` counter after the FIRST row only. The batch runs two rows and must settle
-`moves = 2`.
+What is now established:
 
-So a cloned handler flushes its SCALAR journal per row instead of once after the whole batch, while its
-collection journal correctly settles once. That is the same class of fault as the original allowance bug: two
-rows demanding two different post-states from one output. It is a genuine compiler defect, and
-`cloned-handler-scalar-and-collection-journal-not-enabled` is the correct fail-closed response until the scalar
-journal flushes once per owner like the collection journal does.
+1. The boundary is JUSTIFIED. With the corrected `slotIndex + 2` offset and the boundary lifted, the shape still
+   fails BCH-2026 validation: `mandatory-script-verify-flag-failed`, OP_VERIFY, input index 1. So this is a real
+   unsupported shape and failing closed is correct, whatever the mechanism turns out to be.
+2. Batch arguments encode as minimal SCRIPT pushes, not raw VM numbers. Verified against known values: the
+   amounts 10 and 5 appear in the args blob as `0x5a` and `0x55`, which are `OP_10` and `OP_5`.
+3. What `0x51` MEANS is still open. If that stack item is args-derived it is `OP_1`, the number 1. If it is a
+   commitment value field it is the number 81, since commitments hold VM numbers rather than pushes. Neither 1
+   nor 81 is an intended settled value (85, 10, 5) or the counter (2), so either way it is wrong - but the two
+   readings imply different faults. The item sits beside a slot, an entry address and a next-key, which looks
+   like a commitment, but that was not confirmed.
+
+An earlier version of this section asserted reading (3) as OP_1 and concluded the scalar journal flushes per row.
+That conclusion was retracted: the args decode in (2) is solid, but extending it to the stack item in (3) assumed
+the item's provenance instead of checking it.
+
+Also worth recording as a trap, because it briefly produced a wrong "it settles" result: the fixture BUILDS a
+transaction and returns it; VM validation only happens at `sendRawTransaction`. Wrapping the builder alone in a
+try/catch passes while proving nothing. This is the construction-versus-validation confusion the handoff warns
+about, reached from the positive direction.
 
 Note the method: three rounds of reasoning about stack structure produced two retracted diagnoses, while two
 rounds of dumping actual values produced first the offset bug and then this. Trace values.

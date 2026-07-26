@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. A CLONED handler that writes both scalar state and a collection is rejected at compile time (`cloned-handler-scalar-and-collection-journal-not-enabled`) - the scalar and collection journals disagree at their exit. Un-cloned handlers settle both together, which is why `mint`/`burn` work. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. `cloned-handler-scalar-and-collection-journal-not-enabled` currently rejects a cloned handler that writes both scalar state and a collection, but see the 2026-07-26 correction below: the fixture that motivated it had a wrong entry offset, so that boundary is SUSPECT and must be re-validated before it is trusted. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -129,6 +129,34 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: CORRECTION - the two-journal boundary rests on a broken fixture
+
+Tracing the VALUE the covenant rejects, instead of reasoning about structure for a fourth time, found the fault
+in my own fixture rather than the compiler.
+
+`buildScalarPlusEntryBatchGraph` passed each entry's input offset as `slotIndex + 1`, copied from a token with
+no scalar state. This token HAS scalar state, so its data NFT occupies the slot between the owner's master and
+its entries and the correct offset is `slotIndex + 2`. The covenant was being told to authenticate the wrong
+inputs, and the first thing it rejected was an output-address comparison
+(`aa200830e6...` against `aa20f8495d...`).
+
+Correcting the offset moved the failure from VM state 518 of 520 to 5481 of 5483 - the covenant now executes
+essentially to completion. That does not by itself prove the shape settles, and the remaining rejection was not
+chased to ground before the instrumentation was reverted. What it does mean is that
+`cloned-handler-scalar-and-collection-journal-not-enabled` was derived from a fixture that could never have
+passed for reasons unrelated to journalling, so the boundary is SUSPECT.
+
+Concretely, before that boundary is trusted or removed:
+
+1. rebuild the fixture with the corrected offset and chase the remaining rejection at state 5481;
+2. if it settles, remove the boundary and the four eliminated hypotheses become moot - there was no
+   two-journal bug, only a mis-built transaction;
+3. if it still fails for a real reason, re-derive the boundary from that reason rather than this one.
+
+The boundary is fail-closed, so leaving it in place while suspect costs expressiveness, not soundness. But it
+should not be described as a known compiler limitation until step 1 is done. Recorded because I asserted the
+opposite twice.
 
 ### 2026-07-26: CORRECTION - the call-site ordering diagnosis was wrong
 

@@ -926,3 +926,27 @@ These results do not make parameter-authorized allowance examples equivalent to 
 logical caller. Merely enabling the non-graph repeated-callee route would be unsound: it can prove a
 declared sender category is co-spent, but it does not independently prove that this owner emitted the
 callee's complete batch.
+
+### 2026-07-26: Release C — fixed-array entries and stateless caller derivation
+
+Fixed-size state arrays use the existing entry-NFT collection authority; they are not scalar
+commitment fields. The compiler now admits the bounded repeated-owner shape in which every row
+addresses the same runtime array index. It unrolls the two-row route, invokes a compiler-owned
+internal clone through the collection journal, reads the entry once, observes writes in order, and
+flushes one final entry value. `RepeatedExternalBatchRelease5.test.ts` settles two writes to index
+`1` and reads the final value through the ordinary array getter on the BCH-2026 VM.
+
+The route deliberately has one global index witness. Two rows naming different indices are therefore
+not silently aliased into one physical entry: SDK construction rejects the ambiguous witness before
+the transaction is built. Supporting distinct per-row indices remains a wider resource-layout task,
+not part of this admitted class.
+
+The same fixture exposed and closes an SDK liveness bug. `hasNothingToDerive` previously ignored
+external-call and external-`outState` groups, so a caller with no local state/effects skipped the
+callee derivation probe and constructed stale post-state (which the covenant rejected). Those groups
+now independently require derivation, and the positive fixture intentionally gives the caller no
+local state. This proves external state settlement does not depend on an unrelated caller write.
+
+This moves fixed arrays from unimplemented to PROVEN for the named same-entry repeated-call class.
+It does not close the broader resource row: per-row array entries, dynamic chunks/arrays, token
+containers, and runtime-varying aliases remain.

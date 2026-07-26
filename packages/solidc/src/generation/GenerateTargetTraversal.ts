@@ -5922,7 +5922,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // leaving the surrounding frame byte-for-byte in its pre-call order.
     for (let i = 0; i < targetJournalContextNames.length; i++) {
       const originalName = targetJournalContextNames[i];
-      this.emitReplace(this.getStackIndex(originalName), node);
+      // The VM stack already contains the callee's declared return tuple below
+      // the returned journal contexts, but those values are added to the
+      // compiler's tracked stack only after every context is consumed. Account
+      // for that temporarily untracked tuple when locating the caller-owned
+      // journal slot. Without this offset, a returning collection-journal
+      // helper which also threads scalar state replaces its first declared
+      // return, leaving the scalar context to be captured as an entry value.
+      this.emitReplace(
+        this.getStackIndex(originalName) + targetFunc.returnTypes.length,
+        node,
+      );
       this.popFromStack();
     }
     for (let i = 0; i < targetFunc.returnTypes.length; i++) {

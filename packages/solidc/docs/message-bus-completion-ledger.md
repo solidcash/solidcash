@@ -52,7 +52,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Direct wrapper and transcript wrapper invoke the same compiled business handler | PROVEN for admitted graph handlers | `Layer3ReleaseA.test.ts` also pins state-layout equivalence between the direct and hidden-batch compilations of one contract.  The graph path executes the compiler-owned SCB1 route and original handler. Compiler-evaluated external-call expressions execute at their reached callsites and exact-row substitution fails in the BCH-2026 VM. |
-| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection now share one entry-slot union and one journal pool (`Layer3 Release B`), with compiler-supplied entry identity, so a cross-keyed handler such as `transferFrom` unions with its siblings. Real scalar and admitted collection handlers execute through SCB1; the older arithmetic DSL is no longer the compiled-graph execution path, but eligibility is still narrower than the normative class. |
+| Arbitrary eligible scalar/mapping/collection method bodies execute against one journal | PARTIAL | Several handlers over one collection share one entry-slot union and journal pool (`Layer3 Release B`), with compiler-supplied entry identity. A cloned handler now threads scalar state and multiple collection values through one call without cross-journal corruption. Dynamic/chunked resource classes remain narrower than the normative class. |
 | Modifiers, `require`, `revert`, and normal control flow preserve source semantics | PROVEN for the admitted handler class | `Layer3ReleaseA.test.ts` settles a `msg.sender`-authorizing modifier, string and custom-error `revert`, `while`, `do/while`, `break`, `continue` and early return on the BCH-2026 VM, each paired with a hostile case of identical transaction shape - a different authorized caller, a reached revert, or an off-by-one settlement. Handler shapes outside SCB1 eligibility are unchanged and still fail closed. |
 | Calls dispatch by selector and canonical ABI arguments | PROVEN for the admitted non-returning static call class | Compiler-derived native rows bind exact selector/argument prefix. |
 | Producer-authenticated ABI return values | PROVEN for one common scalar return | Compiled producer results are bound through return-event vectors and invocation bytes; forged producer commitments fail in the VM. Multiple/heterogeneous returns remain. |
@@ -79,7 +79,7 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | Every dirty resource has one authenticated transition; clean resources are preserved | PROVEN for current balanced typed resources | Hostile state/value/token/capability tests. |
-| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. `cloned-handler-scalar-and-collection-journal-not-enabled` rejects a cloned handler that writes both scalar state and a collection. That rejection is OPERATIONALLY JUSTIFIED: with the boundary lifted and the fixture's entry offset corrected, the shape still fails BCH-2026 validation, so admitting it would produce unusable transactions. The MECHANISM is not established, and this is NOT a demonstrated platform boundary - see the current-state block opening section 9. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
+| Mapping insertion/deletion and dynamic chunks use existing backend proofs | PARTIAL | Insertion on a cold key, nested mappings with dynamic keys, and `delete m[k]` are admitted; `Layer3ReleaseA.test.ts` settles a delete as the entry default and rejects a settlement that leaves the value in place. Scalar-plus-collection cloned handlers now settle with independent hostile checks for both post-state classes. Chunked values, dynamic arrays, token containers and runtime-varying aliases remain. |
 | Ordered ERC-20 transfer/transferFrom/mint/burn/approve semantics | PROVEN for the admitted handler class | All five handlers settle through the compiled graph with hostile BCH-2026 negatives: `transfer`/`transferFrom`/`approve` on the caller key, `mint` on balance-versus-supply disagreement, `burn` on an insufficient holder balance. *Ordered* is now covered too: `Layer3CompiledGraphController.test.ts` settles two different handlers over one collection in one owner batch and rejects a batch that omits the second handler's effect. Handler shapes outside SCB1 eligibility still fail closed. |
 | Satoshi/token effects bind recipient, value/category/capability/amount | PROVEN for current fixed effect slots | Balanced criteria and review regressions. |
 | Event identity/topic/data and exact occurrence are authenticated | PARTIAL | Current bounded event rows and standard event NFT are proven, and `Layer3CompiledGraphController.test.ts` now settles a three-argument event and rejects both a reordering of its arguments and publication under a second declared topic of identical arity. Non-scalar argument types and more than one event per handler are still unproven. |
@@ -129,6 +129,32 @@ its required external evidence, and the experimental/default-off marker can be r
 weakening any invariant.
 
 ## 9. Implementation log
+
+### 2026-07-26: scalar-plus-collection cloned handlers fixed
+
+The previously guarded shape is now admitted and VM-proven. The callee returned the correct stack:
+
+```text
+top -> scalar context, recipient entry value, source entry value
+```
+
+The corruption occurred in `visitUserFunctionCall`. The runtime stack already held the declared return tuple
+below the returned scalar-journal context, but compiler stack tracking did not add those declared returns until
+after replacing caller-owned journal slots. Consequently `emitReplace(getStackIndex(originalName))` addressed
+the original scalar slot too shallow by `targetFunc.returnTypes.length`, replaced a collection return, and left
+the scalar value to be captured into an entry cache.
+
+The replacement depth now includes the temporarily untracked declared-return count. The compiler-only guard
+`cloned-handler-scalar-and-collection-journal-not-enabled` is removed. The corrected balanced fixture uses the
+data-NFT-aware entry offset and proves:
+
+- two rows update one scalar and three collection entries;
+- a forged scalar post-state fails;
+- a forged collection post-state fails.
+
+`HiddenBatch.test.ts` passes 23/23 and `Layer3CompiledGraphController.test.ts` passes 41/41. Investigation
+entries below are retained as audit history but are superseded wherever they describe this shape as guarded or
+unsettleable.
 
 ### 2026-07-26: ROOT CAUSE PROVEN - the scalar value leaks into the entry commitment
 

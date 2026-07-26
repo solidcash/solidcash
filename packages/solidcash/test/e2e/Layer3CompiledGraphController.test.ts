@@ -1607,7 +1607,9 @@ async function buildMixedHandlerBatchGraph(mode: 'honest' | 'forge-second-row' =
   return { provider, transaction: raw(tx), layout };
 }
 
-async function buildScalarPlusEntryBatchGraph() {
+async function buildScalarPlusEntryBatchGraph(
+  mode: 'honest' | 'forge-scalar' | 'forge-entry' = 'honest',
+) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -1705,7 +1707,7 @@ async function buildScalarPlusEntryBatchGraph() {
   ] as FunctionArgument[];
   entries.forEach((entry, slotIndex) => {
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
+    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 2), decoded.nextKey, -1n);
   });
   tokenRouteArgs.push(0n);
   const settled = new Map([
@@ -1747,7 +1749,9 @@ async function buildScalarPlusEntryBatchGraph() {
       amount: 0n,
       nft: {
         capability: 'mutable',
-        commitment: buildInitialStateCommitments(tokenArtifact.stateLayout!, { moves: 2n })[0],
+        commitment: buildInitialStateCommitments(
+          tokenArtifact.stateLayout!, { moves: mode === 'forge-scalar' ? 1n : 2n },
+        )[0],
       },
     },
   });
@@ -1762,7 +1766,13 @@ async function buildScalarPlusEntryBatchGraph() {
         nft: {
           capability: 'mutable',
           commitment: binToHex(encodeEntryCommitment(
-            decoded.slot, decoded.nextKey, bigIntToVmNumber(settled.get(binToHex(decoded.slot))!),
+            decoded.slot,
+            decoded.nextKey,
+            bigIntToVmNumber(
+              mode === 'forge-entry' && binToHex(decoded.slot) === binToHex(keyToSlot(first))
+                ? 9n
+                : settled.get(binToHex(decoded.slot))!,
+            ),
           )),
         },
       },
@@ -2024,12 +2034,21 @@ describe('Layer-3 compiled graph controller', () => {
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   });
 
-  it('refuses to batch a cloned handler that writes both scalar state and a collection', async () => {
-    // The scalar journal and the collection journal disagree at their exit for a CLONED handler, so the
-    // settled entry is rejected by the covenant. Rejecting at construction is the fail-closed behaviour; an
-    // un-cloned handler (Release A's mint/burn) still settles both writes together.
-    await expect(buildScalarPlusEntryBatchGraph())
-      .rejects.toThrow(/does not advertise the compiler-hidden SCB1 batch route|hiddenBatch/);
+  it('settles a cloned handler that writes both scalar state and a collection', async () => {
+    const { provider, transaction } = await buildScalarPlusEntryBatchGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a forged scalar post-state from a scalar-plus-collection handler', async () => {
+    const { provider, transaction } = await buildScalarPlusEntryBatchGraph('forge-scalar');
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  });
+
+  it('rejects a forged entry post-state from a scalar-plus-collection handler', async () => {
+    const { provider, transaction } = await buildScalarPlusEntryBatchGraph('forge-entry');
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   });
 
 });

@@ -214,6 +214,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.type === PrimitiveType.STRING
     || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
+  const fixedArrayCollections = new Set(contract.collections.filter((collection) =>
+    collection.type instanceof ArrayType && collection.type.bound !== undefined)
+    .map((collection) => collection.name));
   const disallowedModifiers = new Set([
     FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
     FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
@@ -514,6 +517,14 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     });
     return nested;
   });
+  const fixedArrayMode = eligible.some((fn) => {
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
+        || node instanceof MappingDeleteNode) && fixedArrayCollections.has(node.name)) found = true;
+    });
+    return found;
+  });
   let resultType: Type | undefined;
   if (resultMode) {
     resultType = eligible.find((fn) => fn.returnTypes.length > 0)?.returnTypes[0];
@@ -568,6 +579,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   let resourceHandlerInvokeName: string | undefined;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
+  const fixedArrayHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
 
   // A `msg.sender` mapping key blocks value-threaded journalling: the collection-journal lowering only accepts
   // parameter-keyed entries, so without this the batched clone re-reads and re-flushes the same physical entry
@@ -727,12 +739,36 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     graphHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
+  for (const sourceHandler of eligible) {
+    if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
+      || siblingHandlerInvokeNames.has(sourceHandler)) continue;
+    let touchesFixedArray = false;
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
+        || node instanceof MappingDeleteNode) && fixedArrayCollections.has(node.name)) {
+        touchesFixedArray = true;
+      }
+    });
+    if (!touchesFixedArray) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_array_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.forceCollectionJournalPool = true;
+    fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
   const buildDecodeAndCall = (resultIndex?: number, rowIndex?: number): string =>
     eligible.map((fn, handlerIndex) => {
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
     const invokeName = fn === resourceShapedHandler
       ? resourceHandlerInvokeName!
-      : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn) ?? fn.name);
+      : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
+        ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
     const invoke = (args: string): string => resultIndex === undefined
       ? `${invokeName}(${args});`
       : `__scb_result_${resultIndex} = ${invokeName}(${args});`;
@@ -823,7 +859,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
   const parser = resourceShapedHandler
     ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
       `{ ${parseOneRow(String(row), undefined, row)} }`).join(' ')
-    : eventMode || resultMode || valueEffectMode || nestedCollectionMode
+    : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode ? row : undefined, row)} }`).join(' ')
     : `for (bigint row = 0; row < rowCount; row = row + 1) {

@@ -4,9 +4,12 @@ import {
   decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
+import { encodePushdataValue } from '@solidcash/utils';
 import { Contract, StatefulContract } from '../../src/index.js';
+import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
+import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 
 const INTERFACE = `
 interface ICounter {
@@ -102,6 +105,70 @@ async function deploy(options: { calleeBatch?: boolean } = {}) {
   return {
     provider, caller, callee, calleeCategory, callerCategory, callerInner, calleeArtifact,
   };
+}
+
+async function deployFixedArray() {
+  const provider = createTestProvider();
+  const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+    contract FixedArrayTarget() {
+      bigint[3] slots;
+      function set(bigint index, bigint value) public {
+        this.slots[index] = value;
+        require(index >= 0 && index < 3 && value >= 0);
+      }
+      function check(bigint index, bigint expected) public {
+        require(this.slots[index] == expected);
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+  const calleeInner = new Contract(calleeArtifact, [], { provider });
+  const { categoryId: calleeCategory } = await setupStatefulUtxos(
+    provider, calleeInner, calleeArtifact.stateLayout!, {}, { saltContract: true },
+  );
+  const callee = StatefulContract.withCategory(calleeInner, calleeCategory);
+  await provider.addUtxo(
+    getEntryNftAddress(callee.inner, calleeCategory, 'slots'),
+    randomUtxo({
+      satoshis: 10000n,
+      token: {
+        category: calleeCategory,
+        amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(Uint8Array.from([
+            ...encodePushdataValue(1n, 'bigint'),
+            ...encodePushdataValue(0n, 'bigint'),
+          ])),
+        },
+      },
+    }),
+  );
+  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+    interface IFixedArrayTarget { function set(bigint index, bigint value); }
+    contract FixedArrayCaller(bytes target) {
+      bigint runs;
+      function setSame(bigint index, bigint first, bigint second) public {
+        IFixedArrayTarget(target).set(index, first);
+        IFixedArrayTarget(target).set(index, second);
+        this.runs = this.runs + 1;
+        require(true);
+      }
+      function setDifferent(bigint firstIndex, bigint secondIndex) public {
+        IFixedArrayTarget(target).set(firstIndex, 7);
+        IFixedArrayTarget(target).set(secondIndex, 11);
+        this.runs = this.runs + 1;
+        require(true);
+      }
+    }`, { forceStateful: true, experimentalRepeatedExternalBatch: true });
+  const callerInner = new Contract(
+    callerArtifact, [calleeInner.withCategory(hexToBin(calleeCategory)).lockingBytecode], { provider },
+  );
+  const { categoryId: callerCategory } = await setupStatefulUtxos(
+    provider, callerInner, callerArtifact.stateLayout!, { runs: 0n }, { saltContract: true },
+  );
+  const caller = StatefulContract.withCategory(callerInner, callerCategory, {
+    externals: { IFixedArrayTarget: callee },
+  });
+  return { caller, callee };
 }
 
 describe('Release 5 repeated external callee batch SDK E2E', () => {
@@ -208,6 +275,18 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
 
     await caller.checkRuns(1n).send();
     await callee.check(5n).send();
+  });
+
+  it('settles repeated writes to one fixed-array entry with one final flush', async () => {
+    const { caller, callee } = await deployFixedArray();
+    await caller.setSame(1n, 7n, 11n).send();
+    await callee.check(1n, 11n).send();
+  });
+
+  it('rejects aliasing two fixed-array indices into the one-entry admitted route', async () => {
+    const { caller } = await deployFixedArray();
+    await expect(caller.setDifferent(1n, 2n).send())
+      .rejects.toThrow(/collection witness '__scb_key_slots_0' is ambiguous/);
   });
 
   it('fails closed before transaction construction when the callee lacks SCB1 capability', async () => {

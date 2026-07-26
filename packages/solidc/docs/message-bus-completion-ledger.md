@@ -160,11 +160,13 @@ bound; optimizing that bound is a later deployment task.
 A second measured probe rules out treating fixed arrays as one scalar data-NFT value. In the current storage
 model `T[N]` is a collection with one authenticated entry NFT per index. A route with runtime index `i` therefore
 needs a per-row physical entry descriptor and canonical alias/dedup across equal indices. Cloning the handler
-through the existing single-entry journal correctly removes the original missing-descriptor crash, but the
-generic parser loop then attempts a write at a runtime-discovered entry slot and fails closed. The correct
-implementation is the same descriptor-union mechanism as mappings, extended from the current
-shared-plus-row-local two-entry shape to a bounded per-row key table; scalarizing the whole array would change
-the established storage authority and is rejected.
+through the existing single-entry journal and unrolling the bounded route now implements the equal-index class:
+two logical writes to index `i` consume one entry NFT, observe ordered read-your-writes, and flush the second
+value once. A BCH-2026 SDK test proves settlement; a second test supplies two different indices and is rejected
+as an ambiguous `__scb_key_slots_0` witness before construction. The remaining general class is the same
+descriptor-union mechanism as mappings, extended from the current shared-plus-row-local two-entry shape to a
+bounded per-row key table; scalarizing the whole array would change the established storage authority and is
+rejected.
 
 ### 2026-07-26: scalar-plus-collection cloned handlers fixed
 

@@ -201,10 +201,25 @@ Two facts fall out:
    pushdata-encoded. That is precisely the observed leak, and it explains why the value is the whole scalar RHS
    rather than a corrupted collection value.
 
-So the defect is a stack-frame accounting bug in the unrolled batch route, not a journal-exit design problem.
-The fix is to scope/pop the per-row locals (or make the cache-local resolution immune to the duplicate frame);
-it is NOT to change either journal's exit behaviour. Not yet attempted - the per-row scoping needs care, since
-the duplicate frame may be load-bearing for row-local key witnesses.
+PARTIAL RETRACTION of the paragraph that followed this in an earlier revision: I concluded from (1) that the
+per-row locals are "never popped" and proposed scoping them as the fix. That sub-hypothesis is NOT supported.
+`GenerateTargetTraversal` has no `visitBlock`; block-scoped locals deliberately persist until the function-end
+`cleanStack`. So two live copies of a row frame in an unrolled route are EXPECTED, and their presence is not by
+itself evidence of a bug. The generated source already wraps each unrolled row in its own `{ }`.
+
+What survives from (1) and (2): the adjacency in (2) is a fact, and the leaked value is exactly the element one
+slot deeper than `__cj_cache_1`. That is consistent with the tracked stack model holding one more entry than
+the real VM stack at that point, which would make a name-based lookup resolve one slot short. But I did NOT
+measure the real runtime depth against the model depth, so this remains a hypothesis with a mechanism, not a
+demonstrated cause.
+
+The next step is therefore a MEASUREMENT, not a patch: compare the tracked `this.stack.length` at the upsert
+against the actual VM stack depth at the corresponding instruction pointer in a `vm.debug()` trace. If they
+differ by one, the divergence point is the bug. Do not patch scoping on the strength of the duplicate frame
+alone - that path is now checked and it is a dead end.
+
+Still true and unchanged: this is stack-frame accounting in the batch route, not a journal-exit design problem,
+so the fix should not change either journal's exit behaviour.
 
 SECOND TRAP, worse than the first, and worth reading before any similar investigation: commit a6d602cc was
 intended to be docs-only but ran `git add -A` while the guard was still temporarily lifted for probing. It

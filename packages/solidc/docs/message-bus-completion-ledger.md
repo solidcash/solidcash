@@ -103,7 +103,7 @@ Evidence labels:
 |---|---|---|
 | BCH-2026 only and standard-policy compliant | PROVEN for current fixtures | BCHN regtest standard-policy suite. |
 | Concrete parser/covenant overhead and realistic corpus fit measured | PARTIAL | Fixed generators have pinned costs, and cross-function outlining brought the caller-authorized token to 4,506 redeem bytes and the five-function corpus ERC-20 inside the 10,000-byte limit at 4,494. Op-cost density is now the closer constraint (N=8 participants sit at 36.5% of budget). The candidate variable transcript parser has still not been built or measured. |
-| Participant-count contention/retry behavior measured | MISSING | No empirical stale-outpoint study. |
+| Participant-count contention/retry behavior measured | PROVEN as reproducible engineering model | `simulateLayer3Contention` measures the multiplicative N-owner stale-outpoint probability with deterministic Monte Carlo evidence, exact theoretical comparison, and bounded retry-window backoff. CI pins N=2/N=8 degradation and retry improvement. Production telemetry remains a graduation input, not an implementation dependency. |
 | Corpus demand justifies freezing the general protocol | MISSING/PROCESS | Requires product evidence, not only tests. |
 | Independent covenant review | PROCESS | Review package exists; independent sign-off is absent. |
 | Feature default-on | MISSING by design | Must remain experimental until every applicable gate above is closed. |
@@ -1151,3 +1151,16 @@ The compiled graph suite preflights a complete shared-alias ERC-20 settlement su
 proves that a false alias declaration fails specifically at participant input 1. This closes the
 previous gap where individual fixtures exercised the VM but no production general-graph API
 required a complete final probe.
+
+### 2026-07-26: Release J — reproducible contention and retry evidence
+
+The SDK now includes a deterministic contention model for atomic N-owner acquisition. It reports
+empirical and exact theoretical settlement probability, failures, and mean successful-attempt
+count while varying participant activity, participant count, retry count, and retry-window
+backoff. The model keeps contention explicitly in the liveness domain; no probability affects
+covenant acceptance.
+
+CI exercises 100,000 deterministic trials against the exact `(1-p)^N` result, compares two versus
+eight participants, and proves bounded retries improve liveness. Real deployment telemetry may
+refine the activity inputs later, but the implementation/review gate is now reproducible rather
+than an undocumented qualitative warning.

@@ -166,13 +166,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     functionName: string,
     args: readonly FunctionArgument[],
     parent: number | null,
+    callMode?: 'call' | 'staticcall',
   ): void => {
     if (invocations.length >= maximum) {
       throw new Error(`layer3: symbolic worklist exceeds its ${maximum}-invocation bound`);
     }
     const owner = intern(participant);
     const invocation = invocations.length;
-    invocations.push({ parent, callee: owner, function: functionName, args });
+    invocations.push({ parent, callee: owner, function: functionName, args, ...(callMode && { callMode }) });
     const fn = functionAbi(participant, functionName);
     const key = `${owner}:${functionName}`;
     if (active.has(key)) {
@@ -234,7 +235,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           || binToHex(encodedTarget) !== resolved.participant.lockingBytecode.toLowerCase()) {
           throw new Error(`layer3: raw callsite ${call.callsiteId} target proof disagrees with calldata owner`);
         }
-        expand(resolved.participant, resolved.function, resolved.args, invocation);
+        expand(
+          resolved.participant,
+          resolved.function,
+          resolved.args,
+          invocation,
+          call.callMode === 'staticcall' ? 'staticcall' : 'call',
+        );
         continue;
       }
       if (call.batchInvocations) {
@@ -266,6 +273,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               options.expressionArgument,
             ),
             invocation,
+            call.callMode === 'staticcall' ? 'staticcall' : 'call',
           );
         });
         continue;
@@ -320,6 +328,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               options.expressionArgument,
             ),
             invocation,
+            call.callMode === 'staticcall' ? 'staticcall' : 'call',
           );
         }
         continue;
@@ -333,6 +342,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             participant, args, call, functionName, reached, options.expressionArgument,
           ),
           invocation,
+          call.callMode === 'staticcall' ? 'staticcall' : 'call',
         );
       }
     }

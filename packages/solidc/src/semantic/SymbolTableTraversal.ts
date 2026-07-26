@@ -5747,7 +5747,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // and returns its REAL integrity-bound return (identity + return-event), where `payload` is built with
         // abi.encodeWithSignature/Selector. The statement form `addr.call(payload);` stays fire-and-forget
         // (LowLevelCallStatementNode, built in AstBuilder); the co-spend is supplied via .withExternalCall().
-        if (methodName === 'call' && node.parameters.length === 1) {
+        if ((methodName === 'call' || methodName === 'staticcall') && node.parameters.length === 1) {
           const addrId = new IdentifierNode(varName);
           addrId.location = node.identifier.location;
           addrId.fromModifier = recvFromMod;
@@ -5767,7 +5767,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               hasReturnValues: true,
               returnTypes: [new BytesType()],
               returnEventSignature: '_Return___raw__(bytes)',
-              callMode: ExternalCallMode.REGULAR,
+              callMode: methodName === 'staticcall'
+                ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
             };
             callNode.location = node.location;
             return callNode;

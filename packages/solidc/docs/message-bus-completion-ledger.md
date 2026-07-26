@@ -71,7 +71,7 @@ Evidence labels:
 | SDK expands a graph, reuses owners, stabilizes resources and acquires each input once | PARTIAL | `deriveCompiledGraphPlan` now expands the compiler-authored singular/static call closure, interns exact owner locking bytecodes, emits repeated logical invocations against one physical owner block, and fails closed on runtime occurrence or recursive expansion without a bound. Dynamic occurrence proofs and resource/effect fixed-point stabilization remain. |
 | Direct, repeated and transitive calls derive without hand-authored rows | PROVEN for admitted class | `deriveNativeExternalCalls` runtime-branded tables and VM tests. |
 | Expressions, dynamic targets, loops, function pointers and batches | PARTIAL | The owner-reusing worklist accepts VM-probed expression values, conditional/loop occurrence counts, fixed-method and varying-selector state-array target runs, received single function pointers, and compiler-collapsed repeated-call batches. Dynamic calls require an explicit resolver result for every reached occurrence and validate the selected function against the target ABI; absence fails closed. For received pointers, the compiler-authored graph row copies the covenant-bound address and selector companion rather than accepting either from the SDK. A complete BCH-2026 transaction now executes the received-pointer row and rejects independent target and selector substitutions. Batch logical indices and selectors are canonicalized against the target ABI, producing two ordered logical rows over one physical owner. General higher-order pointers and a spend-level hostile proof for varying-selector arrays remain open. |
-| Returning, opaque, signature-bearing and low-level calls | PARTIAL | Typed scalar/tuple/bytes/string/struct returns and transitive result consumption are proven above. A compiler-hidden row verifies an authentic `datasig`, mutates journaled state, rejects a byte-substituted proof, and settles on the BCH-2026 VM. Scalar transaction signatures are admitted in controller mode as typed, per-handler/per-row route witnesses excluded from the rooted SCB1 argument vector, removing the root/signature fixed point. The SDK signs the compiler-published internal `OP_INVOKE` body actually covered by `checkSig`; honest root and forwarded A -> B signatures pass, different keys reject, and caller/callee emission omits exactly the same typed signature fields while retaining transcript-bound targets, selectors, and pubkeys. Two scalar ECDSA witnesses also pass `checkMultiSig` against three rooted pubkeys while an unknown signer rejects. A canonical `address.call(selector || ABI args)` is resolved to one typed child edge: the compiler binds the exact target, mode, selector, argument tail, and opaque result blob; the worklist re-encodes the resolver's typed ABI proof and rejects target or calldata disagreement; the honest BCH-2026 transaction passes and result substitution rejects. First-class `sig[]`, call options, `delegatecall`, and the remaining general low-level shapes remain fail-closed. |
+| Returning, opaque, signature-bearing and low-level calls | PARTIAL | Typed scalar/tuple/bytes/string/struct returns and transitive result consumption are proven above. A compiler-hidden row verifies an authentic `datasig`, mutates journaled state, rejects a byte-substituted proof, and settles on the BCH-2026 VM. Scalar transaction signatures are admitted in controller mode as typed, per-handler/per-row route witnesses excluded from the rooted SCB1 argument vector, removing the root/signature fixed point. The SDK signs the compiler-published internal `OP_INVOKE` body actually covered by `checkSig`; honest root and forwarded A -> B signatures pass, different keys reject, and caller/callee emission omits exactly the same typed signature fields while retaining transcript-bound targets, selectors, and pubkeys. Two scalar ECDSA witnesses also pass `checkMultiSig` against three rooted pubkeys while an unknown signer rejects. Canonical option-free `address.call/staticcall(selector || ABI args)` is resolved to one typed child edge: the compiler binds the exact target, mode, selector, argument tail, and opaque result blob; the worklist re-encodes the resolver's typed ABI proof and rejects target or calldata disagreement; honest BCH-2026 transactions pass and result substitutions reject. First-class `sig[]`, call options, `delegatecall`, and the remaining general low-level shapes remain fail-closed. |
 | Final complete VM probe for every input | PROVEN | `preflightLayer3Transaction` evaluates every input of the exact finalized transaction with the provider's BCH-2026 consensus limits before broadcast; the compiled-graph suite proves both an all-input success and an exact failing-input diagnostic. `sendPreflightedLayer3Transaction` makes the gate mandatory for the production Layer-3 send path. |
 
 ## 5. State, resources, effects and events
@@ -1236,21 +1236,24 @@ which take several scalar `sig` parameters: two ECDSA route witnesses satisfy `c
 against three transcript-bound public keys, while a signature from a key outside that set rejects.
 First-class dynamic `sig[]` values remain outside the admitted ABI surface.
 
-### 2026-07-26: Release E — canonical low-level call edges
+### 2026-07-26: Release E — canonical low-level call/staticcall edges
 
-A low-level `address.call(payload)` can now enter the authenticated graph when the SDK supplies
-one exact typed decoding proof. The compiler derives the selector and argument tail from the same
-canonical payload stack item, commits the actual target, regular-call mode, selector and tail in
-the caller emission, and receives the callee-authenticated commitment as the opaque return data.
+A low-level `address.call(payload)` or `address.staticcall(payload)` can now enter the
+authenticated graph when the SDK supplies one exact typed decoding proof. The compiler derives
+the selector and argument tail from the same canonical payload stack item, commits the actual
+target, call mode, selector and tail in the caller emission, and receives the
+callee-authenticated commitment as the opaque return data.
 It reconstructs `(success, data)` only inside the caller; `success` is true because any failed
 participant covenant aborts the transaction.
 
 The worklist independently resolves the selected ABI function, re-encodes the supplied typed
 arguments, requires byte equality with `payload`, and requires the resolved participant locking
-bytecode to equal the caller's target argument. The complete BCH-2026 transaction executes
-`call(selector || args)` against an independently compiled typed callee. Replacing the committed
-callee result rejects, while SDK tests also reject decoded-argument and target substitutions.
+bytecode to equal the caller's target argument. Complete BCH-2026 transactions execute both modes
+against an independently compiled typed callee. Replacing either committed callee result rejects,
+while SDK tests also reject decoded-argument and target substitutions. The worklist carries the
+compiler-authored edge mode directly; this is required for raw calls because the selected typed
+child function name differs from the caller's `__raw__` ABI callsite name.
 
-This proof covers the singular, option-free `address.call(bytes)` class. Low-level call options,
-`delegatecall`, and other dynamic/iterated shapes remain fail-closed and keep the ledger row
-PARTIAL.
+This proof covers singular, option-free `address.call(bytes)` and `address.staticcall(bytes)`.
+Low-level call options, `delegatecall`, and other dynamic/iterated shapes remain fail-closed and
+keep the ledger row PARTIAL.

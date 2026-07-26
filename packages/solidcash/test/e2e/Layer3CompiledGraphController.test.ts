@@ -267,6 +267,9 @@ contract GraphRawCaller() {
     require(ok && result == hex"53");
   }
 }`;
+const RAW_STATIC_CALLER = RAW_CALLER
+  .replace('GraphRawCaller', 'GraphRawStaticCaller')
+  .replace('.call(payload)', '.staticcall(payload)');
 const RAW_TARGET = `pragma solidcash >=0.8.0;
 contract GraphRawTarget() {
   function echo(int value) public returns (int) {
@@ -953,7 +956,7 @@ async function buildForwardedSignedGraph(tamper = false) {
   return { provider, transaction: raw(tx) };
 }
 
-async function buildRawCallGraph(tamperResult = false) {
+async function buildRawCallGraph(tamperResult = false, staticCall = false) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -968,7 +971,7 @@ async function buildRawCallGraph(tamperResult = false) {
   const baseB = new Contract(artifactB, [], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
-  const artifactA = compileString(RAW_CALLER, options);
+  const artifactA = compileString(staticCall ? RAW_STATIC_CALLER : RAW_CALLER, options);
   const baseA = new Contract(artifactA, [], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
@@ -2646,6 +2649,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the typed result of a low-level graph edge', async () => {
     const { provider, transaction } = await buildRawCallGraph(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('executes canonical low-level staticcall calldata as an authenticated read-only edge', async () => {
+    const { provider, transaction } = await buildRawCallGraph(false, true);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects substituting the authenticated result of a low-level staticcall edge', async () => {
+    const { provider, transaction } = await buildRawCallGraph(true, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

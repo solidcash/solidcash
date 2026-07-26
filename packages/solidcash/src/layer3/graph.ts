@@ -25,6 +25,8 @@ export interface CompiledGraphInvocation {
   callee: number;
   function: string;
   args?: readonly FunctionArgument[];
+  /** Compiler-authored mode of the parent edge. Omitted only for the root or legacy direct planners. */
+  callMode?: 'call' | 'staticcall';
 }
 
 export interface PlannedGraphInvocation {
@@ -934,22 +936,24 @@ export function planCompiledGraph(
     const row = execution.batch.rows[localRow];
     const result = execution.batch.results.find((candidate) => candidate.row === localRow);
     const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
-    let callMode: 'call' | 'staticcall' = 'call';
+    let callMode: 'call' | 'staticcall' = invocation.callMode ?? 'call';
     if (invocation.parent !== null) {
       const parentInvocation = invocations[invocation.parent];
       const parentArtifact = participants[parentInvocation.callee].artifact;
       const parentFunction = parentArtifact.abi.find((candidate) =>
         candidate.name === parentInvocation.function);
-      const candidates = parentFunction?.externalCalls?.filter((call) =>
-        call.functionName === invocation.function) ?? [];
-      const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
-      if (modes.length > 1) {
-        throw new Error(`layer3: call mode for invocation ${index} is ambiguous`);
+      if (invocation.callMode === undefined) {
+        const candidates = parentFunction?.externalCalls?.filter((call) =>
+          call.functionName === invocation.function) ?? [];
+        const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
+        if (modes.length > 1) {
+          throw new Error(`layer3: call mode for invocation ${index} is ambiguous`);
+        }
+        if (modes[0] === 'delegatecall') {
+          throw new Error('layer3: delegatecall is not a participant-graph call mode');
+        }
+        callMode = modes[0] === 'staticcall' ? 'staticcall' : 'call';
       }
-      if (modes[0] === 'delegatecall') {
-        throw new Error('layer3: delegatecall is not a participant-graph call mode');
-      }
-      callMode = modes[0] === 'staticcall' ? 'staticcall' : 'call';
       if (callMode === 'staticcall') {
         const calleeFunction = participants[invocation.callee].artifact.abi.find((candidate) =>
           candidate.name === invocation.function);

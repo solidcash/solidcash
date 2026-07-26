@@ -366,7 +366,9 @@ describe('Release 4 compiler-hidden local batch', () => {
     // Each of these is a normative ERC-20 handler. `transfer` and `approve` were rejected outright before the
     // caller-keyed-alternative and nested-collection fixes, so the batch surface could not express standard
     // ERC-20 semantics at all without a spender parameter.
-    const admits = (source: string, name: string) => {
+    const admits = (
+      source: string, name: string,
+    ): NonNullable<ReturnType<typeof compileString>['hiddenBatch']>['handlers'][number] | undefined => {
       const artifact = compileString(source, graphOptions);
       return artifact.hiddenBatch?.handlers.find((handler) => handler.name === name);
     };

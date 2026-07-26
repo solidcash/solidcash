@@ -130,6 +130,24 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: second unsuccessful attempt at the two-journal exit (recorded)
+
+Hypothesis: `InlineReturningStateHelpers` deliberately exempts `collectionJournal` helpers from inlining
+because their entry writes are threaded as values and they have no settlement to lose. That stops holding when
+such a helper ALSO writes scalar state - those writes settle in an epilogue a returning subroutine never
+reaches. Relaxing the exemption for that case should make both journals settle in one place.
+
+Result: no change. The full compiler suite stayed green, but the resource-shaped `move` with a counter is still
+rejected by the covenant, and `__scb_resource_move` is still emitted as its own function. Either the relaxed
+condition never selected the clone, or the call site was already inlining and inlining is simply not the fix.
+Distinguishing those needs instrumentation of which call sites `InlineReturningStateHelpers` actually rewrote,
+which is the next concrete step. Reverted rather than shipped as unproven change.
+
+Two hypotheses are now eliminated for this bug: the delete node type (first attempt) and subroutine-versus-
+inline settlement (this one). What remains is the scalar journal's epilogue write-back itself - the clone
+threads `__internal__state_write_*` parameters, and how those reach settlement when the same function also
+returns journalled entry values is the thing still unexamined.
+
 ### 2026-07-26: the delete boundary was mis-scoped, and admitted a failing shape
 
 The two-row composer built for the mixed-batch proof answered the question the previous attempt could not.

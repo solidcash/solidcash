@@ -130,10 +130,48 @@ weakening any invariant.
 
 ## 9. Implementation log
 
+### 2026-07-26: ROOT CAUSE PROVEN - the scalar value leaks into the entry commitment
+
+`cloned-handler-scalar-and-collection-journal-not-enabled` now has a MECHANISM, established by controlled
+experiment rather than by reading code.
+
+Driving the BCH-2026 VM directly (`vm.debug({inputIndex, sourceOutputs, transaction})`, since `tx.debug()`
+throws a formatted summary instead of returning states) and identifying the failing operands against known
+locking bytecodes shows input 1 failing at state 5481/5483 comparing two 65-byte ENTRY COMMITMENTS for the
+`first` key, `slot(first) || slot(second) || value`, identical except the final value byte:
+
+    expected B = ...f340 0a     (0x0a = 10, the correct settled value for `first`)
+    computed A = ...f340 51     (0x51 = 81)
+
+The decisive step was varying the scalar counter's genesis and watching the byte track it:
+
+    moves starts 0  ->  after row 0 moves = 1  ->  leaked byte 0x51  (OP_1)
+    moves starts 7  ->  after row 0 moves = 8  ->  leaked byte 0x58  (OP_8)
+
+So the entry commitment's VALUE field receives the SCALAR journal's post-row value, minimally script-encoded
+as OP_N, instead of the collection journal's value. This is genuine two-journal interference in a cloned
+handler. Note it is NOT the "flushes per row" story retracted earlier - nothing is flushed twice; the wrong
+journal's value is written into the commitment.
+
+This also finally settles `0x51`, which two earlier entries guessed at: it is 81 as a VM number AND OP_1 as a
+push, and the ambiguity was real because the leaked value is script-encoded. Both readings were describing the
+same byte from different ends.
+
+REPRODUCTION: lift the boundary in `synthesizeHiddenBatchRoute`, set `buildScalarPlusEntryBatchGraph`'s entry
+offset to `slotIndex + 2`, send the transaction, then diff the operands at the failing state.
+
+TRAP that cost several probes here: the fixture file has FOUR `tokenRouteArgs.push(decoded.slot, BigInt(...))`
+sites. A `replace(..., 1)` edits the FIRST, which belongs to `buildCallerKeyedTransferGraph` - a working
+fixture whose test was filtered out of the run, so the corruption was silent while the target fixture stayed
+untouched. Edit the LAST occurrence, and assert the enclosing function name before editing.
+
 **CURRENT STATE (read this before any entry below).** Entries are append-only and several were later
 retracted, so an individual entry is NOT authoritative on its own. As of 2026-07-26:
 
-- `cloned-handler-scalar-and-collection-journal-not-enabled` is OPERATIONALLY JUSTIFIED, not explained.
+- `cloned-handler-scalar-and-collection-journal-not-enabled` is OPERATIONALLY JUSTIFIED **and now EXPLAINED**:
+  the scalar journal's value leaks into the entry commitment's value field. See the root-cause entry above,
+  which supersedes the "traced to the router's first external call" note below (that attribution came from
+  `tx.debug()`, whose input index is unreliable; the real failing input is the TOKEN, index 1).
   With the guard lifted and the fixture's entry offset corrected to `slotIndex + 2`, the shape still fails
   BCH-2026 with `mandatory-script-verify-flag-failed` / OP_VERIFY. Admitting it would emit unusable
   transactions, so the rejection is correct to keep.

@@ -124,16 +124,16 @@ task-specific report, not in this table.
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
 | G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27` + corrections `4c131f9b`; three escapes closed, G1-C resolved |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | INTEGRATED | `4c131f9b`; missing/injected/duplicated/reordered/argument all reject |
-| G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
+| G3 | Remaining admitted symbolic target/selector expressions | A | G1 | LEASED | round 4, base `cc47ff0e`; owns 4.7's unpublished-ceiling gap |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
-| E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
+| E3 | Explicit delegate-participant classes | B | E1 | LEASED | round 4, base `cc47ff0e` |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | forgery escape closed; guard keys off slot contribution |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
-| L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
-| L2 | SDK funding/change/event-NFT block assembly | C | L1 | TODO | Equal input/output block extent |
+| L1 | Fully relocatable balanced participant block | C | P0.1 | LEASED | round 4, base `cc47ff0e`; critical path to capstones |
+| L2 | SDK funding/change/event-NFT block assembly | C | L1 | LEASED | round 4, base `cc47ff0e`; gates C1/C2/C3 |
 | C1 | DeFi integrated semantic capstone | Main | G2,E2,S2,L2 | TODO | Relaxed VM allowed |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | Main | G2,E1,S3,L2 | TODO | At least two targets/selectors |
 | C3 | Eight-participant semantic capstone | Main | C1,C2 | TODO | Correctness, not deployability |
@@ -148,9 +148,9 @@ task-specific report, not in this table.
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
-| X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
+| X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | LEASED | round 4; `artifact.ts` lease GRANTED to A |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
-| X6 | Stable diagnostics for unadmitted low-level shapes | — | — | TODO | `Block slot not found: lowLevelCall[0]` leaks; compiler lease |
+| X6 | Stable diagnostics for unadmitted low-level shapes | B | E2 | LEASED | round 4; may need A's `compiler.ts` - request, do not edit |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
@@ -186,6 +186,20 @@ This is a SEMANTIC gate, not a consensus or policy one. Mock limits remain relax
 
 The one remaining red is `LargeContractSplitting` (task X1). The ten `solidc` reds and the parallel-only
 `solidcash` reds are gone: they were a fixture-outpoint birthday collision, fixed in `72f07b07`.
+
+### 4.2d Round-4 dispatch, base `cc47ff0e`
+
+| Worker | Tasks | Lease |
+| --- | --- | --- |
+| A | X4 then G3 | `compiler.ts` + **`packages/utils/src/artifact.ts` (newly granted)** |
+| B | E3 then X6 | `packages/solidcash/src/layer3/*` |
+| C | L1 then L2 | `GenerateTargetTraversal.ts` + `SymbolTableTraversal.ts` |
+
+L1/L2 is the critical path: C1, C2 and C3 all depend on L2. `artifact.ts` is granted to A because X4 cannot be
+closed without it; the change must be additive and optional, since it ripples into the SDK and B's planner.
+
+No round-4 task may absorb X10, X11, X12, X5, X3 or X2. Those stay separately tracked so a partial fix cannot be
+folded into a delivered task's claim.
 
 ### 4.2b Round-2 dispatch, base `b9aa816d`
 

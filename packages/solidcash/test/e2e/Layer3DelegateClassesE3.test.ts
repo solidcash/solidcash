@@ -283,13 +283,20 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
     /**
      * Attacks STATE OWNER, and nothing else: the witness names an input that is not the delegate block's
      * adjacent master. The implementation, calldata and settled state are the honest ones.
+     *
+     * The implementation's covenant enforces this as a CONJUNCTION - minting capability, self-preservation,
+     * not-the-delegate-itself, and `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`. With four inputs
+     * a witness cannot isolate the last conjunct, so all three wrong values are driven and each is refused by
+     * the implementation, not by the proxy.
      */
-    it('rejects a proxy-master witness that is not the delegate block\'s adjacent master', async () => {
-      const message = await outcome((await build({ proxyMasterIndexWitness: 2n })).send);
-      expect(message).toContain('mandatory-script-verify-flag-failed');
-      // The IMPLEMENTATION refuses, at its own input: `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`.
-      expect(failingInput(message)).toBe(2);
-    }, 120_000);
+    it.each([1n, 2n, 3n])(
+      'rejects proxy-master witness %s, which is not the delegate block\'s adjacent master',
+      async (witness) => {
+        const message = await outcome((await build({ proxyMasterIndexWitness: witness })).send);
+        expect(message).toContain('mandatory-script-verify-flag-failed');
+        expect(failingInput(message)).toBe(2);
+      }, 120_000,
+    );
 
     /**
      * Attacks OUTPUT AUTHORITY, and nothing else: a proxy post-state the delegate covenant did not compute.

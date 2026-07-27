@@ -174,6 +174,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     if (!ast.libraryContract) {
       // A standalone interface, a file-level enum/struct, or an inline-only library has no executable contract;
       // emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
+      // Inline-only library functions still require source-level parameter/return location validation before
+      // this early declaration-artifact return.
+      ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
       return generateDeclarationArtifact(ast, code);
     }
     ast.contract = ast.libraryContract;

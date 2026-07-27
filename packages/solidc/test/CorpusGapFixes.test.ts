@@ -246,6 +246,24 @@ describe('constant zero-divisor diagnostics', () => {
   });
 });
 
+describe('inline-only library declaration validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('requires locations on reference-type parameters and returns before the declaration-artifact return', () => {
+    expect(() => cc('library L { function f(uint[] values) internal pure {} }'))
+      .toThrow(/data location must be.*but none was given/i);
+    expect(() => cc('library L { function f() private pure returns(uint[]) {} }'))
+      .toThrow(/data location must be.*but none was given/i);
+  });
+
+  it('retains explicit library parameter and return locations', () => {
+    expect(cc(
+      'library L { function f(uint[] memory values) internal pure returns(uint[] memory out) { return values; } }',
+    )).toBe('L');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

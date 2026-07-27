@@ -4806,3 +4806,13 @@ The focused suite is **933/933**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **936/936**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 537, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Inline-library declaration loop: 4443 flat, NEG-ACCEPTED 537 -> 533 (-4)
+
+- ABI-only definition units now run source-level data-location validation before their early artifact return.
+- Inline-only private and internal library functions require explicit locations on reference-type parameters and
+  returns, using the same validator as executable contracts.
+- Explicitly located inline library declarations remain valid.
+
+The focused suite is **938/938**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+533, plus 275 multifile and 289 cmdline fixtures excluded.

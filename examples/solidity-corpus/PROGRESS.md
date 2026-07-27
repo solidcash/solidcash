@@ -4796,3 +4796,13 @@ The focused suite is **929/929**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **933/933**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 545, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Constant zero-divisor loop: 4443 flat, NEG-ACCEPTED 545 -> 537 (-8)
+
+- Integer constant declarations now reject compile-time division and modulo by a resolved zero expression.
+- `addmod` and `mulmod` constants reject a resolved zero modulus.
+- Validation follows constant references and arithmetic subexpressions, covering both initialization and literal
+  operation fixtures while retaining non-zero constant arithmetic.
+
+The focused suite is **936/936**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+537, plus 275 multifile and 289 cmdline fixtures excluded.

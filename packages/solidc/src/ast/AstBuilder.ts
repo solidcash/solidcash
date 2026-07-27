@@ -4250,9 +4250,9 @@ export default class AstBuilder
       // An unresolved type name is an interface/contract type -> a tagged address handle (as every other
       // declaration site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
       const cType = this.resolveType(scalarTypeCtx.getText()) ?? new AddressType(false, scalarTypeCtx.getText());
-      const cnode = new ConstantDefinitionNode(
-        cType, name, this.visit(constExpr) as ExpressionNode,
-      );
+      const constantExpression = this.visit(constExpr) as ExpressionNode;
+      if (this.solidityImportCompat) this.validateConstantZeroDivisors(constantExpression, ctx);
+      const cnode = new ConstantDefinitionNode(cType, name, constantExpression);
       cnode.visibility = visibility;
       cnode.location = Location.fromCtx(ctx);
       return cnode;
@@ -5651,6 +5651,30 @@ export default class AstBuilder
     return undefined;
   }
 
+  private validateConstantZeroDivisors(node: ExpressionNode, ctx: ParserRuleContext): void {
+    if (node instanceof BinaryOpNode
+      && (node.operator === BinaryOperator.DIV || node.operator === BinaryOperator.MOD)
+      && this.evalConstIntNode(node.right) === 0n) {
+      throw new ParseError(
+        node.operator === BinaryOperator.DIV ? 'Division by zero' : 'Modulo zero',
+        Location.fromCtx(ctx),
+      );
+    }
+    if (node instanceof FunctionCallNode
+      && (node.identifier.name === 'addmod' || node.identifier.name === 'mulmod')
+      && node.parameters.length === 3 && this.evalConstIntNode(node.parameters[2]) === 0n) {
+      throw new ParseError('Arithmetic modulo zero', Location.fromCtx(ctx));
+    }
+    for (const value of Object.values(node)) {
+      if (value instanceof ExpressionNode) this.validateConstantZeroDivisors(value, ctx);
+      else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof ExpressionNode) this.validateConstantZeroDivisors(item, ctx);
+        }
+      }
+    }
+  }
+
   // Pre-scan: record integer constants so they can be used as array dimensions `T[N]`. The init may be a
   // literal, a parenthesised/arithmetic compile-time expression (`(2)`, `(2 + 1) / 1`), or reference an
   // earlier such constant; anything not a compile-time integer is skipped (a clear ParseError at use in
@@ -6657,7 +6681,8 @@ export default class AstBuilder
     const type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false, ctx.typeName().getText());
     const name = ctx.anyIdentifier().getText();
     this.constantTypes.set(name, type);
-    const expression = this.visit(ctx.expression());
+    const expression = this.visit(ctx.expression()) as ExpressionNode;
+    if (this.solidityImportCompat) this.validateConstantZeroDivisors(expression, ctx);
     const node = new ConstantDefinitionNode(type, name, expression);
     node.location = Location.fromCtx(ctx);
     return node;

@@ -220,6 +220,32 @@ describe('function-type state declaration compatibility', () => {
   });
 });
 
+describe('constant zero-divisor diagnostics', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects division and modulo by a resolved zero constant', () => {
+    expect(() => cc('contract C { uint constant Z = 0; uint constant X = 7 / Z; }'))
+      .toThrow(/division by zero/i);
+    expect(() => cc('contract C { uint constant O = 1; uint constant X = 7 % (O - 1); }'))
+      .toThrow(/modulo zero/i);
+  });
+
+  it('rejects addmod and mulmod with a resolved zero modulus', () => {
+    expect(() => cc('contract C { uint constant Z = 0; uint constant X = addmod(3, 4, Z); }'))
+      .toThrow(/arithmetic modulo zero/i);
+    expect(() => cc('contract C { uint constant O = 1; uint constant X = mulmod(3, 4, O - 1); }'))
+      .toThrow(/arithmetic modulo zero/i);
+  });
+
+  it('retains non-zero constant arithmetic', () => {
+    expect(cc(
+      'contract C { uint constant D = 2; uint constant A = 8 / D;'
+      + ' uint constant B = 7 % D; uint constant X = addmod(A, B, D); }',
+    )).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

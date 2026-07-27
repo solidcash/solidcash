@@ -86,6 +86,7 @@ contract C1Token() {
   }
 }`;
 
+/** The Kashi side: collateral accrues in the SHARE unit the Bento vault returned, never in the amount unit. */
 const ACCRUE = `pragma solidcash >=0.8.0;
 interface IC1Vault { function deposit(bigint amount) returns (bigint); }
 contract C1Accrue(address vault) {
@@ -97,6 +98,11 @@ contract C1Accrue(address vault) {
   }
 }`;
 
+/**
+ * The BentoBox side: an elastic/base rebasing vault. `elastic` is the amount pool, `base` the share pool, and
+ * a deposit mints floor(amount * base / elastic) shares before growing both, so the share price carried into
+ * Kashi is the pre-deposit one.
+ */
 const VAULT = `pragma solidcash >=0.8.0;
 contract C1Vault() {
   bigint elastic;
@@ -571,7 +577,8 @@ describe('C1 DeFi integrated semantic capstone', () => {
     expect(built.layout.projectionInputs).toEqual([29, 30, 31, 32]);
     expect(built.layout.controllerInput).toBe(33);
     expect(built.layout.totalSlots).toBe(35);
-    // The Vault is the only returning participant; its return-event lands in its own block's third slot.
+    // The Vault is the only returning participant. This is the SDK's assembly choice - the return-event
+    // position is covenant-unbound, so this asserts where the SDK put it, not where a covenant requires it.
     expect(built.layout.returnOutputs).toEqual([null, null, null, 28]);
     // The planner records that the Accrue invocation depends on the Vault's result.
     expect(built.plan.invocations[3].resultDependencies).toEqual([4]);
@@ -600,6 +607,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
       await expect(control.provider.sendRawTransaction(control.transaction)).resolves.toBeTypeOf('string');
 
       const attacked = await buildC1(hostile);
+      // Every substitution is length-preserving, so an equal serialized size is evidence that the attacked
+      // transaction added or removed no input, output or witness element: only the named field differs.
+      expect(attacked.transaction.length).toBe(control.transaction.length);
       const outcome = preflightOutcome(attacked);
       expect(outcome).toContain(`layer3: BCH-2026 preflight failed at input ${input}`);
       await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();

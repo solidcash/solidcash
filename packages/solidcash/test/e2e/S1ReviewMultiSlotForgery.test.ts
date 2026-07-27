@@ -30,6 +30,7 @@ const SOURCE = `contract S1ReviewMultiSlot {
   mapping(int => int) m;
   function set(int k, int v) external { m[k] = v; require(true); }
   function copy(int a, int b) external { m[a] = m[b] + 1; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
 }`;
 
 const KEYS = Array.from({ length: 60 }, (_, i) => BigInt(i + 1))
@@ -162,6 +163,21 @@ describe('S1 review: collection-address output cardinality', () => {
     await expectCovenantRejection(provider, mutate(hex, (tx) => appendEntryOutput(
       tx, entryOutputIndices(tx)[0], encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
     )));
+  }, 120_000);
+
+  // OPEN DEFECT, severity. The minted node is not merely a stray UTXO: `check(9999, 999)` is an ordinary read
+  // of a key the handler never wrote, and it settles, so the forged value is indistinguishable from genuine
+  // collection state. The assertion below - that such a read must NOT settle - is the correct expectation.
+  it.fails('OPEN: a later read authenticates the forged entry as genuine state', async () => {
+    const { provider, sc } = await deploy();
+    await sc.getFunction('set')(FAR.k, 5n).send();
+    await sc.getFunction('set')(LOW.k, 11n).send();
+    const hex = await capture(provider, () => sc.getFunction('copy')(LOW.k, FAR.k).send());
+    const forged = mutate(hex, (tx) => appendEntryOutput(
+      tx, entryOutputIndices(tx)[0], encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
+    ));
+    await expectAccepted(provider, forged);
+    await expect(sc.getFunction('check')(9999n, 999n).send()).rejects.toThrow();
   }, 120_000);
 
   // Honest control for the multi-slot shape: the unmutated derivation is valid, so the two `it.fails` blocks

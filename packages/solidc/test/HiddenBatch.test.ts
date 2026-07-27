@@ -507,7 +507,10 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.supply = this.supply - amount;
       }
     }`, 'burn')?.eligible).toBe(true);
-  });
+  // Compiles nine message-bus contracts in one test. Measured 6.0s at the 5s default under the parallel-file
+  // load this project runs with; the whole file is 35.7s here against 41.3s before G1, so this is the default
+  // budget being too small for the test, not a cost regression.
+  }, 60_000);
 
   it('rejects a row-local caller-keyed collection instead of mis-binding it', () => {
     // Only the shared alternative can be caller-keyed; a row-local one would need a witness per row. This must

@@ -734,8 +734,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
 /**
  * Why C1 is a tree with one returning leaf rather than one router fanning out to everything.
  *
- * These three shapes are refused today. They are pinned as the boundary the capstone was designed around, not
- * as desired behavior: the first two are named refusals with remedies, the third is an internal error.
+ * These four shapes are refused today. They are pinned as the boundary the capstone was designed around, not as
+ * desired behavior. Three are named refusals - two carry a remedy in the artifact diagnostic, one is a compiler
+ * error naming the handler. The fourth is a GAP: an internal code-generation error with no named refusal.
  */
 describe('C1 admissibility boundaries the composition was shaped around', () => {
   const boundaryOptions = {

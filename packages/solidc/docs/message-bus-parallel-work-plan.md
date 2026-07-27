@@ -122,14 +122,14 @@ task-specific report, not in this table.
 | --- | --- | --- | --- | --- | --- |
 | P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
-| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | **CHANGES** | `30d25f27`; hostile review found an escapable bound - see 4.4 |
-| G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | LEASED | round 2, base `b9aa816d`; lease `compiler.ts` |
+| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27` + corrections `4c131f9b`; three escapes closed, G1-C resolved |
+| G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | INTEGRATED | `4c131f9b`; missing/injected/duplicated/reordered/argument all reject |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
-| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | `6119ba26`; closed a real C2 forgery defect |
+| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **CHANGES** | guard condition too narrow - see 4.6; reassigned to C round 3 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
@@ -247,6 +247,39 @@ must report the compile-cost delta and either reduce it or justify it, not silen
 by SDK block-layout assembly. That is why a graph row would have dropped the option silently, and it is why the
 new SDK gate fails closed rather than best-effort. It also means the guarantee is only as strong as the SDK for
 every existing direct-route user, which is broader than Layer-3 and worth its own look.
+
+### 4.6 S1 hostile review: a live forgery escape, found by the reviewer
+
+Worker A reviewed S1 (it did not implement it) and found the shape Worker C had itself flagged as UNVERIFIED
+rather than cleared. C was right to flag it; A built the fixture C could not.
+
+The collection-output cardinality pin is suppressed whenever a collection owns more than one entry slot in a
+function - and **a READ creates a slot while only WRITES enter the batch route**. So `m[a] = m[b] + 1` has two
+slots and one write: no batch route, therefore no batch verifier, and the pin suppressed. Both the insert and
+update arms then accept a node for a key that was never written.
+
+It is worse than a stray UTXO. A plain `require(m[k] == v)` handler afterwards **authenticates the forged node
+as genuine state** - it satisfies address, category, capability and `slot == H(k)`, which is precisely the
+indistinguishability property S1's own analysis identified. Three cases are pinned with `it.fails` in
+`S1ReviewMultiSlotForgery.test.ts`.
+
+Where the pin IS emitted the mechanism is sound: a duplicate node for the inserted key and a foreign-slot
+substitution both keep the count at 2 and reject. So the count is tight; only its guard condition is too narrow.
+Delegate functions are a fifth suppressing condition that was NOT VM-tested.
+
+S1 returns to `CHANGES` and is reassigned to Worker C for round 3, ahead of X1, since the fix is in its lease.
+
+### 4.7 Recorded gaps from G2 - published bounds are weaker than claimed
+
+Three shapes publish no explicit per-callsite ceiling: a single-selector pointer table (coalescing keys on
+`selectorArrayVar`), a multi-group function (coalescing admits one group), and a loop holding an ordinary
+interface call (`ExpandBoundedPointerTableLoop` counts only pointer dispatches). The third publishes
+`occurrence: 'loop'` with no `maximumOccurrences`, and the planner then accepts **any** count up to the global
+24 ceiling - demonstrated by planning six rows from a source carrying no bound at all.
+
+These are fail-closed on chain, so they are not exploits. But G1's headline claim is that a compiler-proven
+bound is published, and for these shapes no such bound exists. The claim must be scoped to the shapes that
+actually publish one.
 
 ### 4.3 Corrections this round forced on this plan
 

@@ -136,6 +136,27 @@ describe('Solidity function-context restrictions', () => {
   });
 });
 
+describe('modifier declaration source validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects duplicate data locations on modifier parameters', () => {
+    expect(() => cc('contract C { modifier m(string storage memory value) { _; } }'))
+      .toThrow(/multiple data locations specified/i);
+  });
+
+  it('requires a data location for reference-type modifier parameters', () => {
+    expect(() => cc('contract C { modifier m(uint[] values) { _; } }'))
+      .toThrow(/data location must be.*but none was given/i);
+  });
+
+  it('rejects return arguments in modifier bodies while retaining bare return', () => {
+    expect(() => cc('contract C { modifier m() { _; return 7; } }'))
+      .toThrow(/return arguments are not allowed in modifiers/i);
+    expect(cc('contract C { modifier m() { _; return; } function f() public m {} }')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

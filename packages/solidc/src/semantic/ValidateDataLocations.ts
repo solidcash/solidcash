@@ -4,7 +4,7 @@ import {
 import {
   AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionDefinitionNode,
   FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode, StateAssignNode, TupleAssignmentNode,
-  TupleIndexOpNode, VariableDefinitionNode,
+  ReturnNode, TupleIndexOpNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -103,6 +103,23 @@ export default class ValidateDataLocations extends AstTraversal {
       ...node.stateVariables.map((state) => [state.name, state.type] as const),
       ...node.collections.map((collection) => [collection.name, collection.type] as const),
     ]);
+    for (const modifier of node.modifierDefinitions) {
+      for (const parameter of modifier.parameters) {
+        this.validateLocation(parameter.type, parameter.modifier, parameter, 'parameter', 'internal');
+      }
+      const visitStatement = (statement: Node): void => {
+        if (statement instanceof ReturnNode && statement.expressions.length > 0) {
+          throw new InvalidDataLocationError(statement, 'Return arguments are not allowed in modifiers');
+        }
+        for (const value of Object.values(statement)) {
+          if (value instanceof Node) visitStatement(value);
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node) visitStatement(item);
+          }
+        }
+      };
+      for (const statement of modifier.statements) visitStatement(statement);
+    }
     if (node.constructorDef) {
       this.validateConstructorVisibility(node.constructorDef);
       node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;

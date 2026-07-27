@@ -4767,3 +4767,12 @@ The focused suite is **918/918**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **922/922**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 561, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Modifier declaration-validation loop: 4443 flat, NEG-ACCEPTED 561 -> 558 (-3)
+
+- Modifier parameters now receive the same source-level data-location validation as function parameters.
+- Duplicate locations and missing locations on reference types reject before modifier expansion.
+- Modifier bodies reject return arguments while retaining Solidity's valid bare `return;` form.
+
+The focused suite is **925/925**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+558, plus 275 multifile and 289 cmdline fixtures excluded.

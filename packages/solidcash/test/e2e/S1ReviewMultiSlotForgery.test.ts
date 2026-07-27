@@ -6,7 +6,7 @@ import {
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {
-  bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, keyToSlot,
+  bytesToSlotValue, encodeEntryCommitment, keyToSlot,
 } from '../../src/stateful/SortedList.js';
 
 /**

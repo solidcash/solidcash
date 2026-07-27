@@ -6,7 +6,8 @@ import {
   Contract, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { setupStatefulUtxos } from '../test-util.js';
+import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
@@ -39,7 +40,9 @@ contract CompiledRuntimeSizedTable() {
   }
 }`;
 
-async function createGraphAuthority(provider: ReturnType<typeof createTestProvider>): Promise<any> {
+type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
+
+async function createGraphAuthority(provider: SemanticProvider): Promise<any> {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
   const controller = new Contract(
     compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [alicePkh], { provider },
@@ -55,7 +58,7 @@ async function createGraphAuthority(provider: ReturnType<typeof createTestProvid
 }
 
 async function initializeGraphAuthority(
-  provider: ReturnType<typeof createTestProvider>,
+  provider: SemanticProvider,
   controller: Contract,
   genesisUtxo: any,
   categoryId: string,
@@ -83,7 +86,7 @@ async function buildRuntimeSizedGraph(
   rows: number,
   tamper: 'none' | 'selector' | 'target' | 'overlong' = 'none',
 ): Promise<{ provider: any; transaction: string }> {
-  const provider = createTestProvider();
+  const provider = createLayer3SemanticTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
   } = await createGraphAuthority(provider);
@@ -250,7 +253,10 @@ const compileTable = (): Artifact => compileString(RUNTIME_SIZED_TABLE, {
   experimentalMessageBusControllerCategory: '22'.repeat(32),
 });
 
-describe('Layer-3 runtime-sized pointer table', () => {
+// SEMANTIC evidence only. The named layer3-bch2026-semantic-relaxed-v1 profile keeps BCH-2026 opcode,
+// introspection and 128-byte-commitment behaviour while relaxing capacity; it is not consensus-fit, standard
+// policy, relay or deployability evidence.
+describe('Layer-3 runtime-sized pointer table (SEMANTIC)', () => {
   it('publishes the compiler-proven ceiling as one bounded dispatch callsite', () => {
     const artifact = compileTable();
     const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'fireAll')!;
@@ -277,7 +283,7 @@ describe('Layer-3 runtime-sized pointer table', () => {
     })).toThrow(/lacks a valid loop occurrence proof/);
   });
 
-  // SEMANTIC + ordinary BCH-2026 limits: one artifact, one published ceiling, three different runtime sizes.
+  // One artifact, one published ceiling, three different runtime row counts.
   it.each([1, 2, 3])('executes a runtime-sized table of %i rows', async (rows) => {
     const { provider, transaction } = await buildRuntimeSizedGraph(rows);
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');

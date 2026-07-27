@@ -2,17 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  Artifact, buildInitialStateCommitments, parsePushdataCommitment,
+  Artifact, buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,
 } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulTransactionBuilder, layer3,
+  Contract, SignatureTemplate, StatefulTransactionBuilder, TransactionBuilder, layer3,
   getDataNftAddress, createDataNftUnlocker,
 } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
-import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
-import { getTxOutputs } from '../test-util.js';
+import { alicePkh, alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
+import { createFeeFunder, getTxOutputs } from '../test-util.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 
 /**
@@ -125,7 +126,11 @@ contract E3CondProxy(address impl) {
     }
 }`;
 
-/** UNADMITTED class ITERATED_DELEGATE_EDGE: the source delegates twice. */
+/**
+ * UNADMITTED class ITERATED_DELEGATE_EDGE: the source delegates twice. The compiler now REFUSES this shape - one
+ * pinned input and one block slot serve every iteration, so it used to settle 5 -> 6 where the source says
+ * 5 -> 7. Kept as a source string because the refusal itself is the assertion.
+ */
 const PROXY_ITERATED = `pragma solidcash >=0.8.0;
 contract E3LoopProxy(address impl) {
     bigint counter;
@@ -218,7 +223,6 @@ const emittingImplArtifact = compileString(IMPL_EMITTING);
 const collectionImplArtifact = compileString(IMPL_COLLECTION);
 const soloImplArtifact = compileString(IMPL_SINGLE_FUNCTION);
 const conditionalProxyArtifact = compileString(PROXY_CONDITIONAL);
-const iteratedProxyArtifact = compileString(PROXY_ITERATED);
 
 describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
   // =========================================================================
@@ -464,11 +468,11 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
   // =========================================================================
   describe('occurrence classes the published metadata cannot distinguish', () => {
     /**
-     * A conditional, an iterated and a singular delegate edge compile to BYTE-IDENTICAL published metadata, so
-     * no SDK gate can separate them. That is the reason the two cases below are measurements rather than
-     * rejections.
+     * A conditional and a singular delegate edge STILL compile to byte-identical published metadata, so no SDK
+     * gate can separate them - which is exactly why both cases below are settled in the COMPILER instead. The
+     * iterated edge no longer reaches an artifact at all.
      */
-    it('publishes identical metadata for singular, conditional and iterated delegate edges', () => {
+    it('publishes identical metadata for singular and conditional delegate edges', () => {
       const published = (artifact: Artifact): string => {
         const fn = artifact.abi.find((entry) => entry.name === 'up')!;
         return JSON.stringify({
@@ -478,7 +482,6 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
         });
       };
       expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
-      expect(published(iteratedProxyArtifact)).toBe(published(pinnedProxyArtifact));
       expect(layer3.UNDETECTED_BY_THIS_GATE)
         .toEqual(['conditional-delegate-edge', 'iterated-delegate-edge']);
     });
@@ -517,24 +520,24 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
     }
 
     /**
-     * OPEN ESCAPE, measured not reasoned. `if (flag) { impl.delegatecall(input); }` skips the proxy's own state
-     * covenant for the WHOLE function (the codegen gate is `!functionHasDelegatecall`, which is a per-function
-     * property) but forces the delegate co-spend only on the taken branch. Spending with `flag = false` and no
-     * implementation therefore reproduces SECURITY-AUDIT finding C1 exactly: the proxy data NFT's flag=1 path
-     * self-authorizes on minting-NFT presence, so any spender writes an arbitrary commitment.
+     * CLOSED (was an OPEN live forgery). `if (flag) { impl.delegatecall(input); }` skips the proxy's own state
+     * covenant for the WHOLE function - the codegen gate is the per-function `!functionHasDelegatecall` - but
+     * forces the delegate co-spend only on the taken branch. Spending with `flag = false` and no implementation
+     * used to reproduce SECURITY-AUDIT C1 exactly: the proxy data NFT's flag=1 path self-authorizes on
+     * minting-NFT presence, so any spender wrote an arbitrary commitment (measured: 5 -> 999 ACCEPTED).
      *
-     * The honest control is the same transaction with `flag = true`, which the proxy refuses at its own input.
-     * A fix belongs in the compiler - either force the co-spend unconditionally or reject a branched
-     * delegatecall - and this assertion is written to FAIL once that lands, so the class cannot stay open
-     * silently.
+     * The compiler now carries a runtime "delegate edge reached" flag and requires the proxy's own data NFTs to
+     * be preserved (category ++ commitment, input -> output) on every path that did NOT reach the edge. The
+     * forgery is refused at input 0 - the proxy's own covenant, not an incidental mismatch elsewhere.
      */
-    it('OPEN: a conditional delegate edge lets an untaken branch forge the proxy state', async () => {
+    it('refuses a forged proxy state from a conditional delegate edge whose branch was not taken', async () => {
       const forged = await spendProxy(conditionalProxyArtifact, [false], 999n, {
         coSpendImplementation: false,
       });
-      expect(forged.result).toBe('ACCEPTED counter=999');
+      expect(forged.result).toContain('mandatory-script-verify-flag-failed');
+      expect(failingInput(forged.result)).toBe(0);
 
-      // Control: the only difference is the branch condition. The proxy refuses at input 0.
+      // Same shape, same absent implementation, only the branch condition differs: also refused at input 0.
       const control = await spendProxy(conditionalProxyArtifact, [true], 999n, {
         coSpendImplementation: false,
       });
@@ -543,16 +546,89 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
     }, 240_000);
 
     /**
-     * OPEN, measured not reasoned. The source delegates TWICE, so the only correct settlement is 5 -> 7. What
-     * actually settles is 5 -> 6 with a single co-spent implementation: the loop published one edge and one
-     * block slot, so the compiled covenant is satisfied by delegating once. Compiles clean, no diagnostic.
+     * Positive control for the same fix: the honest conditional spend - branch TAKEN, implementation co-spent -
+     * still settles on the BCH-2026 VM, so the refusal above is the not-taken path and not the whole class.
      */
-    it('OPEN: an iterated delegate edge collapses two source delegations into one', async () => {
-      const single = await spendProxy(iteratedProxyArtifact, [], 6n, { coSpendImplementation: true });
-      expect(single.result).toBe('ACCEPTED counter=6');
+    it('still settles the honest conditional spend with the branch taken', async () => {
+      const honest = await spendProxy(conditionalProxyArtifact, [true], 6n, { coSpendImplementation: true });
+      expect(honest.result).toBe('ACCEPTED counter=6');
+    }, 240_000);
 
-      const asWritten = await spendProxy(iteratedProxyArtifact, [], 7n, { coSpendImplementation: true });
-      expect(asWritten.result).toContain('mandatory-script-verify-flag-failed');
+    /**
+     * The not-taken path is FROZEN, not forbidden: a spend that leaves the proxy state exactly as it was is what
+     * `if (flag)` means when flag is false, and it still settles. Its sibling - not taken, but a co-spent
+     * implementation writing 5 -> 6 - is now refused, because the source said not to delegate on that path.
+     */
+    it('settles a not-taken spend that preserves state, and refuses one that writes', async () => {
+      const noop = await spendProxy(conditionalProxyArtifact, [false], 5n, { coSpendImplementation: false });
+      expect(noop.result).toBe('ACCEPTED counter=5');
+
+      const wrote = await spendProxy(conditionalProxyArtifact, [false], 6n, { coSpendImplementation: true });
+      expect(wrote.result).toContain('mandatory-script-verify-flag-failed');
+      expect(failingInput(wrote.result)).toBe(0);
+    }, 240_000);
+
+    /**
+     * CLOSED (was an OPEN silent miscompile). The source delegates TWICE, so the only correct settlement is
+     * 5 -> 7. What used to settle was 5 -> 6 with a single co-spent implementation: the loop published one edge
+     * and one block slot, so the compiled covenant was satisfied by delegating once, with no diagnostic. There
+     * is no honest covenant to emit for the shape, so the compiler now refuses it by name.
+     */
+    it('refuses an iterated delegate edge at compile time rather than collapsing it', () => {
+      expect(() => compileString(PROXY_ITERATED))
+        .toThrow(/issues delegatecall inside a loop.*settle as one/s);
+    });
+
+    /**
+     * The not-taken-path covenant may NOT be written as a check at the block layout's data-NFT offsets. A data
+     * NFT's own sub-covenant never pins its position - its flag=1 path only requires a minting NFT of its
+     * category at the witnessed master index - and nothing else on the delegatecall path pins it either. So an
+     * attacker parks a token-free UTXO at the checked offset and co-spends the real data NFT one input later.
+     *
+     * Raw layout, built with the low-level builder exactly as a raw-tx attacker would:
+     *   in0 proxy master (flag=false)  in1 DECOY funder  in2 proxy data NFT flag=1  in3 fee
+     *   out0 proxy master  out1 decoy change  out2 data NFT with an attacker-chosen commitment
+     *
+     * MEASURED: with the covenant emitted as a per-input PROPERTY loop this is refused at input 0. With only
+     * that one emitter disabled it settles 5 -> 999, so the refusal is attributable to it and not to value
+     * preservation or the C3 conservation loop.
+     */
+    it('refuses the repositioned form of the not-taken forgery', async () => {
+      const provider = createLayer3SemanticTestProvider();
+      const implementation = await deploy(provider, implArtifact, [], { counter: 0n });
+      const proxy = await deploy(
+        provider, conditionalProxyArtifact,
+        [addressToLockScript(implementation.contract.address)], { counter: 5n },
+      );
+      const dataNftAddress = getDataNftAddress(proxy.contract, proxy.categoryId);
+      const forged = buildPushdataCommitment(conditionalProxyArtifact.stateLayout!, { counter: 999n }, 0);
+      const decoy = await createFeeFunder(provider);
+      const decoyAddress = new Contract(p2pkhArtifact, [alicePkh] as never[], { provider }).address;
+      const fee = await createFeeFunder(provider);
+
+      const send = new TransactionBuilder({ provider, allowImplicitNftBurn: true })
+        .addInput(proxy.master, (proxy.contract.unlock as any).up(
+          selectorOf(implArtifact, 'increment'), false, 3n,
+        ))
+        .addInput(decoy.utxo, decoy.unlocker)
+        .addInput(proxy.dataNfts[0], createDataNftUnlocker(proxy.contract, 0, proxy.categoryId))
+        .addInput(fee.utxo, fee.unlocker)
+        .addOutput({ to: proxy.contract.tokenAddress, amount: proxy.master.satoshis, token: proxy.master.token })
+        .addOutput({ to: decoyAddress, amount: decoy.utxo.satoshis })
+        .addOutput({
+          to: dataNftAddress,
+          amount: proxy.dataNfts[0].satoshis,
+          token: {
+            category: proxy.categoryId,
+            amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: forged },
+          },
+        })
+        .send();
+
+      const message = await outcome(send);
+      expect(message).toContain('mandatory-script-verify-flag-failed');
+      expect(failingInput(message)).toBe(0);
     }, 240_000);
   });
 

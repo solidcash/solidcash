@@ -353,6 +353,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   }[];
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
+  // C1/piece-5: the delegatecall sits on a conditional path, so the co-spend pin is not reached on every path
+  // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
+  // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
+  delegatecallIsConditional: boolean = false;
   /** Block-local delegate covenants reserved by an SCB1 graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;

@@ -2211,6 +2211,50 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new DelegatecallSelfMutationError(node, node.name);
     }
 
+    // C1/piece-5: the state-covenant skip is a per-FUNCTION property (!functionHasDelegatecall) while the
+    // co-spend pin is emitted at the CALLSITE. A callsite that is not reached exactly once therefore leaves the
+    // proxy's own state unauthorized. Classify the callsite's reachability so codegen can compensate:
+    //  - 'loop': refused outright. The loop reuses one pinned input and one block slot per iteration, so N source
+    //    delegations settle as ONE - a silent miscompile with no honest covenant to emit.
+    //  - 'conditional': admitted, but codegen must preserve the proxy's own state on the not-taken path.
+    // Scope: the single-witness pin only. A compiler-synthesized SCB1 route / graph handler dispatches its rows
+    // through a loop by design and derives each delegate index from its OWN per-row block slot rather than the
+    // shared __internal__delegateInputIndex witness, so neither the collapse nor the not-taken-path hole applies
+    // there. Same exclusion as the witness injection above.
+    if (this.hasExplicitDelegatecall(node.body) && !node.graphEmissionHandler && !node.hiddenBatchRoute) {
+      const reach = this.delegatecallReachability(node.body);
+      if (reach === 'loop') {
+        throw new InvalidModifierCombinationError(
+          node,
+          `function '${node.name}' issues delegatecall inside a loop. Each iteration reuses the SAME pinned `
+          + 'delegate input and the SAME block slot, so N source delegations settle as one - the compiler cannot '
+          + 'emit an honest covenant for it. Move the delegatecall out of the loop, or delegate to an '
+          + 'implementation function that performs the iteration itself. '
+          + 'See packages/solidc/docs/delegatecall-security.md.',
+        );
+      }
+      node.delegatecallIsConditional = reach === 'conditional';
+    }
+
+    // C1/piece-6: the co-spend covenant pins the delegate input to the address the CALLER supplied, which proves
+    // nothing about identity when that address is an unguarded function parameter - an unrelated spender then
+    // co-spends an implementation they wrote and rewrites this contract's state. Warn precisely: fire only when
+    // the target resolves to a parameter of this entry point AND nothing in the body constrains it (no signature
+    // guard, and no require() mentioning it). A parameter pinned by `require(impl == this.implementation)` is the
+    // legitimate upgradeable-proxy shape and must keep compiling, which is why this warns rather than rejects.
+    const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node);
+    if (callerSuppliedImpl) {
+      const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
+      console.log(
+        `Warning: function '${node.name}'${line} issues delegatecall against '${callerSuppliedImpl}', an `
+        + 'unguarded caller-supplied parameter. The co-spend covenant pins the delegate to the address the CALLER '
+        + 'chose, so it proves nothing about identity: ANY spender can co-spend an implementation they wrote and '
+        + 'rewrite this contract\'s state (SECURITY-AUDIT C1). Take the implementation as a constructor argument, '
+        + `or constrain '${callerSuppliedImpl}' with a signature check or a require() against stored state. `
+        + 'See packages/solidc/docs/delegatecall-security.md.',
+      );
+    }
+
     // C1: a delegatecall against a P2PKH-placeholder impl is NOT pinned (pinsDelegateCoSpend is false), so the
     // proxy cannot force the delegate to be co-spent - ANY spender then co-spends the state NFT and rewrites
     // proxy state arbitrarily. Warn unless the function is pinned (a covenant impl, where the co-spend is forced
@@ -4890,6 +4934,132 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const v of Object.values(node)) {
       if (v instanceof Node) { if (this.hasSignatureGuard(v, seen)) return true; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node && this.hasSignatureGuard(e, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * C1/piece-5: how is the user-written delegatecall reached? 'unconditional' = on every path through the body;
+   * 'conditional' = only inside an if/else arm, switch case or try/catch block; 'loop' = inside a loop body,
+   * where one pinned input and one block slot serve every iteration. Runs BEFORE EnsureFinalRequire /
+   * InjectLocktimeGuard / EarlyReturnTransformation, so no synthetic branch can misclassify a straight-line
+   * callsite. Worst class across all callsites wins (loop > conditional > unconditional).
+   */
+  private delegatecallReachability(body: Node | undefined): 'none' | 'unconditional' | 'conditional' | 'loop' {
+    let worst: 'none' | 'unconditional' | 'conditional' | 'loop' = 'none';
+    const rank = { none: 0, unconditional: 1, conditional: 2, loop: 3 };
+    const record = (kind: 'unconditional' | 'conditional' | 'loop'): void => {
+      if (rank[kind] > rank[worst]) worst = kind;
+    };
+    // Keyed by node AND context: a node re-reached under a stricter context must still be classified, otherwise a
+    // shared sub-tree visited first on a straight-line path would mask a conditional/loop occurrence.
+    const seen = new Map<Node, Set<string>>();
+    const walk = (node: Node | undefined, cond: boolean, loop: boolean): void => {
+      if (!node) return;
+      const context = `${cond ? 'c' : '-'}${loop ? 'l' : '-'}`;
+      const contexts = seen.get(node) ?? new Set<string>();
+      if (contexts.has(context)) return;
+      contexts.add(context);
+      seen.set(node, contexts);
+      if ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+        && node.callMode === 'delegatecall'
+        && !(node instanceof LowLevelCallStatementNode && node.synthesizedFromLibraryCall)) {
+        record(loop ? 'loop' : (cond ? 'conditional' : 'unconditional'));
+        // Keep walking: a nested target/data expression cannot contain a second callsite, but a sibling can.
+      }
+      // A loop's own condition runs once per iteration; its body likewise. A branch/switch/try condition or
+      // subject expression runs unconditionally - only the arms are conditional.
+      if (node instanceof WhileNode || node instanceof DoWhileNode) {
+        walk(node.condition, cond, true);
+        walk(node.block, cond, true);
+        return;
+      }
+      if (node instanceof CollectionIterationNode) {
+        walk(node.body, cond, true);
+        return;
+      }
+      if (node instanceof BranchNode) {
+        walk(node.condition, cond, loop);
+        walk(node.ifBlock, true, loop);
+        walk(node.elseBlock, true, loop);
+        return;
+      }
+      if (node instanceof SwitchNode) {
+        walk(node.expression, cond, loop);
+        for (const switchCase of node.cases) walk(switchCase, true, loop);
+        walk(node.defaultCase, true, loop);
+        return;
+      }
+      if (node instanceof TryCatchNode) {
+        walk(node.expression, cond, loop);
+        walk(node.tryBlock, true, loop);
+        for (const clause of node.catchClauses) walk(clause, true, loop);
+        return;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value, cond, loop);
+        else if (Array.isArray(value)) for (const e of value) if (e instanceof Node) walk(e, cond, loop);
+      }
+    };
+    walk(body, false, false);
+    return worst;
+  }
+
+  /**
+   * C1/piece-6: does this entry point's delegatecall target resolve to one of ITS OWN parameters with nothing in
+   * the body constraining it? Returns the parameter name, or undefined. A constructor argument is excluded (the
+   * contract's p2sh32 commits to it), as is any parameter reached by a signature guard or named in a require().
+   */
+  private delegatecallTargetsUnguardedParameter(node: FunctionDefinitionNode): string | undefined {
+    if (!this.hasExplicitDelegatecall(node.body)) return undefined;
+    const call = this.findDelegatecallNode(node.body);
+    if (!call) return undefined;
+    // Resolve through `address m = impl;` aliases to the underlying identifier.
+    let target: ExpressionNode | undefined = call.targetExpression;
+    const seenNames = new Set<string>();
+    while (target instanceof CastNode) target = target.expression;
+    while (target instanceof IdentifierNode && !seenNames.has(target.name)) {
+      seenNames.add(target.name);
+      const init = this.findLocalInit(node.body, target.name);
+      if (!init) break;
+      let next: ExpressionNode = init;
+      while (next instanceof CastNode) next = next.expression;
+      if (!(next instanceof IdentifierNode)) return undefined; // a computed/literal target, not a bare parameter
+      target = next;
+    }
+    if (!(target instanceof IdentifierNode)) return undefined;
+    const name = target.name;
+    if (!node.parameters.some((parameter) => parameter.name === name)) return undefined;
+    if (this.hasSignatureGuard(node.body)) return undefined;
+    if (this.requireMentionsIdentifier(node.body, name)) return undefined;
+    return name;
+  }
+
+  /** Is `name` referenced by any require() in this body? That is the constraint that authorizes a parameter. */
+  private requireMentionsIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof RequireNode && this.referencesIdentifier(node.expression, name)) return true;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        if (this.requireMentionsIdentifier(value, name, seen)) return true;
+      } else if (Array.isArray(value)) {
+        for (const e of value) if (e instanceof Node && this.requireMentionsIdentifier(e, name, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  private referencesIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof IdentifierNode && node.name === name) return true;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        if (this.referencesIdentifier(value, name, seen)) return true;
+      } else if (Array.isArray(value)) {
+        for (const e of value) if (e instanceof Node && this.referencesIdentifier(e, name, seen)) return true;
       }
     }
     return false;

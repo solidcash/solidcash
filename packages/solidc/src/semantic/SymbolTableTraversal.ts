@@ -3826,7 +3826,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       return;
     }
 
-    if (node instanceof ExternalMappingAccessNode && node.readInfo) {
+    if (node instanceof ExternalMappingAccessNode && node.readInfo && !node.readInfo.outputState) {
       const key = `${node.readInfo.interfaceName}:entry:${node.readInfo.collectionSignature}`;
       if (!map.has(key)) {
         const addressParam = node.addressExpression instanceof IdentifierNode
@@ -4620,6 +4620,20 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private collectExternalOutStateReads(node: Node, map: Map<string, ExternalOutStateSlot>): void {
+    if (node instanceof ExternalMappingAccessNode && node.readInfo?.outputState) {
+      const key = `${node.readInfo.interfaceName}:outState:collection:${node.readInfo.collectionSignature}`;
+      if (!map.has(key)) {
+        const addressParam = node.addressExpression instanceof IdentifierNode
+          ? node.addressExpression.name : undefined;
+        map.set(key, {
+          interfaceName: node.readInfo.interfaceName,
+          addressParam,
+          slotIndex: -1,
+          requiredDataNftIndices: [],
+        });
+      }
+      return;
+    }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
       const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
       const existing = map.get(key);
@@ -4689,6 +4703,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private assignExternalOutStateSlotIndices(node: Node, map: Map<string, ExternalOutStateSlot>): void {
+    if (node instanceof ExternalMappingAccessNode && node.readInfo?.outputState) {
+      const key = `${node.readInfo.interfaceName}:outState:collection:${node.readInfo.collectionSignature}`;
+      const slot = map.get(key);
+      if (slot) node.readInfo.externalOutStateSlotIndex = slot.slotIndex;
+      return;
+    }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
       const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
       const slot = map.get(key);
@@ -7456,6 +7476,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       const allVars = this.getAllInterfaceStateVariables(iface);
       const ifaceVar = allVars.find((v) => v.name === node.name);
       if (!ifaceVar) {
+        const ifaceColl = this.getAllInterfaceCollections(iface).find((c) => c.name === node.name);
+        if (ifaceColl) {
+          const extNode = new ExternalMappingAccessNode(
+            iface.name, node.expression.addressExpression, node.name, [],
+          );
+          extNode.readInfo = {
+            interfaceName: iface.name,
+            collectionName: node.name,
+            collectionSignature: computeCollectionSignature(ifaceColl.name, ifaceColl.type.toString()),
+            keyTypes: ifaceColl.allKeyTypes,
+            valueType: ifaceColl.innermostValueType,
+            externalReadSlotIndex: -1,
+            outputState: true,
+            externalOutStateSlotIndex: -1,
+          };
+          extNode.type = ifaceColl.type;
+          extNode.location = node.location;
+          return extNode;
+        }
         throw new UndefinedExternalStateVariableError(node, node.expression.interfaceName, node.name);
       }
 

@@ -9,7 +9,7 @@ import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';
 import {
-  alicePub,
+  alicePkh, alicePub, bobPkh,
   alicePriv,
 } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';
@@ -96,6 +96,53 @@ contract DynamicOutStateTarget() {
     function set(string next) public {
         this.message = next;
         require(next.length >= 0);
+    }
+}
+`;
+
+const COLLECTION_OUTSTATE_READER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface ICollectionState {
+    public mapping(bytes20 => int) balances;
+}
+
+contract CollectionOutStateReader(bytes target) {
+    function requireOutput(bytes20 holder, int expected) public {
+        require(ICollectionState(target).outState.balances[holder] == expected);
+    }
+}
+`;
+
+const COLLECTION_OUTSTATE_CALLER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface ICollectionState {
+    public mapping(bytes20 => int) balances;
+    function set(bytes20 holder, int value);
+}
+
+contract CollectionOutStateCaller(bytes target) {
+    function updateAndCheck(bytes20 holder, int value) public {
+        ICollectionState(target).set(holder, value);
+        require(ICollectionState(target).outState.balances[holder] == value);
+    }
+
+    function insertAndCheckMissing(bytes20 inserted, bytes20 missing, int value) public {
+        ICollectionState(target).set(inserted, value);
+        require(ICollectionState(target).outState.balances[missing] == 0);
+    }
+}
+`;
+
+const COLLECTION_OUTSTATE_TARGET_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+contract CollectionOutStateTarget() {
+    mapping(bytes20 => int) balances;
+    function set(bytes20 holder, int value) public {
+        this.balances[holder] = value;
+        require(value >= 0);
     }
 }
 `;
@@ -305,6 +352,18 @@ describe('outState Accessor and Function Returns', () => {
         }),
       ]);
       expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
+    });
+
+    it('compiles an existing collection-entry outState read as an authenticated output scan', () => {
+      const artifact = compileString(COLLECTION_OUTSTATE_READER_CONTRACT, { forceStateful: true });
+      const fn = artifact.abi.find((candidate) => candidate.name === 'requireOutput')!;
+      expect(fn.externalOutStateReads).toEqual([
+        expect.objectContaining({
+          interfaceName: 'ICollectionState',
+          addressParam: 'target',
+          requiredDataNftIndices: [],
+        }),
+      ]);
     });
   });
 
@@ -571,6 +630,131 @@ contract Reader(bytes32 counterCategory) {
       await expect(targetStateful.getState()).resolves.toEqual(
         expect.objectContaining({ message: next }),
       );
+    });
+  });
+
+  describe('collection outState reconstruction', () => {
+    it('reads an existing final C2 entry written by the callee', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+
+      await expect(
+        caller.updateAndCheck(alicePkh, 17n)
+          .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+          .send(),
+      ).resolves.toBeDefined();
+      await expect(targetStateful.getState()).resolves.toEqual(expect.any(Object));
+    });
+
+    it('rejects a forged final C2 entry value', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const builder = await caller.updateAndCheck(alicePkh, 17n)
+        .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+        .build();
+      const entry = builder.outputs.find((output) =>
+        output.token?.category === targetSetup.categoryId
+        && output.token.nft?.capability === 'mutable'
+        && (output.token.nft.commitment?.length ?? 0) >= 130);
+      expect(entry?.token?.nft?.commitment).toBeDefined();
+      entry!.token = {
+        ...entry!.token!,
+        nft: {
+          ...entry!.token!.nft!,
+          commitment: `${entry!.token!.nft!.commitment!.slice(0, -2)}12`,
+        },
+      };
+
+      await expect(builder.send()).rejects.toThrow();
+    });
+
+    it('returns the default only with an authenticated final C2 predecessor', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+
+      await expect(
+        caller.insertAndCheckMissing(alicePkh, bobPkh, 17n)
+          .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+          .send(),
+      ).resolves.toBeDefined();
+    });
+
+    it('rejects a forged final C2 predecessor link for an absent key', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const builder = await caller.insertAndCheckMissing(alicePkh, bobPkh, 17n)
+        .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+        .build();
+      const predecessor = builder.outputs.find((output) =>
+        output.token?.category === targetSetup.categoryId
+        && output.token.nft?.capability === 'mutable'
+        && output.token.nft.commitment?.startsWith('00'.repeat(32)));
+      expect(predecessor?.token?.nft?.commitment).toBeDefined();
+      predecessor!.token = {
+        ...predecessor!.token!,
+        nft: {
+          ...predecessor!.token!.nft!,
+          commitment: `${predecessor!.token!.nft!.commitment!.slice(0, 64)}${'ff'.repeat(32)}`,
+        },
+      };
+
+      await expect(builder.send()).rejects.toThrow();
     });
   });
 

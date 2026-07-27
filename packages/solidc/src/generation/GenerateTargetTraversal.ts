@@ -11214,6 +11214,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const info = node.readInfo!;
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    if (info.outputState) {
+      this.emitExternalCollectionOutStateRead(node, locationData);
+      return node;
+    }
+
     // 1. Check if external entry exists via introspection
     this.emitSlotExistsCheck('readOnlyDataNft', info.externalReadSlotIndex, locationData);
 
@@ -11244,6 +11249,203 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.pushToStack('(value)');
     return node;
+  }
+
+  /**
+   * Read an existing C2 collection entry from the owner's finalized output set.
+   *
+   * This path deliberately scans outputs rather than accepting an SDK-authored index. It authenticates the
+   * owner-derived collection covenant, category/capability, the complete composite key hash, and uniqueness of
+   * the matching entry. An absent entry currently fails closed; authenticated predecessor/default semantics are
+   * added separately because absence requires a preserved bracketing C2 output, not merely failure to find a row.
+   */
+  private emitExternalCollectionOutStateRead(
+    node: ExternalMappingAccessNode, loc: SingleLocationData,
+  ): void {
+    const info = node.readInfo!;
+    this.emitExternalOutStateOutputIndex(info.externalOutStateSlotIndex!, undefined, loc);
+    this.pushToStack('(external_out_collection_master)');
+
+    // H(k0) or H(H(k0)||H(k1)..), masked to the positive 255-bit C2 slot domain.
+    for (let index = 0; index < node.keys.length; index++) {
+      node.keys[index] = this.visit(node.keys[index]);
+      this.emit(Op.OP_SHA256, loc);
+      if (index > 0) {
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack();
+      }
+    }
+    this.popFromStack();
+    if (node.keys.length > 1) this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(31n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(new Uint8Array([0x7f]), loc);
+    this.emit(Op.OP_AND, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.pushToStack('(external_out_collection_slot)');
+
+    // Derive the collection output covenant from the actual callee master category.
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_collection_master)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(external_out_collection_category)');
+    this.emit(Op.OP_DUP, loc);
+    this.pushToStack('(external_out_collection_address)');
+    this.emitSortedEntryAddress(computeCollectionHash(info.collectionSignature), loc);
+    this.stack[0] = '(external_out_collection_address)';
+
+    this.emitDefaultValue(loc, info.valueType);
+    this.pushToStack('(external_out_collection_value)');
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(external_out_collection_found)');
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.popFromStack();
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_TOALTSTACK, loc); // authenticated absence brackets (above exact-match count)
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(external_out_collection_i)');
+
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    const stackBeforeBody = [...this.stack];
+    const stackDepth = this.stack.length;
+
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_collection_address)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+
+    // Exact mutable owner category.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_collection_category)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    // C2 commitment = slot32 || next32 || raw value.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc); // slot, remainder
+    this.emit(Op.OP_OVER, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_collection_slot)') + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_DROP, loc); // an exact row supersedes any earlier predecessor bracket
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_NIP, loc); // drop slot, keep next||value
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); // raw value
+    const valueKind = this.sortedValueKind(info.valueType);
+    if (valueKind === null) {
+      throw new Error(`External outState collection '${info.collectionName}' has an unsupported value type`);
+    }
+    if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    this.emitReplace(this.getStackIndex('(external_out_collection_value)') + 1, this.currentFunction);
+    this.emit(Op.OP_ELSE, loc);
+    // Authenticated absence: candidate slot < H(k) < candidate next, with next==0 as +infinity.
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_collection_slot)') + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_collection_slot)') + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_BOOLAND, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc); // candidate slot; duplicated output index remains for scoped cleanup
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+
+    this.removeScopedVariables(stackDepth, this.currentFunction);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(encodeBool(false), loc);
+    this.pushToStack('(external_out_collection_continue)');
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = [...stackBeforeBody];
+    this.emit(encodeBool(true), loc);
+    this.pushToStack('(external_out_collection_exit)');
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack();
+    this.scopeDepth -= 1;
+
+    this.emit(Op.OP_FROMALTSTACK, loc); // bracket count
+    this.emit(Op.OP_FROMALTSTACK, loc); // exact count
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // exact once => no residual bracket
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // no exact row
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // exactly one authenticated predecessor
+    this.emit(Op.OP_ENDIF, loc);
+    for (const name of [
+      '(external_out_collection_i)',
+      '(external_out_collection_address)',
+      '(external_out_collection_category)',
+      '(external_out_collection_slot)',
+      '(external_out_collection_master)',
+    ]) {
+      const index = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+    }
+    this.stack[0] = '(value)';
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
@@ -11707,45 +11909,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitExternalOutputStateAccess(node: ExternalOutputStateAccessNode): Node {
     const info = node.accessInfo!;
     const locationData = { location: node.location, positionHint: PositionHint.START };
-
-    // Find the outState slot for this access to check sharing
-    const osSlot = this.externalOutStateSlots.find(
-      (s) => s.slotIndex === info.externalOutStateSlotIndex,
-    );
-
-    if (osSlot?.sharedWithCallSlotIndex !== undefined) {
-      // Shared with an external call slot - read the callee's data NFT at (callee master + 1 + nftIndex).
-      const callSlot = this.externalCallSlots.find(
-        (cs) => cs.slotIndex === osSlot.sharedWithCallSlotIndex,
-      )!;
-      const idxStack = this.getStackIndex(`__internal__extcallMasterIdx${callSlot.slotIndex}`, true);
-      if (idxStack >= 0) {
-        // Multi-call function: use the SDK-filled runtime callee master index (offset-shift robust).
-        this.emit(encodeInt(BigInt(idxStack)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.emit(encodeInt(BigInt(1 + info.nftIndex)), locationData);
-        this.emit(Op.OP_ADD, locationData);
-      } else {
-        const ecBase = this.getExternalCallBaseOffset();
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(ecBase + callSlot.computedOffset + 1 + info.nftIndex)), locationData);
-        this.emit(Op.OP_ADD, locationData);
-      }
-    } else {
-      // Not shared - use runtime _externalOutStateInputBase param (direction unknown at compile time)
-      let slotOffset = 0;
-      for (const s of this.externalOutStateSlots) {
-        if (s.sharedWithCallSlotIndex !== undefined) continue;
-        if (s.slotIndex === osSlot!.slotIndex) break;
-        slotOffset += 1 + s.requiredDataNftIndices.length;
-      }
-      const positionalIndex = osSlot!.requiredDataNftIndices.indexOf(info.nftIndex);
-      const stackIdx = this.getStackIndex('__internal__externalOutStateInputBase');
-      this.emit(encodeInt(BigInt(stackIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.emit(encodeInt(BigInt(slotOffset + 1 + positionalIndex)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-    }
+    this.emitExternalOutStateOutputIndex(info.externalOutStateSlotIndex, info.nftIndex, locationData);
 
     if (info.dynamic) {
       this.pushToStack('(external_out_dynamic_master)');
@@ -11776,6 +11940,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.pushToStack('(value)');
     return node;
+  }
+
+  /** Push an external outState owner's master output index, or one of its data-NFT output indices. */
+  private emitExternalOutStateOutputIndex(
+    slotIndex: number, nftIndex: number | undefined, locationData: SingleLocationData,
+  ): void {
+    const osSlot = this.externalOutStateSlots.find((s) => s.slotIndex === slotIndex);
+    if (!osSlot) throw new Error('external outState slot metadata is missing');
+    if (osSlot?.sharedWithCallSlotIndex !== undefined) {
+      const callSlot = this.externalCallSlots.find(
+        (cs) => cs.slotIndex === osSlot.sharedWithCallSlotIndex,
+      )!;
+      const idxStack = this.getStackIndex(`__internal__extcallMasterIdx${callSlot.slotIndex}`, true);
+      if (idxStack >= 0) {
+        // Multi-call function: use the SDK-filled runtime callee master index (offset-shift robust).
+        this.emit(encodeInt(BigInt(idxStack)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        if (nftIndex !== undefined) {
+          this.emit(encodeInt(BigInt(1 + nftIndex)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+      } else {
+        const ecBase = this.getExternalCallBaseOffset();
+        this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(
+          ecBase + callSlot.computedOffset + (nftIndex === undefined ? 0 : 1 + nftIndex),
+        )), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+    } else {
+      // Not shared - use runtime _externalOutStateInputBase param (direction unknown at compile time)
+      let slotOffset = 0;
+      for (const s of this.externalOutStateSlots) {
+        if (s.sharedWithCallSlotIndex !== undefined) continue;
+        if (s.slotIndex === osSlot!.slotIndex) break;
+        slotOffset += 1 + s.requiredDataNftIndices.length;
+      }
+      const stackIdx = this.getStackIndex('__internal__externalOutStateInputBase');
+      this.emit(encodeInt(BigInt(stackIdx)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      let relative = slotOffset;
+      if (nftIndex !== undefined) {
+        const positionalIndex = osSlot.requiredDataNftIndices.indexOf(nftIndex);
+        if (positionalIndex < 0) throw new Error('external outState data NFT is absent from its slot');
+        relative += 1 + positionalIndex;
+      }
+      if (relative !== 0) {
+        this.emit(encodeInt(BigInt(relative)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+    }
   }
 
   /**

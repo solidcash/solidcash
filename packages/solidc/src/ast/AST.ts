@@ -1799,6 +1799,9 @@ export interface ExternalCollectionReadInfo {
   keyTypes: Type[];
   valueType: Type;
   externalReadSlotIndex: number;
+  /** Read the final transaction output state rather than the co-spent input state. */
+  outputState?: boolean;
+  externalOutStateSlotIndex?: number;
 }
 
 export class ExternalMappingAccessNode extends ExpressionNode {

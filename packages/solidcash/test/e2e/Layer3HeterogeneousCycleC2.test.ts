@@ -36,10 +36,10 @@ import {
  * RE-DERIVED root. Nothing is mutated after derivation, so an accepted transcript is internally consistent and
  * only a covenant can reject it. Each negative names the exact failing input.
  *
- * The participant shapes here deliberately avoid one measured escape: a pointer-table caller whose contract
- * also declares a returning handler stops authenticating its emission rows once its batch executes two rows.
- * See Layer3PointerTableRowEscape.test.ts. That is why the only returning handler in this graph belongs to
- * AUDIT_D, which is reached exactly once and makes no outgoing call.
+ * The participant shapes here deliberately avoid one measured escape: a pointer-table caller stops
+ * authenticating its emission rows as soon as its own contract declares any returning public handler, whether
+ * or not that handler is ever invoked. See Layer3PointerTableRowEscape.test.ts. That is why the only returning
+ * handler in this graph belongs to AUDIT_D, which owns no pointer table and makes no outgoing call.
  *
  * SEMANTIC evidence only, on the named layer3-bch2026-semantic-relaxed-v1 profile (BCH-2026 opcode,
  * introspection and 128-byte-commitment behaviour, relaxed capacity). Not consensus-fit or policy-fit.

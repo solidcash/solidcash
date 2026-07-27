@@ -120,8 +120,11 @@ const resolveArguments = (
  *
  * The application supplies deployed participants, never transcript rows. Participant identity is interned by
  * exact locking bytecode, so two calls to one owner produce two logical invocations but one physical owner
- * block. Conditional/loop/pointer/opaque shapes remain fail-closed until their runtime occurrence proof is
- * connected to this worklist.
+ * block. Runtime-dependent occurrences and targets are accepted only through explicit derivation-probe
+ * callbacks; the caller projection remains authoritative for the reached rows. Expansion completes before
+ * `planCompiledGraph` reads any balanced block, so resource/effect slots are not guessed or iteratively
+ * stabilized: they are compiler-owned parts of each interned participant artifact and are laid out exactly
+ * once after the physical owner set is complete.
  */
 export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): CompiledGraphPlan {
   const maximum = options.maximumInvocations ?? 24;

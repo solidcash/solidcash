@@ -363,9 +363,23 @@ export function getNetworkPrefix(network: string): 'bitcoincash' | 'bchtest' | '
 
 const randomInt = (): bigint => BigInt(Math.floor(Math.random() * 10000));
 
+// Outpoint uniqueness is a correctness property of a fixture, not a statistical one. A purely random txid
+// seeded from Math.random() * 10000 with 10 vouts spans only 100,000 outpoints, so fixtures that co-spend many
+// inputs collided by birthday and surfaced as "Duplicate input detected" - indistinguishable from a real
+// regression during integration. Mixing a monotonic counter into the seed makes every outpoint unique within a
+// process while keeping the value unpredictable across runs.
+let outpointCounter = 0n;
+const uniqueTxid = (): string => {
+  outpointCounter += 1n;
+  const seed = new Uint8Array(16);
+  seed.set(bigIntToVmNumber(outpointCounter), 0);
+  seed.set(bigIntToVmNumber(randomInt()), 8);
+  return binToHex(sha256(seed));
+};
+
 export const randomUtxo = (defaults?: Partial<Utxo>): Utxo => ({
   ...{
-    txid: binToHex(sha256(bigIntToVmNumber(randomInt()))),
+    txid: uniqueTxid(),
     vout: Math.floor(Math.random() * 10),
     satoshis: 100_000n + randomInt(),
   },

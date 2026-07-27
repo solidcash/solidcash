@@ -121,3 +121,16 @@ export {
   resolveCollectionSignature,
   resolveEventSignature,
 } from './covenant-helpers.js';
+export {
+  preflightBalancedBlockAssembly,
+  balancedAssemblyFromGraphLayout,
+  assertCompleteLocalBlock,
+  participantRegionEnd,
+  BALANCED_SLOT_SATOSHIS,
+  OUTPUT_ONLY_BLOCK_SLOT_KINDS,
+  EVENT_BLOCK_SLOT_KINDS,
+  type BalancedAssembly,
+  type BalancedAssemblyOptions,
+  type BalancedAssemblyView,
+  type BalancedBlockPlacement,
+} from './balancedBlocks.js';

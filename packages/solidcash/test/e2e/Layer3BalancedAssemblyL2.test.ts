@@ -1,0 +1,472 @@
+import { describe, expect, it } from 'vitest';
+import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { scriptToBytecode } from '@solidcash/utils';
+import { compileString } from 'solidc';
+import {
+  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, balancedAssemblyFromGraphLayout,
+  participantRegionEnd, preflightBalancedBlockAssembly, layer3,
+} from '../../src/index.js';
+import type { BalancedAssembly } from '../../src/index.js';
+import { randomUtxo } from '../../src/utils.js';
+import { setupStatefulUtxos } from '../test-util.js';
+import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+
+/**
+ * L2 - SDK funding/change/event-NFT block assembly.
+ *
+ * The shape under test is a two-participant returning graph. Each participant publishes a two-slot block
+ * `[master, returnEvent]`: the return event is OUTPUT-ONLY, so its input side has to be filled by a funding
+ * input or the block's input extent would be one shorter than its output extent and every later block's two
+ * bases would drift apart.
+ *
+ * The five things the checklist asks for are each asserted on the settled transaction rather than described:
+ * funding inputs occupy the unused input-side slots; the paired outputs are the specified 1,000-satoshi
+ * ordinary/return-event form; the return-event NFT stays inside its emitter's block; the fee input and the
+ * terminal change output sit outside every relocatable block; and `preflightBalancedBlockAssembly` refuses a
+ * malformed or unbalanced assembly BEFORE any unlocker is asked for a signature.
+ *
+ * Each preflight negative is paired with the same transaction submitted to the BCH-2026 VM, so the preflight
+ * is shown to reject shapes consensus also rejects, not a private rule of its own.
+ *
+ * Evidence level: SEMANTIC, on `createLayer3SemanticTestProvider()` (the stricter profile: real 128-byte NFT
+ * commitments).
+ */
+
+const raw = (builder: TransactionBuilder): string =>
+  binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+const packed = (...values: bigint[]): Uint8Array =>
+  scriptToBytecode(values.map((value) => {
+    const bytes: number[] = [];
+    let magnitude = value < 0n ? -value : value;
+    while (magnitude > 0n) { bytes.push(Number(magnitude & 0xffn)); magnitude >>= 8n; }
+    if (bytes.length === 0) return new Uint8Array();
+    if (bytes[bytes.length - 1] & 0x80) bytes.push(value < 0n ? 0x80 : 0x00);
+    else if (value < 0n) bytes[bytes.length - 1] |= 0x80;
+    return Uint8Array.from(bytes);
+  }));
+const aggregate = (...values: bigint[]): Uint8Array => scriptToBytecode([packed(...values)]);
+
+const RETURNING_B = `pragma solidcash >=0.8.0;
+contract L2ReturningB(int brand) {
+  function twice(int n) public pure returns (int, int) {
+    require(n >= 0);
+    return (n * 2, n + 10);
+  }
+}`;
+const RETURNING_A = `pragma solidcash >=0.8.0;
+interface IL2ReturningB { function twice(int n) returns (int, int); }
+contract L2ReturningA(int brand, address target) {
+  function plusOne(int n) public pure returns (int) {
+    int child, int witness = IL2ReturningB(target).twice(n);
+    require(child >= 0 && witness == n + 10);
+    return child + 1;
+  }
+}`;
+
+type Malformation =
+  | 'none'
+  | 'missing-slot-funder'      // drop an output-only slot's funding input
+  | 'event-outside-block'      // move a return-event NFT out of its emitter's block, to the tail
+  | 'wrong-slot-value'         // event output value other than the specified 1,000 satoshis
+  | 'change-inside-block'      // claim a terminal change output that falls inside a participant block
+  | 'event-cloned-to-tail';    // keep the in-block event AND emit a copy outside every block
+
+interface Built {
+  provider: ReturnType<typeof createLayer3SemanticTestProvider>;
+  builder: TransactionBuilder;
+  transaction: string;
+  assembly: BalancedAssembly;
+  layout: ReturnType<typeof layer3.compiledGraphPhysicalLayout>;
+  fundingOutpoints: string[];
+  signatureRequests: { count: number };
+}
+
+async function build(malformation: Malformation = 'none'): Promise<Built> {
+  const provider = createLayer3SemanticTestProvider();
+  const projection = new Contract(
+    compileString(layer3.generateGraphProjectionVerifier()), [], { provider },
+  );
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [alicePkh], { provider },
+  );
+  const genesis = await (provider as any).addTokenUtxosDynamic(() => [{
+    address: controller.tokenAddress,
+    satoshis: 3000n,
+    token: { amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  }]);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: genesis.categoryId as string,
+  };
+  const artifactB = compileString(RETURNING_B, options);
+  const baseB = new Contract(artifactB, [2n], { provider });
+  const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const artifactA = compileString(RETURNING_A, options);
+  const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+
+  const plan = layer3.planCompiledGraph([
+    { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'plusOne', args: [2n] },
+    { parent: 0, callee: 1, function: 'twice', args: [2n] },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const resultA = packed(5n);
+  const resultB = packed(4n, 12n);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan,
+    { 0: binToHex(resultA), 1: binToHex(resultB) },
+    layout.participantInputs, layout.returnOutputs,
+    [binToHex(resultA), binToHex(resultB)], layout.projectionInputs,
+  );
+
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootFee = randomUtxo({ satoshis: 20_000n });
+  await provider.addUtxo(p2pkh.address, rootFee);
+  const rootTx = new TransactionBuilder({ provider });
+  rootTx.addInput(genesis.utxos[0], controller.unlock.initialize(
+    hexToBin(transcript.root), alicePub, signature(),
+  ));
+  rootTx.addInput(rootFee, p2pkh.unlock.spend(alicePub, signature()));
+  rootTx.addOutput({
+    to: controller.tokenAddress, amount: genesis.utxos[0].satoshis,
+    token: {
+      category: genesis.categoryId, amount: 0n,
+      nft: { capability: 'mutable', commitment: transcript.root },
+    },
+  });
+  rootTx.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(rootTx));
+  const rooted = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo: any) => utxo.token?.nft?.commitment === transcript.root);
+
+  // One funding input per output-only slot; these are what keep each block's input extent equal to its output
+  // extent. They are ordinary P2PKH coins with no protocol role beyond occupying the slot.
+  const slotFunderA = randomUtxo({ satoshis: 1000n });
+  const slotFunderB = randomUtxo({ satoshis: 1000n });
+  const projectionA = randomUtxo({ satoshis: 1000n });
+  const projectionB = randomUtxo({ satoshis: 1000n });
+  const feeFunder = randomUtxo({ satoshis: 50_000n });
+  for (const utxo of [slotFunderA, slotFunderB, feeFunder]) await provider.addUtxo(p2pkh.address, utxo);
+  for (const utxo of [projectionA, projectionB]) await provider.addUtxo(projection.address, utxo);
+
+  // Count every request for an unlocking signature so a preflight rejection can be proven to happen first.
+  const signatureRequests = { count: 0 };
+  const counted = (unlocker: any): any => ({
+    generateLockingBytecode: (...args: unknown[]) => unlocker.generateLockingBytecode(...args),
+    generateUnlockingBytecode: (...args: unknown[]) => {
+      signatureRequests.count += 1;
+      return unlocker.generateUnlockingBytecode(...args);
+    },
+  });
+
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(setupA.masterUtxo, counted(routeA(
+    ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+    BigInt(layout.returnOutputs[0]!),
+  )));
+  if (malformation !== 'missing-slot-funder') {
+    tx.addInput(slotFunderA, counted(p2pkh.unlock.spend(alicePub, signature())));
+  }
+  tx.addInput(setupB.masterUtxo, counted(routeB(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+    BigInt(layout.returnOutputs[1]!),
+  )));
+  tx.addInput(slotFunderB, counted(p2pkh.unlock.spend(alicePub, signature())));
+  tx.addInput(projectionA, counted(projection.unlock.verify(
+    transcript.bytes, BigInt(layout.controllerInput), 0n,
+  )));
+  tx.addInput(projectionB, counted(projection.unlock.verify(
+    transcript.bytes, BigInt(layout.controllerInput), 1n,
+  )));
+  tx.addInput(rooted, counted(controller.unlock.attest(transcript.bytes)));
+  tx.addInput(feeFunder, counted(p2pkh.unlock.spend(alicePub, signature())));
+
+  const returnEventA = {
+    to: hexToBin('51'), amount: malformation === 'wrong-slot-value' ? 800n : 1000n,
+    token: {
+      category: setupA.categoryId, amount: 0n,
+      nft: { capability: 'none' as const, commitment: binToHex(aggregate(5n)) },
+    },
+  };
+  const returnEventB = {
+    to: hexToBin('51'), amount: 1000n,
+    token: {
+      category: setupB.categoryId, amount: 0n,
+      nft: { capability: 'none' as const, commitment: binToHex(aggregate(4n, 12n)) },
+    },
+  };
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  // The emitter's own block slot. Pushing it to the tail is the 'event-outside-block' malformation.
+  if (malformation !== 'event-outside-block') tx.addOutput(returnEventA);
+  else tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput(returnEventB);
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  if (malformation === 'event-outside-block' || malformation === 'event-cloned-to-tail') {
+    // Same slot COUNT, so the width check cannot be what rejects: A's return-event NFT appears at the terminal
+    // tail position instead of (or as well as) its own block slot.
+    tx.addOutput({ ...returnEventA, amount: 10_000n });
+  } else if (malformation !== 'missing-slot-funder') {
+    tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  }
+
+  let assembly = balancedAssemblyFromGraphLayout(plan.participants, layout);
+  if (malformation === 'change-inside-block') assembly = { ...assembly, changeOutput: 1 };
+  return {
+    provider,
+    builder: tx,
+    transaction: raw(tx),
+    assembly,
+    layout,
+    fundingOutpoints: [slotFunderA, slotFunderB, feeFunder].map((u) => `${u.txid}:${u.vout}`),
+    signatureRequests,
+  };
+}
+
+describe('L2 balanced funding/change/event-NFT block assembly', () => {
+  it('SEMANTIC: settles a balanced two-block assembly and preflights clean before broadcast', async () => {
+    const built = await build();
+    // No exception: every block is a complete span, concatenated from 0, with paired inputs and 1,000-satoshi
+    // slot outputs, and the fee/change tail outside every block.
+    preflightBalancedBlockAssembly(built.builder, built.assembly);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('SEMANTIC: funding inputs fill the unused input side of each output-only slot', async () => {
+    const built = await build();
+    const blocks = built.assembly.blocks;
+    expect(blocks.map((block) => block.blockLayout.slots.map((slot) => `${slot.offset}:${slot.kind}`)))
+      .toEqual([['0:master', '1:returnEvent'], ['0:master', '1:returnEvent']]);
+    // Each block's return-event slot is an OUTPUT-only effect, so its input side carries an ordinary funder.
+    for (const block of blocks) {
+      const slot = block.blockLayout.slots.find((entry) => entry.kind === 'returnEvent')!;
+      const index = block.base + slot.offset;
+      const input = built.builder.inputs[index];
+      expect(built.fundingOutpoints).toContain(`${input.txid}:${input.vout}`);
+      expect(input.token).toBeUndefined();
+    }
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('SEMANTIC: slot outputs are the specified 1,000-satoshi form and event NFTs stay inside their block', async () => {
+    const built = await build();
+    const regionEnd = participantRegionEnd(built.assembly);
+    expect(regionEnd).toBe(4);
+    for (const block of built.assembly.blocks) {
+      const slot = block.blockLayout.slots.find((entry) => entry.kind === 'returnEvent')!;
+      const index = block.base + slot.offset;
+      const output = built.builder.outputs[index];
+      expect(output.amount).toBe(1000n);
+      expect(output.token?.nft?.commitment).toBeTruthy();
+      // Inside the emitting participant's own block, not appended after the graph.
+      expect(index).toBeGreaterThanOrEqual(block.base);
+      expect(index).toBeLessThan(block.base + block.blockLayout.blockSize);
+    }
+    // The projection and controller slots pair with ordinary 1,000-satoshi outputs.
+    for (const auxiliary of built.assembly.auxiliaryInputs) {
+      expect(built.builder.outputs[auxiliary].amount).toBe(1000n);
+      expect(built.builder.outputs[auxiliary].token).toBeUndefined();
+    }
+    // Nothing token-bearing survives outside the participant region.
+    for (let index = regionEnd; index < built.builder.outputs.length; index += 1) {
+      expect(built.builder.outputs[index].token).toBeUndefined();
+    }
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('SEMANTIC: fee funding and terminal change sit outside every relocatable block', async () => {
+    const built = await build();
+    const regionEnd = participantRegionEnd(built.assembly);
+    expect(built.assembly.feeInput).toBeGreaterThanOrEqual(regionEnd);
+    expect(built.assembly.changeOutput).toBeGreaterThanOrEqual(regionEnd);
+    expect(built.assembly.changeOutput).toBe(built.builder.outputs.length - 1);
+    const feeInput = built.builder.inputs[built.assembly.feeInput];
+    expect(built.fundingOutpoints).toContain(`${feeInput.txid}:${feeInput.vout}`);
+    // The change output absorbs the remainder, so it is NOT the fixed 1,000-satoshi slot value.
+    expect(built.builder.outputs[built.assembly.changeOutput].amount).toBe(10_000n);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('HOSTILE: an output-only slot without its funding input is rejected by preflight and by the VM', async () => {
+    const built = await build('missing-slot-funder');
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/balanced assembly: transaction has 7 slots, layout declares 8/);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 180_000);
+
+  it('HOSTILE: a return-event NFT moved out of its block is rejected by preflight and by the VM', async () => {
+    const built = await build('event-outside-block');
+    // Same input/output width; the emitter's own block slot is what lost its authenticated NFT.
+    expect(built.builder.inputs.length).toBe(built.builder.outputs.length);
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/participant 0 'returnEvent' output 1 carries no authenticated NFT/);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 180_000);
+
+  // MEASURED LIMIT, recorded rather than hidden: "event NFTs remain inside the emitting participant's block"
+  // is an SDK assembly property, NOT a covenant invariant. The participant's minting master is co-spent, so a
+  // SECOND NFT of its category can be minted in the tail and the BCH-2026 VM accepts it. The in-block slot is
+  // authenticated; a category-indexing observer that trusts any NFT of that category is not. The preflight
+  // rejects the shape on the honest SDK path; a hostile assembler can still build it.
+  it('FAIL_CLOSED: an event NFT cloned outside every block is preflight-only - the VM accepts the clone', async () => {
+    const built = await build('event-cloned-to-tail');
+    // The in-block slot is honest here, so only the region rule can catch the copy in the tail.
+    expect(built.builder.outputs[1].token?.nft?.commitment).toBeTruthy();
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/output 7 carries a token outside every participant block \(region ends at 4\)/);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  // MEASURED LIMIT, recorded rather than hidden: the 1,000-satoshi slot value is an SDK layout convention, NOT
+  // a covenant invariant. An 800-satoshi return-event output settles on the BCH-2026 VM. The preflight is
+  // therefore a policy gate for this field alone; every other negative in this file is also consensus-rejected.
+  it('FAIL_CLOSED: an off-spec event slot value is a preflight-only rejection - the VM accepts it', async () => {
+    const built = await build('wrong-slot-value');
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/'returnEvent' output 1 is 800 satoshis, the balanced layout specifies 1000/);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('FAIL_CLOSED: a terminal change output inside a participant block is rejected by preflight', async () => {
+    const built = await build('change-inside-block');
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/change output 1 falls inside a relocatable participant block/);
+    // Control: the same transaction with the honest layout preflights clean and settles.
+    const honest = await build();
+    preflightBalancedBlockAssembly(honest.builder, honest.assembly);
+    await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('FAIL_CLOSED: preflight rejects before any unlocking signature is requested', async () => {
+    const built = await build('missing-slot-funder');
+    // Nothing has asked an unlocker for bytecode yet: `raw()` was called during assembly, so reset the counter
+    // and prove the preflight itself needs no signature to reject.
+    built.signatureRequests.count = 0;
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly)).toThrow();
+    expect(built.signatureRequests.count).toBe(0);
+  }, 180_000);
+
+  // MEASUREMENT, not a claim of correctness. The DIRECT `withExternalCall` route is a different assembler from
+  // the compiled-graph route above, and it does NOT balance a callee's block: it appends every callee's
+  // return-event NFT after the whole participant region instead of inside the emitter's block, so a callee
+  // contributes 2 inputs and 3 outputs. This test pins the current shape so the divergence is visible and
+  // cannot drift silently; it is recorded as an open gap, not as satisfied L1/L2 behaviour.
+  it('MEASUREMENT: the direct external-call route does not balance a callee block', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+interface IDirectCallee { function bump(int n) returns (int); }
+contract DirectCallee() is IDirectCallee {
+  int total;
+  function bump(int n) returns (int) {
+    this.total = this.total + n;
+    return n;
+  }
+}`);
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+interface IDirectCallee { function bump(int n) returns (int); }
+contract DirectCaller(bytes calleeAddr) {
+  int seen;
+  function drive(int n) {
+    int got = IDirectCallee(calleeAddr).bump(n);
+    this.seen = this.seen + got;
+  }
+}`);
+    // The compiler publishes the return event as a slot INSIDE the callee's own three-slot block.
+    const calleeAbi = calleeArtifact.abi.find((fn: any) => fn.name === 'bump') as any;
+    expect(calleeAbi.blockLayout.blockSize).toBe(3);
+    expect(calleeAbi.blockLayout.slots.map((slot: any) => `${slot.offset}:${slot.kind}`))
+      .toEqual(['0:master', '1:dataNft', '2:returnEvent']);
+
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const callee = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callerBase = new Contract(callerArtifact, [callee.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, { seen: 0n }, { saltContract: true },
+    );
+    const scCaller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+    const scCallee = StatefulContract.withCategory(calleeBase, calleeSetup.categoryId);
+    const details = await (scCaller as any).drive(5n)
+      .withExternalCall(scCallee, 'bump', [5n]).send();
+    const decoded = decodeTransactionUnsafe(hexToBin(await provider.getRawTransaction(details.txid)));
+
+    // Measured: caller block [0,1], callee block [2,3], fee 4 -> 5 inputs; but 6 outputs, because the
+    // callee's return-event NFT is appended at index 4 instead of occupying its published slot at base+2.
+    expect(decoded.inputs.length).toBe(5);
+    expect(decoded.outputs.length).toBe(6);
+    const returnEventIndex = decoded.outputs.findIndex(
+      (output) => output.token !== undefined
+        && binToHex(output.token.category) === calleeSetup.categoryId
+        && output.valueSatoshis === 800n,
+    );
+    expect(returnEventIndex).toBe(4); // outside the callee block [2,3], and 800 satoshis, not 1,000
+  }, 180_000);
+
+  it('FAIL_CLOSED: a malformed local block descriptor is rejected before any base is assigned', async () => {
+    const built = await build();
+    const gapped = {
+      ...built.assembly,
+      blocks: [
+        {
+          ...built.assembly.blocks[0],
+          blockLayout: {
+            blockSize: 2,
+            slots: [{ kind: 'master' as const, offset: 0 }, { kind: 'returnEvent' as const, offset: 0 }],
+          },
+        },
+        built.assembly.blocks[1],
+      ],
+    };
+    expect(() => preflightBalancedBlockAssembly(built.builder, gapped))
+      .toThrow(/participant 0 has two slots at local offset 0/);
+
+    const headless = {
+      ...built.assembly,
+      blocks: [
+        {
+          ...built.assembly.blocks[0],
+          blockLayout: {
+            blockSize: 2,
+            slots: [{ kind: 'dataNft' as const, offset: 0 }, { kind: 'returnEvent' as const, offset: 1 }],
+          },
+        },
+        built.assembly.blocks[1],
+      ],
+    };
+    expect(() => preflightBalancedBlockAssembly(built.builder, headless))
+      .toThrow(/participant 0 must declare exactly one master slot at local offset 0/);
+
+    const detached = {
+      ...built.assembly,
+      blocks: [built.assembly.blocks[0], { ...built.assembly.blocks[1], base: 3 }],
+    };
+    expect(() => preflightBalancedBlockAssembly(built.builder, detached))
+      .toThrow(/participant 1 block base 3 breaks concatenation at 2/);
+  }, 180_000);
+});

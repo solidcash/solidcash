@@ -145,6 +145,27 @@ Scope: both rules apply to any callsite that owns ONE reserved delegate slot —
 handler dispatches rows through a loop by design and derives a delegate index per ROW, so it is excluded from
 both.
 
+*Why that exclusion does not disarm anything (measured, not proven).* "Excluded" reads like "unprotected", so
+the three things that actually hold there, each measured at compile time on the same source:
+
+- The **source entry point is not excluded**. Compiling a conditional-delegate proxy with the message-bus
+  options still classifies its callsite `conditional` and still emits the not-taken-path covenant into that
+  function's body. Only the `__scb_graph_*` clone (`graphEmissionHandler`) and the `__scb1` route are excluded.
+- The **route never skips its own state covenant.** `__scb1` issues no delegatecall itself (it `OP_INVOKE`s
+  handlers), so `functionHasDelegatecall` is false for it and it runs the ordinary data-NFT covenant. Rule D's
+  hazard is precisely "the per-function skip is wider than the per-callsite pin"; with no skip there is no gap.
+- A **state-writing batch contract with a delegate row does not compile at all**: the route inlines the row
+  bodies, so it has both a delegatecall and a state write and rule B rejects it. (Identical on 05412a58 — this
+  is pre-existing, not a consequence of rule E.)
+
+**Measurement trap, recorded because it produced a false positive on first inspection.** A message-bus artifact
+publishes the dispatcher in `artifact.bytecode` and each function body as HEX in `artifact.functionBodies`.
+Grepping ASM in `bytecode` therefore finds no covenant for *any* function and proves nothing; decode the body
+for the function's selector instead. Pinned in `SecurityAudit.test.ts` ("X16").
+
+Still open: no VM-level forgery was attempted against a live graph-controller transaction with a conditional
+delegate row. The above is compile-level evidence for the mechanism, not a settled negative result.
+
 **E. A delegatecall the COMPILER writes is still a delegatecall.** Two source forms lower to a delegatecall the
 user never typed, and both were excluded from rules 3, B and D because those rules keyed off "did the user write
 `delegatecall`":

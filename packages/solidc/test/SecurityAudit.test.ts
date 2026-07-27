@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString as _csRawSolidc } from '../src/index.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import * as Errors from '../src/Errors.js';
@@ -294,6 +296,66 @@ describe('C1/piece-7: a compiler-synthesized delegatecall pins its co-spend too'
     const conditional = consumer('contract C() { bigint count; '
       + 'function bump(bool flag) { if (flag) { Counter.increment(); } require(true); } }');
     expect(conditional.bytecode).toContain('OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY');
+  });
+});
+
+// X16 - the SCB1 route / graph-handler exclusion in C1/piece-5. Those routes loop by design and derive a
+// delegate index per ROW, so extending the reachability rules into them broke five of their tests; they were
+// excluded. This block pins WHY that exclusion is safe for an ordinary entry point in the same contract,
+// because "excluded" on its own reads like "unprotected".
+//
+// It also pins a MEASUREMENT TRAP that made this look like a live gap on first inspection: a message-bus
+// artifact publishes the dispatcher in `bytecode` and each function body as HEX in `functionBodies`, so
+// grepping ASM in `bytecode` finds no covenant for ANY function and says nothing at all.
+describe('X16: the graph-mode exclusion does not disarm an ordinary entry point', () => {
+  const graphOptions = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+    experimentalMessageBusControllerCategory: '22'.repeat(32),
+  };
+  const CONDITIONAL = `pragma solidcash >=0.8.0;
+    contract GraphDelegateProxy(address impl) { bigint counter;
+      function run(bytes input, bool flag) public {
+        if (flag) { impl.delegatecall(input); } require(input.length > 0); } }`;
+  const STRAIGHT = `pragma solidcash >=0.8.0;
+    contract GraphDelegateProxy(address impl) { bigint counter;
+      function run(bytes input) public { impl.delegatecall(input); require(input.length > 0); } }`;
+  const NOT_TAKEN_SIG = 'OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY';
+
+  const bodyAsm = (artifact: ReturnType<typeof compileString>, selector: string): string =>
+    bytecodeToAsm(hexToBin(artifact.functionBodies![selector]!));
+  const selectorOf = (artifact: ReturnType<typeof compileString>, name: string): string =>
+    artifact.abi.find((fn) => fn.name === name)!.selector!;
+
+  it('keeps the not-taken-path covenant on the source entry point under graph options', () => {
+    const graph = compileString(CONDITIONAL, graphOptions);
+    // The trap: the dispatcher carries no covenant opcodes at all, for any function.
+    expect(graph.bytecode).not.toContain(NOT_TAKEN_SIG);
+    // The body does.
+    expect(bodyAsm(graph, selectorOf(graph, 'run'))).toContain(NOT_TAKEN_SIG);
+  });
+
+  it('emits no not-taken covenant for the straight-line shape, in either mode', () => {
+    const graph = compileString(STRAIGHT, graphOptions);
+    expect(bodyAsm(graph, selectorOf(graph, 'run'))).not.toContain(NOT_TAKEN_SIG);
+    expect(bodyAsm(graph, selectorOf(graph, 'run'))).toContain('OP_UTXOBYTECODE OP_EQUALVERIFY');
+    expect(compileString(STRAIGHT).bytecode).not.toContain(NOT_TAKEN_SIG);
+  });
+
+  /**
+   * The route itself issues no delegatecall (it OP_INVOKEs handlers), so `functionHasDelegatecall` is false for
+   * it and it never skips its own state covenant - which is the exact precondition the piece-5 forgery needed.
+   * A state-WRITING batch contract with a delegate row does not compile at all: the route inlines the row
+   * bodies, so it has both a delegatecall and a state write and rule B rejects it. Same on 05412a58.
+   */
+  it('rejects a delegate row in a state-writing batch contract by name', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract BatchCounter(address impl) { int counter;
+        function add(int n) public { this.counter = this.counter + n; require(n >= 0); }
+        function run(bytes input) public { impl.delegatecall(input); require(input.length > 0); }
+        function signed(sig s, pubkey pk) public { require(checkSig(s, pk)); } }`, graphOptions))
+      .toThrow(/__scb1.*delegatecall and also writes contract state/s);
   });
 });
 

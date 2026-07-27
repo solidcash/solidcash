@@ -129,6 +129,44 @@ export function balancedAssemblyFromGraphLayout(
   };
 }
 
+/** Minimal view of one builder input for deriving an assembly without a caller-declared layout. */
+export interface BalancedAssemblyInputView {
+  unlocker?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
+}
+
+/**
+ * Derive the physical index space from the transaction itself.
+ *
+ * Every participant block starts at its master input, and that input's contract unlocker carries the ABI
+ * function whose `blockLayout` the compiler published. So the block set can be read off an unsigned builder with
+ * no cooperation from the caller - which is what makes the preflight a GATE rather than a capability the caller
+ * may decline to use.
+ *
+ * Returns `undefined` when the transaction is not describable by this model, so the gate stays silent instead of
+ * guessing: no participant block at index 0 (an ordinary or stateless transaction); a block running past the
+ * transaction; or a participant region leaving no slot for the fee input / terminal change output.
+ */
+export function deriveBalancedAssemblyFromInputs(
+  inputs: readonly BalancedAssemblyInputView[], totalSlots: number,
+): BalancedAssembly | undefined {
+  if (!Number.isInteger(totalSlots) || totalSlots < 1) return undefined;
+  const blocks: BalancedBlockPlacement[] = [];
+  let cursor = 0;
+  while (cursor < totalSlots) {
+    const layout = inputs[cursor]?.unlocker?.abiFunction?.blockLayout;
+    if (!layout || !layout.slots.some((slot) => slot.kind === 'master' && slot.offset === 0)) break;
+    blocks.push({ participant: blocks.length, base: cursor, blockLayout: layout });
+    cursor += layout.blockSize;
+  }
+  if (blocks.length === 0 || cursor > totalSlots) return undefined;
+  // The model puts the fee input and the terminal change output past every relocatable block; a transaction whose
+  // participant region covers every slot has no such tail and is out of this model's scope.
+  if (cursor > totalSlots - 1) return undefined;
+  return {
+    blocks, auxiliaryInputs: [], feeInput: totalSlots - 1, changeOutput: totalSlots - 1, totalSlots,
+  };
+}
+
 /** The physical index one past the last participant block. */
 export function participantRegionEnd(assembly: BalancedAssembly): number {
   return assembly.blocks.reduce(

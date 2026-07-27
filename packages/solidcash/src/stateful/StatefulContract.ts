@@ -5288,8 +5288,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               transaction: transactionRet,
             }) as AuthenticationProgramStateCommon[];
 
-            const returnEventOutputBase = stb.getReturnEventOutputBase();
-            const totalReturnEvents = externalCalls.filter((e) => e.hasReturnValues).length;
+            // X13: in the in-block regime this group's return event sits at its own block slot, so scan exactly
+            // that index; otherwise scan the appended tail band shared by every returning callee.
+            const inBlockIdx = stb.getExternalCallReturnEventOutputIndex(groupIdx);
+            const returnEventOutputBase = inBlockIdx >= 0 ? inBlockIdx : stb.getReturnEventOutputBase();
+            const totalReturnEvents = inBlockIdx >= 0
+              ? 1 : externalCalls.filter((e) => e.hasReturnValues).length;
             const returnOutputRange = {
               min: returnEventOutputBase,
               max: returnEventOutputBase + totalReturnEvents,
@@ -7490,10 +7494,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const bAbiFunc = bArt.abi.find((f) => f.name === ecSlot.functionName);
           const bLayout = bAbiFunc?.blockLayout;
           if (!bLayout) continue;
-          const fullBlockKinds = new Set(['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event']);
+          const fullBlockKinds = new Set(
+            ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'returnEvent'],
+          );
           if (!bLayout.slots.some((s) => fullBlockKinds.has(s.kind))) continue;
           for (const s of bLayout.slots) {
-            if (['transfer', 'tcTransfer', 'event'].includes(s.kind)) totalBFunders++;
+            if (['transfer', 'tcTransfer', 'event', 'returnEvent'].includes(s.kind)) totalBFunders++;
             // entry/TC/SC funders also needed when UTXO doesn't exist, but we can't
             // cheaply check on-chain state here. Conservatively over-allocate:
             if (['entry', 'tokenContainer', 'satoshiContainer'].includes(s.kind)) totalBFunders++;
@@ -7565,6 +7571,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : undefined);
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
+        // X13: set once B's block is confirmed to carry a funding input at its published returnEvent offset.
+        let bReturnEventInBlock = false;
         const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
         // Cross-contract callee LOOP write metadata (docs/deferrals.md #1): populated after the block build below.
         let bEntryLoopCommitments: string[] | undefined;
@@ -7578,13 +7586,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         if (bBlockLayout) {
           // Check for slots that need full block treatment (entries, TC, SC, events, transfers, keccak side-cars).
-          // Exclude returnEvent - it's already handled by the return event infrastructure.
+          // returnEvent is included: its OUTPUT lives at B's own block offset, so B's block must carry a paired
+          // funding INPUT there or B's input extent is shorter than its output extent (X13).
           const fullBlockKinds = new Set(
             ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'keccakSideCar'],
           );
-          const hasExtraSlots = bBlockLayout.slots.some(
-            (s) => fullBlockKinds.has(s.kind),
-          );
+          const hadFullBlockKinds = bBlockLayout.slots.some((s) => fullBlockKinds.has(s.kind));
+          // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
+          // keep the appended-tail shape and take no returnEvent funder.
+          const bLoopExpanded = loopIdxRanges.some((r) => slotIndex >= r.start && slotIndex < r.start + r.count);
+          const hasExtraSlots = hadFullBlockKinds
+            || (!bLoopExpanded && bBlockLayout.slots.some((s) => s.kind === 'returnEvent'));
           if ((hasExtraSlots || bHasLoop) && bSc) {
             // Build B's full block following blockLayout slot order.
             // Fetch B's real UTXOs for entries/TC/SC where they exist on-chain;
@@ -7614,6 +7626,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
             // Helper: create a funder input. Uses signer UTXOs when available, OP_TRUE dummies otherwise.
             let bFunderIdx = 0;
+            // Block position of the returnEvent slot's funder, or -1 when the layout declares no such slot.
+            let bReturnFunderOffset = -1;
             const makeFunder = async (): Promise<UnlockableUtxo> => {
               // Real signer: draw from the shared funder pool allocated before the external call loop
               if (sharedFunderPool && sharedFunderPool.length > 0) {
@@ -7627,8 +7641,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + 'The signer needs more UTXOs - split existing UTXOs or fund the signer address with additional inputs.',
                 );
               }
-              // Mocknet fallback: P2SH32-wrapped OP_TRUE dummy registered with provider
-              const dummyTxid = '00'.repeat(30) + (0xb0 + (bFunderIdx++)).toString(16).padStart(4, '0');
+              // Mocknet fallback: P2SH32-wrapped OP_TRUE dummy registered with provider. The outpoint is seeded
+              // with this callee's group position so two callees' block funders are distinct UTXOs.
+              const dummyTxid = '00'.repeat(30)
+                + (externalCallUtxoGroups.length & 0xff).toString(16).padStart(2, '0')
+                + ((0xb0 + (bFunderIdx++)) & 0xff).toString(16).padStart(2, '0');
               const dummy: Utxo = { txid: dummyTxid, vout: 0, satoshis: 10000n };
               if ((this.inner.provider as any).addUtxo) {
                 await (this.inner.provider as any).addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
@@ -7662,6 +7679,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   break;
                 }
                 case 'returnEvent':
+                  // Output-only slot: its return-event NFT output sits at B's block offset, so pair it with a
+                  // funding input to keep B's input extent equal to its output extent (X13). Rolled back below
+                  // when the assembled block does not come out exactly blockSize wide at the published offsets.
+                  if (bLoopExpanded) break;
+                  bReturnFunderOffset = bBlockInputs.length;
+                  bBlockInputs.push(await makeFunder());
+                  break;
                 case 'lowLevelCall':
                 case 'deploy':
                   // Handled by separate infrastructure - skip
@@ -7835,6 +7859,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   break;
               }
             }
+            // X13: the return event may only move into B's block when the block came out EXACTLY blockSize wide
+            // with the funder at the published returnEvent offset. A callee whose published layout disagrees with
+            // what the SDK actually co-spends (for example a pure function with no dataNft slot whose data NFT is
+            // still co-spent for an outState read) would otherwise land the return event on another slot's output.
+            // Fall back to the pre-X13 shape for that callee: drop the funder, and drop the block entirely when
+            // nothing but the returnEvent slot asked for one.
+            if (bReturnFunderOffset >= 0) {
+              const reOffset = bBlockLayout.slots.find((s) => s.kind === 'returnEvent')!.offset;
+              // The builder emits B's outputs as master + one per requiredDataNftIndices + one per remaining
+              // block input, so the two extents only line up when the layout declares exactly those data slots.
+              const layoutDataSlots = bBlockLayout.slots.filter((s) => s.kind === 'dataNft').length;
+              if (bBlockInputs.length === bBlockLayout.blockSize && bReturnFunderOffset === reOffset
+                && layoutDataSlots === bRequiredNftIndices.length) {
+                bReturnEventInBlock = true;
+              } else {
+                bBlockInputs.splice(bReturnFunderOffset, 1);
+                if (!hadFullBlockKinds && !bHasLoop) bBlockInputs = undefined;
+              }
+            }
           }
         }
 
@@ -7967,6 +8010,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }),
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+          ...(bReturnEventInBlock && { returnEventInBlock: true }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
           ...(bEntryLoopCommitments && {
             entryLoopCommitments: bEntryLoopCommitments,
@@ -8137,6 +8181,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Pre-compute return event output base - needed for return output index assignment
       let returnEventOutputBase = -1;
+      // Where the co-spent callees' own output blocks begin (X13: a callee's return event lives inside its block).
+      let externalCallOutputStart = -1;
       if (allReturningGroupIndices.length > 0) {
         const externalCallOutputCount = externalCallUtxoGroups.reduce(
           (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
@@ -8182,12 +8228,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount;
         returnEventOutputBase = baseOutputOffset + entryOutputCount + iterationEntryInputs.length
           + satoshiContainerOutputCount + transferCount + tokenContainerTransferCount + emitCount;
+        externalCallOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
+          + outStateOutputCount + iterationEntryInputs.length;
       }
 
-      // Build return-event-index map: groupIndex -> return event output index
+      // Build return-event-index map: groupIndex -> return event output index.
+      // X13: the compiler publishes each callee's return event as a slot INSIDE that callee's own block. A callee
+      // whose FULL block was assembled carries a paired funding input at that slot, so its return event belongs at
+      // (that callee's output base + slot offset). A callee without a full block (a transitive A->B->C leaf) has no
+      // such input, so it keeps the legacy tail position appended after the participant region.
       const returnEventIndexMap = new Map<number, number>();
-      for (let i = 0; i < allReturningGroupIndices.length; i++) {
-        returnEventIndexMap.set(allReturningGroupIndices[i], returnEventOutputBase + i);
+      const isInBlockGroup = (i: number): boolean => externalCallUtxoGroups[i]?.returnEventInBlock === true;
+      if (allReturningGroupIndices.length > 0) {
+        let cursor = externalCallOutputStart;
+        let tailRank = 0;
+        for (let i = 0; i < externalCallUtxoGroups.length; i++) {
+          const g = externalCallUtxoGroups[i];
+          const offset = g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset;
+          if (groupMetas[i].ecSlot.hasReturnValues) {
+            returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
+              ? cursor + offset
+              : returnEventOutputBase + tailRank++);
+          }
+          cursor += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+        }
       }
 
       // Fix data NFT unlockers and create master unlockers with correct hidden params.
@@ -8208,6 +8272,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             group.externalContract.inner, masterInputIndex, group.categoryId,
           ),
         }));
+        // A full block is what gets serialized, so its dataNft slots must carry the re-created unlockers too.
+        if (group.blockInputs && group.blockLayout && group.returnEventInBlock === true) {
+          let dataIdx = 0;
+          for (const slot of group.blockLayout.slots) {
+            if (slot.kind !== 'dataNft') continue;
+            const recreated = group.dataNftUtxos[dataIdx++];
+            if (recreated && group.blockInputs[slot.offset]) group.blockInputs[slot.offset] = recreated;
+          }
+        }
 
         // Build hidden args by scanning the function's ABI inputs for hidden param names
         type AbiEntry = { name: string; inputs: readonly { name: string }[]; externalCalls?: readonly ExternalCallAbi[] };
@@ -8242,8 +8315,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             && Object.prototype.hasOwnProperty.call(group.compilerRoute.internalArgs, paramName)) {
             bFinalArgs.push(group.compilerRoute.internalArgs[paramName]);
           } else if (paramName === '__internal__externalCallInputBase') {
-            // Where this function's external call groups start in the input sequence
-            const thisGroupEnd = currentInputBase + 1 + group.dataNftUtxos.length;
+            // Where this function's external call groups start in the input sequence: immediately after B's own
+            // co-spent block, which is blockInputs wide when a full block was assembled (X13).
+            const thisGroupEnd = currentInputBase
+              + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length);
             bFinalArgs.push(BigInt(thisGroupEnd));
           } else if (paramName === '__internal__msgSenderCategory') {
             bFinalArgs.push(hexToBin(meta.callerCategoryId));
@@ -8294,7 +8369,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )(...bFinalArgs)
           : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
         group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
-        if (group.compilerRoute && group.blockInputs && group.blockLayout) {
+        // The block's master slot carries the SAME unlocker as group.masterUtxo: the input flattening serializes
+        // blockInputs, so a stale block-build-time unlocker there would drop the hidden params resolved here.
+        // Extended to in-block returning callees: their __internal__returnOutputIdx is unknown at block-build time.
+        if (group.blockInputs && group.blockLayout
+          && (group.compilerRoute || group.returnEventInBlock === true)) {
           const masterOffset = group.blockLayout.slots.find((slot) => slot.kind === 'master')?.offset;
           if (masterOffset !== undefined && group.blockInputs[masterOffset]) {
             group.blockInputs[masterOffset] = {
@@ -8304,8 +8383,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
 
-        // Advance to next group
-        currentInputBase += 1 + group.dataNftUtxos.length;
+        // Advance to next group. A full block occupies blockInputs.length slots (its output-only slots each
+        // carry a paired funder), which is what the builder's input flattening emits.
+        currentInputBase += group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length;
       }
 
       // Resolve 4-byte hash selector from B's ABI - only for A's DIRECT external calls.

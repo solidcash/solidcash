@@ -129,7 +129,7 @@ task-specific report, not in this table.
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
-| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **CHANGES** | guard condition too narrow - see 4.6; reassigned to C round 3 |
+| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | forgery escape closed; guard keys off slot contribution |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
@@ -145,20 +145,37 @@ task-specific report, not in this table.
 | R1 | Select and enforce production envelope | Main | F2,F3,F4 | TODO | Semantic support may exceed production profile |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
-| X1 | Repair delegate returnEvent/proxy-block slot collision | C (after S2) | S2 | TODO | Diagnosed below; fix is in the block layout, a leased file |
+| X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
 | X6 | Stable diagnostics for unadmitted low-level shapes | — | — | TODO | `Block slot not found: lowLevelCall[0]` leaks; compiler lease |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
-| X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | TODO | Compiles; dynamic writes stay raw; NO VM evidence they settle |
-| X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | TODO | 5s timeouts; invalidates the pinned `solidc` gate |
+| X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
+| X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
+| X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
+| X11 | Delegate C2 sorted writes have no settling instance | C | S1 | TODO | S1's delegate exclusion guards an unreachable shape, unattacked |
+| X12 | `emit`-funder delegate class does not settle | C | X1 | TODO | Pre-existing; verified neither repaired nor regressed by X1 |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
-Aggregate after round 1 integration: `2 PROVEN / 3 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.9 Full-repository green, measured at the round-3 integration commit
+
+| Suite | Baseline `93bbfedb` | After round 3 |
+|---|---|---|
+| `solidc` | 2,322 passed / **10 failed** | **2,372 passed / 0 failed** (57 files) |
+| `solidcash` | 3,597 passed / **5 failed** | **3,750 passed / 0 failed** (444 files, 4 skipped) |
+
+Every red present at the baseline is gone, and none was retired by editing a test expectation: the ten `solidc`
+reds were a fixture-outpoint birthday collision, three `FnPtrDispatchTables` reds were a direct-route regression
+from `d941b139`, the `Layer3CompiledGraph` red was G1's own acceptance test, and `LargeContractSplitting` was
+the X1 slot collision. Four separate causes, each fixed at its source.
+
+This is a SEMANTIC gate, not a consensus or policy one. Mock limits remain relaxed by default.
 
 ### 4.2 Round-1 integration result, measured on `72f07b07`
 

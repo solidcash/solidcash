@@ -1,4 +1,4 @@
-import type { Artifact } from '@solidcash/utils';
+import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
   encodeHiddenBatch, type EncodedHiddenBatch, type HiddenBatchInvocation,
@@ -43,6 +43,11 @@ export interface PlannedGraphInvocation {
   callMode: 'call' | 'staticcall';
   argsHex: string;
   resultTypes: readonly string[];
+  /**
+   * Compiler callsite identifier of the parent occurrence this invocation answers. Absent for the root and
+   * for parents whose artifact publishes no matching callsite.
+   */
+  consumerCallsiteId?: number;
   /** Child invocation results which must exist before this invocation can resume. */
   resultDependencies: readonly number[];
 }
@@ -839,6 +844,71 @@ contract GraphProjectionVerifier() {
 }
 
 /**
+ * A callsite whose reached method is not a compile-time name: received/reduced function pointers, varying
+ * selector tables, address-array loops, and low-level `call`/`staticcall` whose method lives in the
+ * canonical calldata. Its `functionName` is a placeholder rather than the method the concrete invocation
+ * resolves to, so name equality must not be required against it.
+ */
+const isRuntimeResolvedCallsite = (callsite: ExternalCallAbi): boolean =>
+  callsite.fnPtrCall === true
+  || callsite.selectorArrayVar !== undefined
+  || callsite.loopArrayVar !== undefined
+  || callsite.functionName === '__raw__'
+  || callsite.opaqueReturn === true
+  || (callsite.possibleTargets?.length ?? 0) > 0;
+
+/**
+ * Bind each reached child of one invocation to exactly one compiler-authored callsite of its handler.
+ *
+ * A result edge must name one unambiguous consumer occurrence, not merely a method name: a handler may
+ * reach the same method more than once, and two callsites of the same name can differ in whether their
+ * result is consumed. When every callsite is statically singular and the reached children exhaust them,
+ * the binding is the source order itself. Otherwise conditional and loop callsites make the mapping
+ * many-to-one, and the binding is accepted only while every remaining candidate agrees on the result
+ * contract; a candidate set that disagrees is rejected rather than guessed.
+ */
+function bindConsumerCallsites(
+  parent: number,
+  callsites: readonly ExternalCallAbi[],
+  reached: readonly string[],
+): (ExternalCallAbi | undefined)[] {
+  if (callsites.length === 0) return reached.map(() => undefined);
+  const singular = callsites.every((callsite) =>
+    callsite.occurrence === undefined || callsite.occurrence === 'once');
+  // Positional binding checks order, so it applies only when the reached methods are a permutation of the
+  // compiler-named ones. A reached method the compiler never named means the callsite resolves its target
+  // method at runtime - a pointer, a selector table or low-level calldata - and order carries no meaning.
+  const sorted = (names: readonly string[]): string => [...names].sort().join(' ');
+  const namesArePermuted = sorted(reached) === sorted(callsites.map((call) => call.functionName));
+  if (singular && callsites.length === reached.length && namesArePermuted) {
+    return reached.map((functionName, position) => {
+      const callsite = callsites[position];
+      if (!isRuntimeResolvedCallsite(callsite) && callsite.functionName !== functionName) {
+        throw new Error(
+          `layer3: invocation ${parent} reaches '${functionName}' where its compiler-authored callsite `
+          + `${position} calls '${callsite.functionName}'`,
+        );
+      }
+      return callsite;
+    });
+  }
+  return reached.map((functionName) => {
+    const candidates = callsites.filter((callsite) =>
+      isRuntimeResolvedCallsite(callsite) || callsite.functionName === functionName);
+    if (candidates.length === 0) return undefined;
+    const contract = (callsite: ExternalCallAbi): string =>
+      `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}`;
+    if (new Set(candidates.map(contract)).size > 1) {
+      throw new Error(
+        `layer3: invocation ${parent} cannot bind '${functionName}' to one callsite; its conditional or `
+        + 'loop callsites disagree on the consumed result',
+      );
+    }
+    return candidates[0];
+  });
+}
+
+/**
  * Group a finite logical graph by physical owner while preserving global invocation order.
  *
  * Each owner receives one real compiler-generated SCB1 plan, regardless of how often a cycle re-enters it.
@@ -978,26 +1048,49 @@ export function planCompiledGraph(
       resultTypes: Object.freeze([...(result?.types ?? [])]),
     });
   });
+  const childrenOf: number[][] = invocations.map(() => []);
+  for (let child = 1; child < invocations.length; child += 1) {
+    childrenOf[invocations[child].parent!].push(child);
+  }
+  const consumerCallsites: (number | undefined)[] = invocations.map(() => undefined);
   const resultDependencies: number[][] = invocations.map(() => []);
-  for (let child = 1; child < plannedBase.length; child += 1) {
-    const parent = invocations[child].parent!;
+  for (let parent = 0; parent < invocations.length; parent += 1) {
+    const children = childrenOf[parent];
+    if (children.length === 0) continue;
     const parentInvocation = invocations[parent];
     const parentFunction = participants[parentInvocation.callee].artifact.abi.find((candidate) =>
       candidate.name === parentInvocation.function);
-    const matchingCallsites = parentFunction?.externalCalls?.filter((call) =>
-      call.functionName === invocations[child].function) ?? [];
-    if (matchingCallsites.some((call) => call.hasReturnValues)) {
-      if (plannedBase[child].resultTypes.length === 0) {
+    const bindings = bindConsumerCallsites(
+      parent, parentFunction?.externalCalls ?? [],
+      children.map((child) => invocations[child].function),
+    );
+    children.forEach((child, position) => {
+      const callsite = bindings[position];
+      consumerCallsites[child] = callsite?.callsiteId;
+      if (!callsite?.hasReturnValues) return;
+      const produced = plannedBase[child].resultTypes;
+      if (produced.length === 0) {
         throw new Error(
           `layer3: invocation ${parent} consumes a result from void invocation ${child}`,
         );
       }
+      // Producer/consumer ABI equality. A runtime-resolved callsite has no compile-time method, and an
+      // opaque low-level return is intentionally untyped, so neither publishes a schema to compare.
+      const expected = callsite.returnTypes;
+      if (!callsite.opaqueReturn && !isRuntimeResolvedCallsite(callsite) && expected !== undefined
+        && expected.join(',') !== produced.join(',')) {
+        throw new Error(
+          `layer3: invocation ${parent} expects result schema (${expected.join(',')}) from invocation `
+          + `${child}, which produces (${produced.join(',')})`,
+        );
+      }
       resultDependencies[parent].push(child);
-    }
+    });
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
   const planned = plannedBase.map((invocation, index) => Object.freeze({
     ...invocation,
+    ...(consumerCallsites[index] !== undefined && { consumerCallsiteId: consumerCallsites[index] }),
     resultDependencies: Object.freeze(resultDependencies[index]),
   }));
 

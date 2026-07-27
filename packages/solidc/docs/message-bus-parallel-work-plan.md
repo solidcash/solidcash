@@ -135,7 +135,7 @@ task-specific report, not in this table.
 | L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
-| C2 | Heterogeneous A→B→A dynamic dispatch capstone | Main | G2,E1,S3,L2 | TODO | At least two targets/selectors |
+| C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
 | C3 | Eight-participant semantic capstone | Main | C1,C2 | TODO | Correctness, not deployability |
 | A1 | Independent in-repository hostile review | C | C1,C2,C3 | TODO | Reviewer did not implement reviewed slice |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
@@ -161,8 +161,9 @@ task-specific report, not in this table.
 | X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | INTEGRATED (layer-3 only) | direct-route wiring DEFERRED to the owner - would reject 44.5% of settling sends |
 | X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **DECIDED: do not gate** | See 4.19; the model, not the sends, is what is wrong |
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | INTEGRATED | REFUSED with a named reason and a remedy; silence ended |
-| X18 | Void `target.call(payload)` leaks on the bus route | — | X6 | TODO | B's module says ADMITTED; the compiler does not admit it |
-| X19 | `m[k]` and `this.m[k]` diverge on the bus route | C | X15 | TODO | Byte-identical direct artifacts, identical ABI, one compiles and one throws |
+| X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
+| X19 | `m[k]` and `this.m[k]` diverge on the bus route | C | X15 | INTEGRATED (partial) | direct route converged; bus-route route-synthesis still differs - `compiler.ts:469`, A's lease |
+| **SEC-5** | **Pointer-table caller stops binding its own emission rows** | — | C2 | **TODO (security)** | **LIVE FORGERY**; triggered by merely DECLARING a returning handler |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
 | X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
@@ -177,6 +178,33 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.21 SEC-5: a pointer-table caller stops authenticating its own emission rows
+
+Found by Worker A while building C2, and reported separately rather than folded into the capstone.
+
+A runtime-sized pointer-table caller **stops binding its own emission rows as soon as its contract declares any
+returning public handler** - declared, never invoked. Target and argument substitutions then settle.
+
+| dispatch | returning handler declared | caller rows | target sub | argument sub |
+|---|---|---|---|---|
+| pointer table | no | 1 and 2 | REJECTS | REJECTS |
+| pointer table | yes (pure or state-writing) | 1 and 2 | **ACCEPTED** | **ACCEPTED** |
+| ordinary `IFoo(x).bar()` | yes | 1 and 2 | n/a | REJECTS |
+
+This lets a graph author redirect a compiled contract's outgoing calls to any co-spent participant with any
+arguments. It is measured one variable at a time, with an honest control that settles in every configuration
+and an ordinary-callsite control that stays bound in the same configuration - so the escape is attributable to
+the pointer-table path plus a declared returning handler, not to the harness.
+
+Committed as a CHARACTERIZATION test: the accepting cells assert measured behaviour and are labelled forgeries,
+so a repair turns the file red rather than silently passing. Starting point, explicitly not a diagnosis: a
+returning handler switches the SCB1 route to the unrolled per-row parser.
+
+**Worker A also corrected its own earlier evidence.** Its first bisect appeared to show the escape additionally
+required two caller rows. It does not - that fixture assembled some cells against the wrong physical block
+layout, so three of its four "rejections" were artifacts. The controlled harness supersedes it, and the
+correction was volunteered.
 
 ### 4.20 C1 settles - and the measurement that matters is where it does NOT fit
 

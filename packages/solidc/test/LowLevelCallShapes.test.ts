@@ -182,16 +182,40 @@ describe('X6 low-level call shape diagnostics', () => {
     });
 
     /**
-     * OPEN: the shape module admits an unconditional VOID low-level call, and the direct route compiles it,
-     * but the message-bus route still leaks `Block slot not found: lowLevelCall[0]` from code generation for
-     * it. That leak predates the wiring (verified on the integration commit with the wiring reverted) and its
-     * repair is in `GenerateTargetTraversal.ts`, which is leased elsewhere. Pinned so the admitted class is
-     * not read as compiling when one member of it does not.
+     * X18 (was OPEN): the module called the unconditional VOID form ADMITTED while the bus route leaked
+     * `Block slot not found: lowLevelCall[0]` for it - the module asserted a class the compiler did not admit.
+     * The void form now lowers to the same opaque `__raw__` graph edge as the returning form, so both
+     * spellings of the callsite reach a transcript row. The direct route is unchanged: its own fire-and-forget
+     * block-slot form stays.
      */
-    it('OPEN: admits one unconditional void call, which the bus route still cannot compile', () => {
+    it('admits one unconditional void call, which the bus route now compiles', () => {
       expect(namedDiagnostic(voidSingular)).toBe('ADMITTED');
-      expect(compilerMessage(voidSingular)).toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(voidSingular)).not.toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(voidSingular)).toBe('COMPILED');
       expect(compileString(voidSingular, { forceStateful: true }).bytecode.length).toBeGreaterThan(0);
+    });
+
+    /** The void staticcall is the same member of the class and leaked the same internal message. */
+    it('admits one unconditional void staticcall, which the bus route now compiles', () => {
+      const voidStatic = source('    target.staticcall(payload);');
+      expect(namedDiagnostic(voidStatic)).toBe('ADMITTED');
+      expect(compilerMessage(voidStatic)).toBe('COMPILED');
+    });
+
+    /**
+     * The void form must reach the same authenticated edge the returning form does, not merely stop throwing:
+     * a published graph row with the raw callsite, and no `lowLevelCall` block slot standing in for it.
+     */
+    it('publishes the void call as a raw graph edge, not a low-level block slot', () => {
+      const artifact = compileString(voidSingular, busOptions);
+      const run = artifact.abi.find((fn) => fn.name === 'run')!;
+      expect(run.lowLevelCalls).toBeUndefined();
+      expect(run.externalCalls?.length).toBe(1);
+      expect(run.blockLayout?.slots.some((slot) => slot.kind === 'lowLevelCall')).toBe(false);
+      // The DIRECT route keeps its fire-and-forget block-slot form for the same source.
+      const direct = compileString(voidSingular, { forceStateful: true });
+      expect(direct.abi.find((fn) => fn.name === 'run')!.lowLevelCalls)
+        .toEqual([{ callMode: 'call' }]);
     });
 
     it('admits a contract with no low-level call at all', () => {

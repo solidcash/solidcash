@@ -8771,7 +8771,59 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.data = this.visit(node.data) as ExpressionNode;
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    return node;
+    return this.lowerVoidRawCallToGraphEdge(node) ?? node;
+  }
+
+  /**
+   * X18: on the message-bus route, lower a VOID `addr.call(payload);` / `addr.staticcall(payload);` to the same
+   * opaque `__raw__` graph edge the RETURNING spelling already uses, with no result binding.
+   *
+   * The two spellings of one callsite were represented differently: the returning form became a `__raw__`
+   * external-call slot (a transcript row), the void form stayed a `LowLevelCallStatementNode` whose co-spend is
+   * a `lowLevelCall` block slot. A graph emission handler shares the hidden route's PHYSICAL block layout, which
+   * reserves no such slot for it, so the void form reached code generation and leaked the internal
+   * `Block slot not found: lowLevelCall[0]`.
+   *
+   * The rewrite runs during the body visit, before every pre-scan, so the callsite is counted as an external
+   * call rather than a low-level call from the start. Gated on message-bus graph mode: the direct route keeps
+   * its fire-and-forget block-slot form, whose co-spend the SDK supplies via `.withExternalCall()`.
+   *
+   * Only the shape `LowLevelCallShapes` admits is lowered - option-free `call`/`staticcall` on an address
+   * receiver. A call option, a `delegatecall` (a delegate participant edge with its own authority argument), or
+   * a non-address receiver is left alone for its own diagnostic.
+   */
+  private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): Node | undefined {
+    const messageBusGraphMode = !!this.compilerOptions.experimentalHiddenBatch
+      && !!this.compilerOptions.experimentalMessageBusController;
+    if (!messageBusGraphMode) return undefined;
+    if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
+    if (node.callOptions) return undefined;
+    const receiver = node.targetExpression;
+    const receiverName = receiver instanceof IdentifierNode ? receiver.name : undefined;
+    const isAddressNullary = receiver instanceof NullaryOpNode
+      && (receiver.operator === NullaryOperator.MSG_SENDER || receiver.operator === NullaryOperator.TX_ORIGIN);
+    const receiverType = receiver.type
+      ?? (receiverName
+        ? this.symbolTables[0].get(receiverName)?.type ?? this.stateVariableMap.get(receiverName)?.type
+        : undefined)
+      ?? (isAddressNullary ? new AddressType() : undefined)
+      ?? this.resolveLowLevelReceiverType(receiver);
+    if (!(receiverType instanceof AddressType)) return undefined;
+
+    const callNode = new ExternalFunctionCallNode('__raw__', receiver, '__raw__', [node.data]);
+    callNode.callInfo = {
+      interfaceName: '__raw__',
+      functionName: '__raw__',
+      externalCallSlotIndex: -1,
+      callMode: node.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
+    };
+    callNode.location = node.location;
+    const surface = new MethodCallNode(receiver, node.callMode, [node.data]);
+    surface.location = node.location;
+    const statement = new MethodCallStatementNode(surface);
+    statement.expression = callNode;
+    statement.location = node.location;
+    return statement;
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {

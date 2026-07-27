@@ -137,6 +137,9 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
   // Signature of a bound expression -> the largest value a dominating require lets it take.
   private provenBounds = new Map<string, bigint>();
   private currentFunction = '';
+  // Every name the CURRENT function can write. A bound may not depend on one: the guard proves a ceiling at the
+  // point it runs, and a later write - before the loop or inside it - would silently invalidate that proof.
+  private functionMutations = new Set<string>();
 
   constructor(private readonly expansions?: PointerTableExpansionMap) {
     super();
@@ -152,11 +155,14 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const previous = this.provenBounds;
     const previousName = this.currentFunction;
+    const previousMutations = this.functionMutations;
     this.provenBounds = new Map();
     this.currentFunction = node.name;
+    this.functionMutations = node.body ? mutatedNames([node.body]) : new Set<string>();
     node.body = this.visit(node.body) as BlockNode;
     this.provenBounds = previous;
     this.currentFunction = previousName;
+    this.functionMutations = previousMutations;
     return node;
   }
 
@@ -260,10 +266,9 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
         + "for example 'require(table.length <= 4);'",
       );
     }
-    const moved = mutatedNames(bodyStatements);
     for (const name of identifiersOf(boundExpression)) {
-      if (moved.has(name)) {
-        throw new PointerTableBoundError(loop, `the loop body can change '${name}', which the bound depends on`);
+      if (this.functionMutations.has(name)) {
+        throw new PointerTableBoundError(loop, `this function can change '${name}', which the bound depends on`);
       }
     }
 

@@ -67,7 +67,7 @@ describe('message-bus pointer-table bound', () => {
       'add a dominating require that bounds the trip count by an integer literal',
     ],
     [
-      'a bound the loop body can move',
+      'a bound this function can move',
       `  function fireAll(uint value, address extra) public {
     require(handlers.length <= 3);
     for (int i = 0; i < handlers.length; i = i + 1) {
@@ -75,7 +75,7 @@ describe('message-bus pointer-table bound', () => {
     }
     require(value >= 0);
   }`,
-      "the loop body can change 'handlers', which the bound depends on",
+      "this function can change 'handlers', which the bound depends on",
     ],
     [
       'a bound above the expansion maximum',

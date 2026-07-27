@@ -18,6 +18,22 @@ const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
+/**
+ * `randomUtxo` draws from 10,000 txid seeds x 10 vouts, so a balanced block that needs ~67 funding outpoints
+ * hits a birthday collision every few runs and the builder rejects the duplicate input. Draw until the outpoint
+ * is new within this fixture.
+ */
+function uniqueUtxo(seen: Set<string>, defaults?: Parameters<typeof randomUtxo>[0]): ReturnType<typeof randomUtxo> {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const utxo = randomUtxo(defaults);
+    const outpoint = `${utxo.txid}:${utxo.vout}`;
+    if (seen.has(outpoint)) continue;
+    seen.add(outpoint);
+    return utxo;
+  }
+  throw new Error('could not draw a distinct funding outpoint');
+}
+
 const POINTER_TARGET = `pragma solidcash >=0.8.0;
 contract CompiledPointerTarget(int brand) {
   function inc(uint value) public pure { require(value > 0); }
@@ -64,8 +80,9 @@ async function initializeGraphAuthority(
   categoryId: string,
   root: string,
   p2pkh: Contract,
+  outpoints: Set<string>,
 ): Promise<any> {
-  const fee = randomUtxo({ satoshis: 20_000n });
+  const fee = uniqueUtxo(outpoints, { satoshis: 20_000n });
   await provider.addUtxo(p2pkh.address, fee);
   const tx = new TransactionBuilder({ provider });
   tx.addInput(genesisUtxo, controller.unlock.initialize(hexToBin(root), alicePub, signature()));
@@ -87,6 +104,7 @@ async function buildRuntimeSizedGraph(
   tamper: 'none' | 'selector' | 'target' | 'overlong' = 'none',
 ): Promise<{ provider: any; transaction: string }> {
   const provider = createLayer3SemanticTestProvider();
+  const outpoints = new Set<string>();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
   } = await createGraphAuthority(provider);
@@ -157,10 +175,10 @@ async function buildRuntimeSizedGraph(
   );
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
-    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh, outpoints,
   );
-  const projections = Array.from({ length: rows + 1 }, () => randomUtxo({ satoshis: 1000n }));
-  const fee = randomUtxo({ satoshis: 120_000n });
+  const projections = Array.from({ length: rows + 1 }, () => uniqueUtxo(outpoints, { satoshis: 1000n }));
+  const fee = uniqueUtxo(outpoints, { satoshis: 120_000n });
   for (const proof of projections) await provider.addUtxo(projection.address, proof);
   await provider.addUtxo(p2pkh.address, fee);
 
@@ -176,7 +194,7 @@ async function buildRuntimeSizedGraph(
   expect(chunks.length).toBeLessThanOrEqual(trailingCapacity);
   const trailingFunding = Array.from(
     { length: trailingCapacity - chunks.length },
-    () => randomUtxo({ satoshis: 1000n }),
+    () => uniqueUtxo(outpoints, { satoshis: 1000n }),
   );
   for (const funding of trailingFunding) await provider.addUtxo(p2pkh.address, funding);
 

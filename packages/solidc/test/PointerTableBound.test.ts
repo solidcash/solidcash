@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 import { PointerTableBoundError } from '../src/semantic/PointerTableBound.js';
 
+// Message-bus compilation is several seconds per contract; the default 5s budget is not enough under the
+// parallel-file load the solidc project runs with.
+const COMPILE_TIMEOUT_MS = 60_000;
+
 const busOptions = {
   forceStateful: true,
   experimentalHiddenBatch: true,
@@ -32,7 +36,7 @@ describe('message-bus pointer-table bound', () => {
     expect(summary.maximumDirectInvocations).toBe(3);
     expect(summary.externalCalls).toHaveLength(1);
     expect(summary.externalCalls![0]).toMatchObject({ occurrence: 'loop', maximumOccurrences: 3 });
-  });
+  }, COMPILE_TIMEOUT_MS);
 
   it('proves a bound from a parameter guard as well as from a table-length guard', () => {
     const artifact = compileString(table(`  function fireN(uint value, int n) public {
@@ -42,7 +46,7 @@ describe('message-bus pointer-table bound', () => {
   }`), busOptions);
     const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'fireN')!;
     expect(summary.externalCalls![0]).toMatchObject({ occurrence: 'loop', maximumOccurrences: 2 });
-  });
+  }, COMPILE_TIMEOUT_MS);
 
   it('keeps a fixed literal trip count exact', () => {
     const artifact = compileString(table(`  function fireAll(uint value) public {
@@ -51,7 +55,7 @@ describe('message-bus pointer-table bound', () => {
   }`), busOptions);
     const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'fireAll')!;
     expect(summary.externalCalls![0]).toMatchObject({ occurrence: 'loop', maximumOccurrences: 2 });
-  });
+  }, COMPILE_TIMEOUT_MS);
 
   it.each([
     [
@@ -121,7 +125,7 @@ describe('message-bus pointer-table bound', () => {
     expect(thrown).toBeInstanceOf(PointerTableBoundError);
     expect((thrown as Error).message)
       .toContain(`Message-bus pointer-table loop is not compiler-bounded: ${detail}`);
-  });
+  }, COMPILE_TIMEOUT_MS);
 
   it('leaves the ordinary broadcast route untouched outside message-bus mode', () => {
     const source = table(`  function fireAll(uint value) public {
@@ -136,5 +140,5 @@ describe('message-bus pointer-table bound', () => {
     expect(fireAll.externalCalls![0].loopArrayVar).toBe('handlers');
     expect(fireAll.externalCalls![0].selectorArrayVar).toBe('__fnsel_handlers');
     expect(fireAll.inputs.some((input) => input.name.startsWith('__internal__extcallMasterIdx'))).toBe(false);
-  });
+  }, COMPILE_TIMEOUT_MS);
 });

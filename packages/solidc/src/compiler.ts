@@ -181,6 +181,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 const SCB1_SELECTOR_HEX = '53434231';
 const MAX_HIDDEN_BATCH_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
+const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
 
@@ -214,7 +215,6 @@ function coalesceExpandedPointerTable(
     ...calls.slice(dispatch[count - 1] + 1),
   ];
 }
-const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
  * but before symbol/type analysis. Only signature-free scalar public handlers

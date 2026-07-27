@@ -64,6 +64,46 @@ const functionAbi = (participant: WorklistParticipant, name: string): AbiFunctio
   return matches[0];
 };
 
+/** Block slots that carry a call option or an unconditioned value movement the transcript row cannot bind. */
+const OPTION_SLOT_KINDS = new Set(['satoshiContainer', 'transfer', 'tokenContainer', 'tcTransfer']);
+
+/**
+ * Reject a graph invocation whose function carries a call option.
+ *
+ * `IFoo(addr).m{value: v}()` and an explicit `transfer(..)` both add `transferCount` plus `satoshiContainer` /
+ * `transfer` slots to the DIRECT block layout, while the SCB1 route layout and the transcript row are byte
+ * identical to the option-free form. Executing such a function as a graph row would therefore drop the option
+ * silently: no covenant byte enforces it and no transcript field commits it. Fail closed until the option is a
+ * committed row field.
+ */
+const assertNoUnboundCallOptions = (
+  participant: WorklistParticipant, fn: AbiFunction, name: string,
+): void => {
+  const slots = fn.blockLayout?.slots?.filter((slot) => OPTION_SLOT_KINDS.has(slot.kind)) ?? [];
+  if ((fn.transferCount ?? 0) === 0 && slots.length === 0) return;
+  const detail = (fn.transferCount ?? 0) > 0
+    ? `${fn.transferCount} value option(s)/transfer(s)`
+    : `block slots ${[...new Set(slots.map((slot) => slot.kind))].join(', ')}`;
+  throw new Error(
+    `layer3: function '${name}' of participant ${participant.lockingBytecode.slice(0, 12)} declares `
+    + `${detail}, which the transcript row does not bind; call options are not an admitted graph edge`,
+  );
+};
+
+/**
+ * Compiler-authored mode of one graph edge.
+ *
+ * Never coerce: `planCompiledGraph` only reaches its `delegatecall` rejection when the mode is absent, so a
+ * silent `mode ?? 'call'` here would let a delegate edge execute as an ordinary call.
+ */
+const edgeCallMode = (call: ExternalCallAbi): 'call' | 'staticcall' => {
+  const mode = call.callMode ?? 'call';
+  if (mode === 'call' || mode === 'staticcall') return mode;
+  throw new Error(
+    `layer3: callsite ${call.callsiteId} declares call mode '${mode}', which is not a participant-graph edge`,
+  );
+};
+
 const literal = (source: ArgSource): FunctionArgument => {
   if (source.value === undefined || source.type === undefined) {
     throw new Error('layer3: malformed literal call argument');
@@ -178,6 +218,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const invocation = invocations.length;
     invocations.push({ parent, callee: owner, function: functionName, args, ...(callMode && { callMode }) });
     const fn = functionAbi(participant, functionName);
+    assertNoUnboundCallOptions(participant, fn, functionName);
     const key = `${owner}:${functionName}`;
     if (active.has(key)) {
       throw new Error(
@@ -190,6 +231,16 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         if (call.interfaceName !== '__raw__' || call.functionName !== '__raw__') {
           throw new Error(
             `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
+          );
+        }
+        // A low-level edge carries no per-occurrence row identity: its calldata, target and opaque result are
+        // proven once against ONE decoded payload. An iterated or conditional raw callsite would therefore be
+        // expanded as exactly one row whatever its runtime count is, so require the singular class explicitly
+        // instead of silently truncating.
+        if ((call.occurrence ?? 'once') !== 'once') {
+          throw new Error(
+            `layer3: raw callsite ${call.callsiteId} is ${call.occurrence} and has no bounded occurrence proof; `
+            + 'iterated low-level calls are not an admitted graph edge',
           );
         }
         const resolved = options.dynamicCall?.({
@@ -243,7 +294,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           resolved.function,
           resolved.args,
           invocation,
-          call.callMode === 'staticcall' ? 'staticcall' : 'call',
+          edgeCallMode(call),
         );
         continue;
       }
@@ -276,7 +327,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               options.expressionArgument,
             ),
             invocation,
-            call.callMode === 'staticcall' ? 'staticcall' : 'call',
+            edgeCallMode(call),
           );
         });
         continue;
@@ -331,7 +382,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               options.expressionArgument,
             ),
             invocation,
-            call.callMode === 'staticcall' ? 'staticcall' : 'call',
+            edgeCallMode(call),
           );
         }
         continue;
@@ -345,7 +396,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             participant, args, call, functionName, reached, options.expressionArgument,
           ),
           invocation,
-          call.callMode === 'staticcall' ? 'staticcall' : 'call',
+          edgeCallMode(call),
         );
       }
     }

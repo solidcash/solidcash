@@ -159,10 +159,12 @@ task-specific report, not in this table.
 | X12 | `emit`-funder delegate class does not settle | C | X1 | TODO | Pre-existing; verified neither repaired nor regressed by X1 |
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
 | X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | INTEGRATED (layer-3 only) | direct-route wiring DEFERRED to the owner - would reject 44.5% of settling sends |
-| X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **TODO (owner decision)** | 1,014 of 2,278 describable sends would be rejected; see 4.15 |
+| X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **DECIDED: do not gate** | See 4.19; the model, not the sends, is what is wrong |
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | INTEGRATED | REFUSED with a named reason and a remedy; silence ended |
 | X18 | Void `target.call(payload)` leaks on the bus route | — | X6 | TODO | B's module says ADMITTED; the compiler does not admit it |
-| X19 | `m[k]` and `this.m[k]` diverge on the bus route | — | X15 | TODO | Byte-identical direct artifacts, identical ABI, one compiles and one throws |
+| X19 | `m[k]` and `this.m[k]` diverge on the bus route | C | X15 | TODO | Byte-identical direct artifacts, identical ABI, one compiles and one throws |
+| X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
+| X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -173,6 +175,35 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.19 X17 DECIDED: do not gate `StatefulTransactionBuilder.send()`
+
+Worker B measured that turning the balanced-assembly gate on would reject **1,014 of 2,278 describable stateful
+sends (44.5%) that settle today**, across 628 `unbalanced transaction`, 378 `token outside every participant
+block`, and 8 satoshi-value mismatches - including that SolidCash emits event NFTs at **1200** satoshis where
+the model specifies 1000.
+
+**Decision: do not gate it, and do not adjust the numbers until the model earns them.**
+
+The reasoning is that a gate rejecting 44% of legitimate settling work is not a strict gate, it is a wrong
+model. The failures are concentrated in shapes the balanced-block model was never built to describe - entry and
+auxiliary inputs are not blocks, which is the direct source of the 378 token-outside-region rejections - and in
+one plain contradiction, where the SDK's own event NFTs are 1200 satoshis and the model asserts 1000. Shipping
+the gate would convert a modelling gap into user-visible breakage and would teach everyone to bypass the gate.
+
+The alternative of relaxing the gate until it accepts today's sends is worse: it would produce a check that
+passes everything and proves nothing, which is exactly the failure mode this board has been catching in other
+workers' claims all effort.
+
+So the gate stays where Worker B put it - a real gate on the layer-3 path, where the model does describe the
+shapes - and stays off the general stateful path. Two follow-ups are opened rather than left implicit:
+
+- **X20**: widen the assembly model to describe entry and auxiliary inputs, then re-measure the 44.5%.
+- **X21**: reconcile the 1200-satoshi event NFT against the model's 1000. One of the two numbers is wrong and
+  the board should say which; today it simply asserts both.
+
+Recorded so nobody later reads L2's checklist line "SDK preflight rejects malformed or unbalanced blocks before
+signing" as covering the stateful path. It does not, deliberately.
 
 ### 4.18 SEC-4 confirmed, and worse than the lead described
 

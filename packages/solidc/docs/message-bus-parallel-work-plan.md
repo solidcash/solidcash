@@ -160,14 +160,50 @@ task-specific report, not in this table.
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | LEASED | round 5; measured refusal is an acceptable outcome |
 | X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | LEASED | round 5; must not silently gate existing users |
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | LEASED | round 5; silence is the one unacceptable outcome |
-| **SEC-1** | **Conditional delegate edge forges proxy state** | C | — | **LEASED (security)** | **LIVE FORGERY**; reopens C1; pinned `OPEN:` at E3 test:531 |
-| **SEC-2** | **Caller-chosen implementation parameter** | C | — | **LEASED (security)** | **LIVE TAKEOVER**; C1 warning suppressed by `pinsDelegateCoSpend` |
-| **SEC-3** | **Iterated delegate edge collapses N to 1** | C | — | **LEASED (security)** | Silent miscompile, no diagnostic; pinned `OPEN:` at test:550 |
+| **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
+| **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
+| **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
+| **SEC-4** | Library-call sugar may never emit the co-spend pin | — | — | **TODO (security)** | `pinsDelegateCoSpend` appears FALSE for a pure `L.f()` function - UNINVESTIGATED |
+| X16 | Extend the delegate rules to SCB1/graph-handler routes | — | SEC-1 | TODO | Deliberately excluded; they loop by design and use per-row slots |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.13 The security round closed SEC-1..SEC-3, and the worker broke its own first fix
+
+SEC-1 is closed by freezing not-taken paths rather than forbidding them: a runtime edge-reached flag is
+allocated only for a conditional callsite, and the epilogue requires every co-spent own-category mutable NFT to
+be preserved in place wherever the flag is 0. The honest taken path still settles, and a not-taken no-op still
+settles.
+
+**The most valuable part was self-refutation.** The worker's FIRST covenant was an index-paired check at the
+block-layout data-NFT offsets. That is dodgeable, because a data NFT's flag=1 path never pins its own position.
+Rather than ship it, the worker built the repositioned attack - master flag=false at input 0, a decoy funder at
+the checked offset, the real data NFT at input 2 - and measured it settling 5 to 999 against its own fix. It
+then rewrote the covenant as an index-agnostic per-input property loop and pinned the repositioned attack
+permanently. An attribution control confirms the refusal comes from the new emitter, not from value preservation
+or the C3 conservation loop.
+
+SEC-2 warns rather than failing closed, with a stated reason: an upgradeable proxy taking `impl` as a parameter
+guarded by `require(impl == this.implementation)` is legitimate, and a hard rejection would have to model every
+way a `require` can constrain an address. Guarded shapes stay silent; unguarded and aliased parameters warn.
+
+**Two honesty notes worth preserving.** The 656-file corpus reports 0 changed, but the worker attached the
+caveat that the corpus contains exactly ONE delegatecall contract - so its discriminating power for delegate
+codegen is one file, and the real coverage is the compiler suites. And it caught one of its own assertions that
+passed on the baseline too, replacing it with an opcode-signature check that does not.
+
+**A new security lead came out of it, uninvestigated: SEC-4.** Library-call sugar (`L.f()`) is excluded by
+`hasExplicitDelegatecall`, and the worker noticed `pinsDelegateCoSpend` therefore appears to be FALSE for a pure
+library-call function - meaning that path may never emit the co-spend pin at all. It did not investigate. That
+is the right disclosure and it needs its own round.
+
+**Process failure worth recording.** The worker reported the work complete and the state clean, but nothing was
+committed: HEAD was still the integration commit with six modified files in the working tree. The integration
+owner caught it by checking `git log` and `git status` rather than trusting the packet, rescued the changes to a
+patch, verified, and committed them. A packet's clean-worktree line means nothing unless the commits exist.
 
 ### 4.12 A published ceiling was WRONG, not merely imprecise
 

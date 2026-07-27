@@ -85,6 +85,32 @@ describe('inherited constructor argument compatibility', () => {
   });
 });
 
+describe('constructor-list invocation compatibility', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects a bare modifier-style base constructor invocation', () => {
+    expect(() => cc(
+      'contract A { constructor() {} } contract B is A { constructor() A {} }',
+    )).toThrow(/base constructor invocation 'A' must use parentheses/i);
+    expect(() => cc(
+      'abstract contract A { constructor(uint x, bool y) {} }'
+      + ' abstract contract B is A { constructor() A {} }',
+    )).toThrow(/base constructor invocation 'A' must use parentheses/i);
+  });
+
+  it('rejects a constructor-list call naming an unrelated contract or itself', () => {
+    expect(() => cc('contract X {} contract C { constructor() X(5) {} }'))
+      .toThrow(/parent invocation references 'X'/i);
+    expect(() => cc('contract C { constructor() C() {} }'))
+      .toThrow(/parent invocation references 'C'/i);
+  });
+
+  it('preserves genuine custom modifiers on constructors', () => {
+    expect(cc('contract C { modifier m(uint x) { require(x == 1); _; } constructor() m(1) {} }')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

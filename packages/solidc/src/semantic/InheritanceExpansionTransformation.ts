@@ -85,6 +85,7 @@ import {
   DiamondInheritanceError,
   InheritanceNameCollisionError,
   MissingOverrideError,
+  ModifierStyleBaseConstructorError,
   ParentInvocationArgCountError,
   UndefinedParentInvocationError,
   DuplicateParentInvocationError,
@@ -240,6 +241,22 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
   // A root contract still needs override validation. A bare `override` cannot override anything, while an
   // explicit list (notably `override(LibraryName)`) is handled by the normal base-list resolver below.
   if (ast.contract.implements.length === 0) {
+    if (solidityImportCompat && ast.contract.parentInvocations.length > 0) {
+      const modifierNames = new Set(ast.contract.modifierDefinitions.map((modifier) => modifier.name));
+      for (const invocation of ast.contract.parentInvocations) {
+        if (!modifierNames.has(invocation.parentName)) {
+          throw new UndefinedParentInvocationError(ast.contract, invocation.parentName);
+        }
+        if (ast.contract.constructorDef) {
+          ast.contract.constructorDef.customModifiers.push({
+            name: invocation.parentName,
+            args: invocation.args,
+            location: invocation.location,
+          });
+        }
+      }
+      ast.contract.parentInvocations = [];
+    }
     const bareOverrides: Array<{ node: Node; name: string }> = [
       ...ast.contract.functions
         .filter((fn) => fn.modifiers.includes(FunctionModifier.OVERRIDE) && fn.overrideBases.length === 0)
@@ -400,6 +417,12 @@ function expandContract(
   const linearization = computeLinearization(contract, contractMap, originalImplements);
   stampModifierQualifiers([...new Set([contract.name, ...linearization])]);
   const ancestorSet = new Set(linearization);
+  const bareBaseInvocation = contract.constructorDef?.customModifiers.find(
+    (invocation) => ancestorSet.has(invocation.name),
+  );
+  if (solidityImportCompat && bareBaseInvocation) {
+    throw new ModifierStyleBaseConstructorError(contract.constructorDef!, bareBaseInvocation.name);
+  }
 
   // Modifiers do not overload in Solidity. Validate the derived source declarations against every original
   // ancestor before flattening silently replaces same-name definitions.

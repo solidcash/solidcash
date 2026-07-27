@@ -1488,6 +1488,13 @@ export default class AstBuilder
       const text = child.getText();
       if (supported.has(text)) node.modifiers.push(text as FunctionModifier);
     }
+    node.customModifiers = ctx.customModifierInvocation_list().map(
+      (modifier: CustomModifierInvocationContext): CustomModifierInvocation => ({
+        name: this.customModifierName(modifier),
+        args: modifier.expressionList() ? this.buildCallArguments(modifier.expressionList()!) : [],
+        location: Location.fromCtx(modifier),
+      }),
+    );
   }
 
   visitFallbackDefinition(ctx: FallbackDefinitionContext): FunctionDefinitionNode {

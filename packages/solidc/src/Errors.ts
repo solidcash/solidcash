@@ -1156,6 +1156,12 @@ export class ParentInvocationArgCountError extends SolidCashError {
   }
 }
 
+export class ModifierStyleBaseConstructorError extends SolidCashError {
+  constructor(node: Node, parentName: string) {
+    super(node, `Base constructor invocation '${parentName}' must use parentheses`);
+  }
+}
+
 export class UndefinedParentInvocationError extends SolidCashError {
   constructor(node: Node, parentName: string) {
     super(node, `Parent invocation references '${parentName}' which is not a parent contract`);

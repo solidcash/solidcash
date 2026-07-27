@@ -4747,3 +4747,13 @@ The focused suite is **911/911**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **915/915**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 568, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Constructor-list invocation loop: 4443 flat, NEG-ACCEPTED 568 -> 564 (-4)
+
+- Constructor custom-modifier invocations are now retained instead of being silently discarded.
+- Bare modifier-style base constructor names reject because Solidity requires parentheses.
+- Constructor-list calls naming an unrelated contract or the contract itself reject, while genuine custom
+  constructor modifiers remain valid.
+
+The focused suite is **918/918**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+564, plus 275 multifile and 289 cmdline fixtures excluded.

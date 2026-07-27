@@ -4736,3 +4736,14 @@ The focused suite is **908/908**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **911/911**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 572, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Inherited constructor-argument loop: 4443 flat, NEG-ACCEPTED 572 -> 568 (-4)
+
+- Concrete Solidity-derived contracts now reject omitted arguments for a base's Solidity-style constructor,
+  including forward-referenced child declarations.
+- Abstract derived contracts may still defer those arguments, and a direct descendant base may construct a
+  shared ancestor on behalf of the final diamond.
+- Interface bases reject constructor arguments because interfaces have no constructors.
+
+The focused suite is **915/915**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+568, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -52,6 +52,39 @@ describe('abstract-contract modifier declaration validation', () => {
   });
 });
 
+describe('inherited constructor argument compatibility', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects concrete derived contracts which omit required base-constructor arguments', () => {
+    expect(() => cc('contract A { constructor(uint x) {} } contract B is A {}'))
+      .toThrow(/parent constructor invocation 'A' expects 1 arguments but got 0/i);
+    expect(() => cc(
+      'contract A { constructor(uint x) {} }'
+      + ' contract B is A { constructor(bytes4 a, bytes28 b) {} }',
+    )).toThrow(/parent constructor invocation 'A' expects 1 arguments but got 0/i);
+  });
+
+  it('allows an abstract derived contract to defer base-constructor arguments', () => {
+    expect(cc('contract A { constructor(uint x) {} } abstract contract B is A {}')).toBe('B');
+  });
+
+  it('allows a direct descendant base to provide the shared ancestor constructor arguments', () => {
+    expect(cc(
+      'contract A { constructor(uint x) {} } contract B is A { constructor(uint x) A(x) {} }'
+      + ' contract C is A, B { constructor(uint x) B(x) {} }',
+    )).toBe('C');
+    expect(cc(
+      'contract A { constructor(uint x) {} } contract B is A(2) {} contract C is A, B {}',
+    )).toBe('C');
+  });
+
+  it('rejects constructor arguments supplied to an interface base', () => {
+    expect(() => cc('interface I {} contract C is I(2) {}'))
+      .toThrow(/parent constructor invocation 'I' expects 0 arguments but got 1/i);
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

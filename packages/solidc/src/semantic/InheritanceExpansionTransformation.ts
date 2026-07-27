@@ -196,6 +196,15 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
 
   const expanded = new Set<string>();
   const interfaceMap = new Map(ast.interfaceDefinitions.map((iface) => [iface.name, iface]));
+  if (solidityImportCompat) {
+    for (const contract of [ast.contract, ...ast.importedContracts]) {
+      const invalid = contract.parentInvocations.find((invocation) =>
+        interfaceMap.has(invocation.parentName) && invocation.args.length > 0);
+      if (invalid) {
+        throw new ParentInvocationArgCountError(contract, invalid.parentName, 0, invalid.args.length);
+      }
+    }
+  }
   const interfaceBases = (direct: string[]): Set<string> => {
     const result = new Set<string>();
     const pending = [...direct];
@@ -655,7 +664,7 @@ function expandContract(
       if (!remainingImplements.includes(iface)) remainingImplements.push(iface);
     }
 
-    mergeParent(contract, parent, isAncestor);
+    mergeParent(contract, parent, isAncestor, solidityImportCompat);
   }
 
   if (solidityImportCompat) validateEffectiveDeclarationNamespace(contract);
@@ -810,6 +819,7 @@ function mergeParent(
   child: ContractNode,
   parent: ContractNode,
   isAncestor?: (ancestor: string, descendant: string) => boolean,
+  solidityImportCompat = false,
 ): void {
   const invocation = child.parentInvocations.find((pi) => pi.parentName === parent.name);
 
@@ -824,6 +834,14 @@ function mergeParent(
       );
     }
     subs = new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]]));
+  } else if (solidityImportCompat && !child.isAbstract
+    && parent.parameters.length === 0 && ctorParams.length > 0
+    && !child.implements.some((other) =>
+      other !== parent.name && isAncestor?.(parent.name, other))) {
+    // Native SolidCash contracts inherit contract-level constructor parameters. Solidity-style constructor
+    // parameters must be supplied explicitly unless the derived contract remains abstract or another direct
+    // base descends from (and therefore constructs) this base.
+    throw new ParentInvocationArgCountError(child, parent.name, ctorParams.length, 0);
   }
 
   // 1. Merge functions (with optional substitution)

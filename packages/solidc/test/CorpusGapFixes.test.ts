@@ -264,6 +264,34 @@ describe('inline-only library declaration validation', () => {
   });
 });
 
+describe('msg.value payable-context validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects msg.value in a nonpayable constructor or public function', () => {
+    expect(() => cc('contract C { constructor() { uint x = msg.value; } }'))
+      .toThrow(/msg\.value.*payable constructors/i);
+    expect(() => cc('contract C { function f() public view returns(uint) { return msg.value; } }'))
+      .toThrow(/msg\.value.*payable.*public/i);
+  });
+
+  it('applies the same rule to msg.value introduced through a modifier argument', () => {
+    expect(() => cc(
+      'contract C { modifier m(uint x) { _; } function f() public view m(msg.value) {} }',
+    )).toThrow(/msg\.value.*payable.*public/i);
+  });
+
+  it('retains payable entry points and internal helper reads', () => {
+    expect(cc(
+      'library L { function read() public view returns(uint) { return msg.value; } }'
+      + ' contract C { uint initial = msg.value; constructor() payable { uint x = msg.value; }'
+      + ' function f() public payable returns(uint) { return msg.value; }'
+      + ' function g() internal view returns(uint) { return msg.value; }'
+      + ' function h() public returns(uint) { return msg.value; } }',
+    )).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

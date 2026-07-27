@@ -6811,6 +6811,19 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.currentFunction, `'pure' functions cannot read '${node.operator}'`,
       );
     }
+    const msgValueForbidden = this.currentFunction?.name === '__construct'
+      ? !node.fromStateInitializer
+      : this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)
+        && !this.currentFunction.isLibraryFunction
+        && (this.currentFunction.visibility === 'public' || this.currentFunction.visibility === 'external');
+    if (this.compilerOptions.solidityImportCompat && node.operator === NullaryOperator.MSG_VALUE
+      && this.currentFunction && !this.currentFunction.modifiers.includes(FunctionModifier.PAYABLE)
+      && msgValueForbidden) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction,
+        `'msg.value' can only be read by payable constructors or payable public/external functions`,
+      );
+    }
     if (node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN) {
       const loc = node.location ? ` at line ${node.location.start.line}` : '';
       console.log(

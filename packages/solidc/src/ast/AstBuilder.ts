@@ -1400,6 +1400,18 @@ export default class AstBuilder
     const initStatements: StatementNode[] = stateVariables
       .filter((sv) => sv.initializer)
       .flatMap((sv) => {
+        const markInitializerContext = (node: Node): void => {
+          if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_VALUE) {
+            node.fromStateInitializer = true;
+          }
+          for (const value of Object.values(node)) {
+            if (value instanceof Node) markInitializerContext(value);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) markInitializerContext(item);
+            }
+          }
+        };
+        markInitializerContext(sv.initializer!);
         const assign = new StateAssignNode(sv.name, sv.initializer!);
         assign.location = sv.location;
         sv.initializer = undefined;

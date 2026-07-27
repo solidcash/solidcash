@@ -4816,3 +4816,15 @@ The focused suite is **936/936**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **938/938**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 533, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### msg.value payable-context loop: 4443 flat, NEG-ACCEPTED 533 -> 528 (-5)
+
+- Explicit nonpayable constructors now reject `msg.value` reads, while state-variable initializer reads retain
+  Solidity's initializer exception.
+- Nonpayable public/external view functions reject `msg.value`, including reads introduced by modifier
+  expansion.
+- Non-view entry points, internal/private helpers, and library view functions retain Solidity's valid
+  zero/delegate-context reads.
+
+The focused suite is **941/941**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+528, plus 275 multifile and 289 cmdline fixtures excluded.

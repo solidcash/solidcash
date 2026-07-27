@@ -245,6 +245,10 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
     );
   }
 
+  // NECESSARY, NOT SUFFICIENT. The implementation locking bytecode appearing in the proxy's instantiated
+  // bytecode proves the proxy's own p2sh32 commits to those bytes - a source literal or a constructor argument
+  // both land there. It does not prove those bytes are what the delegatecall target expression evaluates to;
+  // that is the compiler's `OP_UTXOBYTECODE[delegateIndex] == impl` emission, attacked separately on the VM.
   const proxyBytecode = input.proxy.bytecode.toLowerCase();
   const implementationLbc = input.implementation.lockingBytecode.toLowerCase();
   const pinnedInProxyBytecode = proxyBytecode.includes(implementationLbc);

@@ -122,14 +122,14 @@ task-specific report, not in this table.
 | --- | --- | --- | --- | --- | --- |
 | P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
-| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | LEASED | base `93bbfedb`; lease: `compiler.ts` |
+| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27`; also fixed a `d941b139` direct-route regression |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | TODO | Honest + count/order/omission/injection |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
-| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | LEASED | base `93bbfedb`; lease: SDK `src/layer3/*` |
+| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | TODO | Bind mode/target/calldata/result |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
-| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | LEASED | base `93bbfedb`; lease: `GenerateTargetTraversal.ts` |
+| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | `6119ba26`; closed a real C2 forgery defect |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | TODO | All admitted exits flush or reject |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
@@ -145,11 +145,45 @@ task-specific report, not in this table.
 | R1 | Select and enforce production envelope | Main | F2,F3,F4 | TODO | Semantic support may exceed production profile |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
+| X1 | Repair delegate returnEvent/proxy-block index disagreement | — | — | TODO | `LargeContractSplitting` red; regression from `1f10b5e4` |
+| X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
+| X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
+| X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
-Aggregate at round 1 dispatch: `2 PROVEN / 0 INTEGRATED / 0 REVIEW / 3 LEASED / 18 TODO / 0 BLOCKED`.
+Aggregate after round 1 integration: `2 PROVEN / 3 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.2 Round-1 integration result, measured on `72f07b07`
+
+| Suite | Baseline `93bbfedb` | After round 1 |
+|---|---|---|
+| `solidc` | 2,322 passed / **10 failed** | 2,342 passed / **0 failed** |
+| `solidcash` | 3,597 passed / **5 failed** | 3,656 passed / **1 failed** |
+
+The one remaining red is `LargeContractSplitting` (task X1). The ten `solidc` reds and the parallel-only
+`solidcash` reds are gone: they were a fixture-outpoint birthday collision, fixed in `72f07b07`.
+
+### 4.3 Corrections this round forced on this plan
+
+1. **Section 2 was wrong.** It listed "received and compiler-reduced function pointers are graph-bound" as
+   settled baseline fact. That claim was masking a direct-route regression introduced by `d941b139`, which made
+   the broadcast pointer receiver use the live loop index for EVERY compilation when only a graph handler needs
+   it. `FnPtrDispatchTables` measured 14/14 at `d941b139^`, 11/14 at `93bbfedb`, and 14/14 after G1. The three
+   baseline reds were that regression - not independent bugs, and not G2's.
+2. **Mock limits are already relaxed, so no mock-based test is `CONSENSUS_FIT` evidence.**
+   `MOCK_CONSENSUS_LIMITS` - the default for every mock test, not just semantic ones - sets 1,000,000-byte
+   inputs and stack items, 10,000,000-byte transactions, and a 10,000,000 operation budget. This weakens every
+   prior mock-based capacity claim in this repository, not only Layer-3 ones.
+3. **The semantic profile is STRICTER than the mock default on the limit that matters most.**
+   `MOCK_CONSENSUS_LIMITS.maximumNftCommitmentBytes` is 1,000,000 against BCH-2026's real 128.
+   `createLayer3SemanticTestProvider()` restores 128. So a fixture relying on a commitment above 128 bytes
+   passes by default and would fail on real BCH-2026. Capacity claims must state which provider they used.
+4. **`git stash` is unsafe in this repository.** `refs/stash` is shared across all worktrees, so a
+   push/pop pair in one worker's tree can consume or deliver another worker's entry. It happened this round:
+   Worker A's G1 files landed in Worker C's tree. Both recovered and neither committed foreign work, but the
+   rule is now: workers must use `git diff > file` plus `git checkout --` and `git apply`, never `git stash`.
 
 ### 4.0 Pinned regression baseline at `93bbfedb`
 

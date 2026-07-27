@@ -58,6 +58,48 @@ contract OutStateReader(bytes counterAddr) {
 }
 `;
 
+const DYNAMIC_OUTSTATE_READER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface IDynamicState {
+    public string message;
+}
+
+contract DynamicOutStateReader(bytes target) {
+    function requireOutput(string expected) public {
+        require(IDynamicState(target).outState.message == expected);
+    }
+}
+`;
+
+const DYNAMIC_OUTSTATE_CALLER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface IDynamicState {
+    public string message;
+    function set(string next);
+}
+
+contract DynamicOutStateCaller(bytes target) {
+    function updateAndCheck(string next) public {
+        IDynamicState(target).set(next);
+        require(IDynamicState(target).outState.message == next);
+    }
+}
+`;
+
+const DYNAMIC_OUTSTATE_TARGET_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+contract DynamicOutStateTarget() {
+    string message;
+    function set(string next) public {
+        this.message = next;
+        require(next.length >= 0);
+    }
+}
+`;
+
 // Counter with a function that returns a value
 const RETURNING_COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
@@ -250,6 +292,19 @@ describe('outState Accessor and Function Returns', () => {
 
       // outState reads should NOT appear as externalCalls - they are a separate mechanism
       expect(fn!.externalCalls).toBeUndefined();
+    });
+
+    it('compiles a dynamic outState read as an authenticated output-chunk scan', () => {
+      const artifact = compileString(DYNAMIC_OUTSTATE_READER_CONTRACT);
+      const fn = artifact.abi.find((candidate) => candidate.name === 'requireOutput')!;
+      expect(fn.externalOutStateReads).toEqual([
+        expect.objectContaining({
+          interfaceName: 'IDynamicState',
+          addressParam: 'target',
+          requiredDataNftIndices: [0],
+        }),
+      ]);
+      expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
     });
   });
 
@@ -485,6 +540,37 @@ contract Reader(bytes32 counterCategory) {
       const sc = StatefulContract.withCategory(readerContract, readerCategoryId);
       const call = sc.readOutputState(alicePub, new SignatureTemplate(alicePriv));
       expect(call).toBeInstanceOf(StatefulFunctionCall);
+    });
+  });
+
+  describe('dynamic outState reconstruction', () => {
+    it('reads the callee final multi-chunk value and rejects no honest chunks', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(DYNAMIC_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider,
+        targetBase,
+        targetArtifact.stateLayout!,
+        { message: '' },
+        { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(DYNAMIC_OUTSTATE_CALLER_CONTRACT, { forceStateful: true });
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const next = 'x'.repeat(241);
+
+      await expect(
+        caller.updateAndCheck(next).withExternalCall(targetStateful, 'set', [next]).send(),
+      ).resolves.toBeDefined();
+      await expect(targetStateful.getState()).resolves.toEqual(
+        expect.objectContaining({ message: next }),
+      );
     });
   });
 

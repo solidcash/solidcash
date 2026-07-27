@@ -1978,6 +1978,8 @@ export interface ExternalOutputStateAccessInfo {
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
   calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  /** The data-NFT field is a uint32 length header; the value is reconstructed from owner-branded chunks. */
+  dynamic: boolean;
 }
 
 export class ExternalOutputStateNode extends ExpressionNode {

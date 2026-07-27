@@ -13,8 +13,15 @@ import {
   AbiFunction,
   BlockSlotKind,
   attachDecodedAccessors,
+  buildChunkCommitment,
+  buildEntryNftCovenantScript,
+  computeCollectionHash,
+  dynamicChunkSignature,
+  splitValueIntoChunks,
 } from '@solidcash/utils';
-import { binToHex, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026 } from '@bitauth/libauth';
+import {
+  binToHex, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026, utf8ToBin,
+} from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
 import {
   buildEventNftCovenantScript, computeEventNameHash, buildSidecarRedeem,
@@ -117,6 +124,8 @@ export interface ExternalCallUtxoGroup {
   entryLoopStart?: number;
   /** B's collection signature for the loop entries (for the derive-time master-index unlocker patch). */
   entryLoopCollection?: string;
+  /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
+  dynamicStateValues?: Readonly<Record<string, StateValue>>;
 }
 
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
@@ -1471,6 +1480,44 @@ export class StatefulTransactionBuilder {
         }
       }
 
+      const externalDynamicChunks: Output[] = [];
+      for (const variable of group.stateLayout.variables) {
+        if (!variable.dynamic) continue;
+        const value = group.dynamicStateValues?.[variable.name]
+          ?? bStateUpdates?.get(variable.name);
+        if (value === undefined) continue;
+        const raw = typeof value === 'string' ? utf8ToBin(value)
+          : value instanceof Uint8Array ? value : undefined;
+        if (!raw) {
+          throw new Error(
+            `External dynamic state '${variable.name}' requires a canonical bytes/string value`,
+          );
+        }
+        const collectionHash = computeCollectionHash(
+          dynamicChunkSignature(variable.name, variable.type),
+        );
+        const lockingBytecode = scriptToLockingBytecode(
+          buildEntryNftCovenantScript(hexToBin(group.categoryId), collectionHash),
+          group.externalContract?.inner?.addressType ?? 'p2sh32',
+        );
+        for (const [index, chunk] of splitValueIntoChunks(raw).entries()) {
+          const output: Output = {
+            to: lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n,
+              category: group.categoryId,
+              nft: {
+                capability: 'mutable',
+                commitment: buildChunkCommitment(index, chunk),
+              },
+            },
+          };
+          output.amount = BigInt(Math.max(1200, calculateDust(output)));
+          externalDynamicChunks.push(output);
+        }
+      }
+
       // Create B's data NFT outputs with updated commitments
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftIdx = group.requiredDataNftIndices[i];
@@ -1496,11 +1543,18 @@ export class StatefulTransactionBuilder {
 
       // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
       if (group.blockInputs && group.blockLayout) {
+        if (externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
+          throw new Error(
+            `External dynamic state exceeds balanced trailing capacity `
+            + `(${externalDynamicChunks.length} > ${group.blockLayout.trailingCapacity ?? 0})`,
+          );
+        }
         // The blockInputs already include master + dataNfts at positions 0..D.
         // The remaining positions (D+1..) need corresponding outputs.
         const dataNftEnd = 1 + group.requiredDataNftIndices.length;
         let eventIdx = 0;
         let keccakIdx = 0;
+        let externalDynamicChunkIdx = 0;
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
@@ -1549,6 +1603,13 @@ export class StatefulTransactionBuilder {
                 },
               }
               : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token });
+            continue;
+          }
+
+          if (slot?.kind === 'trailing'
+            && externalDynamicChunkIdx < externalDynamicChunks.length) {
+            const output = externalDynamicChunks[externalDynamicChunkIdx++];
+            builder.addOutput(output);
             continue;
           }
 
@@ -1609,6 +1670,10 @@ export class StatefulTransactionBuilder {
             });
           }
         }
+      } else {
+        // Legacy/unbalanced external calls place their runtime chunk run immediately after the fixed
+        // master+data group. The callee covenant derives the same master-relative base.
+        for (const output of externalDynamicChunks) builder.addOutput(output);
       }
       // Trailing NEW entry nodes for a cross-contract callee INSERT (docs/deferrals.md #1): B's covenant mints the
       // NEW at masterInputIndex + blockSize, right after B's block. Placed here in group order (skip cleared handles).

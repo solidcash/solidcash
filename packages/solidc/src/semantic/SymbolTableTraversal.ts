@@ -7478,6 +7478,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         fieldsInNft,
         externalOutStateSlotIndex: -1, // assigned later by pre-scan
         calleeMultiNft,
+        dynamic: isDynamicStorageType(ifaceVar.type),
       };
       accessNode.location = node.location;
       return accessNode;

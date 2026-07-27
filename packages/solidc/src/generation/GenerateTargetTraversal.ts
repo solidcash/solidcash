@@ -11747,6 +11747,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, locationData);
     }
 
+    if (info.dynamic) {
+      this.pushToStack('(external_out_dynamic_master)');
+      this.emitExternalDynamicOutStateRead(info, locationData);
+      return node;
+    }
+
     // 2. Read OUTPUT commitment (post-execution state)
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
 
@@ -11770,6 +11776,171 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.pushToStack('(value)');
     return node;
+  }
+
+  /**
+   * Reconstruct a dynamic external post-state value from the finalized transaction outputs.
+   *
+   * The callee data NFT authenticates the uint32 byte length. Chunks are selected by the owner-derived
+   * collection covenant address rather than by a participant-local trailing offset, keeping this read valid
+   * when independently compiled balanced blocks relocate or reserve unrelated trailing resources. A complete
+   * output scan proves exact cardinality, mutable capability, owner category, consecutive indices, and the
+   * concatenated bytes. No SDK-authored chunk position is trusted.
+   */
+  private emitExternalDynamicOutStateRead(
+    info: NonNullable<ExternalOutputStateAccessNode['accessInfo']>,
+    loc: SingleLocationData,
+  ): void {
+    const lenType = new IntType(false, 32);
+    const chunkHash = computeCollectionHash(
+      computeCollectionSignature(info.stateVarName, info.stateVarType.toString()),
+    );
+
+    // Read the authoritative A$len header from the selected callee data-NFT output.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    if (info.calleeMultiNft) this.emitNftIndexTagVerify(info.nftIndex, loc);
+    for (let i = 0; i < info.fieldIndex; i++) {
+      this.emitPushdataSkip(info.fieldsInNft[i].type, loc);
+    }
+    if (info.fieldIndex === info.fieldsInNft.length - 1) {
+      this.emitPushdataDecodeLastField(lenType, loc);
+    } else {
+      this.emitPushdataDecode(lenType, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
+    this.pushToStack('(external_out_dynamic_len)');
+
+    // Owner category and the deterministic chunk covenant address.
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_master)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(external_out_dynamic_category)');
+    this.emit(Op.OP_DUP, loc);
+    this.pushToStack('(external_out_dynamic_address)');
+    this.emitSortedEntryAddress(chunkHash, loc);
+    this.stack[0] = '(external_out_dynamic_address)';
+
+    // expected = ceil(length / 120), found = 0, accumulator = empty, scan index = 0.
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_len)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(119n), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(120n), loc);
+    this.emit(Op.OP_DIV, loc);
+    this.pushToStack('(external_out_dynamic_expected)');
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(external_out_dynamic_found)');
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.popFromStack();
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(external_out_dynamic_acc)');
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(external_out_dynamic_i)');
+
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    const stackBeforeBody = [...this.stack];
+    const stackDepth = this.stack.length;
+
+    // Only outputs at the exact owner-derived chunk address enter the authenticated chunk stream.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_address)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+
+    // Category base and mutable capability must match the callee owner.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_category)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    // Commitment is push(index) || push(chunk); indices must be exactly 0,1,... in output order.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emitPushdataDecode(lenType, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitPushdataDecodeLastField(new BytesType(), loc);
+
+    // accumulator = accumulator || chunk
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_acc)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emitReplace(this.getStackIndex('(external_out_dynamic_acc)') + 1, this.currentFunction);
+    // found++ (kept on altstack so the scan counter cannot alias it)
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_ENDIF, loc);
+
+    this.removeScopedVariables(stackDepth, this.currentFunction);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(encodeBool(false), loc);
+    this.pushToStack('(external_out_dynamic_continue)');
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = [...stackBeforeBody];
+    this.emit(encodeBool(true), loc);
+    this.pushToStack('(external_out_dynamic_exit)');
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack();
+    this.scopeDepth -= 1;
+
+    // Exact chunk count and authoritative truncation reject omission, injection, and oversized tails.
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.pushToStack('(external_out_dynamic_found)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_expected)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack();
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_acc)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_len)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(external_out_dynamic_value)');
+
+    for (const name of [
+      '(external_out_dynamic_i)',
+      '(external_out_dynamic_acc)',
+      '(external_out_dynamic_expected)',
+      '(external_out_dynamic_address)',
+      '(external_out_dynamic_category)',
+      '(external_out_dynamic_len)',
+      '(external_out_dynamic_master)',
+    ]) {
+      const index = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+    }
+    this.stack[0] = '(value)';
   }
 
   visitMethodCall(_node: MethodCallNode): Node {

@@ -40,6 +40,26 @@ contract E2RawCaller() {
 const RAW_STATIC_CALLER = RAW_CALLER
   .replace('E2RawCaller', 'E2RawStaticCaller')
   .replace('.call(payload)', '.staticcall(payload)');
+/**
+ * X18: the VOID spelling of the same admitted callsite. `LowLevelCallShapes` listed it as ADMITTED while the
+ * bus route leaked `Block slot not found: lowLevelCall[0]` for it; it now lowers to the same opaque `__raw__`
+ * transcript row as the returning spelling, with no result binding.
+ */
+const RAW_VOID_CALLER = `pragma solidcash >=0.8.0;
+contract E2RawVoidCaller() {
+  function run(address target, bytes payload) public {
+    target.call(payload);
+    require(payload.length > 0);
+  }
+}`;
+const RAW_VOID_STATIC_CALLER = RAW_VOID_CALLER
+  .replace('E2RawVoidCaller', 'E2RawVoidStaticCaller')
+  .replace('.call(payload)', '.staticcall(payload)');
+/** A callee with no return: a void row must bind mode/target/calldata with no result field at all. */
+const RAW_VOID_TARGET = `pragma solidcash >=0.8.0;
+contract E2RawVoidTarget() {
+  function poke(int value) public pure { require(value >= 0); }
+}`;
 const RAW_TARGET = `pragma solidcash >=0.8.0;
 contract E2RawTarget() {
   function echo(int value) public returns (int) {
@@ -209,6 +229,111 @@ async function buildRawCallGraph(
   return { provider, builder: tx, transaction: raw(tx), plan };
 }
 
+interface VoidRawGraphOptions {
+  staticCall?: boolean;
+  /** Commit calldata the caller did not authorize: attacks the CALLDATA field of a void low-level row. */
+  tamperCalldata?: boolean;
+  /** Make the co-spent callee attest the CALLER's row instead of its own: attacks row/participant binding. */
+  tamperParticipantRow?: boolean;
+}
+
+/**
+ * X18: the same two-participant graph as `buildRawCallGraph`, but the caller writes the VOID spelling
+ * `target.call(payload);` into a callee that returns nothing. There is no result field to bind, so the row
+ * must stand on mode, target and calldata alone.
+ */
+async function buildVoidRawCallGraph(
+  graphOptions: VoidRawGraphOptions = {},
+): Promise<{ provider: SemanticProvider; builder: TransactionBuilder; transaction: string; plan: any }> {
+  const provider = createLayer3SemanticTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const artifactB = compileString(RAW_VOID_TARGET, options);
+  const baseB = new Contract(artifactB, [], { provider });
+  const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const compiled = compileString(
+    graphOptions.staticCall ? RAW_VOID_STATIC_CALLER : RAW_VOID_CALLER, options,
+  );
+  // PROBE, not a fixture: `worklist.ts` routes a raw edge to `dynamicCall` only when the ABI declares
+  // `opaqueReturn`, which a VOID edge must not claim - it returns nothing. Forcing the flag here isolates
+  // that one gate, so a settlement below proves the rest of the raw-edge path already handles a void row.
+  const artifactA: any = JSON.parse(JSON.stringify(compiled));
+  artifactA.abi.find((fn: any) => fn.name === 'run').externalCalls[0].opaqueReturn = true;
+  const baseA = new Contract(artifactA, [], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const selector = artifactB.abi.find((fn) => fn.name === 'poke')!.selector!;
+  const argument = graphOptions.tamperCalldata ? 4n : 3n;
+  const payload = Uint8Array.from([...hexToBin(selector), ...packedResult(3n)]);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    function: 'run',
+    args: [b.lockingBytecode, payload],
+    targets: {},
+    dynamicCall: () => ({
+      participant: { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+      function: 'poke',
+      args: [argument],
+    }),
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projections = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 50_000n });
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    setupA.masterUtxo,
+    routeA(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupB.masterUtxo,
+    routeB(...layer3.compiledGraphRouteArgs(
+      transcript, graphOptions.tamperParticipantRow ? 0 : 1, layout.controllerInput,
+    ) as any),
+  );
+  projections.forEach((proof, participant) => tx.addInput(
+    proof,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, builder: tx, transaction: raw(tx), plan };
+}
+
 /** Report the first input whose BCH-2026 evaluation fails, so a hostile case names one exact covenant. */
 function failingInput(builder: TransactionBuilder): number | null {
   try {
@@ -272,6 +397,79 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
     // producer's own SCB1 route, which is what authenticates the commitment it publishes.
     it('rejects a committed result the low-level callee did not produce', async () => {
       const built = await buildRawCallGraph({ tamperResult: true });
+      expect(failingInput(built.builder)).toBe(1);
+      await expect(built.provider.sendRawTransaction(built.transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    }, 120_000);
+  });
+
+  /**
+   * X18. The VOID spelling `target.call(payload);` was listed ADMITTED by the shape module while the bus
+   * route leaked `Block slot not found: lowLevelCall[0]` for it. It now lowers to the same `__raw__`
+   * transcript row as the returning spelling. These cases prove the row is authenticated, not merely
+   * compilable: it binds mode, target and calldata with no result field to lean on.
+   *
+   * The settlement cases force ONE ABI flag - see the PROBE comment in `buildVoidRawCallGraph`. The pin
+   * below states exactly what that probe stands in for, so the covenant evidence is not read as an
+   * end-to-end claim about today's planner.
+   */
+  describe('the admitted VOID low-level class binds mode, target and calldata (X18)', () => {
+    /**
+     * OPEN: the compiler now publishes a void raw edge honestly - `interfaceName`/`functionName` `__raw__`,
+     * no `opaqueReturn`, because the callsite returns nothing. `worklist.ts` routes a raw edge to
+     * `dynamicCall` on `call.opaqueReturn` alone, so it does not recognize the honest artifact and reports
+     * `no symbolic target registered for '__raw__'`, naming a compiler sentinel to the user.
+     *
+     * Repair: gate that branch on `interfaceName === '__raw__' && functionName === '__raw__'` - how the
+     * compiler itself recognizes the edge - instead of on `opaqueReturn`. `packages/solidcash/src` is leased
+     * elsewhere, so this is pinned rather than fixed. The settlement cases above show the rest of the
+     * raw-edge path already handles a void row once that gate admits it.
+     */
+    it('OPEN: the planner does not yet recognize the honestly published void raw edge', () => {
+      const busArtifact = compileString(RAW_VOID_CALLER, busOptions);
+      const run = busArtifact.abi.find((fn) => fn.name === 'run')!;
+      expect(run.externalCalls![0].interfaceName).toBe('__raw__');
+      expect(run.externalCalls![0].opaqueReturn).toBeUndefined();
+      expect(() => layer3.deriveCompiledGraphPlan({
+        root: { artifact: busArtifact, lockingBytecode: `aa20${'cd'.repeat(32)}87` },
+        function: 'run',
+        args: [`aa20${'ab'.repeat(32)}87`, hexToBin('0011223344')],
+        targets: {},
+        dynamicCall: () => ({
+          participant: { artifact: busArtifact, lockingBytecode: `aa20${'ab'.repeat(32)}87` },
+          function: 'run',
+          args: [],
+        }),
+      })).toThrow(/no symbolic target registered for '__raw__'/);
+    });
+
+    it('settles an authenticated VOID low-level call edge', async () => {
+      const built = await buildVoidRawCallGraph();
+      expect(failingInput(built.builder)).toBe(null);
+      await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+      expect(built.plan.invocations[1].callMode).toBe('call');
+      expect(built.plan.invocations[0].resultDependencies).toEqual([]);
+    }, 120_000);
+
+    it('settles an authenticated VOID low-level staticcall edge and commits the read-only mode', async () => {
+      const built = await buildVoidRawCallGraph({ staticCall: true });
+      expect(failingInput(built.builder)).toBe(null);
+      await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+      expect(built.plan.invocations[1].callMode).toBe('staticcall');
+    }, 120_000);
+
+    // Attacks the CALLDATA field. A void row publishes no result, so calldata is the only thing tying the
+    // co-spent callee's execution to the caller's committed payload; decoding must be canonical.
+    it('rejects decoded calldata a VOID caller did not commit', async () => {
+      await expect(buildVoidRawCallGraph({ tamperCalldata: true }))
+        .rejects.toThrow(/decoded calldata is not canonical/);
+    }, 120_000);
+
+    // Hostile, on the VM rather than in the planner: the co-spent callee attests the CALLER's row instead of
+    // its own, so the void edge's callee half is unproven. Input 1 is the callee's own SCB1 route - the
+    // covenant that has to reject it. The honest build above is the negative control for this case.
+    it('rejects a co-spent callee attesting a row that is not its own, at input 1', async () => {
+      const built = await buildVoidRawCallGraph({ tamperParticipantRow: true });
       expect(failingInput(built.builder)).toBe(1);
       await expect(built.provider.sendRawTransaction(built.transaction))
         .rejects.toThrow(/mandatory-script-verify-flag-failed/);

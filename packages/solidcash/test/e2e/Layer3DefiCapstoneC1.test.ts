@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
@@ -163,6 +163,12 @@ interface BuiltC1 {
   transcript: layer3.FinalizedCompiledGraph;
   routerInputBytes: number;
   tokenInputBytes: number;
+  /** Where each settled state transition can be read back off the chain, and how to interpret it. */
+  settled: {
+    scalars: readonly { label: string; address: string; layout: any }[];
+    balances: { address: string; slots: readonly { label: string; slot: Uint8Array }[] };
+    allowance: { address: string; slot: Uint8Array };
+  };
   returnCommitment: string;
   eventCommitment: string;
 }
@@ -553,6 +559,37 @@ async function buildC1(
     transcript,
     routerInputBytes: built.inputs[routerBaseInput].unlockingBytecode.length,
     tokenInputBytes: built.inputs[tokenBaseInput].unlockingBytecode.length,
+    settled: {
+      scalars: [
+        {
+          label: 'router.settled',
+          address: getDataNftAddress(router, routerSetup.categoryId),
+          layout: routerArtifact.stateLayout!,
+        },
+        {
+          label: 'accrue.collateral',
+          address: getDataNftAddress(accrue, accrueSetup.categoryId),
+          layout: accrueArtifact.stateLayout!,
+        },
+        {
+          label: 'vault.elastic/base',
+          address: getDataNftAddress(vault, vaultSetup.categoryId),
+          layout: vaultArtifact.stateLayout!,
+        },
+      ],
+      balances: {
+        address: getEntryNftAddress(token, tokenSetup.categoryId, 'balances'),
+        slots: [
+          { label: 'from', slot: keyToSlot(from) },
+          { label: 'first', slot: keyToSlot(first) },
+          { label: 'second', slot: keyToSlot(second) },
+        ],
+      },
+      allowance: {
+        address: getEntryNftAddress(token, tokenSetup.categoryId, 'allowance'),
+        slot: allowanceSlot,
+      },
+    },
     returnCommitment,
     eventCommitment,
   };
@@ -586,6 +623,40 @@ describe('C1 DeFi integrated semantic capstone', () => {
 
     layer3.preflightLayer3Transaction(built.builder);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+
+    // Every transition is read back off the chain, against numbers this test states independently of the
+    // builder: 100 - 30 debited and split 10/20, allowance 50 - 30, Bento (12,9) -> (12+30, 9+22),
+    // Kashi collateral 5 + 22 - the SHARE the vault returned, not the amount that was deposited.
+    const expectedScalars = [
+      buildInitialStateCommitments(built.settled.scalars[0].layout, { settled: 30n })[0],
+      buildInitialStateCommitments(built.settled.scalars[1].layout, { collateral: 27n })[0],
+      buildInitialStateCommitments(built.settled.scalars[2].layout, { elastic: 42n, base: 31n })[0],
+    ];
+    for (const [index, scalar] of built.settled.scalars.entries()) {
+      const utxos = await built.provider.getUtxos(scalar.address);
+      expect(
+        utxos.map((utxo: any) => utxo.token?.nft?.commitment),
+        `${scalar.label} settled post-state`,
+      ).toContain(expectedScalars[index]);
+    }
+
+    const entryValue = async (address: string, slot: Uint8Array): Promise<bigint | undefined> => {
+      const utxos = await built.provider.getUtxos(address);
+      const match = utxos
+        .map((utxo: any) => decodeEntryCommitment(hexToBin(utxo.token?.nft?.commitment ?? '')))
+        .find((entry) => binToHex(entry.slot) === binToHex(slot));
+      return match === undefined
+        ? undefined
+        : vmNumberToBigInt(match.value, { requireMinimalEncoding: false }) as bigint;
+    };
+    const balanceOf = async (label: string): Promise<bigint | undefined> => entryValue(
+      built.settled.balances.address,
+      built.settled.balances.slots.find((entry) => entry.label === label)!.slot,
+    );
+    expect(await balanceOf('from')).toBe(70n);
+    expect(await balanceOf('first')).toBe(10n);
+    expect(await balanceOf('second')).toBe(20n);
+    expect(await entryValue(built.settled.allowance.address, built.settled.allowance.slot)).toBe(20n);
   }, 180_000);
 
   // Each substitution is refused by the covenant that owns the substituted field, not by the controller:

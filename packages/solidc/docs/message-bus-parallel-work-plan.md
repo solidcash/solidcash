@@ -122,14 +122,14 @@ task-specific report, not in this table.
 | --- | --- | --- | --- | --- | --- |
 | P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
-| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | TODO | Continues `d941b139` |
+| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | LEASED | base `93bbfedb`; lease: `compiler.ts` |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | TODO | Honest + count/order/omission/injection |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
-| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | TODO | Multiple producers/consumers |
+| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | LEASED | base `93bbfedb`; lease: SDK `src/layer3/*` |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | TODO | Bind mode/target/calldata/result |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
-| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | TODO | One authority, one final flush |
+| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | LEASED | base `93bbfedb`; lease: `GenerateTargetTraversal.ts` |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | TODO | All admitted exits flush or reject |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
@@ -148,6 +148,24 @@ task-specific report, not in this table.
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
+
+Aggregate at round 1 dispatch: `2 PROVEN / 0 INTEGRATED / 0 REVIEW / 3 LEASED / 18 TODO / 0 BLOCKED`.
+
+### 4.1 Active leases (round 1, base `93bbfedb`)
+
+| Collision surface | Leased to | Task |
+| --- | --- | --- |
+| `packages/solidc/src/compiler.ts` | Worker A | G1 |
+| `packages/solidc/src/generation/GenerateTargetTraversal.ts` | Worker C | S1 |
+| `packages/solidcash/src/layer3/*` (planner/assembler) | Worker B | E1 |
+| `packages/solidc/src/semantic/SymbolTableTraversal.ts` | unleased | — |
+| this plan and the completion ledger | Main (never workers) | — |
+
+Worktrees: `.worktrees/worker-a-g1`, `.worktrees/worker-b-e1`, `.worktrees/worker-c-s1`, each branched from
+`93bbfedb`. A worker needing a surface leased to another worker must implement behind a NEW module and request
+the lease in its evidence packet; it must not edit the leased file, and must report `BLOCKED` if that is
+impossible. `LowerCollectionJournalHelpers.ts` and the C2/SortedList backend are not collision surfaces and are
+free for Worker C.
 
 ## 5. Phase 0: rebaseline and make claims atomic
 

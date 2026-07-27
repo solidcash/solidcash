@@ -1,8 +1,11 @@
 # Layer-3 BCH-2026 semantic test profile
 
-Profile name: `layer3-bch2026-semantic-relaxed-v1`  
-Evidence label: `SEMANTIC`  
-VM target: `BCH_2026_05`  
+Profile name: `layer3-bch2026-semantic-relaxed-v1`
+
+Evidence label: `SEMANTIC`
+
+VM target: `BCH_2026_05`
+
 Implementation: `packages/solidcash/test/e2e/layer3-semantic-profile.ts`
 
 This test-only profile allows message-bus semantic capstones to execute before bytecode and transaction-size

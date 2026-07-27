@@ -678,6 +678,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Delegatecall tracking
   private functionHasDelegatecall: boolean = false;
   private currentFunctionIsDelegate: boolean = false;
+  // C1/piece-5: stack slot holding "a delegate edge was reached on this path" (0/1), allocated only for a
+  // conditional delegatecall. The epilogue requires the proxy's own state to be untouched wherever it is 0.
+  private static readonly DELEGATE_TAKEN = '__internal__delegateTaken';
+  private delegateTakenFlagActive: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
@@ -2703,6 +2707,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       scan(node.body);
     }
 
+    // C1/piece-5: a conditional delegatecall needs a runtime "the delegate edge was reached" flag. The state
+    // covenant skip is per-function, the co-spend pin is per-callsite, so the epilogue must know which paths
+    // actually delegated. Allocated only for a conditional callsite, so every straight-line delegatecall proxy
+    // keeps byte-identical bytecode.
+    this.delegateTakenFlagActive = this.functionHasDelegatecall && node.delegatecallIsConditional
+      && !this.isDefineSubTraversal;
+    if (this.delegateTakenFlagActive) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GenerateTargetTraversalWithLocation.DELEGATE_TAKEN);
+    }
+
     this.c2WitnessSnapshotsRestored = false;
     this.emitRuntimeAliasWitnessPreflight(node);
     node.body = this.visit(node.body) as BlockNode;
@@ -2844,6 +2859,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // of the proxy's OWN-category mutable (0x01) NFTs input==output; the delegate's writes preserve the
         // count, so this only rejects destruction/count-tampering of the proxy's state.
         this.emitOwnCategoryMutableNftConservation(node);
+        // C1/piece-5: on a path that did NOT reach the delegate edge, nothing authorized a state change - the
+        // delegate never ran and a delegatecall function may not write its own state (C1/B). Freeze the proxy's
+        // own data NFTs there.
+        if (this.delegateTakenFlagActive) this.emitConditionalDelegateStatePreservation(node);
       } else if (hasAnyStatefulAccess) {
         // Full covenant checks
         this.emitTokenCategoryVerification(node);
@@ -12289,6 +12308,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.callMode === 'delegatecall') {
       // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles
       // its own verification via _proxyMasterIndex. Push dummy success/returnData.
+      this.markDelegateEdgeReached(node);
       this.emit(Op.OP_1, locationData);           // [true]
       this.emit(encodeInt(0n), locationData);      // [true, empty]
     } else {
@@ -12365,12 +12385,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, locationData);  // []
         this.popFromStack();                         // untrack input
       }
+      this.markDelegateEdgeReached(node);
     } else {
       this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
       // Stack: [remaining] - drop it
       this.emit(Op.OP_DROP, locationData);
     }
     return node;
+  }
+
+  /**
+   * C1/piece-5: record that a delegate edge executed on THIS path. Set unconditionally at every delegatecall
+   * site, pinned or not - the flag means "the callsite ran", so an unpinned (P2PKH-impl) proxy keeps exactly its
+   * existing, separately-warned behaviour rather than being newly frozen by the not-taken-path covenant.
+   * No-op unless a conditional callsite allocated the flag, so straight-line proxies emit no extra bytes.
+   */
+  private markDelegateEdgeReached(node: Node): void {
+    if (!this.delegateTakenFlagActive) return;
+    this.emit(Op.OP_1, { location: node.location, positionHint: PositionHint.END });
+    this.pushToStack('(delegate_taken_new)');
+    this.emitReplace(this.getStackIndex(GenerateTargetTraversalWithLocation.DELEGATE_TAKEN), node);
+    this.popFromStack();
   }
 
   /** Extract the address parameter name from a low-level call's target expression. */
@@ -19809,6 +19844,82 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (mutable_balance)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (this_cat_mutable)
+  }
+
+  /**
+   * C1/piece-5: a conditional delegatecall skips the proxy's own state covenant for the WHOLE function (the gate
+   * is the per-function !functionHasDelegatecall) but pins the delegate co-spend only on the path that reaches
+   * the callsite. On the other paths nothing authorizes the proxy's state at all - the data NFT sub-covenant
+   * self-authorizes on the master's minting NFT - so any spender rewrites it (SECURITY-AUDIT C1).
+   *
+   * Require every co-spent OWN-category mutable (0x01) NFT to be preserved in place - same index, same
+   * `category ++ commitment` input -> output - UNLESS the delegate edge was reached.
+   *
+   * Deliberately a loop over inputs rather than a check at the block-layout data-NFT offsets. Nothing on the
+   * delegatecall path pins where a proxy data NFT sits: its own sub-covenant's flag=1 path only demands that a
+   * minting NFT of its category is present at the witnessed master index, never its own position. An
+   * offset-indexed check is therefore dodgeable by co-spending the real data NFT somewhere else and parking a
+   * token-free UTXO at the checked offset. Verifying by PROPERTY closes that whole class.
+   *
+   * Together with emitOwnCategoryMutableNftConservation (own-category mutable output count == input count) this
+   * accounts for every own-category mutable output: each such input is preserved at its own index, and the count
+   * leaves no room for an extra forged one elsewhere.
+   */
+  private emitConditionalDelegateStatePreservation(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+
+    // This contract's category ++ mutable(0x01), built from the master's category ++ minting(0x02).
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.pushToStack('(dp_cat_mutable)');
+
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.pushToStack('(dp_i)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);               // [cat01, i, i]
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // [cat01, i, incat]
+    this.emit(encodeInt(2n), loc);           // pick cat01 (incat=0, i=1, cat01=2)
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);                // own-category mutable input -> [cat01, i]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); // [cat01, i, com_in]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [cat01, i, com_in, com_out]
+    this.emit(Op.OP_EQUAL, loc);                 // [cat01, i, comEq]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);   // [cat01, i, comEq, outcat]
+    this.emit(encodeInt(3n), loc);               // pick cat01 (outcat=0, comEq=1, i=2, cat01=3)
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);                 // [cat01, i, comEq, catEq]
+    this.emit(Op.OP_BOOLAND, loc);               // [cat01, i, preserved]
+    // ... OR the delegate edge ran. One untracked item ('preserved') sits above the tracked stack.
+    this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.DELEGATE_TAKEN) + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_VERIFY, loc);                // [cat01, i]
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // (dp_i)
+
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (dp_cat_mutable)
   }
 
   /**

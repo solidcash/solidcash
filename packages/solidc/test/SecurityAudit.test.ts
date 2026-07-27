@@ -101,6 +101,120 @@ describe('C1: delegatecall without access control warns', () => {
   });
 });
 
+// C1/piece-6 - the co-spend covenant pins the delegate input to the address the CALLER supplied. When that
+// address is an unguarded function parameter the pin proves nothing about identity: an unrelated spender
+// co-spends an implementation THEY wrote and rewrites the proxy state (measured 5 -> 999 on the BCH-2026 VM in
+// Layer3DelegateClassesE3). pinsDelegateCoSpend is true for this shape, which is exactly what SUPPRESSED the
+// older P2PKH-only warning, so it needs its own diagnostic.
+describe('C1/piece-6: an unguarded caller-supplied implementation address warns', () => {
+  function callerChosenWarnings(src: string): number {
+    let n = 0;
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      if (a.join(' ').includes('unguarded caller-supplied parameter')) n += 1;
+    });
+    try {
+      compileString(src);
+    } finally {
+      spy.mockRestore();
+    }
+    return n;
+  }
+
+  it('warns when the delegatecall target is a bare parameter', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract Open() { bigint counter;
+        function up(bytes input, address impl) external {
+          impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
+  it('warns when the parameter is laundered through a local alias', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract Alias() { bigint counter;
+        function up(bytes input, address impl) external {
+          address m = impl; m.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
+  /**
+   * The three shapes that must keep compiling silently. A constructor argument is committed by the contract's
+   * own p2sh32; checkSig is the repo's PINNED_PROXY fixture; a require() against stored state is the ordinary
+   * upgradeable-proxy shape, and is why this warns rather than rejecting.
+   */
+  it('stays silent for a constructor-argument implementation', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract Pinned(address impl) { bigint counter;
+        function up(bytes input) external {
+          impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+  });
+
+  it('stays silent for a parameter gated by checkSig', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract Authorized() { bigint counter;
+        function up(bytes input, address impl, pubkey pk, sig s) external {
+          require(checkSig(s, pk)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+  });
+
+  it('stays silent for a parameter constrained by a require against stored state', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract Upgradeable() { bigint counter; address implementation;
+        function up(bytes input, address impl) external {
+          require(impl == this.implementation); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+  });
+});
+
+// C1/piece-5 - the state-covenant skip is per-FUNCTION (!functionHasDelegatecall) while the co-spend pin is
+// per-CALLSITE. A callsite the path does not reach therefore left the proxy's state unauthorized (a live
+// forgery), and a callsite reached N times collapsed to one edge and one block slot (a silent miscompile).
+describe('C1/piece-5: a delegatecall must be reached at most once per path', () => {
+  const IMPL_ARG = 'address impl';
+
+  it('refuses a delegatecall inside a loop by name', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract Loop(${IMPL_ARG}) { bigint counter;
+        function up(bytes input) external {
+          for (int i = 0; i < 2; i = i + 1) { impl.delegatecall(input); }
+          require(input.length > 0); } }`)).toThrow(/issues delegatecall inside a loop.*settle as one/s);
+  });
+
+  it('refuses a delegatecall inside a while loop too', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract While(${IMPL_ARG}) { bigint counter;
+        function up(bytes input, int n) external {
+          while (n > 0) { impl.delegatecall(input); n = n - 1; }
+          require(input.length > 0); } }`)).toThrow(/issues delegatecall inside a loop/);
+  });
+
+  /**
+   * The not-taken-path covenant's own opcode signature: inside the own-category-mutable input loop it compares
+   * the output commitment and then the output CATEGORY at the same index. The C3 conservation loop compares
+   * categories only and never reads a commitment, so a hit is attributable to this covenant and nothing else.
+   */
+  const NOT_TAKEN_SIG = 'OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY';
+
+  it('admits a conditional delegatecall and emits the not-taken-path covenant for it', () => {
+    const conditional = compileString(`pragma solidcash >=0.8.0;
+      contract Cond(${IMPL_ARG}) { bigint counter;
+        function up(bytes input, bool flag) external {
+          if (flag) { impl.delegatecall(input); }
+          require(input.length > 0); } }`);
+    expect(conditional.bytecode).toContain(NOT_TAKEN_SIG);
+  });
+
+  /**
+   * The guard must not spread: a straight-line delegatecall proxy allocates no flag and emits no extra covenant,
+   * so every shipped proxy keeps byte-identical bytecode (corroborated by the 656-file .scash corpus hash check,
+   * which moved 0 files).
+   */
+  it('leaves a straight-line delegatecall proxy untouched', () => {
+    const straight = compileString(`pragma solidcash >=0.8.0;
+      contract Straight(${IMPL_ARG}) { bigint counter;
+        function up(bytes input) external {
+          impl.delegatecall(input); require(input.length > 0); } }`);
+    expect(straight.bytecode).not.toContain(NOT_TAKEN_SIG);
+    expect(straight.abi.find((fn) => fn.name === 'up')!.lowLevelCalls)
+      .toEqual([{ callMode: 'delegatecall' }]);
+  });
+});
+
 // C3 - the master covenant re-creates only the ACCESSED state NFTs; an attacker who additionally co-spends an
 // un-accessed data/entry NFT can destroy it (its sub-covenant self-authorizes given the master's minting NFT
 // is present). The fix emits an own-category mutable(0x01)-NFT input==output conservation loop for functions

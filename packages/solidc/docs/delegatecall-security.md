@@ -99,6 +99,51 @@ Structural note: the dispatcher runs exactly one function per master spend, so t
 (self-authorizing) function are mutually exclusive on the same proxy master; the only way to "compose" them is
 inlining a delegatecall into a regular function, which rule B forbids.
 
+**C. `impl` must be a covenant the CALLER cannot choose.** Rule 3 says `impl` must be a covenant address rather
+than a P2PKH placeholder, but that is only half of it: the pin compares the co-spent input's locking bytecode
+against *whatever address the spender supplied*. If `impl` is an unguarded function parameter the pin is
+trivially satisfiable — the attacker co-spends an implementation **they wrote**, whose `delegate` function
+writes whatever they like:
+
+```solidity
+function up(bytes input, address impl) external {   // pinsDelegateCoSpend == true, and the pin proves NOTHING
+    impl.delegatecall(input);                       // MEASURED: an unrelated spender settles 5 -> 999
+    require(input.length > 0);
+}
+```
+
+The address must be bound to something the caller does not control. Any one of these is sufficient:
+
+- a **constructor argument** — the proxy's own p2sh32 commits to it (the `bytecode-pinned` class);
+- a **signature guard** in the same function — only an authorized signer may choose it (the `caller-authorized`
+  class, and the repo's `PINNED_PROXY` fixture);
+- a **`require()` against stored state** — `require(impl == this.implementation);`, the ordinary upgradeable
+  proxy.
+
+A parameter with none of the three emits a `SECURITY-AUDIT C1` warning naming the parameter. It warns rather
+than rejecting **because the third shape is legitimate and common**, and a hard rejection would have to model
+every way a `require()` can constrain an address.
+
+**D. The delegatecall must be reached at most once per path.** The state-covenant skip is a *per-function*
+property (`!functionHasDelegatecall`), while the co-spend pin is emitted at the *callsite*. Those two disagree
+whenever the callsite is not straight-line:
+
+- **Inside a branch.** `if (flag) { impl.delegatecall(input); }` skips the proxy's own state covenant for the
+  whole function but pins the co-spend only on the taken arm. Spending with `flag = false` and **no
+  implementation in the transaction** reproduced finding C1 exactly (measured: 5 -> 999 accepted). The compiler
+  now allocates a runtime "delegate edge reached" flag and requires every proxy data NFT's
+  `category ++ commitment` to be preserved input -> output on any path that did not reach the edge. So the
+  not-taken path is *frozen*, not unauthorized: a no-op spend still settles, a state change on that path does
+  not. Straight-line proxies allocate no flag and are byte-identical.
+- **Inside a loop.** `for (...) { impl.delegatecall(input); }` reuses the *same* pinned input and the *same*
+  block slot on every iteration, so two source delegations settled as one (measured: 5 -> 6 where the source
+  says 5 -> 7), with no diagnostic. There is no honest covenant to emit for it, so it is a hard compile error.
+  Delegate to an implementation function that performs the iteration itself.
+
+Scope: both rules apply to the single-witness pin (`__internal__delegateInputIndex`). A compiler-synthesized
+SCB1 route / graph handler dispatches rows through a loop by design and derives each delegate index from its own
+per-row block slot, so it is excluded from both.
+
 ## Implementation status
 
 - **B (no self-mutation in a delegatecall function)** — enforced (hard compile error,
@@ -122,11 +167,23 @@ inlining a delegatecall into a regular function, which rule B forbids.
   (`>= 2` functions), so its unlocking script leads with the selector. A single-function delegate has no selector
   (its leading push is `_proxyMasterIndex`), so the pinned path rejects it (fail-closed) — proxy to a multi-function
   implementation, which is the only case where a "wrong function" is possible anyway.
+- **C (`impl` not caller-chosen)** — *warned*, not rejected. A delegatecall whose target resolves (through local
+  aliases) to a parameter of the same entry point, with no signature guard and no `require()` naming it, emits a
+  `SECURITY-AUDIT C1` warning identifying the parameter. Rejecting would break `require(impl == storedImpl)`.
+- **D (reached at most once per path)** — enforced. A delegatecall inside a **loop** is a hard compile error; a
+  delegatecall inside a **branch/switch/try arm** compiles and carries an extra epilogue covenant freezing the
+  proxy's own data NFTs on every path that did not reach the edge. VM-proven both ways in
+  `Layer3DelegateClassesE3`: the not-taken forgery is refused at input 0, the honest taken spend still settles,
+  and a not-taken no-op still settles.
 
 ## Writing a safe proxy
 
 - Make `impl` the delegate contract's real category-pinned covenant address (not a hardcoded P2PKH), so the
   co-spend + selector pins are emitted (a P2PKH `impl` disables them and keeps the C1 warning).
+- Do **not** take `impl` as an unguarded parameter. Use a constructor argument, a signature guard, or a
+  `require()` against stored state (rule C).
+- Keep the delegatecall on a straight line, or accept that a branch's not-taken path can only preserve state.
+  Never put it in a loop (rule D).
 - Keep the delegatecall function pure-forwarding: **no `this.x = ...`** in it (the delegate owns all writes).
 - Ensure the delegate authorizes/preserves the whole proxy state, not just the fields one call touches.
 - Delegate to a **selector-dispatched** (multi-function) implementation so the forwarded-selector pin applies.

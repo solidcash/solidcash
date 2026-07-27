@@ -171,6 +171,17 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.14 Checkpoint after the security round, measured at `05412a58`
+
+| Suite | Baseline `93bbfedb` | At `05412a58` |
+|---|---|---|
+| `solidc` | 2,322 passed / 10 failed | **2,405 passed / 0 failed** |
+| `solidcash` | 3,597 passed / 5 failed | **3,806 passed / 0 failed** (448 files, 4 skipped) |
+
+Both figures were taken in the integration worktree at the integration commit, not inferred from a worker's
+tree. That distinction mattered here: the first SDK number available after the security merge was measured in
+Worker C's worktree and differed, so it was re-run before being recorded.
+
 ### 4.13 The security round closed SEC-1..SEC-3, and the worker broke its own first fix
 
 SEC-1 is closed by freezing not-taken paths rather than forbidding them: a runtime edge-reached flag is

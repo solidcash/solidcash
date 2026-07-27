@@ -1,0 +1,9 @@
+pragma solidcash ^0.13.0;
+
+/// Price attestation helpers.
+library Oracle {
+    /// Verifies an attestation over `message`.
+    function verify(datasig signature, bytes message, pubkey attestor) internal returns (bool) {
+        return checkDataSig(signature, message, attestor);
+    }
+}

@@ -353,6 +353,13 @@ export class FunctionDefinitionNode extends Node implements Named {
   }[];
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
+  /**
+   * C1/piece-7: the pin's delegate input index is DERIVED from this function's own block layout (the reserved
+   * `lowLevelCall` slot) instead of the caller-supplied `__internal__delegateInputIndex` witness. Used by the
+   * compiler-synthesized delegatecall forms - `L.f()` library sugar and split-facet forwarders - which carry no
+   * witness parameter. Derivation is also the stronger source: nothing caller-supplied selects the input.
+   */
+  delegateIndexFromBlockSlot: boolean = false;
   // C1/piece-5: the delegatecall sits on a conditional path, so the co-spend pin is not reached on every path
   // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
   // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
@@ -2361,6 +2368,10 @@ export class LowLevelCallStatementNode extends StatementNode {
   // Set when synthesized from `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls): the user wrote a
   // typed library call, not a raw delegatecall, so suppress the low-level-call warning.
   synthesizedFromLibraryCall = false;
+  // C1/piece-7: the delegate library this call targets is selector-dispatched (>= 2 public functions), so the
+  // co-spend pin can also verify WHICH library function ran. A single-public-function library has no selector
+  // in its unlocking script and nothing to choose, so the selector half is skipped there.
+  librarySelectorDispatched = false;
 
   constructor(
     public targetExpression: ExpressionNode,

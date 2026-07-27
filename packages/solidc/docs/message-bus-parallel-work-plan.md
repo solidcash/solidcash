@@ -124,7 +124,7 @@ task-specific report, not in this table.
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
 | G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27` + corrections `4c131f9b`; three escapes closed, G1-C resolved |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | INTEGRATED | `4c131f9b`; missing/injected/duplicated/reordered/argument all reject |
-| G3 | Remaining admitted symbolic target/selector expressions | A | G1 | LEASED | round 4, base `cc47ff0e`; owns 4.7's unpublished-ceiling gap |
+| G3 | Remaining admitted symbolic target/selector expressions | A | G1 | INTEGRATED (scoped) | 4.7 gaps 1-2 closed; gap 3 closed where a bound exists, SCOPED otherwise |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (partial) | classes enumerated; item 2 NOT satisfied - two classes do not fail closed |
@@ -148,7 +148,7 @@ task-specific report, not in this table.
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
-| X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | LEASED | round 4; `artifact.ts` lease GRANTED to A |
+| X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
 | X6 | Stable diagnostics for unadmitted low-level shapes | B | E2 | BLOCKED | module + 18 tests landed; needs ONE call site in A's `compiler.ts` |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
@@ -168,6 +168,21 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.12 A published ceiling was WRONG, not merely imprecise
+
+While implementing X4, Worker A found that a nested loop published `maximumOccurrences: 2` against a true 6 -
+the inner loop's count REPLACED the outer's instead of multiplying. That is not conservatism, it is a false
+published measurement: the artifact asserted a ceiling lower than the code can reach. Fail-closed on chain, but
+anything reasoning from the published number was reasoning from a wrong one. Now published as 6.
+
+A second trap was avoided rather than hit: a `return` inside a loop survives to artifact generation as a plain
+sibling of the callsite, so a naive floor would have published 3 for a loop that can reach zero. The floor is
+cleared for early-exit loops, and `continue` was verified safe by AST probe rather than assumed.
+
+The lesson generalises past this bound: a published number is evidence only if something checks it against the
+code that produces it. Board rows citing artifact metadata should say when the number was last verified against
+behaviour, not merely that it is published.
 
 ### 4.11 SECURITY: two live delegate forgeries and one silent miscompile
 

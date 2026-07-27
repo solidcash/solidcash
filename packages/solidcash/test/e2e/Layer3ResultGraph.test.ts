@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
+  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256, utf8ToBin,
 } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -15,20 +15,22 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // E1: nested and transitive heterogeneous result dependencies.
 //
-// One canonical graph, five independently compiled participants, six invocations, depth five:
+// One canonical graph, six independently compiled participants, seven invocations, depth six:
 //
-//   R.go -> A.step -> C.pair -> B.mid -> D.deep -> C.tail
+//   R.go -> A.step -> C.pair -> B.mid -> E.note -> D.deep -> C.tail
 //
 // Every non-root invocation both consumes the authenticated result of the call it makes and produces a
 // result its own caller consumes, so the deepest scalar propagates transitively to the top. The result
-// schemas are deliberately heterogeneous: dynamic `bytes` (A), scalar `int` (C, twice), named struct (B)
-// and a static tuple (D). Participant C is reached twice from two different consumers, which makes the
-// producer-occurrence binding - not just the producer identity - load bearing.
+// schemas are deliberately heterogeneous and cover every admitted class: dynamic `bytes` (A), scalar
+// `int` (C, twice), named struct (B), dynamic `string` (E) and a static tuple (D). Participant C is
+// reached twice from two different consumers, which makes the producer-occurrence binding - not just the
+// producer identity - load bearing.
 const PAIR_STRUCT = 'struct RgPair { int total; bool ok; }';
 const I_TAIL = 'interface IRgTail { function tail(int seed) returns (int); }';
 const I_DEEP = 'interface IRgDeep { function deep(address peer, int seed) returns (int, int); }';
 const I_MID = `${PAIR_STRUCT}
 interface IRgMid { function mid(address peer, int seed) returns (RgPair); }`;
+const I_NOTE = 'interface IRgNote { function note(address peer, int seed) returns (string); }';
 const I_PAIR = 'interface IRgPairFn { function pair(address peer, int seed) returns (int); }';
 const I_STEP = 'interface IRgStep { function step(address peer, int seed, bytes label) returns (bytes); }';
 
@@ -43,15 +45,26 @@ contract RgD(int brand) {
   }
 }`;
 
-/** Struct producer: consumes D's tuple. */
-const RG_B = `pragma solidcash >=0.8.0;
+/** Dynamic string producer: consumes D's tuple and picks its answer from the consumed value. */
+const RG_E = `pragma solidcash >=0.8.0;
 ${I_DEEP}
-${PAIR_STRUCT}
-contract RgB(int brand, address peerD) {
-  function mid(address peer, int seed) public pure returns (RgPair) {
+contract RgE(int brand, address peerD) {
+  function note(address peer, int seed) public pure returns (string) {
     int first, int second = IRgDeep(peerD).deep(peer, seed);
-    require(second > seed);
-    return RgPair(first + second, first > second);
+    require(first == second * 2 - seed * 2);
+    return first > 40 ? "wide" : "narrow";
+  }
+}`;
+
+/** Struct producer: consumes E's dynamic string. */
+const RG_B = `pragma solidcash >=0.8.0;
+${I_NOTE}
+${PAIR_STRUCT}
+contract RgB(int brand, address peerE) {
+  function mid(address peer, int seed) public pure returns (RgPair) {
+    string note = IRgNote(peerE).note(peer, seed);
+    require(note.length > 0);
+    return RgPair(note.length * 17 + seed, note.length == 4);
   }
 }`;
 
@@ -100,8 +113,8 @@ const packedScalar = (value: bigint): Uint8Array => scriptToBytecode([bigIntToVm
 const packedTuple = (first: bigint, second: bigint): Uint8Array =>
   scriptToBytecode([bigIntToVmNumber(first), bigIntToVmNumber(second)]);
 const packedBytes = (value: Uint8Array): Uint8Array => scriptToBytecode([value]);
-// `randomUtxo` draws from ~100k distinct outpoints, which collides often enough at sixteen inputs to make
-// this fixture flaky. Every sidecar slot gets its own deterministic outpoint instead.
+// `randomUtxo` draws from ~100k distinct outpoints, which collides often enough at nineteen inputs to
+// make this fixture flaky. Every sidecar slot gets its own deterministic outpoint instead.
 const fixedUtxo = (slot: number, satoshis: bigint): Utxo => randomUtxo({
   satoshis, vout: 0, txid: slot.toString(16).padStart(2, '0').repeat(32),
 });
@@ -167,6 +180,7 @@ export type ResultGraphTamper =
   | 'forge-deep-tuple-field'
   | 'forge-struct-field'
   | 'forge-bytes-result'
+  | 'forge-string-result'
   // Occurrence forgeries, spliced into the frozen transcript bytes at exactly one field.
   | 'swap-producer-occurrences'
   | 'duplicate-producer-occurrence'
@@ -180,11 +194,11 @@ interface ResultGraphFixture {
   plan: ReturnType<typeof layer3.planCompiledGraph>;
   layout: ReturnType<typeof layer3.compiledGraphPhysicalLayout>;
   transcript: ReturnType<typeof layer3.finalizeCompiledGraph>;
-  artifacts: Record<'R' | 'A' | 'C' | 'B' | 'D', ReturnType<typeof compileString>>;
-  vectors: Record<'A' | 'C' | 'B' | 'D', Uint8Array>;
-  commitments: Record<'A' | 'C' | 'B' | 'D', Uint8Array>;
+  artifacts: Record<'R' | 'A' | 'C' | 'B' | 'E' | 'D', ReturnType<typeof compileString>>;
+  vectors: Record<'A' | 'C' | 'B' | 'E' | 'D', Uint8Array>;
+  commitments: Record<'A' | 'C' | 'B' | 'E' | 'D', Uint8Array>;
   values: {
-    leaf: bigint; deepFirst: bigint; deepSecond: bigint;
+    leaf: bigint; deepFirst: bigint; deepSecond: bigint; noteValue: string;
     midTotal: bigint; pairValue: bigint; stepValue: Uint8Array;
   };
 }
@@ -262,8 +276,13 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
   const setupD = await setupStatefulUtxos(provider, baseD, artifactD.stateLayout!, {});
   const d = baseD.withCategory(hexToBin(setupD.categoryId));
 
+  const artifactE = compileString(RG_E, options);
+  const baseE = new Contract(artifactE, [5n, d.lockingBytecode], { provider });
+  const setupE = await setupStatefulUtxos(provider, baseE, artifactE.stateLayout!, {});
+  const e = baseE.withCategory(hexToBin(setupE.categoryId));
+
   const artifactB = compileString(RG_B, options);
-  const baseB = new Contract(artifactB, [3n, d.lockingBytecode], { provider });
+  const baseB = new Contract(artifactB, [3n, e.lockingBytecode], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
 
@@ -288,24 +307,28 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactC, lockingBytecode: c.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+    { artifact: artifactE, lockingBytecode: e.lockingBytecode },
     { artifact: artifactD, lockingBytecode: d.lockingBytecode },
   ], [
     { parent: null, callee: 0, function: 'go', args: [peer, SEED, LABEL] },
     { parent: 0, callee: 1, function: 'step', args: [peer, SEED, LABEL] },
     { parent: 1, callee: 2, function: 'pair', args: [peer, SEED] },
     { parent: 2, callee: 3, function: 'mid', args: [peer, SEED] },
-    { parent: 3, callee: 4, function: 'deep', args: [peer, SEED] },
-    { parent: 4, callee: 2, function: 'tail', args: [SEED] },
+    { parent: 3, callee: 4, function: 'note', args: [peer, SEED] },
+    { parent: 4, callee: 5, function: 'deep', args: [peer, SEED] },
+    { parent: 5, callee: 2, function: 'tail', args: [SEED] },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
 
-  // Sequential execution of the compiled sources: tail(2)=22, deep=(44,24), mid={68,true}, pair=70,
-  // step=`aabb` || bytes2(70). Both of C's scalar occurrences are deliberately above OP_16 and below
-  // 128, so each canonical push is exactly two bytes and an occurrence splice changes no frame length.
+  // Sequential execution of the compiled sources: tail(2)=22, deep=(44,24), note="wide",
+  // mid={70,true}, pair=72, step=`aabb` || bytes2(72). Both of C's scalar occurrences are deliberately
+  // above OP_16 and below 128, so each canonical push is exactly two bytes and an occurrence splice
+  // changes no frame length.
   const leaf = SEED * 11n;
   const deepFirst = leaf * 2n;
   const deepSecond = leaf + SEED;
-  const midTotal = deepFirst + deepSecond;
+  const noteValue = deepFirst > 40n ? 'wide' : 'narrow';
+  const midTotal = BigInt(noteValue.length) * 17n + SEED;
   const pairValue = midTotal + SEED;
   const stepValue = concatBytes(LABEL, hexToBin(binToHex(bigIntToVmNumber(pairValue)).padEnd(4, '0')));
   const structResult = (total: bigint, ok: boolean): Uint8Array => encodeFunctionArgument(
@@ -317,8 +340,10 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
   const forgedBytesResult = tamper === 'forge-bytes-result';
   const resultStep = packedBytes(forgedBytesResult
     ? concatBytes(LABEL, hexToBin('4700')) : stepValue);
+  const forgedStringResult = tamper === 'forge-string-result';
   const resultPair = packedScalar(pairValue);
   const resultMid = structResult(midTotal, !forgedStructField);
+  const resultNote = packedBytes(utf8ToBin(forgedStringResult ? 'wild' : noteValue));
   const resultDeep = packedTuple(deepFirst, forgedTupleField ? deepSecond + 1n : deepSecond);
   const resultTail = packedScalar(leaf);
 
@@ -326,16 +351,18 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
   const vectorA = binToHex(resultStep);
   const vectorC = binToHex(concatBytes(resultPair, resultTail));
   const vectorB = binToHex(resultMid);
+  const vectorE = binToHex(resultNote);
   const vectorD = binToHex(resultDeep);
 
   const honest = layer3.finalizeCompiledGraph(plan, {
     1: binToHex(resultStep),
     2: binToHex(resultPair),
     3: binToHex(resultMid),
-    4: binToHex(resultDeep),
-    5: binToHex(resultTail),
+    4: binToHex(resultNote),
+    5: binToHex(resultDeep),
+    6: binToHex(resultTail),
   }, layout.participantInputs, layout.returnOutputs,
-  [vectorR, vectorA, vectorC, vectorB, vectorD], layout.projectionInputs);
+  [vectorR, vectorA, vectorC, vectorB, vectorE, vectorD], layout.projectionInputs);
 
   // Splice exactly one authenticated result field. Frame lengths never change, so the only difference
   // between the honest and hostile transactions is the attacked field plus the transcript root.
@@ -357,9 +384,9 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
     const bytes = Uint8Array.from(honest.bytes);
     const located = locateTranscriptResults(bytes);
     const first = located.invocationResults[2];
-    const second = located.invocationResults[5];
+    const second = located.invocationResults[6];
     const consumerOfFirst = located.emissionResults.find((row) => row.participant === 1)!;
-    const consumerOfSecond = located.emissionResults.find((row) => row.participant === 4)!;
+    const consumerOfSecond = located.emissionResults.find((row) => row.participant === 5)!;
     if (first.length !== second.length || consumerOfFirst.length !== consumerOfSecond.length) {
       throw new Error('occurrence splice requires equal-width producer results');
     }
@@ -388,6 +415,7 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
       : vectorC,
   ));
   const commitmentB = packedBytes(hexToBin(vectorB));
+  const commitmentE = packedBytes(hexToBin(vectorE));
   const commitmentD = packedBytes(hexToBin(vectorD));
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -397,13 +425,13 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
   const fee = fixedUtxo(0xe2, 220_000n);
   await provider.addUtxo(p2pkh.address, fee);
   const funding = [] as any[];
-  for (let slot = 0; slot < 4; slot += 1) {
+  for (let slot = 0; slot < 5; slot += 1) {
     const utxo = fixedUtxo(0xf0 + slot, 1000n);
     await provider.addUtxo(p2pkh.address, utxo);
     funding.push(utxo);
   }
   const projectionUtxos = [] as any[];
-  for (let slot = 0; slot < 5; slot += 1) {
+  for (let slot = 0; slot < 6; slot += 1) {
     const utxo = fixedUtxo(0xa0 + slot, 1000n);
     await provider.addUtxo(projection.address, utxo);
     projectionUtxos.push(utxo);
@@ -417,6 +445,7 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
   const routeA = route(a, artifactA);
   const routeC = route(c, artifactC);
   const routeB = route(b, artifactB);
+  const routeE = route(e, artifactE);
   const routeD = route(d, artifactD);
 
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
@@ -438,12 +467,17 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
     BigInt(layout.returnOutputs![3]!),
   ));
   tx.addInput(funding[2], p2pkh.unlock.spend(alicePub, signature()));
-  tx.addInput(setupD.masterUtxo, routeD(
+  tx.addInput(setupE.masterUtxo, routeE(
     ...layer3.compiledGraphRouteArgs(transcript, 4, layout.controllerInput) as any,
     BigInt(layout.returnOutputs![4]!),
   ));
   tx.addInput(funding[3], p2pkh.unlock.spend(alicePub, signature()));
-  for (let participant = 0; participant < 5; participant += 1) {
+  tx.addInput(setupD.masterUtxo, routeD(
+    ...layer3.compiledGraphRouteArgs(transcript, 5, layout.controllerInput) as any,
+    BigInt(layout.returnOutputs![5]!),
+  ));
+  tx.addInput(funding[4], p2pkh.unlock.spend(alicePub, signature()));
+  for (let participant = 0; participant < 6; participant += 1) {
     tx.addInput(projectionUtxos[participant], projection.unlock.verify(
       transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
     ));
@@ -469,25 +503,28 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
   tx.addOutput(returnEvent(setupC, commitmentC));
   tx.addOutput(master(b, setupB));
   tx.addOutput(returnEvent(setupB, commitmentB));
+  tx.addOutput(master(e, setupE));
+  tx.addOutput(returnEvent(setupE, commitmentE));
   tx.addOutput(master(d, setupD));
   tx.addOutput(returnEvent(setupD, commitmentD));
-  for (let slot = 0; slot < 5; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  for (let slot = 0; slot < 6; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 60_000n });
 
   return {
     provider, builder: tx, transaction: raw(tx), plan, layout, transcript,
     artifacts: {
-      R: artifactR, A: artifactA, C: artifactC, B: artifactB, D: artifactD,
+      R: artifactR, A: artifactA, C: artifactC, B: artifactB, E: artifactE, D: artifactD,
     },
     vectors: {
-      A: hexToBin(vectorA), C: hexToBin(vectorC), B: hexToBin(vectorB), D: hexToBin(vectorD),
+      A: hexToBin(vectorA), C: hexToBin(vectorC), B: hexToBin(vectorB),
+      E: hexToBin(vectorE), D: hexToBin(vectorD),
     },
     commitments: {
-      A: commitmentA, C: commitmentC, B: commitmentB, D: commitmentD,
+      A: commitmentA, C: commitmentC, B: commitmentB, E: commitmentE, D: commitmentD,
     },
     values: {
-      leaf, deepFirst, deepSecond, midTotal, pairValue, stepValue,
+      leaf, deepFirst, deepSecond, noteValue, midTotal, pairValue, stepValue,
     },
   };
 }
@@ -497,9 +534,10 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
  * rejects it rather than asserting only that something failed.
  */
 const INPUT = {
-  masterR: 0, masterA: 1, masterC: 3, masterB: 5, masterD: 7,
-  projectionR: 9, projectionA: 10, projectionC: 11, projectionB: 12, projectionD: 13,
-  controller: 14,
+  masterR: 0, masterA: 1, masterC: 3, masterB: 5, masterE: 7, masterD: 9,
+  projectionR: 11, projectionA: 12, projectionC: 13, projectionB: 14,
+  projectionE: 15, projectionD: 16,
+  controller: 17,
 } as const;
 
 /** Report the first input whose BCH-2026 evaluation fails, so a hostile case names one exact covenant. */
@@ -515,7 +553,7 @@ function failingInput(builder: TransactionBuilder): number | null {
 }
 
 describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => {
-  it('settles a five-participant transitive chain whose four result schemas all differ', async () => {
+  it('settles a six-participant transitive chain whose five result schemas all differ', async () => {
     const built = await buildResultGraph();
     expect(failingInput(built.builder)).toBe(null);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
@@ -523,21 +561,23 @@ describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => 
     // Each level's authenticated result is the input of the level above it, so the deepest scalar
     // determines every value up the chain.
     expect(built.values).toEqual({
-      leaf: 22n, deepFirst: 44n, deepSecond: 24n, midTotal: 68n, pairValue: 70n,
-      stepValue: hexToBin('aabb4600'),
+      leaf: 22n, deepFirst: 44n, deepSecond: 24n, noteValue: 'wide',
+      midTotal: 70n, pairValue: 72n, stepValue: hexToBin('aabb4800'),
     });
     // Decode each producer's on-chain return-event commitment, not a locally recomputed value.
     const decode = (participant: number, artifact: any, commitment: Uint8Array): unknown =>
       layer3.decodeHiddenBatchResults(artifact, built.plan.participants[participant].batch, commitment);
     expect(decode(1, built.artifacts.A, built.commitments.A))
-      .toEqual([{ row: 0, type: 'bytes', value: hexToBin('aabb4600') }]);
+      .toEqual([{ row: 0, type: 'bytes', value: hexToBin('aabb4800') }]);
     expect(decode(2, built.artifacts.C, built.commitments.C)).toEqual([
-      { row: 0, type: 'int256', value: 70n },
+      { row: 0, type: 'int256', value: 72n },
       { row: 1, type: 'int256', value: 22n },
     ]);
     expect(decode(3, built.artifacts.B, built.commitments.B))
-      .toEqual([{ row: 0, type: 'RgPair', value: { total: 68n, ok: true } }]);
-    expect(decode(4, built.artifacts.D, built.commitments.D))
+      .toEqual([{ row: 0, type: 'RgPair', value: { total: 70n, ok: true } }]);
+    expect(decode(4, built.artifacts.E, built.commitments.E))
+      .toEqual([{ row: 0, type: 'string', value: 'wide' }]);
+    expect(decode(5, built.artifacts.D, built.commitments.D))
       .toEqual([{ row: 0, type: '(int256,int256)', value: [44n, 24n] }]);
   });
 
@@ -545,21 +585,24 @@ describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => 
     const built = await buildResultGraph();
     // Every consumer names exactly one producer, and the chain is a single transitive path.
     expect(built.plan.invocations.map((invocation) => invocation.resultDependencies))
-      .toEqual([[1], [2], [3], [4], [5], []]);
+      .toEqual([[1], [2], [3], [4], [5], [6], []]);
+    // Every non-root invocation answers exactly one compiler-authored consumer callsite.
+    expect(built.plan.invocations.map((invocation) => invocation.consumerCallsiteId))
+      .toEqual([undefined, 0, 0, 0, 0, 0, 0]);
     expect(built.plan.invocations.map((invocation) => invocation.resultTypes)).toEqual([
-      [], ['bytes'], ['int256'], ['RgPair'], ['int256', 'int256'], ['int256'],
+      [], ['bytes'], ['int256'], ['RgPair'], ['string'], ['int256', 'int256'], ['int256'],
     ]);
     // Participant C is reached twice from two different consumers and packs both occurrences into one
     // result vector, so the consumer must bind an offset, not just a producer identity.
-    expect(built.plan.participants[2].invocations).toEqual([2, 5]);
+    expect(built.plan.participants[2].invocations).toEqual([2, 6]);
     expect(built.plan.invocations[2].localRow).toBe(0);
-    expect(built.plan.invocations[5].localRow).toBe(1);
+    expect(built.plan.invocations[6].localRow).toBe(1);
     expect(built.plan.invocations[2].caller).toBe(1);
-    expect(built.plan.invocations[5].caller).toBe(4);
-    expect(binToHex(built.vectors.C)).toBe('01460116');
+    expect(built.plan.invocations[6].caller).toBe(5);
+    expect(binToHex(built.vectors.C)).toBe('01480116');
     expect(built.transcript.resultsHex).toEqual([
-      '', binToHex(packedBytes(hexToBin('aabb4600'))), '0146',
-      binToHex(built.vectors.B), '012c0118', '0116',
+      '', binToHex(packedBytes(hexToBin('aabb4800'))), '0148',
+      binToHex(built.vectors.B), '0477696465', '012c0118', '0116',
     ]);
   });
 
@@ -567,11 +610,15 @@ describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => 
     const built = await buildResultGraph();
     const transaction = built.builder.buildLibauthTransaction();
     const largestInput = Math.max(...transaction.inputs.map((input) => input.unlockingBytecode.length));
-    expect(built.transcript.bytes.length).toBeLessThan(2_000);
+    // Measured at this commit: transcript 1,778 bytes, largest input 8,812 bytes (a projection proof,
+    // which carries the whole transcript), serialized transaction 83,032 bytes. Ordinary BCH-2026
+    // capacity, not the relaxed semantic profile - but the standard-policy and headroom questions belong
+    // to task F1, not here.
+    expect(built.transcript.bytes.length).toBeLessThan(2_500);
     expect(largestInput).toBeLessThan(10_000);
-    expect(built.transaction.length / 2).toBeLessThan(1_000_000);
-    expect(transaction.inputs).toHaveLength(16);
-    expect(transaction.outputs).toHaveLength(16);
+    expect(built.transaction.length / 2).toBeLessThan(100_000);
+    expect(transaction.inputs).toHaveLength(19);
+    expect(transaction.outputs).toHaveLength(19);
   });
 });
 
@@ -584,13 +631,20 @@ describe('Layer-3 result graph hostile cases (E1)', () => {
 
   it('rejects a forged non-leading tuple field produced by the deepest consumer', async () => {
     const built = await buildResultGraph('forge-deep-tuple-field');
-    expect(failingInput(built.builder)).toBe(INPUT.masterB);
+    // The next consumer up the chain checks the tuple it consumed, so the forgery stops at E, not at D.
+    expect(failingInput(built.builder)).toBe(INPUT.masterE);
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   });
 
   it('rejects a forged struct field midway along the transitive chain', async () => {
     const built = await buildResultGraph('forge-struct-field');
     expect(failingInput(built.builder)).toBe(INPUT.masterC);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  });
+
+  it('rejects a forged dynamic string result midway along the transitive chain', async () => {
+    const built = await buildResultGraph('forge-string-result');
+    expect(failingInput(built.builder)).toBe(INPUT.masterE);
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   });
 

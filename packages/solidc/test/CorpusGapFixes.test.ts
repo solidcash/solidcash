@@ -187,6 +187,39 @@ describe('transient and storage declaration placement', () => {
   });
 });
 
+describe('function-type state declaration compatibility', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('allows payable only on external function types', () => {
+    expect(() => cc('contract C { function(uint) internal payable returns(uint) callback; }'))
+      .toThrow(/only external function types can be payable/i);
+    expect(cc('contract C { function(uint) external payable returns(uint) callback; }')).toBe('C');
+  });
+
+  it('rejects internal function types nested in an external function type', () => {
+    expect(() => cc('contract C { function(function() internal) external callback; }'))
+      .toThrow(/internal function types cannot be used inside an external function type/i);
+    expect(() => cc('contract C { function() external returns(function() internal) callback; }'))
+      .toThrow(/internal function types cannot be used inside an external function type/i);
+  });
+
+  it('rejects publicly exposed internal function-type state', () => {
+    expect(() => cc('contract C { function(bytes memory) public callback; }'))
+      .toThrow(/internal function types cannot be exposed by public state variables/i);
+    expect(() => cc('contract C { function(bytes memory) internal public callback; }'))
+      .toThrow(/internal function types cannot be exposed by public state variables/i);
+  });
+
+  it('retains private/internal state and public external function types', () => {
+    expect(cc(
+      'contract C { function(bytes memory) internal private localCallback;'
+      + ' function(address payable) view internal returns(address payable) payableAddressCallback;'
+      + ' function(bytes memory) external public remoteCallback; }',
+    )).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

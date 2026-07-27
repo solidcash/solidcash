@@ -4347,6 +4347,39 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    if (this.solidityImportCompat && type instanceof FunctionType) {
+      const functionModifierText = (): string => {
+        const open = typeText.indexOf('(');
+        let depth = 0;
+        for (let i = open; i < typeText.length; i++) {
+          if (typeText[i] === '(') depth += 1;
+          else if (typeText[i] === ')' && --depth === 0) {
+            const returnsAt = typeText.indexOf('returns(', i + 1);
+            return typeText.slice(i + 1, returnsAt < 0 ? undefined : returnsAt);
+          }
+        }
+        return '';
+      };
+      const containsInternalFunction = (candidate: Type): boolean =>
+        candidate instanceof FunctionType
+          && (!candidate.isExternal
+            || candidate.parameterTypes.some(containsInternalFunction)
+            || candidate.returnTypes.some(containsInternalFunction));
+      if (functionModifierText().includes('payable') && !type.isExternal) {
+        throw new ParseError('Only external function types can be payable', Location.fromCtx(ctx));
+      }
+      if (type.isExternal
+        && [...type.parameterTypes, ...type.returnTypes].some(containsInternalFunction)) {
+        throw new ParseError('Internal function types cannot be used inside an external function type',
+          Location.fromCtx(ctx));
+      }
+      if (visibilityExplicit
+        && (visibility === StateVariableVisibility.PUBLIC || visibility === StateVariableVisibility.EXTERNAL)
+        && !type.isExternal) {
+        throw new ParseError('Internal function types cannot be exposed by public state variables',
+          Location.fromCtx(ctx));
+      }
+    }
     const node = new StateVariableNode(type, name);
     if (contractTypeName) node.contractTypeName = contractTypeName;
     node.visibility = visibility;

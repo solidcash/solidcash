@@ -4785,3 +4785,14 @@ The focused suite is **925/925**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **929/929**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 550, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Function-type state declaration loop: 4443 flat, NEG-ACCEPTED 550 -> 545 (-5)
+
+- Only external function types may carry function-level `payable`; `address payable` parameter and return types
+  remain valid on internal function types.
+- External function types reject nested internal function parameters or returns.
+- Public state exposure rejects internal function types, while private/internal state and public external
+  function types remain valid.
+
+The focused suite is **933/933**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+545, plus 275 multifile and 289 cmdline fixtures excluded.

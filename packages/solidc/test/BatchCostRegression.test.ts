@@ -69,17 +69,32 @@ describe('Release 0 SCB1 compiler cost regression', () => {
     });
 
     expect(batch.hiddenBatch).toMatchObject({ minimumRows: 2, maximumRows: 2 });
+    // X19: this fixture spells its read-modify-writes `this.balances[k] = this.balances[k] - amount`. That
+    // spelling used to skip the read-once/mutate-local/write-once C2 entry cache the equivalent bare spelling
+    // (`balances[k] = ...`, what Solidity source actually writes) has always taken, so the two spellings of one
+    // program published different bytecode. The dotted spelling now takes the same cache: `directBytes` moved
+    // onto the bare spelling's pre-existing figure, which is unchanged by that fix.
     expect({
       directBytes: byteLength(direct),
       batchBytes: byteLength(batch),
       covenantDeltaBytes: byteLength(batch) - byteLength(direct),
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
     }).toEqual({
-      directBytes: 3193,
-      batchBytes: 4611,
-      covenantDeltaBytes: 1418,
-      routeBodyBytes: 1391,
+      directBytes: 3157,
+      batchBytes: 4773,
+      covenantDeltaBytes: 1616,
+      routeBodyBytes: 1565,
     });
+  }, 15_000);
+
+  /**
+   * X19 anchor: the figure above is the BARE spelling's, not a third one. Respelling the fixture's depth-1
+   * mapping accesses without `this.` must produce byte-identical output.
+   */
+  it('publishes the same direct-route bytecode for both spellings of the same write', () => {
+    const bare = ERC20_CALLEE.replace(/this\.balances\[/g, 'balances[');
+    expect(compileString(bare, { forceStateful: true }).bytecode)
+      .toBe(compileString(ERC20_CALLEE, { forceStateful: true }).bytecode);
   }, 15_000);
 
   it('reports an artifact error when library compilation exceeds the BCH script limit', () => {

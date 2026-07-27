@@ -51,6 +51,11 @@ interface MultiCandidate {
   entries: JournalEntry[];
 }
 
+/** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
+const sourceHandlerName = (name: string): string => name
+  .replace(/^__scb_(?:resource|handler|dynamic|array|graph)_/, '')
+  .replace(/_self_alias$/, '');
+
 interface ActiveMultiCache {
   target: MultiCandidate;
   locals: Array<{
@@ -101,6 +106,35 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     });
     const nameCounts = new Map<string, number>();
     for (const fn of node.functions) nameCounts.set(fn.name, (nameCounts.get(fn.name) ?? 0) + 1);
+    const touchesCollection = (fn: FunctionDefinitionNode): boolean => {
+      let touches = false;
+      this.walk(fn.body, (candidate) => {
+        if ((candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
+          || candidate instanceof MappingDeleteNode) && collections.has(candidate.name)) touches = true;
+        else if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
+          && collections.has(candidate.array.name)) touches = true;
+        else if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode)
+          && collections.has(candidate.name)) touches = true;
+      });
+      return touches;
+    };
+    // `LowerDynamicStateJournalHelpers` runs immediately before this pass and converts a helper which writes
+    // exactly one chunk-backed bytes/string state variable into a returning value handler. This pass then
+    // declines that same helper, because its return arity is no longer zero, so its collection accesses stay
+    // raw inside an OP_INVOKE body: code generation reaches them with no block layout, and a synthesized
+    // batch clone reaches them with C2 witness parameters its call site never forwards. Both produced an
+    // internal compiler error rather than a diagnostic - 'Block layout not available while compiling ...' and
+    // a parameter-arity mismatch on '__scb_resource_...'. The two journals do not yet share one exit, so
+    // reject the combination with a stable message.
+    for (const fn of node.functions) {
+      if (!fn.body || fn.parameters[0]?.name !== `__dj_${fn.name}` || !touchesCollection(fn)) continue;
+      throw new Error(
+        `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
+        + 'collection entry. The dynamic-storage journal and the collection journal do not share one exit, '
+        + 'so this handler cannot flush both; split the unbounded write and the collection access into '
+        + 'separate handlers',
+      );
+    }
     for (const fn of node.functions) {
       if (!fn.body || fn.returnTypes.length !== 0
         || !(fn.modifiers.includes(FunctionModifier.INTERNAL)
@@ -162,6 +196,22 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         }
       }
       if (unsupported || distinct.size === 0) continue;
+      // Every journalled entry value leaves through the single exit this pass appends below. A bare early
+      // `return;` in the helper leaves before that exit, so it cannot carry the pending values back. The
+      // wrapper-level check further down already rejects an early return in the CALLER for the same reason;
+      // an early return in the helper itself was never checked, and because this pass runs before type
+      // checking the user saw 'Return type mismatch: expected (bigint, bigint) but found ()' pointing at
+      // their own `return;` rather than a diagnostic. Reject it by name.
+      let hasEarlyReturn = false;
+      this.walk(fn.body, (candidate) => {
+        if (candidate instanceof ReturnNode) hasEarlyReturn = true;
+      });
+      if (hasEarlyReturn) {
+        throw new Error(
+          `Collection journal helper '${sourceHandlerName(fn.name)}' cannot contain an early return; `
+          + 'its journalled entry values are flushed only at the single function exit',
+        );
+      }
       if (distinct.size > 1 || fn.forceCollectionJournalPool) {
         this.multiCandidates.set(`${fn.name}/${fn.parameters.length}`, {
           fn, entries: [...distinct.values()],

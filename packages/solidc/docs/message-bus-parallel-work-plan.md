@@ -166,13 +166,52 @@ task-specific report, not in this table.
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
-| **SEC-4** | Library-call sugar may never emit the co-spend pin | — | — | **TODO (security)** | `pinsDelegateCoSpend` appears FALSE for a pure `L.f()` function - UNINVESTIGATED |
-| X16 | Extend the delegate rules to SCB1/graph-handler routes | — | SEC-1 | TODO | Deliberately excluded; they loop by design and use per-row slots |
+| **SEC-4** | Library-call sugar emitted NO pin at all | C | — | **INTEGRATED** | CONFIRMED live forgery; state rewritten with NO delegate co-spent |
+| X16 | Extend the delegate rules to SCB1/graph-handler routes | C | SEC-1 | INTEGRATED (compile-level) | exclusion NOT falsified; a VM-level graph forgery remains unattempted |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.18 SEC-4 confirmed, and worse than the lead described
+
+Worker C disclosed this lead at the end of the previous round without chasing it. It was right, and the reality
+was worse: `pinsDelegateCoSpend` is FALSE for a pure `L.f()` function AND the emitted covenant pinned
+**nothing** - no delegate identity, no selector, and no state covenant either, because the per-function
+`!functionHasDelegatecall` gate still fired.
+
+Measured on the BCH-2026 VM, baseline to fixed:
+
+| co-spent at the delegate slot | settled | baseline | fixed |
+|---|---|---|---|
+| the real linked library | 1 | ACCEPTED | ACCEPTED |
+| a HOSTILE library, same layout and same selector | 999 | **ACCEPTED** | REJECTED input 0 |
+| **nothing at all** | 999 | **ACCEPTED** | REJECTED input 0 |
+| 2-function library, `wipe` substituted for `increment` | 0 | - | REJECTED input 0 |
+
+A spender rewrote a consumer's state with **no delegate co-spent at all**.
+
+Root cause: `L.f()` desugars to a node marked `synthesizedFromLibraryCall`, and every C1 rule keyed off
+`hasExplicitDelegatecall`, which excludes exactly that node - so the pin, self-write and reachability rules all
+skipped it, while codegen read `lowLevelCalls` rather than the AST predicate and skipped the state covenant. The
+same flag is set by the split-facet forwarder, so **the hole covered two shipped features**, not one.
+
+The fix derives the delegate input index from the function's own reserved `lowLevelCall` block slot rather than
+a witness, so it is not caller-chosen, and emits the selector half only when the library has two or more public
+functions. Three previously-compiling shapes are now rejected: `L.f()` beside a state write, `L.f()` in a loop,
+and `L.f()` from a non-entry-point.
+
+**The corpus caveat is stronger than last round and the worker said so first.** 656 files, 0 changed - but the
+corpus contains ZERO `L.f()` consumers and zero split roots, and its one delegatecall file uses the explicit
+form. **Discriminating power for this change: zero files.** The real evidence is the suites and the matrix above.
+
+**X16: the worker caught its own false positive before reporting it.** It first measured that graph mode had
+LOST the SEC-1 covenant. That was a measurement artifact - a message-bus artifact publishes bodies as hex in
+`functionBodies`, and a split root outlines bodies into `OP_DEFINE`d spans pushed as data, so an ASM grep of
+`artifact.bytecode` returns a false negative for both. Decoding showed the covenant present. The exclusion is
+therefore NOT falsified, but the evidence is compile-level: no VM-level forgery was attempted against a live
+graph-controller transaction with a conditional delegate row, and that stays open.
 
 ### 4.16 FULL REPOSITORY GREEN - all six packages, measured in one run
 

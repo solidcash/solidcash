@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm } from '@solidcash/utils';
-import { compileString as _csRawSolidc } from '../src/index.js';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { asmToBytecode, bytecodeToAsm } from '@solidcash/utils';
+import { compileString as _csRawSolidc, compileStringSplit } from '../src/index.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import * as Errors from '../src/Errors.js';
 
@@ -296,6 +296,21 @@ describe('C1/piece-7: a compiler-synthesized delegatecall pins its co-spend too'
     const conditional = consumer('contract C() { bigint count; '
       + 'function bump(bool flag) { if (flag) { Counter.increment(); } require(true); } }');
     expect(conditional.bytecode).toContain('OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY');
+  });
+
+  /**
+   * The OTHER synthesized form: a split root's facet forwarder. Its body is fully outlined into OP_DEFINE'd
+   * spans that are PUSHED AS DATA, so opcode-name grepping cannot see inside them - search the assembled
+   * BYTES instead (`93 c7 88` = OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY, the derived identity pin).
+   */
+  it('pins the facet co-spend in a split root forwarder', () => {
+    const bundle = compileStringSplit(`pragma solidcash >=0.8.0;
+      contract SplitCounter() { int a; int b;
+        function bumpA(int n) public { this.a = this.a + n; require(n >= 0); }
+        function bumpB(int n) public { this.b = this.b + n; require(n >= 0); } }`, { forceSplit: true });
+    const bytes = binToHex(asmToBytecode(bundle.root.bytecode))
+      + Object.values(bundle.root.functionBodies ?? {}).join('');
+    expect(bytes).toContain('93c788');
   });
 });
 

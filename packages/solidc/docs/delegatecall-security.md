@@ -158,10 +158,15 @@ the three things that actually hold there, each measured at compile time on the 
   bodies, so it has both a delegatecall and a state write and rule B rejects it. (Identical on 05412a58 — this
   is pre-existing, not a consequence of rule E.)
 
-**Measurement trap, recorded because it produced a false positive on first inspection.** A message-bus artifact
-publishes the dispatcher in `artifact.bytecode` and each function body as HEX in `artifact.functionBodies`.
-Grepping ASM in `bytecode` therefore finds no covenant for *any* function and proves nothing; decode the body
-for the function's selector instead. Pinned in `SecurityAudit.test.ts` ("X16").
+**Measurement traps, recorded because each produced a false negative on first inspection.** Two artifact shapes
+hide emitted covenants from an ASM grep of `artifact.bytecode`:
+
+- A **message-bus** artifact publishes the dispatcher in `bytecode` and each function body as HEX in
+  `functionBodies`; decode the body for the function's selector.
+- A **split root** outlines forwarder bodies into `OP_DEFINE`d spans that are *pushed as data*, so opcode names
+  never appear; search the assembled BYTES (`93 c7 88` = `OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`).
+
+Both are pinned in `SecurityAudit.test.ts` ("X16", "pins the facet co-spend in a split root forwarder").
 
 Still open: no VM-level forgery was attempted against a live graph-controller transaction with a conditional
 delegate row. The above is compile-level evidence for the mechanism, not a settled negative result.

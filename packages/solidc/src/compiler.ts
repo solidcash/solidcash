@@ -1520,6 +1520,12 @@ function compileResolvedAst(
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
 
+  // A low-level call written in a MODIFIER body is invisible to the source-shape pass above, and reaches the
+  // user as `Block slot not found: lowLevelCall[0]` once inlined. Re-run the same check on the expanded bodies.
+  // The first pass still owns every callsite it can see, so a loop callsite keeps its loop diagnostic rather
+  // than the count diagnostic the bus loop expansions would produce for it here.
+  if (messageBusGraphMode) validateLowLevelCallShapes(ast.contract);
+
   // Hidden-batch synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
   // visible to its wrapper. Beta-reduce side-effect-free foreign function-pointer return/pass helpers before that
   // snapshot too; otherwise the source entry point is lowered later to an external edge while its already-cloned

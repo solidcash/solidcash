@@ -233,4 +233,31 @@ contract X6Twice() {
 }`)).toContain("function 'run' issues 2 low-level calls");
     });
   });
+
+  /**
+   * A callsite written in a MODIFIER body is not in any function body until modifier expansion, so the
+   * source-shape pass cannot see it. The compiler runs the same check a second time on the expanded bodies;
+   * these cases leaked `Block slot not found: lowLevelCall[0]` with only the first pass wired.
+   */
+  describe('callsites inlined from a modifier', () => {
+    const modifierSource = (modifierBody: string): string => `pragma solidcash >=0.8.0;
+contract X6Modifier(address sink) {
+  modifier notify(bytes payload) { ${modifierBody} _; }
+  function run(bytes payload) public notify(payload) { require(payload.length > 0); }
+}`;
+
+    it('names a call option carried by a modifier callsite', () => {
+      expect(compilerMessage(modifierSource('sink.call{value: 1}(payload);')))
+        .toContain("issues a low-level 'call' carrying the call option(s) 'value'");
+    });
+
+    it('names a conditional modifier callsite', () => {
+      expect(compilerMessage(modifierSource('if (payload.length > 4) { sink.call(payload); }')))
+        .toContain("issues a low-level 'call' inside a branch");
+    });
+
+    it('is not reached by the source-shape pass, which sees no callsite in the function body', () => {
+      expect(namedDiagnostic(modifierSource('sink.call{value: 1}(payload);'))).toBe('ADMITTED');
+    });
+  });
 });

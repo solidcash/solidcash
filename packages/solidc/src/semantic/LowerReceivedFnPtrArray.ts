@@ -74,6 +74,15 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   private lowered = new Map<string, { iface: string; returns: boolean }>();
   private currentFn: FunctionDefinitionNode | undefined;
 
+  /**
+   * `graphMode` only affects a broadcast (in-loop) receiver: a message-bus graph handler reconstructs one
+   * authoritative row per reached iteration and needs the live element plus its live selector, while the
+   * ordinary broadcast covenant verifies the whole table in its epilogue and must stay index-independent.
+   */
+  constructor(private readonly graphMode = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
     this.synthIfaces = [];
@@ -299,24 +308,30 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
           }
           const arrId = new IdentifierNode(name); arrId.location = node.location;
-          // Preserve the live loop index. The ordinary broadcast covenant still verifies the whole table in
-          // its epilogue, while a transcript handler executes this callsite once per reached iteration and
-          // must reconstruct that row's exact target and selector from state.
-          const liveIndex = this.visit(target.index) as ExpressionNode;
-          const elem = new ArrayAccessNode(arrId, liveIndex); elem.location = node.location;
+          // The ordinary broadcast covenant verifies the whole table in its epilogue, so its receiver stays
+          // index-independent (fns[0]); the loop variable is not in scope where the receiver is hoisted. A
+          // graph handler executes this callsite once per reached iteration and must reconstruct that row's
+          // exact target and selector from state, so it keeps the live index.
+          const liveIndex = this.graphMode
+            ? this.visit(target.index) as ExpressionNode
+            : Object.assign(new IntLiteralNode(0n), { location: node.location });
+          const elem = new ArrayAccessNode(arrId, cloneNode(liveIndex) as ExpressionNode);
+          elem.location = node.location;
           const ifaceId = new IdentifierNode(info.iface); ifaceId.location = node.location;
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
           mc.selectorArrayVar = this.selArrayName(name);
-          const selectorArray = new IdentifierNode(this.selArrayName(name));
-          selectorArray.location = node.location;
-          const selectorRead = new ArrayAccessNode(
-            selectorArray, cloneNode(liveIndex) as ExpressionNode,
-          );
-          selectorRead.location = node.location;
-          const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
-          selectorCast.location = node.location;
-          mc.runtimeSelector = selectorCast;
+          if (this.graphMode) {
+            const selectorArray = new IdentifierNode(this.selArrayName(name));
+            selectorArray.location = node.location;
+            const selectorRead = new ArrayAccessNode(
+              selectorArray, cloneNode(liveIndex) as ExpressionNode,
+            );
+            selectorRead.location = node.location;
+            const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
+            selectorCast.location = node.location;
+            mc.runtimeSelector = selectorCast;
+          }
           return mc;
         }
         const idx = this.visit(target.index) as ExpressionNode;

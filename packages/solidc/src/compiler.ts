@@ -26,6 +26,7 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
+import HoistPointerTableBranchLocals from './semantic/HoistPointerTableBranchLocals.js';
 import HoistNonLoopArrayElemExtcallTargets from './semantic/HoistNonLoopArrayElemExtcallTargets.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
@@ -57,6 +58,8 @@ import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
+import ExpandBoundedPointerTableLoop from './semantic/ExpandBoundedPointerTableLoop.js';
+import { PointerTableExpansion, PointerTableExpansionMap } from './semantic/PointerTableBound.js';
 import LowerC2CounterLoops from './semantic/LowerC2CounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
@@ -179,6 +182,39 @@ const SCB1_SELECTOR_HEX = '53434231';
 const MAX_HIDDEN_BATCH_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
 const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
+
+type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
+
+/**
+ * Publish an expanded pointer-table dispatch loop as ONE bounded loop callsite in the invocation analysis.
+ *
+ * The compiler expands a bounded table into `count` syntactic callsites so every reached row has a
+ * compile-time-constant table index; the ABI keeps those physical rows because direct (non-graph) execution
+ * binds each one. Graph expansion instead needs the SOURCE shape: one dispatch site whose reached-row count is a
+ * runtime value with an explicit compiler-proven ceiling. Coalescing is skipped whenever the correspondence is
+ * not exact, so an unrecognized shape keeps the physical rows rather than publishing a wrong bound.
+ */
+function coalesceExpandedPointerTable(
+  functionName: string,
+  calls: readonly InvocationExternalCall[],
+  expansions: PointerTableExpansionMap,
+): readonly InvocationExternalCall[] {
+  const groups: PointerTableExpansion[] | undefined = expansions.get(functionName);
+  if (!groups || groups.length !== 1) return calls;
+  const { count } = groups[0];
+  if (count < 1) return calls;
+  const dispatch = calls
+    .map((call, index) => (call.selectorArrayVar || call.fnPtrCall) ? index : -1)
+    .filter((index) => index >= 0);
+  if (dispatch.length !== count) return calls;
+  if (dispatch[count - 1] - dispatch[0] !== count - 1) return calls;
+  const { computedOffset: _computedOffset, ...first } = calls[dispatch[0]];
+  return [
+    ...calls.slice(0, dispatch[0]),
+    { ...first, occurrence: 'loop' as const, maximumOccurrences: count },
+    ...calls.slice(dispatch[count - 1] + 1),
+  ];
+}
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
  * but before symbol/type analysis. Only signature-free scalar public handlers
@@ -1339,15 +1375,22 @@ function compileResolvedAst(
   // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
   // table is lowered. This preserves exact invocation cardinality and lets each state-selected target/selector
   // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
-  if (mergedCompilerOptions.experimentalHiddenBatch
-    && mergedCompilerOptions.experimentalMessageBusController) {
-    ast = ast.accept(new UnrollFixedBoundEntryLoop(true)) as Ast;
+  const messageBusGraphMode = !!mergedCompilerOptions.experimentalHiddenBatch
+    && !!mergedCompilerOptions.experimentalMessageBusController;
+  const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
+  if (messageBusGraphMode) {
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(true, pointerTableBounds)) as Ast;
+    // A pointer-table loop whose trip count is RUNTIME-sized survives the fixed-bound pass. Admit it only when a
+    // dominating source guard proves a finite ceiling, expand it to that many guarded rows, and reject every
+    // other shape with one stable diagnostic. The guard stays in the emitted covenant, so a runtime table longer
+    // than the published bound fails on-chain instead of executing a truncated prefix.
+    ast = ast.accept(new ExpandBoundedPointerTableLoop(pointerTableBounds)) as Ast;
   }
 
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
   // array-element co-spend `IFace(fns[i]).m()`. Runs FIRST so the moved array is a native `address[]` to every
   // later pass (the fn-ptr array parses as a COLLECTION; a plain address array is a dynamic-array STATE VAR).
-  ast = ast.accept(new LowerForeignFunctionPointerArrayElements()) as Ast;
+  ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
@@ -1552,7 +1595,7 @@ function compileResolvedAst(
   // A foreign fn-ptr ARRAY holding RECEIVED values (`fns.push(p)`) -> `address[]` + a parallel `bytes[]`
   // selector array + the per-element on-chain-selector dispatch loop with SDK-filled witness master indices
   // (the array analogue of the storage pass). After the param lowering that splits `p` -> `__fnsel_p`.
-  ast = ast.accept(new LowerReceivedFnPtrArray()) as Ast;
+  ast = ast.accept(new LowerReceivedFnPtrArray(messageBusGraphMode)) as Ast;
   // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
   // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
   // struct-field pass (only received-value fields remain).
@@ -1623,6 +1666,9 @@ function compileResolvedAst(
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
   ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
+  // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
+  // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
+  if (messageBusGraphMode) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
   // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
   // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
   ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -1771,6 +1817,16 @@ function compileResolvedAst(
   }
   const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
   if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
+  // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
+  // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
+  // controller compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
+  if (messageBusGraphMode && pointerTableBounds.size > 0) {
+    artifact.abi = artifact.abi.map((fn) => {
+      if (!fn.externalCalls?.length) return fn;
+      const coalesced = coalesceExpandedPointerTable(fn.name, fn.externalCalls, pointerTableBounds);
+      return coalesced === fn.externalCalls ? fn : { ...fn, externalCalls: coalesced };
+    });
+  }
   const invocationAnalysis = analyseContractInvocations(ast.contract);
   const invocationFunctionById = new Map(
     [...ast.contract.functions, ast.contract.fallbackDef, ast.contract.receiveDef]

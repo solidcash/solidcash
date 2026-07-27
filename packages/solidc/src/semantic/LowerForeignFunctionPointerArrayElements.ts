@@ -69,6 +69,16 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
   private hoistCounter = 0;
   private hoists: StatementNode[] = [];
 
+  /**
+   * `graphMode` only affects a broadcast (in-loop) receiver. Message-bus graph handlers reconstruct one
+   * authoritative row per reached iteration, so they need the live element and its live selector. The ordinary
+   * broadcast covenant instead reads and verifies the WHOLE table in its epilogue, and its receiver must stay
+   * index-independent: the loop variable is not in scope where the receiver is hoisted.
+   */
+  constructor(private readonly graphMode = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
     for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
@@ -326,10 +336,14 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
             throw new FnPtrArrayLoweringError(node, name,
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
           }
-          // Preserve the reached element for transcript handlers. The legacy broadcast epilogue still reads
-          // and verifies the whole table, while graph mode reconstructs one authoritative row per iteration.
+          // Broadcast: the covenant reads the WHOLE array; the receiver only names it, so use the
+          // index-independent fns[0] (the loop variable is not in scope where the receiver is hoisted).
+          // A graph handler instead reconstructs one authoritative row per reached iteration and therefore
+          // keeps the live index and its live selector.
           const arrId = new IdentifierNode(name); arrId.location = node.location;
-          const liveIndex = this.visit(target.index) as ExpressionNode;
+          const liveIndex = this.graphMode
+            ? this.visit(target.index) as ExpressionNode
+            : Object.assign(new IntLiteralNode(0n), { location: node.location });
           const elem = new ArrayAccessNode(
             arrId, cloneNode(liveIndex) as ExpressionNode,
           );
@@ -339,15 +353,17 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
           const mc = new MethodCallNode(cast, t.method, args); mc.location = node.location;
           if (t.kind === 'varying') {
             mc.selectorArrayVar = this.selArrayName(name);
-            const selectorArray = new IdentifierNode(this.selArrayName(name));
-            selectorArray.location = node.location;
-            const selectorRead = new ArrayAccessNode(
-              selectorArray, cloneNode(liveIndex) as ExpressionNode,
-            );
-            selectorRead.location = node.location;
-            const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
-            selectorCast.location = node.location;
-            mc.runtimeSelector = selectorCast;
+            if (this.graphMode) {
+              const selectorArray = new IdentifierNode(this.selArrayName(name));
+              selectorArray.location = node.location;
+              const selectorRead = new ArrayAccessNode(
+                selectorArray, cloneNode(liveIndex) as ExpressionNode,
+              );
+              selectorRead.location = node.location;
+              const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
+              selectorCast.location = node.location;
+              mc.runtimeSelector = selectorCast;
+            }
           }
           return mc;
         }

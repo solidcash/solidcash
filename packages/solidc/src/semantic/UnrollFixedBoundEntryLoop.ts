@@ -32,6 +32,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, Type } from '@solidcash/utils';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { PointerTableExpansionMap, recordPointerTableExpansion } from './PointerTableBound.js';
 
 const MAX_UNROLL = 64;
 
@@ -62,7 +63,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private newArrayLocalSizes = new Map<string, bigint>();
   private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
 
-  constructor(private readonly indirectCallsOnly = false) {
+  private currentFunction = '';
+
+  constructor(
+    private readonly indirectCallsOnly = false,
+    private readonly expansions?: PointerTableExpansionMap,
+  ) {
     super();
   }
 
@@ -90,6 +96,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const prevName = this.currentFunction;
+    this.currentFunction = node.name;
     const prev = this.varTypes;
     this.varTypes = new Map(prev);
     const prevNewArr = this.newArrayLocalSizes;
@@ -101,6 +109,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     this.varTypes = prev;
     this.newArrayLocalSizes = prevNewArr;
     this.mutatedNames = prevMutated;
+    this.currentFunction = prevName;
     return node;
   }
 
@@ -201,10 +210,24 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
+    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (message-bus controller) mode.
+    // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
+    // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
+    // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts) && !hasIndirectCall)) return undefined;
+      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts))) return undefined;
     if (this.hasControlFlowEscape(bodyStmts)) return undefined;
+
+    // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
+    // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
+    if (hasIndirectCall
+      && this.countNodes(bodyStmts, (n) => n instanceof IndirectCallNode
+        || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined)) === 1) {
+      recordPointerTableExpansion(
+        this.expansions, this.currentFunction, { count: values.length, guarded: false },
+      );
+    }
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
     // across the N copies (Solidity block scoping). The loop variable is substituted by its per-iteration literal.
@@ -285,11 +308,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return this.anyNode(stmts, (n) => n instanceof BreakNode || n instanceof ContinueNode || n instanceof ReturnNode);
   }
 
-  private anyNode(stmts: Node[], pred: (n: Node) => boolean): boolean {
-    let found = false;
+  private countNodes(stmts: Node[], pred: (n: Node) => boolean): number {
+    let found = 0;
     const walk = (n: Node): void => {
-      if (found || !n) return;
-      if (pred(n)) { found = true; return; }
+      if (!n) return;
+      if (pred(n)) found += 1;
       for (const key of Object.keys(n)) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
@@ -299,6 +322,10 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     };
     for (const s of stmts) walk(s);
     return found;
+  }
+
+  private anyNode(stmts: Node[], pred: (n: Node) => boolean): boolean {
+    return this.countNodes(stmts, pred) > 0;
   }
 
   private substituteVar(node: Node, varName: string, value: bigint): void {

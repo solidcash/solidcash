@@ -261,7 +261,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
             }
             else routeUsesOtherIntrospection = true;
           }
-          if (node instanceof ExternalFunctionCallNode) statefulExternalCall = true;
+          if (node instanceof ExternalFunctionCallNode) {
+            statefulExternalCall = true;
+            methodCallCount += 1;
+            if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
+              graphHasComputedCallArguments = true;
+            }
+          }
           if (node instanceof LowLevelCallStatementNode) {
             statefulExternalCall = true;
             methodCallCount += 1;
@@ -1330,6 +1336,14 @@ function compileResolvedAst(
     return generateDeclarationArtifact(ast, code);
   }
 
+  // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
+  // table is lowered. This preserves exact invocation cardinality and lets each state-selected target/selector
+  // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
+  if (mergedCompilerOptions.experimentalHiddenBatch
+    && mergedCompilerOptions.experimentalMessageBusController) {
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(true)) as Ast;
+  }
+
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
   // array-element co-spend `IFace(fns[i]).m()`. Runs FIRST so the moved array is a native `address[]` to every
   // later pass (the fn-ptr array parses as a COLLECTION; a plain address array is a dynamic-array STATE VAR).
@@ -1388,12 +1402,44 @@ function compileResolvedAst(
     group.push(fn);
     hiddenBatchFunctionsByName.set(fn.name, group);
   }
+  const collectionNames = new Set(ast.contract.collections.map((collection) => collection.name));
+  const loweredFunctionPointerTables = new Set<string>();
+  for (const collection of ast.contract.collections) {
+    if (collection.type instanceof ArrayType
+      && collection.type.elementType instanceof FunctionType
+      && collection.type.elementType.isExternal) {
+      loweredFunctionPointerTables.add(collection.name);
+      loweredFunctionPointerTables.add(`__fnsel_${collection.name}`);
+    }
+  }
+  for (const name of collectionNames) {
+    if (collectionNames.has(`__fnsel_${name}`)) {
+      loweredFunctionPointerTables.add(name);
+      loweredFunctionPointerTables.add(`__fnsel_${name}`);
+    }
+  }
+  for (const fn of ast.contract.functions) {
+    const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
+    for (const resource of [...footprint.reads, ...footprint.writes]) {
+      if (!resource.startsWith('collection:__fnsel_')) continue;
+      const selectorName = resource.slice('collection:'.length).split(':', 1)[0];
+      loweredFunctionPointerTables.add(selectorName);
+      loweredFunctionPointerTables.add(selectorName.slice('__fnsel_'.length));
+    }
+  }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.experimentalHiddenBatch
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
       return [...footprint.reads, ...footprint.writes]
-        .some((resource) => resource.startsWith('collection:'))
-        || footprint.effects.length > 0
+        .some((resource) => {
+          if (!resource.startsWith('collection:')) return false;
+          const name = resource.slice('collection:'.length).split(':', 1)[0];
+          return !loweredFunctionPointerTables.has(name);
+        })
+        // External edges are represented by graph handlers and must be cloned after higher-order/loop
+        // lowering. Unlike transfers/events/deploys, the edge itself adds no owner-local block slot that
+        // the early wrapper must expose.
+        || footprint.effects.some((effect) => effect !== 'external-call')
         || fn.returnTypes.length > 0;
     });
   if (synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
@@ -1621,6 +1667,18 @@ function compileResolvedAst(
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+  // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
+  // block. Their external edges are transcript rows, not additional co-spent slots, so their independently
+  // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still
+  // address the owner's data NFTs and trailing chunks relative to the hidden route's block. Share that physical
+  // layout explicitly; otherwise the code generator falls back to activeInput+1 and aliases the first fixed or
+  // funding slot rather than the route's canonical trailing region.
+  const hiddenBatchRoute = ast.contract.functions.find((fn) => fn.hiddenBatchRoute);
+  if (hiddenBatchRoute?.blockLayout) {
+    for (const fn of ast.contract.functions) {
+      if (fn.graphEmissionHandler) fn.blockLayout = hiddenBatchRoute.blockLayout;
+    }
+  }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.
   // Record the corresponding physical-slot alternatives after entry slots have been assigned, but before
   // covenant generation. The code generator uses this to skip the duplicate slot completely; the SDK funds it

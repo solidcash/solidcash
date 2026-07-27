@@ -545,6 +545,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // External call tracking
   private externalCallSlots: ExternalCallSlot[] = [];
+  private graphStraightRuntimeRows: string[] = [];
+  private graphStraightRuntimeMode = false;
 
   // External outState tracking
   private externalOutStateSlots: ExternalOutStateSlot[] = [];
@@ -2225,8 +2227,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
+  private hasConditionalOrLoop(node: Node): boolean {
+    if (node instanceof BranchNode || node instanceof WhileNode || node instanceof DoWhileNode
+      || node instanceof SwitchNode || node instanceof TryCatchNode) return true;
+    for (const key of Object.keys(node)) {
+      if (key === 'resolvedFunction' || key === 'definition' || key === 'collection') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node) {
+        if (this.hasConditionalOrLoop(value)) return true;
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof Node && this.hasConditionalOrLoop(item)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    this.graphStraightRuntimeRows = [];
+    this.graphStraightRuntimeMode = this.isDefineSubTraversal
+      && node.graphRuntimeEmissionHandler === true
+      && (node.externalCalls?.length ?? 0) > 1
+      && (node.externalCalls ?? []).every((slot) => slot.selectorArrayVar !== undefined && !slot.loopArrayVar)
+      && !this.hasConditionalOrLoop(node.body);
     const candidateJournalSlots = node.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
     const invokesJournalHandler = node.body
@@ -2707,6 +2732,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Void handlers drop ordinary locals/params but return hidden journal slots in canonical order.
     if (this.isDefineSubTraversal) {
+      if (this.graphStraightRuntimeMode) {
+        const loc = { location: node.body.location, positionHint: PositionHint.END };
+        this.emit(new Uint8Array(), loc);
+        this.pushToStack('(__graph_straight_vector)');
+        for (const rowName of this.graphStraightRuntimeRows) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(rowName))), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.pushToStack('(__graph_straight_row)');
+          this.emit(Op.OP_CAT, loc);
+          this.popFromStack(2);
+          this.pushToStack('(__graph_straight_vector)');
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.pushToStack('(__graph_straight_expected)');
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.popFromStack(2);
+      }
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
       const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
       if (node.graphRuntimeEmissionHandler) journalNames.add('__internal__graphEmissions');
@@ -2719,6 +2762,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ROLL, { location: node.body.location, positionHint: PositionHint.END });
         this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
         this.removeFromStack(i);
+      }
+      if (this.graphStraightRuntimeMode) {
+        this.emit(Op.OP_0, { location: node.body.location, positionHint: PositionHint.END });
+        this.pushToStack('(__graph_exhausted)');
+        this.emitReplace(this.getStackIndex('__internal__graphEmissions'), node);
+        this.popFromStack();
       }
       return node;
     }
@@ -3218,10 +3267,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(index)), locationData);
     this.emit(Op.OP_ROLL, locationData);
     this.emit(Op.OP_DROP, locationData);
-    // For deep replacements, rotate the new value beneath the intervening items with two counted loops. Phase 1
-    // moves the intervening values to the altstack (above any OP_INVOKE return address); phase 2 restores them in
-    // order after the new value. Both loops finish with the altstack exactly as they found it. This is smaller than
-    // the unrolled 3k-2 opcode sequence once k=index-1 is sufficiently large.
+    // For deep replacements in an entry body, rotate the new value beneath the intervening items with two counted
+    // loops. OP_DEFINE subroutines already carry OP_INVOKE control state on the altstack; keep their replacements
+    // entirely on the main stack until the counted algorithm has a dedicated nested-invocation proof. The unrolled
+    // path is larger but has no hidden control-stack interaction and is bounded by compiler-owned handler shapes.
     if (index >= 14) {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
@@ -11463,6 +11512,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
     if (this.currentFunction.graphRuntimeEmissionHandler) {
       if (!physicalSlot) throw new Error('Runtime graph call lacks compiler metadata');
+      if (this.graphStraightRuntimeMode) {
+        this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, false, true);
+        const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
+        this.stack[0] = rowName;
+        this.graphStraightRuntimeRows.push(rowName);
+        return node;
+      }
       this.consumeGraphRuntimeEmissionRow(physicalSlot, node.parameters, node, locationData);
       return node;
     }
@@ -11643,7 +11699,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!rawCall && !slot.compileTimeSelector && !slot.runtimeSelector) {
       throw new Error('Graph emission call lacks an authenticated selector');
     }
-    if (slot.addressParam) {
+    const evaluatedTargetExpression = parametersAreCallArguments && slot.sourceCallNode !== undefined;
+    if (evaluatedTargetExpression) {
+      this.visit(slot.sourceCallNode!.addressExpression);
+    } else if (slot.addressParam) {
       const parameterIndex = handler.parameters.findIndex((parameter) =>
         parameter.name === slot.addressParam);
       if (parametersAreCallArguments) {
@@ -11665,7 +11724,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       throw new Error('Graph emission target must be a pinned parameter or literal');
     }
-    this.pushToStack('(__graph_target)');
+    if (evaluatedTargetExpression) this.stack[0] = '(__graph_target)';
+    else this.pushToStack('(__graph_target)');
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
@@ -18070,6 +18130,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Array-element target `IFoo(arr[i]).m()`: verify EVERY co-spent callee against the array in a loop.
       if (slot.inlineLoopDispatch) continue; // handled inline per-iteration in visitExternalFunctionCall
       if (slot.loopArrayVar) {
+        // Transcript handlers authenticate every reached array element while executing the source loop:
+        // target, runtime selector, arguments, order, and callee projection are all rooted. The legacy
+        // epilogue assumes callees occupy one contiguous direct-call block, which is false once graph
+        // participant projections/controller inputs are interleaved into the balanced transaction.
+        if (node.graphEmissionHandler) continue;
         this.emitArrayExternalCallLoop(slot, node);
         continue;
       }

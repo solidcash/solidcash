@@ -23,6 +23,8 @@ import {
   ContinueNode,
   ReturnNode,
   FunctionCallNode,
+  IndirectCallNode,
+  MethodCallNode,
   NewArrayNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -41,8 +43,9 @@ const MAX_UNROLL = 64;
  * by EntryWriteInLoopError, because one fixed entry slot can't hold N runtime entries). Distinct constant-index
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
- * Restricted to be sound: only fires when the body contains a mapping write OR a keccak256 call (else unrolling
- * is needless), never when the body has break/continue/return (unrolling changes their control flow), and
+ * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, or an indirect
+ * external function-pointer call (else unrolling is needless), never when the body has break/continue/return
+ * (unrolling changes their control flow), and
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
  * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
@@ -58,6 +61,10 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // size always holds - the length can't change out from under the fold.
   private newArrayLocalSizes = new Map<string, bigint>();
   private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
+
+  constructor(private readonly indirectCallsOnly = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -194,7 +201,9 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
-    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)) return undefined;
+    const hasIndirectCall = this.hasIndirectCall(bodyStmts);
+    if (this.indirectCallsOnly ? !hasIndirectCall
+      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts) && !hasIndirectCall)) return undefined;
     if (this.hasControlFlowEscape(bodyStmts)) return undefined;
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
@@ -265,6 +274,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   private hasKeccakCall(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.KECCAK256);
+  }
+
+  private hasIndirectCall(stmts: Node[]): boolean {
+    return this.anyNode(stmts, (n) => n instanceof IndirectCallNode
+      || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined));
   }
 
   private hasControlFlowEscape(stmts: Node[]): boolean {

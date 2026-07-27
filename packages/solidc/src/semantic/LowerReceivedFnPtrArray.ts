@@ -299,12 +299,24 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
           }
           const arrId = new IdentifierNode(name); arrId.location = node.location;
-          const zero = new IntLiteralNode(0n); zero.location = node.location;
-          const elem = new ArrayAccessNode(arrId, zero); elem.location = node.location;
+          // Preserve the live loop index. The ordinary broadcast covenant still verifies the whole table in
+          // its epilogue, while a transcript handler executes this callsite once per reached iteration and
+          // must reconstruct that row's exact target and selector from state.
+          const liveIndex = this.visit(target.index) as ExpressionNode;
+          const elem = new ArrayAccessNode(arrId, liveIndex); elem.location = node.location;
           const ifaceId = new IdentifierNode(info.iface); ifaceId.location = node.location;
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
           mc.selectorArrayVar = this.selArrayName(name);
+          const selectorArray = new IdentifierNode(this.selArrayName(name));
+          selectorArray.location = node.location;
+          const selectorRead = new ArrayAccessNode(
+            selectorArray, cloneNode(liveIndex) as ExpressionNode,
+          );
+          selectorRead.location = node.location;
+          const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
+          selectorCast.location = node.location;
+          mc.runtimeSelector = selectorCast;
           return mc;
         }
         const idx = this.visit(target.index) as ExpressionNode;

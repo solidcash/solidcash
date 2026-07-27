@@ -5,7 +5,8 @@ import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureAlgorithm, SignatureTemplate, TransactionBuilder, encodeFunctionArgument, layer3,
+  Contract, SignatureAlgorithm, SignatureTemplate, StatefulContract, TransactionBuilder,
+  encodeFunctionArgument, layer3,
 } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { randomUtxo } from '../../src/utils.js';
@@ -16,7 +17,8 @@ import {
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, createSatoshiContainerUnlocker,
-  getDataNftAddress, getEntryNftAddress, getEventNftAddress, getSatoshiContainerAddress,
+  createReadOnlyDynamicChunkUnlocker, getDataNftAddress, getDynamicChunkAddress,
+  getEntryNftAddress, getEventNftAddress, getSatoshiContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, encodeEntryCommitment, keyToSlot, keyToSlotMulti,
@@ -196,6 +198,17 @@ contract CompiledReturnedPointerCaller(int brand) {
   function fire(address target, uint value) public {
     function(uint) external handler = choose(target);
     handler(value);
+    require(value >= 0);
+  }
+}`;
+const VARYING_SELECTOR_TABLE = `pragma solidcash >=0.8.0;
+interface IVaryingHandler { function inc(uint value); function dec(uint value); }
+contract CompiledVaryingSelectorTable() {
+  function(uint) external[] handlers;
+  function registerInc(address target) public { this.handlers.push(IVaryingHandler(target).inc); require(true); }
+  function registerDec(address target) public { this.handlers.push(IVaryingHandler(target).dec); require(true); }
+  function fireAll(uint value) public {
+    for (int i = 0; i < 2; i = i + 1) { handlers[i](value); }
     require(value >= 0);
   }
 }`;
@@ -649,6 +662,162 @@ async function buildPointerGraph(
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, transaction: raw(tx) };
+}
+
+async function buildVaryingSelectorGraph(
+  tamper: 'none' | 'selector' | 'target' = 'none',
+) {
+  const provider = createTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const handlerArtifact = compileString(POINTER_TARGET, options);
+  const handlerSetups = await Promise.all([2n, 3n].map(async (brand) => {
+    const base = new Contract(handlerArtifact, [brand], { provider });
+    const setup = await setupStatefulUtxos(provider, base, handlerArtifact.stateLayout!, {});
+    return { contract: base.withCategory(hexToBin(setup.categoryId)), setup, brand };
+  }));
+  const tableArtifact = compileString(VARYING_SELECTOR_TABLE, options);
+  const tableBase = new Contract(tableArtifact, [], { provider });
+  const tableSetup = await setupStatefulUtxos(
+    provider, tableBase, tableArtifact.stateLayout!,
+    { handlers: [], __fnsel_handlers: [] },
+  );
+  const table = tableBase.withCategory(hexToBin(tableSetup.categoryId));
+  const tableStateful = StatefulContract.withCategory(tableBase, tableSetup.categoryId);
+  await tableStateful.registerInc(handlerSetups[0].contract.lockingBytecode).send();
+  await tableStateful.registerDec(
+    tamper === 'target'
+      ? hexToBin(`aa20${'44'.repeat(32)}87`)
+      : handlerSetups[1].contract.lockingBytecode,
+  ).send();
+  const currentTable = await tableStateful.getFullState();
+  if (!currentTable.masterUtxo || currentTable.dataNftUtxos.length !== 1) {
+    throw new Error('varying-selector fixture did not materialize its current master/data state');
+  }
+
+  const participants = [
+    { artifact: tableArtifact, lockingBytecode: table.lockingBytecode },
+    ...handlerSetups.map(({ contract, brand }) => ({
+      artifact: handlerArtifact, lockingBytecode: contract.lockingBytecode, constructorArgs: [brand],
+    })),
+  ];
+  let dynamicCallIndex = 0;
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: participants[0],
+    function: 'fireAll',
+    args: [4n],
+    targets: {},
+    occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+    dynamicCall: () => {
+      const reached = dynamicCallIndex++;
+      if (reached === 0) return { participant: participants[1], function: 'inc' };
+      return {
+        participant: participants[2],
+        function: tamper === 'selector' ? 'inc' : 'dec',
+      };
+    },
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', '', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const projections = Array.from({ length: 3 }, () => randomUtxo({ satoshis: 1000n }));
+  const fee = randomUtxo({ satoshis: 80_000n });
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+  await provider.addUtxo(p2pkh.address, fee);
+
+  const dynamicVariables = tableArtifact.stateLayout!.variables.filter((variable) => variable.dynamic);
+  const chunks: { variable: typeof dynamicVariables[number]; utxo: any; address: string }[] = [];
+  for (const variable of dynamicVariables) {
+    const address = getDynamicChunkAddress(
+      table, tableSetup.categoryId, variable.name, variable.type,
+    );
+    for (const utxo of await provider.getUtxos(address)) chunks.push({ variable, utxo, address });
+  }
+  expect(chunks.length).toBeGreaterThanOrEqual(2);
+  const trailingCapacity = tableArtifact.hiddenBatch!.route.blockLayout!.trailingCapacity ?? 0;
+  expect(chunks.length).toBeLessThanOrEqual(trailingCapacity);
+  const trailingFunding = Array.from(
+    { length: trailingCapacity - chunks.length },
+    () => randomUtxo({ satoshis: 1000n }),
+  );
+  for (const funding of trailingFunding) await provider.addUtxo(p2pkh.address, funding);
+
+  const tableRoute = table.createCompilerRouteUnlocker(
+    tableArtifact.hiddenBatch!.route, hexToBin(tableArtifact.hiddenBatch!.selector),
+  );
+  const handlerRoutes = handlerSetups.map(({ contract }) => contract.createCompilerRouteUnlocker(
+    handlerArtifact.hiddenBatch!.route, hexToBin(handlerArtifact.hiddenBatch!.selector),
+  ));
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(
+    currentTable.masterUtxo,
+    tableRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    currentTable.dataNftUtxos[0],
+    createDataNftUnlocker(table, layout.participantInputs[0], tableSetup.categoryId),
+  );
+  for (const { variable, utxo } of chunks) {
+    tx.addInput(
+      utxo,
+      createReadOnlyDynamicChunkUnlocker(
+        table, layout.participantInputs[0], tableSetup.categoryId, variable.name, variable.type,
+      ),
+    );
+  }
+  for (const funding of trailingFunding) {
+    tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature()));
+  }
+  handlerSetups.forEach(({ setup }, index) => tx.addInput(
+    setup.masterUtxo,
+    handlerRoutes[index](
+      ...layer3.compiledGraphRouteArgs(transcript, index + 1, layout.controllerInput) as any,
+    ),
+  ));
+  projections.forEach((proof, participant) => tx.addInput(
+    proof,
+    projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    ),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  tx.addOutput({
+    to: table.tokenAddress, amount: currentTable.masterUtxo.satoshis,
+    token: currentTable.masterUtxo.token,
+  });
+  tx.addOutput({
+    to: getDataNftAddress(table, tableSetup.categoryId),
+    amount: currentTable.dataNftUtxos[0].satoshis,
+    token: currentTable.dataNftUtxos[0].token,
+  });
+  for (const { address, utxo } of chunks) {
+    tx.addOutput({ to: address, amount: utxo.satoshis, token: utxo.token });
+  }
+  for (const funding of trailingFunding) {
+    tx.addOutput({ to: p2pkh.address, amount: funding.satoshis });
+  }
+  handlerSetups.forEach(({ contract, setup }) => tx.addOutput({
+    to: contract.tokenAddress, amount: setup.masterUtxo.satoshis, token: setup.masterUtxo.token,
+  }));
+  for (let index = 0; index < projections.length + 1; index++) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
   tx.addOutput({ to: p2pkh.address, amount: 10_000n });
   return { provider, transaction: raw(tx) };
 }
@@ -2890,6 +3059,19 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a returned-pointer %s disagreement with the compiler-reduced child row',
     async (tamper) => {
       const { provider, transaction } = await buildPointerGraph(tamper, true);
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    },
+  );
+
+  it('executes state-backed function pointers with a different selector in each row', async () => {
+    const { provider, transaction } = await buildVaryingSelectorGraph();
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it.each(['selector', 'target'] as const)(
+    'rejects a state-backed varying-selector pointer %s disagreement',
+    async (tamper) => {
+      const { provider, transaction } = await buildVaryingSelectorGraph(tamper);
       await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
     },
   );

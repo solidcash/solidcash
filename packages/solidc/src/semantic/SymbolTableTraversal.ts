@@ -1834,7 +1834,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (node.graphEmissionHandler) {
           if (logicalCallSlots.length < 1
             || logicalCallSlots.some((slot) =>
-              slot.loopArrayVar
+              (slot.loopArrayVar && !node.graphRuntimeEmissionHandler)
               || (slot.fnPtrCall && !slot.runtimeSelector)
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
@@ -1845,14 +1845,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           if (node.graphRuntimeEmissionHandler
             && logicalCallSlots.some((slot) => slot.hasReturnValues
-              || (!slot.fnPtrCall
+              || (!slot.sourceCallNode
+                && !slot.fnPtrCall
+                && !slot.selectorArrayVar
                 && !node.parameters.some((parameter) => parameter.name === slot.addressParam)))) {
             throw new Error(
               `Runtime graph handler '${node.name}' requires void calls with parameter- or state-pinned targets`,
             );
           }
           for (const slot of logicalCallSlots) {
-            if (!slot.addressParam) {
+            if (!slot.addressParam && !node.graphRuntimeEmissionHandler) {
               throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);
             }
             if (!node.graphRuntimeEmissionHandler
@@ -8728,6 +8730,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     scanDynamicState(node.body);
+    // The hidden route invokes compiler-generated handlers through OP_INVOKE, so walking only the route
+    // body cannot see their dynamic state accesses. Reserve its balanced trailing region whenever the
+    // contract has dynamic storage: concrete chunks occupy the leading trailing slots and funding/change
+    // pairs fill the remainder, keeping the next participant's block relocatable and index-stable.
+    if (node.name === '__scb1' && dynamicNames.size > 0) touchesDynamicState = true;
     if (node.name === '__scb1' && !touchesDynamicState) {
       const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__scb_dynamic_'));
       if (dynamicHelpers.length > 0) touchesDynamicState = true;

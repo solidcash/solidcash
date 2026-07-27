@@ -326,15 +326,29 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
             throw new FnPtrArrayLoweringError(node, name,
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
           }
-          // Broadcast: the covenant reads the WHOLE array; the receiver only names it, so use the
-          // index-independent fns[0] (the loop variable is not in scope where the receiver is hoisted).
+          // Preserve the reached element for transcript handlers. The legacy broadcast epilogue still reads
+          // and verifies the whole table, while graph mode reconstructs one authoritative row per iteration.
           const arrId = new IdentifierNode(name); arrId.location = node.location;
-          const zero = new IntLiteralNode(0n); zero.location = node.location;
-          const elem = new ArrayAccessNode(arrId, zero); elem.location = node.location;
+          const liveIndex = this.visit(target.index) as ExpressionNode;
+          const elem = new ArrayAccessNode(
+            arrId, cloneNode(liveIndex) as ExpressionNode,
+          );
+          elem.location = node.location;
           const ifaceId = new IdentifierNode(t.iface); ifaceId.location = node.location;
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, t.method, args); mc.location = node.location;
-          if (t.kind === 'varying') mc.selectorArrayVar = this.selArrayName(name);
+          if (t.kind === 'varying') {
+            mc.selectorArrayVar = this.selArrayName(name);
+            const selectorArray = new IdentifierNode(this.selArrayName(name));
+            selectorArray.location = node.location;
+            const selectorRead = new ArrayAccessNode(
+              selectorArray, cloneNode(liveIndex) as ExpressionNode,
+            );
+            selectorRead.location = node.location;
+            const selectorCast = new CastNode(new BytesType(4), selectorRead, false);
+            selectorCast.location = node.location;
+            mc.runtimeSelector = selectorCast;
+          }
           return mc;
         }
         // Single element: hoist `address __fnelem_N = fns[idx];` (+ the element's runtime selector for a
@@ -352,6 +366,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
         const cast = new FunctionCallNode(ifaceId, [elemId]); cast.location = node.location;
         const mc = new MethodCallNode(cast, t.method, args); mc.location = node.location;
         if (t.kind === 'varying') {
+          mc.selectorArrayVar = this.selArrayName(name);
           const selName = `__fnelemsel_${n}`;
           const selArrId = new IdentifierNode(this.selArrayName(name)); selArrId.location = node.location;
           const selRead = new ArrayAccessNode(selArrId, cloneNode(idx) as ExpressionNode);

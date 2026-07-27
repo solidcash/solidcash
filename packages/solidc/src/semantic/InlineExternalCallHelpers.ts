@@ -80,7 +80,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
 
     this.voidExternalCallHelpers = new Set();
     for (const fn of all) {
-      if (fn.body && fn.returnTypes.length === 0 && this.makesExternalCall(fn)) {
+      // Graph handlers intentionally execute behind OP_INVOKE: their hidden transcript/caller/result
+      // frame is what makes each reached edge authoritative. Flattening one into __scb1 erases that
+      // context and turns its external calls into inert ordinary-call nodes.
+      if (!fn.graphEmissionHandler && fn.body && fn.returnTypes.length === 0
+        && this.makesExternalCall(fn)) {
         this.voidExternalCallHelpers.add(fn.name);
       }
     }

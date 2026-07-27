@@ -215,6 +215,88 @@ describe('C1/piece-5: a delegatecall must be reached at most once per path', () 
   });
 });
 
+// C1/piece-7 - `L.f()` library-call sugar and split-facet forwarders are COMPILER-SYNTHESIZED delegatecalls
+// (LowLevelCallStatementNode.synthesizedFromLibraryCall). Every rule above keyed off hasExplicitDelegatecall,
+// which excludes exactly those nodes, so pinsDelegateCoSpend was FALSE and the callsite emitted NO covenant at
+// all - while the per-function !functionHasDelegatecall gate still skipped the consumer's ENTIRE state covenant.
+// Measured live on the BCH-2026 VM in LibraryDelegate.test.ts: 0 -> 999 with a hostile library co-spent, and
+// 0 -> 999 with NO delegate co-spent at all.
+describe('C1/piece-7: a compiler-synthesized delegatecall pins its co-spend too', () => {
+  const ONE_FN_LIB = 'pragma solidcash >=0.8.0; library Counter { bigint count; '
+    + 'function increment() public { this.count = this.count + 1; } }';
+  const TWO_FN_LIB = 'pragma solidcash >=0.8.0; library Pair { bigint count; '
+    + 'function increment() public { this.count = this.count + 1; } '
+    + 'function wipe() public { this.count = 0; } }';
+  const resolverFor = (source: string, id: string) =>
+    (path: string): { source: string; id: string } | undefined =>
+      (path.includes(id) ? { source, id } : undefined);
+  const consumer = (body: string, lib = 'Counter', id = 'counter'): ReturnType<typeof compileString> =>
+    compileString(`pragma solidcash >=0.8.0; import { ${lib} } from "./${id}.scash"; ${body}`,
+      { importResolver: resolverFor(lib === 'Counter' ? ONE_FN_LIB : TWO_FN_LIB, id) });
+
+  /**
+   * The identity pin's opcode signature: the delegate input index is DERIVED from the reserved block slot
+   * (OP_INPUTINDEX + offset), then its UTXO bytecode is compared to the linked library address. An ordinary
+   * stateful contract never emits `OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`, so a hit is attributable to this pin.
+   */
+  const IDENTITY_PIN = 'OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY';
+  const SELECTOR_PIN = 'OP_INPUTBYTECODE OP_1 OP_SPLIT OP_NIP OP_OVER OP_SIZE OP_NIP OP_SPLIT OP_DROP OP_EQUALVERIFY';
+
+  it('emits the identity pin for a pure L.f() consumer', () => {
+    expect(consumer('contract C() { bigint count; function bump() { Counter.increment(); } }').bytecode)
+      .toContain(IDENTITY_PIN);
+  });
+
+  it('does not emit it for a stateful contract with no library call', () => {
+    const plain = compileString('pragma solidcash >=0.8.0; contract P() { bigint count; '
+      + 'function bump() external { this.count = this.count + 1; require(true); } }');
+    expect(plain.bytecode).not.toContain(IDENTITY_PIN);
+    expect(plain.bytecode).not.toContain(SELECTOR_PIN);
+  });
+
+  /**
+   * The selector half needs a selector to pin. A one-public-function library compiles to a single-entry-point
+   * contract whose unlocking script carries no leading selector - and with one function there is nothing for a
+   * caller to choose, so identity alone is the whole property. Two functions: both halves.
+   */
+  it('adds the selector pin only when the library is selector-dispatched', () => {
+    const one = consumer('contract C() { bigint count; function bump() { Counter.increment(); } }');
+    const two = consumer('contract C() { bigint count; function bump() { Pair.increment(); } }', 'Pair', 'pair');
+    expect(one.bytecode).toContain(IDENTITY_PIN);
+    expect(one.bytecode).not.toContain(SELECTOR_PIN);
+    expect(two.bytecode).toContain(IDENTITY_PIN);
+    expect(two.bytecode).toContain(SELECTOR_PIN);
+  });
+
+  /** The pin needs no witness: the index is derived, so the consumer's ABI is unchanged. */
+  it('adds no witness parameter to the consumer ABI', () => {
+    const art = consumer('contract C() { bigint count; function bump() { Counter.increment(); } }');
+    expect(art.abi.find((fn) => fn.name === 'bump')!.inputs).toEqual([]);
+    expect(JSON.stringify(art.abi)).not.toContain('__internal__delegateInputIndex');
+  });
+
+  /** Sibling rule, previously excluded with the pin: the consumer's own writes are never verified. */
+  it('refuses a self state-write alongside a library call', () => {
+    expect(() => consumer('contract C() { bigint count; '
+      + 'function bump() { Counter.increment(); this.count = 5; } }'))
+      .toThrow(/delegatecall and also writes contract state/);
+  });
+
+  /** Sibling rule: one reserved slot serves every iteration, so N source delegations settle as one. */
+  it('refuses a library call inside a loop by name', () => {
+    expect(() => consumer('contract C() { bigint count; '
+      + 'function bump() { for (int i = 0; i < 2; i = i + 1) { Counter.increment(); } require(true); } }'))
+      .toThrow(/issues delegatecall inside a loop.*settle as one/s);
+  });
+
+  /** A conditional library call is admitted and picks up the same not-taken-path covenant as piece-5. */
+  it('emits the not-taken-path covenant for a conditional library call', () => {
+    const conditional = consumer('contract C() { bigint count; '
+      + 'function bump(bool flag) { if (flag) { Counter.increment(); } require(true); } }');
+    expect(conditional.bytecode).toContain('OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY');
+  });
+});
+
 // C3 - the master covenant re-creates only the ACCESSED state NFTs; an attacker who additionally co-spends an
 // un-accessed data/entry NFT can destroy it (its sub-covenant self-authorizes given the master's minting NFT
 // is present). The fix emits an own-category mutable(0x01)-NFT input==output conservation loop for functions

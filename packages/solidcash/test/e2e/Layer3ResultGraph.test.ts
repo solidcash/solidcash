@@ -185,7 +185,8 @@ export type ResultGraphTamper =
   | 'swap-producer-occurrences'
   | 'duplicate-producer-occurrence'
   | 'substitute-consumer-emission'
-  | 'reorder-producer-result-vector';
+  | 'reorder-producer-result-vector'
+  | 'append-producer-result-suffix';
 
 interface ResultGraphFixture {
   provider: ReturnType<typeof createTestProvider>;
@@ -349,7 +350,12 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
 
   const vectorR = '';
   const vectorA = binToHex(resultStep);
-  const vectorC = binToHex(concatBytes(resultPair, resultTail));
+  // `finalizeCompiledGraph` only requires a participant vector to START WITH its reached results, and the
+  // projection verifier walks the vector with a cursor it never asserts is exhausted. Nothing but the
+  // producer's own compiled route stands between a declared suffix and acceptance, so attack it directly.
+  const vectorSuffix = tamper === 'append-producer-result-suffix'
+    ? packedScalar(99n) : new Uint8Array();
+  const vectorC = binToHex(concatBytes(resultPair, resultTail, vectorSuffix));
   const vectorB = binToHex(resultMid);
   const vectorE = binToHex(resultNote);
   const vectorD = binToHex(resultDeep);
@@ -675,6 +681,14 @@ describe('Layer-3 result graph hostile cases (E1)', () => {
   it('rejects a transcript that reorders one producer result vector', async () => {
     const built = await buildResultGraph('reorder-producer-result-vector');
     expect(failingInput(built.builder)).toBe(INPUT.projectionC);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  });
+
+  it('rejects a producer result vector carrying a suffix no invocation consumes', async () => {
+    const built = await buildResultGraph('append-producer-result-suffix');
+    // Only the producer's own route catches this: the controller sees a commitment that matches the
+    // transcript, and the projection verifier's result cursor is never asserted to be exhausted.
+    expect(failingInput(built.builder)).toBe(INPUT.masterC);
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   });
 });

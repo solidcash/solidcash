@@ -134,7 +134,7 @@ task-specific report, not in this table.
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
-| C1 | DeFi integrated semantic capstone | Main | G2,E2,S2,L2 | TODO | Relaxed VM allowed |
+| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | Main | G2,E1,S3,L2 | TODO | At least two targets/selectors |
 | C3 | Eight-participant semantic capstone | Main | C1,C2 | TODO | Correctness, not deployability |
 | A1 | Independent in-repository hostile review | C | C1,C2,C3 | TODO | Reviewer did not implement reviewed slice |
@@ -165,6 +165,8 @@ task-specific report, not in this table.
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C | X15 | TODO | Byte-identical direct artifacts, identical ABI, one compiles and one throws |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
+| X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
+| X23 | Reduce projection-verifier operation density | — | C1 | TODO | The ONLY thing keeping C1 from ordinary capacity, by 0.0095% |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -175,6 +177,37 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.20 C1 settles - and the measurement that matters is where it does NOT fit
+
+C1 settles as one transaction: 35 inputs, 35 outputs, four independently compiled participants, layout
+`[0,19,24,26]` gapless from input 0 as L1's pinned region requires. Every post-state is read back off the chain
+against numbers the test states independently - `balances` 100 to 70/10/20, `allowance` 50 to 20, Bento
+`(12,9)` to `(42,31)`, Kashi collateral 5 to 27 using the SHARE returned rather than the amount deposited.
+
+Seven hostile cases, each refused by the covenant that OWNS the field and never by the controller, and each
+attacked build is **the same serialized length as its control** - so no input, output or witness was added or
+removed to produce the rejection. That control is what makes the matrix mean something.
+
+**Under ordinary BCH-2026 capacity C1 does NOT fit, and the blocker is not what anyone assumed.** It fails at
+input 29, the first graph projection proof, on operation-cost density: a budget of 6,579,200 for 8,224 density
+bytes, overrun to 6,579,826. That is **0.0095% over**. Participant scripts are comfortably inside the ordinary
+10,000-byte input limit - Router 4,843 bytes, Token 7,058. So the thing standing between this composition and
+ordinary consensus capacity is the PROJECTION VERIFIER's density, by a hair, and nothing else. Opened as X23;
+it is the highest-value single optimisation target this effort has produced, and it arrives before F1 rather
+than after.
+
+**A new gap, reported rather than endorsed (X22).** A handler that consumes a result AND carries an effect
+fails with the internal `Unbound return call in __scb1; graph=undefined` - no named refusal and no diagnostic
+channel entry. Same family as X15, on a shape X15's fix does not reach.
+
+**And a correction to X3's framing.** The refusal a result-consuming handler hits is
+`requires call/staticcall edges and at most one returning call`, which is broader than fan-in: it rejects a
+result consumer alongside ANY second edge, not merely a second producer. X3 should be read as that wider
+restriction.
+
+C1's continuation claim is scoped by the worker rather than by me: it proves a result-dependent STATE
+TRANSITION, not a result-dependent onward CALL, because that shape is one of the four pinned refusals.
 
 ### 4.19 X17 DECIDED: do not gate `StatefulTransactionBuilder.send()`
 

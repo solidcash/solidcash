@@ -201,9 +201,13 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
+    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (message-bus controller) mode.
+    // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
+    // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
+    // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts) && !hasIndirectCall)) return undefined;
+      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts))) return undefined;
     if (this.hasControlFlowEscape(bodyStmts)) return undefined;
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide

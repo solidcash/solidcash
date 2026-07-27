@@ -1339,15 +1339,16 @@ function compileResolvedAst(
   // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
   // table is lowered. This preserves exact invocation cardinality and lets each state-selected target/selector
   // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
-  if (mergedCompilerOptions.experimentalHiddenBatch
-    && mergedCompilerOptions.experimentalMessageBusController) {
+  const messageBusGraphMode = !!mergedCompilerOptions.experimentalHiddenBatch
+    && !!mergedCompilerOptions.experimentalMessageBusController;
+  if (messageBusGraphMode) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(true)) as Ast;
   }
 
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
   // array-element co-spend `IFace(fns[i]).m()`. Runs FIRST so the moved array is a native `address[]` to every
   // later pass (the fn-ptr array parses as a COLLECTION; a plain address array is a dynamic-array STATE VAR).
-  ast = ast.accept(new LowerForeignFunctionPointerArrayElements()) as Ast;
+  ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
@@ -1552,7 +1553,7 @@ function compileResolvedAst(
   // A foreign fn-ptr ARRAY holding RECEIVED values (`fns.push(p)`) -> `address[]` + a parallel `bytes[]`
   // selector array + the per-element on-chain-selector dispatch loop with SDK-filled witness master indices
   // (the array analogue of the storage pass). After the param lowering that splits `p` -> `__fnsel_p`.
-  ast = ast.accept(new LowerReceivedFnPtrArray()) as Ast;
+  ast = ast.accept(new LowerReceivedFnPtrArray(messageBusGraphMode)) as Ast;
   // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
   // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
   // struct-field pass (only received-value fields remain).

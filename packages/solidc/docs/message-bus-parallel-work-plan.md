@@ -162,6 +162,27 @@ pre-existing failure.
 | `solidc` (full parallel run) | 2,322 passed, **10 failed** across 2 files |
 | `solidc` `HiddenBatch.test.ts` alone | 27 passed, 0 failed |
 | `solidc` `MessageBusRoute.test.ts` alone | 3 passed, 0 failed |
+| `solidcash` (full run) | 3,597 passed, 24 skipped, 9 todo, **5 failed** across 3 files |
+| `solidcash` failures in isolation | still fail - these are GENUINE, unlike the `solidc` ten |
+
+The five `solidcash` failures, each reproduced in isolation:
+
+| File | Failure | Owner |
+| --- | --- | --- |
+| `Layer3CompiledGraph.test.ts` | `expected [ '51', '52' ] to deeply equal [ '51', '52', '53' ]` | G1 target test, already red |
+| `FnPtrDispatchTables.test.ts` (3) | `argument count mismatch for function 'fire'. SDK produced 3 args but ABI expects 8 ... compiler/SDK version mismatch`; `Duplicate input detected` | unassigned - A to classify |
+| `LargeContractSplitting.test.ts` | `Could not derive the return value of 'setXReturning' for .emitReturn(). The covenant trace did not expose an authenticated return commitment.` | unassigned - B to classify |
+
+The `Layer3CompiledGraph.test.ts` red is a pre-written acceptance test for G1: a two-element selector table where a
+three-element one is expected. It should be made to pass by implementing G1, never by editing the expectation.
+
+**Open question against section 2.** Section 2 lists as already-committed baseline fact that "two-element persisted
+varying-target/varying-selector dispatch passes honestly" and that "received and compiler-reduced function pointers
+are graph-bound". The first is consistent with the measurements above. The second may not be: three
+`FnPtrDispatchTables` cases fail in isolation at this exact commit. The integration owner has NOT concluded that
+section 2 is wrong - the failures may cover an aspect the claim never made - and has asked Worker A to classify
+them as either subsumed by G1 or an independent pre-existing defect. Section 2 will be corrected only on that
+evidence, and only by the integration owner.
 
 **The 10 failures are parallel-run only.** Both files pass in isolation, so the baseline defect is test
 execution, not compiled behaviour. A round-1 delivery that reproduces exactly these 10 in a full run has NOT

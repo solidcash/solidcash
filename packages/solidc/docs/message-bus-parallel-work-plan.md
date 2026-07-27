@@ -132,8 +132,8 @@ task-specific report, not in this table.
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | forgery escape closed; guard keys off slot contribution |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
-| L1 | Fully relocatable balanced participant block | C | P0.1 | LEASED | round 4, base `cc47ff0e`; critical path to capstones |
-| L2 | SDK funding/change/event-NFT block assembly | C | L1 | LEASED | round 4, base `cc47ff0e`; gates C1/C2/C3 |
+| L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
+| L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
 | C1 | DeFi integrated semantic capstone | Main | G2,E2,S2,L2 | TODO | Relaxed VM allowed |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | Main | G2,E1,S3,L2 | TODO | At least two targets/selectors |
 | C3 | Eight-participant semantic capstone | Main | C1,C2 | TODO | Correctness, not deployability |
@@ -157,11 +157,40 @@ task-specific report, not in this table.
 | X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
 | X11 | Delegate C2 sorted writes have no settling instance | C | S1 | TODO | S1's delegate exclusion guards an unreachable shape, unattacked |
 | X12 | `emit`-funder delegate class does not settle | C | X1 | TODO | Pre-existing; verified neither repaired nor regressed by X1 |
+| X13 | Direct `withExternalCall` route does not balance callee blocks | — | — | TODO | Callee contributes 2 inputs / 3 outputs; graph route is correct |
+| X14 | Wire the balanced-assembly preflight into the production send path | C | L2 | TODO | Today it is an exported helper the tests call |
+| X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | — | — | TODO | Caller writing state in the called fn plus an external call |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.10 L1/L2 land with three claims deliberately scoped down
+
+L1 proves the strong form of relocation: one physical instance - one locking bytecode, one category, one master
+UTXO carried forward - settles at block base 0, 1 and 2 across 5-, 7- and 8-slot transactions, with accumulated
+state proving continuity rather than re-seeding.
+
+**But the participant REGION is pinned to input 0, and that is pre-existing, not introduced.**
+`generateGraphProjectionVerifier` and `GraphRootController.attest` both start their packing cursor at
+`expectedParticipantInput = 0` and require `participantInput == expectedParticipantInput`. Worker C proved this
+with a padded prefix in which every committed index was consistently shifted: rejected on chain, and rejected
+identically by the new preflight. So blocks relocate RELATIVE TO EACH OTHER; the region cannot be offset as a
+whole. Reading L1 as full positional freedom would be wrong, and the capstones must not assume it.
+
+Two L2 criteria are SDK-level only, measured rather than asserted:
+
+1. The **1,000-satoshi slot value is a convention, not a covenant invariant** - an 800-satoshi return-event
+   output settles on the BCH-2026 VM.
+2. **Event NFTs staying inside the emitting block is SDK assembly, not a covenant invariant** - the
+   participant's minting master is co-spent, so a second NFT of that category minted in the tail settles. The
+   in-block slot is authenticated; a category-indexing observer that trusts any NFT of the category is not safe.
+
+Both hold for the honest SDK and neither survives a hostile assembler. They are broader than Layer-3.
+
+The L2 preflight is also a CAPABILITY, not a mandatory gate: it is an exported helper the tests call explicitly
+and is not wired into any production send path (task X14).
 
 ### 4.9 Full-repository green, measured at the round-3 integration commit
 

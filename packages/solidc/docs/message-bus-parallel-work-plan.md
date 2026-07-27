@@ -157,8 +157,9 @@ task-specific report, not in this table.
 | X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
 | X11 | Delegate C2 sorted writes have no settling instance | C | S1 | TODO | S1's delegate exclusion guards an unreachable shape, unattacked |
 | X12 | `emit`-funder delegate class does not settle | C | X1 | TODO | Pre-existing; verified neither repaired nor regressed by X1 |
-| X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | LEASED | round 5; measured refusal is an acceptable outcome |
-| X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | LEASED | round 5; must not silently gate existing users |
+| X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
+| X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | INTEGRATED (layer-3 only) | direct-route wiring DEFERRED to the owner - would reject 44.5% of settling sends |
+| X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **TODO (owner decision)** | 1,014 of 2,278 describable sends would be rejected; see 4.15 |
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | LEASED | round 5; silence is the one unacceptable outcome |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
@@ -170,6 +171,41 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.15 X14 stops at a decision the integration owner has to make
+
+The preflight is now a real gate on the layer-3 path: `deriveBalancedAssemblyFromInputs` reads the block set off
+an unsigned builder rather than from a caller-supplied layout, so no cooperation is needed, and it runs
+unconditionally as the first statement of both `preflightLayer3Transaction` and
+`sendPreflightedLayer3Transaction`. Proven on the production path, not a harness: a malformed assembly is
+rejected with `signatureRequests.count === 0`, against an honest control differing only in the attacked field.
+
+**It was deliberately NOT wired into `StatefulTransactionBuilder.send()`, and the reason is measured rather than
+argued.** Worker B instrumented `send()` and ran the whole SDK suite - 2,413 stateful sends:
+
+| outcome | count |
+|---|---|
+| gate would accept | 1,264 |
+| **gate would REJECT a send that settles today** | **1,014 of 2,278 describable (44.5%)** |
+| model cannot describe, skipped | 135 |
+
+Categories: 628 `unbalanced transaction`, 378 `output carries a token outside every participant block`, 5 a
+`returnEvent` satoshi-value mismatch, 3 the same for `event` - SolidCash emits event NFTs at **1200** satoshis
+while the model specifies 1000.
+
+So the balanced-block model does not describe most of what the stateful SDK legitimately builds today. Turning
+the gate on would break roughly 44 percent of settling sends. That is a product decision, not a worker's, and it
+is recorded as X17 rather than taken silently in either direction. The instrumentation was reverted before
+staging.
+
+**A second honest limit:** after X13 the direct route's own external-call transactions are UNDESCRIBABLE by this
+model rather than accepted by it - the measured shapes leave no slot outside the participant region for the
+model's mandatory fee/change tail. X13 balanced the blocks; it did not bring the direct route inside the model.
+
+**And X13 is an assembler correction, not a security fix.** The return-event position is still covenant-UNBOUND:
+the covenant constrains commitment, category, capability, FT amount, bytecode and value, never the index. Worker
+B proved it rather than asserting it - the SAME unmodified covenants accepted output 6 before the change and
+output 4 after. A hostile assembler can still splice the event elsewhere.
 
 ### 4.14 Checkpoint after the security round, measured at `05412a58`
 

@@ -1372,6 +1372,15 @@ export default class AstBuilder
     // Merge and sort by source position so function order matches source code
     const functions = [...concreteFunctions, ...abstractFunctions]
       .sort((a, b) => (a.location?.start.line ?? 0) - (b.location?.start.line ?? 0));
+    if (this.solidityImportCompat) {
+      const oldStyleConstructor = functions.find((fn) => fn.name === name);
+      if (oldStyleConstructor) {
+        throw new ParseError(
+          `Function '${oldStyleConstructor.name}' cannot have the same name as its contract`,
+          oldStyleConstructor.location!,
+        );
+      }
+    }
 
     // Extract optional fallback/receive
     const fallbackCtx = this.atMostOne(ctx.fallbackDefinition_list(), 'fallback function', ctx);

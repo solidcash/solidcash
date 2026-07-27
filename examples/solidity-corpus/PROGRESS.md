@@ -4757,3 +4757,13 @@ The focused suite is **915/915**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **918/918**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 564, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Function-context restriction loop: 4443 flat, NEG-ACCEPTED 564 -> 561 (-3)
+
+- Functions can no longer reuse their containing contract's name in Solidity compatibility mode.
+- Concrete constructors reject internal function-pointer parameters, while abstract constructors retain
+  Solidity's deferral exception.
+- `msg.data` rejects inside `receive()` but remains available inside `fallback()`.
+
+The focused suite is **922/922**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+561, plus 275 multifile and 289 cmdline fixtures excluded.

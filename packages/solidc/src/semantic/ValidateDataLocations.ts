@@ -1,5 +1,5 @@
 import {
-  ArrayType, BytesType, MappingType, PrimitiveType, StructType, Type,
+  ArrayType, BytesType, FunctionType, MappingType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
   AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionDefinitionNode,
@@ -139,6 +139,16 @@ export default class ValidateDataLocations extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.validateFunctionModifiers(node);
     const isConstructor = node.name === '__construct';
+    if (this.solidityImportCompat && isConstructor && !this.currentContractIsAbstract) {
+      const internalPointer = node.parameters.find((parameter) =>
+        parameter.type instanceof FunctionType && !parameter.type.isExternal);
+      if (internalPointer) {
+        throw new InvalidDataLocationError(
+          internalPointer,
+          'Internal function type is not allowed in a concrete constructor parameter',
+        );
+      }
+    }
     // File-level and library-inline functions are internal unless explicitly made public/external. The generic
     // AST visibility getter defaults an unmarked function to public because that is correct for contract members.
     const visibility = node.isFreeFunction
@@ -172,6 +182,14 @@ export default class ValidateDataLocations extends AstTraversal {
     this.calldataLocals = previousCalldataLocals;
     this.initializedCalldataLocals = previousInitializedCalldataLocals;
     return node;
+  }
+
+  visitNullaryOp(node: NullaryOpNode): Node {
+    if (this.solidityImportCompat && this.currentFunction?.isReceive
+      && node.operator === NullaryOperator.MSG_DATA) {
+      throw new InvalidDataLocationError(node, "'msg.data' cannot be used inside a receive function");
+    }
+    return super.visitNullaryOp(node);
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {

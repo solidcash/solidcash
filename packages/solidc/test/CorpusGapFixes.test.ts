@@ -111,6 +111,31 @@ describe('constructor-list invocation compatibility', () => {
   });
 });
 
+describe('Solidity function-context restrictions', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects a function with the same name as its contract', () => {
+    expect(() => cc('contract A { function A() public {} }'))
+      .toThrow(/cannot have the same name as its contract/i);
+  });
+
+  it('rejects internal function-pointer parameters on concrete constructors', () => {
+    expect(() => cc('contract A { constructor(function() internal callback) {} }'))
+      .toThrow(/internal function type is not allowed in a concrete constructor/i);
+  });
+
+  it('allows an internal function-pointer parameter on an abstract constructor', () => {
+    expect(cc('abstract contract A { constructor(function() internal callback) {} }')).toBe('A');
+  });
+
+  it('rejects msg.data inside receive while retaining it in fallback', () => {
+    expect(() => cc('contract C { receive() external payable { msg.data; } }'))
+      .toThrow(/msg\.data.*cannot be used inside a receive/i);
+    expect(cc('contract C { fallback() external { msg.data; } }')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

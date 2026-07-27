@@ -5,7 +5,7 @@ import {
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, TransactionBuilder, layer3,
+  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { randomUtxo } from '../../src/utils.js';
@@ -129,6 +129,25 @@ type Hostile =
   /** The ordinary event NFT is sent somewhere other than its event covenant. */
   | 'event';
 
+/**
+ * Ordinary BCH-2026 capacity, for the F1-style measurement below. Two deliberate deviations, both stated:
+ * relay dust stays disabled (dust is standard policy, not consensus, and this fixture pays a 10-satoshi
+ * compiled satoshi effect), and the hash-iteration allowance is 3 rather than the 3.5 nonstandard consensus
+ * figure, because the mock feeds one integer to both the standard and nonstandard knobs. Passing under 3 is
+ * therefore conservative on that axis; failing under it would be inconclusive.
+ */
+const createOrdinaryCapacityProvider = (): MockNetworkProvider => new MockNetworkProvider({
+  consensusLimits: {
+    maximumInputBytes: 10_000,
+    maximumStackItemBytes: 10_000,
+    maximumTransactionBytes: 1_000_000,
+    maximumNftCommitmentBytes: 128,
+    operationCostBudgetPerByte: 800,
+    hashDigestIterationsPerByte: 3,
+  },
+  policy: { enforceDust: false },
+});
+
 interface BuiltC1 {
   provider: ReturnType<typeof createLayer3SemanticTestProvider>;
   transaction: string;
@@ -142,8 +161,11 @@ interface BuiltC1 {
   eventCommitment: string;
 }
 
-async function buildC1(hostile: Hostile = 'none'): Promise<BuiltC1> {
-  const provider = createLayer3SemanticTestProvider();
+async function buildC1(
+  hostile: Hostile = 'none',
+  createProvider: () => MockNetworkProvider = createLayer3SemanticTestProvider,
+): Promise<BuiltC1> {
+  const provider = createProvider();
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
   const controller = new Contract(
     compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [alicePkh], { provider },
@@ -559,10 +581,13 @@ describe('C1 DeFi integrated semantic capstone', () => {
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 180_000);
 
+  // Each substitution is refused by the covenant that owns the substituted field, not by the controller:
+  // caller/allowance by the Token master route (19), result by the Vault master route (26), the
+  // result-dependent continuation by the Accrue master route (24), resource/event by the Router route (0).
   it.each([
     { hostile: 'caller' as const, input: 19 },
     { hostile: 'allowance' as const, input: 19 },
-    { hostile: 'result' as const, input: 33 },
+    { hostile: 'result' as const, input: 26 },
     { hostile: 'continuation' as const, input: 24 },
     { hostile: 'resource' as const, input: 0 },
     { hostile: 'event' as const, input: 0 },
@@ -584,10 +609,124 @@ describe('C1 DeFi integrated semantic capstone', () => {
 
   it('MEASURED: reports the honest input sizes on the relaxed semantic profile', async () => {
     const built = await buildC1();
-    // SEMANTIC profile only: these are recorded, not asserted against the 10,000-byte consensus input limit.
+    // SEMANTIC profile only. Recorded, not claimed: both happen to sit under the ordinary 10,000-byte input
+    // limit, but this profile does not measure that limit - the next test does.
     // eslint-disable-next-line no-console
     console.log(`C1 router input ${built.routerInputBytes} bytes, token input ${built.tokenInputBytes} bytes`);
-    expect(built.routerInputBytes).toBeGreaterThan(0);
-    expect(built.tokenInputBytes).toBeGreaterThan(0);
+    expect(built.routerInputBytes).toBeLessThan(10_000);
+    expect(built.tokenInputBytes).toBeLessThan(10_000);
   }, 180_000);
+
+  it('MEASURED: the same composition under ordinary BCH-2026 capacity does NOT fit yet', async () => {
+    // An F1-style capacity measurement, NOT a CONSENSUS_FIT or POLICY_FIT claim: only the consensus capacity
+    // knobs the semantic profile relaxes are restored. Relay dust and standard transaction size are untested.
+    // Per the profile doc, a semantic pass with an ordinary-capacity failure is a production-fitting problem,
+    // not a semantic failure - which is exactly what this records.
+    const built = await buildC1('none', createOrdinaryCapacityProvider);
+    const outcome = preflightOutcome(built);
+    const broadcast = await built.provider.sendRawTransaction(built.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    // eslint-disable-next-line no-console
+    console.log(`C1 under ordinary BCH-2026 capacity: preflight=${outcome} broadcast=${broadcast}`);
+    // The blocker is NOT participant script size: both compiled participant inputs measure under 10,000 bytes
+    // above. It is operation-cost density on input 29, the FIRST graph projection proof, whose unlocking
+    // bytecode is mostly the transcript blob and so buys a small density budget for a long verification loop.
+    expect(outcome).toContain('preflight failed at input 29');
+    expect(outcome).toContain('exceed the operation cost density limit');
+    expect(broadcast).toContain('error in evaluating input index 29');
+    // Recorded because it is marginal: the honest evaluation overruns the budget by well under 0.1%.
+    const [, maximum, cost] = outcome.match(/Maximum operation cost: (\d+).*following operation: (\d+)/)!;
+    expect(Number(cost) - Number(maximum)).toBeLessThan(Number(maximum) / 1000);
+  }, 180_000);
+});
+
+/**
+ * Why C1 is a tree with one returning leaf rather than one router fanning out to everything.
+ *
+ * These three shapes are refused today. They are pinned as the boundary the capstone was designed around, not
+ * as desired behavior: the first two are named refusals with remedies, the third is an internal error.
+ */
+describe('C1 admissibility boundaries the composition was shaped around', () => {
+  const boundaryOptions = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
+    experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+  };
+  const rejectionOf = (source: string): string => {
+    const artifact = compileString(source, boundaryOptions);
+    expect(artifact.hiddenBatch).toBeUndefined();
+    const diagnostic = (artifact.diagnostics ?? [])
+      .find((entry: any) => entry.code === 'hidden-batch-route-not-synthesized');
+    expect(diagnostic).toBeDefined();
+    return diagnostic!.message;
+  };
+
+  it('BOUNDARY: a returning handler that also makes an outgoing call is refused by name', () => {
+    const message = rejectionOf(`pragma solidcash >=0.8.0;
+interface IC1Token { function transferFrom(bytes20 from, bytes20 to, bigint amount); }
+contract C1VaultCalling(address token) {
+  bigint elastic;
+  function deposit(bytes20 from, bytes20 to, bigint amount) public returns (bigint) {
+    this.elastic = this.elastic + amount;
+    IC1Token(token).transferFrom(from, to, amount);
+    require(amount > 0);
+    return amount * 2;
+  }
+}`);
+    expect(message).toContain('batched-handler-forward-call-not-enabled');
+    // This is why the Vault is a leaf and the Token hangs off the Router instead.
+    expect(message).toContain('move the call into its own handler');
+  });
+
+  it('BOUNDARY: a returning handler that also carries an effect is refused by name', () => {
+    const message = rejectionOf(`pragma solidcash >=0.8.0;
+contract C1VaultEmitting() {
+  bigint elastic;
+  event Deposited(bigint amount);
+  function deposit(bigint amount) public returns (bigint) {
+    this.elastic = this.elastic + amount;
+    emit Deposited(amount);
+    require(amount > 0);
+    return amount * 2;
+  }
+}`);
+    expect(message).toContain('result-route-requires-effect-free-handlers');
+    // This is why the event NFT is emitted by the Router and not by the returning Vault.
+    expect(message).toContain('split the return and the effect into two handlers');
+  });
+
+  it('GAP: a handler that CONSUMES a result and carries an effect fails with an internal error', () => {
+    // Unlike the two boundaries above, this shape produces no named refusal and no diagnostic channel entry:
+    // code generation throws its own internal message. Reported, not endorsed.
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+interface IC1Vault { function deposit(bigint amount) returns (bigint); }
+contract C1AccrueEmitting(address vault) {
+  bigint collateral;
+  event Accrued(bigint shares);
+  function accrue(bigint amount) public {
+    bigint shares = IC1Vault(vault).deposit(amount);
+    this.collateral = this.collateral + shares;
+    emit Accrued(shares);
+    require(shares >= 0);
+  }
+}`, boundaryOptions)).toThrow(/Unbound return call in __scb1/);
+  });
+
+  it('BOUNDARY: a handler may not consume a result alongside any second edge', () => {
+    // Broader than result fan-in (board task X3): a returning edge may not share a handler with ANY other edge,
+    // which is why the Router reaches the Vault through Accrue rather than calling it directly.
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+interface IC1Vault { function deposit(bigint amount) returns (bigint); }
+interface IC1Accrue { function accrue(bigint amount); }
+contract C1RouterDirect(address vault, address accrue) {
+  bigint settled;
+  function settle(bigint amount) public {
+    bigint shares = IC1Vault(vault).deposit(amount);
+    IC1Accrue(accrue).accrue(shares);
+    this.settled = this.settled + shares;
+    require(shares >= 0);
+  }
+}`, boundaryOptions)).toThrow(/requires call\/staticcall edges and at most one returning call/);
+  });
 });

@@ -548,6 +548,49 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
       await expect(provider.sendRawTransaction(transaction))
         .rejects.toThrow(/mandatory-script-verify-flag-failed/);
     });
+
+    /**
+     * X19. `balances[to] = ...` and `this.balances[to] = ...` denote the same write. The bare spelling - the
+     * one Solidity source actually uses - parses as an ArrayAssign until symbol resolution decides
+     * state-vs-local, so several pre-semantic node-type matches saw only the dotted spelling.
+     *
+     * The two settling mint cases above are themselves X19 evidence: the dotted read-modify-write now takes
+     * the read-once/mutate-local/write-once C2 entry cache that the bare spelling has always taken, so their
+     * emitted covenant changed. They still settle, and their hostile variants still fail.
+     */
+    const BARE_MINT = MINT.replace('MintTarget', 'BareMintTarget').replace(/this\./g, '');
+
+    it('compiles both spellings of the same mint to a byte-identical direct-route artifact', () => {
+      const dotted = MINT.replace('MintTarget', 'BareMintTarget');
+      const a = compileString(dotted, { forceStateful: true });
+      const b = compileString(BARE_MINT, { forceStateful: true });
+      expect(b.bytecode).toBe(a.bytecode);
+      expect(JSON.stringify(b.abi)).toBe(JSON.stringify(a.abi));
+    }, 30_000);
+
+    /**
+     * OPEN: the bare spelling reaches the BATCH route with no SCB1 route at all, where the dotted spelling
+     * gets one. It used to fail there outright, with the internal
+     * `Function '__scb1' writes a resource at entry slot 0 that has no entry descriptor`; the footprint fix
+     * removed that, and the X15 diagnostic now names the absence instead of it being silent. But the two
+     * spellings still disagree.
+     *
+     * Remaining cause: hidden-batch eligibility builds its `directKeys` set by walking
+     * `MappingAccess|MappingAssign|MappingDelete` only (compiler.ts), so a bare write contributes no direct
+     * key and the handler is rejected `collection-helper-route-not-enabled`. That site is in a file leased
+     * elsewhere, so this is pinned rather than fixed. `delete m[k]` already agrees in both spellings.
+     */
+    it('OPEN: the bare-spelled mapping write still gets no SCB1 route, but is now diagnosed', () => {
+      const batch = { forceStateful: true, experimentalHiddenBatch: true };
+      expect(compileString(MINT.replace('MintTarget', 'BareMintTarget'), batch).hiddenBatch).toBeDefined();
+      const bare = compileString(BARE_MINT, batch);
+      expect(bare.hiddenBatch).toBeUndefined();
+      expect(bare.diagnostics).toContainEqual(expect.objectContaining({
+        severity: 'error',
+        code: 'hidden-batch-route-not-synthesized',
+        message: expect.stringContaining("'mint': collection-helper-route-not-enabled"),
+      }));
+    }, 30_000);
   });
 
   describe('control flow', () => {

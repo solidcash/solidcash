@@ -1,7 +1,7 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  ContractNode, FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, Node,
+  ContractNode, FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, Node, VariableDefinitionNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -84,6 +84,7 @@ export function analyseFunctionFootprint(
   const result = { unknown: false };
   for (const name of collectNamedFunctionClosure(fn, byName)) {
     for (const candidate of byName.get(name) ?? []) {
+      const locallyBound = locallyBoundNames(candidate);
       walkInvocationAst(candidate.body, (node) => {
         const kind = node.constructor.name;
         const shaped = node as unknown as { name?: string; keys?: Node[] };
@@ -97,6 +98,16 @@ export function analyseFunctionFootprint(
           writes.add(`state:${resourceName}`);
         } else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
           .test(kind) && collectionResource) {
+          writes.add(collectionResource);
+        // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
+        // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
+        // parser). This analysis runs BOTH before and after that resolution, so omitting the bare forms made one
+        // spelling of the same write invisible to every pre-semantic caller - notably the hidden-batch route's
+        // synthesis point, which then produced a route carrying a write it had reserved no entry descriptor for.
+        // A name bound locally in this function is a LOCAL array element write and stays out of the footprint;
+        // the same test is what symbol resolution later applies to choose MappingAssign over ArrayAssign.
+        } else if (/^(ArrayAssign|ArrayDelete)/.test(kind) && collectionResource
+          && resourceName && !locallyBound.has(resourceName)) {
           writes.add(collectionResource);
         } else if (kind === 'EmitStatementNode') effects.add('events');
         else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') effects.add('value');
@@ -112,6 +123,15 @@ export function analyseFunctionFootprint(
     effects: [...effects].sort(),
     ...result,
   };
+}
+
+/** Parameter and local-declaration names bound inside one function - never a contract collection. */
+function locallyBoundNames(fn: FunctionDefinitionNode): Set<string> {
+  const names = new Set<string>(fn.parameters.map((parameter) => parameter.name));
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof VariableDefinitionNode) names.add(node.name);
+  });
+  return names;
 }
 
 export function collectionResourceName(name: string, keys: Node[] | undefined): string {

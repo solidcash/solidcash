@@ -11,10 +11,14 @@ It can be difficult to fully grasp the intricacies of time locks, so if you're s
 ### tx.time
 `tx.time` is used to create an *absolute* time lock on the transaction. The value of `tx.time` can either represent the block number of the spending transaction or its timestamp. When comparing it with values below `500,000,000`, it is treated as a blocknumber, while higher values are treated as a timestamp.
 
-`tx.time` corresponds to the `nLocktime` field of the current transaction using the `OP_CHECKLOCKTIMEVERIFY` opcode. Because of this `tx.time` can only be used in the following way:
+`tx.time` corresponds to the `nLocktime` field of the current transaction using the `OP_CHECKLOCKTIMEVERIFY` opcode. Because of this, `tx.time` may only appear in one form: as the left-hand side of a `>=` inside `require`.
 
 ```solidity
-require(tx.time >= <expression>);
+contract Locked(int expiration) {
+    function claim() {
+        require(tx.time >= expiration);
+    }
+}
 ```
 
 :::note
@@ -26,10 +30,14 @@ Because of the way time locks work, **a corresponding time lock needs to be adde
 ### this.age
 `this.age` is used to create a *relative* time lock on a UTXO. The value of `this.age` can either represent a number of blocks, or a number of *chunks*, which are 512 seconds. The corresponding *transaction level* time lock determines which of the two options is used.
 
-`this.age` corresponds to the `nSequence` field of the current evaluated *UTXO* using the `OP_CHECKSEQUENCEVERIFY` opcode. Because of this `this.age` can only be used in the following way:
+`this.age` corresponds to the `nSequence` field of the current evaluated *UTXO* using the `OP_CHECKSEQUENCEVERIFY` opcode. Because of this, `this.age` may only appear in one form: as the left-hand side of a `>=` inside `require`.
 
 ```solidity
-require(this.age >= <expression>);
+contract Matured(int minAge) {
+    function claim() {
+        require(this.age >= minAge);
+    }
+}
 ```
 
 :::note
@@ -205,10 +213,14 @@ One of the main use cases of covenants is enforcing transaction outputs (where m
 
 #### Example
 ```solidity
-bytes25 lockingBytecode = new LockingBytecodeP2PKH(pkh);
-int value = 10_000;
-require(tx.outputs[0].lockingBytecode == lockingBytecode);
-require(tx.outputs[0].value == value);
+contract PinnedOutput(bytes20 pkh) {
+    function spend() {
+        bytes25 lockingBytecode = new LockingBytecodeP2PKH(pkh);
+        int value = 10_000;
+        require(tx.outputs[0].lockingBytecode == lockingBytecode);
+        require(tx.outputs[0].value == value);
+    }
+}
 ```
 
 ### LockingBytecodeP2PKH

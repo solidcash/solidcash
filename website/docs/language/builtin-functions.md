@@ -108,13 +108,18 @@ All signature checking functions must comply with the [NULLFAIL][bip146] rule wh
 The `NULLFAIL` rule means passing an invalid signature to `checkSig()` does not return `false` — it fails the script. To safely return `false` on a signature check, use an empty `0x` signature instead, as shown below:
 
 ```solidity
-// this script will immediately fail
-// because userSig will be invalid for either the 'seller' or the 'referee'
-require(checkSig(userSig, seller) || checkSig(userSig, referee));
+contract Escrow(pubkey seller, pubkey referee) {
+    // This would immediately fail: userSig is invalid for whichever key it
+    // does not match, and a non-empty invalid signature aborts the script.
+    //
+    //   require(checkSig(userSig, seller) || checkSig(userSig, referee));
 
-// instead, use 2 different signatures
-// set the unused signature to 0x so 'checkSig' returns false
-require(checkSig(sellerSig, seller) || checkSig(userSig, referee));
+    // Instead take two signatures, and pass 0x for the unused one so that
+    // checkSig returns false rather than aborting.
+    function release(sig sellerSig, sig refereeSig) {
+        require(checkSig(sellerSig, seller) || checkSig(refereeSig, referee));
+    }
+}
 ```
 
 ### checkSig()

@@ -130,6 +130,12 @@ Enums can be file-level or contract-level. File-level enums are importable:
 import { Status } from "./enums.scash";
 ```
 
+:::caution
+An imported enum can currently only be used as a **value** (`Status.ACTIVE`, `int(Status.ACTIVE)`), not as a
+**type annotation**. `Status s = Status.ACTIVE;` on an imported enum fails to resolve the type. Declare the
+enum in the same file when you need to annotate a variable with it.
+:::
+
 ## User-Defined Value Types (UDVT)
 
 Type aliases create zero-cost semantic wrappers around existing types:

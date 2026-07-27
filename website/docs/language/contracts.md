@@ -25,7 +25,10 @@ For non-stateful contracts, the constructor parameters are specified directly on
 pragma solidcash ^0.13.0;
 
 contract HTLC(pubkey sender, pubkey recipient, int expiration, bytes32 hash) {
-    ...
+    function reveal(bytes secret, sig recipientSig) {
+        require(sha256(secret) == hash);
+        require(checkSig(recipientSig, recipient));
+    }
 }
 ```
 
@@ -62,11 +65,12 @@ pragma solidcash ^0.13.0;
 
 contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     function transfer(sig recipientSig) {
-        ...
+        require(checkSig(recipientSig, recipient));
     }
 
     function timeout(sig senderSig) {
-        ...
+        require(checkSig(senderSig, sender));
+        require(tx.time >= timeout);
     }
 }
 ```
@@ -134,12 +138,20 @@ compound assignment operators, as well as prefix and postfix increment and decre
 
 #### Example
 ```solidity
-i = i + 1;
-i += 1;
-i++;
-++i;
-hashedValue = sha256(hashedValue);
-myString = 'Cash';
+contract Assignments() {
+    function demo(int i, bytes32 hashedValue) {
+        string myString = 'Bitcoin Cash';
+
+        i = i + 1;
+        i += 1;
+        i++;
+        ++i;
+        hashedValue = sha256(hashedValue);
+        myString = 'Cash';
+
+        require(i > 0 && hashedValue != 0x && myString.length == 4);
+    }
+}
 ```
 
 The available compound assignment operators are `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=` and

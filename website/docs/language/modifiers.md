@@ -47,13 +47,23 @@ modifier logged(string label) {
 Modifiers accept parameters just like functions. Use different parameter names than the function to avoid `VariableRedefinitionError`:
 
 ```solidity
-modifier charged(int fee) {
-    require(msg.value >= fee);
-    _;
-}
+contract Fees(pubkey owner) {
+    int handled;
 
-function doSomething(int amount, sig s) charged(100) onlyOwner(s) {
-    // ...
+    modifier onlyOwner(sig ownerSig) {
+        require(checkSig(ownerSig, owner));
+        _;
+    }
+
+    modifier charged(int fee) {
+        require(msg.value >= fee);
+        _;
+    }
+
+    function doSomething(int amount, sig s) public charged(100) onlyOwner(s) {
+        require(amount > 0);
+        this.handled += 1;
+    }
 }
 ```
 

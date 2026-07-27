@@ -51,9 +51,14 @@ contract Config() {
 State variables are accessed and modified using the `this.` prefix.
 
 ```solidity
-function increment() {
-    this.counter = this.counter + 1;
-    this.owner = hash160(bytes(msg.sender));
+contract Counter() {
+    int counter;
+    bytes20 owner;
+
+    function increment() public {
+        this.counter = this.counter + 1;
+        this.owner = hash160(bytes(msg.sender));
+    }
 }
 ```
 
@@ -120,7 +125,13 @@ function approve(bytes20 owner, bytes32 spender, int amount) {
 ### Deleting Entries
 
 ```solidity
-delete this.balances[account];
+contract Ledger() {
+    mapping(bytes20 => int) balances;
+
+    function clear(bytes20 account) public {
+        delete this.balances[account];
+    }
+}
 ```
 
 This removes the entry NFT for the given key.

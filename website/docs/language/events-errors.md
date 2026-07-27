@@ -143,9 +143,13 @@ contract Ledger() {
 ### Revert Variants
 
 ```solidity
-revert InsufficientBalance(100, 50);  // structured error with args
-revert("Not enough funds");            // string message
-revert();                               // no data
+error InsufficientBalance(int requested, int available);
+
+contract RevertForms() {
+    function structured() { revert InsufficientBalance(100, 50); }  // error with args
+    function withMessage() { revert("Not enough funds"); }          // string message
+    function bare() { revert(); }                                   // no data
+}
 ```
 
 ## Assert
@@ -153,7 +157,14 @@ revert();                               // no data
 Assert checks internal invariants that should never be false:
 
 ```solidity
-assert(totalSupply >= 0);
+contract Invariant() {
+    int totalSupply;
+
+    function check() public {
+        assert(this.totalSupply >= 0);
+        this.totalSupply += 1;
+    }
+}
 ```
 
 If the assertion fails, the transaction is aborted.
@@ -163,8 +174,12 @@ If the assertion fails, the transaction is aborted.
 The `require` statement is the primary validation mechanism. An optional second argument provides an error message:
 
 ```solidity
-require(amount > 0, "Amount must be positive");
-require(checkSig(s, owner));
+contract Guarded(pubkey owner) {
+    function withdraw(int amount, sig s) {
+        require(amount > 0, "Amount must be positive");
+        require(checkSig(s, owner));
+    }
+}
 ```
 
 :::note

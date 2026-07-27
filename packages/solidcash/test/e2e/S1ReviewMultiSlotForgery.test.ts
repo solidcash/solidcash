@@ -24,6 +24,14 @@ import {
  * These cases are read as: the first two `it` blocks prove the count is tight where it IS emitted; the two
  * `it.fails` blocks pin the OPEN defect where it is not. `it.fails` asserts the body currently throws, so the
  * assertion inside each is the CORRECT expectation - when the defect is fixed these go red and must become `it`.
+ *
+ * CLOSED. The guard now keys off what the other slots of the same collection contribute rather than on how many
+ * slots they own: a pure read co-spends one node and recreates it, so it adds exactly one to the expected count,
+ * and only a loop, alias or second written slot still suppresses the pin. The three cases below were converted
+ * from `it.fails` to `it` exactly as this comment instructed, with their assertions kept or strengthened. The
+ * severity case can no longer reach its original premise - the forged node cannot be minted at all - so it now
+ * asserts the rejection and, as the control the severity claim rested on, that the unwritten key stays unreadable
+ * after the honest transaction settles.
  */
 
 const SOURCE = `contract S1ReviewMultiSlot {
@@ -146,29 +154,30 @@ describe('S1 review: collection-address output cardinality', () => {
     await expectAccepted(provider, hex);
   }, 120_000);
 
-  // OPEN DEFECT. Attacks unique authority over an unwritten key. The function reads m[FAR] and writes m[MID], so
-  // collection `m` owns two entry slots and the cardinality pin is suppressed; only the pinned output INDICES are
-  // checked. The appended node carries the contract's own category, the mutable entry capability and the
-  // collection entry address, so a later read authenticates it as genuine.
-  it.fails('OPEN: mints a node for an unwritten key alongside a multi-slot insert', async () => {
+  // Attacks unique authority over an unwritten key. The function reads m[FAR] and writes m[MID], so collection
+  // `m` owns two entry slots. The appended node carries the contract's own category, the mutable entry
+  // capability and the collection entry address, so before the fix a later read authenticated it as genuine.
+  it('rejects a node for an unwritten key alongside a multi-slot insert', async () => {
     const { provider, hex } = await capturedMultiSlot(MID.k);
     await expectCovenantRejection(provider, mutate(hex, (tx) => appendEntryOutput(
       tx, entryOutputIndices(tx)[0], encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
     )));
   }, 120_000);
 
-  // OPEN DEFECT, update arm: same suppression, expected count would have been 1.
-  it.fails('OPEN: mints a node for an unwritten key alongside a multi-slot update', async () => {
+  // Update arm: same shape, expected count 1 for the written slot plus 1 for the co-spent read slot.
+  it('rejects a node for an unwritten key alongside a multi-slot update', async () => {
     const { provider, hex } = await capturedMultiSlot(LOW.k);
     await expectCovenantRejection(provider, mutate(hex, (tx) => appendEntryOutput(
       tx, entryOutputIndices(tx)[0], encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
     )));
   }, 120_000);
 
-  // OPEN DEFECT, severity. The minted node is not merely a stray UTXO: `check(9999, 999)` is an ordinary read
-  // of a key the handler never wrote, and it settles, so the forged value is indistinguishable from genuine
-  // collection state. The assertion below - that such a read must NOT settle - is the correct expectation.
-  it.fails('OPEN: a later read authenticates the forged entry as genuine state', async () => {
+  // Severity, restated against the fixed behaviour. The original claim was that the minted node is not merely a
+  // stray UTXO: `check(9999, 999)` is an ordinary read of a key the handler never wrote and it settled, so the
+  // forged value was indistinguishable from genuine collection state. The forgery can no longer be minted, so
+  // this pins both halves - the mutated transaction is refused, and after the honest transaction settles the
+  // unwritten key is still not readable as state.
+  it('keeps an unwritten key unreadable: the forgery is refused and no node exists for it', async () => {
     const { provider, sc } = await deploy();
     await sc.getFunction('set')(FAR.k, 5n).send();
     await sc.getFunction('set')(LOW.k, 11n).send();
@@ -176,7 +185,8 @@ describe('S1 review: collection-address output cardinality', () => {
     const forged = mutate(hex, (tx) => appendEntryOutput(
       tx, entryOutputIndices(tx)[0], encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
     ));
-    await expectAccepted(provider, forged);
+    await expectCovenantRejection(provider, forged);
+    await expectAccepted(provider, hex);
     await expect(sc.getFunction('check')(9999n, 999n).send()).rejects.toThrow();
   }, 120_000);
 

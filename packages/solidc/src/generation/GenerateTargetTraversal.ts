@@ -13206,13 +13206,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // emitVerifyChunkUtxoCount; without it only the pinned output indices are checked, so the same transaction
     // could also mint extra nodes at this collection's entry address - a second node for the written key, or a
     // fabricated node for a key that was never written - which later reads would authenticate as genuine.
-    // Emitted only when this collection owns exactly one entry slot in the function, so the expected count is
-    // 1 (update) or 2 (predecessor + new node on insert) with no other slot to account for.
+    //
+    // This used to be emitted only when the collection owned exactly ONE entry slot in the function. That is too
+    // narrow: a slot is created by a READ as well as by a write, while the batch route is entered on the count of
+    // WRITES, so `m[a] = m[b] + 1` has two slots, one write, no batch verifier, and no pin - and both arms then
+    // accepted a fabricated node. Key off what the other slots actually contribute instead. A pure read co-spends
+    // one node and recreates it, so it adds exactly one output; a loop slot, an alias slot or a second written
+    // slot has no statically known count and still suppresses the pin.
+    const sameCollectionOthers = this.entrySlots.filter((info, index) =>
+      index !== slotIndex && info.collection === collection.name);
+    const otherCountsAreStatic = sameCollectionOthers.every((info) =>
+      !info.inLoop
+      && info.aliasCondDeleteSlot === undefined
+      && (info.runtimeAliasPriorSlots?.length ?? 0) === 0
+      && !info.operations.includes('write') && !info.operations.includes('delete'));
+    const extraCollectionOutputs = BigInt(sameCollectionOthers.length);
     const pinsCollectionOutputCount = !this.currentFunctionIsDelegate
       && aliasOwner === undefined && runtimeAliasOwners.length === 0
       && !this.entrySlots[slotIndex].inLoop
       && !this.sortedInsertLoopActive && !this.sortedUpsertLoopActive
-      && this.entrySlots.every((info, index) => index === slotIndex || info.collection !== collection.name);
+      && otherCountsAreStatic;
 
     // 3. entry address -> [v, Hk32, entryAddr]
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -13252,8 +13265,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEntryOutputIndex(slotIndex, loc, 6);                    // [.., coValue, outIdx]
       this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6);             // addr4, coSlot32 d3, coNext32 d2, v d6
     }
-    // One recreated node is the whole collection footprint of an update.
-    if (pinsCollectionOutputCount) this.emit(encodeInt(1n), loc);
+    // One recreated node, plus one per co-spent read slot, is the whole collection footprint of an update.
+    if (pinsCollectionOutputCount) this.emit(encodeInt(1n + extraCollectionOutputs), loc);
     this.emit(Op.OP_ELSE, loc);
     // --- INSERT: bracket coSlot < H(k) < coNext, then P' + NEW ---
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coSlot#
@@ -13291,8 +13304,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
     this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7);                  // NEW = Hk32 || coNext32 || v
     this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
-    // Predecessor plus new node is the whole collection footprint of an insert.
-    if (pinsCollectionOutputCount) this.emit(encodeInt(2n), loc);
+    // Predecessor plus new node, plus one per co-spent read slot, is the whole footprint of an insert.
+    if (pinsCollectionOutputCount) this.emit(encodeInt(2n + extraCollectionOutputs), loc);
     this.emit(Op.OP_ENDIF, loc);
     // [.., Hk32, entryAddr, coSlot32, coNext32, coValue, expected] - entryAddr is 4 below the expected count.
     if (pinsCollectionOutputCount) this.emitVerifySortedOutputCountRaw(4, loc);

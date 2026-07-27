@@ -3,6 +3,7 @@
 export * from './codec.js';
 export * from './contention.js';
 export * from './covenant.js';
+export * from './delegate.js';
 export * from './derive-native.js';
 export * from './graph.js';
 export * from './hidden-batch.js';

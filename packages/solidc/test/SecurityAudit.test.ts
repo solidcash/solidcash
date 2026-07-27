@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString as _csRawSolidc } from '../src/index.js';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { asmToBytecode, bytecodeToAsm } from '@solidcash/utils';
+import { compileString as _csRawSolidc, compileStringSplit } from '../src/index.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import * as Errors from '../src/Errors.js';
 
@@ -212,6 +214,175 @@ describe('C1/piece-5: a delegatecall must be reached at most once per path', () 
     expect(straight.bytecode).not.toContain(NOT_TAKEN_SIG);
     expect(straight.abi.find((fn) => fn.name === 'up')!.lowLevelCalls)
       .toEqual([{ callMode: 'delegatecall' }]);
+  });
+});
+
+// C1/piece-7 - `L.f()` library-call sugar and split-facet forwarders are COMPILER-SYNTHESIZED delegatecalls
+// (LowLevelCallStatementNode.synthesizedFromLibraryCall). Every rule above keyed off hasExplicitDelegatecall,
+// which excludes exactly those nodes, so pinsDelegateCoSpend was FALSE and the callsite emitted NO covenant at
+// all - while the per-function !functionHasDelegatecall gate still skipped the consumer's ENTIRE state covenant.
+// Measured live on the BCH-2026 VM in LibraryDelegate.test.ts: 0 -> 999 with a hostile library co-spent, and
+// 0 -> 999 with NO delegate co-spent at all.
+describe('C1/piece-7: a compiler-synthesized delegatecall pins its co-spend too', () => {
+  const ONE_FN_LIB = 'pragma solidcash >=0.8.0; library Counter { bigint count; '
+    + 'function increment() public { this.count = this.count + 1; } }';
+  const TWO_FN_LIB = 'pragma solidcash >=0.8.0; library Pair { bigint count; '
+    + 'function increment() public { this.count = this.count + 1; } '
+    + 'function wipe() public { this.count = 0; } }';
+  const resolverFor = (source: string, id: string) =>
+    (path: string): { source: string; id: string } | undefined =>
+      (path.includes(id) ? { source, id } : undefined);
+  const consumer = (body: string, lib = 'Counter', id = 'counter'): ReturnType<typeof compileString> =>
+    compileString(`pragma solidcash >=0.8.0; import { ${lib} } from "./${id}.scash"; ${body}`,
+      { importResolver: resolverFor(lib === 'Counter' ? ONE_FN_LIB : TWO_FN_LIB, id) });
+
+  /**
+   * The identity pin's opcode signature: the delegate input index is DERIVED from the reserved block slot
+   * (OP_INPUTINDEX + offset), then its UTXO bytecode is compared to the linked library address. An ordinary
+   * stateful contract never emits `OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`, so a hit is attributable to this pin.
+   */
+  const IDENTITY_PIN = 'OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY';
+  const SELECTOR_PIN = 'OP_INPUTBYTECODE OP_1 OP_SPLIT OP_NIP OP_OVER OP_SIZE OP_NIP OP_SPLIT OP_DROP OP_EQUALVERIFY';
+
+  it('emits the identity pin for a pure L.f() consumer', () => {
+    expect(consumer('contract C() { bigint count; function bump() { Counter.increment(); } }').bytecode)
+      .toContain(IDENTITY_PIN);
+  });
+
+  it('does not emit it for a stateful contract with no library call', () => {
+    const plain = compileString('pragma solidcash >=0.8.0; contract P() { bigint count; '
+      + 'function bump() external { this.count = this.count + 1; require(true); } }');
+    expect(plain.bytecode).not.toContain(IDENTITY_PIN);
+    expect(plain.bytecode).not.toContain(SELECTOR_PIN);
+  });
+
+  /**
+   * The selector half needs a selector to pin. A one-public-function library compiles to a single-entry-point
+   * contract whose unlocking script carries no leading selector - and with one function there is nothing for a
+   * caller to choose, so identity alone is the whole property. Two functions: both halves.
+   */
+  it('adds the selector pin only when the library is selector-dispatched', () => {
+    const one = consumer('contract C() { bigint count; function bump() { Counter.increment(); } }');
+    const two = consumer('contract C() { bigint count; function bump() { Pair.increment(); } }', 'Pair', 'pair');
+    expect(one.bytecode).toContain(IDENTITY_PIN);
+    expect(one.bytecode).not.toContain(SELECTOR_PIN);
+    expect(two.bytecode).toContain(IDENTITY_PIN);
+    expect(two.bytecode).toContain(SELECTOR_PIN);
+  });
+
+  /** The pin needs no witness: the index is derived, so the consumer's ABI is unchanged. */
+  it('adds no witness parameter to the consumer ABI', () => {
+    const art = consumer('contract C() { bigint count; function bump() { Counter.increment(); } }');
+    expect(art.abi.find((fn) => fn.name === 'bump')!.inputs).toEqual([]);
+    expect(JSON.stringify(art.abi)).not.toContain('__internal__delegateInputIndex');
+  });
+
+  /** Sibling rule, previously excluded with the pin: the consumer's own writes are never verified. */
+  it('refuses a self state-write alongside a library call', () => {
+    expect(() => consumer('contract C() { bigint count; '
+      + 'function bump() { Counter.increment(); this.count = 5; } }'))
+      .toThrow(/delegatecall and also writes contract state/);
+  });
+
+  /**
+   * Only a stateful ENTRY POINT reserves a delegate input slot, so a library call from an internal helper has
+   * nothing to pin to. On 05412a58 this compiled with `lowLevelCalls` undefined on the entry point - no slot, no
+   * pin, and no diagnostic. It now fails closed by name.
+   */
+  it('refuses a library call from a context with no reserved delegate slot', () => {
+    expect(() => consumer('contract C() { bigint count; '
+      + 'function helper() internal { Counter.increment(); } '
+      + 'function bump() { helper(); require(true); } }'))
+      .toThrow(/no reserved delegate input slot/);
+  });
+
+  /** Sibling rule: one reserved slot serves every iteration, so N source delegations settle as one. */
+  it('refuses a library call inside a loop by name', () => {
+    expect(() => consumer('contract C() { bigint count; '
+      + 'function bump() { for (int i = 0; i < 2; i = i + 1) { Counter.increment(); } require(true); } }'))
+      .toThrow(/issues delegatecall inside a loop.*settle as one/s);
+  });
+
+  /** A conditional library call is admitted and picks up the same not-taken-path covenant as piece-5. */
+  it('emits the not-taken-path covenant for a conditional library call', () => {
+    const conditional = consumer('contract C() { bigint count; '
+      + 'function bump(bool flag) { if (flag) { Counter.increment(); } require(true); } }');
+    expect(conditional.bytecode).toContain('OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY');
+  });
+
+  /**
+   * The OTHER synthesized form: a split root's facet forwarder. Its body is fully outlined into OP_DEFINE'd
+   * spans that are PUSHED AS DATA, so opcode-name grepping cannot see inside them - search the assembled
+   * BYTES instead (`93 c7 88` = OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY, the derived identity pin).
+   */
+  it('pins the facet co-spend in a split root forwarder', () => {
+    const bundle = compileStringSplit(`pragma solidcash >=0.8.0;
+      contract SplitCounter() { int a; int b;
+        function bumpA(int n) public { this.a = this.a + n; require(n >= 0); }
+        function bumpB(int n) public { this.b = this.b + n; require(n >= 0); } }`, { forceSplit: true });
+    const bytes = binToHex(asmToBytecode(bundle.root.bytecode))
+      + Object.values(bundle.root.functionBodies ?? {}).join('');
+    expect(bytes).toContain('93c788');
+  });
+});
+
+// X16 - the SCB1 route / graph-handler exclusion in C1/piece-5. Those routes loop by design and derive a
+// delegate index per ROW, so extending the reachability rules into them broke five of their tests; they were
+// excluded. This block pins WHY that exclusion is safe for an ordinary entry point in the same contract,
+// because "excluded" on its own reads like "unprotected".
+//
+// It also pins a MEASUREMENT TRAP that made this look like a live gap on first inspection: a message-bus
+// artifact publishes the dispatcher in `bytecode` and each function body as HEX in `functionBodies`, so
+// grepping ASM in `bytecode` finds no covenant for ANY function and says nothing at all.
+describe('X16: the graph-mode exclusion does not disarm an ordinary entry point', () => {
+  const graphOptions = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+    experimentalMessageBusControllerCategory: '22'.repeat(32),
+  };
+  const CONDITIONAL = `pragma solidcash >=0.8.0;
+    contract GraphDelegateProxy(address impl) { bigint counter;
+      function run(bytes input, bool flag) public {
+        if (flag) { impl.delegatecall(input); } require(input.length > 0); } }`;
+  const STRAIGHT = `pragma solidcash >=0.8.0;
+    contract GraphDelegateProxy(address impl) { bigint counter;
+      function run(bytes input) public { impl.delegatecall(input); require(input.length > 0); } }`;
+  const NOT_TAKEN_SIG = 'OP_OUTPUTTOKENCOMMITMENT OP_EQUAL OP_OVER OP_OUTPUTTOKENCATEGORY';
+
+  const bodyAsm = (artifact: ReturnType<typeof compileString>, selector: string): string =>
+    bytecodeToAsm(hexToBin(artifact.functionBodies![selector]!));
+  const selectorOf = (artifact: ReturnType<typeof compileString>, name: string): string =>
+    artifact.abi.find((fn) => fn.name === name)!.selector!;
+
+  it('keeps the not-taken-path covenant on the source entry point under graph options', () => {
+    const graph = compileString(CONDITIONAL, graphOptions);
+    // The trap: the dispatcher carries no covenant opcodes at all, for any function.
+    expect(graph.bytecode).not.toContain(NOT_TAKEN_SIG);
+    // The body does.
+    expect(bodyAsm(graph, selectorOf(graph, 'run'))).toContain(NOT_TAKEN_SIG);
+  });
+
+  it('emits no not-taken covenant for the straight-line shape, in either mode', () => {
+    const graph = compileString(STRAIGHT, graphOptions);
+    expect(bodyAsm(graph, selectorOf(graph, 'run'))).not.toContain(NOT_TAKEN_SIG);
+    expect(bodyAsm(graph, selectorOf(graph, 'run'))).toContain('OP_UTXOBYTECODE OP_EQUALVERIFY');
+    expect(compileString(STRAIGHT).bytecode).not.toContain(NOT_TAKEN_SIG);
+  });
+
+  /**
+   * The route itself issues no delegatecall (it OP_INVOKEs handlers), so `functionHasDelegatecall` is false for
+   * it and it never skips its own state covenant - which is the exact precondition the piece-5 forgery needed.
+   * A state-WRITING batch contract with a delegate row does not compile at all: the route inlines the row
+   * bodies, so it has both a delegatecall and a state write and rule B rejects it. Same on 05412a58.
+   */
+  it('rejects a delegate row in a state-writing batch contract by name', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract BatchCounter(address impl) { int counter;
+        function add(int n) public { this.counter = this.counter + n; require(n >= 0); }
+        function run(bytes input) public { impl.delegatecall(input); require(input.length > 0); }
+        function signed(sig s, pubkey pk) public { require(checkSig(s, pk)); } }`, graphOptions))
+      .toThrow(/__scb1.*delegatecall and also writes contract state/s);
   });
 });
 

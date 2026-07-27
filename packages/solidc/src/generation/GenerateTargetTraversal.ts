@@ -12343,17 +12343,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.currentFunction.pinsDelegateCoSpend) {
         // (a) IDENTITY: the delegate at delegateInputIndex is the contract at impl.
         this.visit(node.targetExpression);           // [impl]
-        if (this.currentFunction.graphEmissionHandler) {
-          const nftCount = this.currentFunction.requiredNftIndices?.length
-            ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
-          this.emitMasterInputIndex(locationData);
-          this.emit(encodeInt(BigInt(1 + nftCount + node.callIndex)), locationData);
-          this.emit(Op.OP_ADD, locationData);
-        } else {
-          const idx = this.getStackIndex('__internal__delegateInputIndex');
-          this.emit(encodeInt(BigInt(idx)), locationData);
-          this.emit(Op.OP_PICK, locationData);
-        }                                           // [impl, delegateIdx]
+        this.emitDelegateInputIndex(node, locationData);
+        // Real stack: [impl, delegateIdx]
         this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
         this.emit(Op.OP_EQUALVERIFY, locationData);  // []
         this.popFromStack();                         // untrack impl
@@ -12361,29 +12352,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // (b) SELECTOR: the delegate's unlocking bytecode leads with the forwarded calldata (`input`), so a
         // co-spent-but-wrong delegate FUNCTION can't slip past the identity pin. Mirrors emitLowLevelCall-
         // Verification: skip the push-opcode byte, then compare the next |input| bytes against `input`.
-        this.visit(node.data);                       // [input]
-        if (this.currentFunction.graphEmissionHandler) {
-          const nftCount = this.currentFunction.requiredNftIndices?.length
-            ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
-          this.emitMasterInputIndex(locationData);
-          this.emit(encodeInt(BigInt(1 + nftCount + node.callIndex)), locationData);
-          this.emit(Op.OP_ADD, locationData);
-        } else {
-          const idx = this.getStackIndex('__internal__delegateInputIndex');
-          this.emit(encodeInt(BigInt(idx)), locationData);
-          this.emit(Op.OP_PICK, locationData);
-        }                                           // [input, delegateIdx]
-        this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
-        this.emit(encodeInt(1n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
-        this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest]
-        this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
-        this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
-        this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]
-        this.emit(Op.OP_SPLIT, locationData);        // [input, payload, remaining]
-        this.emit(Op.OP_DROP, locationData);         // [input, payload]
-        this.emit(Op.OP_EQUALVERIFY, locationData);  // []
-        this.popFromStack();                         // untrack input
+        // C1/piece-7: skipped for a single-public-function library. Such a library compiles to a contract with
+        // one entry point, whose unlocking script carries NO leading selector - and with one function there is
+        // nothing for a caller to choose, so the identity pin alone is the whole property.
+        const singleFunctionLibrary = node.synthesizedFromLibraryCall && !node.librarySelectorDispatched;
+        if (!singleFunctionLibrary) {
+          this.visit(node.data);                       // [input]
+          this.emitDelegateInputIndex(node, locationData);
+          // Real stack: [input, delegateIdx]
+          this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
+          this.emit(encodeInt(1n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
+          this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest]
+          this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
+          this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
+          this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]
+          this.emit(Op.OP_SPLIT, locationData);        // [input, payload, remaining]
+          this.emit(Op.OP_DROP, locationData);         // [input, payload]
+          this.emit(Op.OP_EQUALVERIFY, locationData);  // []
+          this.popFromStack();                         // untrack input
+        }
       }
       this.markDelegateEdgeReached(node);
     } else {
@@ -12392,6 +12380,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
     }
     return node;
+  }
+
+  /**
+   * Push the input index the delegate co-spend pin reads. Three sources, in order of preference:
+   *  - a graph clone/route derives it from its OWN per-row block slot;
+   *  - a compiler-synthesized callsite (`L.f()` sugar, split forwarder) derives it from this function's reserved
+   *    `lowLevelCall` block slot - it takes no witness parameter, and a derived index is not caller-chosen;
+   *  - a hand-written delegatecall picks the `__internal__delegateInputIndex` witness.
+   * Leaves exactly one untracked value on the real stack.
+   */
+  private emitDelegateInputIndex(node: LowLevelCallStatementNode, locationData: SingleLocationData): void {
+    if (this.currentFunction.graphEmissionHandler) {
+      const nftCount = this.currentFunction.requiredNftIndices?.length
+        ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
+      this.emitMasterInputIndex(locationData);
+      this.emit(encodeInt(BigInt(1 + nftCount + node.callIndex)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+      return;
+    }
+    if (this.currentFunction.delegateIndexFromBlockSlot) {
+      this.emitBlockSlotIndex('lowLevelCall', node.callIndex, locationData);
+      return;
+    }
+    const idx = this.getStackIndex('__internal__delegateInputIndex');
+    this.emit(encodeInt(BigInt(idx)), locationData);
+    this.emit(Op.OP_PICK, locationData);
   }
 
   /**

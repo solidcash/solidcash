@@ -2203,11 +2203,38 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // C1/piece-7: the COMPILER-SYNTHESIZED delegatecall forms - `L.f()` library-call sugar and split-facet
+    // forwarders - were excluded from every rule in this block by hasExplicitDelegatecall, so pinsDelegateCoSpend
+    // stayed FALSE and the callsite emitted NO covenant at all, while the per-function !functionHasDelegatecall
+    // gate still skipped the consumer's ENTIRE state covenant. Measured on the BCH-2026 VM: a consumer of a
+    // one-line delegate library settled 0 -> 999 with a HOSTILE library co-spent, and also with NO delegate
+    // co-spent at all. Pin them exactly like an explicit delegatecall, but DERIVE the delegate input index from
+    // this function's own block layout: the synthesized forms carry no witness parameter, and the target is a
+    // ctor-arg address the contract's own p2sh32 commits to, so nothing here is caller-chosen.
+    // The derived index needs the block layout that reserves the slot, which exists only for a stateful entry
+    // point. A synthesized delegatecall anywhere else has no reserved slot to pin to and is refused rather than
+    // left silently unpinned.
+    if (!node.pinsDelegateCoSpend && !node.graphEmissionHandler && !node.hiddenBatchRoute
+      && this.hasSynthesizedDelegatecall(node.body)) {
+      if (!this.isStatefulContract || !node.isEntryPoint) {
+        throw new InvalidModifierCombinationError(
+          node,
+          `function '${node.name}' delegates to a library from a context with no reserved delegate input slot `
+          + '(only a stateful entry point has one), so the co-spend cannot be pinned to the library and ANY '
+          + 'co-spent script would run against this contract\'s state. Call the library directly from a public '
+          + 'entry point. See packages/solidc/docs/delegatecall-security.md.',
+        );
+      }
+      node.pinsDelegateCoSpend = true;
+      node.delegateIndexFromBlockSlot = true;
+    }
+
     // C1/B: a delegatecall function skips its own state covenant (emitAutoCovenantVerification is gated
     // !functionHasDelegatecall) and defers ALL state writes to the co-spent delegate, so any self state-write in
-    // it is unauthorized. Reject it - the delegate must own every proxy write. (Library-call sugar is excluded;
-    // its writes ARE the delegate mechanism.)
-    if (this.hasExplicitDelegatecall(node.body) && this.hasStateWrite(node.body)) {
+    // it is unauthorized. Reject it - the delegate must own every proxy write. Applies to the synthesized forms
+    // too: `function f() { L.g(); this.x = 5; }` compiled clean and the write was never verified.
+    if ((this.hasExplicitDelegatecall(node.body) || this.hasSynthesizedDelegatecall(node.body))
+      && this.hasStateWrite(node.body)) {
       throw new DelegatecallSelfMutationError(node, node.name);
     }
 
@@ -2217,11 +2244,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     //  - 'loop': refused outright. The loop reuses one pinned input and one block slot per iteration, so N source
     //    delegations settle as ONE - a silent miscompile with no honest covenant to emit.
     //  - 'conditional': admitted, but codegen must preserve the proxy's own state on the not-taken path.
-    // Scope: the single-witness pin only. A compiler-synthesized SCB1 route / graph handler dispatches its rows
-    // through a loop by design and derives each delegate index from its OWN per-row block slot rather than the
-    // shared __internal__delegateInputIndex witness, so neither the collapse nor the not-taken-path hole applies
-    // there. Same exclusion as the witness injection above.
-    if (this.hasExplicitDelegatecall(node.body) && !node.graphEmissionHandler && !node.hiddenBatchRoute) {
+    // Scope: the single-callsite pin only. A compiler-synthesized SCB1 route / graph handler dispatches its rows
+    // through a loop by design and derives each delegate index from its OWN per-row block slot rather than one
+    // shared slot, so neither the collapse nor the not-taken-path hole applies there. Same exclusion as the
+    // witness injection above. `L.f()` sugar and split forwarders are NOT excluded: they use one reserved slot
+    // per callsite exactly like a hand-written delegatecall, so both hazards apply verbatim (C1/piece-7).
+    if ((this.hasExplicitDelegatecall(node.body) || this.hasSynthesizedDelegatecall(node.body))
+      && !node.graphEmissionHandler && !node.hiddenBatchRoute) {
       const reach = this.delegatecallReachability(node.body);
       if (reach === 'loop') {
         throw new InvalidModifierCombinationError(
@@ -4923,6 +4952,26 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
+  /**
+   * C1/piece-7: a COMPILER-SYNTHESIZED delegatecall - `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls)
+   * or a split-facet forwarder (compiler.ts). The user wrote no delegatecall keyword, so hasExplicitDelegatecall
+   * skips it; the covenant consequences are identical and must not be skipped with it.
+   */
+  private hasSynthesizedDelegatecall(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall'
+      && node.synthesizedFromLibraryCall) {
+      return true;
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { if (this.hasSynthesizedDelegatecall(v, seen)) return true; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.hasSynthesizedDelegatecall(e, seen)) return true;
+      }
+    }
+    return false;
+  }
+
   private hasSignatureGuard(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
     if (!node || seen.has(node)) return false;
     seen.add(node);
@@ -4962,9 +5011,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (contexts.has(context)) return;
       contexts.add(context);
       seen.set(node, contexts);
+      // Synthesized callsites (`L.f()` sugar, split forwarders) count too - one reserved block slot per
+      // callsite, so a loop collapses N delegations into one there as well (C1/piece-7).
       if ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
-        && node.callMode === 'delegatecall'
-        && !(node instanceof LowLevelCallStatementNode && node.synthesizedFromLibraryCall)) {
+        && node.callMode === 'delegatecall') {
         record(loop ? 'loop' : (cond ? 'conditional' : 'unconditional'));
         // Keep walking: a nested target/data expression cannot contain a second callsite, but a sibling can.
       }

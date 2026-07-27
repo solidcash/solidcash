@@ -140,9 +140,79 @@ whenever the callsite is not straight-line:
   says 5 -> 7), with no diagnostic. There is no honest covenant to emit for it, so it is a hard compile error.
   Delegate to an implementation function that performs the iteration itself.
 
-Scope: both rules apply to the single-witness pin (`__internal__delegateInputIndex`). A compiler-synthesized
-SCB1 route / graph handler dispatches rows through a loop by design and derives each delegate index from its own
-per-row block slot, so it is excluded from both.
+Scope: both rules apply to any callsite that owns ONE reserved delegate slot — a hand-written
+`impl.delegatecall(input)` and the synthesized forms of rule E alike. A compiler-synthesized SCB1 route / graph
+handler dispatches rows through a loop by design and derives a delegate index per ROW, so it is excluded from
+both.
+
+*Why that exclusion does not disarm anything (measured, not proven).* "Excluded" reads like "unprotected", so
+the three things that actually hold there, each measured at compile time on the same source:
+
+- The **source entry point is not excluded**. Compiling a conditional-delegate proxy with the message-bus
+  options still classifies its callsite `conditional` and still emits the not-taken-path covenant into that
+  function's body. Only the `__scb_graph_*` clone (`graphEmissionHandler`) and the `__scb1` route are excluded.
+- The **route never skips its own state covenant.** `__scb1` issues no delegatecall itself (it `OP_INVOKE`s
+  handlers), so `functionHasDelegatecall` is false for it and it runs the ordinary data-NFT covenant. Rule D's
+  hazard is precisely "the per-function skip is wider than the per-callsite pin"; with no skip there is no gap.
+- A **state-writing batch contract with a delegate row does not compile at all**: the route inlines the row
+  bodies, so it has both a delegatecall and a state write and rule B rejects it. (Identical on 05412a58 — this
+  is pre-existing, not a consequence of rule E.)
+
+**Measurement traps, recorded because each produced a false negative on first inspection.** Two artifact shapes
+hide emitted covenants from an ASM grep of `artifact.bytecode`:
+
+- A **message-bus** artifact publishes the dispatcher in `bytecode` and each function body as HEX in
+  `functionBodies`; decode the body for the function's selector.
+- A **split root** outlines forwarder bodies into `OP_DEFINE`d spans that are *pushed as data*, so opcode names
+  never appear; search the assembled BYTES (`93 c7 88` = `OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`).
+
+Both are pinned in `SecurityAudit.test.ts` ("X16", "pins the facet co-spend in a split root forwarder").
+
+Still open: no VM-level forgery was attempted against a live graph-controller transaction with a conditional
+delegate row. The above is compile-level evidence for the mechanism, not a settled negative result.
+
+**E. A delegatecall the COMPILER writes is still a delegatecall.** Two source forms lower to a delegatecall the
+user never typed, and both were excluded from rules 3, B and D because those rules keyed off "did the user write
+`delegatecall`":
+
+- **`L.f()` library-call sugar.** `contract C { bigint count; function bump() { Counter.increment(); } }`
+  desugars to `__libAddr_Counter.delegatecall(<increment selector>)`.
+- **Split-facet forwarders.** A contract over the script-size limit is split, and each moved entry point becomes
+  a root forwarder that delegatecalls its facet.
+
+The exclusion made `pinsDelegateCoSpend` **false** for these, so the callsite emitted no covenant at all — while
+the per-function `!functionHasDelegatecall` gate still skipped the consumer's **entire** state covenant. That is
+rule 3's hazard with nothing left to catch it and, unlike rule C, no caller-supplied address to blame. Measured
+on the BCH-2026 VM with a one-line delegate library (consumer state 0):
+
+| co-spent at the delegate slot | settled | baseline | fixed |
+|---|---|---|---|
+| the real, linked library | 1 | ACCEPTED | ACCEPTED |
+| a HOSTILE library, same layout + same `increment()` selector | 999 | ACCEPTED | REJECTED at input 0 |
+| **nothing at all** | 999 | ACCEPTED | REJECTED at input 0 |
+
+The synthesized forms are now pinned exactly like a hand-written delegatecall, with one difference: the delegate
+input index is **derived** from the function's own reserved `lowLevelCall` block slot rather than read from the
+`__internal__delegateInputIndex` witness. They carry no witness parameter (the consumer ABI is unchanged), and a
+derived index is the stronger source — nothing caller-supplied selects the input. The target is a synthesized
+constructor argument (`__libAddr_L`, or the facet link), so rule C is satisfied structurally: the contract's own
+p2sh32 commits to it.
+
+Only a stateful **entry point** reserves a delegate input slot, so a library call from an internal helper has
+nothing to pin to; it is refused by name rather than left silently unpinned. (On 05412a58 that shape compiled
+with `lowLevelCalls` undefined on the entry point — no slot, no pin, no diagnostic.)
+
+The forwarded-selector half is emitted only when the library has **>= 2 public functions**. A
+one-public-function library compiles to a single-entry-point contract whose unlocking script carries no leading
+selector — and with one function there is nothing for a caller to choose, so the identity pin alone is the whole
+property there. Un-excluding these forms also brings rules B and D to bear on them: `L.f()` next to a
+`this.x = ...` is now `DelegatecallSelfMutationError`, and `L.f()` inside a loop is refused by name (one reserved
+slot serves every iteration).
+
+*Residual:* the library's `delegate` function still does not authenticate its caller (by design — a delegate
+serves many proxies; see the `_proxyMasterIndex` note above). What the consumer now guarantees is that the script
+at the delegate slot IS the linked library and, when the library is selector-dispatched, that the named function
+ran. A `brandLibrary: true` library adds the converse pin (the library refuses a foreign consumer's master).
 
 ## Implementation status
 
@@ -175,6 +245,12 @@ per-row block slot, so it is excluded from both.
   proxy's own data NFTs on every path that did not reach the edge. VM-proven both ways in
   `Layer3DelegateClassesE3`: the not-taken forgery is refused at input 0, the honest taken spend still settles,
   and a not-taken no-op still settles.
+- **E (synthesized delegatecalls are pinned too)** — enforced. `L.f()` library sugar and split-facet forwarders
+  set `pinsDelegateCoSpend` with `delegateIndexFromBlockSlot`, so the identity pin reads the reserved block slot
+  instead of a witness; the selector half is added when the library is selector-dispatched. Rules B and D now
+  apply to them as well. VM-proven in `LibraryDelegate.test.ts` (`SEC-4`): honest spend settles, a hostile
+  implementation and a bare no-delegate rewrite are both refused at input 0, and a substituted library function
+  is refused on a two-function library.
 
 ## Writing a safe proxy
 
@@ -187,5 +263,8 @@ per-row block slot, so it is excluded from both.
 - Keep the delegatecall function pure-forwarding: **no `this.x = ...`** in it (the delegate owns all writes).
 - Ensure the delegate authorizes/preserves the whole proxy state, not just the fields one call touches.
 - Delegate to a **selector-dispatched** (multi-function) implementation so the forwarded-selector pin applies.
+- The same rules apply to a `L.f()` delegate-library call, which is a delegatecall the compiler writes for you
+  (rule E): no `this.x = ...` beside it, never in a loop, and prefer a multi-function library so the
+  which-function pin applies too.
 - `upgrades.deployProxy` (SDK) wires all of this: it deploys the implementation + a pinned proxy, seeds the state,
   and forwards `proxy.fn(...)` through the pinned delegatecall. See `docs/upgrades.md`.

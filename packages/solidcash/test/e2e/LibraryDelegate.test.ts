@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
-import { parsePushdataCommitment } from '@solidcash/utils';
-import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import {
+  Contract, StatefulContract, StatefulTransactionBuilder, createDataNftUnlocker,
+} from '../../src/index.js';
+import { Artifact, parsePushdataCommitment } from '@solidcash/utils';
+import { addressToLockScript } from '../../src/utils.js';
+import {
+  createTestProvider, getTxOutputs, setupStatefulUtxos, type StatefulUtxoSetup,
+} from '../test-util.js';
 
 // library-contracts 3b: a state-touching LIBRARY (docs/library-contracts.md) lowers to a delegate contract
 // (auto-delegated public functions). This probes the consumer side: a proxy delegatecalls the library via the
@@ -410,4 +415,186 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
 
     expect(() => consumerSc.registerLibrary('Counter', libSc)).toThrow(/not branded to this contract/i);
   });
+});
+
+// ---------------------------------------------------------------------------
+// SEC-4: the library-sugar delegate co-spend must be PINNED
+// ---------------------------------------------------------------------------
+
+/**
+ * `L.f()` desugars to a delegatecall whose AST node carries `synthesizedFromLibraryCall`. Every C1 rule in
+ * SymbolTableTraversal keyed off `hasExplicitDelegatecall`, which excludes exactly those nodes, so
+ * `pinsDelegateCoSpend` was FALSE for a pure library-call function and the callsite emitted NO covenant at all -
+ * while the per-function `!functionHasDelegatecall` gate still skipped the consumer's ENTIRE state covenant.
+ * The consumer's data NFT sub-covenant self-authorizes on the master's minting NFT, so nothing was left.
+ *
+ * MEASURED on the BCH-2026 VM, baseline -> fixed (consumer state 0, one-line delegate library):
+ *
+ *   honest, real library co-spent, settle 1     ACCEPTED count=1    -> ACCEPTED count=1
+ *   HOSTILE library co-spent, settle 999        ACCEPTED count=999  -> REJECTED at input 0
+ *   NO delegate co-spent at all, settle 999     ACCEPTED count=999  -> REJECTED at input 0
+ *
+ * The third row is the severe one: a spender rewrote a consumer's state with no delegate present at all, in a
+ * shipped language feature, with no diagnostic. Attribution control: disabling ONLY the new emitter (leaving
+ * every semantic-analysis change in place) made both hostile rows settle again.
+ */
+describe('SEC-4: L.f() pins the library co-spend', () => {
+  const ONE_FN = 'pragma solidcash >=0.8.0; library Counter { bigint count; '
+    + 'function increment() public { this.count = this.count + 1; } }';
+  // Same layout, same `increment()` signature (so the SAME selector); only the body and therefore the locking
+  // bytecode differ. That makes "which script was co-spent" the single varying field.
+  const HOSTILE_FN = 'pragma solidcash >=0.8.0; library Counter { bigint count; '
+    + 'function increment() public { this.count = 999; } }';
+  const TWO_FN = 'pragma solidcash >=0.8.0; library Pair { bigint count; '
+    + 'function increment() public { this.count = this.count + 1; } '
+    + 'function wipe() public { this.count = 0; } }';
+  const CONSUMER_ONE = 'pragma solidcash >=0.8.0; import { Counter } from "./counter.scash"; '
+    + 'contract LibConsumer() { bigint count; function bump() { Counter.increment(); } }';
+  const CONSUMER_TWO = 'pragma solidcash >=0.8.0; import { Pair } from "./pair.scash"; '
+    + 'contract PairConsumer() { bigint count; function bump() { Pair.increment(); } }';
+
+  const resolve = (source: string, id: string) =>
+    (path: string): { source: string; id: string } | undefined => (path.includes(id) ? { source, id } : undefined);
+
+  const oneFnLibArtifact = compileString(ONE_FN);
+  const hostileLibArtifact = compileString(HOSTILE_FN);
+  const twoFnLibArtifact = compileString(TWO_FN);
+  const oneFnConsumerArtifact = compileString(CONSUMER_ONE, { importResolver: resolve(ONE_FN, 'counter') });
+  const twoFnConsumerArtifact = compileString(CONSUMER_TWO, { importResolver: resolve(TWO_FN, 'pair') });
+
+  const failingInput = (message: string): number | null => {
+    const match = /error in evaluating input index (\d+)/.exec(message);
+    return match ? Number(match[1]) : null;
+  };
+
+  /** The co-spent library group, unlocked through its own auto-`delegate` public function. */
+  function libraryGroup(
+    artifact: Artifact, deployed: { contract: Contract; setup: StatefulUtxoSetup }, fn: string,
+  ): unknown {
+    return {
+      categoryId: deployed.setup.categoryId,
+      stateLayout: artifact.stateLayout!,
+      masterUtxo: {
+        ...deployed.setup.masterUtxo, unlocker: (deployed.contract.unlock as any)[fn](0n),
+      },
+      dataNftUtxos: deployed.setup.dataNftUtxos.map((nft) => ({
+        ...nft, unlocker: createDataNftUnlocker(deployed.contract, 2, deployed.setup.categoryId),
+      })),
+      requiredDataNftIndices: deployed.setup.dataNftUtxos.map((_nft, index) => index),
+      functionName: fn,
+      functionArgs: [0n],
+      externalContract: null,
+    };
+  }
+
+  /**
+   * Build the spend with a RAW StatefulTransactionBuilder rather than the auto-wiring `call.bump()` path: an
+   * attacker does not use our SDK, so the co-spend set is chosen freely here.
+   */
+  async function spend(options: {
+    libArtifact: Artifact; consumerArtifact: Artifact; libId: string;
+    coSpend: 'honest' | 'hostile' | 'none'; libFunction?: string; settled: bigint;
+  }): Promise<string> {
+    const provider = createTestProvider();
+    const library = new Contract(options.libArtifact, [], { provider });
+    const librarySetup = await setupStatefulUtxos(
+      provider, library, options.libArtifact.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    // The deployed library sits at its CATEGORY-PINNED address (setupStatefulUtxos / withCategory), which is
+    // also the address the consumer links: `__libAddr_L` is a constructor argument, so the consumer's own
+    // p2sh32 commits to it and no caller can choose it.
+    const libraryPinned = library.withCategory(hexToBin(librarySetup.categoryId));
+    const hostile = new Contract(hostileLibArtifact, [], { provider });
+    const hostileSetup = await setupStatefulUtxos(
+      provider, hostile, hostileLibArtifact.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const hostilePinned = hostile.withCategory(hexToBin(hostileSetup.categoryId));
+    const linked = addressToLockScript(libraryPinned.address);
+    const consumer = new Contract(options.consumerArtifact, [linked] as never[], { provider });
+    const consumerSetup = await setupStatefulUtxos(
+      provider, consumer, options.consumerArtifact.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const consumerPinned = consumer.withCategory(hexToBin(consumerSetup.categoryId));
+
+    const groups: unknown[] = [];
+    if (options.coSpend === 'honest') {
+      groups.push(libraryGroup(options.libArtifact, { contract: libraryPinned, setup: librarySetup },
+        options.libFunction ?? 'increment'));
+    }
+    if (options.coSpend === 'hostile') {
+      groups.push(libraryGroup(hostileLibArtifact, { contract: hostilePinned, setup: hostileSetup }, 'increment'));
+    }
+
+    const builder = new StatefulTransactionBuilder({
+      provider,
+      stateLayout: options.consumerArtifact.stateLayout!,
+      categoryId: consumerSetup.categoryId,
+      masterUtxo: { ...consumerSetup.masterUtxo, unlocker: (consumerPinned.unlock as any).bump() },
+      dataNftUtxos: consumerSetup.dataNftUtxos.map((nft) => ({
+        ...nft, unlocker: createDataNftUnlocker(consumerPinned, 0, consumerSetup.categoryId),
+      })),
+      ...(groups.length > 0 ? { externalCallUtxoGroups: groups as never } : {}),
+    } as never).setState('count', options.settled);
+
+    return builder.send()
+      .then((tx: any) => {
+        const output = getTxOutputs(tx).find(
+          (candidate: any) => candidate.token?.category === consumerSetup.categoryId
+            && candidate.token?.nft?.capability === 'mutable',
+        );
+        const state = parsePushdataCommitment(
+          output!.token!.nft!.commitment, options.consumerArtifact.stateLayout!, 0,
+        ) as Record<string, bigint>;
+        return `ACCEPTED count=${state.count}`;
+      })
+      .catch((error: Error) => error.message);
+  }
+
+  /** Positive control: the refusals below are the hostile co-spend, not the whole class. */
+  it('still settles the honest spend with the linked library co-spent', async () => {
+    expect(await spend({
+      libArtifact: oneFnLibArtifact, consumerArtifact: oneFnConsumerArtifact, libId: 'counter',
+      coSpend: 'honest', settled: 1n,
+    })).toBe('ACCEPTED count=1');
+  }, 120_000);
+
+  it('refuses an implementation the library author never wrote', async () => {
+    const message = await spend({
+      libArtifact: oneFnLibArtifact, consumerArtifact: oneFnConsumerArtifact, libId: 'counter',
+      coSpend: 'hostile', settled: 999n,
+    });
+    expect(message).toContain('mandatory-script-verify-flag-failed');
+    expect(failingInput(message)).toBe(0);
+  }, 120_000);
+
+  /**
+   * The severe row, and the one with no caller-supplied address to blame: no delegate is co-spent at ALL and the
+   * consumer's state is still rewritten. The refusal must come from the consumer's own covenant (input 0).
+   */
+  it('refuses a state rewrite with no delegate co-spent at all', async () => {
+    const message = await spend({
+      libArtifact: oneFnLibArtifact, consumerArtifact: oneFnConsumerArtifact, libId: 'counter',
+      coSpend: 'none', settled: 999n,
+    });
+    expect(message).toContain('mandatory-script-verify-flag-failed');
+    expect(failingInput(message)).toBe(0);
+  }, 120_000);
+
+  /**
+   * A selector-dispatched library (>= 2 public functions) also pins WHICH function ran. Honest control differs
+   * only in the co-spent library function.
+   */
+  it('settles the named library function and refuses a substituted one', async () => {
+    expect(await spend({
+      libArtifact: twoFnLibArtifact, consumerArtifact: twoFnConsumerArtifact, libId: 'pair',
+      coSpend: 'honest', libFunction: 'increment', settled: 1n,
+    })).toBe('ACCEPTED count=1');
+
+    const substituted = await spend({
+      libArtifact: twoFnLibArtifact, consumerArtifact: twoFnConsumerArtifact, libId: 'pair',
+      coSpend: 'honest', libFunction: 'wipe', settled: 0n,
+    });
+    expect(substituted).toContain('mandatory-script-verify-flag-failed');
+    expect(failingInput(substituted)).toBe(0);
+  }, 240_000);
 });

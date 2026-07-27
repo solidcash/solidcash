@@ -130,7 +130,7 @@ task-specific report, not in this table.
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | `6119ba26`; closed a real C2 forgery defect |
-| S2 | Mixed scalar/collection/dynamic journals | C | S1 | LEASED | round 2, base `b9aa816d`; lease `GenerateTargetTraversal.ts`; owns the cloned-handler guard |
+| S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | TODO | Equal input/output block extent |
@@ -151,6 +151,9 @@ task-specific report, not in this table.
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
 | X6 | Stable diagnostics for unadmitted low-level shapes | — | — | TODO | `Block slot not found: lowLevelCall[0]` leaks; compiler lease |
+| X7 | Assert the projection result cursor is exhausted | B | E1 | TODO | Stated invariant is enforced only by consumer routes |
+| X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | TODO | Compiles; dynamic writes stay raw; NO VM evidence they settle |
+| X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | TODO | 5s timeouts; invalidates the pinned `solidc` gate |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
@@ -298,7 +301,14 @@ section 2 is wrong - the failures may cover an aspect the claim never made - and
 them as either subsumed by G1 or an independent pre-existing defect. Section 2 will be corrected only on that
 evidence, and only by the integration owner.
 
-**The 10 failures are parallel-run only.** Both files pass in isolation, so the baseline defect is test
+**CORRECTION (round 2): the `solidc` figures above no longer hold.** After G1, `HiddenBatch.test.ts` is
+genuinely flaky on the 5s default timeout - the integration owner measured 27/27 and then 26/27 on consecutive
+isolated runs, and Workers B and C independently reported 1 and 4 timeout failures in that file. This is
+compile-cost fragility introduced by G1's added passes (task G1-C), not a correctness regression: every failure
+is `Test timed out in 5000ms`, never an assertion. Do not treat "solidc 0 failed" as a stable gate until G1-C is
+resolved; compare failure KINDS, and re-run that file in isolation before charging a worker with it.
+
+**The 10 original failures were parallel-run only.** Both files pass in isolation, so the baseline defect is test
 execution, not compiled behaviour. A round-1 delivery that reproduces exactly these 10 in a full run has NOT
 regressed anything; a delivery that changes the set has. `yarn test` halts after `solidc` fails, so the
 `solidcash` baseline must be taken with `yarn workspace solidcash test` separately.

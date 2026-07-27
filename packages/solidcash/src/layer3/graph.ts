@@ -878,7 +878,7 @@ function bindConsumerCallsites(
   // Positional binding checks order, so it applies only when the reached methods are a permutation of the
   // compiler-named ones. A reached method the compiler never named means the callsite resolves its target
   // method at runtime - a pointer, a selector table or low-level calldata - and order carries no meaning.
-  const sorted = (names: readonly string[]): string => [...names].sort().join(' ');
+  const sorted = (names: readonly string[]): string => [...names].sort().join('\x00');
   const namesArePermuted = sorted(reached) === sorted(callsites.map((call) => call.functionName));
   if (singular && callsites.length === reached.length && namesArePermuted) {
     return reached.map((functionName, position) => {

@@ -150,16 +150,16 @@ task-specific report, not in this table.
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
-| X6 | Stable diagnostics for unadmitted low-level shapes | B | E2 | BLOCKED | module + 18 tests landed; needs ONE call site in A's `compiler.ts` |
+| X6 | Stable diagnostics for unadmitted low-level shapes | A (wiring) | E2 | LEASED | round 5; module landed by B, A holds the call site |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
 | X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
 | X11 | Delegate C2 sorted writes have no settling instance | C | S1 | TODO | S1's delegate exclusion guards an unreachable shape, unattacked |
 | X12 | `emit`-funder delegate class does not settle | C | X1 | TODO | Pre-existing; verified neither repaired nor regressed by X1 |
-| X13 | Direct `withExternalCall` route does not balance callee blocks | — | — | TODO | Callee contributes 2 inputs / 3 outputs; graph route is correct |
-| X14 | Wire the balanced-assembly preflight into the production send path | C | L2 | TODO | Today it is an exported helper the tests call |
-| X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | — | — | TODO | Caller writing state in the called fn plus an external call |
+| X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | LEASED | round 5; measured refusal is an acceptable outcome |
+| X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | LEASED | round 5; must not silently gate existing users |
+| X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | LEASED | round 5; silence is the one unacceptable outcome |
 | **SEC-1** | **Conditional delegate edge forges proxy state** | C | — | **LEASED (security)** | **LIVE FORGERY**; reopens C1; pinned `OPEN:` at E3 test:531 |
 | **SEC-2** | **Caller-chosen implementation parameter** | C | — | **LEASED (security)** | **LIVE TAKEOVER**; C1 warning suppressed by `pinsDelegateCoSpend` |
 | **SEC-3** | **Iterated delegate edge collapses N to 1** | C | — | **LEASED (security)** | Silent miscompile, no diagnostic; pinned `OPEN:` at test:550 |
@@ -263,6 +263,22 @@ This is a SEMANTIC gate, not a consensus or policy one. Mock limits remain relax
 
 The one remaining red is `LargeContractSplitting` (task X1). The ten `solidc` reds and the parallel-only
 `solidcash` reds are gone: they were a fixture-outpoint birthday collision, fixed in `72f07b07`.
+
+### 4.2e Round-5 dispatch, base `97484fe1`
+
+| Worker | Tasks | Lease |
+| --- | --- | --- |
+| A | wire X6, then X15 | `compiler.ts` + `packages/utils/src/artifact.ts` |
+| B | X14, then X13 | `packages/solidcash/src/layer3/*` + `src/stateful/*` |
+| C | **SEC-1, SEC-2, SEC-3** (in flight) | `GenerateTargetTraversal.ts` + `SymbolTableTraversal.ts` |
+
+Round 5 is shaped around Worker C's security round: A and B were given work that cannot touch
+`GenerateTargetTraversal.ts` or `SymbolTableTraversal.ts` while the delegate forgeries are being fixed there.
+
+Two round-4 deliveries were inert until this round, each blocked by a lease rather than by a technical problem:
+B's X6 module had no call site because the call site is in A's file, and C's L2 preflight was a capability
+because the production send path is in B's. Round 5 closes both. That pattern - a delivery that is complete but
+unreachable across a lease boundary - is worth watching for; it does not show up as a failing test.
 
 ### 4.2d Round-4 dispatch, base `cc47ff0e`
 

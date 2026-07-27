@@ -8580,6 +8580,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'dataNft', offset: offset++, nftIndex: nftIdx });
     }
 
+    // Delegate implementation input. The delegate covenant requires
+    // `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`, so the implementation must sit immediately
+    // after the proxy's master/data-NFT region. A direct wrapper reserved no slot at all, which happened to
+    // work only while nothing else occupied that offset: adding any output-only funder slot - a `returns`
+    // function's returnEvent, an `emit`, a transfer or a token-container transfer - claimed the same position,
+    // the SDK materialized a funder there, and the implementation was pushed one input later until the
+    // covenant's subtraction disagreed with the witness. Reserve the position instead.
+    if (!node.graphEmissionHandler && !node.hiddenBatchRoute) {
+      for (let i = 0; i < (node.lowLevelCalls ?? []).length; i++) {
+        if (node.lowLevelCalls![i].callMode !== 'delegatecall') continue;
+        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
+      }
+    }
+
     // External reads
     if (node.externalReads) {
       for (let i = 0; i < node.externalReads.length; i++) {
@@ -8692,6 +8706,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // delegate-input witness.
     if (node.lowLevelCalls) {
       for (let i = 0; i < node.lowLevelCalls.length; i++) {
+        // Direct delegate implementations already own a reserved slot next to the data-NFT region above.
         if (node.lowLevelCalls[i].callMode === 'delegatecall'
           && !node.graphEmissionHandler && !node.hiddenBatchRoute) continue;
         slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });

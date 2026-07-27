@@ -4717,3 +4717,22 @@ The focused suite is **902/902**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **904/904**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 579, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Constructor-visibility loop: 4443 flat, NEG-ACCEPTED 579 -> 574 (-5)
+
+- Solidity-compatible constructors now reject `external` visibility.
+- Concrete contracts reject `internal` constructors, while abstract contracts reject legacy `public`
+  constructors.
+- The inverse legacy combinations remain accepted: abstract/internal and concrete/public.
+
+The focused suite is **908/908**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+574, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Abstract modifier-declaration loop: 4443 flat, NEG-ACCEPTED 574 -> 572 (-2)
+
+- Abstract-contract declaration artifacts now validate modifier definitions before their early ABI-only return.
+- Implemented modifier bodies without an `_` placeholder reject even when no bytecode is generated.
+- Unimplemented modifiers still require `virtual` in abstract contracts.
+
+The focused suite is **911/911**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+572, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -103,7 +103,10 @@ export default class ValidateDataLocations extends AstTraversal {
       ...node.stateVariables.map((state) => [state.name, state.type] as const),
       ...node.collections.map((collection) => [collection.name, collection.type] as const),
     ]);
-    if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
+    if (node.constructorDef) {
+      this.validateConstructorVisibility(node.constructorDef);
+      node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
+    }
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
@@ -111,6 +114,19 @@ export default class ValidateDataLocations extends AstTraversal {
     this.immutableStateNames = previousImmutableStateNames;
     this.stateTypes = previousStateTypes;
     return node;
+  }
+
+  private validateConstructorVisibility(node: FunctionDefinitionNode): void {
+    if (!this.solidityImportCompat) return;
+    if (node.modifiers.includes(FunctionModifier.EXTERNAL)) {
+      throw new InvalidModifierCombinationError(node, 'constructor cannot have external visibility');
+    }
+    if (node.modifiers.includes(FunctionModifier.INTERNAL) && !this.currentContractIsAbstract) {
+      throw new InvalidModifierCombinationError(node, 'non-abstract contracts cannot have internal constructors');
+    }
+    if (node.modifiers.includes(FunctionModifier.PUBLIC) && this.currentContractIsAbstract) {
+      throw new InvalidModifierCombinationError(node, 'abstract contracts cannot have public constructors');
+    }
   }
 
   visitStateAssign(node: StateAssignNode): Node {

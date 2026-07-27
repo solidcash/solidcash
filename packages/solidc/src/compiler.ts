@@ -72,7 +72,7 @@ import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayW
 import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
-import expandModifiers from './semantic/ModifierExpansionTransformation.js';
+import expandModifiers, { validateModifierDefinitions } from './semantic/ModifierExpansionTransformation.js';
 import FoldHashLiterals from './semantic/FoldHashLiterals.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
@@ -222,6 +222,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc
   // parity - abstract contracts have an ABI + empty bytecode), like interface / decl-only files.
   if (ast.contract.isAbstract) {
+    // Declaration artifacts still undergo source-level modifier validation. Expansion/code generation are
+    // unnecessary, but an implemented modifier without `_` remains invalid Solidity.
+    validateModifierDefinitions(ast);
     return generateDeclarationArtifact(ast, code);
   }
 

@@ -4,6 +4,54 @@ import { compileString, compileStringMulti } from '../src/index.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
+describe('constructor visibility compatibility', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects external constructors', () => {
+    expect(() => cc('contract C { constructor() external {} }'))
+      .toThrow(/constructor cannot have external visibility/);
+  });
+
+  it('rejects internal constructors on concrete contracts', () => {
+    expect(() => cc('contract C { constructor() internal {} }'))
+      .toThrow(/non-abstract contracts cannot have internal constructors/);
+  });
+
+  it('rejects public constructors on abstract contracts', () => {
+    expect(() => cc('abstract contract C { constructor() public {} }'))
+      .toThrow(/abstract contracts cannot have public constructors/);
+  });
+
+  it('accepts the inverse legacy visibility combinations', () => {
+    expect(cc('abstract contract C { constructor() internal {} }')).toBe('C');
+    expect(cc('contract C { constructor() public {} }')).toBe('C');
+  });
+});
+
+describe('abstract-contract modifier declaration validation', () => {
+  it('rejects an implemented modifier without a placeholder before emitting a declaration artifact', () => {
+    expect(() => compileString(
+      'abstract contract A { function f() public view mod { require(true); } modifier mod() virtual {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/must contain at least one.*placeholder/i);
+  });
+
+  it('still emits an abstract declaration when each implemented modifier has a placeholder', () => {
+    expect(compileString(
+      'abstract contract A { function f() public view mod { require(true); } modifier mod() virtual { _; } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('A');
+  });
+
+  it('rejects an unimplemented modifier which is not virtual', () => {
+    expect(() => compileString(
+      'abstract contract A { modifier mod(); }',
+      { solidityImportCompat: true },
+    )).toThrow(/unimplemented modifier.*must be virtual/i);
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

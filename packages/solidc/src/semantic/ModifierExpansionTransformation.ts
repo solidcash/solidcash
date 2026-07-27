@@ -228,6 +228,26 @@ function countPlaceholdersDeep(stmts: StatementNode[]): number {
   return n;
 }
 
+export function validateModifierDefinitions(ast: SourceFileNode): void {
+  const contract = ast.contract;
+  const names = new Set<string>();
+  for (const mod of [...contract.modifierDefinitions, ...ast.libraryModifierDefinitions]) {
+    if (names.has(mod.name)) throw new ModifierRedefinitionError(mod);
+    names.add(mod.name);
+    if (!mod.isAbstract && countPlaceholdersDeep(mod.statements) === 0) {
+      throw new ModifierPlaceholderError(mod, `Modifier '${mod.name}' must contain at least one '_' placeholder`);
+    }
+    if (mod.isAbstract && !mod.isVirtual) {
+      throw new ModifierPlaceholderError(mod, `Unimplemented modifier '${mod.name}' must be virtual`);
+    }
+    // Qualified aliases exist for explicit `A.m` lookup and may point at an abstract ancestor. An unqualified
+    // abstract modifier on a concrete final contract, however, has no implementation.
+    if (mod.isAbstract && !contract.isAbstract && !mod.name.includes('.')) {
+      throw new ModifierPlaceholderError(mod, `Contract '${contract.name}' must implement modifier '${mod.name}'`);
+    }
+  }
+}
+
 // Replace each `_;` (recursively, inside nested blocks) with the current function body. The first placeholder
 // reuses the body nodes; each additional placeholder gets a deep clone (no shared references).
 function replacePlaceholdersDeep(
@@ -269,24 +289,10 @@ export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
   const modifierMap = new Map<string, ModifierDefinitionNode>();
   const libraryQualifiers = new Set(ast.declaredLibraryNames);
 
-  // Collect and validate modifier definitions
+  validateModifierDefinitions(ast);
+
+  // Collect modifier definitions
   for (const mod of [...contract.modifierDefinitions, ...ast.libraryModifierDefinitions]) {
-    if (modifierMap.has(mod.name)) {
-      throw new ModifierRedefinitionError(mod);
-    }
-
-    if (!mod.isAbstract && countPlaceholdersDeep(mod.statements) === 0) {
-      throw new ModifierPlaceholderError(mod, `Modifier '${mod.name}' must contain at least one '_' placeholder`);
-    }
-    if (mod.isAbstract && !mod.isVirtual) {
-      throw new ModifierPlaceholderError(mod, `Unimplemented modifier '${mod.name}' must be virtual`);
-    }
-    // Qualified aliases exist for explicit `A.m` lookup and may point at an abstract ancestor. An unqualified
-    // abstract modifier on a concrete final contract, however, has no implementation.
-    if (mod.isAbstract && !contract.isAbstract && !mod.name.includes('.')) {
-      throw new ModifierPlaceholderError(mod, `Contract '${contract.name}' must implement modifier '${mod.name}'`);
-    }
-
     modifierMap.set(mod.name, mod);
   }
 

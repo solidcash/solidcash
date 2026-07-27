@@ -127,7 +127,7 @@ task-specific report, not in this table.
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | LEASED | round 4, base `cc47ff0e`; owns 4.7's unpublished-ceiling gap |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
-| E3 | Explicit delegate-participant classes | B | E1 | LEASED | round 4, base `cc47ff0e` |
+| E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (partial) | classes enumerated; item 2 NOT satisfied - two classes do not fail closed |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | forgery escape closed; guard keys off slot contribution |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
@@ -150,7 +150,7 @@ task-specific report, not in this table.
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | LEASED | round 4; `artifact.ts` lease GRANTED to A |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
-| X6 | Stable diagnostics for unadmitted low-level shapes | B | E2 | LEASED | round 4; may need A's `compiler.ts` - request, do not edit |
+| X6 | Stable diagnostics for unadmitted low-level shapes | B | E2 | BLOCKED | module + 18 tests landed; needs ONE call site in A's `compiler.ts` |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
@@ -160,11 +160,44 @@ task-specific report, not in this table.
 | X13 | Direct `withExternalCall` route does not balance callee blocks | — | — | TODO | Callee contributes 2 inputs / 3 outputs; graph route is correct |
 | X14 | Wire the balanced-assembly preflight into the production send path | C | L2 | TODO | Today it is an exported helper the tests call |
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | — | — | TODO | Caller writing state in the called fn plus an external call |
+| **SEC-1** | **Conditional delegate edge forges proxy state** | C | — | **LEASED (security)** | **LIVE FORGERY**; reopens C1; pinned `OPEN:` at E3 test:531 |
+| **SEC-2** | **Caller-chosen implementation parameter** | C | — | **LEASED (security)** | **LIVE TAKEOVER**; C1 warning suppressed by `pinsDelegateCoSpend` |
+| **SEC-3** | **Iterated delegate edge collapses N to 1** | C | — | **LEASED (security)** | Silent miscompile, no diagnostic; pinned `OPEN:` at test:550 |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.11 SECURITY: two live delegate forgeries and one silent miscompile
+
+Found by Worker B while enumerating delegate classes for E3, and verified by the integration owner by reading
+and running the pinned cases. These are in the delegatecall proxy path, a shipped feature - not Layer-3-only.
+
+**SEC-1, live forgery.** A guarded delegatecall spent with the branch condition FALSE and no implementation
+co-spent settles a forged proxy state. The honest control - the identical transaction with the condition TRUE -
+is refused at input 0. The codegen gate that skips the proxy's own state covenant is `!functionHasDelegatecall`,
+a PER-FUNCTION property, while the co-spend pin sits INSIDE the branch: on the untaken path the proxy both skips
+its state covenant and never reaches the pin, so the false path self-authorizes on minting-NFT presence alone.
+This reopens security finding C1.
+
+**SEC-2, live takeover.** A delegate entry point taking the implementation address as an unguarded parameter
+lets an unrelated spender co-spend an implementation they wrote. The covenant does exactly what it promises - it
+pins the co-spent script to the supplied address - but the address is caller-supplied, so the pin proves
+nothing. The existing C1 warning fires only for a P2PKH literal and is SUPPRESSED here because
+`pinsDelegateCoSpend` is true. `delegatecall-security.md` requires a covenant `impl` but never excludes an
+unguarded parameter.
+
+**SEC-3, silent miscompile.** An iterated delegate edge publishes one edge and one slot, so a loop delegating
+twice settles one delegation. Compiles clean, no diagnostic.
+
+Both forgeries are pinned as `OPEN:` tests asserting today's broken behaviour, so a fix makes them FAIL loudly
+rather than close silently. Worker B established why an SDK-side gate cannot catch SEC-1 or SEC-3: conditional,
+iterated and singular delegate edges publish byte-identical artifact metadata, asserted as a test. Typed
+interface edges publish `occurrence`/`maximumOccurrences`; low-level edges do not.
+
+Assigned to Worker C as a dedicated security round, ahead of remaining feature work, because the fixes are in
+its leased files.
 
 ### 4.10 L1/L2 land with three claims deliberately scoped down
 

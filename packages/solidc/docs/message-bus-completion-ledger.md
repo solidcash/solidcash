@@ -20,6 +20,7 @@ Evidence labels:
 - **PROVEN**: implemented and covered by a hostile BCH-2026 VM test.
 - **PARTIAL**: a bounded implementation exists, but it does not cover the normative semantic class.
 - **MISSING**: no conforming implementation exists.
+- **SCOPED**: deliberately unsupported; the compiler or SDK rejects the shape deterministically.
 - **PROCESS**: cannot be established only by an in-repository implementation.
 
 ## 1. Owner-local journal and hidden batching
@@ -60,7 +61,10 @@ Evidence labels:
 | Logical callbacks and `A -> B -> A` execute each handler exactly once | PROVEN for admitted compiled scalar handlers | The stateful compiled cycle executes and flushes each physical owner once; forged post-state fails. General callback shapes remain narrower than the specification. |
 | Staticcall snapshots and runtime-enforces no writes/effects | PROVEN by compile-time immutability for admitted staticcall | The compiler derives call mode and admits only a target proven read-only; the transcript binds that mode. Runtime dirty/effect snapshots for broader targets remain missing. |
 | Existing pinned one-hop delegatecall semantics | PROVEN for one block-local delegate | The proxy SCB1 block reserves the real implementation covenant after its master/data region. The transcript-bound proxy handler pins implementation LBC and exact calldata; the delegate binds its proxy-index witness to the adjacent relocatable block, mutates proxy state, and preserves itself. BCH-2026 tests cover base zero and non-zero placement, wrong selector, wrong proxy index, and forged proxy post-state. Nested/general delegate graphs remain outside this one-hop requirement. |
-| Correct `msg.sig`, `msg.data`, `msg.value`, `outState`, and transaction introspection | PARTIAL | Logical `msg.sender`, `msg.sig`, canonical `msg.data`, multi-row per-invocation `msg.value`, physical `activeInputIndex`, scalar `outState`, chunk-backed string/bytes `outState`, and C2 collection-entry `outState` at final owner settlement are BCH-2026 VM-proven. Dynamic output reads authenticate the callee's length header, scan the complete output table for its owner-derived chunk covenant, enforce category/capability/consecutive indices/exact cardinality, and reconstruct a 241-byte three-chunk value; the SDK now materializes direct unambiguous external dynamic writes in both legacy and balanced trailing layouts. Collection reads derive the exact owner/category-specific entry covenant, scan finalized outputs, authenticate capability and complete composite slot, reject duplicate exact rows, and return a type default only when exactly one finalized predecessor proves `slot < H(key) < next` (`next=0` as infinity); honest exact/absent cases and forged value/predecessor cases execute on the BCH-2026 VM. The complete physical transaction table fixture pins version, locktime, lengths, values, bytecodes, prevouts, sequences, and token fields. `activeBytecode` and `tx.origin` remain rejected because measurement confirms route divergence, so the broader row remains PARTIAL. |
+| Logical `msg.sender`, `msg.sig`, canonical `msg.data`, and per-invocation `msg.value` | PROVEN for admitted graph handlers | Multi-row BCH-2026 VM fixtures bind each logical context value to its exact invocation. |
+| Scalar, chunk-backed string/bytes, and C2 collection-entry `outState` | PROVEN for admitted state backends | Dynamic reads authenticate the owner-derived output covenant, category, capability, count/order and commitments. Collection reads authenticate exact entries or one finalized predecessor for absence. Honest and forged-value/predecessor cases execute on the BCH-2026 VM. Remaining cross-backend combinations are tracked by E4. |
+| Physical transaction introspection other than route-divergent identities | PROVEN | The complete transaction-table fixture pins version, locktime, lengths, values, bytecodes, prevouts, sequences and token fields; `activeInputIndex` remains physical. |
+| Transcript-mode `activeBytecode` and `tx.origin` parity | SCOPED | Measurement proves direct/transcript route divergence. Both remain deterministic compile-time rejections unless a later specification explicitly defines logical rather than physical semantics. Task E4 owns the policy matrix, not an emulation. |
 
 ## 4. Compiler analysis and automatic derivation
 
@@ -70,8 +74,13 @@ Evidence labels:
 | Impossible call/result cycles and duplicate authorities fail before transaction construction | PROVEN for the admitted graph surface | The compiler's invocation analysis runs Tarjan SCC over resolved internal calls and marks recursive components. The Layer-3 graph planner separately performs a complete DFS over the concrete invocation result-dependency graph and rejects self, duplicate, out-of-range, and cyclic producer edges before any transaction is built; structural A -> B -> A execution edges remain valid. Owner interning is by exact locking bytecode and rejects one physical authority registered with different artifacts. Participant projection parsing independently rejects physical proof aliasing on-chain. Cross-artifact SCCs necessarily run at SDK composition time because no single source compilation knows deployed peer artifacts. |
 | SDK expands a graph, reuses owners, stabilizes resources and acquires each input once | PROVEN | `deriveCompiledGraphPlan` exhausts the compiler-authored closure before physical layout, interns exact owner locking bytecodes, and emits repeated logical invocations against one physical owner block. Conditional and loop counts come only from an explicit bounded derivation-probe result; varying selectors and pointers likewise require a compiler-bounded resolver result, while absent/out-of-bound proofs fail before construction. Resource/effect spans require no speculative fixed point: they are compiler-owned parts of each artifact's balanced block and are read exactly once by `planCompiledGraph` after the participant set is complete. The compiled-graph all-input preflight and heterogeneous state/effect/event fixtures prove the finalized owner acquisition and layout on BCH-2026. |
 | Direct, repeated and transitive calls derive without hand-authored rows | PROVEN for admitted class | `deriveNativeExternalCalls` runtime-branded tables and VM tests. |
-| Expressions, dynamic targets, loops, function pointers and batches | PARTIAL | The owner-reusing worklist accepts VM-probed expression values, conditional/loop occurrence counts, fixed-method and varying-selector state-array target runs, received single function pointers, compiler-reduced pointers returned through side-effect-free internal helpers, and compiler-collapsed repeated-call batches. Dynamic calls require an explicit resolver result for every reached occurrence and validate the selected function against the target ABI; absence fails closed. For received pointers, the compiler-authored graph row copies the covenant-bound address and selector companion rather than accepting either from the SDK. Complete BCH-2026 transactions execute a received-pointer row, a helper-returned pointer reduced to its exact native edge, and a two-element persisted dispatch table whose rows select different methods; independent target and selector substitutions reject for all three. Controller-mode fixed pointer loops are compiler-bounded and expanded to concrete callsites before pointer lowering, while ordinary non-bus compilation retains its broadcast covenant. Early SCB1 synthesis runs the same pointer beta-reduction before cloning, preventing its wrapper from retaining the pre-reduction higher-order signature. Batch logical indices and selectors are canonicalized against the target ABI, producing two ordered logical rows over one physical owner. General runtime-sized pointer tables and the remaining symbolic expression classes keep the wider row PARTIAL. |
-| Returning, opaque, signature-bearing and low-level calls | PARTIAL | Typed scalar/tuple/bytes/string/struct returns and transitive result consumption are proven above. A compiler-hidden row verifies an authentic `datasig`, mutates journaled state, rejects a byte-substituted proof, and settles on the BCH-2026 VM. Transaction signatures are admitted in controller mode as typed, per-handler/per-row route witnesses excluded from the rooted SCB1 argument vector, removing the root/signature fixed point. The SDK signs the compiler-published internal `OP_INVOKE` body actually covered by `checkSig`/`checkMultiSig`; honest root and forwarded A -> B scalar signatures pass and different keys reject. First-class `sig[]` is also finalized after the transaction root: the compiler runtime-flattens its canonical variable-width elements and the rooted `pubkey[]` into BCH CHECKMULTISIG stack form. An honest 2-of-3 BCH-2026 spend passes and an unknown signer rejects. Composite row arguments are concatenated without an erroneous second field frame, so nonzero array elements remain addressable. Canonical option-free `address.call/staticcall(selector || ABI args)` is resolved to one typed child edge: the compiler binds the exact target, mode, selector, argument tail, and opaque result blob; the worklist re-encodes the resolver's typed ABI proof and rejects target or calldata disagreement; honest BCH-2026 transactions pass and result substitutions reject. The pinned block-local one-hop delegate class is separately proven. Call options, general delegate-participant edges, and the remaining dynamic/iterated low-level shapes remain fail-closed. |
+| Bounded expressions, conditional/loop counts, fixed/varying targets, received/reduced pointers and repeated batches | PROVEN for the admitted bounded classes | Resolver results are required for every reached occurrence and checked against the target ABI. Received pointers copy compiler-authored address/selector companions. Honest received, helper-returned and two-element persisted varying-selector transactions pass; independent target/selector substitutions reject. Fixed pointer loops expand to concrete callsites, and ordinary non-bus compilation retains broadcast behavior. |
+| Compiler-bounded runtime-sized pointer tables and exact occurrence exhaustion | MISSING/IMPLEMENTATION (G1,G2) | The two-element persisted table is proven at `d941b139`. General finite runtime tables still require an artifact-published bound plus omission, injection, duplicate, reorder and count proofs. |
+| Remaining admitted symbolic target/selector expression classes | MISSING/IMPLEMENTATION (G3) | Each class must either reduce to canonical concrete rows or fail with a stable diagnostic; the SDK must not guess. |
+| Typed returns, signatures and canonical option-free low-level calls | PROVEN for admitted classes | Scalar/tuple/bytes/string/struct results, `datasig`, root-excluded `sig`/`sig[]`, and option-free typed `address.call/staticcall` all have honest and hostile BCH-2026 VM evidence. |
+| Nested/transitive heterogeneous result dependencies | MISSING/IMPLEMENTATION (E1) | Existing scalar transitivity and owner-local heterogeneous rows do not yet prove the general bounded producer/consumer graph. |
+| Call options and bounded iterated low-level calls | MISSING/IMPLEMENTATION (E2) | Currently fail closed. Mode, target, calldata, options, occurrence count and result must all be transcript-bound. |
+| Delegate-participant classes beyond the pinned block-local one-hop class | SCOPED (E3) | General delegation is not admitted. E3 may add only separately specified bounded classes with code-identity, state-owner and output-authority proofs. |
 | Final complete VM probe for every input | PROVEN | `preflightLayer3Transaction` evaluates every input of the exact finalized transaction with the provider's BCH-2026 consensus limits before broadcast; the compiled-graph suite proves both an all-input success and an exact failing-input diagnostic. `sendPreflightedLayer3Transaction` makes the gate mandatory for the production Layer-3 send path. |
 
 ## 5. State, resources, effects and events
@@ -102,13 +111,44 @@ Evidence labels:
 | Requirement | Status | Current evidence / remaining work |
 |---|---|---|
 | BCH-2026 only and standard-policy compliant | PROVEN for current fixtures | BCHN regtest standard-policy suite. |
-| Concrete parser/covenant overhead and realistic corpus fit measured | PARTIAL | Fixed generators have pinned costs, and cross-function outlining brought the caller-authorized token to 4,506 redeem bytes and the five-function corpus ERC-20 inside the 10,000-byte limit at 4,494. Op-cost density is now the closer constraint (N=8 participants sit at 36.5% of budget). The bounded variable `L3GRAPH1` controller and projection parser are built and test-pinned at 1,897 and 7,025 redeem-script bytes respectively, both below 10,000. Corpus-wide composed transaction and operation-density measurements remain incomplete. |
+| Fixed generator/parser and representative ERC-20 size measurements | PROVEN as pinned measurements | Cross-function outlining brought the caller-authorized token to 4,506 redeem bytes and the five-function corpus ERC-20 to 4,494. The bounded variable `L3GRAPH1` controller and projection parser are pinned at 1,897 and 7,025 bytes. N=8 participant binding is pinned at 36.5% operation-budget density. |
+| Corpus-wide composed transaction and operation-density measurements | MISSING/MEASUREMENT (F1,F3) | Measure complete MistSwap, Effective Acceleration and proving-corpus shapes under ordinary BCH-2026 consensus and standard policy. |
 | Participant-count contention/retry behavior measured | PROVEN as reproducible engineering model | `simulateLayer3Contention` measures the multiplicative N-owner stale-outpoint probability with deterministic Monte Carlo evidence, exact theoretical comparison, and bounded retry-window backoff. CI pins N=2/N=8 degradation and retry improvement. Production telemetry remains a graduation input, not an implementation dependency. |
 | Corpus demand justifies freezing the general protocol | MISSING/PROCESS | Requires product evidence, not only tests. |
 | Independent covenant review | PROCESS | Review package exists; independent sign-off is absent. |
 | Feature default-on | MISSING by design | Must remain experimental until every applicable gate above is closed. |
 
-## 8. Implementation order
+## 8. Open-work classification and task mapping
+
+The execution plan in `message-bus-parallel-work-plan.md` owns task state. This table ensures every remaining
+implementable or measurable claim has one owner and prevents process gates from being mistaken for compiler work.
+
+| Claim class | Plan task | Classification | Completion evidence |
+|---|---|---|---|
+| Runtime-sized pointer tables | G1 | implementation | Published finite bound; honest varying rows; target/selector substitution rejection |
+| Occurrence order and exact exhaustion | G2 | implementation | Omission, injection, duplicate, reorder and count negatives |
+| Remaining admitted symbolic expressions | G3 | implementation or scoped rejection | Canonical concrete rows or stable diagnostic per class |
+| Nested/transitive heterogeneous results | E1 | implementation | Producer/consumer/order binding with substitution negatives |
+| Options and bounded iterated low-level calls | E2 | implementation | Mode/target/calldata/options/count/result binding |
+| Additional delegate classes | E3 | deliberately scoped until specified | Per-class identity, ownership and authority argument |
+| Context and remaining `outState` combinations | E4 | implementation plus scoped rejection | Supported matrix tests; route-divergent values reject |
+| Mapping insertion/deletion | S1 | implementation | Ordering/uniqueness/one-flush hostile VM evidence |
+| Mixed journals and exits | S2 | implementation | One read-your-writes journal; every exit flushes or rejects |
+| Multi-handler dynamic chunks/arrays | S3 | implementation | Bounds, order, alias and final-flush hostile evidence |
+| Relocatable balanced blocks | L1 | implementation | Base-zero/nonzero equivalence; no global absolute indices |
+| SDK funding/change/event-NFT assembly | L2 | implementation | Equal block extents and malformed-block preflight negatives |
+| Integrated compositions | C1–C3 | integration | DeFi, heterogeneous cycle and maximum bounded graph capstones |
+| Hostile integration review | A1 | in-repository review | Independent reproduction and field-by-field adversarial cases |
+| Ordinary-limit measurements | F1 | measurement | Exact consensus/policy metrics for 2/4/8 participant shapes |
+| Conservative estimator | F2 | implementation after measurement | Conservative predictions and recorded error margins |
+| Corpus fit | F3 | measurement/product input | Corpus report separating real demand from synthetic capacity |
+| Bytecode minimization | F4 | optimization after correctness | Measured savings with unchanged stack/authentication contract |
+| External review and demand | R3 | process | Independent sign-off and product evidence; not code-closable |
+
+No stale varying-selector investigation remains: its two-element persisted dispatch milestone is committed at
+`d941b139`. Process rows do not block semantic implementation completion, but they continue to block graduation.
+
+## 9. Historical implementation order
 
 1. Reuse the compiler's existing stateful handler lowering as the transcript handler instead of
    generating an arithmetic-only application body.
@@ -128,7 +168,7 @@ The specification is complete only when every non-process row is **PROVEN**, eve
 its required external evidence, and the experimental/default-off marker can be removed without
 weakening any invariant.
 
-## 9. Implementation log
+## 10. Implementation log
 
 ### 2026-07-26: Release C dynamic-state authority path measured
 

@@ -1687,20 +1687,11 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // A delegate facet is preserved at its absolute input index. Materialize the proxy's return channel first,
-    // inside the proxy block, so it does not shift behind (and collide with) the facet preservation output.
+    // A delegate facet is preserved at its absolute input index, and the block layout now reserves that index
+    // immediately after the proxy's master/data-NFT region - the position the delegate covenant derives with
+    // `OP_INPUTINDEX - (1 + dataNftCount)`. Emit the facet preservation output there FIRST, then the proxy's
+    // return channel, so the output side matches the reserved input side instead of claiming its slot.
     if (this.delegateEntriesAfterLowLevel) {
-      for (const re of this.pendingReturnEventOutputs) {
-        builder.addOutput({
-          to: new Uint8Array([0x51]),
-          amount: 800n,
-          token: {
-            amount: 0n,
-            category: re.categoryId,
-            nft: { capability: 'none', commitment: binToHex(re.commitment) },
-          },
-        });
-      }
       for (const group of this.lowLevelCallUtxoGroups.filter((g) => g.callMode === 'delegatecall')) {
         const bMaster = group.masterUtxo as UnlockableUtxo;
         builder.addOutput({
@@ -1711,6 +1702,17 @@ export class StatefulTransactionBuilder {
             to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
           });
         }
+      }
+      for (const re of this.pendingReturnEventOutputs) {
+        builder.addOutput({
+          to: new Uint8Array([0x51]),
+          amount: 800n,
+          token: {
+            amount: 0n,
+            category: re.categoryId,
+            nft: { capability: 'none', commitment: binToHex(re.commitment) },
+          },
+        });
       }
     }
 

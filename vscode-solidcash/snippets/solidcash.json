@@ -1,0 +1,36 @@
+{
+  "Contract": {
+    "prefix": "contract",
+    "body": [
+      "contract ${1:ContractName}(${2:pubkey admin}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a SolidCash contract"
+  },
+  "Function": {
+    "prefix": "function",
+    "body": [
+      "function ${1:name}(${2}) ${3:public} {",
+      "\t${0:require(true);}",
+      "}"
+    ],
+    "description": "Create a SolidCash function"
+  },
+  "Stateful contract": {
+    "prefix": "stateful",
+    "body": [
+      "pragma solidcash ^0.13.0;",
+      "",
+      "contract ${1:Counter}(pubkey admin) {",
+      "\tint public ${2:counter};",
+      "",
+      "\tfunction ${3:increment}(sig signature) {",
+      "\t\trequire(checkSig(signature, admin));",
+      "\t\tthis.${2:counter} = this.${2:counter} + 1;",
+      "\t}",
+      "}"
+    ],
+    "description": "Create a stateful SolidCash contract"
+  }
+}

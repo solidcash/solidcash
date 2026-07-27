@@ -1,0 +1,74 @@
+pragma solidcash ^0.13.0;
+
+import "./math.scash";
+import { Ledger as Book, Receipt } from "./ledger.scash";
+import "./oracle.scash" as OracleNs;
+
+/// A minimal token used by the navigation tests.
+contract Token(pubkey owner) is Base {
+    /// Balance per holder.
+    enumerable mapping(address holder => int amount) balances;
+
+    // Total minted supply.
+    int public totalSupply;
+
+    int constant MAX_SUPPLY = 21_000_000;
+
+    struct Holder {
+        address account;
+        int weight;
+    }
+
+    enum Phase { Created, Open, Closed }
+
+    event Transfer(address indexed from, address indexed to, int amount);
+
+    error InsufficientBalance(int available, int required);
+
+    modifier onlyOwner(sig signature) {
+        require(checkSig(signature, owner));
+        _;
+    }
+
+    /// Moves `amount` from the caller to `to`.
+    function transfer(sig signature, address to, int amount) public onlyOwner(signature) {
+        int available = this.balances[msg.sender];
+        if (available < amount) {
+            revert InsufficientBalance(available, amount);
+        }
+        Holder memory holder = Holder({ account: to, weight: amount });
+        Phase phase = Phase.Closed;
+        this.balances[msg.sender] = available - amount;
+        this.balances[to] = this.balances[to] + holder.weight;
+        require(tx.outputs[0].value >= 1000 sats);
+        Receipt memory receipt = Receipt({ payer: msg.sender, amount: amount });
+        require(Book(to).settle(receipt));
+        emit Transfer(msg.sender, to, amount);
+    }
+
+    function mint(int amount) internal {
+        uint minted = uint(amount);
+        bigint native = 1;
+        require(minted >= native);
+        require(this.totalSupply + amount <= MAX_SUPPLY);
+        this.totalSupply = add(this.totalSupply, amount);
+        require(SafeMath.sub(amount, 1) >= 0);
+        require(this.age >= 4 weeks);
+    }
+}
+
+contract Base() {
+    function version() internal returns (int) {
+        assembly { OP_TXVERSION }
+        return tx.version;
+    }
+
+    function scaled(int input) internal returns (int) {
+        int[2] packed weights = [2, 3];
+        assembly {
+            let scale := mul(input, 2)
+            sstore(0, scale)
+        }
+        return weights[0];
+    }
+}

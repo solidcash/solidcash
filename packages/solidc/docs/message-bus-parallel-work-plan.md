@@ -123,14 +123,14 @@ task-specific report, not in this table.
 | P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
 | G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27`; also fixed a `d941b139` direct-route regression |
-| G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | TODO | Honest + count/order/omission/injection |
+| G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | LEASED | round 2, base `b9aa816d`; lease `compiler.ts` |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
-| E2 | Call options and bounded iterated low-level calls | B | E1 | TODO | Bind mode/target/calldata/result |
+| E2 | Call options and bounded iterated low-level calls | B | E1 | LEASED | round 2, base `b9aa816d`; lease SDK `src/layer3/*` |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | `6119ba26`; closed a real C2 forgery defect |
-| S2 | Mixed scalar/collection/dynamic journals | C | S1 | TODO | All admitted exits flush or reject |
+| S2 | Mixed scalar/collection/dynamic journals | C | S1 | LEASED | round 2, base `b9aa816d`; lease `GenerateTargetTraversal.ts`; owns the cloned-handler guard |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | TODO | Equal input/output block extent |
@@ -164,6 +164,20 @@ Aggregate after round 1 integration: `2 PROVEN / 3 INTEGRATED / 0 REVIEW / 0 LEA
 
 The one remaining red is `LargeContractSplitting` (task X1). The ten `solidc` reds and the parallel-only
 `solidcash` reds are gone: they were a fixture-outpoint birthday collision, fixed in `72f07b07`.
+
+### 4.2b Round-2 dispatch, base `b9aa816d`
+
+Each worker opens with a hostile review of a peer's round-1 slice, since the protocol requires that the reviewer
+did not implement the reviewed work. No round-1 task can reach `PROVEN` until its review lands.
+
+| Reviewer | Reviews | Then implements |
+| --- | --- | --- |
+| Worker A | S1 (`6119ba26`) - the skipped-guard shapes, especially the UNVERIFIED multi-slot single-write case | G2 |
+| Worker B | G1 (`30d25f27`) - ceiling-not-exact-count, movable bounds, the direct-route gating fix | E2 |
+| Worker C | E1 (`39d034f2`) - `isRuntimeResolvedCallsite` widening, unexhausted projection result cursor | S2 |
+
+Round-1 worktrees were deliberately left intact rather than reset, so every delivered commit stays reachable
+from its original branch. Round-2 worktrees are new: `worker-a-g2`, `worker-b-e2`, `worker-c-s2`.
 
 ### 4.3 Corrections this round forced on this plan
 

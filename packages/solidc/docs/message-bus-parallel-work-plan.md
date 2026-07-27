@@ -120,8 +120,8 @@ task-specific report, not in this table.
 
 | ID | Deliverable | Owner | Depends on | State | Lease/commit/evidence |
 | --- | --- | --- | --- | --- | --- |
-| P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | TODO | Split compound PARTIAL rows |
-| P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | TODO | Must identify every raised limit |
+| P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
+| P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
 | G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | TODO | Continues `d941b139` |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | TODO | Honest + count/order/omission/injection |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
@@ -155,21 +155,21 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Checklist:
 
-- [ ] Remove stale references to the now-complete varying-selector investigation.
-- [ ] Split compound rows where a proven feature and a deliberate rejection share one `PARTIAL` status.
-- [ ] Classify every remaining claim as implementation, fail-closed scope, measurement, or external/process.
-- [ ] Map every implementable claim to exactly one task ID in this plan.
-- [ ] Confirm process rows cannot block semantic completion.
+- [x] Remove stale references to the now-complete varying-selector investigation.
+- [x] Split compound rows where a proven feature and a deliberate rejection share one `PARTIAL` status.
+- [x] Classify every remaining claim as implementation, fail-closed scope, measurement, or external/process.
+- [x] Map every implementable claim to exactly one task ID in this plan.
+- [x] Confirm process rows cannot block semantic completion.
 
 ### P0.2 — relaxed semantic-test profile
 
 Checklist:
 
-- [ ] Add one named BCH-2026 VM configuration used only by semantic capstones.
-- [ ] Document every changed input-size, transaction-size and operation-budget limit.
-- [ ] Keep opcode behavior, introspection behavior and covenant evaluation identical to BCH-2026.
-- [ ] Ensure test names and reports say `SEMANTIC`, never `standard` or `deployable`.
-- [ ] Retain ordinary-limit tests for already fitting cases.
+- [x] Add one named BCH-2026 VM configuration used only by semantic capstones.
+- [x] Document every changed input-size, transaction-size and operation-budget limit.
+- [x] Keep opcode behavior, introspection behavior and covenant evaluation identical to BCH-2026.
+- [x] Ensure test names and reports say `SEMANTIC`, never `standard` or `deployable`.
+- [x] Retain ordinary-limit tests for already fitting cases.
 
 ## 6. Phase 1: bounded semantic closure
 

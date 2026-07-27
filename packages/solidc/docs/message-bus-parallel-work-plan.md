@@ -1,0 +1,373 @@
+# Message-Bus Parallel Work Plan
+
+Status: execution plan  
+Baseline: `d941b139` (`prove persisted varying-selector graph dispatch`)  
+Scope: finish the bounded journaled message-bus semantics first, prove that the parts compose, and only then
+optimize and select the production envelope.
+
+## 1. Objective and evidence levels
+
+The immediate objective is semantic correctness, not premature selection of a deployable participant bound.
+Correctness and deployability are related but distinct claims:
+
+1. **SEMANTIC**: honest and hostile transactions execute with BCH-2026 consensus semantics. Relaxed mock limits may
+   be used so size does not block semantic work.
+2. **CONSENSUS_FIT**: the same shape passes ordinary BCH-2026 consensus limits.
+3. **POLICY_FIT**: the same shape is accepted by the BCHN standard-policy configuration and retains the selected
+   production headroom.
+
+Relaxed limits prove only `SEMANTIC`. They must never be cited as `CONSENSUS_FIT` or `POLICY_FIT`. Conversely, a
+semantically sound shape that is currently too large remains implemented and testable; it is not silently removed
+from the language. The compiler and SDK may keep it experimental or reject it under a production preflight profile.
+
+The intended order is:
+
+1. reconcile the ledger and finish bounded semantics;
+2. prove the semantics compose in integrated capstones;
+3. complete balanced SDK assembly;
+4. measure and optimize;
+5. select and enforce the production envelope;
+6. graduate only after the external/process gates are separately satisfied.
+
+## 2. Baseline facts
+
+The following work is already committed and must not be reopened without a failing regression:
+
+- two-element persisted varying-target/varying-selector dispatch passes honestly;
+- independent target and selector substitutions reject;
+- received and compiler-reduced function pointers are graph-bound;
+- scalar, tuple, bytes, string and struct results are authenticated;
+- canonical option-free low-level `call` and `staticcall` have typed graph edges;
+- a pinned, block-local one-hop delegate class is proven;
+- chunk-backed and collection-entry `outState` reads are authenticated;
+- balanced participant layouts and event-NFT slots exist for the currently proven shapes;
+- bounded variable transcript validation and bounded immutable-version interoperability have committed evidence.
+
+The completion ledger remains authoritative for detailed evidence. This plan owns execution order and task status;
+it does not duplicate the ledger's historical narrative.
+
+## 3. Roles and shared-work rules
+
+At most four agents are active:
+
+1. **Integration owner (main thread)**: owns the status board, dependency decisions, collision-file leases,
+   cherry-picks/merges, full regression, and ledger updates.
+2. **Worker A — graph semantics**: symbolic graph expansion, targets, selectors, loops and function pointers.
+3. **Worker B — execution semantics**: returns, continuations, low-level calls, context and introspection.
+4. **Worker C — state/layout or audit**: state backends and balanced assembly while implementation is active;
+   adversarial review after an integration candidate exists.
+
+Workers use separate Git worktrees and branches created from an integration commit named by the main thread. They
+must not work in or modify another worker's worktree.
+
+### 3.1 Collision-file leases
+
+The following are single-writer files or surfaces:
+
+- `packages/solidc/src/compiler.ts`
+- `packages/solidc/src/generation/GenerateTargetTraversal.ts`
+- `packages/solidc/src/semantic/SymbolTableTraversal.ts`
+- shared AST/artifact types
+- shared Layer-3 SDK planner/assembler modules
+- existing large Layer-3 integration tests
+- this plan and the completion ledger
+
+Before changing one, a worker requests a lease from the integration owner. The status board records the lease.
+A lease names the file/surface, worker, task ID and base commit. Only the integration owner may resolve overlapping
+leases. Workers should prefer new modules, sources and focused test files.
+
+Workers never edit this plan or the completion ledger. They report evidence; the integration owner updates both.
+
+### 3.2 Worker evidence packet
+
+Every completed task returns exactly:
+
+- task ID and result: `PASS`, `FAIL_CLOSED`, `BLOCKED`, or `NO_CHANGE`;
+- base commit and ordered commit hashes;
+- files changed, including every leased collision file;
+- focused commands and their exact pass/fail counts;
+- honest VM cases added;
+- hostile cases added and the field/invariant each attacks;
+- evidence level reached: `SEMANTIC`, `CONSENSUS_FIT`, or `POLICY_FIT`;
+- measurements, when applicable;
+- direct-route regression result;
+- remaining unsupported shapes and their exact diagnostic;
+- an explicit statement of what the work does not prove;
+- clean-worktree confirmation.
+
+`PASS` means the task's written acceptance checklist is satisfied. It does not mean `PROVEN`. Only the integration
+owner may mark `INTEGRATED`, and only a separate review pass may justify changing a ledger claim to `PROVEN`.
+
+### 3.3 Task states
+
+The main-thread board uses:
+
+- `TODO`: ready or waiting on listed dependencies;
+- `LEASED`: assigned against a named base commit;
+- `REVIEW`: worker commits and evidence packet received;
+- `CHANGES`: review found required corrections;
+- `INTEGRATED`: merged and focused plus full regression passed;
+- `PROVEN`: hostile review passed and ledger evidence was updated;
+- `SCOPED`: deliberately unsupported and rejected deterministically;
+- `BLOCKED`: concrete dependency or contradiction prevents progress.
+
+Only the integration owner changes task state.
+
+## 4. Main-thread status board
+
+This is the concise, authoritative progress view. Historical investigation belongs in the completion ledger or a
+task-specific report, not in this table.
+
+| ID | Deliverable | Owner | Depends on | State | Lease/commit/evidence |
+| --- | --- | --- | --- | --- | --- |
+| P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | TODO | Split compound PARTIAL rows |
+| P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | TODO | Must identify every raised limit |
+| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | TODO | Continues `d941b139` |
+| G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | TODO | Honest + count/order/omission/injection |
+| G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
+| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | TODO | Multiple producers/consumers |
+| E2 | Call options and bounded iterated low-level calls | B | E1 | TODO | Bind mode/target/calldata/result |
+| E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
+| E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
+| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | TODO | One authority, one final flush |
+| S2 | Mixed scalar/collection/dynamic journals | C | S1 | TODO | All admitted exits flush or reject |
+| S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
+| L1 | Fully relocatable balanced participant block | C | P0.1 | TODO | No global absolute indices |
+| L2 | SDK funding/change/event-NFT block assembly | C | L1 | TODO | Equal input/output block extent |
+| C1 | DeFi integrated semantic capstone | Main | G2,E2,S2,L2 | TODO | Relaxed VM allowed |
+| C2 | Heterogeneous A→B→A dynamic dispatch capstone | Main | G2,E1,S3,L2 | TODO | At least two targets/selectors |
+| C3 | Eight-participant semantic capstone | Main | C1,C2 | TODO | Correctness, not deployability |
+| A1 | Independent in-repository hostile review | C | C1,C2,C3 | TODO | Reviewer did not implement reviewed slice |
+| F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
+| F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
+| F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
+| F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
+| R1 | Select and enforce production envelope | Main | F2,F3,F4 | TODO | Semantic support may exceed production profile |
+| R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
+| R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
+
+The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
+for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
+
+## 5. Phase 0: rebaseline and make claims atomic
+
+### P0.1 — ledger reconciliation
+
+Checklist:
+
+- [ ] Remove stale references to the now-complete varying-selector investigation.
+- [ ] Split compound rows where a proven feature and a deliberate rejection share one `PARTIAL` status.
+- [ ] Classify every remaining claim as implementation, fail-closed scope, measurement, or external/process.
+- [ ] Map every implementable claim to exactly one task ID in this plan.
+- [ ] Confirm process rows cannot block semantic completion.
+
+### P0.2 — relaxed semantic-test profile
+
+Checklist:
+
+- [ ] Add one named BCH-2026 VM configuration used only by semantic capstones.
+- [ ] Document every changed input-size, transaction-size and operation-budget limit.
+- [ ] Keep opcode behavior, introspection behavior and covenant evaluation identical to BCH-2026.
+- [ ] Ensure test names and reports say `SEMANTIC`, never `standard` or `deployable`.
+- [ ] Retain ordinary-limit tests for already fitting cases.
+
+## 6. Phase 1: bounded semantic closure
+
+Workers implement the smallest vertical slice that can be independently falsified. A task must not combine an
+unrelated compiler change, SDK change and optimization.
+
+### G1–G3 — graph acquisition and expansion
+
+Checklist:
+
+- [ ] Compiler bound is explicit and artifact-published.
+- [ ] Every reached occurrence resolves to one canonical participant, selector and argument vector.
+- [ ] Runtime-sized inputs are accepted only when the compiler can prove a finite bound.
+- [ ] Transcript order matches source execution order.
+- [ ] Exact exhaustion rejects missing, injected, duplicated and reordered occurrences.
+- [ ] Target and selector substitution reject independently.
+- [ ] Direct non-graph behavior is regression-identical.
+- [ ] Shapes beyond the admitted bound fail with a stable diagnostic.
+
+### E1–E4 — execution and context
+
+Checklist:
+
+- [ ] Result schema, producer, consumer and occurrence are canonical.
+- [ ] Scalar and composite results work through nested and transitive dependencies.
+- [ ] Multiple consumers cannot substitute or consume a result twice unintentionally.
+- [ ] Low-level mode, target, calldata, options and result are transcript-bound.
+- [ ] Iteration has a compiler-proven bound and exact row count.
+- [ ] Every delegate class proves code identity, state owner and output authority.
+- [ ] Supported context values have direct/transcript equivalence or explicitly documented logical semantics.
+- [ ] Divergent context, including current `tx.origin` and `activeBytecode`, fails closed.
+
+### S1–S3 — state and journal semantics
+
+Checklist:
+
+- [ ] Mapping insertion proves predecessor/successor ordering and unique authority.
+- [ ] Mapping deletion cannot strand, duplicate or fabricate value.
+- [ ] Scalar, collection and dynamic writes share one read-your-writes journal.
+- [ ] Structural aliases canonicalize to one physical entry.
+- [ ] Every physical state/resource slot has one final authorized flush.
+- [ ] Early return, loop exit and revert either flush correctly or fail at compile time.
+- [ ] Dynamic chunk count, order, category, capability and commitment are authenticated.
+- [ ] Honest and hostile transactions execute on the BCH-2026 VM.
+
+### L1–L2 — balanced physical composition
+
+Checklist:
+
+- [ ] Each participant contributes an equal-width input/output block.
+- [ ] Funding inputs fill unused input-side slots.
+- [ ] Corresponding output-side slots use the specified 1,000-satoshi ordinary/event/return-event or settlement
+      outputs.
+- [ ] Event NFTs remain inside the emitting participant's block.
+- [ ] Final fee funding and terminal change are outside relocatable participant blocks.
+- [ ] A block may move without changing its internal covenant meaning.
+- [ ] No new global absolute-index dependency exists.
+- [ ] SDK preflight rejects malformed or unbalanced blocks before signing.
+
+## 7. Phase 2: integrated semantic capstones
+
+Capstones use the relaxed profile when necessary. They prove composition, not production fit.
+
+### C1 — DeFi composition
+
+- [ ] Caller-authorized ERC-20 `transferFrom`.
+- [ ] Bento/Kashi-style accounting.
+- [ ] Result-dependent continuation.
+- [ ] Multiple state/resource transitions.
+- [ ] Ordinary and return-event NFTs.
+- [ ] Hostile caller, allowance, result, resource and event substitutions reject.
+
+### C2 — heterogeneous cycle
+
+- [ ] Three independently compiled participant types.
+- [ ] Structural A→B→A cycle; every physical input executes once.
+- [ ] Dynamic state and at least two possible target/selector pairs.
+- [ ] Missing/reordered return edge rejects.
+- [ ] Target, selector, argument, result and post-state substitutions reject independently.
+
+### C3 — bounded maximum graph
+
+- [ ] Eight participants or the explicitly selected semantic bound.
+- [ ] Calls, results, resources, dynamic chunks and event NFTs are all present.
+- [ ] Balanced blocks compose without absolute-index rewriting.
+- [ ] Honest all-input execution passes.
+- [ ] Participant injection, omission, duplicate owner and disjoint-root cases reject.
+
+## 8. Phase 3: adversarial integration review
+
+The reviewer must not be the worker who implemented the reviewed slice.
+
+Checklist:
+
+- [ ] Reproduce all capstones from committed fixtures.
+- [ ] Add at least one hostile case per authenticated transcript field.
+- [ ] Check whole-table exhaustion, owner uniqueness and physical input/output binding.
+- [ ] Check state/resource value, category, capability, commitment and locking-bytecode preservation.
+- [ ] Check direct-route bytecode/behavior regressions.
+- [ ] Check relaxed limits are the only reason a relaxed-only case fails ordinary limits.
+- [ ] Report findings by task ID and return affected tasks to `CHANGES`.
+- [ ] Mark a task `PROVEN` only after corrections and regressions land.
+
+## 9. Phase 4: production fitting
+
+Only this phase may narrow the production envelope.
+
+### F1 — measurements
+
+For 2-, 4- and 8-participant representative shapes, pin:
+
+- redeem and unlocking-bytecode size per input;
+- operation cost and available-budget percentage;
+- maximum stack and item sizes;
+- serialized transaction size;
+- standard-policy result;
+- construction/preflight time;
+- marginal cost per participant, invocation, resource, result, chunk and event.
+
+### F2 — estimator
+
+- [ ] Predictions are conservative for all measured fixtures.
+- [ ] Unknown shapes fail estimation closed.
+- [ ] Error margins are recorded.
+- [ ] Reporting ships before enforcement.
+- [ ] Production rejection is enabled only after calibration.
+
+### F3 — corpus fit
+
+Evaluate MistSwap, Effective Acceleration, TreasurySplit, Marketplace, MasterChef, BentoBox and Kashi. Record graph
+shape, compiler derivation, eligibility, exact rejection, measured/estimated cost and fit at 2/4/8 participants.
+
+### F4 — optimization
+
+Every proposal records the exact repeated span, bytes saved, operation-cost change, stack contract, preserved
+authentication invariant and protocol-version effect. Smaller bytecode with unsafe stack or authentication behavior
+is a rejection, not an optimization.
+
+The provisional 20% headroom target is a product policy subject to measured justification. It is not a semantic
+correctness criterion.
+
+## 10. Integration protocol
+
+For every worker delivery, the main thread:
+
+1. verifies the evidence packet and clean commit series;
+2. reviews diffs before integration;
+3. runs focused compiler and SDK tests;
+4. runs the relevant honest and hostile BCH-2026 VM cases;
+5. runs full build, test and lint at an integration checkpoint;
+6. assigns an independent hostile review;
+7. updates the status board;
+8. updates the completion ledger only after evidence is committed.
+
+Integration commits must be small enough to revert independently. No task may remain `LEASED` across a baseline
+change without being rebased or explicitly renewed. Workers must report a blocker as soon as it is measured; they
+must not fill time with adjacent unassigned changes.
+
+Suggested cadence:
+
+- assign up to three independent tasks from the board;
+- receive evidence packets asynchronously;
+- integrate the least collision-prone task first;
+- publish the new integration commit;
+- rebase or renew remaining leases;
+- report changed board rows to the main thread;
+- run a full regression after every two integrated semantic slices, and immediately after any shared codegen or
+  transaction-layout change.
+
+## 11. Production-envelope decision
+
+After F1–F4, select one production profile:
+
+- bounded graph up to eight participants;
+- bounded graph up to four participants;
+- two-party graph plus repeated-owner batching;
+- journaling/repeated-owner batching only.
+
+This decision changes production preflight and default-on status, not the truth of already proven semantic tests.
+Semantically implemented shapes outside the selected profile remain experimental and are rejected by production
+preflight with a precise capacity diagnostic.
+
+## 12. Definition of completion
+
+Semantic implementation is complete when:
+
+- every implementable non-process claim in the bounded semantic envelope is `PROVEN`;
+- every excluded shape is `SCOPED` with deterministic compiler or SDK rejection;
+- C1–C3 and their hostile suites pass on the exact integration commit;
+- balanced participant blocks are relocatable and SDK-assembled;
+- no temporary probes or unexplained test-limit changes remain.
+
+Production fitting is complete when:
+
+- ordinary BCH-2026 consensus and standard-policy measurements are pinned;
+- conservative preflight limits enforce the selected production envelope;
+- corpus-fit and contention evidence are recorded;
+- documentation distinguishes semantic support, consensus fit and policy fit.
+
+Graduation/default-on additionally requires the independent external review and product-demand gates. These are
+reported separately and are never simulated by in-repository tests.

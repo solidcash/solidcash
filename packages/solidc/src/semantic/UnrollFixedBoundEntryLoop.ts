@@ -19,6 +19,7 @@ import {
   MappingAssignNode,
   MappingFieldAssignNode,
   MappingDeleteNode,
+  TupleAssignmentNode,
   BreakNode,
   ContinueNode,
   ReturnNode,
@@ -124,6 +125,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
+      // A tuple assignment rebinds every non-skip slot. `(a, b) = (b, a)` swaps whole array values, so a
+      // `new T[](N)` size recorded for `a` would otherwise stay trusted while `a` now holds b's array.
+      if (n instanceof TupleAssignmentNode) {
+        for (const element of n.elements) if (!element.skip && element.name) names.add(element.name);
+      }
       if (n instanceof ArrayPushNode || n instanceof ArrayPopNode) names.add(n.name);
       if (n instanceof DeleteLocalNode) names.add(n.identifier.name);
       for (const key of Object.keys(n)) {

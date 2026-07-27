@@ -127,6 +127,141 @@ describe('message-bus pointer-table bound', () => {
       .toContain(`Message-bus pointer-table loop is not compiler-bounded: ${detail}`);
   }, COMPILE_TIMEOUT_MS);
 
+  /**
+   * Bound-provenance escapes, from Worker B's hostile review of G1.
+   *
+   * Each ESCAPE is byte-equivalent in effect to a CONTROL the pass already refused, and each was ACCEPTED with a
+   * published `maximumOccurrences: 3` before this fix. The worst is the tuple swap: `require(n <= 3)` runs, the
+   * swap then raises `n`, and the expansion emits only three guarded rows - a silently truncated prefix, which is
+   * exactly what the guard exists to prevent. `TupleAssignmentNode` was never tracked as a write; the write is
+   * real and survives to codegen. The other two move the write, or the read, one call deep.
+   */
+  it.each([
+    [
+      'a bound raised by a tuple swap',
+      `  function fireAll(uint value, int m) public {
+    int n = m;
+    require(n <= 3);
+    (n, m) = (m, n);
+    for (int i = 0; i < n; i = i + 1) { handlers[i](value); }
+    require(value >= 0);
+  }`,
+      "this function can change 'n', which the bound depends on",
+    ],
+    [
+      'a bound mutated through an internal call',
+      `  function bump(address extra) internal { this.handlers.push(IH(extra).inc); }
+  function fireAll(uint value, address extra) public {
+    require(handlers.length <= 3);
+    bump(extra);
+    for (int i = 0; i < handlers.length; i = i + 1) { handlers[i](value); }
+    require(value >= 0);
+  }`,
+      "this function can change 'handlers', which the bound depends on",
+    ],
+    [
+      'a bound read through a getter over a mutated table',
+      `  function rows() internal view returns (int) { return handlers.length; }
+  function fireAll(uint value, address extra) public {
+    require(rows() <= 3);
+    this.handlers.push(IH(extra).inc);
+    for (int i = 0; i < rows(); i = i + 1) { handlers[i](value); }
+    require(value >= 0);
+  }`,
+      "this function can change 'handlers', which the bound depends on",
+    ],
+  ])('rejects %s', (_name, body, detail) => {
+    let thrown: unknown;
+    try {
+      compileString(table(body), busOptions);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PointerTableBoundError);
+    expect((thrown as Error).message)
+      .toContain(`Message-bus pointer-table loop is not compiler-bounded: ${detail}`);
+  }, COMPILE_TIMEOUT_MS);
+
+  // The honest controls for the three escapes above: a write the bound does NOT depend on must stay admitted,
+  // otherwise the fix would have been bought by rejecting valid contracts.
+  it.each([
+    [
+      'a tuple swap of locals the bound does not depend on',
+      `  function fireAll(uint value, int p, int q) public {
+    require(handlers.length <= 3);
+    (p, q) = (q, p);
+    for (int i = 0; i < handlers.length; i = i + 1) { handlers[i](value); }
+    require(value >= 0 && p >= 0 && q >= 0);
+  }`,
+    ],
+    [
+      'an internal call that writes something else',
+      `  int counter;
+  function bump() internal { this.counter = counter + 1; }
+  function fireAll(uint value) public {
+    require(handlers.length <= 3);
+    bump();
+    for (int i = 0; i < handlers.length; i = i + 1) { handlers[i](value); }
+    require(value >= 0);
+  }`,
+    ],
+    [
+      'a getter bound over a table nothing writes',
+      `  function rows() internal view returns (int) { return handlers.length; }
+  function fireAll(uint value) public {
+    require(rows() <= 3);
+    for (int i = 0; i < rows(); i = i + 1) { handlers[i](value); }
+    require(value >= 0);
+  }`,
+    ],
+  ])('still admits %s', (_name, body) => {
+    const artifact = compileString(table(body), busOptions);
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'fireAll')!;
+    expect(summary.externalCalls![0]).toMatchObject({ occurrence: 'loop', maximumOccurrences: 3 });
+  }, COMPILE_TIMEOUT_MS);
+
+  /**
+   * The same blind spot in the OLDER `UnrollFixedBoundEntryLoop`, which G1 inherited rather than created, and
+   * which was exploitable in its own right: its `new T[](N)` length fold trusts a local that is never mutated,
+   * a tuple swap was not counted as a mutation, and a folded size of ZERO deletes the loop as provably-dead
+   * code. Before the fix this compiled with NO entry accesses at all - the two mapping writes vanished. The
+   * byte-equivalent plain reassignment was already refused.
+   */
+  it.each([
+    ['a tuple swap', '(empty, full) = (full, empty);'],
+    ['a plain reassignment', 'empty = full;'],
+  ])('refuses to fold a `new T[](0)` length across %s', (_name, mutation) => {
+    const source = `contract UnrollFold {
+  mapping(int => int) m;
+  function run(int v) external {
+    int[] memory empty = new int[](0);
+    int[] memory full = new int[](2);
+    full[0] = 7;
+    full[1] = 8;
+    ${mutation}
+    for (int i = 0; i < empty.length; i = i + 1) { m[i] = full[i]; }
+    require(v >= 0);
+  }
+}`;
+    expect(() => compileString(source, { forceStateful: true }))
+      .toThrow(/cannot be represented by the C2 linked-list transition generator/);
+  }, COMPILE_TIMEOUT_MS);
+
+  it('still folds a `new T[](N)` length when nothing rebinds the local', () => {
+    const artifact = compileString(`contract UnrollHonest {
+  mapping(int => int) m;
+  function run(int v) external {
+    int[] memory full = new int[](2);
+    full[0] = 7;
+    full[1] = 8;
+    for (int i = 0; i < full.length; i = i + 1) { m[i] = full[i]; }
+    require(v >= 0);
+  }
+}`, { forceStateful: true });
+    // Folded to two constant-index writes, i.e. two distinct fixed entry slots.
+    expect(artifact.abi.find((fn) => fn.name === 'run')!.entryAccesses).toHaveLength(2);
+  }, COMPILE_TIMEOUT_MS);
+
   it('leaves the ordinary broadcast route untouched outside message-bus mode', () => {
     const source = table(`  function fireAll(uint value) public {
     for (int i = 0; i < handlers.length; i = i + 1) { handlers[i](value); }

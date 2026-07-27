@@ -22,6 +22,8 @@ import {
   MappingFieldAssignNode,
   MappingDeleteNode,
   StateAssignNode,
+  TupleAssignmentNode,
+  FunctionCallNode,
   StateArrayPushNode,
   StateArrayPopNode,
   StateArrayAssignNode,
@@ -93,10 +95,15 @@ function anyNode(nodes: Node[], predicate: (node: Node) => boolean): boolean {
 }
 
 /** Names whose value or length a statement list can change. A proven bound may not depend on one of these. */
-function mutatedNames(nodes: Node[]): Set<string> {
+export function mutatedNames(nodes: Node[]): Set<string> {
   const names = new Set<string>();
   const record = (node: Node): boolean => {
     if (node instanceof AssignNode && node.identifier instanceof IdentifierNode) names.add(node.identifier.name);
+    // A tuple assignment writes every non-skip slot. `(n, m) = (m, n)` is a real write to `n` that survives to
+    // codegen, so a bound depending on `n` is only as good as the guard that ran BEFORE the swap.
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (!element.skip && element.name) names.add(element.name);
+    }
     if (node instanceof DeleteLocalNode && node.identifier instanceof IdentifierNode) {
       names.add(node.identifier.name);
     }
@@ -137,9 +144,16 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
   // Signature of a bound expression -> the largest value a dominating require lets it take.
   private provenBounds = new Map<string, bigint>();
   private currentFunction = '';
-  // Every name the CURRENT function can write. A bound may not depend on one: the guard proves a ceiling at the
-  // point it runs, and a later write - before the loop or inside it - would silently invalidate that proof.
-  private functionMutations = new Set<string>();
+  // Every name the CURRENT function can write, INCLUDING through the contract functions it calls. A bound may
+  // not depend on one: the guard proves a ceiling at the point it runs, and a later write - before the loop,
+  // inside it, or inside a callee - would silently invalidate that proof. Computed on first use: only a
+  // function that actually holds a pointer-table loop ever consults it, and building it walks whole bodies.
+  private functionMutations?: Set<string>;
+  private currentFunctionNode?: FunctionDefinitionNode;
+  // Contract functions visible to internal calls, so mutation and bound provenance can be followed into them.
+  private contractFunctions = new Map<string, FunctionDefinitionNode>();
+  // Per-function direct mutations, shared across the callers that reach them.
+  private mutationCache = new Map<FunctionDefinitionNode, Set<string>>();
 
   constructor(private readonly expansions?: PointerTableExpansionMap) {
     super();
@@ -152,18 +166,101 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
     return node;
   }
 
+  visitContract(node: ContractNode): Node {
+    const previous = this.contractFunctions;
+    this.contractFunctions = new Map(node.functions.map((fn) => [fn.name, fn]));
+    if (node.constructorDef) this.contractFunctions.set(node.constructorDef.name, node.constructorDef);
+    const result = super.visitContract(node);
+    this.contractFunctions = previous;
+    return result;
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const previous = this.provenBounds;
     const previousName = this.currentFunction;
     const previousMutations = this.functionMutations;
+    const previousNode = this.currentFunctionNode;
     this.provenBounds = new Map();
     this.currentFunction = node.name;
-    this.functionMutations = node.body ? mutatedNames([node.body]) : new Set<string>();
+    this.currentFunctionNode = node;
+    this.functionMutations = undefined;
     node.body = this.visit(node.body) as BlockNode;
     this.provenBounds = previous;
     this.currentFunction = previousName;
     this.functionMutations = previousMutations;
+    this.currentFunctionNode = previousNode;
     return node;
+  }
+
+  /** Contract functions this node can call, by name. Only names the contract defines are followed. */
+  private calledFunctions(node: Node | undefined): string[] {
+    const called: string[] = [];
+    const walk = (candidate: Node | undefined): void => {
+      if (!candidate) return;
+      if (candidate instanceof FunctionCallNode && this.contractFunctions.has(candidate.identifier.name)) {
+        called.push(candidate.identifier.name);
+      }
+      for (const key of Object.keys(candidate)) {
+        if (key === 'location' || key === 'resolvedFunction') continue;
+        const value = (candidate as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(node);
+    return called;
+  }
+
+  /**
+   * Names `fn` can write, following internal calls transitively. Without this a bound is escapable by moving the
+   * write one call deep - `bump(extra)` pushing to the very table the bound reads - which the identical inline
+   * write is correctly refused for.
+   */
+  private reachableMutations(fn: FunctionDefinitionNode): Set<string> {
+    const names = new Set<string>();
+    const seen = new Set<FunctionDefinitionNode>();
+    const walk = (current: FunctionDefinitionNode | undefined): void => {
+      if (!current?.body || seen.has(current)) return;
+      seen.add(current);
+      let direct = this.mutationCache.get(current);
+      if (!direct) {
+        direct = mutatedNames([current.body]);
+        this.mutationCache.set(current, direct);
+      }
+      for (const name of direct) names.add(name);
+      for (const callee of this.calledFunctions(current.body)) walk(this.contractFunctions.get(callee));
+    };
+    walk(fn);
+    return names;
+  }
+
+  /** The current function's reachable mutations, built once and only when a pointer-table loop needs them. */
+  private currentMutations(): Set<string> {
+    if (!this.functionMutations) {
+      this.functionMutations = this.currentFunctionNode
+        ? this.reachableMutations(this.currentFunctionNode) : new Set<string>();
+    }
+    return this.functionMutations;
+  }
+
+  /**
+   * Every name a bound expression's VALUE can depend on. A bare identifier chain contributes its own names; a
+   * call contributes every name its callee body mentions, transitively. Without the call leg a bound read
+   * through a getter - `require(rows() <= 3)` where `rows()` returns `handlers.length` - hides its dependency on
+   * a table the same function pushes to.
+   */
+  private boundDependencies(expression: Node | undefined): Set<string> {
+    const names = identifiersOf(expression);
+    const seen = new Set<FunctionDefinitionNode>();
+    const queue = this.calledFunctions(expression);
+    while (queue.length > 0) {
+      const callee = this.contractFunctions.get(queue.pop()!);
+      if (!callee?.body || seen.has(callee)) continue;
+      seen.add(callee);
+      identifiersOf(callee.body, names);
+      queue.push(...this.calledFunctions(callee.body));
+    }
+    return names;
   }
 
   visitBlock(node: BlockNode): Node {
@@ -266,8 +363,9 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
         + "for example 'require(table.length <= 4);'",
       );
     }
-    for (const name of identifiersOf(boundExpression)) {
-      if (this.functionMutations.has(name)) {
+    const mutations = this.currentMutations();
+    for (const name of this.boundDependencies(boundExpression)) {
+      if (mutations.has(name)) {
         throw new PointerTableBoundError(loop, `this function can change '${name}', which the bound depends on`);
       }
     }

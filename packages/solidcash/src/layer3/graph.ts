@@ -598,7 +598,15 @@ contract GraphRootController(bytes20 initializer) {
 }`;
 }
 
-/** Fixed proof-slot covenant: exhaustively compares one owner's global rows to its SCB1/result projection. */
+/**
+ * Fixed proof-slot covenant: exhaustively compares one owner's global rows to its SCB1/result projection.
+ *
+ * The four cursor-exhaustion requires at the end are the whole point of the walk: batch, emissions, callers
+ * and results must each be consumed to their exact length, so no row can under-claim its share. The result
+ * cursor matters most for a row with no consumer - a returning ROOT invocation has no parent, therefore no
+ * emission row and no compiled route decoding it, so the projection slice is its only binding and the slice
+ * alone is prefix-only. A non-root row is additionally bound by its consumer's route.
+ */
 export function generateGraphProjectionVerifier(): string {
   const lbcDeclarations = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_unused, index) =>
     `bytes participantLbc${index};`).join('\n    ');
@@ -833,6 +841,8 @@ contract GraphProjectionVerifier() {
     require(localRow > 0 && batchCursor == ownerBatch.length);
     require(emissionCursor == ownerEmissions.length);
     require(callerCursor == ownerCallers.length);
+    // X7: every returned byte is claimed by exactly one row.
+    require(resultCursor == resultVector.length);
     require(this.activeInputIndex < tx.outputs.length);
     require(tx.outputs[this.activeInputIndex].value == 1000);
     require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);
@@ -848,14 +858,22 @@ contract GraphProjectionVerifier() {
  * selector tables, address-array loops, and low-level `call`/`staticcall` whose method lives in the
  * canonical calldata. Its `functionName` is a placeholder rather than the method the concrete invocation
  * resolves to, so name equality must not be required against it.
+ *
+ * TRUST BOUNDARY. This predicate reads compiler-authored ABI metadata, and an artifact is NOT trusted input:
+ * the SDK cannot tell a compiler-emitted artifact from a hand-written or third-party one. Every disjunct here
+ * therefore only widens what a *builder* accepts; none of them weakens a covenant. Authority stays with the
+ * transcript machinery and the compiled routes, which authenticate the concrete selector, arguments and
+ * result regardless of what the ABI claimed. Given that, a disjunct is worth carrying only if the compiler
+ * actually needs it: `possibleTargets` was removed because the compiler emits it strictly alongside
+ * `selectorArrayVar` (`Artifact.ts` spreads it inside that guard), so it changed nothing for real compiler
+ * output while silently disabling the name and result-schema checks for any artifact that carries it alone.
  */
 const isRuntimeResolvedCallsite = (callsite: ExternalCallAbi): boolean =>
   callsite.fnPtrCall === true
   || callsite.selectorArrayVar !== undefined
   || callsite.loopArrayVar !== undefined
   || callsite.functionName === '__raw__'
-  || callsite.opaqueReturn === true
-  || (callsite.possibleTargets?.length ?? 0) > 0;
+  || callsite.opaqueReturn === true;
 
 /**
  * Bind each reached child of one invocation to exactly one compiler-authored callsite of its handler.

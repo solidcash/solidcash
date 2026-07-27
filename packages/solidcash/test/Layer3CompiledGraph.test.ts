@@ -680,12 +680,14 @@ describe('layer3.planCompiledGraph', () => {
     expect(controller).toContain('unlocking.slice(0, 5) == hex"0453434231"');
     expect(controller).toContain('outputCategory.slice(0, 32) != controllerCategory');
     expect(projection).toContain('projectionInput == this.activeInputIndex');
+    expect(projection).toContain('resultCursor == resultVector.length');
     const controllerArtifact = compileString(controller);
     const projectionArtifact = compileString(projection);
     // Freeze the actual redeem-script cost of the variable-table parsers. `Artifact.bytecode` is ASM text;
     // `debug.bytecode` is the hex-encoded script and is the consensus/deployment size.
     expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_897);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(7_025);
+    // 7,025 before X7; the result-cursor exhaustion assertion costs 8 bytes.
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(7_033);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

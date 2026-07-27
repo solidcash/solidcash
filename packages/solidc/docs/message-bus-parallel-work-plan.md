@@ -128,7 +128,7 @@ task-specific report, not in this table.
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
-| E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
+| E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **CHANGES** | guard condition too narrow - see 4.6; reassigned to C round 3 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
@@ -151,7 +151,7 @@ task-specific report, not in this table.
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
 | X6 | Stable diagnostics for unadmitted low-level shapes | — | — | TODO | `Block slot not found: lowLevelCall[0]` leaks; compiler lease |
-| X7 | Assert the projection result cursor is exhausted | B | E1 | TODO | Stated invariant is enforced only by consumer routes |
+| X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | TODO | Compiles; dynamic writes stay raw; NO VM evidence they settle |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | TODO | 5s timeouts; invalidates the pinned `solidc` gate |
 
@@ -280,6 +280,28 @@ interface call (`ExpandBoundedPointerTableLoop` counts only pointer dispatches).
 These are fail-closed on chain, so they are not exploits. But G1's headline claim is that a compiler-proven
 bound is published, and for these shapes no such bound exists. The claim must be scoped to the shapes that
 actually publish one.
+
+### 4.8 X7 was a live exploit, and the integration owner called it wrong
+
+When assigning X7 the integration owner wrote that the unexhausted result cursor was defence-in-depth rather
+than a live exploit, on the grounds that every route Worker C had built was caught one level lower. That
+reasoning was wrong for one shape.
+
+A returning **root** invocation has no parent, therefore no emission row and no compiled consumer route
+decoding its result. The prefix-only projection slice was its ONLY binding. Two hostile transcripts - a root
+result declared void, and a root result truncated to a one-byte prefix, both leaving every return-event NFT
+commitment byte honest - **settled on the BCH-2026 VM** at integration commit `3386bbc4`.
+
+Independently confirmed by the integration owner with a guard negative control: commenting out the single new
+`require(resultCursor == resultVector.length)` and rebuilding makes exactly those two cases settle again, while
+the honest control and the non-root ordering test still pass.
+
+The worker was equally careful about the limit of the claim: for any NON-root producer the assertion is second,
+because every participant master input structurally precedes every projection slot, so a consumer route always
+rejects first. That ordering is pinned as its own test.
+
+Lesson for this board: "caught one level lower" is a claim about the shapes someone happened to build, not a
+property of the design. It should not have been used to downgrade a stated invariant.
 
 ### 4.3 Corrections this round forced on this plan
 

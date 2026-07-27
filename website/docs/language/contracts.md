@@ -186,7 +186,7 @@ contract OneOfTwo(bytes20 pkh1, bytes32 hash1, bytes20 pkh2, bytes32 hash2) {
 
 ### Loops
 
-SolidCash supports `for`, `while`, and `do-while` loops with `break` and `continue`. See [Advanced Features](/docs/language/advanced-features#for-loops) for the full loop syntax reference.
+SolidCash supports `for`, `while`, and `do-while` loops with `break` and `continue`. See [Advanced Features](/docs/language/advanced-features#loops) for the full loop syntax reference.
 
 #### Example
 ```solidity

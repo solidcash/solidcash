@@ -115,7 +115,7 @@ contract MemoryDemo() {
 :::caution
 If you are porting EVM assembly that packs values into the high byte of a word or hashes a hand-assembled
 buffer, re-derive the offsets for little-endian order. See
-[Platform Differences](/docs/basics/platform-differences#1-byte-order-little-endian).
+[Platform Differences](/docs/basics/platform-differences#byte-order).
 :::
 
 ### Storage model

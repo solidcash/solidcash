@@ -26,7 +26,7 @@ would.
 | Gas | metered | not metered (bytecode and stack size limits instead) |
 | Re-entrancy | possible | **structurally impossible** (no synchronous cross-call) |
 
-## 1. Byte order: little-endian
+## 1. Byte order: little-endian {#byte-order}
 
 EVM words and memory are **big-endian**: the most significant byte sits at the lowest index. BCH Script
 numbers are **little-endian**, so in SolidCash `bytes32(x)` puts the **low byte at index 0**:
@@ -56,7 +56,7 @@ re-derive the offsets for little-endian, or better, rewrite it in high-level Sol
 lay out memory.
 :::
 
-## 2. Number encoding: sign-magnitude
+## 2. Number encoding: sign-magnitude {#number-encoding}
 
 EVM integers are 256-bit **two's complement**: `-1` is `0xFFFF...FF`, the high bit is the sign, and overflow
 wraps mod 2^256.
@@ -83,7 +83,7 @@ never wraps.
 
 See [Types & Operators](/docs/language/types#integers) for the full integer model.
 
-## 3. Hashing: keccak256 values are real, slot ids are sha256
+## 3. Hashing: keccak256 values are real, slot ids are sha256 {#hashing}
 
 The EVM uses **keccak256** everywhere it matters structurally. BCH has no native keccak256 opcode, so
 SolidCash splits the difference:
@@ -108,7 +108,7 @@ the `evmCompat` compiler option selectors use real keccak256 and match Ethereum.
 [Cryptography](/docs/language/cryptography).
 :::
 
-## 4. Execution model: UTXO covenant, not accounts
+## 4. Execution model: UTXO covenant, not accounts {#execution-model}
 
 This is the deepest difference, and it explains most of the others.
 
@@ -139,7 +139,7 @@ This is the deepest difference, and it explains most of the others.
 | Unbounded loop over storage | Bounded by per-input operation cost, not gas |
 | Upgradeable proxy | Supported, via inferred delegate builds |
 
-## 5. Contention: the UTXO cost that has no EVM analogue
+## 5. Contention: the UTXO cost that has no EVM analogue {#contention}
 
 An EVM contract is a single account that any number of transactions can touch in the same block. A BCH
 contract's state lives in **UTXOs, and a UTXO can only be spent once**. Two transactions spending the same

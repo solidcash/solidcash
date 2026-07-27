@@ -50,7 +50,7 @@ Ranges are exactly the EVM ranges: `intN` is `[-2^(N-1), 2^(N-1) - 1]` and `uint
 :::note
 `int256` and `uint256` occupy **33 bytes** on chain, not 32. BCH Script numbers are sign-magnitude, so a full
 256-bit magnitude needs one extra byte for the sign flag. Ranges are unaffected; only the physical width
-differs. See [Platform Differences](/docs/basics/platform-differences#2-number-encoding).
+differs. See [Platform Differences](/docs/basics/platform-differences#number-encoding).
 :::
 
 Operators:

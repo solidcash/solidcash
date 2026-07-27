@@ -21,7 +21,7 @@ new Contract(
 
 A SolidCash contract can be instantiated by providing an `Artifact` object, a list of constructor arguments, and optionally an options object configuring `NetworkProvider` and `addressType`.
 
-An `Artifact` object is the result of compiling a SolidCash contract. Compilation can be done using the standalone [`solidc` CLI](/docs/compiler/compiler) or programmatically with the `solidc` NPM package (see [SolidCash Compiler](/docs/compiler/compiler#javascript-compilation)).
+An `Artifact` object is the result of compiling a SolidCash contract. Compilation can be done using the standalone [`solidc` CLI](/docs/compiler) or programmatically with the `solidc` NPM package (see [SolidCash Compiler](/docs/compiler#javascript-compilation)).
 
 :::tip
 If compilation is done using the `solidc` CLI with the <span style={{ display: 'inline-block' }}>`--format ts`</span> option to output TypeScript Artifacts, you will get explicit types and type checking for the constructor arguments and function arguments of the `Contract` class.

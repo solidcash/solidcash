@@ -188,6 +188,6 @@ for real keccak256 selectors.
 
 - [Built-in Functions](/docs/language/builtin-functions) - the full global function catalogue
 - [Libraries & Using-For](/docs/language/libraries#external-library-precompiles) - the precompile mechanism
-- [Platform Differences](/docs/basics/platform-differences#3-hashing) - the hashing policy rationale
+- [Platform Differences](/docs/basics/platform-differences#hashing) - the hashing policy rationale
 
 [bip146]: https://github.com/bitcoin/bips/blob/master/bip-0146.mediawiki

@@ -284,6 +284,18 @@ describe('C1/piece-7: a compiler-synthesized delegatecall pins its co-spend too'
       .toThrow(/delegatecall and also writes contract state/);
   });
 
+  /**
+   * Only a stateful ENTRY POINT reserves a delegate input slot, so a library call from an internal helper has
+   * nothing to pin to. On 05412a58 this compiled with `lowLevelCalls` undefined on the entry point - no slot, no
+   * pin, and no diagnostic. It now fails closed by name.
+   */
+  it('refuses a library call from a context with no reserved delegate slot', () => {
+    expect(() => consumer('contract C() { bigint count; '
+      + 'function helper() internal { Counter.increment(); } '
+      + 'function bump() { helper(); require(true); } }'))
+      .toThrow(/no reserved delegate input slot/);
+  });
+
   /** Sibling rule: one reserved slot serves every iteration, so N source delegations settle as one. */
   it('refuses a library call inside a loop by name', () => {
     expect(() => consumer('contract C() { bigint count; '

@@ -198,6 +198,10 @@ derived index is the stronger source — nothing caller-supplied selects the inp
 constructor argument (`__libAddr_L`, or the facet link), so rule C is satisfied structurally: the contract's own
 p2sh32 commits to it.
 
+Only a stateful **entry point** reserves a delegate input slot, so a library call from an internal helper has
+nothing to pin to; it is refused by name rather than left silently unpinned. (On 05412a58 that shape compiled
+with `lowLevelCalls` undefined on the entry point — no slot, no pin, no diagnostic.)
+
 The forwarded-selector half is emitted only when the library has **>= 2 public functions**. A
 one-public-function library compiles to a single-entry-point contract whose unlocking script carries no leading
 selector — and with one function there is nothing for a caller to choose, so the identity pin alone is the whole

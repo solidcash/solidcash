@@ -292,6 +292,22 @@ describe('msg.value payable-context validation', () => {
   });
 });
 
+describe('hex string separator validation', () => {
+  const cc = (literal: string): string => compileString(
+    `contract C { function f() public pure { bytes memory x = ${literal}; } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it.each(['hex"_1234"', 'hex"1234_"', 'hex"12__34"', 'hex"1_234"'])(
+    'rejects invalid separator placement in %s',
+    (literal) => expect(() => cc(literal)).toThrow(/hex string separator/i),
+  );
+
+  it('accepts separators between complete byte groups', () => {
+    expect(cc('hex"12_3456_789012"')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

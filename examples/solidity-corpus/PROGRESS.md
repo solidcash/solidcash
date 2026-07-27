@@ -4828,3 +4828,12 @@ The focused suite is **938/938**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **941/941**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 528, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Hex-string separator loop: 4443 flat, NEG-ACCEPTED 528 -> 524 (-4)
+
+- Solidity-compatible hex strings now reject leading, trailing, and duplicate underscore separators.
+- Separators must occur after a complete byte boundary, rejecting odd-nibble placement while retaining valid
+  variable-sized byte grouping.
+
+The focused suite is **946/946**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+524, plus 275 multifile and 289 cmdline fixtures excluded.

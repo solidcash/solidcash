@@ -4078,7 +4078,22 @@ export default class AstBuilder
     const hexContent = ctx.HexStringLiteral_list().map((token) => {
       const raw = token.getText();
       // raw is like: hex"deadbeef" or hex'deadbeef'
-      return raw.substring(4, raw.length - 1).replace(/_/g, '');
+      const content = raw.substring(4, raw.length - 1);
+      if (this.solidityImportCompat) {
+        let nibbleCount = 0;
+        for (let i = 0; i < content.length; i++) {
+          if (/[0-9a-fA-F]/.test(content[i])) {
+            nibbleCount++;
+          } else if (content[i] === '_' && (
+            nibbleCount % 2 !== 0
+            || !/[0-9a-fA-F]/.test(content[i - 1] ?? '')
+            || !/[0-9a-fA-F]/.test(content[i + 1] ?? '')
+          )) {
+            throw new ParseError('Invalid use of hex string separator', Location.fromCtx(ctx));
+          }
+        }
+      }
+      return content.replace(/_/g, '');
     }).join('');
     if (hexContent.length % 2 !== 0) {
       throw new ParseError('Hex string must have even number of hex digits', Location.fromCtx(ctx));

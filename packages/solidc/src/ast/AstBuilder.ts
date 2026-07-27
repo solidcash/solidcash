@@ -5889,6 +5889,12 @@ export default class AstBuilder
     }
 
     const modifierTexts = ctx.functionModifier_list().map((modifier) => modifier.getText());
+    if (this.solidityImportCompat && !modifierTexts.includes('external')) {
+      throw new ParseError(
+        'Functions in interfaces must be declared external',
+        Location.fromCtx(ctx),
+      );
+    }
     const stateMutability = modifierTexts.includes('pure') ? 'pure'
       : modifierTexts.includes('view') ? 'view'
         : modifierTexts.includes('payable') ? 'payable' : 'nonpayable';

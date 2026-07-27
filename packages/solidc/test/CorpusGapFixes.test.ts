@@ -7869,3 +7869,197 @@ describe('virtual function declaration rules', () => {
     )).toThrow(/without implementation cannot have modifiers/);
   });
 });
+
+describe('unimplemented overrides of implemented functions', () => {
+  it('rejects an abstract override when any overridden base has an implementation', () => {
+    const invalid = [
+      'contract A { function f() public virtual {} }'
+      + ' abstract contract B is A { function f() public virtual override; }',
+      'abstract contract A { function f() external virtual; }'
+      + ' abstract contract B { function f() external virtual {} }'
+      + ' abstract contract C is A, B { function f() external virtual override(A, B); }',
+      'abstract contract A { function f() external virtual; }'
+      + ' abstract contract B { function f() external virtual {} }'
+      + ' abstract contract C is B, A { function f() external virtual override(A, B); }',
+    ];
+    for (const source of invalid) {
+      expect(() => compileString(source, { solidityImportCompat: true }))
+        .toThrow(/cannot override implemented function/);
+    }
+  });
+
+  it('accepts an abstract override when every overridden base is abstract', () => {
+    expect(compileString(
+      'abstract contract A { function f() public virtual; }'
+      + ' abstract contract B { function f() public virtual; }'
+      + ' abstract contract C is A, B { function f() public virtual override(A, B); }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
+describe('Solidity function visibility spelling', () => {
+  it('requires interface functions to be external', () => {
+    for (const visibility of ['', ' internal', ' private', ' public']) {
+      expect(() => compileString(
+        `interface I { function f()${visibility}; }`,
+        { solidityImportCompat: true },
+      )).toThrow(/interfaces must be declared external/);
+    }
+  });
+
+  it('accepts external interface functions without changing contract compatibility defaults', () => {
+    expect(compileString(
+      'interface I { function f() external; }'
+      + ' abstract contract C { function g() internal virtual; function h() {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
+describe('bare override on root declarations', () => {
+  it('rejects functions, public getters, modifiers, and fallback without a base declaration', () => {
+    const invalid = [
+      'contract C { function f() public override {} }',
+      'contract C { uint public override value; }',
+      'contract C { mapping(address => uint) public override values; }',
+      'contract C { modifier m() override { _; } }',
+      'contract C { fallback() external override {} }',
+    ];
+    for (const source of invalid) {
+      expect(() => compileString(source, { solidityImportCompat: true }))
+        .toThrow(/override specified but does not override anything/);
+    }
+  });
+
+  it('accepts the same declarations without override', () => {
+    expect(compileString(
+      'contract C { uint public value; modifier m() { _; }'
+      + ' function f() public m {} fallback() external {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
+describe('public-getter override base lists', () => {
+  it('rejects a named base which is not inherited', () => {
+    expect(() => compileString(
+      'interface A { function foo() external view returns (uint); } interface B {}'
+      + ' contract C is A { uint public override(A, B) foo; }',
+      { solidityImportCompat: true },
+    )).toThrow(/'B' is not a base contract/);
+  });
+
+  it('accepts a direct interface named in a getter override list', () => {
+    expect(compileString(
+      'interface A { function foo() external view returns (uint); }'
+      + ' contract C is A { uint public override(A) foo; }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
+describe('public-getter override signatures', () => {
+  it('requires override only for an ABI-matching inherited function', () => {
+    expect(() => compileString(
+      'contract A { function foo() internal virtual view returns (uint) { return 1; } }'
+      + ' contract C is A { uint public foo; }',
+      { solidityImportCompat: true },
+    )).toThrow(/Use 'override'/);
+    expect(compileString(
+      'contract A { function foo(uint) internal virtual pure returns (uint) { return 1; } }'
+      + ' contract C is A { uint public foo; }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('rejects getter parameter and return shapes which match no base overload', () => {
+    expect(() => compileString(
+      'contract A { function balanceOf(uint) external virtual view returns (uint) { return 1; } }'
+      + ' contract C is A { mapping(address => uint) public override balanceOf; }',
+      { solidityImportCompat: true },
+    )).toThrow(/does not override anything/);
+    expect(() => compileString(
+      'contract A { function foo() external virtual view returns (address) { return address(0); } }'
+      + ' contract C is A { uint public override foo; }',
+      { solidityImportCompat: true },
+    )).toThrow(/does not match the overridden function return type/);
+  });
+
+  it('requires every undominated concrete provider in a multi-base override list', () => {
+    expect(() => compileString(
+      'contract A { function foo() external virtual view returns (uint) { return 1; } }'
+      + ' contract B { function foo() external virtual view returns (uint) { return 2; } }'
+      + ' contract C is A, B { uint public override foo; }',
+      { solidityImportCompat: true },
+    )).toThrow(/must specify bases/);
+    expect(compileString(
+      'contract A { function foo() external virtual view returns (uint) { return 1; } }'
+      + ' contract B is A { function foo() external virtual override view returns (uint) { return 2; } }'
+      + ' contract C { function foo() external virtual view returns (uint) { return 3; } }'
+      + ' contract D is B, C { uint public override(B, C) foo; }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('D');
+  });
+});
+
+describe('function override provider lists', () => {
+  it('rejects a named ancestor which does not declare the exact overload', () => {
+    expect(() => compileString(
+      'abstract contract A { function f(uint) internal virtual; }'
+      + ' abstract contract B { function f() internal virtual; }'
+      + ' abstract contract C is A, B { function f() internal virtual override(A, B); }',
+      { solidityImportCompat: true },
+    )).toThrow(/'A' is not a base contract that declares it/);
+  });
+
+  it('requires all undominated concrete providers and accepts a complete list', () => {
+    const bases = 'abstract contract A { function f() internal virtual; }'
+      + ' abstract contract B { function f() internal virtual; }';
+    expect(() => compileString(
+      `${bases} abstract contract C is A, B { function f() internal virtual override(A); }`,
+      { solidityImportCompat: true },
+    )).toThrow(/must specify bases/);
+    expect(compileString(
+      `${bases} abstract contract C is A, B { function f() internal virtual override(A, B); }`,
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
+describe('direct-base effective function origins', () => {
+  it('requires an override when direct ancestor and descendant bases expose distinct origins', () => {
+    expect(() => compileString(
+      'contract A { function f() public pure virtual {} }'
+      + ' contract B is A { function f() public pure virtual override {} }'
+      + ' contract C is A, B {}',
+      { solidityImportCompat: true },
+    )).toThrow(/Diamond inheritance conflict/);
+  });
+
+  it('accepts an explicit resolution and an unchanged same-origin diamond', () => {
+    expect(compileString(
+      'contract A { function f() public pure virtual {} }'
+      + ' contract B is A { function f() public pure virtual override {} }'
+      + ' contract C is A, B { function f() public pure override(A, B) {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+    expect(compileString(
+      'contract A { function f() public pure virtual {} }'
+      + ' contract B is A {} contract C is A {} contract D is B, C {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('D');
+    expect(compileString(
+      'abstract contract A { function f() public pure virtual; }'
+      + ' contract B is A { function f() public pure virtual override {} }'
+      + ' contract C is A, B {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+    expect(compileString(
+      'abstract contract A { function f() public virtual; }'
+      + ' abstract contract B is A { function f() public virtual override; }'
+      + ' abstract contract C is A {} abstract contract D is B, C {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('D');
+  });
+});

@@ -63,18 +63,24 @@ import {
   LowLevelCallNode,
   TypeIntrospectionNode,
   StateVariableNode,
+  CollectionNode,
   StateVariableVisibility,
   ExpressionStatementNode,
   PlaceholderStatementNode,
   AssignmentExpressionNode,
 } from '../ast/AST.js';
+import { ArrayType, IntType, MappingType, StructType, Type } from '@solidcash/utils';
 import {
   CircularContractInheritanceError,
   C3LinearizationError,
   NonVirtualOverrideError,
   OverrideMutabilityError,
+  AbstractOverrideOfImplementedError,
   OverrideBaseListError,
   DuplicateOverrideBaseError,
+  OverrideNothingError,
+  GetterOverrideMismatchError,
+  MissingOverrideBasesError,
   InvalidModifierOverrideError,
   DiamondInheritanceError,
   InheritanceNameCollisionError,
@@ -222,9 +228,27 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
     }
   }
 
-  // A root contract still needs explicit override-list validation. In particular, `override(LibraryName)` must
-  // not escape merely because there is no inheritance graph to flatten.
+  // A root contract still needs override validation. A bare `override` cannot override anything, while an
+  // explicit list (notably `override(LibraryName)`) is handled by the normal base-list resolver below.
   if (ast.contract.implements.length === 0) {
+    const bareOverrides: Array<{ node: Node; name: string }> = [
+      ...ast.contract.functions
+        .filter((fn) => fn.modifiers.includes(FunctionModifier.OVERRIDE) && fn.overrideBases.length === 0)
+        .map((fn) => ({ node: fn as Node, name: fn.name })),
+      ...[...ast.contract.stateVariables, ...ast.contract.collections]
+        .filter((declaration) => declaration.isOverride && declaration.overrideBases.length === 0)
+        .map((declaration) => ({ node: declaration as Node, name: declaration.name })),
+      ...ast.contract.modifierDefinitions
+        .filter((modifier) => modifier.isOverride && modifier.overrideBases.length === 0)
+        .map((modifier) => ({ node: modifier as Node, name: modifier.name })),
+      ...[ast.contract.fallbackDef, ast.contract.receiveDef]
+        .filter((fn): fn is FunctionDefinitionNode =>
+          fn !== undefined && fn.modifiers.includes(FunctionModifier.OVERRIDE) && fn.overrideBases.length === 0)
+        .map((fn) => ({ node: fn as Node, name: fn.isFallback ? 'fallback' : 'receive' })),
+    ];
+    if (bareOverrides.length > 0) {
+      throw new OverrideNothingError(bareOverrides[0].node, bareOverrides[0].name);
+    }
     resolveSuperAndBaseCalls(ast.contract, [], new Set());
     return ast;
   }
@@ -487,6 +511,133 @@ function expandContract(
     }
     return false;
   };
+
+  // Validate source public-getter overrides against the original concrete hierarchy before flattening. A public
+  // declaration overrides only the function with its generated getter ABI shape; unrelated overloads remain
+  // independent. Interface-only matches are validated later by the interface traversal, so absence is conclusive
+  // here only when the concrete hierarchy has no interface bases.
+  const hierarchyHasInterfaces = linearization.some((ancestorName) =>
+    (originalImplements?.get(ancestorName) ?? contractMap.get(ancestorName)?.implements ?? [])
+      .some((baseName) => !contractMap.has(baseName)));
+  for (const declaration of [...contract.stateVariables, ...contract.collections].filter(
+    (candidate) => candidate.inheritedFrom === undefined
+      && (candidate.visibility === StateVariableVisibility.PUBLIC
+        || candidate.visibility === StateVariableVisibility.EXTERNAL),
+  )) {
+    const shape = publicGetterShape(declaration);
+    if (!shape) continue;
+    const candidates = linearization
+      .filter((ancestorName) => ancestorName !== contract.name)
+      .flatMap((ancestorName) => (contractMap.get(ancestorName)?.functions ?? [])
+        .filter((fn) => fn.inheritedFrom === undefined && fn.name === declaration.name)
+        .map((fn) => ({ fn, origin: ancestorName })));
+    const parameterMatches = candidates.filter(({ fn }) =>
+      fn.parameters.map((parameter) => parameter.type.toString()).join(',')
+        === shape.parameters.join(','));
+    const matches = parameterMatches.filter(({ fn }) =>
+      fn.returnTypes.length === 1 && fn.returnTypes[0].toString() === shape.returnType);
+
+    if (!declaration.isOverride) {
+      if (matches.length > 0) {
+        throw new MissingOverrideError(contract, declaration.name, matches[0].origin);
+      }
+      continue;
+    }
+    if (matches.length === 0 && candidates.length > 0 && !hierarchyHasInterfaces) {
+      if (parameterMatches.length > 0) {
+        throw new GetterOverrideMismatchError(declaration, declaration.name);
+      }
+      throw new OverrideNothingError(declaration, declaration.name);
+    }
+
+    const providers = [...new Set(matches.map(({ origin }) => origin))]
+      .filter((origin, _index, all) => !all.some((other) =>
+        other !== origin && isAncestor(origin, other)));
+    if (providers.length > 1
+      && providers.some((provider) => !declaration.overrideBases.includes(provider))) {
+      throw new MissingOverrideBasesError(declaration, declaration.name, providers);
+    }
+  }
+
+  // A function override list names providers of this exact overload, not merely arbitrary ancestors. When more
+  // than one undominated concrete base provides the signature, every provider must be listed explicitly.
+  for (const fn of contract.functions.filter((candidate) =>
+    candidate.inheritedFrom === undefined && candidate.modifiers.includes(FunctionModifier.OVERRIDE))) {
+    const signature = functionSignature(fn);
+    const candidates = linearization
+      .filter((ancestorName) => ancestorName !== contract.name)
+      .flatMap((ancestorName) => (contractMap.get(ancestorName)?.functions ?? [])
+        .filter((candidate) => candidate.inheritedFrom === undefined
+          && functionSignature(candidate) === signature)
+        .map(() => ancestorName));
+    const providers = [...new Set(candidates)]
+      .filter((origin, _index, all) => !all.some((other) =>
+        other !== origin && isAncestor(origin, other)));
+
+    for (const base of fn.overrideBases) {
+      if (contractMap.has(base) && !candidates.includes(base)) {
+        throw new OverrideBaseListError(fn, fn.name, base);
+      }
+    }
+    if (providers.length > 1
+      && providers.some((provider) => !fn.overrideBases.includes(provider))) {
+      throw new MissingOverrideBasesError(fn, fn.name, providers);
+    }
+  }
+
+  // Resolve the effective concrete origin of each signature as seen through every DIRECT base. Two direct bases
+  // exposing distinct origins are ambiguous even when one direct base descends from the other (`C is A, B` with
+  // `B` overriding `A.f`). A true diamond which merely carries the same unchanged origin through both branches
+  // remains unambiguous.
+  const effectiveOrigins = (
+    baseName: string,
+    signature: string,
+    seen: Set<string> = new Set(),
+  ): string[] => {
+    if (seen.has(baseName)) return [];
+    seen.add(baseName);
+    const base = contractMap.get(baseName);
+    if (!base) return [];
+    const own = base.functions.filter((fn) =>
+      fn.inheritedFrom === undefined && fn.visibility !== 'private' && functionSignature(fn) === signature);
+    if (own.length > 0) return [baseName];
+    return [...new Set(
+      (originalImplements?.get(baseName) ?? base.implements)
+        .filter((parentName) => contractMap.has(parentName))
+        .flatMap((parentName) => effectiveOrigins(parentName, signature, new Set(seen))),
+    )];
+  };
+  const inheritedSignatures = new Set(
+    linearization.filter((name) => name !== contract.name)
+      .flatMap((name) => (contractMap.get(name)?.functions ?? [])
+        .filter((fn) => fn.inheritedFrom === undefined && fn.visibility !== 'private')
+        .map(functionSignature)),
+  );
+  for (const signature of inheritedSignatures) {
+    const rawOrigins = [...new Set(parentNames.flatMap((parentName) =>
+      effectiveOrigins(parentName, signature)))];
+    const origins = rawOrigins.filter((origin) => {
+      const declaration = contractMap.get(origin)?.functions.find((fn) =>
+        fn.inheritedFrom === undefined && functionSignature(fn) === signature);
+      return !declaration?.isAbstract || !rawOrigins.some((other) =>
+        other !== origin && isAncestor(origin, other));
+    });
+    if (origins.length < 2) continue;
+    const explicitFunction = contract.functions.some((fn) =>
+      fn.inheritedFrom === undefined
+      && fn.modifiers.includes(FunctionModifier.OVERRIDE)
+      && functionSignature(fn) === signature);
+    const explicitGetter = [...contract.stateVariables, ...contract.collections].some((declaration) => {
+      if (declaration.inheritedFrom !== undefined || !declaration.isOverride) return false;
+      const shape = publicGetterShape(declaration);
+      return shape !== undefined
+        && `${declaration.name}(${shape.parameters.join(',')})` === signature;
+    });
+    if (!explicitFunction && !explicitGetter) {
+      const functionName = signature.slice(0, signature.indexOf('('));
+      throw new DiamondInheritanceError(contract, 'Function', functionName, origins[0], origins[1]);
+    }
+  }
 
   // Merge parents left-to-right
   for (const parentName of parentNames) {
@@ -781,6 +932,33 @@ function functionSignature(f: FunctionDefinitionNode): string {
   return `${f.name}(${f.parameters.map((p) => String(p.type)).join(',')})`;
 }
 
+function publicGetterShape(
+  declaration: StateVariableNode | CollectionNode,
+): { parameters: string[]; returnType: string } | undefined {
+  if (declaration instanceof StateVariableNode) {
+    if (declaration.type instanceof StructType
+      || declaration.type instanceof MappingType
+      || declaration.type instanceof ArrayType) return undefined;
+    return { parameters: [], returnType: declaration.type.toString() };
+  }
+
+  const parameters: string[] = [];
+  let terminal: Type = declaration.type;
+  while (terminal instanceof MappingType || terminal instanceof ArrayType) {
+    if (terminal instanceof MappingType) {
+      parameters.push(terminal.keyType.toString());
+      terminal = terminal.valueType;
+    } else {
+      parameters.push(new IntType(false, 256).toString());
+      terminal = terminal.elementType;
+    }
+  }
+  // Solidity flattens public struct getter returns into a tuple. Leave those to the existing synthesized-getter
+  // machinery rather than treating the inline struct type as its ABI return shape.
+  if (terminal instanceof StructType) return undefined;
+  return { parameters, returnType: terminal.toString() };
+}
+
 function declaredDataLocation(modifiers: string[]): string | undefined {
   return modifiers.find((modifier) =>
     modifier === Modifier.MEMORY || modifier === Modifier.CALLDATA || modifier === Modifier.STORAGE);
@@ -906,6 +1084,13 @@ function mergeFunctions(
       // overridden parent body under a mangled internal name so super.f()/Base.f() can still call it.
       if (!existingFunc.inheritedFrom
           && existingFunc.modifiers.includes(FunctionModifier.OVERRIDE)) {
+        if (existingFunc.isAbstract && !parentFunc.isAbstract) {
+          throw new AbstractOverrideOfImplementedError(
+            existingFunc,
+            parentFunc.name,
+            parentFunc.inheritedFrom ?? parent.name,
+          );
+        }
         // Meaningful virtual: a parent function must be virtual (or abstract) to be overridable.
         if (!parentFunc.isAbstract && !parentFunc.modifiers.includes(FunctionModifier.VIRTUAL)) {
           throw new NonVirtualOverrideError(existingFunc, parentFunc.name, parentFunc.inheritedFrom ?? parent.name);
@@ -999,6 +1184,13 @@ function resolveSuperAndBaseCalls(
       if (!ancestors.has(base)) {
         throw new OverrideBaseListError(fn, fn.name, base);
       }
+    }
+  }
+  for (const declaration of [...contract.stateVariables, ...contract.collections]) {
+    if (!declaration.isOverride) continue;
+    for (const base of declaration.overrideBases) {
+      if (inheritedInterfaces.has(base) || ancestors.has(base)) continue;
+      throw new OverrideBaseListError(declaration, declaration.name, base);
     }
   }
 

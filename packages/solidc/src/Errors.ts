@@ -1040,6 +1040,12 @@ export class OverrideMutabilityError extends SolidCashError {
   }
 }
 
+export class AbstractOverrideOfImplementedError extends SolidCashError {
+  constructor(node: Node, functionName: string, parentName: string) {
+    super(node, `Unimplemented function '${functionName}' cannot override implemented function from '${parentName}'`);
+  }
+}
+
 export class OverrideBaseListError extends SolidCashError {
   constructor(node: Node, functionName: string, baseName: string) {
     super(node, `override(${baseName}) on '${functionName}': '${baseName}' is not a base contract that declares it`);
@@ -1049,6 +1055,24 @@ export class OverrideBaseListError extends SolidCashError {
 export class DuplicateOverrideBaseError extends SolidCashError {
   constructor(node: Node, declarationName: string, baseName: string) {
     super(node, `Duplicate contract '${baseName}' in override list of '${declarationName}'`);
+  }
+}
+
+export class OverrideNothingError extends SolidCashError {
+  constructor(node: Node, declarationName: string) {
+    super(node, `Declaration '${declarationName}' has override specified but does not override anything`);
+  }
+}
+
+export class GetterOverrideMismatchError extends SolidCashError {
+  constructor(node: Node, declarationName: string) {
+    super(node, `Public getter '${declarationName}' does not match the overridden function return type`);
+  }
+}
+
+export class MissingOverrideBasesError extends SolidCashError {
+  constructor(node: Node, declarationName: string, bases: string[]) {
+    super(node, `Override of '${declarationName}' must specify bases ${bases.join(', ')}`);
   }
 }
 

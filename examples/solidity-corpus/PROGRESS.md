@@ -4641,3 +4641,79 @@ The focused suite is **888/888**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **889/889**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 595, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Abstract-over-implemented override loop: 4443 flat, NEG-ACCEPTED 595 -> 593 (-2)
+
+- An unimplemented function can no longer override a base function which already has an implementation.
+- Validation runs during function merging and is independent of parent order, while an abstract override of only
+  abstract base declarations remains valid.
+- Both affected Solidity override fixtures now reject with `AbstractOverrideOfImplementedError`.
+
+The focused suite is **891/891**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+593, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Interface-function visibility loop: 4443 flat, NEG-ACCEPTED 593 -> 588 (-5)
+
+- Solidity-compatible interface functions must now explicitly declare `external`; omitted, internal, private, and
+  public visibility spellings are rejected during interface AST construction.
+- Contract function visibility defaults remain intentionally permissive for import compatibility, preserving
+  existing snippet and porting behavior outside interfaces.
+- All five affected interface visibility fixtures now reject, including the state-reset fixture containing a
+  later contract declaration.
+
+The focused suite is **893/893**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+588, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Root bare-override loop: 4443 flat, NEG-ACCEPTED 588 -> 587 (-1)
+
+- Root contracts now reject bare `override` on functions, public state getters, collection getters, modifiers,
+  fallback, and receive declarations because no inherited declaration can exist.
+- Explicit base lists still use the existing resolver, preserving the more specific invalid-base diagnostic for
+  cases such as `override(LibraryName)`.
+- Solidity's `public_vars_wrong_override.sol` fixture now rejects with `OverrideNothingError`.
+
+The focused suite is **895/895**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+587, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Public-getter override-base loop: 4443 flat, NEG-ACCEPTED 587 -> 586 (-1)
+
+- Explicit override base lists on public scalar and collection getters now validate every named contract or
+  interface through the same post-flattening resolver used by function overrides.
+- Direct and transitively inherited interface names remain valid; surplus names which are not inherited reject.
+- Solidity's `public_var_surplus_override.sol` fixture now rejects with `OverrideBaseListError`.
+
+The focused suite is **897/897**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+586, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Public-getter signature loop: 4443 flat, NEG-ACCEPTED 586 -> 581 (-5)
+
+- Scalar, mapping, and array public getters now derive their Solidity ABI parameter and return shapes before
+  inheritance flattening.
+- Getter overrides reject unrelated overload sets, return-type mismatches, missing `override`, and incomplete
+  multi-base lists; dominated ancestors are excluded when computing required diamond providers.
+- Unrelated inherited overloads and valid explicit diamond lists remain accepted.
+
+The focused suite is **900/900**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+581, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Function override-provider loop: 4443 flat, NEG-ACCEPTED 581 -> 580 (-1)
+
+- Explicit function override lists now validate that each named concrete base declares the exact overload, rather
+  than accepting any ancestor with a same-name function.
+- Overrides with multiple undominated concrete providers must list every provider; dominated ancestors remain
+  excluded from the required list.
+- Solidity's `override_multiple_missing.sol` fixture now rejects with `OverrideBaseListError`.
+
+The focused suite is **902/902**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+580, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Direct-base effective-origin loop: 4443 flat, NEG-ACCEPTED 580 -> 579 (-1)
+
+- Direct concrete bases now resolve each inherited function signature to its effective source origin before
+  flattening.
+- Distinct implemented origins require an explicit override even when one direct base descends from another;
+  dominated abstract ancestors and unchanged same-origin diamonds remain unambiguous.
+- Public getters with matching ABI signatures count as explicit conflict resolutions.
+
+The focused suite is **904/904**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+579, plus 275 multifile and 289 cmdline fixtures excluded.

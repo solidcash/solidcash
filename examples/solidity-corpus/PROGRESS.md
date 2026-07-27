@@ -4776,3 +4776,12 @@ The focused suite is **922/922**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **925/925**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 558, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Transient/storage placement loop: 4443 flat, NEG-ACCEPTED 558 -> 550 (-8)
+
+- Solidity-compatible state variables reject an explicit `storage` location, including parser-stop fixtures.
+- `transient` rejects on local variables and in combination with `constant` or `immutable`.
+- Transient state initializers reject, while uninitialized value-type transient state remains supported.
+
+The focused suite is **929/929**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+550, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -157,6 +157,36 @@ describe('modifier declaration source validation', () => {
   });
 });
 
+describe('transient and storage declaration placement', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects an explicit storage location on state variables', () => {
+    expect(() => cc('contract C { uint storage value; }'))
+      .toThrow(/state variables are implicitly storage/i);
+    expect(() => cc('contract C { uint transient storage value; }'))
+      .toThrow(/state variables are implicitly storage/i);
+  });
+
+  it('rejects transient on local variables', () => {
+    expect(() => cc('contract C { function f() public pure { uint transient value = 0; } }'))
+      .toThrow(/transient data location is only valid on state variables/i);
+  });
+
+  it('rejects constant, immutable, and initialized transient state', () => {
+    expect(() => cc('contract C { uint constant transient VALUE = 0; }'))
+      .toThrow(/transient cannot be used with constant or immutable/i);
+    expect(() => cc('contract C { uint immutable transient value; }'))
+      .toThrow(/transient cannot be used with constant or immutable/i);
+    expect(() => cc('contract C { uint transient value = 1; }'))
+      .toThrow(/initialization of transient state variables is not supported/i);
+  });
+
+  it('retains uninitialized value-type transient state', () => {
+    expect(cc('contract C { uint transient value; function f() public { value = 1; } }')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

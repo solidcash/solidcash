@@ -2085,6 +2085,12 @@ export default class AstBuilder
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
     const name = ctx.anyIdentifier().getText();
+    if (this.solidityImportCompat && modifiers.includes('transient')) {
+      throw new ParseError(
+        'Transient data location is only valid on state variables',
+        Location.fromCtx(ctx),
+      );
+    }
 
     // `uint x = y = 3;` - the initializer is an assignment chain: run the chain first, then initialize from
     // the first target's value (re-read after its write).
@@ -4208,6 +4214,25 @@ export default class AstBuilder
       return node;
     };
     const isTransient = allModTexts.includes('transient');
+    if (this.solidityImportCompat && allModTexts.includes('storage')) {
+      throw new ParseError(
+        'State variables are implicitly storage and cannot specify the storage data location',
+        Location.fromCtx(ctx),
+      );
+    }
+    if (this.solidityImportCompat && isTransient
+      && (allModTexts.includes('constant') || allModTexts.includes('immutable'))) {
+      throw new ParseError(
+        'Transient cannot be used with constant or immutable state variables',
+        Location.fromCtx(ctx),
+      );
+    }
+    if (this.solidityImportCompat && isTransient && ctx.expression?.()) {
+      throw new ParseError(
+        'Initialization of transient state variables is not supported',
+        Location.fromCtx(ctx),
+      );
+    }
     if (this.solidityImportCompat && isTransient && (ctx.mappingType() || ctx.arrayType())) {
       throw new ParseError(
         'Transient data location is only supported for value types',

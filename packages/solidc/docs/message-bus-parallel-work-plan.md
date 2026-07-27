@@ -145,7 +145,7 @@ task-specific report, not in this table.
 | R1 | Select and enforce production envelope | Main | F2,F3,F4 | TODO | Semantic support may exceed production profile |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
-| X1 | Repair delegate returnEvent/proxy-block index disagreement | — | — | TODO | `LargeContractSplitting` red; regression from `1f10b5e4` |
+| X1 | Repair delegate returnEvent/proxy-block slot collision | C (after S2) | S2 | TODO | Diagnosed below; fix is in the block layout, a leased file |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
@@ -178,6 +178,32 @@ did not implement the reviewed work. No round-1 task can reach `PROVEN` until it
 
 Round-1 worktrees were deliberately left intact rather than reset, so every delivered commit stays reachable
 from its original branch. Round-2 worktrees are new: `worker-a-g2`, `worker-b-e2`, `worker-c-s2`.
+
+### 4.2c X1 diagnosed by the integration owner - it is a slot collision, not an SDK placement bug
+
+Worker B traced the `LargeContractSplitting` red to a disagreement about whether an active `returnEvent`
+consumes an input position inside the proxy block, and offered a compiler-side or an SDK-side fix. Measuring the
+published layout settles which is correct:
+
+    setX            blockSize 2  [[0 master] [1 dataNft]]
+    setXReturning   blockSize 3  [[0 master] [1 dataNft] [2 returnEvent]]
+    getX            blockSize 3  [[0 master] [1 dataNft] [2 returnEvent]]
+
+There is **no `lowLevelCall` slot in the layout at all** - the delegate facet input is not represented. But the
+covenant pins the facet at `proxyMaster + 1 + dataNftCount`, which for one data NFT is index **2**, and index 2
+is where the layout puts `returnEvent`. With `.emitReturn()` active the SDK materializes a funder for that
+output-only slot, the funder takes index 2, and the facet is pushed to 3. The covenant then computes
+`OP_INPUTINDEX (3) OP_2 OP_SUB = 1` against a `proxyMasterIndex` witness of 0 and fails.
+
+So the two positions are not merely misaligned; they are **the same slot claimed twice**. The SDK-side option -
+moving the funder out of the block - was rejected on inspection: participant blocks are balanced, input extent
+must equal output extent, and pulling a funder out of the block range breaks the 1:1 input/output
+correspondence the whole layout depends on. The honest fix is for the block layout to reserve the delegate
+input slot and place `returnEvent` after it.
+
+That lives in `GenerateTargetTraversal.ts`, currently leased to Worker C for S2, so X1 is assigned to Worker C
+after S2 rather than worked around in the SDK. The integration owner deliberately did not patch the SDK to
+route around a leased file.
 
 ### 4.3 Corrections this round forced on this plan
 

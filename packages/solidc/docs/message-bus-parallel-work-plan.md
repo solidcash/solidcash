@@ -122,11 +122,11 @@ task-specific report, not in this table.
 | --- | --- | --- | --- | --- | --- |
 | P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
-| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27`; also fixed a `d941b139` direct-route regression |
+| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | **CHANGES** | `30d25f27`; hostile review found an escapable bound - see 4.4 |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | LEASED | round 2, base `b9aa816d`; lease `compiler.ts` |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | TODO | Unsupported classes diagnose exactly |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
-| E2 | Call options and bounded iterated low-level calls | B | E1 | LEASED | round 2, base `b9aa816d`; lease SDK `src/layer3/*` |
+| E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | TODO | Each class needs authority argument |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | TODO | `tx.origin`/`activeBytecode` stay rejected unless specified |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | `6119ba26`; closed a real C2 forgery defect |
@@ -149,6 +149,8 @@ task-specific report, not in this table.
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | TODO | Needs `packages/utils/src/artifact.ts` lease |
+| X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
+| X6 | Stable diagnostics for unadmitted low-level shapes | — | — | TODO | `Block slot not found: lowLevelCall[0]` leaks; compiler lease |
 
 The main thread should reproduce this table in progress updates using only changed rows plus a one-line aggregate,
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
@@ -204,6 +206,44 @@ input slot and place `returnEvent` after it.
 That lives in `GenerateTargetTraversal.ts`, currently leased to Worker C for S2, so X1 is assigned to Worker C
 after S2 rather than worked around in the SDK. The integration owner deliberately did not patch the SDK to
 route around a leased file.
+
+### 4.4 G1 hostile review: CHANGES, with one confirmed soundness escape
+
+Worker B reviewed G1 (it did not implement it) and the review did its job.
+
+**Confirmed sound:** the published bound being a ceiling rather than an exact count is genuinely fail-closed.
+Co-spending fewer rows than the persisted table reaches rejects at input 0. Bound edges behave: `<= 24`
+compiles, `<= 25` rejects, `i <= n` with `n <= 24` correctly computes 25 and rejects.
+
+**Confirmed defective:** the guard-derived bound is escapable. `mutatedNames()` in
+`ExpandBoundedPointerTableLoop.ts` walks `AssignNode`, array, mapping and state nodes only. The integration
+owner verified directly that the file never mentions `TupleAssignmentNode`.
+
+    require(n <= 3); (n, m) = (m, n); for (i < n) handlers[i](v);
+
+is accepted and publishes `maximumOccurrences: 3`, but with `n=1, m=9` runs **9 iterations**, VM-measured. The
+control `n = m;` is correctly rejected. In graph mode the expansion emits 3 guarded rows while the source
+`require` ran before the swap, so 6 dispatches are dropped from the compiled program with nothing left to reject
+them - a silent truncated prefix, exactly the failure mode the guard exists to prevent. Two further escapes are
+confirmed at compile level: mutation through an `internal` function, and a bound read through a getter while a
+state push moves it.
+
+**The blind spot is inherited, and wider than G1.** `TupleAssignmentNode` is also absent from the older
+`UnrollFixedBoundEntryLoop.collectMutatedNames` (verified: zero occurrences). `TupleAssignmentNode` survives to
+codegen, so the write is real in both passes. Worker A is asked to fix both trackers and to report whether the
+older pass was independently exploitable.
+
+**Compile-cost regression (G1-C).** G1's passes pushed `HiddenBatch.test.ts > admits the caller-authorized
+ERC-20 handler set` past the 5s default: that file measured 27/27 at `93bbfedb` but 26/27 at `b9aa816d`, file
+time 41.3s -> 56.6s (+37%). So the "27/27 alone" figure pinned in 4.0 no longer holds on this machine. Worker A
+must report the compile-cost delta and either reduce it or justify it, not silently raise the timeout.
+
+### 4.5 A security-relevant measurement from the E2 work
+
+`{value:}` call options change **no covenant byte at all**, in graph or direct mode. They are enforced entirely
+by SDK block-layout assembly. That is why a graph row would have dropped the option silently, and it is why the
+new SDK gate fails closed rather than best-effort. It also means the guarantee is only as strong as the SDK for
+every existing direct-route user, which is broader than Layer-3 and worth its own look.
 
 ### 4.3 Corrections this round forced on this plan
 

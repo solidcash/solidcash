@@ -4837,3 +4837,12 @@ The focused suite is **941/941**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **946/946**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 524, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Event indexed-parameter loop: 4443 flat, NEG-ACCEPTED 524 -> 522 (-2)
+
+- Ordinary events now reject more than three indexed parameters in Solidity compatibility mode.
+- Anonymous events retain Solidity's additional topic slot but reject more than four indexed parameters.
+- Both event forms remain valid at their respective indexed-parameter limits.
+
+The focused suite is **949/949**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+522, plus 275 multifile and 289 cmdline fixtures excluded.

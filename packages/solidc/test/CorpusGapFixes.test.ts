@@ -308,6 +308,31 @@ describe('hex string separator validation', () => {
   });
 });
 
+describe('event indexed-parameter limits', () => {
+  const cc = (declaration: string): string => compileString(
+    `contract C { ${declaration} }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it('rejects more than three indexed parameters on ordinary events', () => {
+    expect(() => cc('event E(uint indexed a, uint indexed b, uint indexed c, uint indexed d);'))
+      .toThrow(/more than 3 indexed arguments/i);
+  });
+
+  it('rejects more than four indexed parameters on anonymous events', () => {
+    expect(() => cc(
+      'event E(uint indexed a, uint indexed b, uint indexed c, uint indexed d, uint indexed e) anonymous;',
+    )).toThrow(/more than 4 indexed arguments.*anonymous event/i);
+  });
+
+  it('accepts each event form at its indexed-parameter limit', () => {
+    expect(cc('event E(uint indexed a, uint indexed b, uint indexed c);')).toBe('C');
+    expect(cc(
+      'event E(uint indexed a, uint indexed b, uint indexed c, uint indexed d) anonymous;',
+    )).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

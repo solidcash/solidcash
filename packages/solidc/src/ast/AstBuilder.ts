@@ -6634,6 +6634,14 @@ export default class AstBuilder
       };
     });
     const isAnonymous = ctx.children?.some((c) => c.getText() === 'anonymous') === true;
+    const indexedCount = parameters.filter((parameter) => parameter.indexed).length;
+    const maxIndexed = isAnonymous ? 4 : 3;
+    if (this.solidityImportCompat && indexedCount > maxIndexed) {
+      throw new ParseError(
+        `More than ${maxIndexed} indexed arguments for ${isAnonymous ? 'anonymous ' : ''}event`,
+        Location.fromCtx(ctx),
+      );
+    }
     const node = new EventDefinitionNode(eventName, parameters);
     node.isAnonymous = isAnonymous;
     node.location = Location.fromCtx(ctx);

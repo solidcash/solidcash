@@ -425,7 +425,11 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
      * elsewhere, so this is pinned rather than fixed. The settlement cases above show the rest of the
      * raw-edge path already handles a void row once that gate admits it.
      */
-    it('OPEN: the planner does not yet recognize the honestly published void raw edge', () => {
+    // Was pinned OPEN by Worker C: the planner keyed its raw-edge branch off `opaqueReturn`, which a VOID
+    // edge must not claim, so the honestly published artifact surfaced the internal sentinel. The integration
+    // owner applied C's one-line handoff - recognize a raw edge by its compiler-authored `__raw__` identity -
+    // and inverted this pin. It now asserts the planner accepts what the compiler publishes.
+    it('recognizes the honestly published void raw edge without an opaqueReturn flag', () => {
       const busArtifact = compileString(RAW_VOID_CALLER, busOptions);
       const run = busArtifact.abi.find((fn) => fn.name === 'run')!;
       expect(run.externalCalls![0].interfaceName).toBe('__raw__');
@@ -440,7 +444,21 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
           function: 'run',
           args: [],
         }),
-      })).toThrow(/no symbolic target registered for '__raw__'/);
+      // It no longer emits the internal `no symbolic target registered for '__raw__'` sentinel. It now reaches
+      // the genuine requirement for a raw edge - a decoded calldata proof - which this stub does not supply.
+      // Reaching the real check IS the fix; a stub that satisfied it would be testing calldata, not recognition.
+      })).toThrow(/raw callsite 0 (decoded|lacks)/);
+      expect(() => layer3.deriveCompiledGraphPlan({
+        root: { artifact: busArtifact, lockingBytecode: `aa20${'cd'.repeat(32)}87` },
+        function: 'run',
+        args: [`aa20${'ab'.repeat(32)}87`, hexToBin('0011223344')],
+        targets: {},
+        dynamicCall: () => ({
+          participant: { artifact: busArtifact, lockingBytecode: `aa20${'ab'.repeat(32)}87` },
+          function: 'run',
+          args: [],
+        }),
+      })).not.toThrow(/no symbolic target registered/);
     });
 
     it('settles an authenticated VOID low-level call edge', async () => {

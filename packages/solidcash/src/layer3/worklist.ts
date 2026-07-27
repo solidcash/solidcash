@@ -230,8 +230,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     active.add(key);
     for (const call of fn.externalCalls ?? []) {
-      if (call.opaqueReturn) {
-        if (call.interfaceName !== '__raw__' || call.functionName !== '__raw__') {
+      // Recognize a raw edge by its compiler-authored identity, not by opaqueReturn. A VOID low-level call is
+      // a raw edge that returns nothing, so it must not claim opaqueReturn - that flag means "opaque
+      // integrity-bound return". Keying the branch off the flag left the honestly published void artifact
+      // unrecognized, surfacing the internal sentinel `no symbolic target registered for '__raw__'`.
+      const isRawEdge = call.interfaceName === '__raw__' && call.functionName === '__raw__';
+      if (isRawEdge || call.opaqueReturn) {
+        if (!isRawEdge) {
           throw new Error(
             `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
           );

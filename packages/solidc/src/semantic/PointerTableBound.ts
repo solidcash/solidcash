@@ -30,6 +30,30 @@ export interface PointerTableExpansion {
 /** Expanded pointer-table loops per source function name, in source order. */
 export type PointerTableExpansionMap = Map<string, PointerTableExpansion[]>;
 
+/**
+ * A compiler-proven trip-count ceiling for a loop that is NOT expanded, one entry per external callsite the
+ * loop body holds, in source order.
+ *
+ * A loop holding an ordinary interface call keeps its rolled form - the covenant really loops - so the reached
+ * row count stays runtime. It is still bounded whenever a dominating guard bounds the trip count by a literal,
+ * and that ceiling is exactly what a graph consumer must check a chosen row count against. Nothing is recorded
+ * when the guard, the loop shape or the bound's mutation analysis fails, so an absent entry always means
+ * "no ceiling proven" and never "any count admitted".
+ */
+export type ProvenLoopCeilingMap = Map<string, number[]>;
+
+/** Record `ceiling` for one external callsite of `functionName`, in source order. */
+export function recordProvenLoopCeiling(
+  ceilings: ProvenLoopCeilingMap | undefined,
+  functionName: string,
+  ceiling: number,
+): void {
+  if (!ceilings) return;
+  const group = ceilings.get(functionName) ?? [];
+  group.push(ceiling);
+  ceilings.set(functionName, group);
+}
+
 /** Record one expansion for `functionName`. A function with more than one group is not coalesced. */
 export function recordPointerTableExpansion(
   expansions: PointerTableExpansionMap | undefined,

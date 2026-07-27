@@ -397,8 +397,21 @@ export interface ExternalCallAbi {
   callsiteId?: number;
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
   occurrence?: 'once' | 'conditional' | 'loop';
-  /** Exact reached-row ceiling for a compiler-proven canonical literal loop. */
+  /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */
   maximumOccurrences?: number;
+  /**
+   * Compiler-proven FLOOR on reached rows, published only where the compiler can prove one. When it equals
+   * `maximumOccurrences` the reached count is exact and a consumer that plans any other count is wrong before
+   * a transaction exists. Absent means the floor is unknown: only the ceiling binds, and an under-count stays
+   * fail-closed on chain rather than being rejected at plan time.
+   */
+  minimumOccurrences?: number;
+  /**
+   * Provenance of the published bound: `literal` = a compile-time trip count, `guard` = a dominating
+   * `require` ceiling over a runtime trip count, `structural` = a single-reach branch. Absent when no bound
+   * is published.
+   */
+  occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
   interfaceName: string;
   functionName: string;
   addressParam?: string;
@@ -697,6 +710,79 @@ export interface SplitArtifactBundle {
   root: Artifact;
   facets: ArtifactMap;
   manifest: SplitManifest;
+}
+
+/** How a published occurrence bound reads back, with the unknown legs made explicit. */
+export interface OccurrenceBound {
+  kind: 'once' | 'conditional' | 'loop';
+  /** Proven floor on reached rows, or undefined when the compiler proved none. */
+  minimum?: number;
+  /** Proven ceiling on reached rows, or undefined when the compiler proved none. */
+  maximum?: number;
+  /** True when floor and ceiling coincide, so exactly one count can ever be honest. */
+  exact: boolean;
+  source?: 'literal' | 'guard' | 'structural';
+}
+
+/**
+ * Read one callsite's published occurrence bound.
+ *
+ * `once` is a straight-line callsite, so its count is structurally one whether or not the compiler wrote a
+ * bound down. Every other class reports exactly what the artifact carries: an absent leg means the compiler
+ * proved nothing there, never that any count is admissible.
+ */
+export function occurrenceBoundOf(call: ExternalCallAbi): OccurrenceBound {
+  const kind = call.occurrence ?? 'once';
+  if (kind === 'once') {
+    return { kind, minimum: 1, maximum: 1, exact: true, source: call.occurrenceBoundSource ?? 'structural' };
+  }
+  const minimum = call.minimumOccurrences;
+  const maximum = call.maximumOccurrences;
+  return {
+    kind,
+    ...(minimum !== undefined && { minimum }),
+    ...(maximum !== undefined && { maximum }),
+    exact: minimum !== undefined && minimum === maximum,
+    // A conditional callsite's ceiling of one is a property of the branch, not of any written-down bound, so
+    // its provenance is structural even when the compiler spent no bytes saying so.
+    source: call.occurrenceBoundSource ?? (kind === 'conditional' ? 'structural' : undefined),
+  };
+}
+
+const boundProvenance = (bound: OccurrenceBound): string =>
+  bound.source === 'literal' ? 'a compile-time trip count'
+    : bound.source === 'guard' ? 'a dominating require guard'
+      : bound.source === 'structural' ? 'a single-reach branch'
+        : 'the compiler';
+
+/**
+ * Validate a chosen reached-occurrence count against the compiler-published bound.
+ *
+ * Returns undefined when the count is admitted, otherwise a precise diagnostic naming the callsite, the
+ * chosen count, the bound it violates and where that bound came from. A consumer that plans a count outside
+ * the published bound builds a transaction the caller covenant rejects; this turns that into a plan-time
+ * error. An absent bound leg is never treated as permission - callers decide separately whether an unproven
+ * ceiling is admissible at all.
+ */
+export function occurrenceCountViolation(call: ExternalCallAbi, count: number): string | undefined {
+  const bound = occurrenceBoundOf(call);
+  const where = `callsite ${call.callsiteId ?? '?'}`;
+  if (!Number.isInteger(count) || count < 0) {
+    return `${where} was planned with ${count} occurrences, which is not a reached-row count`;
+  }
+  if (bound.kind !== 'loop' && count > 1) {
+    return `${where} is a ${bound.kind} callsite reached at most once, but ${count} occurrences were planned`;
+  }
+  if (bound.maximum !== undefined && count > bound.maximum) {
+    return `${where} was planned with ${count} occurrences, above the ${bound.maximum} `
+      + `proven by ${boundProvenance(bound)}`;
+  }
+  if (bound.minimum !== undefined && count < bound.minimum) {
+    return `${where} was planned with ${count} occurrences, below the ${bound.minimum} `
+      + `proven by ${boundProvenance(bound)}`
+      + (bound.exact ? `; this callsite reaches exactly ${bound.minimum} rows` : '');
+  }
+  return undefined;
 }
 
 export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {

@@ -160,54 +160,167 @@ describe('pointer-table occurrence ordering', () => {
     expect(calls.map((call) => call.functionName)).toEqual(['inc', 'inc', 'dec']);
   }, TIMEOUT);
 
-  it('publishes a fixed literal trip count as an explicit loop ceiling', () => {
+  it('publishes a fixed literal trip count as an exact loop occurrence, floor and ceiling', () => {
     const [call] = callsites(FIXED_LOOP_PLAIN_CALL);
     expect(call.occurrence).toBe('loop');
     expect(call.maximumOccurrences).toBe(3);
+    // X4: the count cannot vary, so the floor is published too and a consumer planning 2 rows is wrong before
+    // a transaction exists rather than after the VM rejects one.
+    expect(call.minimumOccurrences).toBe(3);
+    expect(call.occurrenceBoundSource).toBe('literal');
+  }, TIMEOUT);
+
+  it('publishes a require-derived pointer-table ceiling with no floor', () => {
+    const [call] = callsites(VARYING_SINGLE_LOOP);
+    expect(call.maximumOccurrences).toBe(3);
+    // The guard bounds the table from above only; a shorter runtime table reaches fewer rows honestly.
+    expect(call.minimumOccurrences).toBeUndefined();
+    expect(call.occurrenceBoundSource).toBe('guard');
   }, TIMEOUT);
 
   /**
-   * Recorded GAPS, reported to the integration owner rather than changed here. In each of these the loop IS
-   * expanded or refused correctly and the caller covenant still emits exactly the rows the source executes -
-   * so an inflated count is rejected on-chain - but NO explicit per-callsite ceiling reaches the artifact:
+   * Board 4.7, first two recorded gaps, CLOSED here.
    *
-   *  - a single-selector pointer table is expanded but not coalesced, because coalescing keys on
-   *    `selectorArrayVar`/`fnPtrCall`, which a table with one possible method never sets;
-   *  - a multi-group function is not coalesced either, since coalescing admits exactly one group;
-   *  - a loop holding an ordinary interface call is never seen by `ExpandBoundedPointerTableLoop` at all
-   *    (it counts only POINTER dispatches), so it is neither expanded nor refused, even with no source bound.
-   *
-   * `deriveCompiledGraphPlan` validates a loop occurrence as
-   * `maximumOccurrences === undefined || count <= maximumOccurrences`, so the third case accepts any count up
-   * to the global 24-invocation ceiling. The first two publish `conditional` callsites, whose count the planner
-   * caps at one each, so their bound is structural rather than published.
+   * Both shapes are expanded correctly and both were already fail-closed on chain, but neither published a
+   * per-callsite ceiling: coalescing keys on `selectorArrayVar`/`fnPtrCall`, which a single-method table never
+   * sets, and admits exactly one group. Rather than widen coalescing - which would rewrite the published row
+   * count and the slot correspondence the planner depends on - each expanded row now carries the ceiling it
+   * always had structurally. A `conditional` row is reached at most once by construction, so `1` is a proven
+   * ceiling, and the function summary aggregates them into the same total the expansion proved.
    */
   it.each([
-    ['a single-selector pointer table', FIXED_SELECTOR_SINGLE_LOOP, 'conditional', 3],
-    ['a multi-group function', TWO_GROUPS, 'conditional', 4],
-  ])('GAP: publishes no explicit loop ceiling for %s', (_label, source, occurrence, count) => {
-    const calls = callsites(source);
+    ['a single-selector pointer table', FIXED_SELECTOR_SINGLE_LOOP, 3],
+    ['a multi-group function', TWO_GROUPS, 4],
+  ])('publishes an explicit per-callsite ceiling for %s', (_label, source, count) => {
+    const calls = callsites(source as string);
     expect(calls).toHaveLength(count as number);
     for (const call of calls) {
-      expect(call.occurrence).toBe(occurrence);
-      expect(call.maximumOccurrences).toBeUndefined();
+      expect(call.occurrence).toBe('conditional');
+      expect(call.maximumOccurrences).toBe(1);
+      // A conditional row can be skipped, so it never carries a floor.
+      expect(call.minimumOccurrences).toBeUndefined();
     }
     const summary = summaryOf(source as string);
-    expect(summary.bounded).toBe(false);
-    expect(summary.maximumDirectInvocations).toBeUndefined();
+    expect(summary.bounded).toBe(true);
+    expect(summary.maximumDirectInvocations).toBe(count);
   }, TIMEOUT);
 
-  it.each([
-    ['a require-bounded runtime trip count', RUNTIME_LOOP_PLAIN_CALL],
-    ['an entirely unbounded runtime trip count', UNBOUNDED_LOOP_PLAIN_CALL],
-  ])('GAP: publishes an unbounded loop occurrence for a plain interface call under %s', (_label, source) => {
-    const artifact = artifactOf(source);
-    // The function reaches the graph surface: it is an admitted hidden-batch handler.
+  /**
+   * Board 4.7, third recorded gap, CLOSED for every shape whose source carries a bound.
+   *
+   * A loop holding an ordinary interface call keeps its rolled form - `ExpandBoundedPointerTableLoop` expands
+   * only POINTER dispatches - so nothing about the emitted covenant changes. What changes is that the ceiling
+   * the source already proves reaches the artifact, through the same guard and mutation analysis the pointer
+   * table demands, so the planner has a compiler-proven number to check a chosen row count against.
+   */
+  it('publishes a require-derived ceiling for a rolled loop holding an ordinary interface call', () => {
+    const artifact = artifactOf(RUNTIME_LOOP_PLAIN_CALL);
     expect(artifact.hiddenBatch!.handlers.map((handler) => handler.name)).toContain('fireAll');
-    const [call, ...rest] = callsites(source);
+    const [call, ...rest] = callsites(RUNTIME_LOOP_PLAIN_CALL);
+    expect(rest).toHaveLength(0);
+    expect(call.occurrence).toBe('loop');
+    expect(call.maximumOccurrences).toBe(3);
+    expect(call.minimumOccurrences).toBeUndefined();
+    expect(call.occurrenceBoundSource).toBe('guard');
+    expect(summaryOf(RUNTIME_LOOP_PLAIN_CALL).bounded).toBe(true);
+  }, TIMEOUT);
+
+  /**
+   * REMAINING SCOPE, not a gap that this round closes.
+   *
+   * A loop whose trip count has no source bound at all proves nothing, so nothing is published and
+   * `deriveCompiledGraphPlan` still admits any count up to the global 24-invocation transcript ceiling. The
+   * caller covenant emits exactly the rows the source executes, so an inflated count is rejected on chain;
+   * what is absent is a plan-time bound, and no compiler analysis can invent one. Closing this means either
+   * refusing the shape at compile time - which would reject `Layer3CompiledGraph`'s established
+   * `LoopGraph.repeat` acceptance case - or having the planner refuse an unproven ceiling, which lives in the
+   * SDK worklist.
+   */
+  it('SCOPED: publishes no ceiling for a loop whose trip count the source never bounds', () => {
+    const artifact = artifactOf(UNBOUNDED_LOOP_PLAIN_CALL);
+    expect(artifact.hiddenBatch!.handlers.map((handler) => handler.name)).toContain('fireAll');
+    const [call, ...rest] = callsites(UNBOUNDED_LOOP_PLAIN_CALL);
     expect(rest).toHaveLength(0);
     expect(call.occurrence).toBe('loop');
     expect(call.maximumOccurrences).toBeUndefined();
-    expect(summaryOf(source).bounded).toBe(false);
+    expect(call.minimumOccurrences).toBeUndefined();
+    expect(summaryOf(UNBOUNDED_LOOP_PLAIN_CALL).bounded).toBe(false);
+  }, TIMEOUT);
+
+  it('bounds every external callsite a rolled loop body holds', () => {
+    const calls = callsites(`pragma solidcash >=0.8.0;
+interface IFoo { function bar(uint value); function baz(uint value); }
+contract TwoCallsOneLoop() {
+  int n;
+  function fireAll(uint value, address t) public {
+    require(n <= 2);
+    for (int i = 0; i < n; i = i + 1) { IFoo(t).bar(value); IFoo(t).baz(value); }
+    require(value >= 0);
+  }
+}`);
+    expect(calls.map((call) => call.functionName)).toEqual(['bar', 'baz']);
+    for (const call of calls) {
+      expect(call.maximumOccurrences).toBe(2);
+      expect(call.occurrenceBoundSource).toBe('guard');
+    }
+  }, TIMEOUT);
+
+  it('attaches a proven ceiling to an array-element loop callsite', () => {
+    const [call] = callsites(`pragma solidcash >=0.8.0;
+interface IFoo { function bar(uint value); }
+contract ArrayElementLoop() {
+  address[] targets;
+  function register(address t) public { this.targets.push(t); require(true); }
+  function fireAll(uint value) public {
+    require(targets.length <= 3);
+    for (uint i = 0; i < targets.length; i = i + 1) { IFoo(targets[i]).bar(value); }
+    require(value >= 0);
+  }
+}`);
+    expect(call.loopArrayVar).toBe('targets');
+    expect(call.maximumOccurrences).toBe(3);
+    expect(call.occurrenceBoundSource).toBe('guard');
+  }, TIMEOUT);
+
+  /**
+   * A rolled-loop ceiling is matched to its ABI row positionally, so it is published only when every
+   * ceiling-less loop row has a proven ceiling. One unbounded loop beside a bounded one therefore publishes
+   * NOTHING rather than risk attaching the proven bound to the wrong row.
+   */
+  it('publishes no rolled-loop ceiling when one loop in the function is unbounded', () => {
+    const calls = callsites(`pragma solidcash >=0.8.0;
+interface IFoo { function bar(uint value); }
+contract MixedLoops() {
+  int n; int m;
+  function fireAll(uint value, address t) public {
+    require(n <= 2);
+    for (int i = 0; i < n; i = i + 1) { IFoo(t).bar(value); }
+    for (int j = 0; j < m; j = j + 1) { IFoo(t).bar(value); }
+    require(value >= 0);
+  }
+}`);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call.maximumOccurrences).toBeUndefined();
+  }, TIMEOUT);
+
+  /**
+   * The rolled-loop ceiling runs the SAME mutation analysis the pointer-table expansion demands, so a bound
+   * the function can move afterwards proves nothing - the G1 escape class must not reappear on this path.
+   */
+  it('refuses a rolled-loop ceiling whose bound the function itself can move', () => {
+    const [call] = callsites(`pragma solidcash >=0.8.0;
+interface IFoo { function bar(uint value); }
+contract MovableBound() {
+  int n;
+  function fireAll(uint value, address t) public {
+    require(n <= 2);
+    this.n = 9;
+    for (int i = 0; i < n; i = i + 1) { IFoo(t).bar(value); }
+    require(value >= 0);
+  }
+}`);
+    expect(call.occurrence).toBe('loop');
+    expect(call.maximumOccurrences).toBeUndefined();
+    expect(call.occurrenceBoundSource).toBeUndefined();
   }, TIMEOUT);
 });

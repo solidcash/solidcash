@@ -39,8 +39,8 @@ import { BinaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
-  MAXIMUM_POINTER_TABLE_BOUND, PointerTableBoundError, PointerTableExpansionMap,
-  recordPointerTableExpansion,
+  MAXIMUM_POINTER_TABLE_BOUND, PointerTableBoundError, PointerTableExpansionMap, ProvenLoopCeilingMap,
+  recordPointerTableExpansion, recordProvenLoopCeiling,
 } from './PointerTableBound.js';
 
 /** Structural signature of an expression, used to match a guard subject against a loop bound expression. */
@@ -74,10 +74,19 @@ function identifiersOf(node: Node | undefined, into: Set<string> = new Set()): S
   return into;
 }
 
+/**
+ * Count the DISTINCT nodes matching `predicate`.
+ *
+ * Identity matters: a statement wrapper can reference the same expression through two fields (a method-call
+ * statement keeps both `call` and the post-analysis `expression`), so a naive walk counts one source callsite
+ * twice and every count derived from it - a dispatch cardinality, a per-row ceiling - is silently doubled.
+ */
 function countNodes(nodes: Node[], predicate: (node: Node) => boolean): number {
   let found = 0;
+  const seen = new Set<Node>();
   const walk = (node: Node): void => {
-    if (!node) return;
+    if (!node || seen.has(node)) return;
+    seen.add(node);
     if (predicate(node)) found += 1;
     for (const key of Object.keys(node)) {
       if (key === 'location') continue;
@@ -154,12 +163,19 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
   private contractFunctions = new Map<string, FunctionDefinitionNode>();
   // Per-function direct mutations, shared across the callers that reach them.
   private mutationCache = new Map<FunctionDefinitionNode, Set<string>>();
+  // Declared interface names, so an ordinary `IFoo(addr).m()` in a loop is told apart from any other method call.
+  private interfaceNames = new Set<string>();
 
-  constructor(private readonly expansions?: PointerTableExpansionMap) {
+  constructor(
+    private readonly expansions?: PointerTableExpansionMap,
+    private readonly ceilings?: ProvenLoopCeilingMap,
+  ) {
     super();
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    for (const declared of node.interfaceDefinitions) this.interfaceNames.add(declared.name);
+    for (const imported of node.importedContracts) this.interfaceNames.add(imported.name);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((contract) => this.visit(contract) as ContractNode);
     node.freeFunctions = node.freeFunctions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
@@ -313,6 +329,101 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
     if (existing === undefined || ceiling < existing) this.provenBounds.set(key, ceiling);
   }
 
+  /**
+   * Publish a ceiling for a loop this pass leaves ROLLED because it holds ordinary interface calls rather than
+   * a pointer dispatch.
+   *
+   * Nothing about the emitted program changes: the covenant still loops and still emits one row per executed
+   * iteration. What changes is that the ceiling the source already proves - a dominating
+   * `require(bound <= K)` over the trip count - reaches the artifact, so a consumer choosing a row count has a
+   * compiler-proven number to check it against instead of only the global transcript ceiling. A shape whose
+   * bound cannot be proven records nothing and stays exactly as unbounded as it was.
+   */
+  private recordRolledLoopCeiling(
+    initializer: VariableDefinitionNode, loop: WhileNode, bodyStatements: StatementNode[],
+  ): void {
+    if (!this.ceilings) return;
+    const calls = countNodes(bodyStatements, (node) => node instanceof MethodCallNode
+      && node.selectorArrayVar === undefined
+      && node.object instanceof FunctionCallNode
+      && this.interfaceNames.has(node.object.identifier.name));
+    if (calls === 0) return;
+    const count = this.provenTripCount(initializer, loop, bodyStatements, 'decline');
+    if (count === undefined) return;
+    for (let index = 0; index < calls; index += 1) {
+      recordProvenLoopCeiling(this.ceilings, this.currentFunction, Number(count));
+    }
+  }
+
+  /**
+   * The compiler-proven ceiling on a loop's trip count, or undefined when no ceiling is proven.
+   *
+   * `onFailure: 'throw'` is the pointer-table contract - every unbounded shape must be refused with one stable
+   * diagnostic - while `'decline'` is used where the loop is admitted either way and only the published bound
+   * is at stake. The two modes share one proof so a bound can never be published on weaker evidence than the
+   * expansion demands.
+   */
+  private provenTripCount(
+    initializer: VariableDefinitionNode, loop: WhileNode, bodyStatements: StatementNode[],
+    onFailure: 'throw' | 'decline',
+  ): bigint | undefined {
+    const decline = (node: Node, detail: string): undefined => {
+      if (onFailure === 'throw') throw new PointerTableBoundError(node, detail);
+      return undefined;
+    };
+    const variable = initializer.name;
+    if (!(initializer.expression instanceof IntLiteralNode)) {
+      return decline(initializer, 'the loop initializer is not an integer literal');
+    }
+    const start = initializer.expression.value;
+
+    const condition = loop.condition;
+    if (!(condition instanceof BinaryOpNode)
+      || ![BinaryOperator.LT, BinaryOperator.LE].includes(condition.operator)
+      || !(condition.left instanceof IdentifierNode && condition.left.name === variable)) {
+      return decline(loop, `the loop condition must be '${variable} < bound' or '${variable} <= bound'`);
+    }
+    const boundExpression = condition.right;
+    const inclusive = condition.operator === BinaryOperator.LE;
+
+    const all = loop.block.statements ?? [];
+    const step = this.stepOf(all.slice(all.length - loop.forLoopUpdateCount), variable);
+    if (step === undefined || step <= 0n) {
+      return decline(loop, `the loop update must be '${variable} = ${variable} + literal'`);
+    }
+    if (anyNode(bodyStatements, (node) => node instanceof BreakNode
+      || node instanceof ContinueNode || node instanceof ReturnNode)) {
+      return decline(loop, 'the loop body uses break, continue or return');
+    }
+
+    const maximum = this.provenBounds.get(signatureOf(boundExpression));
+    if (maximum === undefined) {
+      return decline(
+        loop,
+        'add a dominating require that bounds the trip count by an integer literal, '
+        + "for example 'require(table.length <= 4);'",
+      );
+    }
+    const mutations = this.currentMutations();
+    for (const name of this.boundDependencies(boundExpression)) {
+      if (mutations.has(name)) {
+        return decline(loop, `this function can change '${name}', which the bound depends on`);
+      }
+    }
+
+    const span = maximum - start;
+    let count = 0n;
+    if (span >= 0n) count = inclusive ? span / step + 1n : (span + step - 1n) / step;
+    if (count < 0n) count = 0n;
+    if (count > BigInt(MAXIMUM_POINTER_TABLE_BOUND)) {
+      return decline(
+        loop,
+        `the proven bound of ${count} reached rows exceeds the maximum of ${MAXIMUM_POINTER_TABLE_BOUND}`,
+      );
+    }
+    return count;
+  }
+
   private tryExpand(
     initializer: VariableDefinitionNode, loop: WhileNode,
   ): StatementNode[] | undefined {
@@ -322,7 +433,10 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
     const bodyStatements = all.slice(0, all.length - updateCount);
     const dispatches = countNodes(bodyStatements, (node) => node instanceof IndirectCallNode
       || (node instanceof MethodCallNode && node.selectorArrayVar !== undefined));
-    if (dispatches === 0) return undefined;
+    if (dispatches === 0) {
+      this.recordRolledLoopCeiling(initializer, loop, bodyStatements);
+      return undefined;
+    }
     if (dispatches > 1) {
       throw new PointerTableBoundError(
         loop, `the loop body holds ${dispatches} pointer dispatches; exactly one is admitted`,
@@ -330,56 +444,10 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
     }
 
     const variable = initializer.name;
-    if (!(initializer.expression instanceof IntLiteralNode)) {
-      throw new PointerTableBoundError(initializer, 'the loop initializer is not an integer literal');
-    }
-    const start = initializer.expression.value;
-
-    const condition = loop.condition;
-    if (!(condition instanceof BinaryOpNode)
-      || ![BinaryOperator.LT, BinaryOperator.LE].includes(condition.operator)
-      || !(condition.left instanceof IdentifierNode && condition.left.name === variable)) {
-      throw new PointerTableBoundError(
-        loop, `the loop condition must be '${variable} < bound' or '${variable} <= bound'`,
-      );
-    }
-    const boundExpression = condition.right;
-    const inclusive = condition.operator === BinaryOperator.LE;
-
-    const step = this.stepOf(all.slice(all.length - updateCount), variable);
-    if (step === undefined || step <= 0n) {
-      throw new PointerTableBoundError(loop, `the loop update must be '${variable} = ${variable} + literal'`);
-    }
-    if (anyNode(bodyStatements, (node) => node instanceof BreakNode
-      || node instanceof ContinueNode || node instanceof ReturnNode)) {
-      throw new PointerTableBoundError(loop, 'the loop body uses break, continue or return');
-    }
-
-    const maximum = this.provenBounds.get(signatureOf(boundExpression));
-    if (maximum === undefined) {
-      throw new PointerTableBoundError(
-        loop,
-        'add a dominating require that bounds the trip count by an integer literal, '
-        + "for example 'require(table.length <= 4);'",
-      );
-    }
-    const mutations = this.currentMutations();
-    for (const name of this.boundDependencies(boundExpression)) {
-      if (mutations.has(name)) {
-        throw new PointerTableBoundError(loop, `this function can change '${name}', which the bound depends on`);
-      }
-    }
-
-    const span = maximum - start;
-    let count = 0n;
-    if (span >= 0n) count = inclusive ? span / step + 1n : (span + step - 1n) / step;
-    if (count < 0n) count = 0n;
-    if (count > BigInt(MAXIMUM_POINTER_TABLE_BOUND)) {
-      throw new PointerTableBoundError(
-        loop,
-        `the proven bound of ${count} reached rows exceeds the maximum of ${MAXIMUM_POINTER_TABLE_BOUND}`,
-      );
-    }
+    const count = this.provenTripCount(initializer, loop, bodyStatements, 'throw')!;
+    const start = (initializer.expression as IntLiteralNode).value;
+    const condition = loop.condition as BinaryOpNode;
+    const step = this.stepOf(all.slice(all.length - updateCount), variable)!;
 
     const expanded: StatementNode[] = [];
     for (let index = 0n; index < count; index += 1n) {

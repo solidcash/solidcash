@@ -65,7 +65,10 @@ function uniqueUtxo(seen: Set<string>, defaults?: Parameters<typeof randomUtxo>[
   throw new Error('could not draw a distinct funding outpoint');
 }
 
-/** The returning handler under test. Declared in three of the four cells; never invoked in any of them. */
+/**
+ * The returning handler under test. It is DECLARED by the cells that name it and INVOKED by none of them, in
+ * either body form: whether it writes state is measured, not assumed.
+ */
 const RETURNING_HANDLER = `
   function audit(uint value) public returns (uint) {
     require(value > 0);
@@ -98,7 +101,7 @@ contract EscapeTableHub() {
   }${returningBody(returning)}
 }`;
 
-/** The control: the same two-row, returning-handler configuration reached through ordinary interface calls. */
+/** The control: the same declared returning handler, reached through ordinary interface calls. */
 const ORDINARY_HUB = `pragma solidcash >=0.8.0;
 interface IEscapeLeg { function credit(uint value); function debit(uint value); }
 contract EscapeOrdinaryHub() {
@@ -140,8 +143,8 @@ const CALL_VALUE = 4n;
 type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
 
 interface Cell {
-  /** 'none', 'pure' or 'stateful': what returning handler the caller's contract declares. */
-  returningHandler: string;
+  /** What returning handler the caller's contract declares. None of them is ever invoked. */
+  returningHandler: 'none' | 'pure' | 'stateful';
   /** Does leg B call back, giving the caller a second local row? */
   callback: boolean;
   /** Pointer-table dispatch, or plain interface calls. */
@@ -454,6 +457,17 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
     { tamper: 'argument' as const, callback: false }, { tamper: 'argument' as const, callback: true },
   ])('ACCEPTS a %o substitution when a returning handler is declared', async (cell) => {
     const built = await buildArgumentSubstitution({ ...cell, returningHandler: 'pure' });
+    expect(built.resultMode).toBe(true);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  // The declared handler's own body does not change the measurement either: a state-writing returning handler
+  // escapes exactly like a pure one.
+  it('ACCEPTS a target substitution when the declared returning handler writes state', async () => {
+    const built = await buildArgumentSubstitution({
+      returningHandler: 'stateful', callback: false, tamper: 'target',
+    });
     expect(built.resultMode).toBe(true);
     expect(outcomeOf(built.builder)).toBe('ACCEPTED');
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');

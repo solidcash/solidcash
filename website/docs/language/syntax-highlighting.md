@@ -7,6 +7,14 @@ When developing smart contracts for SolidCash it is useful to have the proper sy
 ## Visual Studio Code (Recommended)
 For Visual Studio Code (and derived editors like Cursor) we have an official [SolidCash extension](https://marketplace.visualstudio.com/items?itemName=SolidCash.solidcash-vscode). This extension works with `.scash` files and supports syntax highlighting, autocompletion, snippets and linting. Because of the first-class SolidCash support, Visual Studio Code with this SolidCash extension is the recommended way to develop SolidCash contracts.
 
+It also provides editor intelligence for the language itself:
+
+- **Hover documentation** on keywords, modifiers, types, global functions, introspection variables (`tx.outputs[0].value`, `msg.sender`, `this.age`), member operations, units, Bitcoin Script opcodes and the Yul builtins, each linking to the matching page in these docs. Hovering your own declarations shows their signature and doc comment.
+- **Go to definition** (Cmd+click, F12) on functions, modifiers, events, errors, structs, enums, contracts, interfaces, libraries, state variables, parameters and locals, following inheritance and imports. Import paths are clickable links and resolve the same way the compiler resolves them, including npm-style paths.
+- **Outline, breadcrumbs and workspace symbol search** for contracts and their members.
+
+Inside `assembly { ... }` blocks the supported Yul builtins are highlighted as functions, and the ones the compiler rejects (`create`, `create2`, `verbatim_*`, `pc`, `leave`, ...) are scoped as invalid, so they read as errors before you compile.
+
 To have the extension automatically suggested for any developer looking at your SolidCash contract in VScode, add the following configuration in a `.vscode/extensions.json` file:
 
 ```json title="&#126;/.vscode/extensions.json"

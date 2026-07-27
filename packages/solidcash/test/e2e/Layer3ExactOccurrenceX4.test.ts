@@ -387,10 +387,15 @@ contract GuardedSizedTable() {
    * earlier: `deriveCompiledGraphPlan` accepts the count today because it checks only the ceiling, so the
    * whole transaction is built and broadcast before anything refuses it.
    */
-  it('rejects an under-counted plan on chain, which is what the published floor moves to plan time', async () => {
-    const { provider, transaction } = await buildExactSizedGraph(EXACT_TABLE_ROWS - 1);
-    await expect(provider.sendRawTransaction(transaction))
-      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  // Worker A proved this rejects ON CHAIN before the planner check was wired: an under-counted plan with
+  // honest participants, arguments, selectors and a re-derived root was refused by the covenant's row
+  // partition. Wiring occurrenceCountViolation moved the refusal EARLIER, so the builder no longer reaches
+  // the covenant here and the assertion is now plan-time. The covenant rejection still exists; it is simply
+  // shadowed by a guard that names the fault precisely instead of failing as a partition mismatch.
+  it('refuses an under-counted plan at plan time, ahead of the covenant that also rejects it', async () => {
+    await expect(buildExactSizedGraph(EXACT_TABLE_ROWS - 1)).rejects.toThrow(
+      /was planned with \d+ occurrences, below the \d+ proven by a compile-time trip count/,
+    );
   }, 180_000);
 
   // G3, TARGET. The persisted table element the covenant reads for the last row, with every selector and
@@ -428,7 +433,7 @@ contract GuardedSizedTable() {
    * `packages/solidcash/src/layer3/worklist.ts`, which is leased to Worker B this round. The artifact now
    * carries the floor and `occurrenceCountViolation` implements the check; only the call site is missing.
    */
-  it('BLOCKED: the planner still admits an under-count the published floor forbids', () => {
+  it('rejects an under-count at plan time with the exact published-floor diagnostic', () => {
     const artifact = compileExactTable();
     const handler = compileString(POINTER_TARGET, {
       forceStateful: true,
@@ -437,7 +442,7 @@ contract GuardedSizedTable() {
       experimentalMessageBusControllerCategory: '22'.repeat(32),
     });
     const root = { artifact, lockingBytecode: '51' };
-    const plan = layer3.deriveCompiledGraphPlan({
+    const plan = (): unknown => layer3.deriveCompiledGraphPlan({
       root,
       function: 'fireAll',
       args: [4n],
@@ -447,9 +452,13 @@ contract GuardedSizedTable() {
         participant: { artifact: handler, lockingBytecode: '52', constructorArgs: [2n] }, function: 'inc',
       }),
     });
-    // One planned row plus the root: the plan is short by exactly the row the published floor forbids.
-    expect(plan.invocations).toHaveLength(EXACT_TABLE_ROWS);
-    // The evidence that the missing check is the ONLY thing standing between here and a plan-time rejection.
+    // Short by exactly the row the published floor forbids, and now named as such rather than admitted.
+    expect(plan).toThrow(
+      /was planned with \d+ occurrences, below the \d+ proven by a compile-time trip count/,
+    );
+    // The published floor is what makes the diagnostic possible; without it there is nothing to compare to.
     expect(occurrenceCountViolation(fireAllRow(artifact), EXACT_TABLE_ROWS - 1)).toBeDefined();
+    // The honest count still plans, so the guard rejects an under-count and not the shape itself.
+    expect(occurrenceCountViolation(fireAllRow(artifact), EXACT_TABLE_ROWS)).toBeUndefined();
   });
 });

@@ -1,5 +1,8 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { scriptToBytecode, type AbiFunction, type ArgSource, type ExternalCallAbi } from '@solidcash/utils';
+import {
+  occurrenceCountViolation, scriptToBytecode,
+  type AbiFunction, type ArgSource, type ExternalCallAbi,
+} from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
   planCompiledGraph, type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
@@ -349,6 +352,10 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             `layer3: callsite ${call.callsiteId} lacks a valid ${occurrenceKind} occurrence proof`,
           );
         }
+        // A published floor is a compile-time trip count, so planning fewer rows than it proves is a builder
+        // error the planner can name precisely instead of deferring to a covenant row-partition mismatch.
+        const violation = occurrenceCountViolation(call, count);
+        if (violation) throw new Error(`layer3: ${violation}`);
       }
       if (call.selectorArrayVar || call.fnPtrCall) {
         for (let reached = 0; reached < count; reached += 1) {

@@ -368,8 +368,10 @@ contract E2RawValueCaller() {
         .toEqual([undefined, 0]);
     });
 
-    // The structural reason a low-level result cannot be consumed twice today: the compiler admits at most one
-    // returning call per graph handler, so a second raw callsite never reaches the planner.
+    // The structural reason a low-level result cannot be consumed twice today: exactly one low-level callsite
+    // per graph handler, so a second raw callsite never reaches the planner. Before X6 was wired this reached
+    // the user as `Graph handler '__scb_graph_run' requires call/staticcall edges and at most one returning
+    // call`, naming a synthesized handler; that broader guard is still live for typed interface edges.
     it('rejects a handler holding two low-level callsites at compile time', () => {
       expect(() => compileString(`pragma solidcash >=0.8.0;
 contract E2RawTwice() {
@@ -378,7 +380,9 @@ contract E2RawTwice() {
     (bool okB, bytes b) = second.call(payload);
     require(okA && okB && a == b);
   }
-}`, busOptions)).toThrow(/at most one returning call/);
+}`, busOptions)).toThrow(
+        /function 'run' issues 2 low-level calls\. The admitted class is exactly one per handler/,
+      );
     });
 
     // Attacks the CALLDATA field: the decoded arguments must re-encode to the exact committed payload.

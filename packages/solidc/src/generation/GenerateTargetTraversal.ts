@@ -13202,6 +13202,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    // Exact collection-address output cardinality for the single-write route. The batch route proves this with
+    // emitVerifyChunkUtxoCount; without it only the pinned output indices are checked, so the same transaction
+    // could also mint extra nodes at this collection's entry address - a second node for the written key, or a
+    // fabricated node for a key that was never written - which later reads would authenticate as genuine.
+    // Emitted only when this collection owns exactly one entry slot in the function, so the expected count is
+    // 1 (update) or 2 (predecessor + new node on insert) with no other slot to account for.
+    const pinsCollectionOutputCount = !this.currentFunctionIsDelegate
+      && aliasOwner === undefined && runtimeAliasOwners.length === 0
+      && !this.entrySlots[slotIndex].inLoop
+      && !this.sortedInsertLoopActive && !this.sortedUpsertLoopActive
+      && this.entrySlots.every((info, index) => index === slotIndex || info.collection !== collection.name);
+
     // 3. entry address -> [v, Hk32, entryAddr]
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
@@ -13240,6 +13252,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEntryOutputIndex(slotIndex, loc, 6);                    // [.., coValue, outIdx]
       this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6);             // addr4, coSlot32 d3, coNext32 d2, v d6
     }
+    // One recreated node is the whole collection footprint of an update.
+    if (pinsCollectionOutputCount) this.emit(encodeInt(1n), loc);
     this.emit(Op.OP_ELSE, loc);
     // --- INSERT: bracket coSlot < H(k) < coNext, then P' + NEW ---
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coSlot#
@@ -13277,7 +13291,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
     this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7);                  // NEW = Hk32 || coNext32 || v
     this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
+    // Predecessor plus new node is the whole collection footprint of an insert.
+    if (pinsCollectionOutputCount) this.emit(encodeInt(2n), loc);
     this.emit(Op.OP_ENDIF, loc);
+    // [.., Hk32, entryAddr, coSlot32, coNext32, coValue, expected] - entryAddr is 4 below the expected count.
+    if (pinsCollectionOutputCount) this.emitVerifySortedOutputCountRaw(4, loc);
 
     // drop coValue, coNext, coSlot, entryAddr, Hk32 (untracked), then v (tracked)
     this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
@@ -16937,6 +16955,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
     this.emitStateFieldRead(sv, new IntType(false, 32), fieldsInNft, loc);
     this.pushToStack(trackName);
+  }
+
+  /**
+   * Untracked-stack variant of emitVerifyChunkUtxoCount for the single-write C2 upsert, whose working area is a
+   * run of raw values the stack tracker does not name. Expects the expected count on top and the collection entry
+   * address `addrDepth` items below it; both operands are consumed, leaving the working area unchanged.
+   */
+  private emitVerifySortedOutputCountRaw(addrDepth: number, loc: SingleLocationData): void {
+    this.emit(encodeInt(0n), loc);            // running count
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);               // descending output index
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    // +3: the expected count, the running count and the index sit between the address and this bytecode.
+    this.emit(encodeInt(BigInt(addrDepth + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_EQUALVERIFY, loc);        // actual == expected
   }
 
   /**

@@ -250,6 +250,12 @@ contract GraphMultiSigned() {
     require(checkMultiSig([first, second], [one, two, three]));
   }
 }`;
+const SIGNATURE_ARRAY_APP = `pragma solidcash >=0.8.0;
+contract GraphSignatureArray() {
+  function signedMany(sig[] authorizations, pubkey[] owners) public {
+    require(checkMultiSig(authorizations, owners));
+  }
+}`;
 const FORWARDED_SIGNED_CALLER = `pragma solidcash >=0.8.0;
 interface IGraphSigned {
   function signed(sig authorization, pubkey owner);
@@ -827,12 +833,13 @@ async function buildIntrospectionGraph(tamper = false) {
   return { provider, transaction: raw(tx) };
 }
 
-async function buildSignedGraph(tamper = false, multisig = false) {
+async function buildSignedGraph(tamper = false, multisig: boolean | 'array' = false) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
   } = await createGraphAuthority(provider);
-  const artifact = compileString(multisig ? MULTISIG_APP : SIGNED_APP, {
+  const artifact = compileString(multisig === 'array' ? SIGNATURE_ARRAY_APP
+    : multisig ? MULTISIG_APP : SIGNED_APP, {
     forceStateful: true,
     experimentalHiddenBatch: true,
     experimentalMessageBusController: controller.lockingBytecode,
@@ -843,7 +850,7 @@ async function buildSignedGraph(tamper = false, multisig = false) {
   const contract = base.withCategory(hexToBin(setup.categoryId));
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const authorization = new SignatureTemplate(tamper ? bobPriv : alicePriv);
-  const args: FunctionArgument[] = multisig ? [
+  const scalarArgs: FunctionArgument[] = [
     new SignatureTemplate(alicePriv, undefined, SignatureAlgorithm.ECDSA),
     new SignatureTemplate(
       tamper ? new Uint8Array(32).fill(7) : bobPriv,
@@ -851,19 +858,31 @@ async function buildSignedGraph(tamper = false, multisig = false) {
       SignatureAlgorithm.ECDSA,
     ),
     alicePub, bobPub, carolPub,
-  ] : [authorization, alicePub];
+  ];
+  const args: FunctionArgument[] = multisig === 'array'
+    ? [[
+      new SignatureTemplate(alicePriv, undefined, SignatureAlgorithm.ECDSA),
+      new SignatureTemplate(
+        tamper ? new Uint8Array(32).fill(7) : bobPriv,
+        undefined,
+        SignatureAlgorithm.ECDSA,
+      ),
+    ], [alicePub, bobPub, carolPub]]
+    : multisig ? scalarArgs : [authorization, alicePub];
   const plan = layer3.planCompiledGraph([
     { artifact, lockingBytecode: contract.lockingBytecode },
   ], [{
     parent: null,
     callee: 0,
-    function: multisig ? 'signed2of3' : 'signed',
+    function: multisig === 'array' ? 'signedMany' : multisig ? 'signed2of3' : 'signed',
     args,
   }]);
   // The canonical row commits the public key but deliberately excludes the
   // transaction signature, which is finalized only after the root exists.
   expect(plan.participants[0].batch.rows[0].argsHex).toBe(binToHex(
-    scriptToBytecode(multisig ? [alicePub, bobPub, carolPub] : [alicePub]),
+    multisig === 'array'
+      ? encodeFunctionArgument([alicePub, bobPub, carolPub], 'pubkey[]') as Uint8Array
+      : scriptToBytecode(multisig ? [alicePub, bobPub, carolPub] : [alicePub]),
   ));
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
@@ -2877,6 +2896,16 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a multisig route witness whose key is absent from the rooted key set', async () => {
     const { provider, transaction } = await buildSignedGraph(true, true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+  });
+
+  it('verifies a canonical root-excluded sig[] witness against rooted owners', async () => {
+    const { provider, transaction } = await buildSignedGraph(false, 'array');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a sig[] signer absent from the rooted owner vector', async () => {
+    const { provider, transaction } = await buildSignedGraph(true, 'array');
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
   });
 

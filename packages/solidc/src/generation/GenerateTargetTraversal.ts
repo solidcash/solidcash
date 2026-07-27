@@ -5608,10 +5608,61 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitMultiSig(node: FunctionCallNode): Node {
     this.emit(encodeBool(false), { location: node.location, positionHint: PositionHint.START });
     this.pushToStack('(value)');
+    const sigs = node.parameters[0];
+    const pks = node.parameters[1];
+    if (!(sigs instanceof ArrayNode) || !(pks instanceof ArrayNode)) {
+      const locationData = { location: node.location, positionHint: PositionHint.END };
+      const flattenTop = (elementType: Type): void => {
+        // [arrayBlob] -> [N, elements], retain N on altstack while
+        // sequentially decoding each element onto the main stack.
+        this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
+        this.emit(Op.OP_SWAP, locationData); // [elements, N]
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_TOALTSTACK, locationData); // retained output count
+        this.emit(Op.OP_TOALTSTACK, locationData); // loop counter
+        this.emit(Op.OP_BEGIN, locationData);
+        this.emit(Op.OP_FROMALTSTACK, locationData);
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_0NOTEQUAL, locationData);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(Op.OP_1SUB, locationData);
+        this.emit(Op.OP_TOALTSTACK, locationData);
+        if (isFixedWidthType(elementType)) {
+          this.emit(encodeInt(BigInt(getFixedWidth(elementType))), locationData);
+          this.emit(Op.OP_SPLIT, locationData); // [.., packed, remainder]
+          this.emit(Op.OP_SWAP, locationData);
+          this.emitDecodeElementPacked(elementType, locationData);
+          this.emit(Op.OP_SWAP, locationData); // [.., value, remainder]
+        } else {
+          this.emitPushdataDecode(elementType, locationData); // [.., value, remainder]
+        }
+        this.emit(encodeBool(false), locationData);
+        this.emit(Op.OP_ELSE, locationData);
+        this.emit(Op.OP_DROP, locationData); // zero counter
+        this.emit(Op.OP_DROP, locationData); // exhausted remainder
+        this.emit(Op.OP_FROMALTSTACK, locationData); // retained N
+        this.emit(encodeBool(true), locationData);
+        this.emit(Op.OP_ENDIF, locationData);
+        this.emit(Op.OP_UNTIL, locationData);
+      };
+      // Resolve both expressions while the physical stack still matches the
+      // static tracker. Expanding the first vector before visiting the second
+      // would make the second identifier PICK from inside the expanded vector.
+      node.parameters[0] = this.visit(sigs) as ExpressionNode;
+      node.parameters[1] = this.visit(pks) as ExpressionNode;
+      this.emit(Op.OP_TOALTSTACK, locationData); // park key-array blob
+      flattenTop(PrimitiveType.SIG);
+      this.emit(Op.OP_FROMALTSTACK, locationData);
+      flattenTop(PrimitiveType.PUBKEY);
+      this.emit(Op.OP_CHECKMULTISIG, locationData);
+      // Statically each flattened vector remains represented by its original
+      // one array value; CHECKMULTISIG consumes dummy + both vectors.
+      this.popFromStack(3);
+      this.pushToStack('(value)');
+      return node;
+    }
     node.parameters = this.visitList(node.parameters);
     this.emit(Op.OP_CHECKMULTISIG, { location: node.location, positionHint: PositionHint.END });
-    const sigs = node.parameters[0] as ArrayNode;
-    const pks = node.parameters[1] as ArrayNode;
     this.popFromStack(sigs.elements.length + pks.elements.length + 3);
     this.pushToStack('(value)');
 

@@ -1,8 +1,8 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  decodePushdataValue, type Artifact, type StateValue, scriptToBytecode,
+  ArrayType, decodePushdataValue, parseType, type Artifact, type StateValue, scriptToBytecode,
 } from '@solidcash/utils';
-import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument } from '../Argument.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 
 export interface HiddenBatchInvocation {
@@ -134,7 +134,8 @@ export function encodeHiddenBatch(
         rowEncoded.push(argument);
         return;
       }
-      if (handler.inputs[index].type !== 'sig' || !(argument instanceof SignatureTemplate)) {
+      if (!((handler.inputs[index].type === 'sig' && argument instanceof SignatureTemplate)
+        || (handler.inputs[index].type === 'sig[]' && isSignatureTemplateArray(argument)))) {
         throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
       }
       signatureWitnessValues.set(`__scb_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
@@ -161,7 +162,15 @@ export function encodeHiddenBatch(
       }
       if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
     }
-    const argsBlob = scriptToBytecode(rowEncoded);
+    const argsBlob = concat(...rowEncoded.map((argument, index) => {
+      const typeName = handler.inputs[index].type;
+      const type = parseType(typeName);
+      // Arrays and structs are already canonical composite blobs. Scalar
+      // arguments are raw VM values and require one field push.
+      const composite = type instanceof ArrayType
+        || structs?.some((definition) => definition.name === typeName);
+      return composite ? argument : scriptToBytecode([argument]);
+    }));
     if (argsBlob.length > 0xffff) {
       throw new Error(`SCB1 arguments for '${handler.name}' exceed 65535 bytes`);
     }

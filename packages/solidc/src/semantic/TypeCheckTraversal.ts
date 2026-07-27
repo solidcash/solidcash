@@ -1412,9 +1412,12 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Additional array length check for checkMultiSig
     if (node.identifier.name === GlobalFunction.CHECKMULTISIG) {
-      const sigs = node.parameters[0] as ArrayNode;
-      const pks = node.parameters[1] as ArrayNode;
-      if (sigs.elements.length > pks.elements.length) {
+      const sigs = node.parameters[0];
+      const pks = node.parameters[1];
+      // Literal widths are statically comparable. Dynamic value arrays are
+      // checked by OP_CHECKMULTISIG at runtime.
+      if (sigs instanceof ArrayNode && pks instanceof ArrayNode
+        && sigs.elements.length > pks.elements.length) {
         throw new ArrayElementError(pks);
       }
     }

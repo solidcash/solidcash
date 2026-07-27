@@ -479,15 +479,13 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
     // controller commitment, while that commitment would in turn commit the
-    // signature. In authenticated graph mode a scalar `sig` is instead a
-    // positional, per-row route witness (generated below) and is verified by
-    // the original handler against the final transaction. Arrays/multisig keep
-    // failing closed until they have an equally canonical witness encoding.
+    // signature. In authenticated graph mode `sig` and `sig[]` are instead
+    // positional, per-row route witnesses (generated below) and are verified
+    // by the original handler against the final transaction.
     else if (!reason && (
       (signatureCheck || fn.parameters.some((parameter) =>
         ['sig', 'sig[]'].includes(parameter.type.toString())))
-      && (graphControllerLbc === undefined
-        || fn.parameters.some((parameter) => parameter.type.toString() === 'sig[]'))
+      && graphControllerLbc === undefined
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
@@ -637,8 +635,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
   const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
   const signatureMode = eligible.some((fn) =>
-    fn.parameters.some((parameter) => parameter.type.toString() === 'sig'));
+    fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__scb_sig_${handlerIndex}_${parameterIndex}_r${row}`;
@@ -967,7 +966,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
     const decodedParameters = fn.parameters
       .map((parameter, index) => ({ parameter, index }))
-      .filter(({ parameter }) => parameter.type.toString() !== 'sig');
+      .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString()));
     const declarations = decodedParameters.map(({ parameter, index }) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
     const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
@@ -989,7 +988,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       : []);
     const sourceCallArgs = [
       ...fn.parameters.map((parameter, i) =>
-        parameter.type.toString() === 'sig'
+        isTransactionSignatureType(parameter.type.toString())
           ? signatureWitnessName(handlerIndex, i, rowIndex ?? 0)
           : i === tokenCategoryInputByHandler.get(fn)
           ? '__scb_token_category'
@@ -1066,9 +1065,9 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     });
   const routeSignatureParameters = eligible.flatMap((fn, handlerIndex) =>
     fn.parameters.flatMap((parameter, parameterIndex) =>
-      parameter.type.toString() === 'sig'
+      isTransactionSignatureType(parameter.type.toString())
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
-          `sig ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
+          `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
   const graphRouteParameters = graphControllerLbc === undefined ? [] : [
     'bytes __internal__graphTranscript',
@@ -1800,9 +1799,13 @@ function compileResolvedAst(
           name: parameter.name,
           type: parameter.type.toString().replace(/address payable/g, 'address'),
         })),
-        ...(fn.parameters.some((parameter) => parameter.type.toString() === 'sig')
-          && fn.functionId !== undefined
-          && traversal.invokedFunctionBytecodes.has(fn.functionId) && {
+        ...(fn.parameters.some((parameter) =>
+          ['sig', 'sig[]'].includes(parameter.type.toString()))
+          && fn.functionId !== undefined && fn.functionSelector !== undefined
+          && traversal.invokedFunctionBytecodes.has(fn.functionId)
+          && artifact.functionBodies?.[binToHex(fn.functionSelector)] !== undefined && {
+          // CHECKSIG/CHECKMULTISIG execute inside this OP_INVOKE body, not the
+          // outer selector wrapper.
           signatureBytecode: binToHex(traversal.invokedFunctionBytecodes.get(fn.functionId)!),
         }),
         ...(fn.returnTypes.length > 0 && {

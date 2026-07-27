@@ -13,6 +13,7 @@ import {
 } from '@solidcash/utils';
 import {
   ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
+  isSignatureTemplateArray,
 } from './Argument.js';
 import {
   Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker, LibauthOutput,
@@ -406,15 +407,17 @@ export class Contract<
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         const completeArgs = encodedArgs.map((arg, index) => {
-          if (!(arg instanceof SignatureTemplate)) return arg;
+          if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
 
           // Generate transaction signature from SignatureTemplate
           const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
-          const preimage = createSighashPreimage(
-            transaction, sourceOutputs, inputIndex, coveredBytecode, arg.getHashType(),
-          );
-          const sighash = hash256(preimage);
-          return arg.generateSignature(sighash);
+          const sign = (template: SignatureTemplate): Uint8Array => template.generateSignature(hash256(
+            createSighashPreimage(
+              transaction, sourceOutputs, inputIndex, coveredBytecode, template.getHashType(),
+            ),
+          ));
+          if (arg instanceof SignatureTemplate) return sign(arg);
+          return encodeFunctionArgument(arg.map(sign), argInputs[index].type, structs) as Uint8Array;
         });
 
         // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);

@@ -151,6 +151,27 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate at round 1 dispatch: `2 PROVEN / 0 INTEGRATED / 0 REVIEW / 3 LEASED / 18 TODO / 0 BLOCKED`.
 
+### 4.0 Pinned regression baseline at `93bbfedb`
+
+Measured by the integration owner BEFORE any round-1 delivery, so a worker is never charged with a
+pre-existing failure.
+
+| Package | Result at `93bbfedb` |
+| --- | --- |
+| `@solidcash/utils` | 295 passed, 1 todo (14 files, 1 skipped) |
+| `solidc` (full parallel run) | 2,322 passed, **10 failed** across 2 files |
+| `solidc` `HiddenBatch.test.ts` alone | 27 passed, 0 failed |
+| `solidc` `MessageBusRoute.test.ts` alone | 3 passed, 0 failed |
+
+**The 10 failures are parallel-run only.** Both files pass in isolation, so the baseline defect is test
+execution, not compiled behaviour. A round-1 delivery that reproduces exactly these 10 in a full run has NOT
+regressed anything; a delivery that changes the set has. `yarn test` halts after `solidc` fails, so the
+`solidcash` baseline must be taken with `yarn workspace solidcash test` separately.
+
+Cross-worktree contamination was checked and ruled out: the compiler's `compileCache` is an in-process `Map`
+(`compiler.ts:116`), not a shared filesystem cache, so parallel workers in separate worktrees cannot corrupt
+each other through it. Workers may run their own suites concurrently.
+
 ### 4.1 Active leases (round 1, base `93bbfedb`)
 
 | Collision surface | Leased to | Task |

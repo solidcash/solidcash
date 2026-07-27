@@ -263,6 +263,49 @@ function applyRolledLoopCeilings(
   return patched;
 }
 
+/**
+ * What a user should do about a rejection reason, for the reasons whose remedy is exact. A reason with no entry
+ * is still named; inventing a remedy for one would be worse than stating the refusal alone.
+ */
+const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
+  'batched-handler-forward-call-not-enabled':
+    'a handler that makes an external call is batched only on the authenticated graph route, and only in void '
+    + 'tail form: supply experimentalMessageBusController with its experimentalMessageBusControllerCategory, '
+    + 'declare no return type, and end the body with a require - or move the call into its own handler',
+  'unresolved-or-effectful-handler':
+    'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
+    + 'the footprint is known',
+  'initial-v1-route-requires-public-visibility': 'declare the handler public',
+  'result-route-requires-effect-free-handlers':
+    'a returning handler cannot also carry an effect; split the return and the effect into two handlers',
+  'mixed-scalar-and-collection-route-not-enabled':
+    'every batched handler must address a collection entry, or none may; split the scalar-only handlers out',
+};
+
+/**
+ * State, by name, why a requested hidden-batch route does not exist.
+ *
+ * Route synthesis records one stable reason per entry point, but the only channel that publishes those reasons
+ * is `hiddenBatch.handlers` - which is never built when no entry point survives. Rendering the same reasons
+ * here makes that outcome a refusal the user can read instead of an absent field.
+ */
+function hiddenBatchAbsenceMessage(
+  contractName: string, functions: readonly FunctionDefinitionNode[],
+): string {
+  const head = `No hidden-batch route was synthesized for '${contractName}': it has no SCB1 entry point and `
+    + 'cannot participate in a message bus. Only the direct per-function route exists. ';
+  const entryPoints = functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract && !fn.hiddenBatchRoute);
+  if (entryPoints.length === 0) return `${head}The contract declares no entry point for a route to admit.`;
+  const reasonOf = (fn: FunctionDefinitionNode): string => fn.hiddenBatchRejectionReason
+    ?? (fn.hiddenBatchEligible === true
+      ? 'admitted-but-route-abandoned-before-assembly'
+      : 'not-examined-by-route-synthesis');
+  const stated = entryPoints.map((fn) => `'${fn.name}': ${reasonOf(fn)}`).join('; ');
+  const remedies = [...new Set(entryPoints.map(reasonOf))]
+    .map((reason) => HIDDEN_BATCH_REJECTION_REMEDIES[reason]).filter((remedy) => remedy !== undefined);
+  return `${head}Rejected entry points - ${stated}.${remedies.length ? ` To admit one: ${remedies.join('; ')}.` : ''}`;
+}
+
 /** Add the experimental Release 4 physical dispatcher after source lowering
  * but before symbol/type analysis. Only signature-free scalar public handlers
  * enter the initial covenant surface; every other source handler receives an
@@ -2015,6 +2058,16 @@ function compileResolvedAst(
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
       })),
     };
+  } else if (mergedCompilerOptions.experimentalHiddenBatch) {
+    // X15. Route synthesis names a rejection reason for every entry point, but the ONLY channel that publishes
+    // those names is `hiddenBatch.handlers` - which is not built when no entry point survives. A contract whose
+    // every handler is rejected therefore reached the user as an artifact with no `hiddenBatch` and no
+    // diagnostic at all. Publish the same names here so the absence is always stated, never merely observed.
+    artifact.diagnostics = [...(artifact.diagnostics ?? []), {
+      severity: 'error',
+      code: 'hidden-batch-route-not-synthesized',
+      message: hiddenBatchAbsenceMessage(artifact.contractName, ast.contract.functions),
+    }];
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;

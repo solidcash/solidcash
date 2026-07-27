@@ -39,6 +39,7 @@ import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
 } from '../interfaces.js';
+import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 
 export interface EntryNftInfo {
   slotIndex: number;
@@ -110,6 +111,9 @@ export interface ExternalCallUtxoGroup {
   blockInputs?: UnlockableUtxo[];
   /** B's function block layout (for full block ordering) */
   blockLayout?: FunctionBlockLayout;
+  /** X13: B's block carries a funding input at its published returnEvent offset, so B's return-event NFT is
+   * emitted at that offset instead of appended after the whole participant region. */
+  returnEventInBlock?: boolean;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{ eventSignature: string; commitment: string; lockingBytecode: Uint8Array }>;
   /** B's keccak256 compute side-car INPUTS (outState path: appended after dataNfts; externalCall path already
@@ -1613,6 +1617,22 @@ export class StatefulTransactionBuilder {
             continue;
           }
 
+          // X13: B's return event belongs to B's OWN block slot, paired with the funding input the block now
+          // carries at the same offset. The commitment comes from B's VM trace (setReturnEventOutput).
+          if (slot?.kind === 'returnEvent' && group.returnEventInBlock) {
+            const re = this.pendingReturnEventOutputs.find((r) => r.categoryId === group.categoryId);
+            builder.addOutput({
+              to: new Uint8Array([0x51]),
+              amount: BALANCED_SLOT_SATOSHIS,
+              token: {
+                amount: 0n,
+                category: group.categoryId,
+                nft: { capability: 'none', commitment: re ? binToHex(re.commitment) : '' },
+              },
+            });
+            continue;
+          }
+
           // Event slots: use auto-derived event NFT output or placeholder
           if (slot?.kind === 'event') {
             if (group.eventOutputs && eventIdx < group.eventOutputs.length) {
@@ -1994,8 +2014,9 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    // Create return event outputs (from cross-contract calls with return values)
-    for (const re of (this.delegateEntriesAfterLowLevel ? [] : this.pendingReturnEventOutputs)) {
+    // Create return event outputs (from cross-contract calls with return values). X13: a callee whose full block
+    // carries a returnEvent slot already emitted its own return event inside that block above.
+    for (const re of (this.delegateEntriesAfterLowLevel ? [] : this.tailReturnEventOutputs())) {
       builder.addOutput({
         to: new Uint8Array([0x51]), // OP_TRUE
         amount: 800n,
@@ -2409,6 +2430,39 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * X13: a callee whose FULL block was assembled publishes a returnEvent slot inside that block, and the block
+   * carries a paired funding input there, so its return-event NFT belongs at that slot - not appended after the
+   * whole participant region. A callee without a full block (a transitive A->B->C leaf) keeps the appended tail.
+   */
+  private isInBlockReturnEventGroup(groupIdx: number): boolean {
+    return this.externalCallUtxoGroups[groupIdx]?.returnEventInBlock === true;
+  }
+
+  /** Return events that are NOT emitted inside a callee block, in emission order. */
+  private tailReturnEventOutputs(): Array<{ categoryId: string; commitment: Uint8Array }> {
+    const inBlock = new Set<string>();
+    for (let i = 0; i < this.externalCallUtxoGroups.length; i += 1) {
+      if (this.isInBlockReturnEventGroup(i)) inBlock.add(this.externalCallUtxoGroups[i].categoryId);
+    }
+    return this.pendingReturnEventOutputs.filter((re) => !inBlock.has(re.categoryId));
+  }
+
+  /**
+   * X13: the output index carrying external-call group `groupIdx`'s return-event NFT - its own block slot when the
+   * callee carries a full block, otherwise its rank in the appended tail band.
+   */
+  getExternalCallReturnEventOutputIndex(groupIdx: number): number {
+    const group = this.externalCallUtxoGroups[groupIdx];
+    if (!group) return -1;
+    const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
+    if (this.isInBlockReturnEventGroup(groupIdx) && offset !== undefined) {
+      return this.getExternalCallOutputBase(groupIdx) + offset;
+    }
+    const tailOrder = this.tailReturnEventOutputs().findIndex((re) => re.categoryId === group.categoryId);
+    return tailOrder < 0 ? -1 : this.getReturnEventOutputBase() + tailOrder;
+  }
+
+  /**
    * Count the actual number of event NFT outputs that build() will create.
    * This mirrors the merge logic in build(): manual emits fill dense indices,
    * placeholders (with optional raw commitments) fill by emitIndex, and
@@ -2486,8 +2540,9 @@ export class StatefulTransactionBuilder {
     const iterationEntryOutputCount = this.iterationEntryInputs.length;
     // Include potential funder change output (added last in build())
     const changeOutputCount = (this.funderChangeAddress && this.funderUtxos.length > 0) ? 1 : 0;
+    // X13: in-block return events are already counted inside each callee's block output span.
     return this.getEventOutputBase() + eventOutputCount
-      + this.pendingReturnEventOutputs.length
+      + this.tailReturnEventOutputs().length
       + lowLevelCallOutputCount
       + this._dynamicChunkOutputCount()
       + iterationEntryOutputCount

@@ -4,7 +4,32 @@ import {
 } from '@bitauth/libauth';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import {
+  deriveBalancedAssemblyFromInputs, preflightBalancedBlockAssembly,
+} from '../stateful/balancedBlocks.js';
+import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+
+/**
+ * Structural block-assembly gate, run BEFORE any unlocker is asked for bytecode.
+ *
+ * The assembly is read off the builder's own inputs (each participant's master input carries the compiler-
+ * published block layout), so this fires without the caller opting in. A transaction the model cannot describe
+ * (no participant block at index 0, or no slot outside the participant region for fee/change) is left alone -
+ * see `deriveBalancedAssemblyFromInputs`.
+ *
+ * Returns the assembly it checked, or undefined when nothing was checkable.
+ */
+export const preflightLayer3BlockAssembly = (
+  builder: TransactionBuilder, options?: BalancedAssemblyOptions,
+): BalancedAssembly | undefined => {
+  const assembly = deriveBalancedAssemblyFromInputs(
+    builder.inputs as never, builder.inputs.length,
+  );
+  if (!assembly) return undefined;
+  preflightBalancedBlockAssembly(builder, assembly, options);
+  return assembly;
+};
 
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
@@ -32,6 +57,8 @@ const evaluateEveryInput = (
  * every covenant before it is handed to a provider.
  */
 export const preflightLayer3Transaction = (builder: TransactionBuilder): Transaction => {
+  // Structural gate first: a malformed or unbalanced block assembly is rejected before any signature is taken.
+  preflightLayer3BlockAssembly(builder);
   const transaction = builder.buildLibauthTransaction();
   evaluateEveryInput(builder, transaction);
   return transaction;
@@ -47,6 +74,8 @@ export const preflightLayer3Transaction = (builder: TransactionBuilder): Transac
 export async function sendPreflightedLayer3Transaction(
   builder: TransactionBuilder,
 ): Promise<string> {
+  // Structural gate first: this runs before build() takes a single signature.
+  preflightLayer3BlockAssembly(builder);
   const raw = builder.build();
   const transaction = decodeTransactionUnsafe(hexToBin(raw));
   evaluateEveryInput(builder, transaction);

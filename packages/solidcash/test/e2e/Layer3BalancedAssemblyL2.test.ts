@@ -161,7 +161,10 @@ async function build(malformation: Malformation = 'none'): Promise<Built> {
 
   // Count every request for an unlocking signature so a preflight rejection can be proven to happen first.
   const signatureRequests = { count: 0 };
+  // Spread the original unlocker so its `abiFunction` (and therefore its published block layout) survives the
+  // wrapper: the production gate derives the assembly from exactly that field on each master input.
   const counted = (unlocker: any): any => ({
+    ...unlocker,
     generateLockingBytecode: (...args: unknown[]) => unlocker.generateLockingBytecode(...args),
     generateUnlockingBytecode: (...args: unknown[]) => {
       signatureRequests.count += 1;
@@ -370,12 +373,11 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     expect(built.signatureRequests.count).toBe(0);
   }, 180_000);
 
-  // MEASUREMENT, not a claim of correctness. The DIRECT `withExternalCall` route is a different assembler from
-  // the compiled-graph route above, and it does NOT balance a callee's block: it appends every callee's
-  // return-event NFT after the whole participant region instead of inside the emitter's block, so a callee
-  // contributes 2 inputs and 3 outputs. This test pins the current shape so the divergence is visible and
-  // cannot drift silently; it is recorded as an open gap, not as satisfied L1/L2 behaviour.
-  it('MEASUREMENT: the direct external-call route does not balance a callee block', async () => {
+  // X13: the DIRECT `withExternalCall` route now honours the published block layout. Its callee block carries a
+  // funding INPUT at the published returnEvent offset and emits the return-event NFT at the paired OUTPUT, so the
+  // block's two extents are equal and the emitter's return event stays inside its own block. Previously the route
+  // appended every callee return event after the whole participant region at 800 satoshis (2 inputs, 3 outputs).
+  it('SEMANTIC: the direct external-call route balances a callee block at its published slot', async () => {
     const provider = createLayer3SemanticTestProvider();
     const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
 interface IDirectCallee { function bump(int n) returns (int); }
@@ -416,16 +418,62 @@ contract DirectCaller(bytes calleeAddr) {
       .withExternalCall(scCallee, 'bump', [5n]).send();
     const decoded = decodeTransactionUnsafe(hexToBin(await provider.getRawTransaction(details.txid)));
 
-    // Measured: caller block [0,1], callee block [2,3], fee 4 -> 5 inputs; but 6 outputs, because the
-    // callee's return-event NFT is appended at index 4 instead of occupying its published slot at base+2.
+    // Measured: caller block [0,1], callee block [2,3,4] on BOTH sides - the third callee slot is a funding
+    // input paired with the return-event NFT output at the published offset 2.
+    expect(decoded.inputs.length).toBe(decoded.outputs.length);
     expect(decoded.inputs.length).toBe(5);
-    expect(decoded.outputs.length).toBe(6);
     const returnEventIndex = decoded.outputs.findIndex(
       (output) => output.token !== undefined
         && binToHex(output.token.category) === calleeSetup.categoryId
-        && output.valueSatoshis === 800n,
+        && output.token.nft?.capability === 'none',
     );
-    expect(returnEventIndex).toBe(4); // outside the callee block [2,3], and 800 satoshis, not 1,000
+    // base(2) + published returnEvent offset(2), inside the callee block, at the balanced slot value.
+    expect(returnEventIndex).toBe(4);
+    expect(decoded.outputs[4].valueSatoshis).toBe(1000n);
+    // The paired input at the same index carries no token: it is the ordinary funder that keeps the block's
+    // input extent equal to its output extent.
+    expect(decoded.inputs[4]).toBeDefined();
+  }, 180_000);
+
+  // X14: the checks above call the helper directly. These two prove the SAME checks run inside the SDK's own
+  // layer-3 send path, on an assembly the SDK DERIVES from the builder's inputs - the caller passes no layout and
+  // cannot decline the gate. Each participant's master input carries the contract unlocker whose ABI function
+  // publishes that participant's block layout, so the blocks are read off the unsigned transaction.
+  it('SEMANTIC: the production send path derives the assembly from the builder and settles', async () => {
+    const built = await build();
+    const derived = layer3.preflightLayer3BlockAssembly(built.builder);
+    expect(derived).toBeDefined();
+    // Nothing was declared: these bases and sizes came from the two masters' published block layouts.
+    expect(derived!.blocks.map((block) => `${block.base}:${block.blockLayout.blockSize}`)).toEqual(['0:2', '2:2']);
+    expect(derived!.totalSlots).toBe(8);
+    await expect(layer3.sendPreflightedLayer3Transaction(built.builder)).resolves.toMatch(/^[0-9a-f]{64}$/);
+  }, 180_000);
+
+  it('FAIL_CLOSED: the production send path rejects a malformed assembly before any signature is requested', async () => {
+    const built = await build('event-outside-block');
+    // `raw()` ran during assembly; reset so the count measures only what the send path itself requests.
+    built.signatureRequests.count = 0;
+    await expect(layer3.sendPreflightedLayer3Transaction(built.builder))
+      .rejects.toThrow(/participant 0 'returnEvent' output 1 carries no authenticated NFT/);
+    expect(built.signatureRequests.count).toBe(0);
+    // The same gate runs on the build-only entry point, also before signing.
+    built.signatureRequests.count = 0;
+    expect(() => layer3.preflightLayer3Transaction(built.builder)).toThrow(/balanced assembly:/);
+    expect(built.signatureRequests.count).toBe(0);
+  }, 180_000);
+
+  it('FAIL_CLOSED: the derived gate stays silent on a transaction the block model cannot describe', async () => {
+    // An ordinary P2PKH transfer publishes no participant block at index 0, so the gate skips it rather than
+    // guessing a layout. This is what keeps the wiring from rejecting shapes it was never meant to judge.
+    const provider = createLayer3SemanticTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const coin = randomUtxo({ satoshis: 20_000n });
+    await provider.addUtxo(p2pkh.address, coin);
+    const plain = new TransactionBuilder({ provider });
+    plain.addInput(coin, p2pkh.unlock.spend(alicePub, signature()));
+    plain.addOutput({ to: p2pkh.address, amount: 15_000n });
+    expect(layer3.preflightLayer3BlockAssembly(plain)).toBeUndefined();
+    await expect(provider.sendRawTransaction(raw(plain))).resolves.toBeTypeOf('string');
   }, 180_000);
 
   it('FAIL_CLOSED: a malformed local block descriptor is rejected before any base is assigned', async () => {

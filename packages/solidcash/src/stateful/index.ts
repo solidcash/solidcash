@@ -124,6 +124,7 @@ export {
 export {
   preflightBalancedBlockAssembly,
   balancedAssemblyFromGraphLayout,
+  deriveBalancedAssemblyFromInputs,
   assertCompleteLocalBlock,
   participantRegionEnd,
   BALANCED_SLOT_SATOSHIS,

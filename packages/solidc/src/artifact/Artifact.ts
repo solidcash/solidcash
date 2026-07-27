@@ -61,53 +61,122 @@ const fixedForMaximum = (
   return Number(count);
 };
 
+/** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */
+const composeCount = (outer: number | undefined, inner: number | undefined): number | undefined =>
+  outer === undefined || inner === undefined ? undefined : outer * inner;
+
+/**
+ * True when a loop body can stop short of its trip count.
+ *
+ * `continue` is rewritten into a branch before this runs, so it is caught by the branch rule, but a `return`
+ * inside a loop survives to artifact generation as a plain sibling of the callsite: without this check
+ * `for (i < 3) { if (flag) { return; } m(); }` would publish a floor of three while reaching zero.
+ */
+const loopCanExitEarly = (loop: WhileNode): boolean => {
+  let found = false;
+  const walk = (value: unknown): void => {
+    if (found || !(value instanceof Node)) return;
+    if (/^(ReturnNode|BreakNode|ContinueNode)$/.test(value.constructor.name)) {
+      found = true;
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'location') continue;
+      if (child instanceof Node) walk(child);
+      else if (Array.isArray(child)) for (const item of child) walk(item);
+    }
+  };
+  walk(loop.block);
+  return found;
+};
+
+type OccurrenceInfo = {
+  occurrence: 'once' | 'conditional' | 'loop';
+  maximumOccurrences?: number;
+  minimumOccurrences?: number;
+  occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
+};
+
+/**
+ * Classify one callsite's reached-occurrence count inside its function.
+ *
+ * Two independent quantities are tracked down every path to the callsite. `reachedMaximum` is the product of
+ * the trip counts of every enclosing loop and is the published CEILING; one unproven loop poisons it, and
+ * nesting multiplies rather than replaces - an inner literal loop under an outer one reaches
+ * `outer * inner` rows, not `inner`. `reachedExact` is the same product restricted to paths that cross no
+ * branch at all, so it is a FLOOR as well as a ceiling: it survives only when every enclosing loop has a
+ * compile-time trip count and nothing conditional stands between the function entry and the callsite.
+ */
 const occurrenceInfoOf = (
   fn: FunctionDefinitionNode, target: Node | undefined,
-): { occurrence: 'once' | 'conditional' | 'loop'; maximumOccurrences?: number } => {
+): OccurrenceInfo => {
   if (!target) return { occurrence: 'once' };
   let found: 'once' | 'conditional' | 'loop' = 'once';
   let maximumOccurrences: number | undefined;
+  let minimumOccurrences: number | undefined;
+  let literalBound = false;
   const seen = new Set<object>();
+  // Loops whose trip count the enclosing block already folded in, so the generic walk does not re-enter them.
+  const counted = new Set<Node>();
   const visit = (
-    value: unknown, context: 'once' | 'conditional' | 'loop', loopMaximum?: number,
+    value: unknown, context: 'once' | 'conditional' | 'loop',
+    reachedMaximum: number | undefined, reachedExact: number | undefined,
   ): void => {
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
     if (value === target) {
       found = context;
-      maximumOccurrences = context === 'loop' ? loopMaximum : context === 'once' ? 1 : undefined;
+      maximumOccurrences = context === 'loop' ? reachedMaximum : 1;
+      minimumOccurrences = context === 'loop' ? reachedExact : undefined;
+      // `once`/`conditional` carry their provenance in the class itself, so only a loop bound - which could
+      // also have come from a require guard - spends artifact bytes recording where it came from.
+      literalBound = context === 'loop' && reachedMaximum !== undefined;
       return;
     }
     if (value instanceof BlockNode) {
       const statements = value.statements ?? [];
       statements.forEach((statement, index) => {
         if (statement instanceof WhileNode) {
-          visit(statement, 'loop', fixedForMaximum(statements[index - 1], statement));
+          const trips = fixedForMaximum(statements[index - 1], statement);
+          counted.add(statement);
+          const exactTrips = loopCanExitEarly(statement) ? undefined : trips;
+          visit(statement, 'loop', composeCount(reachedMaximum, trips), composeCount(reachedExact, exactTrips));
         } else {
-          visit(statement, context, loopMaximum);
+          visit(statement, context, reachedMaximum, reachedExact);
         }
       });
       return;
     }
     const kind = value.constructor.name;
-    const nested = /^(WhileNode|DoWhileNode)$/.test(kind)
+    const isLoop = /^(WhileNode|DoWhileNode)$/.test(kind);
+    const nested = isLoop
       ? 'loop'
       : /^(BranchNode|SwitchNode|SwitchCaseNode)$/.test(kind) && context === 'once'
         ? 'conditional'
         : context;
+    // A loop the enclosing block did not fold in (a do-while, or a while whose header is not a canonical
+    // literal for-loop) contributes an unproven number of trips, so both quantities stop being proven.
+    const childMaximum = isLoop && !counted.has(value) ? undefined : reachedMaximum;
+    // Anything that can skip the callsite kills the FLOOR while leaving the ceiling intact. A ternary arm is
+    // listed here but deliberately not in the `conditional` classification above: it can skip a reach, but
+    // changing which class a callsite reports would change published behaviour rather than tighten a bound.
+    const childExact = (isLoop && !counted.has(value))
+      || /^(BranchNode|SwitchNode|SwitchCaseNode|TernaryOpNode)$/.test(kind) ? undefined : reachedExact;
     for (const [key, child] of Object.entries(value)) {
       if ([
         'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection',
       ].includes(key)) continue;
-      if (child instanceof Node) visit(child, nested, loopMaximum);
-      else if (Array.isArray(child)) for (const item of child) visit(item, nested, loopMaximum);
+      if (child instanceof Node) visit(child, nested, childMaximum, childExact);
+      else if (Array.isArray(child)) for (const item of child) visit(item, nested, childMaximum, childExact);
     }
   };
-  visit(fn.body, 'once');
+  visit(fn.body, 'once', 1, 1);
   return {
     occurrence: found,
     ...(maximumOccurrences !== undefined && { maximumOccurrences }),
+    ...(minimumOccurrences !== undefined && { minimumOccurrences }),
+    ...(literalBound ? { occurrenceBoundSource: 'literal' as const } : {}),
   };
 };
 

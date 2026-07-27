@@ -59,7 +59,9 @@ import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionP
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
 import ExpandBoundedPointerTableLoop from './semantic/ExpandBoundedPointerTableLoop.js';
-import { PointerTableExpansion, PointerTableExpansionMap } from './semantic/PointerTableBound.js';
+import {
+  PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
+} from './semantic/PointerTableBound.js';
 import LowerC2CounterLoops from './semantic/LowerC2CounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
@@ -208,12 +210,56 @@ function coalesceExpandedPointerTable(
     .filter((index) => index >= 0);
   if (dispatch.length !== count) return calls;
   if (dispatch[count - 1] - dispatch[0] !== count - 1) return calls;
+  // Every field but the physical offset carries over; the expanded rows are `once`/`conditional`, so neither a
+  // floor nor a bound provenance can be present to carry over stale.
   const { computedOffset: _computedOffset, ...first } = calls[dispatch[0]];
+  const { guarded } = groups[0];
+  // A guarded expansion reaches 0..count rows, decided on-chain; an unguarded one comes from a compile-time
+  // trip count. The floor is only real if every expanded row is ALSO straight-line: the same fixed loop nested
+  // under a branch, or holding a conditional dispatch, expands to `conditional` rows and reaches zero.
+  const rows = calls.slice(dispatch[0], dispatch[count - 1] + 1);
+  const exact = !guarded && rows.every((call) => (call.occurrence ?? 'once') === 'once');
   return [
     ...calls.slice(0, dispatch[0]),
-    { ...first, occurrence: 'loop' as const, maximumOccurrences: count },
+    {
+      ...first,
+      occurrence: 'loop' as const,
+      maximumOccurrences: count,
+      ...(exact && { minimumOccurrences: count }),
+      occurrenceBoundSource: (guarded ? 'guard' : 'literal') as 'guard' | 'literal',
+    },
     ...calls.slice(dispatch[count - 1] + 1),
   ];
+}
+
+/**
+ * Attach the ceiling proven for a loop the compiler left ROLLED to the ABI rows that loop produces.
+ *
+ * The proof runs on the source shape, where a guard's mutation analysis is meaningful; the rows are matched
+ * here, where the published order is known. Matching is positional and only accepted when the number of rows
+ * still missing a ceiling equals the number of proven ceilings, so a function mixing a bounded and an
+ * unbounded loop publishes nothing rather than attaching a bound to the wrong row.
+ */
+function applyRolledLoopCeilings(
+  functionName: string,
+  calls: readonly InvocationExternalCall[],
+  ceilings: ProvenLoopCeilingMap,
+): readonly InvocationExternalCall[] {
+  const proven = ceilings.get(functionName);
+  if (!proven?.length) return calls;
+  const open = calls
+    .map((call, index) =>
+      call.occurrence === 'loop' && call.maximumOccurrences === undefined ? index : -1)
+    .filter((index) => index >= 0);
+  if (open.length !== proven.length) return calls;
+  const patched = [...calls];
+  open.forEach((index, order) => {
+    // A guard bounds the trip count from above only: the loop may still reach zero rows, so no floor.
+    patched[index] = {
+      ...calls[index], maximumOccurrences: proven[order], occurrenceBoundSource: 'guard' as const,
+    };
+  });
+  return patched;
 }
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
@@ -1378,13 +1424,14 @@ function compileResolvedAst(
   const messageBusGraphMode = !!mergedCompilerOptions.experimentalHiddenBatch
     && !!mergedCompilerOptions.experimentalMessageBusController;
   const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
+  const rolledLoopCeilings: ProvenLoopCeilingMap = new Map<string, number[]>();
   if (messageBusGraphMode) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(true, pointerTableBounds)) as Ast;
     // A pointer-table loop whose trip count is RUNTIME-sized survives the fixed-bound pass. Admit it only when a
     // dominating source guard proves a finite ceiling, expand it to that many guarded rows, and reject every
     // other shape with one stable diagnostic. The guard stays in the emitted covenant, so a runtime table longer
     // than the published bound fails on-chain instead of executing a truncated prefix.
-    ast = ast.accept(new ExpandBoundedPointerTableLoop(pointerTableBounds)) as Ast;
+    ast = ast.accept(new ExpandBoundedPointerTableLoop(pointerTableBounds, rolledLoopCeilings)) as Ast;
   }
 
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
@@ -1825,6 +1872,14 @@ function compileResolvedAst(
       if (!fn.externalCalls?.length) return fn;
       const coalesced = coalesceExpandedPointerTable(fn.name, fn.externalCalls, pointerTableBounds);
       return coalesced === fn.externalCalls ? fn : { ...fn, externalCalls: coalesced };
+    });
+  }
+  // A loop that keeps its rolled form publishes no ceiling of its own; attach the one the source guard proves.
+  if (messageBusGraphMode && rolledLoopCeilings.size > 0) {
+    artifact.abi = artifact.abi.map((fn) => {
+      if (!fn.externalCalls?.length) return fn;
+      const bounded = applyRolledLoopCeilings(fn.name, fn.externalCalls, rolledLoopCeilings);
+      return bounded === fn.externalCalls ? fn : { ...fn, externalCalls: bounded };
     });
   }
   const invocationAnalysis = analyseContractInvocations(ast.contract);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ExternalCallAbi } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -112,10 +113,64 @@ describe('Release 0 shared invocation analysis', () => {
     expect(occurrence('repeated')).toBe('loop');
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'once'))
       .toMatchObject({ bounded: true, maximumDirectInvocations: 1 });
+    // A conditional callsite is reached at most once by construction: the classifier only assigns
+    // `conditional` on a branch that no loop encloses. That ceiling is now published per callsite rather than
+    // left implicit, so a branch-only function is bounded. The reached count is still 0 or 1, and the ceiling
+    // is what the summary aggregates - `bounded: false` here was conservative, not a different measurement.
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe'))
-      .toMatchObject({ bounded: false });
+      .toMatchObject({ bounded: true, maximumDirectInvocations: 1 });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe')!
+      .externalCalls![0]).toMatchObject({ occurrence: 'conditional', maximumOccurrences: 1 });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe')!
+      .externalCalls![0].minimumOccurrences).toBeUndefined();
+    // A runtime trip count with no dominating literal ceiling still proves nothing, in either direction.
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated'))
       .toMatchObject({ bounded: false });
+  });
+
+  it('publishes an exact floor only where the reached count cannot vary', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint n); }
+      contract ExactFloors() {
+        function exact(address target, bigint n) public {
+          for (bigint i = 0; i < 3; i = i + 1) { ITarget(target).step(n); }
+          require(n >= 0);
+        }
+        function nested(address target, bigint n) public {
+          for (bigint i = 0; i < 3; i = i + 1) {
+            for (bigint j = 0; j < 2; j = j + 1) { ITarget(target).step(n); }
+          }
+          require(n >= 0);
+        }
+        function guardedBody(address target, bigint n, bool take) public {
+          for (bigint i = 0; i < 3; i = i + 1) { if (take) { ITarget(target).step(n); } }
+          require(n >= 0);
+        }
+        function underBranch(address target, bigint n, bool take) public {
+          if (take) { for (bigint i = 0; i < 3; i = i + 1) { ITarget(target).step(n); } }
+          require(n >= 0);
+        }
+        function earlyReturn(address target, bigint n, bool take) public {
+          for (bigint i = 0; i < 3; i = i + 1) { if (take) { return; } ITarget(target).step(n); }
+          require(n >= 0);
+        }
+      }`, { forceStateful: true });
+    const row = (name: string): ExternalCallAbi => artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === name)!.externalCalls![0];
+    // A canonical literal trip count with nothing conditional on the path reaches exactly three rows.
+    expect(row('exact')).toMatchObject({
+      occurrence: 'loop', minimumOccurrences: 3, maximumOccurrences: 3, occurrenceBoundSource: 'literal',
+    });
+    // Nesting MULTIPLIES: an inner literal loop under an outer one reaches outer*inner rows. Publishing the
+    // inner count alone understated the ceiling by a factor of the outer trip count.
+    expect(row('nested')).toMatchObject({
+      occurrence: 'loop', minimumOccurrences: 6, maximumOccurrences: 6,
+    });
+    // Each of these keeps the ceiling and loses the floor, because each can reach the callsite zero times.
+    for (const name of ['guardedBody', 'underBranch', 'earlyReturn']) {
+      expect(row(name)).toMatchObject({ occurrence: 'loop', maximumOccurrences: 3 });
+      expect(row(name).minimumOccurrences).toBeUndefined();
+    }
   });
 
   it('emits a conservative direct-call ceiling for a canonical literal loop', () => {

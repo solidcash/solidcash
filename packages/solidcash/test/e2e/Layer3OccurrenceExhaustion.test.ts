@@ -452,15 +452,57 @@ describe('Layer-3 occurrence ordering and exact exhaustion (SEMANTIC)', () => {
   });
 
   /**
-   * Recorded GAP, reported rather than changed here. `ExpandBoundedPointerTableLoop` inspects only POINTER
-   * dispatches, so a loop holding an ordinary interface call is neither expanded nor refused, and publishes
-   * `occurrence: 'loop'` with no `maximumOccurrences`. The planner then validates the count as
-   * `maximumOccurrences === undefined || count <= maximumOccurrences`, so it accepts any count for this shape -
-   * here six rows from a source that publishes no ceiling at all. The caller covenant still emits exactly the
-   * rows the source executes, so an inflated count is rejected on-chain; what is missing is the compiler-proven
-   * per-callsite bound the derivation is supposed to check against.
+   * The same rolled shape, now with the source bound the sibling case lacks.
+   *
+   * `ExpandBoundedPointerTableLoop` still expands only POINTER dispatches, so this loop keeps its rolled form
+   * and the covenant is unchanged. What changed is that the ceiling the source proves reaches the artifact, so
+   * the planner refuses an over-count here instead of admitting anything below the global transcript ceiling.
    */
-  it('GAP: plans an arbitrary loop occurrence count when no ceiling is published', () => {
+  it('refuses an over-count for a rolled loop whose source bounds the trip count', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+interface IFoo { function bar(uint value); }
+contract GuardedLoopPlainCall() {
+  int n;
+  function fireAll(uint value, address target) public {
+    require(n <= 3);
+    for (int i = 0; i < n; i = i + 1) { IFoo(target).bar(value); }
+    require(value >= 0);
+  }
+}`, options);
+    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+contract PlainTarget() {
+  function bar(uint value) public pure { require(value > 0); }
+}`, options);
+    const row = callerArtifact.abi.find((fn) => fn.name === 'fireAll')!.externalCalls![0];
+    expect(row.maximumOccurrences).toBe(3);
+    expect(row.occurrenceBoundSource).toBe('guard');
+    // A guard bounds from above only, so an under-count stays honest and must NOT gain a floor.
+    expect(row.minimumOccurrences).toBeUndefined();
+    const base = {
+      root: { artifact: callerArtifact, lockingBytecode: '51' },
+      function: 'fireAll',
+      args: [CALL_VALUE, hexToBin('52')],
+      targets: { IFoo: { artifact: calleeArtifact, lockingBytecode: '52' } },
+    };
+    expect(() => layer3.deriveCompiledGraphPlan({ ...base, occurrence: () => 4 }))
+      .toThrow('layer3: callsite 0 lacks a valid loop occurrence proof');
+    expect(layer3.deriveCompiledGraphPlan({ ...base, occurrence: () => 3 }).invocations).toHaveLength(4);
+  });
+
+  /**
+   * REMAINING SCOPE, unchanged. A loop whose trip count the source never bounds publishes no ceiling, because
+   * there is none to prove, and the planner still validates the count as
+   * `maximumOccurrences === undefined || count <= maximumOccurrences` - so it accepts any count up to the
+   * global 24-invocation transcript ceiling, here six rows. The caller covenant still emits exactly the rows
+   * the source executes, so an inflated count is rejected on-chain; what is absent is a plan-time bound.
+   */
+  it('SCOPED: plans an arbitrary loop occurrence count when no ceiling can be proven', () => {
     const options = {
       forceStateful: true,
       experimentalHiddenBatch: true,

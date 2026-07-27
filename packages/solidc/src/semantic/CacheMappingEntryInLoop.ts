@@ -26,6 +26,7 @@ import {
   AssignNode,
   FieldAccessNode,
   FunctionCallNode,
+  LiteralNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type } from '@solidcash/utils';
@@ -39,21 +40,35 @@ const PREFIX = '__c2cache_';
 // them and they read identically every iteration). `for(i) bal[msg.sender] -= amts[i]` (a batch debit from the
 // caller - the same-key half of an ERC-20 multiTransfer) is the driving case; its flush is a single msg.sender
 // C2 write, which is proven (MsgSenderC2).
-type KeyKind = { kind: 'id'; name: string } | { kind: 'nullary'; op: NullaryOperator };
+type KeyKind =
+  | { kind: 'id'; name: string }
+  | { kind: 'nullary'; op: NullaryOperator }
+  | { kind: 'literal'; node: LiteralNode; canon: string };
+
+function literalCanon(k: LiteralNode): string {
+  const value = k.value instanceof Uint8Array ? [...k.value].join(',') : String(k.value);
+  return `${k.constructor.name}:${value}`;
+}
 
 // canon groups accesses of the same entry; null = an unsupported key (arr[i], m[k2], expression) -> not cached, so
 // the multi-write / loop write falls through to the fail-closed sorted-codegen path (sound, never a silent skip).
-function canonKeyOf(k: Node): { canon: string; key: KeyKind } | null {
+function canonKeyOf(k: Node, allowLiteral = false): { canon: string; key: KeyKind } | null {
   if (k instanceof IdentifierNode) return { canon: `id:${k.name}`, key: { kind: 'id', name: k.name } };
   if (k instanceof NullaryOpNode
     && (k.operator === NullaryOperator.MSG_SENDER || k.operator === NullaryOperator.TX_ORIGIN)) {
     return { canon: `nullary:${k.operator}`, key: { kind: 'nullary', op: k.operator } };
   }
+  if (allowLiteral && k instanceof LiteralNode) {
+    const canon = literalCanon(k);
+    return { canon: `literal:${canon}`, key: { kind: 'literal', node: cloneNode(k), canon } };
+  }
   return null;
 }
 
 function buildKeyNode(key: KeyKind, loc: Node['location']): Node {
-  const n: Node = key.kind === 'id' ? new IdentifierNode(key.name) : new NullaryOpNode(key.op);
+  const n: Node = key.kind === 'id'
+    ? new IdentifierNode(key.name)
+    : key.kind === 'nullary' ? new NullaryOpNode(key.op) : cloneNode(key.node);
   n.location = loc;
   return n;
 }
@@ -61,7 +76,8 @@ function buildKeyNode(key: KeyKind, loc: Node['location']): Node {
 function keyNodeMatches(k: Node | undefined, key: KeyKind): boolean {
   if (!k) return false;
   if (key.kind === 'id') return k instanceof IdentifierNode && k.name === key.name;
-  return k instanceof NullaryOpNode && k.operator === key.op;
+  if (key.kind === 'nullary') return k instanceof NullaryOpNode && k.operator === key.op;
+  return k instanceof LiteralNode && literalCanon(k) === key.canon;
 }
 
 type EntryInfo = {
@@ -143,8 +159,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     body: Node,
   ): Array<{ mapping: string; key: KeyKind; valueType: Type; fromModifier?: string }> {
     const info = new Map<string, EntryInfo>();
-    const get = (mapping: string, k: Node): EntryInfo | null => {
-      const ck = canonKeyOf(k);
+    const get = (mapping: string, k: Node, allowLiteral = false): EntryInfo | null => {
+      const ck = canonKeyOf(k, allowLiteral);
       if (!ck) return null;
       const ek = `${mapping}|${ck.canon}`;
       let e = info.get(ek);
@@ -178,20 +194,22 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         const k0 = n.keys[0];
         // element write `m[k][j]=v` is keys=[k,j] pre-semantic; push/pop are keys=[k] + flag; whole assign is keys=[k].
         const isElementWrite = n.arrayIndex !== undefined || (n.keys.length === 2 && !n.arrayPush && !n.arrayPop);
-        if (k0 instanceof IdentifierNode) { // array entries: identifier key only (single msg.sender array write unproven)
-          const e = get(n.name, k0);
-          if (e) {
-            if (n.arrayPush || n.arrayPop || isElementWrite) {
-              e.count += 1;
-              if (inLoop) e.inLoop = true;
-            } else {
-              e.bad = true; // whole-entry assign m[k]=v: cache reassign not handled -> do not cache this entry
-            }
+        // canonKeyOf accepts stable identifiers and compile-time literal keys. Both identify one invariant entry
+        // across the loop; literal string keys are common after inlining `Lib.set(data["abc"])`.
+        const elementType = (this.arrayMappings.get(n.name) as ArrayType).elementType;
+        const e = get(n.name, k0, !(elementType instanceof StructType));
+        if (e) {
+          if (n.arrayPush || n.arrayPop || isElementWrite) {
+            e.count += 1;
+            if (inLoop) e.inLoop = true;
+          } else {
+            e.bad = true; // whole-entry assign m[k]=v: cache reassign not handled -> do not cache this entry
           }
         }
       }
-      if (n instanceof MappingDeleteNode && this.arrayMappings.has(n.name) && n.keys[0] instanceof IdentifierNode) {
-        const e = get(n.name, n.keys[0]); if (e) e.bad = true;
+      if (n instanceof MappingDeleteNode && this.arrayMappings.has(n.name)) {
+        const elementType = (this.arrayMappings.get(n.name) as ArrayType).elementType;
+        const e = get(n.name, n.keys[0], !(elementType instanceof StructType)); if (e) e.bad = true;
       }
       // Scalar C2 mapping: a WHOLE-entry write `m[k] = expr` (an RMW `m[k] -= v` desugars to this) to an INVARIANT
       // key (identifier or msg.sender/tx.origin) is the cacheable form (read once -> mutate local -> one upsert). A

@@ -119,7 +119,12 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     if (node.identifier instanceof IdentifierNode) {
       const cand = this.candidates.get(node.identifier.name);
-      if (cand && node.parameters.length === cand.params.length) {
+      // A synthesized public getter can share its name with the external-function state variable it exposes.
+      // `this.g()` is the getter read, but bare `g()` invokes the stored pointer; do not beta-reduce the latter
+      // into the getter's returned pointer value.
+      const bareStatePointerCall = cand?.isPublic && this.fnPtrStateVars.has(node.identifier.name)
+        && !node.fromThisCall;
+      if (cand && !bareStatePointerCall && node.parameters.length === cand.params.length) {
         const subst = new Map<string, ExpressionNode>();
         cand.params.forEach((p, i) => subst.set(p, this.visit(node.parameters[i]) as ExpressionNode));
         return this.substExpr(cloneNode(cand.returnExpr) as ExpressionNode, subst);

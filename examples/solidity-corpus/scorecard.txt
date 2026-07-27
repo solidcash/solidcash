@@ -1,34 +1,43 @@
+  ...500/7343
+  ...1000/7343
+  ...1500/7343
+  ...2000/7343
+  ...2500/7343
+  ...3000/7343
+  ...3500/7343
+  ...4500/7343
+  ...5500/7343
 
-=== SOLC-CORPUS SCORECARD: 4488/4876 single-file in-scope compiled (388 failed) | 2190 negative-skipped (solc rejects; 904 of them we also accept, diagnostic) | 277 multifile-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 4443/4587 single-file in-scope compiled (144 failed) | 2192 negative-skipped (solc rejects; 595 of them we also accept, diagnostic) | 275 multifile-skipped | 289 cmdline-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
-   45  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not y
-   17  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+   19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not y
    16  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..'
-   13  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
-   12  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
-   11  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
-   10  ParseError: Unexpected token '..' at Line N, Column N
-    9  StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line
-    9  UnresolvedImportError: Cannot resolve import '..' from '..'
+   11  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
     9  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code
-    9  Error: external call target address must be a constructor/function parameter
-    9  UnsupportedTypeError: Found type '..' where type '..' was expected at Line N, Column N
-    8  ParseError: Unsupported .push/.pop/.delete receiver at Line N, Column N
-    7  UndefinedModifierError: Undefined modifier '..' at Line N, Column N
-    7  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column
+    8  Error: Expected variable '..' does not exist on the stack
     7  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equival
-    7  ParseError: Invalid .push/.pop/.delete target at Line N, Column N
-    7  InvalidModifierCombinationError: Invalid modifier combination on function '..': '..' is on
-    7  UnsupportedTypeError: Tried to index unsupported type '..' at Line N, Column N
-    6  Error: Expected variable '..' does not exist on the stack
-    6  StructFieldExternalCallError: External call '..' on an interface-typed struct field or com
-    5  ParseError: Invalid assignment target at Line N, Column N
-    5  ParseError: A tuple expression is only valid as a ternary branch in a tuple assignment or
-    5  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', '..
-    4  UndefinedReferenceError: Undefined reference to symbol s at Line N, Column N
-    4  DeployValueInNonStatefulError: '..' can only be used in stateful contracts that have coven
-    4  StatefulContractDeploymentError: Cannot deploy stateful contract '..' here: '..' mints its
-    3  MethodCallNotSupportedError: Method calls are only supported on interface or contract inst
-    3  TypeError: Found type '..' where type '..' was expected at Line N, Column N
-    3  Error: Compiled bytecode for contract '..' not available
+    7  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
+    6  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+    6  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column
+    4  UnresolvedImportError: Cannot resolve import '..' from '..'
+    4  Error: recursive struct types are not supported (no finite inline encoding on BCH)
+    3  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters (
+    2  Error: Block layout not available for function '..'
+    2  Error: Block slot not found: transfer[N]
+    2  ParseError: Unexpected token '..' at Line N, Column N
+    2  CastTypeError: Type '..' is not castable to type '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol a at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol data__recursive__recursive at Line
+    2  UndefinedReferenceError: Undefined reference to symbol severalMaps at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol A at Line N, Column N
+    1  InvalidParameterTypeError: Found parameters (uintN,bool) in call to function '..' where pa
+    1  ReturnTypeMismatchError: Return type mismatch: expected (bool) but found () at Line N, Col
+    1  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
+    1  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
+    1  UnimplementedAbstractFunctionError: Concrete contract '..' must implement abstract functio
+    1  UnknownContractTypeError: Unknown contract or interface type '..' at Line N, Column N
+    1  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
+    1  UndefinedReferenceError: Undefined reference to symbol x at Line N, Column N
+    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column
+    1  UnsupportedMemoryAliasingError: Memory alias group '..' reaches an operation that cannot y

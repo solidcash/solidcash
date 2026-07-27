@@ -22,6 +22,9 @@ Buckets (so the denominator is meaningful):
 - **NEGATIVE** - the `// ----` trailer declares a compile `Error`; solc rejects it, so SolidCash rejecting is
   parity (excluded from the denominator). If SolidCash *accepts* one it is `NEG-ACCEPTED` (over-permissive).
 - **MULTIFILE** - `==== Source:` harness delimiter; not a single compilable unit (excluded).
+- **CMDLINE** - files under `test/cmdlineTests/`; these exercise CLI modes and diagnostic rendering rather than
+  positive standalone compilation. Many are intentionally invalid without a semantic-test error trailer, so both
+  accepting and rejecting them are meaningless for the language-parity denominator (excluded).
 - Denominator = **OK + FAIL** (single files that should compile).
 
 ## Scorecard (2026-07, 7343 files)

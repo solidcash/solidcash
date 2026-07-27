@@ -31,6 +31,7 @@ import {
   DoWhileNode,
   WhileNode,
   RequireNode,
+  AssertNode,
   TimeOpNode,
   StateAssignNode,
   MappingAssignNode,
@@ -38,6 +39,7 @@ import {
   MappingDeleteNode,
   MappingAccessNode,
   StateAccessNode,
+  IntLiteralNode,
   EmitStatementNode,
   TransferStatementNode,
   TokenContainerMethodStatementNode,
@@ -64,12 +66,16 @@ import {
   StateVariableVisibility,
   ExpressionStatementNode,
   PlaceholderStatementNode,
+  AssignmentExpressionNode,
 } from '../ast/AST.js';
 import {
   CircularContractInheritanceError,
   C3LinearizationError,
   NonVirtualOverrideError,
+  OverrideMutabilityError,
   OverrideBaseListError,
+  DuplicateOverrideBaseError,
+  InvalidModifierOverrideError,
   DiamondInheritanceError,
   InheritanceNameCollisionError,
   MissingOverrideError,
@@ -162,7 +168,7 @@ function mangleCollidingPrivateVars(
   }
 }
 
-export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
+export default function expandInheritance(ast: SourceFileNode, solidityImportCompat = false): SourceFileNode {
   // Build a map of available contracts from importedContracts
   const contractMap = new Map<string, ContractNode>();
   for (const c of ast.importedContracts) {
@@ -183,6 +189,18 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   }
 
   const expanded = new Set<string>();
+  const interfaceMap = new Map(ast.interfaceDefinitions.map((iface) => [iface.name, iface]));
+  const interfaceBases = (direct: string[]): Set<string> => {
+    const result = new Set<string>();
+    const pending = [...direct];
+    while (pending.length > 0) {
+      const name = pending.pop()!;
+      if (result.has(name)) continue;
+      result.add(name);
+      pending.push(...(interfaceMap.get(name)?.parents ?? []));
+    }
+    return result;
+  };
 
   // The primary contract's own ancestors (captured before expansion clears `implements`) are flattened as part
   // of the primary's expansion below; flattening one independently first would double-merge a shared diamond
@@ -199,21 +217,25 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
     if (imported.implements.length > 0 && !expanded.has(imported.name) && !primaryAncestors.has(imported.name)) {
       const importedLinearization = computeLinearization(imported, contractMap, originalImplements);
       mangleCollidingPrivateVars(importedLinearization, contractMap, ast.contract);
-      expandContract(imported, contractMap, expanded, new Set(), originalImplements);
-      resolveSuperAndBaseCalls(imported, importedLinearization);
+      expandContract(imported, contractMap, expanded, new Set(), originalImplements, solidityImportCompat);
+      resolveSuperAndBaseCalls(imported, importedLinearization, interfaceBases(imported.implements));
     }
   }
 
-  // If the primary contract doesn't implement anything, nothing more to do
-  if (ast.contract.implements.length === 0) return ast;
+  // A root contract still needs explicit override-list validation. In particular, `override(LibraryName)` must
+  // not escape merely because there is no inheritance graph to flatten.
+  if (ast.contract.implements.length === 0) {
+    resolveSuperAndBaseCalls(ast.contract, [], new Set());
+    return ast;
+  }
 
   // Origin-mangle any private state var declared in >1 ancestor before flattening (Solidity allows same-name
   // private vars across ancestors; the flatten would otherwise collide). See mangleCollidingPrivateVars.
   mangleCollidingPrivateVars(primaryLinearization, contractMap, ast.contract);
 
-  expandContract(ast.contract, contractMap, expanded, new Set(), originalImplements);
+  expandContract(ast.contract, contractMap, expanded, new Set(), originalImplements, solidityImportCompat);
 
-  resolveSuperAndBaseCalls(ast.contract, primaryLinearization);
+  resolveSuperAndBaseCalls(ast.contract, primaryLinearization, interfaceBases(ast.contract.implements));
 
   return ast;
 }
@@ -286,9 +308,27 @@ function expandContract(
   expanded: Set<string>,
   expanding: Set<string>,
   originalImplements?: Map<string, string[]>,
+  solidityImportCompat = false,
 ): void {
   if (expanding.has(contract.name)) {
     throw new CircularContractInheritanceError(contract);
+  }
+
+  // Solidity requires each contract in an explicit override list to occur exactly once. Validate source
+  // declarations before inheritance merging: a repeated base must not disappear when declarations are cloned
+  // or deduplicated during flattening.
+  for (const declaration of [
+    ...contract.functions,
+    ...contract.stateVariables,
+    ...contract.collections,
+  ]) {
+    const seen = new Set<string>();
+    for (const base of declaration.overrideBases) {
+      if (seen.has(base)) {
+        throw new DuplicateOverrideBaseError(declaration, declaration.name, base);
+      }
+      seen.add(base);
+    }
   }
 
   // Separate parent contracts from interface names
@@ -327,6 +367,47 @@ function expandContract(
   const linearization = computeLinearization(contract, contractMap, originalImplements);
   stampModifierQualifiers([...new Set([contract.name, ...linearization])]);
   const ancestorSet = new Set(linearization);
+
+  // Modifiers do not overload in Solidity. Validate the derived source declarations against every original
+  // ancestor before flattening silently replaces same-name definitions.
+  for (const modifier of contract.modifierDefinitions.filter(
+    (candidate) => candidate.inheritedFrom === undefined && !candidate.name.includes('.'),
+  )) {
+    const candidates = linearization.filter((ancestorName) => ancestorName !== contract.name).flatMap((ancestorName) => {
+      const ancestor = contractMap.get(ancestorName);
+      return (ancestor?.modifierDefinitions ?? [])
+        .filter((candidate) => !candidate.name.includes('.') && candidate.name === modifier.name)
+        .map((candidate) => ({ candidate, origin: candidate.inheritedFrom ?? ancestorName }));
+    }).filter(({ origin }, index, all) =>
+      all.findIndex((item) => item.origin === origin) === index);
+
+    if (candidates.length === 0) {
+      if (modifier.isOverride) {
+        throw new InvalidModifierOverrideError(modifier, modifier.name, 'override specified but no base declares it');
+      }
+      continue;
+    }
+    if (!modifier.isOverride) {
+      throw new InvalidModifierOverrideError(modifier, modifier.name, "missing 'override' specifier");
+    }
+
+    const childSignature = modifier.parameters.map((parameter) => parameter.type.toString()).join(',');
+    for (const { candidate, origin } of candidates) {
+      const parentSignature = candidate.parameters.map((parameter) => parameter.type.toString()).join(',');
+      if (childSignature !== parentSignature) {
+        throw new InvalidModifierOverrideError(modifier, modifier.name, `signature differs from '${origin}'`);
+      }
+      if (!candidate.isVirtual) {
+        throw new NonVirtualOverrideError(modifier, modifier.name, origin);
+      }
+    }
+    for (const base of modifier.overrideBases) {
+      if (!candidates.some(({ origin }) => origin === base)) {
+        throw new OverrideBaseListError(modifier, modifier.name, base);
+      }
+    }
+  }
+
   const modifierNames = new Set(contract.modifierDefinitions.map((m) => m.name));
   for (const ancestor of linearization) {
     for (const md of contractMap.get(ancestor)?.modifierDefinitions ?? []) modifierNames.add(md.name);
@@ -354,6 +435,41 @@ function expandContract(
     }
   }
 
+  // A base constructor may receive arguments at most once across the whole
+  // inheritance graph. The linearization deduplicates shared ancestors, so
+  // count the source declarations from each distinct contract: this catches
+  // both `D is Base, Mid` plus `Mid is Base(args)`, and sibling bases which
+  // independently invoke the same ancestor constructor.
+  const constructorArgumentProviders = new Map<string, string>();
+  for (const providerName of [contract.name, ...linearization]) {
+    const provider = providerName === contract.name ? contract : contractMap.get(providerName);
+    if (!provider) continue;
+    for (const invocation of provider.parentInvocations) {
+      if (!ancestorSet.has(invocation.parentName)) continue;
+      const previous = constructorArgumentProviders.get(invocation.parentName);
+      if (previous && previous !== providerName) {
+        throw new DuplicateParentInvocationError(contract, invocation.parentName);
+      }
+      constructorArgumentProviders.set(invocation.parentName, providerName);
+    }
+  }
+
+  // Solidity evaluates assignment expressions in base-constructor arguments before entering the base
+  // constructor (`is Base(D.x = 3)`). Pull the write out as a constructor prelude and substitute a read of the
+  // assigned slot as the argument value. This also prevents the general expression type checker from treating
+  // the state assignment like a local-stack AssignmentExpressionNode.
+  for (const pi of contract.parentInvocations) {
+    const prelude: StatementNode[] = [];
+    pi.args = pi.args.map((arg) => {
+      if (!(arg instanceof AssignmentExpressionNode)) return arg;
+      prelude.push(arg.assign);
+      const value = new IdentifierNode(arg.assign.identifier.name);
+      value.location = arg.location;
+      return value;
+    });
+    if (prelude.length > 0) pi.argumentPrelude = prelude;
+  }
+
   expanding.add(contract.name);
 
   // Ancestor relation over the ORIGINAL hierarchy, for diamond dominance (an override in a derived base
@@ -378,7 +494,7 @@ function expandContract(
 
     // Recursively expand parent first (if it has its own parents)
     if (!expanded.has(parentName) && parent.implements.length > 0) {
-      expandContract(parent, contractMap, expanded, new Set(expanding), originalImplements);
+      expandContract(parent, contractMap, expanded, new Set(expanding), originalImplements, solidityImportCompat);
     }
 
     // Carry the parent's interface bases up: after expansion `parent.implements` holds only interfaces, and this
@@ -391,6 +507,8 @@ function expandContract(
     mergeParent(contract, parent, isAncestor);
   }
 
+  if (solidityImportCompat) validateEffectiveDeclarationNamespace(contract);
+
   inlineParentConstructors(contract, parentNames, contractMap, linearization);
 
   expanding.delete(contract.name);
@@ -398,6 +516,67 @@ function expandContract(
 
   // Remove parent contract names from implements (leaving only interface names)
   contract.implements = remainingImplements;
+}
+
+// After inheritance is flattened, Solidity's effective contract scope still has one declaration namespace across
+// variables, functions, events, and modifiers. Same-kind overloads are handled by their individual merge logic;
+// a name which survives in two DIFFERENT kinds is an illegal cross-kind inheritance collision. Private ancestor
+// members are not visible in the derived scope and therefore do not participate.
+function validateEffectiveDeclarationNamespace(contract: ContractNode): void {
+  const declared = new Map<string, { kind: string; origin: string }>();
+  // Public state declarations can explicitly implement an inherited virtual/abstract getter while other overloads
+  // of that function name remain inherited. Mapping-to-struct getters need later tuple-shape synthesis before their
+  // signature can be compared, so defer these pairs to the existing public-getter override validator.
+  const deferredGetterOverrides = new Set(
+    [...contract.stateVariables, ...contract.collections]
+      .filter((variable) => variable.isOverride && variable.inheritedFrom === undefined
+        && contract.functions.some((fn) => fn.name === variable.name && fn.inheritedFrom))
+      .map((variable) => variable.name),
+  );
+  const ownVariableNames = new Set(
+    [...contract.stateVariables, ...contract.collections]
+      .filter((variable) => variable.inheritedFrom === undefined)
+      .map((variable) => variable.name),
+  );
+  const register = (
+    item: { name: string; inheritedFrom?: string },
+    kind: string,
+    inheritedPrivate = false,
+  ): void => {
+    if (item.name.includes('.') || item.name.startsWith('__base_') || inheritedPrivate) return;
+    const origin = item.inheritedFrom ?? contract.name;
+    const previous = declared.get(item.name);
+    if (previous && previous.kind !== kind) {
+      throw new InheritanceNameCollisionError(contract, 'Declaration', item.name, origin);
+    }
+    if (!previous) declared.set(item.name, { kind, origin });
+  };
+
+  for (const variable of [...contract.stateVariables, ...contract.transientStateVars]) {
+    register(
+      variable,
+      'variable',
+      variable.inheritedFrom !== undefined && variable.visibility === StateVariableVisibility.PRIVATE,
+    );
+  }
+  for (const collection of contract.collections) {
+    register(
+      collection,
+      'variable',
+      collection.inheritedFrom !== undefined && collection.visibility === StateVariableVisibility.PRIVATE,
+    );
+  }
+  for (const fn of contract.functions) {
+    if (fn.inheritedFrom && (deferredGetterOverrides.has(fn.name)
+      || (ownVariableNames.has(fn.name) && fn.visibility === 'internal'))) continue;
+    register(
+      fn,
+      'function',
+      fn.inheritedFrom !== undefined && fn.visibility === 'private',
+    );
+  }
+  for (const event of contract.eventDefinitions) register(event, 'event');
+  for (const modifier of contract.modifierDefinitions) register(modifier, 'modifier');
 }
 
 /**
@@ -425,7 +604,8 @@ function inlineParentConstructors(
     const invocation = indirect.find((pi) => pi.parentName === ancestorName);
     if (!invocation) continue;
     const ancestor = contractMap.get(ancestorName);
-    if (!ancestor?.constructorDef?.body?.statements?.length) continue;
+    if (!ancestor) continue;
+    if (!ancestor.constructorDef && !invocation.argumentPrelude?.length) continue;
     const ctorParams = effectiveConstructorParams(ancestor);
     if (ctorParams.length === 0) continue; // parameterless: chain-inlined already
     const chainInvoked = linearization.some((name) => name !== contract.name
@@ -434,30 +614,32 @@ function inlineParentConstructors(
     if (invocation.args.length !== ctorParams.length) {
       throw new ParentInvocationArgCountError(contract, ancestorName, ctorParams.length, invocation.args.length);
     }
-    const clonedCtor = cloneNode(ancestor.constructorDef);
-    substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    const clonedCtor = ancestor.constructorDef ? cloneNode(ancestor.constructorDef) : undefined;
+    if (clonedCtor) {
+      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    }
     // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
     // private state; tag its accesses so the flattened child does not trip the private-access check.
-    tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
-    parentStmts.push(...(clonedCtor.body.statements ?? []));
+    if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
+    parentStmts.push(...(invocation.argumentPrelude ?? []), ...(clonedCtor?.body.statements ?? []));
   }
 
   for (const parentName of parentNames) {
     const invocation = contract.parentInvocations.find((pi) => pi.parentName === parentName);
     const parent = contractMap.get(parentName)!;
-    if (!parent.constructorDef?.body?.statements?.length) continue;
+    if (!parent.constructorDef && !invocation?.argumentPrelude?.length) continue;
     const ctorParams = effectiveConstructorParams(parent);
     // MD4: a parent constructor runs even without an explicit `is Parent(args)` invocation - Solidity's implicit
     // base-constructor call - otherwise guard-relevant init (e.g. owner = ...) silently stays at the zero default.
     // Without an invocation we can only run a PARAMETERLESS parent ctor (a parameterized one needs explicit args,
     // which Solidity requires); skip a parameterized, un-invoked parent as before.
     if (!invocation && ctorParams.length > 0) continue;
-    const clonedCtor = cloneNode(parent.constructorDef);
-    if (invocation) {
+    const clonedCtor = parent.constructorDef ? cloneNode(parent.constructorDef) : undefined;
+    if (invocation && clonedCtor) {
       substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
     }
-    tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
-    parentStmts.push(...(clonedCtor.body.statements ?? []));
+    if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
+    parentStmts.push(...(invocation?.argumentPrelude ?? []), ...(clonedCtor?.body.statements ?? []));
   }
   if (parentStmts.length === 0) return;
 
@@ -495,6 +677,8 @@ function mergeParent(
 
   // 1. Merge functions (with optional substitution)
   mergeFunctions(child, parent, subs, isAncestor);
+  mergeSpecialFunction(child, parent, 'fallbackDef', 'fallback');
+  mergeSpecialFunction(child, parent, 'receiveDef', 'receive');
 
   // 2. Merge constructor params only if no explicit invocation
   if (!invocation) {
@@ -554,6 +738,33 @@ function mergeParent(
   }
 }
 
+function mergeSpecialFunction(
+  child: ContractNode,
+  parent: ContractNode,
+  key: 'fallbackDef' | 'receiveDef',
+  label: string,
+): void {
+  const parentFunction = parent[key];
+  const inherited = parent.inheritedSpecialFunctions[label as 'fallback' | 'receive'];
+  if (!parentFunction && !inherited) return;
+  const origin = parentFunction?.inheritedFrom ?? inherited?.origin ?? parent.name;
+  const isVirtual = parentFunction
+    ? parentFunction.modifiers.includes(FunctionModifier.VIRTUAL)
+    : inherited!.isVirtual;
+  const childFunction = child[key];
+  if (!childFunction) {
+    child.inheritedSpecialFunctions[label as 'fallback' | 'receive'] = { origin, isVirtual };
+    return;
+  }
+  if (!childFunction.modifiers.includes(FunctionModifier.OVERRIDE)) {
+    throw new MissingOverrideError(child, label, parent.name);
+  }
+  if (!isVirtual) {
+    throw new NonVirtualOverrideError(childFunction, label, origin);
+  }
+  if (parentFunction) validateOverrideMutability(childFunction, parentFunction);
+}
+
 /**
  * Merge parent functions into child.
  * If child has a function with the same name, it must be marked `override`.
@@ -597,6 +808,29 @@ function validateOverrideDataLocations(child: FunctionDefinitionNode, parent: Fu
   }
 }
 
+function functionMutability(fn: FunctionDefinitionNode): 'payable' | 'nonpayable' | 'view' | 'pure' {
+  if (fn.modifiers.includes(FunctionModifier.PAYABLE)) return 'payable';
+  if (fn.modifiers.includes(FunctionModifier.PURE)) return 'pure';
+  if (fn.modifiers.includes(FunctionModifier.VIEW)) return 'view';
+  return 'nonpayable';
+}
+
+function validateOverrideMutability(child: FunctionDefinitionNode, parent: FunctionDefinitionNode): void {
+  const parentMutability = functionMutability(parent);
+  const childMutability = functionMutability(child);
+  if (parentMutability === childMutability) return;
+  const strictness = new Map<string, number>([
+    ['nonpayable', 0],
+    ['view', 1],
+    ['pure', 2],
+  ]);
+  // Payable may only override payable. For every other base, Solidity permits an equal or more restrictive
+  // override: nonpayable -> view -> pure.
+  if (parentMutability !== 'payable' && childMutability !== 'payable'
+    && strictness.get(childMutability)! >= strictness.get(parentMutability)!) return;
+  throw new OverrideMutabilityError(child, parentMutability, childMutability);
+}
+
 function mergeFunctions(
   child: ContractNode,
   parent: ContractNode,
@@ -621,6 +855,11 @@ function mergeFunctions(
       const matchesGetter = declaredParams.length === 0 && parentFunc.returnTypes.length === 1
         && parentFunc.returnTypes[0].toString() === getterType.toString();
       if (matchesGetter) {
+        if (parentFunc.visibility !== 'external') {
+          throw new Error(
+            `Public state variable '${variableOverride.name}' can only override an external function`,
+          );
+        }
         if (parentFunc.modifiers.includes(FunctionModifier.PURE)) {
           throw new Error(
             `Public state getter '${variableOverride.name}' is view and cannot override pure function `
@@ -671,6 +910,7 @@ function mergeFunctions(
         if (!parentFunc.isAbstract && !parentFunc.modifiers.includes(FunctionModifier.VIRTUAL)) {
           throw new NonVirtualOverrideError(existingFunc, parentFunc.name, parentFunc.inheritedFrom ?? parent.name);
         }
+        validateOverrideMutability(existingFunc, parentFunc);
         validateOverrideDataLocations(existingFunc, parentFunc);
         preserveOverriddenFunction(child, parentFunc, parent, subs);
         continue;
@@ -743,7 +983,9 @@ function superImplFor(contract: ContractNode, definingContract: string, fnName: 
 
 // Rewrite `super.f(...)`/`Base.f(...)` to the preserved parent implementations, then prune preserved
 // bodies no call reaches (dead bodies may reference parent-only state and fail to compile).
-function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[]): void {
+function resolveSuperAndBaseCalls(
+  contract: ContractNode, linearization: string[], inheritedInterfaces: Set<string> = new Set(),
+): void {
   const ancestors = new Set(linearization);
   const indexOf = new Map(linearization.map((name, i) => [name, i]));
   const references = new Map<string, Set<string>>(); // function name -> preserved impls it calls
@@ -753,7 +995,7 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
   // (still in `implements` after expansion) is accepted the same way.
   for (const fn of contract.functions) {
     for (const base of fn.overrideBases) {
-      if (contract.implements.includes(base)) continue; // interface base: declares the function, no super impl
+      if (inheritedInterfaces.has(base)) continue; // direct or transitive interface: no super impl
       if (!ancestors.has(base)) {
         throw new OverrideBaseListError(fn, fn.name, base);
       }
@@ -1018,7 +1260,10 @@ function mergeNamedList(
           (it) => it.name === parentItem.name
             && sigOf(it as { name: string; parameters?: { type: unknown }[] }) === parentSig,
         );
-        if (present) continue;
+        if (present) {
+          if (key === 'eventDefinitions') child.hasDuplicateInheritedEventSignature = true;
+          continue;
+        }
       } else {
         throw new InheritanceNameCollisionError(child, kind, parentItem.name, parent.name);
       }
@@ -1059,6 +1304,39 @@ function mergeNamedList(
 
 // ---- Expression substitution ----
 
+function flattenedIndexedSubstitution(
+  name: string,
+  subs: Map<string, ExpressionNode>,
+): { name: string; keys: ExpressionNode[] } | undefined {
+  const separator = name.indexOf('__');
+  if (separator <= 0) return undefined;
+  const replacement = subs.get(name.slice(0, separator));
+  const suffix = name.slice(separator);
+  if (replacement instanceof MappingAccessNode) {
+    return {
+      name: `${replacement.name}${suffix}`,
+      keys: replacement.keys.map((key) => cloneNode(key)),
+    };
+  }
+  if (replacement instanceof ArrayAccessNode && replacement.array instanceof IdentifierNode) {
+    return {
+      name: `${replacement.array.name}${suffix}`,
+      keys: [cloneNode(replacement.index)],
+    };
+  }
+  // Before semantic typing, `data[1]` in a parent-constructor invocation can be represented as tuple-index
+  // syntax. A bare identifier receiver is still the indexed mapping/array storage path at this stage.
+  if (replacement instanceof TupleIndexOpNode && replacement.tuple instanceof IdentifierNode) {
+    const key = new IntLiteralNode(BigInt(replacement.index));
+    key.location = replacement.location;
+    return {
+      name: `${replacement.tuple.name}${suffix}`,
+      keys: [key],
+    };
+  }
+  return undefined;
+}
+
 /**
  * Recursively substitute IdentifierNode references in an expression tree.
  * Returns a new expression if substitution occurred, otherwise returns the original.
@@ -1092,6 +1370,13 @@ function substituteInExpression(
   }
 
   if (expr instanceof FunctionCallNode) {
+    const callee = subs.get(expr.identifier.name);
+    if (callee instanceof IdentifierNode) expr.identifier = cloneNode(callee);
+    else if (callee instanceof FieldAccessNode && callee.expression instanceof IdentifierNode) {
+      const qualified = new IdentifierNode(`${callee.expression.name}.${callee.name}`);
+      qualified.location = callee.location;
+      expr.identifier = qualified;
+    }
     expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
     return expr;
   }
@@ -1166,6 +1451,11 @@ function substituteInExpression(
   }
 
   if (expr instanceof MappingAccessNode) {
+    const flattened = flattenedIndexedSubstitution(expr.name, subs);
+    if (flattened) {
+      expr.name = flattened.name;
+      expr.keys = [...flattened.keys, ...expr.keys];
+    }
     expr.keys = expr.keys.map((k) => substituteInExpression(k, subs));
     return expr;
   }
@@ -1268,6 +1558,11 @@ function substituteInStatement(
     return stmt;
   }
 
+  if (stmt instanceof AssertNode) {
+    stmt.expression = substituteInExpression(stmt.expression, subs);
+    return stmt;
+  }
+
   if (stmt instanceof TimeOpNode) {
     stmt.expression = substituteInExpression(stmt.expression, subs);
     return stmt;
@@ -1279,18 +1574,33 @@ function substituteInStatement(
   }
 
   if (stmt instanceof MappingAssignNode) {
+    const flattened = flattenedIndexedSubstitution(stmt.name, subs);
+    if (flattened) {
+      stmt.name = flattened.name;
+      stmt.keys = [...flattened.keys, ...stmt.keys];
+    }
     stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs));
     stmt.expression = substituteInExpression(stmt.expression, subs);
     return stmt;
   }
 
   if (stmt instanceof MappingFieldAssignNode) {
+    const flattened = flattenedIndexedSubstitution(stmt.name, subs);
+    if (flattened) {
+      stmt.name = flattened.name;
+      stmt.keys = [...flattened.keys, ...stmt.keys];
+    }
     stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs));
     stmt.expression = substituteInExpression(stmt.expression, subs);
     return stmt;
   }
 
   if (stmt instanceof MappingDeleteNode) {
+    const flattened = flattenedIndexedSubstitution(stmt.name, subs);
+    if (flattened) {
+      stmt.name = flattened.name;
+      stmt.keys = [...flattened.keys, ...stmt.keys];
+    }
     stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs));
     return stmt;
   }
@@ -1323,6 +1633,13 @@ function substituteInStatement(
   }
 
   if (stmt instanceof FunctionCallStatementNode) {
+    const callee = subs.get(stmt.call.identifier.name);
+    if (callee instanceof IdentifierNode) stmt.call.identifier = cloneNode(callee);
+    else if (callee instanceof FieldAccessNode && callee.expression instanceof IdentifierNode) {
+      const qualified = new IdentifierNode(`${callee.expression.name}.${callee.name}`);
+      qualified.location = callee.location;
+      stmt.call.identifier = qualified;
+    }
     stmt.call.parameters = stmt.call.parameters.map((p) => substituteInExpression(p, subs));
     return stmt;
   }

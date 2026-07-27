@@ -630,6 +630,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
   private currentContractEmitsEvent: boolean = false;
+  private currentContractDeploysWithValue: boolean = false;
 
   // Unchecked block depth: when > 0, bounds checks emit wrapping instead of OP_VERIFY
   private uncheckedDepth: number = 0;
@@ -649,6 +650,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emit(op: OpOrData | OpOrData[], locationData: SingleLocationData): void {
+    if (op === undefined || (Array.isArray(op) && op.some((element) => element === undefined))) {
+      throw new Error(`Attempted to emit an undefined instruction at source line ${
+        locationData.location?.start.line ?? 'unknown'
+      }`);
+    }
     if (Array.isArray(op)) {
       op.forEach((element) => this.output.push(element as Op));
       op.forEach(() => this.locationData.push(locationData));
@@ -695,7 +701,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private getBlockSlotOffset(kind: BlockSlotKind, slotIndex?: number): number {
     const layout = this.currentFunction.blockLayout;
-    if (!layout) throw new Error('Block layout not available');
+    if (!layout) throw new Error(`Block layout not available for function '${this.currentFunction.name}'`);
     const slot = layout.slots.find(
       (s) => s.kind === kind && (slotIndex === undefined || s.slotIndex === slotIndex),
     );
@@ -839,6 +845,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractEmitsEvent = node.emitsEvent;
+    this.currentContractDeploysWithValue = node.deploysWithValue;
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -2306,6 +2313,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.collectionCount > 0 || this.eventDefinitions.length > 0
       || this.currentContractUsesBlockhash
       || this.currentContractEmitsEvent
+      || this.currentContractDeploysWithValue
+      || node.modifiers.includes(FunctionModifier.SELFDESTRUCT)
       || (this.compilerOptions.forceStateful ?? false);
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;
@@ -7737,9 +7746,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Extra keys drill into a fixed-inner array element: `a[i][j]` reads the row (above) then indexes into it.
     let rowType: Type = elemType;
     for (let k = 1; k < node.keys.length; k++) {
-      const rowArr = rowType as ArrayType;
-      node.keys[k] = this.emitIndexIntoArrayBlob(rowArr.elementType, node.keys[k], locationData);
-      rowType = rowArr.elementType;
+      if (rowType instanceof BytesType && rowType.bound === undefined) {
+        node.keys[k] = this.visit(node.keys[k]) as ExpressionNode;
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(encodeInt(1n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        rowType = new BytesType(1);
+      } else {
+        const rowArr = rowType as ArrayType;
+        node.keys[k] = this.emitIndexIntoArrayBlob(rowArr.elementType, node.keys[k], locationData);
+        rowType = rowArr.elementType;
+      }
     }
 
     return node;
@@ -16374,10 +16395,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const addrParamIdx = this.getStackIndex(addrName);
         this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
         this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
-      } else if (slot.addressLiteral) {
+      } else if (slot.addressLiteral !== undefined) {
         this.emit(hexToBin(slot.addressLiteral), locationData); // [idx, B_master_bytecode, expected_addr]
       } else {
-        throw new Error('external call target address must be a constructor/function parameter');
+        throw new Error(
+          'external call target address must be a constructor/function parameter or self-pinned state value '
+          + `(target '${slot.interfaceName}.${slot.functionName}' in function '${node.name}')`,
+        );
       }
       this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       // Stack: [B_master_inputIdx] (1 untracked)

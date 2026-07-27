@@ -49,7 +49,7 @@ function buildYulStatement(ctx: YulStatementContext): YulStatementNode {
 }
 
 function buildYulVariableDeclaration(ctx: YulVariableDeclarationContext): YulVariableDeclarationNode {
-  const names = ctx.anyIdentifier_list().map((t) => t.getText());
+  const names = ctx.yulIdentifier_list().map((t) => t.getText());
   const valueCtx = ctx.yulExpression();
   return loc(new YulVariableDeclarationNode(names, valueCtx ? buildYulExpression(valueCtx) : undefined), ctx);
 }
@@ -85,10 +85,10 @@ function buildYulForLoop(ctx: YulForLoopContext): YulForLoopNode {
   ), ctx);
 }
 
-// `function name(params) -> returns { body }`. Identifier_list() flattens [name, ...params, ...returns]; split
+// `function name(params) -> returns { body }`. yulIdentifier_list() flattens [name, ...params, ...returns]; split
 // params from returns at the `->` token's position (the grammar has no separate accessor for either list).
 function buildYulFunctionDefinition(ctx: YulFunctionDefinitionContext): YulFunctionDefinitionNode {
-  const idTerminals = ctx.Identifier_list();
+  const idTerminals = ctx.yulIdentifier_list();
   const name = idTerminals[0]?.getText() ?? '';
   let arrowPos = Infinity;
   for (const child of ctx.children ?? []) {
@@ -98,7 +98,7 @@ function buildYulFunctionDefinition(ctx: YulFunctionDefinitionContext): YulFunct
   const returns: string[] = [];
   for (let i = 1; i < idTerminals.length; i += 1) {
     const t = idTerminals[i];
-    if (t.symbol.start > arrowPos) returns.push(t.getText());
+    if (t.start.start > arrowPos) returns.push(t.getText());
     else params.push(t.getText());
   }
   return loc(new YulFunctionDefinitionNode(name, params, returns, buildYulBlock(ctx.yulBlock())), ctx);

@@ -86,6 +86,14 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     }
     if (this.voidExternalCallHelpers.size === 0) return node;
 
+    // Normalize the retained library/free-function definitions too. A transitive wrapper such as
+    // `L.g(i) { L.f(i); }`, where L.f performs the external call, is inlined at contract call sites below, but
+    // L.g's own retained definition must not keep calling L.f after semantic analysis injects L.f's compiler-only
+    // covenant parameters. Inlining the same helper body here leaves L.g with the direct external call and its own
+    // correctly discovered witness parameters.
+    for (const fn of this.freeFns) {
+      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+    }
     for (const fn of node.functions) {
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }

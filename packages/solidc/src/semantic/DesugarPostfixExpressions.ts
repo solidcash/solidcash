@@ -23,9 +23,12 @@ import {
   DoWhileNode,
   ReturnNode,
   VariableDefinitionNode,
+  FieldAccessNode,
+  FunctionCallNode,
+  FunctionDefinitionNode,
 } from '../ast/AST.js';
 import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
-import { MappingType, Type } from '@solidcash/utils';
+import { MappingType, StructType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -37,6 +40,9 @@ function lvalueBaseName(operand: ExpressionNode): string | undefined {
   if (operand instanceof StateAccessNode) return operand.name;
   if (operand instanceof MappingAccessNode) return operand.name;
   if (operand instanceof ArrayAccessNode && operand.array instanceof IdentifierNode) return operand.array.name;
+  if (operand instanceof FieldAccessNode && operand.expression instanceof IdentifierNode) {
+    return operand.expression.name;
+  }
   return undefined;
 }
 
@@ -138,6 +144,7 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   private inReturn = false;
   private currentStmt: StatementNode | undefined; // innermost enclosing statement (a sequence point)
   private collectionTypes = new Map<string, MappingType>(); // mapping name -> its MappingType (for the save-old temp)
+  private localStructTypes = new Map<string, StructType>();
   private tempCounter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -150,6 +157,19 @@ export default class DesugarPostfixExpressions extends AstTraversal {
       if (c.type instanceof MappingType) this.collectionTypes.set(c.name, c.type);
     }
     return super.visitContract(node) as Node;
+  }
+
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const saved = this.localStructTypes;
+    this.localStructTypes = new Map();
+    const result = super.visitFunctionDefinition(node);
+    this.localStructTypes = saved;
+    return result;
+  }
+
+  visitVariableDefinition(node: VariableDefinitionNode): Node {
+    if (node.type instanceof StructType) this.localStructTypes.set(node.name, node.type);
+    return super.visitVariableDefinition(node);
   }
 
   // The value type of `m[k]` / `m[a][b]`: unwrap the mapping's MappingType by the number of keys applied. Returns
@@ -409,6 +429,10 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   // now an ordinary statement). Suppressed inside a ternary / short-circuit / loop condition (where the write would
   // become conditional), where the node is left as-is (the existing local-only value-form handling still applies).
   visitAssignmentExpression(node: AssignmentExpressionNode): Node {
+    if (node.prelude && node.result) {
+      for (const statement of node.prelude) this.before.push(this.visit(statement) as StatementNode);
+      return this.visit(node.result);
+    }
     node.assign = this.visit(node.assign) as AssignNode; // recurse first: a nested postfix in the RHS hoists too
     if (this.suppress) return node;
     const target = node.assign.identifier;
@@ -450,6 +474,20 @@ export default class DesugarPostfixExpressions extends AstTraversal {
       // bare-element statement assign with an ArrayAssign so it resolves the same way.
       const index = cloneNode(operand.index) as ExpressionNode;
       stmt = new ArrayAssignNode(operand.array.name, index, sum(cloneNode(operand) as ExpressionNode));
+    } else if (operand instanceof FieldAccessNode && operand.expression instanceof IdentifierNode) {
+      const baseName = operand.expression.name;
+      const structType = this.localStructTypes.get(baseName);
+      if (structType?.fields.some((field) => field.name === operand.name)) {
+        const args = structType.fields.map((field) => {
+          const base = new IdentifierNode(baseName); base.location = operand.location;
+          const read = new FieldAccessNode(base, field.name); read.location = operand.location;
+          return field.name === operand.name ? sum(read) : read;
+        });
+        const ctor = new FunctionCallNode(new IdentifierNode(structType.name), args);
+        ctor.location = operand.location;
+        const target = new IdentifierNode(baseName); target.location = operand.location;
+        stmt = new AssignNode(target, ctor);
+      }
     }
     if (stmt) stmt.location = operand.location;
     return stmt;

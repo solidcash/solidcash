@@ -2727,3 +2727,1917 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   `semanticTests/functionCall/precompile_extcodesize_check.sol`; the focused suite is 642/642, the direct fixture
   passes, `git diff --check` is clean, and the full corpus passes. Final scorecard: **4487/4876**, 389 failed,
   903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4487 -> 4488 (+1, NEG-ACCEPTED flat 903)
+
+- **Discarded nested tuple RHS flattening (+1)**: when a skipped outer assignment slot receives a nested tuple,
+  such as `(a,) = (4, (8,16,32))`, the builder now expands that skip to one flat VM slot per nested leaf.
+  This preserves left-to-right evaluation—including side effects in discarded expressions—and drops exactly the
+  number of values produced. Non-skipped nested values still require a shape-matching nested target. This compiles
+  `semanticTests/types/nested_tuples.sol`; the focused suite is 643/643, the direct fixture passes,
+  `git diff --check` is clean, and the full corpus passes. Final scorecard: **4488/4876**, 388 failed,
+  903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4488 -> 4489 (+1, NEG-ACCEPTED flat 903)
+
+- **Fixed-array using-for methods named `push`/`pop` (+1)**: local array receivers now retain their complete
+  using-for type key. For fixed arrays—which have no native size-changing operations—the dedicated push/pop
+  grammar path resolves attached library methods before constructing builtin array operations, so
+  `using L for uint[2]; input.push()` becomes `L.push(input)`. Dynamic-array builtins remain unchanged. This
+  compiles `libraries/internal_library_function_attached_to_array_named_pop_push.sol`; the focused suite is
+  644/644, the direct fixture passes, `git diff --check` is clean, and the full corpus passes. Final scorecard:
+  **4489/4876**, 387 failed, 903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4489 -> 4490 (+1, NEG-ACCEPTED flat 903)
+
+- **Imported/inherited enum placeholder resolution (+1)**: post-import type repair now resolves named
+  `AddressType` placeholders to `EnumType` as well as imported structs and UDVTs. Function locals and parameters
+  such as `Color e = Color.Red` therefore retain their declared enum type after import merging instead of failing
+  as `bigint -> address`. This compiles `lsp/goto/goto_definition.sol`; `StandardMarket.sol` also advances past
+  its enum error to an independent chained-call stack gap. The focused suite is 645/645, the direct import fixture
+  and LSP fixture pass, `git diff --check` is clean, and the full corpus passes. Final scorecard:
+  **4490/4876**, 386 failed, 903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4490 -> 4491 (+1, NEG-ACCEPTED flat 903)
+
+- **Yul alignment observation for contract-code buffers (+1)**: inline assembly now preserves the exact EVM
+  invariant observed by `mod(sub(b, a), 0x20)` when `a` and `b` are memory locals initialized from
+  `type(C).creationCode`/`runtimeCode`. SolidCash represents those locals by their byte values rather than fake
+  EVM addresses, but Solidity allocates both at word-aligned addresses, so the remainder is provably zero. The
+  fold is deliberately limited to recorded contract-code locals and a literal 32-byte modulus; arbitrary pointer
+  differences remain unsupported. This compiles `semanticTests/various/code_access_padding.sol`; the focused
+  suite is 646/646, the exact built-compiler fixture passes, `git diff --check` is clean, and the full corpus
+  passes. Final scorecard: **4491/4876**, 385 failed, 903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4491 -> 4492 (+1, NEG-ACCEPTED flat 903)
+
+- **Yul `byte()` returns an integer word (+1)**: both lowering paths for the EVM/Yul `byte(index, value)` builtin
+  now cast the selected `bytes1` slice to `uint256`. This matches Yul's word semantics and allows ordinary
+  arithmetic/comparison consumers such as `lt(byte(0, mload(ptr)), 0xC0)` without weakening high-level
+  `bytes1` typing. This compiles `compilationTests/milestonetracker/MilestoneTracker.sol` through its imported
+  RLP decoder; the focused suite is 647/647, the exact built-compiler fixture passes, `git diff --check` is clean,
+  and the full corpus passes. Final scorecard: **4492/4876**, 384 failed, 903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4492 -> 4493 (+1, NEG-ACCEPTED flat 903)
+
+- **Selective and namespace enum import aliases (+1)**: a selectively imported file enum now receives a cloned
+  definition under its explicit alias (`Weather as Wetter`), while namespace imports register compound enum
+  names such as `That.Color`. This feeds the existing post-import type repair and enum member resolver, avoiding
+  runtime-identifier treatment of namespace qualifiers without mutating the cached imported AST shared by other
+  imports. This compiles `lsp/goto/goto_definition_imports.sol`; the new import regression and focused 647-test
+  corpus gap suite pass, the exact built-compiler fixture passes, `git diff --check` is clean, and the full corpus
+  passes. Final scorecard: **4493/4876**, 383 failed, 903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4493 -> 4494 (+1, NEG-ACCEPTED flat 903)
+
+- **Contract-qualified named struct constructors (+1)**: sibling/imported contract structs are now registered as
+  distinct qualified constructor symbols (`Lib.S`), and named-field syntax `Lib.S({a: 2, b: 3})` is routed from
+  its method-call parse shape into the existing struct-constructor resolver. Qualified struct symbols take
+  precedence over the older contract-qualified function-pointer fallback, while bare struct names are not leaked
+  across contract scopes. This compiles `semanticTests/various/cross_contract_types.sol`; the focused suite is
+  648/648, the exact built-compiler fixture passes, `git diff --check` is clean, and the full corpus passes.
+  Final scorecard: **4494/4876**, 382 failed, 903 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4494 -> 4495 (+1, NEG-ACCEPTED improves 903 -> 901)
+
+- **Storage-layout clause before inheritance (+1)**: preprocessing now recognizes Solidity's current
+  `contract C layout at <expr> is A` order and blanks only the EVM layout clause, preserving the `is A`
+  inheritance tail and all source line/column offsets. The older post-inheritance spelling remains accepted for
+  compatibility. Inherited collections therefore reach normal inheritance expansion instead of references such
+  as `locked[x]` becoming undefined. This compiles
+  `semanticTests/storageLayoutSpecifier/state_variable_mapping.sol`; the focused suite is 648/648, the exact
+  built-compiler fixture passes, `git diff --check` is clean, and the full corpus passes. Final scorecard:
+  **4495/4876**, 381 failed, 901 NEG-ACCEPTED (two fewer solc-negative fixtures over-accepted).
+
+### Continued bench/fix loop: 4495 -> 4497 (+2, NEG-ACCEPTED flat 901)
+
+- **Bytecode dependencies reached through file-level functions (+2)**: referenced-contract discovery now scans
+  the retained free functions emitted with the primary contract, so `type(C).runtimeCode` inside a helper called
+  by `D` causes `C` to compile first. Conversely, each referenced child wrapper now carries only the transitive
+  free-function set that child actually references (including identifier and method-call forms), preventing an
+  unrelated primary-only helper from creating a false child self-dependency. This compiles both
+  `semanticTests/freeFunctions/free_runtimecode.sol` and `smtCheckerTests/file_level/free_runtimecode.sol`.
+  The focused suite is 649/649, both exact built-compiler fixtures and the three initially exposed Gnosis
+  method-helper regression probes pass, `git diff --check` is clean, and the corrected full corpus passes. Final
+  scorecard: **4497/4876**, 379 failed, 901 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4497 -> 4499 (+2, NEG-ACCEPTED flat 901)
+
+- **Unreachable internal contract-bytecode subgraphs (+2)**: the existing conservative unreachable-method pass
+  now treats `new C()`, contract references, and `type(C).creationCode/runtimeCode` like its existing `msg.data`
+  hazard. Only internal/private methods in that transitive subgraph are eligible, and name-conservative
+  reachability from every entry point and constructor retains all potentially live overloads. Dead deployment
+  helpers therefore neither emit unavailable bytecode nor create false dependency cycles. This compiles both
+  `syntaxTests/bytecodeReferences/circular_reference_internal_function.sol` and
+  `circular_reference_internal_functions.sol`; the focused suite is 650/650, the exact built-compiler fixture
+  passes, `git diff --check` is clean, and the full corpus passes. Final scorecard: **4499/4876**, 377 failed,
+  901 NEG-ACCEPTED.
+
+### Continued bench/fix loop: 4499 -> 4501 (+2, NEG-ACCEPTED flat 901)
+
+- **Writable `bytes` views over storage strings (+2)**: lvalue reconstruction now preserves the narrow
+  `bytes(stateString)` cast used by Solidity for storage mutation. `.push(value)` lowers to a whole-string
+  append and `bytes(s)[i] = value` to the existing prefix/byte/suffix splice, with explicit bytes/string casts
+  around the storage read and write-back. Other casts remain non-lvalues and bare `string.push()` remains
+  unsupported. This compiles `semanticTests/events/event_indexed_string.sol` and
+  `smtCheckerTests/typecast/string_to_bytes_push_1.sol`; the full corpus finishes at **4501/4876**, 375 failed,
+  with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4501 -> 4502 (+1, NEG-ACCEPTED flat 901)
+
+- **Field writes through plain storage-reference helper calls (+1)**: the existing inline
+  `Library.factory(...).field = value` lvalue reconstruction now also accepts a plain resolvable
+  `helper(...).field = value`. It synthesizes the same typed temporary and struct-field rebuild, allowing the
+  storage-return helper to inline through the established state-reference machinery. This compiles
+  `syntaxTests/viewPureChecker/returning_structs_no_restrict_warning.sol`; two related fixtures now advance to
+  separate fixed-array-alias and Yul-slot gaps rather than failing in the parser. The focused suite is 652/652
+  and the full corpus finishes at **4502/4876**, 374 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4502 -> 4503 (+1, NEG-ACCEPTED flat 901)
+
+- **Prefix mutation of a no-argument push result (+1)**: `++a.push()` on a plain dynamic array now lowers to
+  the equivalent single append `a.push(T(1))`: Solidity first appends `default(T)`, then increments the returned
+  storage reference. The regression test proves bytecode identity with the explicit reduction, while the
+  decrement path retains checked `default(T) - 1` semantics. This compiles
+  `smtCheckerTests/operators/unary_add_array_push_1.sol`; the focused suite is 653/653 and the full corpus
+  finishes at **4503/4876**, 373 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4503 -> 4504 (+1, NEG-ACCEPTED flat 901)
+
+- **Indexed writes through a parenthesized mapping-storage rebind (+1)**: `(p = other)[k] = value` now lowers
+  to the exact sequential semantics `p = other; p[k] = value`. The first operation updates the compiler's
+  storage-alias path, and the indexed write is then routed through that newly selected mapping. The regression
+  test proves bytecode identity with the sequential form. This compiles
+  `semanticTests/variables/mapping_local_compound_assignment.sol`; the focused suite is 654/654 and the full
+  corpus finishes at **4504/4876**, 372 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4504 -> 4505 (+1, NEG-ACCEPTED flat 901)
+
+- **Push through a simple storage-return alias helper (+1)**: a zero-argument internal helper whose entire body
+  returns one direct state variable by `storage` reference is now recorded as a compile-time alias. A
+  `getData().push(value)` call can therefore mutate the known bytes/array state target without inventing an
+  on-stack representation for the storage pointer. Recognition requires a single return statement and no
+  parameters, so helpers with argument evaluation or body side effects are not collapsed. This compiles
+  `smtCheckerTests/array_members/push_function_return_value.sol`; the focused suite is 655/655 and the full corpus
+  finishes at **4505/4876**, 371 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4505 -> 4507 (+2, NEG-ACCEPTED flat 901)
+
+- **Nested library external-call helpers (+2)**: `InlineExternalCallHelpers` now normalizes retained
+  library/free-function bodies as well as contract bodies. A wrapper such as `L.g(i) { L.f(i); }`, where `L.f`
+  performs an external call, no longer retains a source-arity call after `L.f` receives compiler-only covenant
+  parameters. The same recursive inline path handles both same-library and cross-library wrappers, leaving each
+  retained definition with its own directly discoverable external-call witnesses. This compiles
+  `internal_library_external_call_2.sol` and `_3.sol`; the focused suite is 657/657 and the full corpus finishes
+  at **4507/4876**, 369 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4507 -> 4510 (+3, NEG-ACCEPTED flat 901)
+
+- **Code-baked integer targets through contract/address casts (+3)**: external-call literal extraction now
+  unwraps an explicit contract/interface cast and its nested address casts. In particular, `address(0)` encodes
+  as the empty locking-bytecode hex string; metadata and codegen now test presence rather than truthiness, so that
+  valid-but-empty fail-closed literal is retained. Concrete cross-contract member validation also distinguishes
+  a real function or explicitly public getter from an omitted-visibility state member. A separate
+  `visibilityExplicit` bit preserves native/public state representation and internal `this.x()` compatibility
+  adapters without exposing those adapters across contracts. This compiles
+  `bare_call_no_returndatacopy.sol`, `096_access_to_default_function_visibility.sol`, and
+  `099_access_to_internal_state_variable.sol`, while `098_access_to_default_state_variable_visibility.sol`
+  remains rejected as Solidity requires. The focused suite is 659/659 and the full corpus finishes at
+  **4510/4876**, 366 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4510 -> 4513 (+3, NEG-ACCEPTED flat 901)
+
+- **Discarded ABI-mismatch calls through a freshly deployed alias (+3)**:
+  `IExpected(address(fresh)).f()` now recognizes the address/contract casts as identity wrappers around a
+  same-transaction `new Concrete()` result. The compiler evaluates the concrete implementation when deciding
+  whether the call can fold into deployment; an implemented empty function is a valid no-effect fold whose
+  unnamed return is its type default. A deliberately different interface return layout may be erased only in
+  statement position, where Solidity discards the result; using that mismatched result as a value still fails
+  closed. This compiles the three `return_size_{bigger,shorter}_than_expected` fixtures. The focused suite is
+  661/661 and the full corpus finishes at **4513/4876**, 363 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4513 -> 4515 (+2, NEG-ACCEPTED flat 901)
+
+- **Inline deployments hidden by ABI casts (+2)**: the same deploy-call fold now recognizes an
+  `InstantiationNode` directly beneath address/interface identity casts, not only a named local initialized from
+  `new`. Calls such as `IView(address(new Child())).f()` therefore evaluate `Child.f`'s real straight-line state
+  transition and return expression against the new output's genesis. The match requires an actual inline
+  instantiation, so computed and immutable external targets remain governed by the ordinary covenant provenance
+  checks. This compiles both `staticcall_for_view_and_pure` fixtures. The focused suite is 662/662 and the full
+  corpus finishes at **4515/4876**, 361 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4515 -> 4516 (+1, NEG-ACCEPTED flat 901)
+
+- **State-backed targets through address/interface casts (+1)**:
+  `SynthesizeExternalAddressLocals` now traces identity casts in
+  `IExpected(address(this.contractTypedState)).f()`. A contract/interface-typed immutable or ordinary state
+  variable is self-pinned target provenance just like a direct interface state receiver; the pass hoists the
+  outer ABI cast into an `__extaddr_...` local so the external-call epilogue can retain and identity-check the
+  actual state value. Different interface ABIs preserve their cast rather than being treated as the original
+  contract type. This compiles `shanghai/evmone_support.sol`; the focused suite is 663/663 and the full corpus
+  finishes at **4516/4876**, 360 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4516 -> 4517 (+1, NEG-ACCEPTED flat 901)
+
+- **Private helpers in directly compiled libraries (+1)**: promoting a library to its deployable contract
+  artifact now removes only the namespaced public/external functions that were actually promoted. Private and
+  internal functions remain inline free helpers, so a public entry point can still reach them directly or through
+  a library-scoped `using {L.helper} for T` binding. This avoids both the previous undefined using-for binding and
+  duplicate deployed entry points. This compiles `using/private_library_function.sol`; the focused suite is
+  664/664 and the full corpus finishes at **4517/4876**, 359 failed, with NEG-ACCEPTED unchanged at 901.
+
+### Continued bench/fix loop: 4517 -> 4519 (+2, NEG-ACCEPTED flat 901)
+
+- **Own-contract-qualified state arrays (+2)**: reads and array operations now reduce `C.a` to the same state
+  binding as bare `a` when `C` is the current contract and `a` is a declared state variable. This applies to
+  indexed reads, `.length`, `.push()`, and `.pop()`; assignments already used the equivalent qualifier stripping.
+  A bytecode-identity regression covers the complete qualified/bare sequence. This compiles both
+  `assignment_contract_member_variable_array` SMT fixtures.
+- **Operator reachability groundwork**: per-contract compilation now treats file-level using-for function bindings
+  as free-function reachability roots, and the returning-helper inliner no longer drops an operator implementation
+  merely because its call is represented by a binary/unary operator until semantic resolution. The two external
+  operator fixtures now advance from an undefined-function error to their real remaining memory-derived target
+  provenance gap.
+- **Flattened struct fixed-array groundwork**: a fixed-array leaf of a flattened state struct now writes through
+  its collection backend rather than an unregistered `StateArray` slot. `delete s` resets every finite fixed-array
+  index and resets chunked dynamic-array leaves as state, while still leaving mapping leaves intact per Solidity.
+  The former `UndefinedStateVariable(s__b)` fixture now reaches its independent unsupported Yul block.
+
+The focused suite is 667/667 and the full corpus finishes at **4519/4876**, 357 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4519 -> 4519 (+0, NEG-ACCEPTED flat 901)
+
+- **Cycle-safe recursive mapping-struct flattening (robustness)**: collection expansion now tracks the struct
+  types on each flattening path and omits only a mapping edge that revisits an ancestor. This terminates both
+  self-recursive and mutually recursive storage declarations while preserving scalar leaves before the cycle.
+  The three remaining corpus stack overflows now reach ordinary, actionable recursive-storage or
+  multidimensional-array diagnostics. A broad recursive-lvalue router was rejected after an A/B corpus run
+  exposed four regressions; removing it restored the full protected baseline.
+
+The focused suite is **669/669** and the full corpus remains **4519/4876**, 357 failed, with NEG-ACCEPTED
+unchanged at 901 and no `RangeError` failures.
+
+### Continued bench/fix loop: 4519 -> 4520 (+1, NEG-ACCEPTED flat 901)
+
+- **Flattened struct fixed-array literals and state copies (+1)**: whole fixed-array literals on a
+  mapping-bearing flattened state struct now lower to the same per-index collection writes as explicit element
+  assignments. A direct copy between two flattened state structs copies scalar leaves and every fixed-array
+  index while leaving mapping leaves untouched, matching Solidity storage-copy semantics. This compiles
+  `copy_struct_with_nested_array_from_storage_to_storage.sol`.
+
+The focused suite is **671/671** and the full corpus finishes at **4520/4876**, 356 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4520 -> 4522 (+2, NEG-ACCEPTED flat 901)
+
+- **Whole storage aliases to flattened structs (+2)**: `S storage p = s` now substitutes a mapping-bearing
+  flattened state struct just like an ordinary state struct. Scalar and mapping-field writes through `p` route
+  to `s`'s concrete flattened leaves rather than inventing an undefined aggregate collection. A bytecode-identity
+  regression compares alias and direct state writes. This compiles `copy_substructures_from_mapping.sol`; the
+  shared routing recovers one additional corpus fixture that previously failed under another diagnostic bucket.
+  Nested storage-parameter paths such as `t.s.innerM` remain a separate inliner gap.
+
+The focused suite is **672/672** and the full corpus finishes at **4522/4876**, 354 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4522 -> 4523 (+1, NEG-ACCEPTED flat 901)
+
+- **Nested flattened struct storage parameters (+1)**: mapping-bearing struct storage parameters now register
+  every nested struct prefix that itself needs flattening, using a cycle-aware traversal. The helper body
+  `p.s.innerM[k] = v` therefore lowers to `p__s__innerM[k]` before `InlineStoragePointerCalls` renames the root
+  to the caller's `t__s__innerM`. A bytecode-identity regression compares the inlined helper with direct nested
+  state writes. This compiles `struct_aliasing_parameter_storage_3.sol`.
+
+The focused suite is **673/673** and the full corpus finishes at **4523/4876**, 353 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4523 -> 4524 (+1, NEG-ACCEPTED flat 901)
+
+- **Indexed flattened storage pointers in inherited constructors (+1)**: constructors now register struct
+  storage parameters before visiting their bodies, matching ordinary function setup. During parent-constructor
+  substitution, flattened collection names are rewritten together with their indexed storage path:
+  `p__m[5]` under `A(data[1])` becomes `data__m[1][5]`. The substitution handles the pre-semantic tuple-index
+  representation used by constructor invocation arguments, plus mapping/array access forms. This compiles
+  `struct_mapping_abstract_constructor_param.sol`.
+
+The focused suite is **674/674** and the full corpus finishes at **4524/4876**, 352 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4524 -> 4524 (+0, NEG-ACCEPTED flat 901)
+
+- **Defined-later struct storage-return helpers (groundwork)**: struct-returning function signatures are now
+  predeclared for the whole contract before any function body is visited. An inline write such as
+  `factory(args).field = value` therefore uses the real struct rebuild even when `factory` appears later in the
+  source. The focused source-order regression compiles. `FixedFeeRegistrar.sol` advances from an undefined
+  synthesized collection to its independent internal-transfer stack-lifetime gap.
+
+The focused suite is **675/675** and the full corpus remains **4524/4876**, 352 failed, with NEG-ACCEPTED
+unchanged at 901. `UndefinedCollection` drops from 14 to 13 with the reclassified fixture.
+
+### Continued bench/fix loop: 4524 -> 4525 (+1, NEG-ACCEPTED flat 901)
+
+- **Increment/decrement on flattened scalar leaves (+1)**: prefix and postfix statement forms now use the same
+  flattened scalar state routing as assignment and compound assignment. `++s.x`, `s.x++`, `--s.x`, and `s.x--`
+  lower to checked state reads followed by `+ 1` or `- 1`, rather than falling through to an undefined aggregate
+  collection. A bytecode-identity regression compares all four forms with explicit arithmetic. This compiles
+  `struct_recursive_6.sol`.
+
+The focused suite is **676/676** and the full corpus finishes at **4525/4876**, 351 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4525 -> 4527 (+2, NEG-ACCEPTED flat 901)
+
+- **Fresh inner-bytes pushes and packed `bytes[]` indexing (+2)**: `bytes[] c; c.push().push() = b` now folds
+  the mutation of the freshly created empty bytes value into one outer `c.push(bytes(b))`; the no-argument inner
+  push similarly appends a single zero byte. Packed `bytes[]` reads now accept a second dynamic index and extract
+  the selected byte with the same raw-byte split sequence as ordinary `bytes[k]`, yielding `bytes1` with natural
+  bounds failure. This compiles `push_as_lhs_bytes_2d.sol` and recovers one additional corpus fixture through the
+  shared indexing path.
+
+The focused suite is **678/678** and the full corpus finishes at **4527/4876**, 349 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4527 -> 4531 (+4, NEG-ACCEPTED flat 901)
+
+- **Dead mapping-bearing storage-pointer helpers and mapping-array declarations (+4)**: state collection
+  validation now accepts Solidity's legal `mapping(K => V)[]` shape while recursively validating mapping keys
+  and eventual values. Internal/private helpers returning mapping-bearing storage pointers are conservatively
+  pruned only when unreachable; reachable helpers remain in place for storage-pointer lowering. This removes
+  backend failures for dead declarations without pretending a mapping has a standalone stack representation.
+
+The focused suite is **679/679** and the full corpus finishes at **4531/4876**, 345 failed, with NEG-ACCEPTED
+unchanged at 901.
+
+### Continued bench/fix loop: 4531 -> 4532 (+1, NEG-ACCEPTED 901 -> 903)
+
+- **Indexed aggregate fields in local struct arrays (+1)**: writes such as `rows[i].fixed[j] = v` and
+  `rows[i].bytesField[j] = v` now materialize the selected aggregate field, mutate it locally, rebuild the struct
+  element, and write it back. Moving the fallback local-bytes splice after this pass also covers generated bytes
+  temporaries. This compiles `create_memory_array.sol`; two additional solc-negative fixtures reach acceptance,
+  retained in the diagnostic count.
+
+The focused suite is **680/680** and the full corpus finishes at **4532/4876**, 344 failed.
+
+### Continued bench/fix loop: 4532 -> 4535 (+3, NEG-ACCEPTED flat 903)
+
+- **Struct arrays nested in local structs (+3)**: `s.rows[i].field = v` now rebuilds the selected row before
+  rebuilding the containing struct, rather than assigning the field value as the whole row. A deeper
+  `s.rows[i].arrayField[j] = v` adds an inner aggregate read/modify/write before those two rebuilds. This compiles
+  the safe and both unsafe nested-memory-struct SMT fixtures.
+
+The focused suite is **681/681** and the full corpus finishes at **4535/4876**, 341 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4535 -> 4546 (+11, NEG-ACCEPTED 903 -> 904)
+
+- **Nested aggregate writes and memory/storage parity (+11)**: nested dynamic-array fields in state-array rows,
+  nested struct fields in mapping values, and aggregate members of local struct-array elements now rebuild the
+  containing values along the complete access path. The Yul memory model uses one EVM word per narrow integer
+  (including integer-backed user-defined value types), resets deleted memory-array pointers to zero, and
+  materializes inline reference allocations embedded in struct rebuilds. Mixed integer/fixed-point arithmetic
+  promotes the integer to the fixed scale. Dynamic state-array copies now convert wider fixed rows element by
+  element and zero-fill their tails.
+
+The focused suite is **691/691** and the full corpus finishes at **4546/4876**, 330 failed, with NEG-ACCEPTED
+at 904.
+
+### Continued bench/fix loop: 4546 -> 4547 (+1, NEG-ACCEPTED flat 904)
+
+- **Fixed local-array copies into wider state arrays (+1)**: whole fixed-array state assignment now resolves a
+  memory/calldata/local source from the active symbol table, not only from the state-variable map. Copying a
+  shorter fixed outer array writes the shared rows and resets every remaining destination row to its default
+  value. This compiles `nested_array_memory_to_storage.sol`.
+
+The focused suite is **692/692** and the full corpus finishes at **4547/4876**, 329 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4547 -> 4548 (+1, NEG-ACCEPTED 904 -> 903)
+
+- **Recursive fixed-array widening (+1)**: fixed state-array copies now recursively reshape nested rows, apply
+  only Solidity-legal implicit leaf conversions (including integer and fixed-bytes widening), and zero-fill
+  missing elements at every dimension. Restricting the leaf conversion to widening also restores rejection of
+  a previously accepted solc-negative narrowing fixture. This compiles
+  `array_copy_storage_storage_different_base_nested.sol`.
+
+The focused suite is **693/693** and the full corpus finishes at **4548/4876**, 328 failed, with NEG-ACCEPTED
+at 903.
+
+### Continued bench/fix loop: 4548 -> 4549 (+1, NEG-ACCEPTED flat 903)
+
+- **Nested dynamic-array push widening (+1)**: pushing a narrower dynamic state array into a nested dynamic
+  state array now materializes an exact-typed memory row, widens each element in a bounded runtime loop, and
+  pushes the converted row. This compiles `static_array_implicit_push_3.sol`.
+
+The focused suite is **694/694** and the full corpus finishes at **4549/4876**, 327 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4549 -> 4550 (+1, NEG-ACCEPTED flat 903)
+
+- **Returns through stacked loop modifiers (+1)**: break/continue lowering now detects synthesized breaks inside
+  modifier-inserted lexical blocks, preserves those scopes, and guards the loop tail with the break flag.
+  Modifier-origin bare returns are tagged and accepted independently of the decorated function's return tuple,
+  preserving the value produced by the placeholder continuation. This compiles
+  `stacked_return_with_modifiers.sol`.
+
+The focused suite is **695/695** and the full corpus finishes at **4550/4876**, 326 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4550 -> 4551 (+1, NEG-ACCEPTED flat 903)
+
+- **Discarded payable-address method references (+1)**: bare `.transfer` and `.send` members now behave as
+  discarded Solidity function values. Their receiver expression is still evaluated, but no transfer is invoked
+  and the member is not misresolved as a struct field. This compiles `uncalled_address_transfer_send.sol`.
+
+The focused suite is **696/696** and the full corpus finishes at **4551/4876**, 325 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4551 -> 4552 (+1, NEG-ACCEPTED flat 903)
+
+- **UDVT operator overloads on state operands (+1)**: pre-typecheck operator resolution now obtains the declared
+  user-defined value type from a resolved state access, just as it already did for locals and parameters. Global
+  overloads such as `using {add as +} for U8 global` therefore rewrite `stateU8 + rhs` to the registered pure
+  helper before ordinary arithmetic type checking. This compiles `user_defined_overflow.sol`.
+
+The focused suite is **697/697** and the full corpus finishes at **4552/4876**, 324 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4552 -> 4555 (+3, NEG-ACCEPTED 903 -> 904)
+
+- **Declaring-base-qualified inherited state (+3)**: after inheritance expansion, `Base.slot` now resolves from
+  the inherited slot's `inheritedFrom` provenance. The qualifier must be the contract that declared the slot;
+  `Child.inheritedSlot` and unrelated namespaces remain rejected. This compiles
+  `constructor_hierarchy_same_var.sol`, `069_base_class_state_variable_accessor.sol`, and
+  `071_base_class_state_variable_internal_member.sol`. One view/pure-checker fixture advances to acceptance
+  because its independent mutability diagnostic is not yet enforced.
+
+The focused suite is **699/699** and the full corpus finishes at **4555/4876**, 321 failed, with NEG-ACCEPTED
+at 904.
+
+### Continued bench/fix loop: 4555 -> 4556 (+1, NEG-ACCEPTED 904 -> 905)
+
+- **Discarded contract fixed-array type expressions (+1)**: a declared contract metatype followed by a literal
+  array bound (`C[0];`) is now recognized in either parser representation and dropped as Solidity's no-effect
+  type expression. Unknown runtime bases retain their undefined-reference diagnostic, and library metatypes are
+  excluded from this lowering. This compiles `contract_index_access.sol`; one additional solc-negative fixture
+  reaches acceptance and remains tracked diagnostically.
+
+The focused suite is **700/700** and the full corpus finishes at **4556/4876**, 320 failed, with NEG-ACCEPTED
+at 905.
+
+### Continued bench/fix loop: 4556 -> 4558 (+2, NEG-ACCEPTED flat 905)
+
+- **Discarded contract metatype references (+2)**: bare current and sibling contract names used as expression
+  statements are now dropped as Solidity no-effect metatype references. A runtime symbol with the same spelling
+  still wins normal lexical resolution, and unknown names retain their diagnostic. This compiles
+  `001_name_references.sol` and `circular_reference_mention_only.sol`.
+
+The focused suite is **701/701** and the full corpus finishes at **4558/4876**, 318 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4558 -> 4559 (+1, NEG-ACCEPTED flat 905)
+
+- **Sibling-contract-qualified enum members (+1)**: enum definitions from sibling/imported contracts are now
+  registered under their declaring namespace, so types and values such as `Interface.MyEnum.One` resolve in
+  another contract. The bare alias is withheld when the selected contract already owns or inherits an enum of
+  the same name, preserving Solidity's distinct contract scopes. This compiles
+  `125_enum_member_access_accross_contracts.sol`.
+
+The focused suite is **702/702** and the full corpus finishes at **4559/4876**, 317 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4559 -> 4559 (+0 prerequisite, NEG-ACCEPTED flat 905)
+
+- **Discarded contract-qualified struct array types**: fixed-array metatype expressions such as `C.S[10];`
+  now follow the same no-effect lowering as `C[0];`, while a runtime local shadowing the type name remains an
+  ordinary indexed expression. This clears the reported `S` symbol failure in
+  `250_member_access_parser_ambiguity.sol`; that fixture now reaches its independent unsupported nested
+  struct-array state-layout operation.
+
+The focused suite is **703/703** and the full corpus remains **4559/4876**, 317 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4559 -> 4561 (+2, NEG-ACCEPTED flat 905)
+
+- **Inherited storage-alias tuple lvalues (+2)**: complex tuple targets such as `(tx.executed,)`, where `tx`
+  aliases a struct entry inherited from an imported base contract, are now recognized even though `tx` overlaps
+  the transaction-introspection namespace. When early import resolution cannot yet provide the struct field
+  type, the fixed `(bool, bytes)` return ABI of a low-level `.call` supplies the tuple target types without
+  guessing the inherited layout. This compiles `MultiSigWalletWithDailyLimit.sol` and
+  `MultiSigWalletWithDailyLimitFactory.sol`.
+
+The focused suite is **704/704** and the full corpus finishes at **4561/4876**, 315 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4561 -> 4562 (+1, NEG-ACCEPTED flat 905)
+
+- **Nested tuple targets after a plain first slot (+1)**: the grammar's nested-assignment lookahead now detects
+  a nested tuple at any outer slot boundary, not only when the whole left side begins with `((`. It remains
+  restricted to slot boundaries, so parentheses inside indexed or called lvalues do not steal ordinary tuple
+  assignments. This compiles `tuple_assign_multi_slot_grow.sol` and its
+  `(a, (b, c)) = ("0", ("1", "2"))` assignment.
+
+The focused suite is **705/705** and the full corpus finishes at **4562/4876**, 314 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4562 -> 4564 (+2, NEG-ACCEPTED flat 905)
+
+- **Parenthesized discarded tuple expressions (+2)**: expression-statement lowering now unwraps redundant
+  parentheses before recognizing a tuple value, evaluates each ordinary component, and discards the results.
+  This preserves the existing tuple-statement semantics while accepting Solidity forms such as `(("", 2));`.
+  This compiles `tuple_single_element_1.sol` and `tuple_single_element_2.sol`.
+
+The focused suite is **706/706** and the full corpus finishes at **4564/4876**, 312 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4564 -> 4565 (+1, NEG-ACCEPTED flat 905)
+
+- **Parenthesized explicit tuple assignment RHS (+1)**: a tuple value hidden under redundant parentheses is now
+  exposed to the ordinary parallel destructuring path, while calls that return tuples remain single RHS
+  expressions. This compiles `tuple_different_count_assignment_1.sol`, including
+  `(,, a) = (((1, 3, ((2)))));`.
+
+The focused suite is **707/707** and the full corpus finishes at **4565/4876**, 311 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4565 -> 4566 (+1, NEG-ACCEPTED flat 905)
+
+- **Contextual overloaded internal function references (+1)**: assigning a bare overloaded function name to an
+  internal function-pointer variable now selects the unique overload matching the destination's parameter and
+  return types. External-only candidates are excluded, and compiler-generated return-routing parameters are
+  omitted from structural matching. This compiles `valid_lvalues.sol` without regressing
+  `conditional_expression_functions.sol`.
+
+The focused suite is **709/709** and the full corpus finishes at **4566/4876**, 310 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4566 -> 4567 (+1, NEG-ACCEPTED flat 905)
+
+- **Lexical function-pointer shadowing (+1)**: calls through a function-pointer parameter now take precedence
+  over a same-named contract function. The exceptional resolution is marked explicitly on the call, keeping
+  ordinary contract functions and state-backed function pointers on their existing paths. This compiles
+  `function_type_to_function_type_internal.sol` without regressing the corpus's function-pointer cases.
+
+The focused suite is **710/710** and the full corpus finishes at **4567/4876**, 309 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4567 -> 4569 (+2, NEG-ACCEPTED flat 905)
+
+- **Parallel whole-storage-pointer rebinding (+2)**: tuple assignment now rebinds both whole-mapping and
+  whole-struct storage-pointer locals from a snapshot of the old aliases. This preserves parallel swap
+  semantics while leaving ordinary state-value tuple assignments on their existing copy path. It compiles
+  `nowarn_swap_storage_pointers.sol` and `assignment_local.sol`.
+
+The focused suite is **711/711** and the full corpus finishes at **4569/4876**, 307 failed, with NEG-ACCEPTED
+unchanged at 905.
+
+### Continued bench/fix loop: 4569 -> 4570 (+1, NEG-ACCEPTED 905 -> 903)
+
+- **Inherited constructor function-pointer callees (+1)**: constructor-argument substitution now rewrites a
+  function-pointer parameter used as the callee itself, including a qualified reference such as `C.f`. The
+  pre-lowering validation pass also enforces that immutable writes originate directly in a constructor before
+  inlining can erase the helper boundary. This compiles `function_pointer_reading.sol`, rejects its
+  `function_pointer_initializing.sol` negative twin, and restores two additional immutable diagnostics.
+
+The focused suite is **713/713** and the full corpus finishes at **4570/4876**, 306 failed, with NEG-ACCEPTED
+improved from 905 to 903.
+
+### Continued bench/fix loop: 4570 -> 4571 (+1, NEG-ACCEPTED flat 903)
+
+- **Exact rational constants with negative exponents (+1)**: literal-only rational arithmetic is now evaluated
+  exactly before integer code generation when a negative power produces an integral result. This preserves the
+  rational intermediate in `(-1 / 2) ** -1`, folds it to `-2`, and leaves non-integral or dynamic negative
+  powers on the existing rejection path. This compiles `rational_negative_numerator_negative_exp.sol`.
+
+The focused suite is **714/714** and the full corpus finishes at **4571/4876**, 305 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4571 -> 4573 (+2, NEG-ACCEPTED flat 903)
+
+- **Declaration-order-independent constant dependencies (+2)**: constants in a scope are now predeclared before
+  validation, and referenced initializers are recursively checked with both cycle detection and Solidity's
+  bounded dependency depth. This accepts acyclic forward arithmetic/hash and long contract-typed chains while
+  retaining genuine-cycle and validator-exhaustion rejection. It compiles
+  `constant_with_cyclic_dependency_4.sol` and `cyclic_dependency_check_on_consts_good.sol`.
+
+The focused suite is **716/716** and the full corpus finishes at **4573/4876**, 303 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4573 -> 4575 (+2, NEG-ACCEPTED flat 903)
+
+- **Event-only reserved-name exceptions (+2)**: the grammar now accepts Solidity's narrow event declaration
+  exceptions for `this`, `super`, and `_` without adding them to the general identifier rule. Their reserved or
+  special behavior elsewhere remains unchanged. This compiles `illegal_names_exception.sol` and
+  `illegal_names_exception_file_level.sol`.
+
+The focused suite is **717/717** and the full corpus finishes at **4575/4876**, 301 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4575 -> 4578 (+3, NEG-ACCEPTED flat 903)
+
+- **Explicit array-pointer casts (+3)**: cast syntax now accepts array types such as `uint[](c)` through the
+  same cast path as scalar types, including contextual bare `uint`, while writable byte casts retain their
+  lvalue handling. This compiles `not_allowed_conversion_to_int_array_pointer1.sol`,
+  `not_allowed_conversion_to_int_array_pointer2.sol`, and one additional corpus cast form exposed by the
+  unified grammar.
+
+The focused suite is **718/718** and the full corpus finishes at **4578/4876**, 298 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4578 -> 4579 (+1, NEG-ACCEPTED flat 903)
+
+- **Incomplete function-layout parser recovery (+1)**: Solidity import compatibility now blanks the exact
+  no-expression `function ... layout at {` recovery shape while retaining source positions. Ordinary custom
+  modifiers, modifier calls, and contract-level storage-layout clauses are unaffected. This compiles
+  `function_declaration_layout_with_no_expression.sol`.
+
+The focused suite is **719/719** and the full corpus finishes at **4579/4876**, 297 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4579 -> 4580 (+1, NEG-ACCEPTED flat 903)
+
+- **Exact no-dot scientific rationals in integer constants (+1)**: a literal such as `500e-3` is now retained
+  as an exact decimal rational instead of being rejected as a non-integer token. A literal-only integer
+  constant expression is folded only when that fractional intermediate produces an integral final value,
+  preserving existing integer-only constant code generation. This compiles
+  `constant_initialized_with_unlimited_arithmetic_expression.sol`.
+
+The focused suite is **720/720** and the full corpus finishes at **4580/4876**, 296 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4580 -> 4582 (+2, NEG-ACCEPTED flat 903)
+
+- **State-variable initializer assignment chains (+2)**: scalar state and immutable declarations now accept
+  Solidity's right-associative initializer assignments. Inner writes are retained as constructor prelude
+  statements and execute immediately before the outer variable initialization, reusing the existing assignment
+  chain semantics rather than dropping side effects. This compiles `variable_declaration_value.sol` and
+  `variable_declaration_already.sol`.
+
+The focused suite is **721/721** and the full corpus finishes at **4582/4876**, 294 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4582 -> 4585 (+3, NEG-ACCEPTED flat 903)
+
+- **Assignment expressions in base-constructor arguments (+3)**: a direct or contract-qualified state write in
+  a parent invocation is now evaluated as a constructor prelude, then the assigned slot is read as the argument
+  value used for base-constructor substitution. Complex/chained lvalues remain rejected. This compiles
+  `inheritance_ctor_inherit_specifier_argument_init.sol`, `init_in_inheritance_specifier_param.sol`, and
+  `multiple_initializations.sol`.
+
+The focused suite is **722/722** and the full corpus finishes at **4585/4876**, 291 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4585 -> 4587 (+2, NEG-ACCEPTED flat 903)
+
+- **Fixed local external-function-pointer arrays and indexed ABI selectors (+2)**: local declarations now parse
+  fixed arrays whose element is a function type. Straight-line indexed assignments retain their proven method,
+  allowing `abi.encodeCall(callbacks[i], ...)`, scalar aliases initialized from a known element, and the alias's
+  `.selector` to resolve without replacing the runtime pointer value. Reassigned aliases remain non-foldable.
+  This compiles `abi_encode_call_memory_v2.sol` plus an additional corpus function-array declaration/use.
+
+The focused suite is **723/723** and the full corpus finishes at **4587/4876**, 289 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4587 -> 4588 (+1, NEG-ACCEPTED flat 903)
+
+- **Call options on indexed function-pointer calls (+1)**: indexed calls now parse and retain `{value: ...}` /
+  `{gas: ...}` expressions on the indirect-call AST. Type checking visits the option expressions, and both the
+  fixed-method and received-selector foreign-array lowerings propagate them to the resulting external method
+  call. This compiles `inline_array_with_value_call_option.sol`.
+
+The focused suite is **724/724** and the full corpus finishes at **4588/4876**, 288 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4588 -> 4589 (+1, NEG-ACCEPTED flat 903)
+
+- **Standalone libraries with generic storage-pointer entry points (+1)**: public library functions whose ABI
+  depends on an unknown caller `storage` layout remain available for import/inlining but are excluded from the
+  standalone BCH executable. When no layout-independent entry point remains, direct compilation emits the
+  existing ABI-only declaration artifact. This compiles `library_argument_storage.sol` without inventing an
+  unsafe concrete mapping layout.
+
+The focused suite is **725/725** and the full corpus finishes at **4589/4876**, 287 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4589 -> 4590 (+1, NEG-ACCEPTED 903 -> 904)
+
+- **Returning a no-argument state-array push (+1)**: `return array.push()` now appends the element type's
+  default value and returns that same value, matching Solidity's fresh storage-element semantics for scalar
+  arrays while preserving the existing state-array write lowering. This compiles
+  `viewPureChecker/array/access_to_array_push.sol`.
+
+The focused suite is **726/726** and the full corpus finishes at **4590/4876**, 286 failed, with NEG-ACCEPTED
+at 904.
+
+### Continued bench/fix loop: 4590 -> 4591 (+1, NEG-ACCEPTED flat 904)
+
+- **Deleting freshly pushed array elements (+1)**: `delete array.push()` now retains the append and treats the
+  delete of its already-default-initialized result as a no-op. The same lowering handles
+  `delete array2d.push().push()` by preserving the fresh outer index for the nested append. This compiles
+  `smtCheckerTests/operators/delete_array_push.sol`.
+
+The focused suite is **727/727** and the full corpus finishes at **4591/4876**, 285 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4591 -> 4592 (+1, NEG-ACCEPTED flat 904)
+
+- **Pushes through nested struct-array element fields (+1)**: a receiver such as `t.rows[i].values.push(v)`
+  now resolves the array-valued field to its flattened state collection (`t__rows`) while retaining the element
+  index and inner member chain. It then reuses the indexed struct-field read/modify/write lowering. This compiles
+  `smtCheckerTests/array_members/push_struct_member_2.sol`.
+
+The focused suite is **727/727** and the full corpus finishes at **4592/4876**, 284 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4592 -> 4593 (+1, NEG-ACCEPTED flat 904)
+
+- **No-argument pushes on both sides of a struct-field assignment (+1)**:
+  `s.items.push() = t.items.push()` now evaluates the RHS append first and then appends the same fresh default
+  value on the LHS. Because both no-argument results are already default-initialized, no storage-reference
+  read-back is necessary. Nested struct fields use their flattened collection names. This compiles
+  `smtCheckerTests/array_members/push_as_lhs_struct.sol`.
+
+The focused suite is **728/728** and the full corpus finishes at **4593/4876**, 283 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4593 -> 4594 (+1, NEG-ACCEPTED flat 904)
+
+- **Reads through element array storage-pointer aliases (+1)**: indexed reads and unary collection operations
+  such as `.length` now substitute an element alias with its recorded storage access path before semantic
+  analysis. Thus `uint[] storage row = data[i]` consistently routes `row[j]` and `row.length` through
+  `data[i]`, matching the already-supported aliased push/write path. This compiles
+  `smtCheckerTests/array_members/push_storage_ref_safe_aliasing.sol`.
+
+The focused suite is **729/729** and the full corpus finishes at **4594/4876**, 282 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4594 -> 4601 (+7, NEG-ACCEPTED flat 904)
+
+- **Selfdestruct implies stateful covenant mode (+7)**: a Solidity-style `selfdestruct(recipient)` now causes
+  master-NFT state layout and covenant generation even when the source contract declares no state variables.
+  Stateful classification is consistent across semantic validation, final-require analysis, code generation,
+  ABI metadata, and artifact state-layout emission. The recipient must still be `address payable`, preserving
+  Solidity's rejection of an implicit nonpayable-to-payable conversion. This compiles seven selfdestruct corpus
+  fixtures without a `forceStateful` option while retaining the corresponding negative diagnostic.
+
+The focused suite is **731/731** and the full corpus finishes at **4601/4876**, 275 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4601 -> 4605 (+4, NEG-ACCEPTED flat 904)
+
+- **Value-bearing deployment implies a stateful parent (+4)**: `new Child{value: amount}()` now marks its parent
+  contract stateful even when neither parent nor child declares storage, ensuring the master NFT, value-transfer
+  covenant, code-generation layout, and artifact metadata are present. Solidity diagnostics remain intact:
+  the child constructor must be payable, and value-bearing deployment is rejected in pure/view functions.
+  This compiles four payable-constructor/deployment corpus fixtures while retaining both related negatives.
+
+The focused suite is **733/733** and the full corpus finishes at **4605/4876**, 271 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4605 -> 4609 (+4, NEG-ACCEPTED flat 904)
+
+- **Stateful child deployment from constructors (+4)**: the parent pre-scan now includes constructor, fallback,
+  and receive bodies when detecting `new Child(...)` sites that mint stateful child genesis. Constructor-time
+  deployment therefore makes the parent stateful and enables its deploy covenant just like a deployment in an
+  ordinary function. Public state-variable getters still may override only external functions, preserving the
+  two internal/private override negatives exposed by the broader scan.
+
+The focused suite is **735/735** and the full corpus finishes at **4609/4876**, 267 failed, with NEG-ACCEPTED
+unchanged at 904.
+
+### Continued bench/fix loop: 4609 -> 4612 (+3, NEG-ACCEPTED 904 -> 903)
+
+- **Contract-qualified state assignment chains in initializers (+3)**: current-contract and direct-base
+  qualifiers are normalized before inline state slots are fully registered, so chains such as
+  `uint y = (Base).x = 3` preserve the inner state write and initialize from its assigned value. Qualified
+  inherited state reads/writes carry source provenance into semantic analysis, retaining Solidity's pure-read
+  and view-write diagnostics without confusing base constants, enums, or function references.
+
+The focused suite is **737/737** and the full corpus finishes at **4612/4876**, 264 failed, with NEG-ACCEPTED
+improved to 903.
+
+### Continued bench/fix loop: 4612 -> 4613 (+1, NEG-ACCEPTED flat 903)
+
+- **Current-contract-qualified state deletion (+1)**: `delete C.x` now resolves `C` as the current-contract
+  qualifier and routes the operation through the same state reset lowering as `delete this.x`. This compiles
+  `smtCheckerTests/operators/assignment_contract_member_variable.sol` while retaining bytecode equivalence
+  between the qualified and `this` forms.
+
+The focused suite is **738/738** and the full corpus finishes at **4613/4876**, 263 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4613 -> 4614 (+1, NEG-ACCEPTED flat 903)
+
+- **Returning internal helpers with mapping storage parameters (+1)**: internal/private helpers that accept a
+  `mapping(...) storage` reference and return a value are now hoisted into their contract call sites, substituting
+  the compile-time mapping pointer before semantic analysis. This supports read/modify/write helpers such as
+  `old = set_internal(a, key, value)` without attempting to encode the mapping itself on the stack. Eligibility is
+  intentionally scoped away from public and library dispatch paths, preserving their existing alias semantics.
+
+The focused suite is **739/739** and the full corpus finishes at **4614/4876**, 262 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4614 -> 4620 (+6, NEG-ACCEPTED flat 903)
+
+- **Numeric nested-mapping reads (+6)**: nested numeric bracket chains parsed as tuple-index expressions are now
+  flattened according to the declared mapping depth before semantic analysis. Thus `m[13][14]` and
+  `m[13][14][15]` resolve as multi-key mapping reads rather than indexing an already-resolved scalar. A trailing
+  index on `mapping(K => T[])` remains the array-value index, and fixed state arrays retain their existing path.
+
+The focused suite is **740/740** and the full corpus finishes at **4620/4876**, 256 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4620 -> 4621 (+1, NEG-ACCEPTED flat 903)
+
+- **Bare Cancun `blobhash` references (+1)**: an uncalled `blobhash;` expression is now discarded as Solidity's
+  no-effect builtin reference while `blobhash(i)` remains a typed call. Solidity corpus trailers requesting
+  `EVMVersion: <=shanghai` explicitly hide the builtin in import-compat mode, retaining the undeclared-identifier
+  diagnostic without preventing a same-named user variable.
+
+The focused suite is **742/742** and the full corpus finishes at **4621/4876**, 255 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4621 -> 4624 (+3, NEG-ACCEPTED flat 903)
+
+- **Flattened struct array deletion and collection-backed Yul slots (+3)**: deleting an array leaf such as
+  `delete s.x` now resets the flattened `s__x` collection rather than attempting to rebuild it as a scalar struct
+  field. Dynamic-array storage aliases pointing at collection-backed leaves now resolve `.slot` through the EVM
+  storage layout, enabling the same `sload`/`sstore` length-slot behavior as direct state arrays.
+
+The focused suite is **743/743** and the full corpus finishes at **4624/4876**, 252 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4624 -> 4625 (+1, NEG-ACCEPTED flat 903)
+
+- **Yul external function-pointer selector reads (+1)**: `fp.selector` inside inline assembly now reuses the
+  established high-level external-function member resolver and converts the bytes4 selector to Yul's right-aligned
+  uint256 word. Pointer component mutation remains fail-closed until the runtime pair can be reconstructed soundly.
+
+The focused suite is **744/744** and the full corpus finishes at **4625/4876**, 251 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4625 -> 4628 (+3, NEG-ACCEPTED flat 903)
+
+- **Yul slots through erased storage-pointer aliases (+3)**: direct whole-state mapping and struct pointer
+  declarations now retain compile-time alias metadata on their function after the runtime declaration is erased.
+  Inline assembly uses that metadata to resolve `.slot`/`.offset`, including packed scalar slots, composite struct
+  sub-slots, and mapping layout slots, while ordinary high-level pointer substitution remains unchanged.
+
+The focused suite is **745/745** and the full corpus finishes at **4628/4876**, 248 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4628 -> 4633 (+5, NEG-ACCEPTED flat 903)
+
+- **Separate Yul transient-state layout (+5)**: transient variables now receive their own EIP-1153 slot space,
+  packed independently from persistent storage. Yul `.slot`/`.offset`, `tload`, and `tstore` bind back to the
+  per-function transient locals, with values cleaned to the declared bounded type before reads are exposed as
+  uint256 words.
+
+The focused suite is **746/746** and the full corpus finishes at **4633/4876**, 243 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4633 -> 4634 (+1, NEG-ACCEPTED flat 903)
+
+- **Dynamic Yul `byte(index, word)` (+1)**: non-constant byte indices now lower to a guarded big-endian word
+  extraction equivalent to the EVM opcode, returning zero for indices outside the 32-byte word. The existing
+  optimized literal-index byte-slice path remains unchanged.
+
+The focused suite is **747/747** and the full corpus finishes at **4634/4876**, 242 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4634 -> 4636 (+2, NEG-ACCEPTED flat 903)
+
+- **EVM base slots for flattened state structs (+2)**: storage layout now assigns each erased struct prefix
+  (including nested prefixes) the minimum slot occupied by its flattened leaves. Inline assembly can therefore
+  use `s.slot` consistently with member `sload`/`sstore` operations even when the first physical leaf is a
+  collection, without inventing an extra standalone struct slot.
+
+The focused suite is **748/748** and the full corpus finishes at **4636/4876**, 240 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4636 -> 4637 (+1, NEG-ACCEPTED flat 903)
+
+- **Yul address reads from erased foreign function pointers (+1)**: fixed foreign pointer aliases now retain
+  their original member expression as compile-time function metadata when the runtime declaration is removed.
+  Inline assembly resolves `fp.address` directly to that receiver address, preserving the established direct-call
+  lowering without materializing an unsupported two-word EVM pointer local.
+
+The focused suite is **749/749** and the full corpus finishes at **4637/4876**, 239 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4637 -> 4640 (+3, NEG-ACCEPTED flat 903)
+
+- **Named storage returns initialized through Yul slots (+3)**: the canonical
+  `result.slot := state.slot` form now lowers to the existing high-level storage-pointer return instead of
+  exposing raw EVM slot integers to BCH codegen. Direct and guaranteed-control-flow forms compile; assignments
+  occurring only in a Yul loop body or post-step remain fail-closed because they do not definitely initialize the
+  return pointer on every path.
+
+The focused suite is **751/751** and the full corpus finishes at **4640/4876**, 236 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4640 -> 4641 (+1, NEG-ACCEPTED flat 903)
+
+- **Definite Yul switch initialization of storage returns (+1)**: an exhaustive switch whose default and every
+  case either assign the same named storage-return pointer or unconditionally revert now lowers to guarded aborts
+  followed by one high-level pointer return. Missing-default switches remain unsupported because they can leave
+  the pointer uninitialized.
+
+The focused suite is **753/753** and the full corpus finishes at **4641/4876**, 235 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4641 -> 4642 (+1, NEG-ACCEPTED flat 903)
+
+- **Assembly-defined named calldata return views (+1)**: a dynamic named `calldata` return whose Yul block assigns
+  both `.offset` and `.length` now materializes the corresponding slice of synthesized EVM calldata immediately
+  before its implicit or explicit tail return. Functions with intervening high-level reads remain unsupported
+  until those reads can observe the mutable view consistently.
+
+The focused suite is **756/756** and the full corpus finishes at **4642/4876**, 234 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4642 -> 4646 (+4, NEG-ACCEPTED flat 903)
+
+- **Definite Yul initialization of local storage pointers (+4)**: uninitialized local `storage` declarations now
+  recover a compile-time alias from direct `.slot` assignment, a for-loop initializer, or an exhaustive switch
+  whose successful arms select the same state target. The declaration and raw slot assignment are erased and all
+  later high-level uses are substituted with the state target. Conditional, loop-body/post, and missing-default
+  initialization remain unsupported.
+
+The focused suite is **759/759** and the full corpus finishes at **4646/4876**, 230 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4646 -> 4647 (+1, NEG-ACCEPTED flat 903)
+
+- **Mutable Yul selector component on self function pointers (+1)**: erased self-pointer declarations now retain
+  their aliased method name. A Yul `fp.selector := value` writes a dedicated uint256 selector component initialized
+  from that method's compile-time selector, and later assembly or high-level `fp.selector` reads observe the
+  mutation. Address-component mutation remains unsupported.
+
+The focused suite is **760/760** and the full corpus finishes at **4647/4876**, 229 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Bench classification correction: 4647/4876 -> 4647/4874 (NEG-ACCEPTED flat 903)
+
+- **Whitespace-tolerant negative trailers**: two historical Solidity fixtures spell their expected diagnostic as
+  `//  TypeError ...` with an extra space. The bench now recognizes arbitrary whitespace after the comment marker,
+  moving both deliberately invalid and correctly rejected fixtures out of the positive denominator.
+
+The corrected corpus baseline is **4647/4874**, 227 failed, with 2192 negative-skipped and NEG-ACCEPTED unchanged
+at 903.
+
+### Continued bench/fix loop: 4647 -> 4648 (+1, NEG-ACCEPTED flat 903)
+
+- **Inside-out nested local Yul function inlining (+1)**: nested leaf definitions are now simplified within their
+  parent function body before the parent is checked and inlined. This supports nested, non-recursive call graphs
+  and multi-return bindings while genuine self/mutual recursion remains unsupported.
+
+The focused suite is **762/762** and the full corpus finishes at **4648/4874**, 226 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4648 -> 4649 (+1, NEG-ACCEPTED flat 903)
+
+- **For-initialized named storage returns (+1)**: named `storage` returns now participate in the same recovered
+  alias analysis as local pointers. A `.slot` assignment in a Yul for-loop initializer becomes the function's
+  compile-time return target, eliminating the phantom EVM pointer stack variable; loop-body/post assignments
+  remain non-definite and unsupported.
+
+The focused suite is **763/763** and the full corpus finishes at **4649/4874**, 225 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4649 -> 4650 (+1, NEG-ACCEPTED flat 903)
+
+- **Mutable Yul address components on external function pointers (+1)**: external function values now retain a
+  dedicated address word alongside the selector word. Yul `.address` assignments and reads, plus later high-level
+  `.address` reads, observe that component; self and fixed-foreign aliases initialize it from their known receiver,
+  while uninitialized pointers start at zero.
+
+The focused suite is **764/764** and the full corpus finishes at **4650/4874**, 224 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4650 -> 4651 (+1, NEG-ACCEPTED flat 903)
+
+- **Address-typed Yul function-pointer mutation (+1)**: assigning a Solidity `address` local to an external
+  function pointer's Yul `.address` component now crosses the typed-AST boundary through an explicit `uint256`
+  word cast. The mutable component still round-trips through the dedicated address word added in the prior step.
+
+The focused suite is **765/765** and the full corpus finishes at **4651/4874**, 223 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4651 -> 4653 (+2, NEG-ACCEPTED flat 903)
+
+- **Tuple-assignment targets returned by storage `push()` (+2)**: tuple lvalue patterns now accept `.push()` and
+  lower the assigned component to an append of the contextually converted element. Flat and nested patterns,
+  indexed sibling targets, whole-array/bytes storage aliases, packed arrays, and dynamic `bytes` are covered.
+  Array/bytes pointer declarations remain present so Yul `.slot`/`.offset` reads retain their storage view.
+
+The focused suite is **767/767** and the full corpus finishes at **4653/4874**, 221 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4653 -> 4655 (+2, NEG-ACCEPTED flat 903)
+
+- **Type-aware same-arity storage-helper overload selection (+2)**: returning helper inlining now first filters
+  overloads to bodies the pass can actually reduce, then uses known state-variable and current-parameter types to
+  distinguish otherwise identical name/arity candidates. This selects the `uint` using-for overload over a
+  `bytes32` sibling while genuinely indistinguishable overloads remain fail-closed.
+
+The focused suite is **768/768** and the full corpus finishes at **4655/4874**, 219 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4655 -> 4660 (+5, NEG-ACCEPTED flat 903)
+
+- **UDVT dynamic state arrays and whole-array copies (+5)**: chunk-layout classification and fixed-width sizing
+  now unwrap user-defined value types. Same-type UDVT array assignments from calldata or memory lower through the
+  existing delete/push/cache pipeline, covering integer-, fixed-bytes-, and address-backed UDVT elements while
+  leaving ordinary array tuple/write lowering unchanged.
+
+The focused suite is **770/770** and the full corpus finishes at **4660/4874**, 214 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4660 -> 4666 (+6, NEG-ACCEPTED flat 903)
+
+- **Constructor-time state-struct external receivers (+6)**: external calls through interface/contract fields in
+  state structs, nested structs, and state struct arrays are now captured immediately before the constructor
+  statement that performs the call. This preserves initialization order (the receiver may have been assigned by
+  an earlier constructor statement) while reusing the existing pinned external-address dispatch. Ordinary
+  functions retain their deduplicated body-top capture.
+
+The focused suite is **771/771** and the full corpus finishes at **4666/4874**, 208 failed, with NEG-ACCEPTED
+unchanged at 903.
+
+### Continued bench/fix loop: 4666 -> 4668 (+2)
+
+- **External calls inside global UDVT operator implementations (+2)**: binary and unary operator calls whose
+  pure file-level implementation invokes an interface through another pure helper result are now pre-lowered
+  before semantic operator rewriting. The returning-helper inliner moves the implementation into the entry point,
+  and the computed receiver is captured at that call site for the existing external-call covenant.
+- The rewrite is provenance-tagged and limited to this operator/helper shape; unrelated computed receivers remain
+  rejected. Retained operator declaration checks are performed before the consumed helper/binding is removed.
+
+The focused suite is **772/772** and the full corpus finishes at **4668/4874**, 206 failed. The current
+NEG-ACCEPTED diagnostic is 906.
+
+### Continued bench/fix loop: 4668 -> 4671 (+3, NEG-ACCEPTED flat 906)
+
+- **Constructor void calls vs deploy-time getter reads (+2)**: constructor external-read promotion now requires
+  the referenced method to declare exactly one return value. A zero-argument `void` call such as `child.f()` is
+  retained as a call rather than replaced with a meaningless deploy-input identifier, covering aggregate-contract
+  event fixtures after `child = new Child()`.
+- **Contract-state receiver assigned during construction (+1)**: a namespaced call on a contract-typed state
+  variable is captured immediately at its constructor call site. This reads the value after its preceding
+  assignment (for example `peer = other; peer.f()`), keeps it live for the external-call covenant, and avoids the
+  incorrect ordinary-function body-top capture.
+
+The focused suite is **774/774** and the full corpus finishes at **4671/4874**, 203 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4671 -> 4672 (+1, NEG-ACCEPTED flat 906)
+
+- **Public struct getter with an external-function member (+1)**: synthesized Solidity getters now retain
+  contract-address and external-function fields in their ABI tuple. The generated return is explicitly marked
+  as the narrow storage-representation bridge, allowing the lowered selector/address bytes blob to satisfy that
+  function-typed ABI position without relaxing ordinary user-authored return checking.
+
+The focused suite is **775/775** and the full corpus finishes at **4672/4874**, 202 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4672 -> 4673 (+1, NEG-ACCEPTED flat 906)
+
+- **Stored function pointer vs same-named public getter (+1)**: a public external-function state variable and its
+  synthesized getter intentionally share a name. `this.g()` remains a getter read, while bare `g()` now remains
+  an invocation of the stored pointer instead of being beta-reduced to the getter's function-valued return.
+
+The focused suite is **776/776** and the full corpus finishes at **4673/4874**, 201 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4673 -> 4676 (+3, NEG-ACCEPTED flat 906)
+
+- **Public getters retained across dynamic-field struct flattening (+3)**: AstBuilder now preserves the original
+  public struct getter specification when a dynamic array or mapping forces the state value into
+  `root__field` leaves. Getter synthesis reconstructs every exact ABI-visible value leaf (including nested value
+  structs) while continuing to omit array/mapping members, matching Solidity's generated signature.
+
+The focused suite is **777/777** and the full corpus finishes at **4676/4874**, 198 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4676 -> 4677 (+1, NEG-ACCEPTED flat 906)
+
+- **Storage struct reference returned by no-argument array push (+1)**: a no-argument `S[]` push now captures
+  the pre-push length, appends the default struct without materializing an unrelated local value, and aliases
+  `S storage s` to the new element. The same expression bridge permits `array.push()` directly in a call
+  argument, while bare storage aliases passed to internal helpers are substituted with their concrete access.
+
+The focused suite is **778/778** and the full corpus finishes at **4677/4874**, 197 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4677 -> 4679 (+2, NEG-ACCEPTED flat 906)
+
+- **Fixed arrays containing mappings (+2)**: collection metadata now retains the full
+  `(arrayIndex, mappingKey, ...)` key path for an array-rooted mixed container, while preserving the existing
+  mapping-to-array value-blob model. Returning internal helpers with fixed-array storage pointers inline like
+  mapping-pointer helpers, numeric literal indices remain part of the same collection access, and `.length`
+  folds to the fixed bound without inventing runtime length state.
+- **Nested-array desugaring guard**: an array whose element is a mapping is no longer mistaken for a nested
+  value array and materialized into an impossible local mapping value.
+
+The focused suite is **780/780** and the full corpus finishes at **4679/4874**, 195 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4679 -> 4682 (+3, NEG-ACCEPTED flat 906)
+
+- **Mapping pointers into fixed-array collections (+3)**: internal storage-pointer inlining now captures the
+  complete root/prefix path for arguments such as `maps[x]` and `maps[x][0]`. Reads through the pointer rebuild
+  that concrete access; writes become mapping assignments with the captured keys prepended.
+- **All-literal mixed-key reads**: numeric-only chains such as `maps[0][0]` no longer reach tuple extraction
+  after the first scalar leaf. A complete fixed-array/mapping key path is routed directly to the collection,
+  while partial paths remain storage references rather than fabricated values.
+
+The focused suite is **781/781** and the full corpus finishes at **4682/4874**, 192 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4682 -> 4683 (+1, NEG-ACCEPTED flat 906)
+
+- **No-argument pushes into mapping-held struct arrays (+1)**: mapping array defaults are now synthesized
+  during symbol resolution, matching ordinary state arrays. Struct defaults therefore pass through constructor
+  resolution before type checking instead of reaching code generation as an unresolved global-function call.
+- **Invalid-instruction diagnostic**: code generation now reports an undefined emitted instruction at its
+  source line instead of crashing later inside bytecode serialization.
+
+The focused suite is **782/782** and the full corpus finishes at **4683/4874**, 191 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4683 -> 4688 (+5, NEG-ACCEPTED flat 906)
+
+- **Typed mapping keys through library storage pointers (+5)**: void library helpers taking mapping or array
+  `storage` parameters now inline through the same compile-time alias path as struct storage pointers. Their
+  indexed reads/writes therefore retain the caller collection's declared contract, enum, or user-defined value
+  key type instead of being misclassified as local array operations requiring an integer index.
+- This closes the contract-key and both enum-key library fixtures, plus related typed/overloaded mapping-storage
+  helper cases, while preserving value-returning storage-pointer inlining.
+
+The focused suite is **783/783** and the full corpus finishes at **4688/4874**, 186 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4688 -> 4689 (+1, NEG-ACCEPTED flat 906)
+
+- **Inherited constructor assertions (+1)**: parent-constructor argument substitution now traverses `assert`
+  conditions just as it already traversed `require` conditions. A cloned constructor such as
+  `B(int b) { assert(x == b); }`, invoked as `B(-c)`, no longer retains an undefined `b` reference after
+  inheritance flattening.
+
+The focused suite is **784/784** and the full corpus finishes at **4689/4874**, 185 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4689 -> 4691 (+2, NEG-ACCEPTED flat 906)
+
+- **Flattened library struct pointers into mapping entries (+2)**: a library `Struct storage` parameter bound to
+  `data[key]` now propagates that root and key through flattened scalar and dynamic-array field operations.
+  The inference is limited to library helpers whose referenced flattened fields all exist in the caller layout,
+  avoiding false aliases for ordinary internal struct-pointer helpers.
+- **Invariant literal-key array-entry caching**: repeated/looped mutations of a primitive array stored at a
+  literal mapping key (for example `data["abc"].items.push()`) are cached locally and flushed as one C2 update.
+  Struct-element arrays retain their specialized lowering and are deliberately excluded from this cache path.
+
+The focused suite is **785/785** and the full corpus finishes at **4691/4874**, 183 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Continued bench/fix loop: 4691 -> 4692 (+1, NEG-ACCEPTED flat 906)
+
+- **Mapping-entry reads in try success blocks (+1)**: entry-access collection and slot-index stamping now descend
+  into `TryCatchNode.tryBlock`, matching code generation (which compiles the success path and treats catches as
+  unreachable on BCH). Mapping reads in assertions or other expressions inside that path therefore receive their
+  authenticated block-layout slot rather than reaching sorted codegen with index `-1`.
+
+The focused suite is **786/786** and the full corpus finishes at **4692/4874**, 182 failed, with NEG-ACCEPTED
+unchanged at 906.
+
+### Bench taxonomy correction: 4422/4587 language-positive scope (165 failed)
+
+- **CLI harness fixtures excluded**: all 289 files under `test/cmdlineTests/` now have their own `CMDLINE` bucket.
+  They exercise compiler modes and diagnostic presentation (missing imports, stop-after parsing, line truncation,
+  standard-json errors), and many deliberately invalid inputs lack semantic-test error trailers. Counting either
+  their acceptance or rejection as language parity distorted the denominator.
+- The comparable compiler result is unchanged by this re-bucketing: the apparent numerator/denominator change
+  removes 270 accepted and 17 rejected CLI inputs from the former 4692/4874 score.
+- **Tuple locals in repeated inlining**: tuple-declared locals and subsequent tuple reassignments are now
+  alpha-renamed per inlined call site, like ordinary local declarations. This removes cross-call-site variable
+  collisions in helpers invoked repeatedly; the focused regression is green, while the motivating large fixture
+  now advances to a separate multi-return state-helper inlining gap.
+
+The focused suite is **787/787**. The corrected full corpus finishes at **4422/4587**, 165 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4422 -> 4423 (+1, NEG-ACCEPTED flat 906)
+
+- **Multi-return internal collection helpers (+1)**: internal helpers that touch a declared mapping/collection
+  and return through multiple branches now reuse the compiler's flag-backed branch-return normalization before
+  returning-state-helper inlining. This reduces them to one tail return, allowing their entry-slot reads and
+  writes to inline into the dispatched caller instead of leaking hidden block-layout parameters into a
+  subroutine call.
+- Synthesized flag/result assignments are source-location stamped, preventing optimizer source-map failures.
+- The motivating Corion module-handler fixture advances through both its helper signature and tuple-return
+  mismatches to a separate external-call target provenance limitation.
+
+The focused suite is **788/788**. The corrected full corpus finishes at **4423/4587**, 164 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4423 -> 4424 (+1, NEG-ACCEPTED flat 906)
+
+- **External target behind an inlined struct binding (+1)**: an interface cast of a plain-address field on a
+  single-assignment/inliner-created struct local is now captured immediately before the call. The value is live
+  at that point and is pinned by the script, avoiding the unsound alternative of lifting it into a caller-chosen
+  witness or the invalid alternative of reading the local in a body-top prologue.
+- The fail-closed behavior for reassigned/mutable target locals remains intact. External-target diagnostics now
+  include the interface method and containing function while preserving the established error prefix.
+- This closes the full `test/compilationTests/corion/moduleHandler.sol` fixture.
+
+The focused suite remains **788/788**. The corrected full corpus finishes at **4424/4587**, 163 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4424 -> 4425 (+1, NEG-ACCEPTED flat 906)
+
+- **Forward-declared storage-return aliases with push preludes (+1)**: `helper().push()` can now target a
+  zero-argument helper declared later in the contract when that helper performs only direct array pushes before
+  returning a direct state array (or array-element) storage reference. Calls are deferred until the helper body
+  is parsed, then materialized as the cloned prelude followed by the push on the returned storage path.
+- The lowering remains intentionally narrow: locals, arbitrary control flow, and other side effects do not become
+  implicit writable aliases.
+- This closes `semanticTests/array_members/storage_pointer_push_1.sol`.
+
+The focused suite is **789/789**. The corrected full corpus finishes at **4425/4587**, 162 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4425 -> 4426 (+1, NEG-ACCEPTED flat 906)
+
+- **Prefix mutation of local struct fields (+1)**: prefix/postfix expression lowering now recognizes a direct
+  field of a local struct and rebuilds the aggregate with only that field incremented or decremented. This matches
+  the compiler's existing value-struct assignment model and preserves every sibling field.
+- This closes the `isSimpleCounterLoop_negative_cases.sol` property fixture, whose final loop update is `++s.x`;
+  the expression no longer reaches code generation as an undefined unary instruction.
+
+The focused suite is **790/790**. The corrected full corpus finishes at **4426/4587**, 161 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4426 -> 4427 (+1, NEG-ACCEPTED flat 906)
+
+- **Prefix mutation of nested push results (+1)**: `++receiver.push()` and `--receiver.push()` now reuse the
+  indexed struct-field array read/modify/write path, rather than supporting only a plain array receiver. The
+  appended default is replaced with the correctly typed `+1`/`-1` value while the containing aggregate is written
+  back through its existing lvalue path.
+- This closes `smtCheckerTests/operators/unary_add_array_push_2.sol`
+  (`++data[1].d[3].push()`).
+
+The focused suite is **791/791**. The corrected full corpus finishes at **4427/4587**, 160 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4427 -> 4428 (+1, NEG-ACCEPTED flat 906)
+
+- **Deep indexed struct-array pushes (+1)**: the existing aggregate read/modify/write lowering now handles more
+  than one struct member in an indexed receiver path, such as `s1[1].ts[4].a.push()`. It reads the innermost
+  dynamic array, applies the push/pop, and writes the updated value back through both containing struct arrays.
+- This closes `smtCheckerTests/types/struct/array_struct_array_struct_storage_safe.sol`, including its repeated
+  deep pushes and subsequent indexed element write.
+
+The focused suite is **792/792**. The corrected full corpus finishes at **4428/4587**, 159 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4428 -> 4429 (+1, NEG-ACCEPTED flat 906)
+
+- **Unconditional do-while break folding (+1)**: a top-level unconditional `break` now collapses a `do...while`
+  to the straight-line statements that precede the break. The remaining body and condition are unreachable, so
+  condition side effects are correctly skipped (`do { break; } while (++x < 2)` leaves `x` unchanged).
+- This closes `smtCheckerTests/loops/do_while_bmc_iterations_break_8.sol`.
+
+The focused suite is **794/794**. The corrected full corpus finishes at **4429/4587**, 158 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4429 -> 4430 (+1, NEG-ACCEPTED flat 906)
+
+- **Array-write final-use ordering (+1)**: local array assignment analysis now records the replacement write
+  after traversing its index and value. A nested aggregate rebuild may read the same array while constructing the
+  replacement; that read can no longer consume the stack slot before codegen performs the enclosing write.
+- This closes `smtCheckerTests/types/struct/array_struct_array_struct_memory_unsafe.sol`, including nested writes
+  to otherwise unread memory struct arrays.
+
+The focused suite is **795/795**. The corrected full corpus finishes at **4430/4587**, 157 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4430 -> 4431 (+1, NEG-ACCEPTED flat 906)
+
+- **Transitive interface override bases (+1)**: explicit override lists now accept an interface inherited through
+  a sub-interface, not only a contract's direct interface names. The inheritance pass computes the transitive
+  interface parent closure before validating `override(Base)`.
+- This closes `syntaxTests/inheritance/interface/implementation/complete.sol`
+  (`SubImpl is Sub`, with `override(ParentB)`).
+
+The focused suite is **796/796**. The corrected full corpus finishes at **4431/4587**, 156 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4431 -> 4432 (+1, NEG-ACCEPTED flat 906)
+
+- **Solidity keywords as Yul identifiers (+1)**: Yul declarations and paths now accept Solidity-reserved tokens
+  as ordinary Yul names. A parser predicate handles these tokens only in Yul identifier positions, avoiding any
+  change to keyword lexing in the surrounding Solidity grammar.
+- This closes `syntaxTests/inlineAssembly/solidity_keywords.sol`.
+
+The focused suite is **797/797**. The corrected full corpus finishes at **4432/4587**, 155 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4432 -> 4435 (+3, NEG-ACCEPTED flat 906)
+
+- **Runtime Yul memory and raw bytes storage words (+3)**: constant-offset `mstore` words remain available while
+  an assembly block uses the runtime memory buffer, allowing `keccak256(array.slot)` to retain its dynamic-array
+  meaning without aliasing different-length hashes. Bare bytes32 hash results are converted to Yul uint256 words
+  for anonymous storage keys.
+- Canonical long-bytes markers (`sstore(b.slot, 2*n+1)`) now resize the high-level bytes value, while raw
+  `sstore(keccak256(b.slot)+i, word)` and matching `sload` splice/read the corresponding 32-byte chunk of that same
+  value. This avoids accepting the fixture through an unrelated anonymous-storage register.
+- This closes `array/delete/delete_bytes_array.sol`,
+  `inlineAssembly/keccak256_optimizer_cache_bug.sol`, and
+  `viaYul/storage/dirty_storage_bytes_long.sol`.
+
+The focused suite is **800/800**. The corrected full corpus finishes at **4435/4587**, 152 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4435 -> 4436 (+1, NEG-ACCEPTED flat 906)
+
+- **ABI-produced bytes exposed as Yul memory pointers (+1)**: a named memory-bytes return initialized by an
+  arbitrary bytes expression (such as `abi.encode(x)`) is now evaluated once, allocated in the shared linear
+  memory buffer, and byte-copied before assembly observes it. Yul receives the numeric pointer while the return
+  boundary serializes the buffer back to bytes.
+- This closes `abicoder/cleanup/reencoded_calldata_string.sol` (`eq(mptr, r)`).
+
+The focused suite is **801/801**. The corrected full corpus finishes at **4436/4587**, 151 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4436 -> 4437 (+1, NEG-ACCEPTED flat 906)
+
+- **ABI-decoded dynamic arrays exposed as Yul memory pointers (+1)**: tuple decoding remains a single evaluation,
+  but each decoded dynamic array referenced by inline assembly is copied into its own shared-memory allocation.
+  High-level uses and Yul now share the pointer-backed array, preserving Solidity's independent allocation and
+  pointer-comparison semantics.
+- This closes `abicoder/abi_decode_overlapping_dynamic_arrays.sol`, including comparisons between both decoded
+  array pointers and the original ABI buffer.
+
+The focused suite is **802/802**. The corrected full corpus finishes at **4437/4587**, 150 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4437 -> 4438 (+1, NEG-ACCEPTED flat 906)
+
+- **Nested mapping fixed-struct-array field writes (+1)**: an lvalue such as
+  `m[k1][k2][i].items[j] = value`, where the mapping value is `Struct[N]`, now separates the mapping keys from
+  the outer struct index and inner field-array index. The selected struct is read, rebuilt through the existing
+  local array-field update path, and written back to the same mapping-array element.
+- This closes `storage/array_accessor.sol`, whose constructor writes through
+  `multiple_map[2][1][2].finalArray[3]`.
+
+The focused suite is **803/803**. The corrected full corpus finishes at **4438/4587**, 149 failed, with
+NEG-ACCEPTED unchanged at 906, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4438 -> 4439 (+1, NEG-ACCEPTED 906 -> 902)
+
+- **Storage-only mapping-bearing struct-array declarations (+1)**: struct validation now accepts fixed or dynamic
+  arrays of mapping-bearing structs as legal Solidity storage-only type declarations. Representation checks remain
+  at actual state/local/parameter use sites rather than rejecting an otherwise-unused declaration.
+- Fixed-array recursion uses an active-path cycle check: directly recursive fixed arrays remain rejected because
+  they have infinite inline size, while repeated non-recursive struct fields and recursion behind a mapping/dynamic
+  indirection remain valid. This also corrects four previously over-accepted negative recursion fixtures.
+- This closes `parsing/arrays_in_storage.sol` while retaining rejection of
+  `struct_definition_directly_recursive_fixed_array.sol`.
+
+The focused suite is **805/805**. The corrected full corpus finishes at **4439/4587**, 148 failed, with
+NEG-ACCEPTED reduced to 902, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4439 -> 4440 (+1, NEG-ACCEPTED flat 902)
+
+- **Attached storage helpers on scalar state receivers (+1)**: parser-level using-for receiver tracking now
+  includes scalar state variables, not only parameters and locals. A call such as `stateString.helper()` is
+  qualified to `Library.helper(stateString)` before storage-pointer helpers are inlined and removed.
+- Interface-typed state receivers retain their ambiguity guard, so genuine interface calls such as
+  `token.transfer(...)` are not accidentally captured by a same-named attached library method.
+- This closes `libraries/internal_library_function_attached_to_string_accepting_storage.sol`, including both its
+  memory-copy and `string storage` attached helpers.
+
+The focused suite is **806/806**. The corrected full corpus finishes at **4440/4587**, 147 failed, with
+NEG-ACCEPTED unchanged at 902, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4440 -> 4441 (+1, NEG-ACCEPTED flat 902)
+
+- **Wildcard using-for on named returns (+1)**: named return locals now receive the same parser-level using-for
+  type tracking as parameters and ordinary locals. Wildcard directives (`using Math for *`) participate in early
+  qualification, so `result = result.add(offset)` resolves before later library pruning/inlining.
+- **Returning external calls in allocation bounds**: external-call slot collection and slot-index propagation now
+  traverse `NewArrayNode.size`. A bound such as `new T[](source.length())` therefore receives its return-event
+  witness instead of reaching codegen with an undefined return slot.
+- Together these close `compilationTests/gnosis/MarketMakers/LMSRMarketMaker.sol`.
+
+The focused suite is **808/808**. The corrected full corpus finishes at **4441/4587**, 146 failed, with
+NEG-ACCEPTED unchanged at 902, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4441 -> 4442 (+1, NEG-ACCEPTED flat 902)
+
+- **Hidden oversized storage declarations (+1)**: compatibility getter synthesis now avoids generating a dead
+  getter for an omitted-visibility mapping/array when its fixed-array shape exceeds the compiler's 10,000-element
+  materialization ceiling. The declaration remains valid storage, while no astronomical default getter value is
+  emitted.
+- The guard is deliberately dimension-specific. Ordinary omitted-visibility compatibility getters remain
+  synthesized because downstream storage lowering currently relies on them; two broader visibility-based attempts
+  were rejected after the full corpus exposed three OK-to-FAIL regressions.
+- This closes `largeTypes/large_storage_array_mapping.sol`, containing
+  `mapping(uint => uint[2**100]) x`.
+
+The focused suite is **809/809**. The corrected full corpus finishes at **4442/4587**, 145 failed, with
+NEG-ACCEPTED unchanged at 902, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4442 -> 4443 (+1, NEG-ACCEPTED flat 902)
+
+- **AST-preserved internal-function event declarations (+1)**: an unused event declaration may retain an internal
+  function parameter for Solidity AST compatibility. The type is still rejected at an actual `emit`, where no
+  cross-boundary encoding exists.
+- Declaration validation remains strict for every other unsupported event type. Struct parameters are now checked
+  recursively, so recursive or mapping-containing structs remain rejected instead of slipping through the AST-only
+  internal-function exception.
+- This closes `ASTJSON/event_with_variables_of_internal_types.sol` while retaining rejection of
+  `syntaxTests/events/internal_type.sol` and keeping negative over-acceptance flat.
+
+The focused suite is **809/809**. The corrected full corpus finishes at **4443/4587**, 144 failed, with
+NEG-ACCEPTED unchanged at 902, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 902 -> 892 (-10)
+
+- **Fixed-array dimension range validation (-10 over-accepted negatives)**: array dimensions are now checked at
+  type construction, before the compiler chooses packed-state, collection, local, or parameter representation.
+  Every fixed dimension must be positive and no greater than `2**256 - 1`, matching Solidity.
+- This closes the zero-length and uint256-overflow family across scalar, bytes, multidimensional, parameter, and
+  ABI-decode shapes. The valid but enormous `uint[2**100]` storage declaration remains accepted, preserving the
+  preceding large-storage fix.
+- Exact checks cover `array/length/fixed_size_zero_length.sol`, `array/length/too_large.sol`, and
+  `largeTypes/large_storage_array_mapping.sol`.
+
+The focused suite is **810/810**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+892, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 892 -> 886 (-6)
+
+- **ABI-coder source-unit selection validation (-6 over-accepted negatives)**: `pragma abicoder` now accepts only
+  v1/v2 (including Solidity's quoted `"v1"`/`"v2"` spellings), rejects repeated or conflicting selections, and
+  treats legacy `pragma experimental ABIEncoderV2` as a v2 selection.
+- Solidity's asymmetric compatibility rule is preserved: the deprecated legacy spelling may follow an explicit
+  v2 selection, while an explicit selection after the legacy spelling is rejected.
+- Exact verification covers the six conflicting/repeated/invalid negative fixtures and the three positive
+  `select_v*_quoted_string.sol` / `selected_twice_v2.sol` fixtures.
+
+The focused suite is **811/811**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+886, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 886 -> 867 (-19)
+
+- **Recursive external ABI boundary validation (-19 over-accepted negatives)**: public/external parameters and
+  returns now reject internal function pointers, mappings, and recursive aggregate shapes at any nesting depth,
+  including inside structs and arrays. External function pointers remain ABI-encodable and accepted.
+- The traversal is active-path cycle-safe, so a recursive struct fails closed at the boundary without looping,
+  while repeated non-recursive aggregate fields remain valid.
+- Seed fixtures cover the four `external_functions_taking_internal_types_struct_*` mapping/function-pointer cases;
+  the full corpus confirms the same invariant closes nineteen previously over-accepted negatives.
+
+The focused suite is **812/812**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+867, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 867 -> 862 (-5)
+
+- **Dynamic-storage-only array push/pop (-5 over-accepted negatives)**: under Solidity compatibility, length
+  mutation is rejected on memory/calldata arrays and fixed-size storage arrays. Dynamic storage arrays continue to
+  support both methods.
+- Receiver classification covers packed/chunked state variables, entry-backed collection arrays, whole-array
+  storage aliases, and local array values. Native SolidCash local-array mutation remains unchanged.
+- Exact fixtures cover `dynamic_memory_array_pop.sol`, `pop/memory_pop.sol`, `push/memory_push.sol`, and
+  `static_storage_array_pop.sol`; direct and aliased dynamic-storage controls compile.
+
+The focused suite is **813/813**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+862, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 862 -> 859 (-3)
+
+- **Library metatypes are not array value types (-3 over-accepted negatives)**: Solidity compatibility now rejects
+  array declarations/allocations whose element is a declared library and rejects index access on a library
+  metatype.
+- Ordinary contract and interface types remain valid array elements because they are runtime address handles;
+  the check keys only on declarations known to be libraries.
+- This closes `array/invalid/library_array.sol`, `array/invalid/library_index_access.sol`, and
+  `array/library_array.sol`.
+
+The focused suite is **814/814**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+859, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 859 -> 854 (-5)
+
+- **Custom-error name uniqueness (-5 over-accepted negatives)**: Solidity compatibility now rejects error
+  overloading by parameter signature and rejects function/error collisions in the same effective file or contract
+  scope, including inherited declarations.
+- Definitions-only files are validated during AST construction; executable and inherited contract scopes are
+  validated during symbol registration. Same-named errors in unrelated contract scopes remain valid.
+- The rule is compatibility-gated, preserving native SolidCash's signature-based custom-error overloading.
+
+The focused suite is **815/815**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+854, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 854 -> 847 (-7)
+
+- **Exact event-signature redeclarations (-7 over-accepted negatives)**: event overloading by distinct parameter
+  types remains valid, but an exact name+type signature may not be redeclared by changing `indexed`, `anonymous`,
+  or its inheritance path.
+- Inheritance expansion retains a duplicate marker while keeping the operational event list deduplicated. Legal
+  diamond copies from the same original ancestor remain exempt, and interface event signatures participate in the
+  same check.
+- File-level duplicates are caught during AST construction; contract, multi-parent, and interface duplicates are
+  caught during semantic validation.
+
+The focused suite is **816/816**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+847, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 847 -> 841 (-6)
+
+- **Exact Solidity fallback signatures (-6 over-accepted negatives)**: compatibility mode now accepts only the
+  empty `fallback()` signature or the coupled forwarding signature
+  `fallback(bytes calldata) returns (bytes memory)`.
+- The forwarding input and output must appear together; the input must be unbounded calldata bytes and the single
+  output must be unbounded memory bytes. Native SolidCash fallback behavior remains unchanged.
+- Exact fixtures cover the wrong input/output data locations, missing forwarding halves, wrong return type, and
+  multiple return values under `syntaxTests/fallback` and `nameAndTypeResolution`.
+
+The focused suite is **819/819**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+841, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 841 -> 836 (-5)
+
+- **Control-flow declarations require braces (-5 over-accepted negatives)**: Solidity compatibility now rejects a
+  variable declaration used directly as the unbraced body of `if`, `else`, `while`, `do while`, or `for`.
+- The validation is applied while constructing a control-flow `block`, before the single statement is normalized
+  into a `BlockNode`, so braced declarations remain distinguishable and legal.
+- Ordinary unbraced statements remain accepted, and native SolidCash parsing is unchanged.
+
+The focused suite is **821/821**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+836, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 836 -> 819 (-17)
+
+- **File-level global using-for targets (-17 over-accepted negatives)**: compatibility mode now permits
+  `using ... for T global` only when `T` is a user-defined value type declared in the source unit.
+- Built-ins, arrays, mappings, function types, contracts, interfaces, and wildcard targets are rejected. Legal
+  UDVT global method and operator bindings remain accepted.
+- Validation runs during AST construction as well as semantic registration. The early check is required because
+  definitions-only and abstract source files emit declaration artifacts before ordinary symbol analysis.
+
+The focused suite is **823/823**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+819, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 819 -> 809 (-10)
+
+- **Solidity index-range source validation (-10 over-accepted negatives)**: `x[start:end]` now requires a dynamic
+  calldata array, calldata bytes/string, a nested calldata-array element, or an existing calldata slice.
+  Memory, storage, and fixed calldata sources are rejected.
+- The rule runs in the pre-lowering data-location pass, while parameter/local/state provenance is still exact.
+  Later ordinary type checking remains responsible for element sliceability.
+- `msg.data[:]`, omitted bounds, nested calldata slices, and string calldata slices remain accepted. SolidCash's
+  explicit `.slice(start, end)` method is deliberately unaffected.
+
+The focused suite is **826/826**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+809, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 809 -> 792 (-17)
+
+- **Required Solidity reference-type data locations (-17 over-accepted negatives)**: compatibility mode now
+  requires `storage`, `memory`, or `calldata` on reference-type function parameters and return parameters.
+- The validation covers internal/private/public/external contract functions, free functions, and library
+  functions, including definitions-only library artifacts. Explicit locations retain the existing context-specific
+  legality checks.
+- Native SolidCash omission remains accepted. Focused fixtures whose unrelated behavior was under test were
+  corrected to use Solidity-valid explicit memory locations.
+
+The focused suite is **828/828**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+792, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 792 -> 786 (-6)
+
+- **Parameter mutability keyword placement (-6 over-accepted negatives)**: Solidity compatibility now rejects
+  `constant` and `immutable` on function, modifier, try-return, and catch parameters.
+- Return-clause modifiers are checked independently because ordinary function returns use `returnParam` rather
+  than the shared parameter parser path.
+- Valid state/file constants and state immutables remain accepted; native SolidCash parsing is unchanged.
+
+The focused suite is **830/830**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+786, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 786 -> 776 (-10)
+
+- **ABI coder v1 boundary type validation (-10 over-accepted negatives)**: the source AST now retains an explicit
+  `pragma abicoder v1|v2` selection, and the pre-lowering validator rejects v2-only structs and nested or
+  dynamic-element arrays at constructor, entry-point, event, error, and interface ABI boundaries.
+- One full-run regression exposed Solidity's abstract-constructor exception: an abstract contract's constructor
+  is not externally ABI-decoded, so its v2-only argument shapes remain legal under v1. Concrete constructors still
+  reject them.
+- One-dimensional legacy-supported arrays remain accepted; v2/default source units are unaffected.
+
+The focused suite is **832/832**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+776, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 776 -> 771 (-5)
+
+- **Duplicate SPDX source identifiers (-5 over-accepted negatives)**: Solidity compatibility now scans actual
+  line/block comments and rejects more than one `SPDX-License-Identifier:` tag in a source unit.
+- The scanner skips quoted strings, so tag-shaped runtime text is not mistaken for a license declaration.
+- The first full run exposed two corpus positives whose diagnostic trailer repeats SPDX warning text. Text after
+  the Solidity harness `// ----` delimiter is now excluded as test metadata, restoring both positives while all
+  five duplicate-license fixtures remain rejected.
+
+The focused suite is **834/834**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+771, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 771 -> 767 (-4)
+
+- **Transient storage is value-type-only (-4 over-accepted negatives)**: Solidity compatibility now rejects
+  transient dynamic/fixed arrays, mappings, structs, dynamic bytes, and strings before selecting a state storage
+  representation.
+- Scalar transient values, including bounded integers and fixed bytes, retain the existing per-execution local
+  lowering.
+- The restriction is compatibility-gated, preserving native SolidCash declaration behavior.
+
+The focused suite is **836/836**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+767, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 767 -> 761 (-6)
+
+- **Non-type declarations in type positions (-6 over-accepted negatives)**: Solidity compatibility now rejects
+  error, function, and modifier identifiers used where a user-defined type is required.
+- Unknown identifiers continue to become named address placeholders, preserving forward/imported contract and
+  interface type resolution. The guard applies only when the declaration kind is already known to be non-type.
+- Source-unit declarations and each contract's declarations are pre-scanned, so forward references are rejected
+  consistently in parameters, local declarations, and struct members.
+
+The focused suite is **838/838**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+761, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 761 -> 746 (-15)
+
+- **Balanced Unicode directional controls (-15 over-accepted negatives)**: Solidity compatibility now validates
+  LRE/RLE/LRO/RLO and PDF controls independently inside every comment and string token.
+- A PDF without a matching opener reports directional-control underflow; an unclosed opener reports mismatching
+  markers. Nested balanced scopes remain accepted, and controls cannot be balanced across separate tokens.
+- Diagnostic trailer text is excluded from this source validation, matching the existing SPDX source-unit scan.
+
+The focused suite is **840/840**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+746, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 746 -> 734 (-12)
+
+- **Source-unit declaration namespace (-12 over-accepted negatives)**: Solidity compatibility now rejects
+  duplicate and cross-kind enum, struct, UDVT, constant, error, event, function, interface, library, and contract
+  declarations in the shared source-unit namespace.
+- Free functions may still overload other free functions, and events may still overload other events. A collision
+  between overload sets or with any non-overloadable declaration is rejected.
+- Reserved event names (`this` and `super`) retain their grammar-specific handling.
+
+The focused suite is **842/842**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+734, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 734 -> 727 (-7)
+
+- **Contract-local declaration namespace (-7 over-accepted negatives)**: Solidity compatibility now rejects
+  state-variable/constant collisions with functions or modifiers, and event/function name collisions in the same
+  contract. Function and event overload sets remain valid.
+- Struct fields and enum members are now required to have unique names within their own declaration.
+- Validation pre-scans the complete contract body, so declaration order does not affect the result.
+
+The focused suite is **844/844**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+727, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 727 -> 717 (-10)
+
+- **Effective inherited declaration namespace (-10 over-accepted negatives)**: after inheritance flattening,
+  Solidity compatibility now rejects cross-kind collisions among visible state variables/collections, functions,
+  events, and modifiers.
+- Private ancestor declarations remain outside the derived namespace. Explicit public state getter overrides may
+  coexist with inherited overloads, and a new public variable may coexist with an inherited internal-only function.
+- Getter signature compatibility remains delegated to the existing synthesized-getter override validator, including
+  mapping-to-struct tuple returns.
+
+The focused suite is **847/847**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+717, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 717 -> 710 (-7)
+
+- **Oversized Solidity memory types (-7 over-accepted negatives)**: compatibility validation now rejects fixed
+  array or aggregate memory components whose 32-byte-word head exceeds Solidity's 32-bit memory-size limit.
+- Nested fixed arrays are checked through dynamic outer arrays, and struct members are measured recursively while
+  dynamic members occupy one pointer word in their containing aggregate.
+- The same validation applies to `abi.decode` result schemas. Storage-only types remain unaffected.
+
+The focused suite is **849/849**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+710, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 710 -> 702 (-8)
+
+- **`abi.encodePacked` source-type restrictions (-8 over-accepted negatives)**: Solidity compatibility now rejects
+  structs, nested arrays, arrays of structs, and arrays whose elements are dynamic bytes or strings in packed mode.
+- Scalar values, direct bytes/string values, and one-dimensional arrays of packable value types remain accepted.
+- The validation runs after expression typing, so array literals and state/local aggregate references use their
+  resolved source types.
+
+The focused suite is **851/851**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+702, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 702 -> 695 (-7)
+
+- **Override state mutability (-7 over-accepted negatives)**: inherited function merging now validates Solidity's
+  mutability substitution rules for explicit overrides.
+- Payable functions may only be overridden by payable functions. Other overrides may retain or increase
+  restrictiveness along `nonpayable -> view -> pure`, but cannot move in the opposite direction.
+- The check runs alongside existing virtual, data-location, and override-base validation.
+
+The focused suite is **853/853**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+695, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 695 -> 680 (-15)
+
+- **Unique explicit `using for` function references (-15 over-accepted negatives)**: every
+  `using {f, L.g as +}` binding must now resolve to exactly one user-defined free or qualified library function.
+- Events, errors, libraries, builtins, unqualified library members, and ambiguous overload sets are rejected before
+  operator/helper lowering can discard the original binding.
+- Definitions-only files are validated during AST construction; executable contracts retain a second semantic
+  guard after imports and function registration.
+
+The focused suite is **855/855**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+680, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 680 -> 659 (-21)
+
+- **Reserved inline-assembly identifiers (-21 over-accepted negatives)**: Solidity compatibility now rejects EVM
+  instruction names used as Yul variables, function names, parameters, or return variables, including the
+  non-callable `pushN`/`dupN`/`swapN` families and reserved object-format helpers.
+- Validation recursively covers nested blocks, function bodies, switches, and all three `for` blocks.
+- Fork-gated instructions remain legal identifiers before activation (`basefee`, `prevrandao`, Cancun transient/
+  blob/memory-copy instructions, and Osaka `clz`), while high-level members such as `block.prevrandao` are left
+  untouched.
+- Solidity keywords that are legal in the Yul dialect remain accepted as identifiers.
+
+The focused suite is **859/859**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+659, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued bench/fix loop: 4443 flat, NEG-ACCEPTED 659 -> 641 (-18)
+
+- **Pure-function effect validation (-18 over-accepted negatives)**: compatibility mode now rejects inline Yul
+  instructions that read EVM state/environment or perform calls/creation from a `pure` function.
+- The Yul effect scan is recursive through arguments, local functions, conditionals, switches, and loops.
+  Arithmetic, memory/calldata operations, and return-data buffer inspection retain Solidity's pure classification.
+- Scalar, mapping, and storage-reference state reads are rejected from pure functions. Immutable reads remain
+  pure, matching Solidity.
+- A Yul `.slot` assignment to a named storage return is tracked as pointer selection rather than a state load, so
+  valid pure storage-pointer helpers remain accepted.
+
+The focused suite is **862/862**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+641, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued pure-effect loop: 4443 flat, NEG-ACCEPTED 641 -> 638 (-3)
+
+- Pure functions now reject environment-valued nullary expressions such as `msg.value`, including expressions
+  introduced through modifier arguments or modifier bodies after expansion.
+- Transient-state reads in pure functions and transient-state writes in view functions are validated before the
+  BCH transaction-local lowering erases their state semantics.
+
+The focused suite is **864/864**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+638, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Continued pure-effect loop: 4443 flat, NEG-ACCEPTED 638 -> 636 (-2)
+
+- Function-pointer types now retain their declared `pure`/`view`/`payable`/`nonpayable` mutability in the shared
+  type model.
+- Indirect calls enforce caller/callee mutability: pure callers require pure pointers, while view callers reject
+  nonpayable/payable pointers.
+
+The focused suite is **865/865**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+636, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Completed pure-effect cluster: 4443 flat, NEG-ACCEPTED 636 -> 634 (-2)
+
+- Interface function declarations now retain their source mutability, including synthesized interfaces derived
+  from concrete contracts and function-pointer lowerings.
+- Pure free/operator helpers are checked against interface-constant external calls before helper inlining erases
+  the call boundary; view/nonpayable/payable external calls are rejected from pure helpers.
+- The corpus now has no remaining over-accepted fixture whose primary diagnostic is a pure function reading state
+  or the environment.
+
+The focused suite is **866/866**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+634, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Explicit-conversion loop: 4443 flat, NEG-ACCEPTED 634 -> 627 (-7)
+
+- Source-written bounded-integer conversions now follow Solidity's one-change rule: a cast may change signedness
+  or width, but changing both requires two nested casts.
+- Source-written integer/fixed-bytes conversions require matching bit widths. Compiler-generated Yul word
+  normalization retains the broader internal conversion rules.
+- Explicit conversion between distinct enum types is rejected before enum members are folded to integer literals.
+- Numeric and hex-string literal conversion tightening was investigated but deferred: the first implementation
+  exposed interactions with contextual literal rewrites and was rolled back rather than reducing positive
+  coverage.
+
+The focused suite is **870/870**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+627, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### View-effect loop: 4443 flat, NEG-ACCEPTED 627 -> 617 (-10)
+
+- Pure/view functions now reject direct scalar and dynamic-array state mutation, contract creation, and
+  state-modifying low-level calls.
+- Direct and explicitly base-qualified calls enforce the resolved callee's mutability; view callers cannot invoke
+  nonpayable/payable functions.
+- Inline assembly in view functions rejects `sstore`, `tstore`, calls/delegatecalls, creation, and selfdestruct
+  while retaining environment reads and static calls.
+- Storage-pointer rebinding remains view-safe, and writes originating from Solidity's permitted virtual-modifier
+  override cases retain the prior positive behavior.
+
+The focused suite is **873/873**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+617, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Special-function override loop: 4443 flat, NEG-ACCEPTED 617 -> 612 (-5)
+
+- Fallback and receive declarations now retain `virtual`/`override` metadata and participate in inheritance
+  override validation.
+- A derived fallback/receive must explicitly use `override`, including when the declaration is inherited through
+  an intermediate base; overriding a non-virtual special function is rejected.
+- Intermediate inheritance retains validation-only provenance rather than cloning special-function bodies into
+  every flattened descendant, avoiding AST growth while preserving existing BCH entry-point behavior.
+
+The focused suite is **875/875**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+612, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Duplicate base-constructor path loop: 4443 flat, NEG-ACCEPTED 612 -> 607 (-5)
+
+- Constructor argument providers are now validated across the original linearized inheritance hierarchy, so an
+  ancestor cannot receive constructor arguments independently from a derived contract and an intermediate base.
+- Sibling inheritance branches that each invoke the same ancestor constructor are rejected, while a valid diamond
+  with one shared provider remains accepted.
+- The five affected Solidity negative fixtures now reject with `DuplicateParentInvocationError`.
+
+The focused suite is **878/878**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+607, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Override-list uniqueness loop: 4443 flat, NEG-ACCEPTED 607 -> 606 (-1)
+
+- Explicit function and public-state-variable override lists now reject a contract name that occurs more than
+  once, before inheritance flattening can clone or deduplicate the declaration.
+- Unique multi-base lists such as `override(A, B)` retain their existing behavior.
+- Solidity's `override_multiple_duplicated.sol` fixture now rejects with `DuplicateOverrideBaseError`.
+
+The focused suite is **880/880**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+606, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Private-virtual loop: 4443 flat, NEG-ACCEPTED 606 -> 605 (-1)
+
+- Function declaration construction now rejects `private virtual`: private functions are not inherited and
+  cannot participate in virtual dispatch.
+- The check runs for abstract declarations as well as implemented functions; body-oriented semantic traversal
+  alone does not visit abstract declarations.
+- Solidity's `virtual_private.sol` fixture now rejects at the source declaration.
+
+The focused suite is **882/882**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+605, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Root override-list loop: 4443 flat, NEG-ACCEPTED 605 -> 604 (-1)
+
+- Root contracts now run explicit override-list validation even when they have no inheritance graph to flatten.
+- This closes the early-return path which accepted a library name in `override(L)` despite `L` not being a base.
+- Solidity's `override_library.sol` fixture now rejects with `OverrideBaseListError`.
+
+The focused suite is **884/884**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+604, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Modifier-override loop: 4443 flat, NEG-ACCEPTED 604 -> 600 (-4)
+
+- Modifier declarations now retain explicit `override(...)` metadata through AST construction.
+- Inheritance validation requires a same-name base modifier, a matching parameter signature, an explicit
+  `override`, and a `virtual` base declaration; named override bases must identify an actual provider.
+- C3 validation excludes the current contract from its own ancestor candidates, preserving qualified-base and
+  abstract modifier behavior.
+
+The focused suite is **886/886**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+600, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Virtual-declaration loop: 4443 flat, NEG-ACCEPTED 600 -> 596 (-4)
+
+- Unimplemented functions in abstract contracts must now explicitly declare `virtual` in Solidity compatibility
+  mode.
+- Library functions reject `virtual`, since libraries cannot participate in contract inheritance dispatch.
+- The general abstract-function rule also closes the runtime and creation `type(Abstract).code` negative fixtures,
+  whose abstract declarations omitted `virtual`.
+
+The focused suite is **888/888**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+596, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Abstract-function modifier loop: 4443 flat, NEG-ACCEPTED 596 -> 595 (-1)
+
+- Unimplemented functions now reject custom modifier invocations in Solidity compatibility mode.
+- The validation lives in the abstract-declaration construction path, leaving ordinary implemented functions and
+  their modifier expansion unchanged.
+- Solidity's `modifiers_on_abstract_functions_no_parser_error.sol` fixture now rejects at the first modifier.
+
+The focused suite is **889/889**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+595, plus 275 multifile and 289 cmdline fixtures excluded.

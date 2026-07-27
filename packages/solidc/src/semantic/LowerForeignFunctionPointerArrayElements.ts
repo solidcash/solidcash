@@ -334,6 +334,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
           const ifaceId = new IdentifierNode(t.iface); ifaceId.location = node.location;
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, t.method, args); mc.location = node.location;
+          mc.callOptions = node.callOptions;
           if (t.kind === 'varying') mc.selectorArrayVar = this.selArrayName(name);
           return mc;
         }
@@ -351,6 +352,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
         const ifaceId = new IdentifierNode(t.iface); ifaceId.location = node.location;
         const cast = new FunctionCallNode(ifaceId, [elemId]); cast.location = node.location;
         const mc = new MethodCallNode(cast, t.method, args); mc.location = node.location;
+        mc.callOptions = node.callOptions;
         if (t.kind === 'varying') {
           const selName = `__fnelemsel_${n}`;
           const selArrId = new IdentifierNode(this.selArrayName(name)); selArrId.location = node.location;

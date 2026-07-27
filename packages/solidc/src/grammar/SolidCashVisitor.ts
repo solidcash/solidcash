@@ -83,12 +83,14 @@ import { ReturnStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
+import { FunctionArrayTypeContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
 import { NestedTupleAssignmentContext } from "./SolidCashParser.js";
 import { NestedTuplePatternContext } from "./SolidCashParser.js";
 import { NestedTuplePatternItemContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
 import { PushArgumentContext } from "./SolidCashParser.js";
+import { DeletePushContext } from "./SolidCashParser.js";
 import { DeleteLocalContext } from "./SolidCashParser.js";
 import { DeleteParenthesizedContext } from "./SolidCashParser.js";
 import { DeleteStateContext } from "./SolidCashParser.js";
@@ -137,6 +139,7 @@ import { YulFunctionDefinitionContext } from "./SolidCashParser.js";
 import { YulExpressionContext } from "./SolidCashParser.js";
 import { YulFunctionCallContext } from "./SolidCashParser.js";
 import { YulFunctionNameContext } from "./SolidCashParser.js";
+import { YulIdentifierContext } from "./SolidCashParser.js";
 import { YulPathContext } from "./SolidCashParser.js";
 import { YulLiteralContext } from "./SolidCashParser.js";
 import { UncheckedStatementContext } from "./SolidCashParser.js";
@@ -219,6 +222,7 @@ import { LiteralContext } from "./SolidCashParser.js";
 import { NumberLiteralContext } from "./SolidCashParser.js";
 import { DecimalLiteralContext } from "./SolidCashParser.js";
 import { TypeNameContext } from "./SolidCashParser.js";
+import { FunctionTypeContext } from "./SolidCashParser.js";
 import { FunctionTypeParameterContext } from "./SolidCashParser.js";
 import { FunctionTypeReturnParameterContext } from "./SolidCashParser.js";
 import { TypeCastContext } from "./SolidCashParser.js";
@@ -719,6 +723,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitVariableDefinition?: (ctx: VariableDefinitionContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionArrayType`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionArrayType?: (ctx: FunctionArrayTypeContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.tupleAssignment`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -754,6 +764,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitPushArgument?: (ctx: PushArgumentContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `DeletePush`
+	 * labeled alternative in `SolidCashParser.deleteStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDeletePush?: (ctx: DeletePushContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `DeleteLocal`
 	 * labeled alternative in `SolidCashParser.deleteStatement`.
@@ -1063,6 +1080,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitYulFunctionName?: (ctx: YulFunctionNameContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulIdentifier`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulIdentifier?: (ctx: YulIdentifierContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.yulPath`.
 	 * @param ctx the parse tree
@@ -1603,6 +1626,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitTypeName?: (ctx: TypeNameContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionType`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionType?: (ctx: FunctionTypeContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.functionTypeParameter`.
 	 * @param ctx the parse tree

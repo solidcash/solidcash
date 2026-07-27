@@ -1,5 +1,6 @@
 import { ImportResolverFn } from '@solidcash/utils';
 import { SourceFileNode, ImportNode } from './ast/AST.js';
+import { cloneNode } from './ast/clone.js';
 import { parseCode } from './compiler.js';
 import { UnresolvedImportError, ImportSymbolNotFoundError, UnsafeImportPathError } from './Errors.js';
 
@@ -122,7 +123,7 @@ export class ImportResolver {
       case 'selective':
         if (!importNode.bindings) break;
         for (const binding of importNode.bindings) {
-          const { name } = binding;
+          const { name, alias } = binding;
           // Check if importing a library namespace (e.g. import { SafeMath } from "math_lib.scash"). A file may
           // declare SEVERAL libraries (Sablier's DataTypes.sol: Lockup, LockupDynamic, ..); `libraryName` is only
           // the last, so match any declared one. Library structs/enums are registered BARE (namespaced type refs
@@ -177,7 +178,13 @@ export class ImportResolver {
             if (constant) {
               target.constantDefinitions.push(constant);
             } else if (enumDef) {
-              target.enumDefinitions.push(enumDef);
+              if (alias) {
+                const aliased = cloneNode(enumDef);
+                aliased.name = alias;
+                target.enumDefinitions.push(aliased);
+              } else {
+                target.enumDefinitions.push(enumDef);
+              }
             } else if (structDef) {
               target.structDefinitions.push(structDef);
             } else if (typeDef) {
@@ -216,6 +223,17 @@ export class ImportResolver {
         }
         target.importedContracts.push(...source.importedContracts);
         target.enumDefinitions.push(...source.enumDefinitions);
+        // Namespace-qualified enum references (`import "./x.sol" as X; X.Color.Red`) are parsed as nested field
+        // accesses. Register cloned compound enum names so SymbolTableTraversal can collapse `X.Color` as a type
+        // namespace before it attempts to resolve X as a runtime identifier. Keep the bare imports above for
+        // compatibility with existing SolidCash namespace-import behavior.
+        if (importNode.alias) {
+          target.enumDefinitions.push(...source.enumDefinitions.map((ed) => {
+            const qualified = cloneNode(ed);
+            qualified.name = `${importNode.alias}.${ed.name}`;
+            return qualified;
+          }));
+        }
         target.structDefinitions.push(...source.structDefinitions);
         target.typeDefinitions.push(...source.typeDefinitions);
         target.eventDefinitions.push(...source.eventDefinitions);

@@ -1034,9 +1034,27 @@ export class NonVirtualOverrideError extends SolidCashError {
   }
 }
 
+export class OverrideMutabilityError extends SolidCashError {
+  constructor(node: Node, from: string, to: string) {
+    super(node, `Overriding function changes state mutability from '${from}' to '${to}'`);
+  }
+}
+
 export class OverrideBaseListError extends SolidCashError {
   constructor(node: Node, functionName: string, baseName: string) {
     super(node, `override(${baseName}) on '${functionName}': '${baseName}' is not a base contract that declares it`);
+  }
+}
+
+export class DuplicateOverrideBaseError extends SolidCashError {
+  constructor(node: Node, declarationName: string, baseName: string) {
+    super(node, `Duplicate contract '${baseName}' in override list of '${declarationName}'`);
+  }
+}
+
+export class InvalidModifierOverrideError extends SolidCashError {
+  constructor(node: Node, modifierName: string, reason: string) {
+    super(node, `Invalid override of modifier '${modifierName}': ${reason}`);
   }
 }
 
@@ -1092,6 +1110,12 @@ export class StatefulContractDeploymentError extends SolidCashError {
 export class DeployValueInNonStatefulError extends SolidCashError {
   constructor(public node: Node, contractName: string) {
     super(node, `'new ${contractName}{value: ...}' can only be used in stateful contracts that have covenant verification.`);
+  }
+}
+
+export class InvalidDeploymentValueError extends SolidCashError {
+  constructor(public node: Node, message: string) {
+    super(node, message);
   }
 }
 
@@ -1191,6 +1215,24 @@ export class UsingForUndefinedLibraryError extends SolidCashError {
 export class UsingForUndefinedFunctionError extends SolidCashError {
   constructor(node: Node, functionName: string) {
     super(node, `Function '${functionName}' referenced in 'using for' directive is not defined or imported`);
+  }
+}
+
+export class UsingForInvalidFunctionReferenceError extends SolidCashError {
+  constructor(node: Node, functionName: string) {
+    super(node, `Identifier '${functionName}' in 'using for' directive is not a function name or not unique`);
+  }
+}
+
+export class GlobalUsingForNonUDVTError extends SolidCashError {
+  constructor(node: Node, typeName: string) {
+    super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);
+  }
+}
+
+export class UnsupportedAbiV1TypeError extends SolidCashError {
+  constructor(node: Node, typeName: string) {
+    super(node, `Type '${typeName}' is only supported in ABI coder v2; use 'pragma abicoder v2;'`);
   }
 }
 

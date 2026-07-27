@@ -4,9 +4,12 @@ import {
   FunctionDefinitionNode,
   VariableDefinitionNode,
   IdentifierNode,
+  AssignNode,
+  FunctionModifier,
   Node,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { InvalidModifierCombinationError } from '../Errors.js';
 
 // Whether a name is referenced (as an identifier) anywhere in a subtree.
 class ReferenceFinder extends AstTraversal {
@@ -23,6 +26,23 @@ class ReferenceFinder extends AstTraversal {
   visitIdentifier(node: IdentifierNode): Node {
     if (node.name === this.targetName) this.found = true;
     return node;
+  }
+}
+
+class AssignmentFinder extends AstTraversal {
+  private found = false;
+
+  constructor(private targetName: string) { super(); }
+
+  has(node: Node): boolean {
+    this.found = false;
+    this.visit(node);
+    return this.found;
+  }
+
+  visitAssign(node: AssignNode): Node {
+    if (node.identifier.name === this.targetName) this.found = true;
+    return super.visitAssign(node);
   }
 }
 
@@ -55,7 +75,19 @@ function lowerContract(contract: ContractNode): void {
       + 'it to a transaction-local (zero at the start of each spend). It does not persist across spends, and '
       + 'cross-call transient state is impossible on BCH (one spend = one execution).');
     for (const fn of fns) {
-      if (fn.body && new ReferenceFinder(tv.name).has(fn.body)) {
+      if (!fn.body) continue;
+      const referenced = new ReferenceFinder(tv.name).has(fn.body);
+      if (referenced && fn.modifiers.includes(FunctionModifier.PURE)) {
+        throw new InvalidModifierCombinationError(
+          fn, `'pure' functions cannot read transient state variable '${tv.name}'`,
+        );
+      }
+      if (fn.modifiers.includes(FunctionModifier.VIEW) && new AssignmentFinder(tv.name).has(fn.body)) {
+        throw new InvalidModifierCombinationError(
+          fn, `'view' functions cannot modify transient state variable '${tv.name}'`,
+        );
+      }
+      if (referenced) {
         const local = new VariableDefinitionNode(tv.type, [], tv.name);
         local.allowUnused = true;
         local.location = tv.location;

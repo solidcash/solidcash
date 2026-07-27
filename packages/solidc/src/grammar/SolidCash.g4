@@ -41,6 +41,53 @@ isMalformedBoundedTypeName(text: string): boolean {
   }
   return false;
 }
+
+// Tokens reserved by the Solidity grammar remain ordinary identifiers inside Yul. Consume them through a
+// predicate + wildcard rather than spelling them as literals in yulIdentifier: new literal alternatives would
+// make previously non-reserved words into lexer tokens throughout the whole Solidity grammar.
+isYulSolidityKeyword(text: string): boolean {
+  return new Set([
+    'abstract', 'anonymous', 'as', 'assembly', 'catch', 'constant', 'constructor', 'contract', 'delete', 'do',
+    'else', 'enum', 'emit', 'event', 'external', 'fallback', 'indexed', 'interface', 'internal', 'immutable',
+    'import', 'is', 'library', 'mapping', 'memory', 'modifier', 'new', 'override', 'payable', 'public', 'pragma',
+    'private', 'pure', 'receive', 'returns', 'storage', 'calldata', 'struct', 'throw', 'try', 'unicode', 'using',
+    'view', 'virtual', 'while', 'wei', 'gwei', 'ether', 'seconds', 'minutes', 'hours', 'days', 'weeks', 'years',
+    'int', 'uint', 'bytes', 'string', 'address', 'bool', 'fixed', 'ufixed', 'after', 'alias', 'apply', 'auto', 'copyof',
+    'define', 'final', 'implements', 'in', 'inline', 'macro', 'match', 'mutable', 'null', 'of', 'partial',
+    'promise', 'reference', 'relocatable', 'sealed', 'sizeof', 'static', 'supports', 'typedef', 'typeof',
+    'unchecked', 'var',
+  ]).has(text);
+}
+
+// True when the tuple-assignment LHS contains a nested tuple item, including forms whose first item is plain:
+// `(a, (b, c))`. The older two-token check recognized only `((a, b), c)`. Restrict the scan to an opening
+// parenthesis immediately after the outer `(` or a depth-one comma, so parentheses inside an index/call do not
+// redirect an ordinary complex-lvalue tuple assignment to the nested-pattern rule.
+hasNestedTuplePatternAhead(): boolean {
+  let depth = 0;
+  let itemStart = false;
+  for (let i = 1; i < 4096; i++) {
+    const text = this._input.LT(i).text;
+    if (text === '<EOF>' || text === '=') return false;
+    if (text === '(') {
+      if (depth === 1 && itemStart) return true;
+      depth++;
+      itemStart = depth === 1;
+      continue;
+    }
+    if (text === ')') {
+      depth--;
+      itemStart = false;
+      continue;
+    }
+    if (text === ',' && depth === 1) {
+      itemStart = true;
+      continue;
+    }
+    if (depth === 1) itemStart = false;
+  }
+  return false;
+}
 }
 
 sourceFile
@@ -186,7 +233,8 @@ abstractFunctionDefinition
     ;
 
 eventDefinition
-    : 'event' anyIdentifier '(' (eventParameter (',' eventParameter)* ','?)? ')' 'anonymous'? ';'
+    : 'event' (anyIdentifier | eventSpecialName=('this' | '_'))
+      '(' (eventParameter (',' eventParameter)* ','?)? ')' 'anonymous'? ';'
     ;
 
 eventParameter
@@ -257,11 +305,13 @@ parentInvocation
     ;
 
 stateVariableDeclaration
-    : stateVariableVisibility? typeName (modifier | overrideSpecifier)* anyIdentifier ('=' expression)? ';'
+    : stateVariableVisibility? typeName (modifier | overrideSpecifier)* anyIdentifier
+      ('=' expression (sop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain)?)? ';'
     // modifiers may appear on either side of the visibility, so `uint constant public X` (as well as
     // `uint public constant X`) parses - Solidity allows any order. `override` (a public state var
     // overriding a base getter) is accepted and ignored: EVM inheritance is a no-op in SolidCash.
-    | typeName (modifier | overrideSpecifier)* stateVariableVisibility (modifier | overrideSpecifier)* anyIdentifier ('=' expression)? ';'
+    | typeName (modifier | overrideSpecifier)* stateVariableVisibility (modifier | overrideSpecifier)* anyIdentifier
+      ('=' expression (sop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain)?)? ';'
     | stateVariableVisibility? 'enumerable'? mappingType collectionModifier* anyIdentifier ';'
     | stateVariableVisibility? arrayType collectionModifier* anyIdentifier ('=' expression)? ';'
     ;
@@ -283,7 +333,8 @@ mappingType
     ;
 
 arrayType
-    : typeName '[' expression? ']'
+    : functionType '[' expression? ']'
+    | typeName '[' expression? ']'
     | mappingType '[' expression? ']'
     | arrayType '[' expression? ']'
     ;
@@ -483,6 +534,7 @@ prefixIncDecStatement
 
 returnStatement
     : 'return' ';'
+    | 'return' pushBase=Identifier '.push' '(' ')' ';'
     | 'return' expression rop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain ';'
     | 'return' expression (',' expression)* ';'
     | 'return' '(' expression (',' expression)* ','? ')' ';'
@@ -500,9 +552,16 @@ emitStatement
     ;
 
 variableDefinition
-    : typeName modifier* anyIdentifier ('=' expression (iop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain | '.push' '(' ')')?)? ';'
+    // Put arrayType first so a function type followed by brackets (`function() external[2] memory callbacks`)
+    // is not committed to the scalar typeName alternative at `external`.
+    : functionArrayType modifier* anyIdentifier ('=' expression ('.push' '(' ')')?)? ';'
     | arrayType modifier* anyIdentifier ('=' expression ('.push' '(' ')')?)? ';'
+    | typeName modifier* anyIdentifier ('=' expression (iop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain | '.push' '(' ')')?)? ';'
     | mappingType modifier* anyIdentifier ('=' expression)? ';'
+    ;
+
+functionArrayType
+    : functionType ('[' expression? ']')+
     ;
 
 tupleAssignment
@@ -516,7 +575,7 @@ tupleAssignment
     ;
 
 nestedTupleAssignment
-    : {this._input.LT(1).text === '(' && this._input.LT(2).text === '('}?
+    : {this.hasNestedTuplePatternAhead()}?
       nestedTuplePattern '=' expression ';'
     ;
 
@@ -527,7 +586,7 @@ nestedTuplePattern
 nestedTuplePatternItem
     : typeName modifier* anyIdentifier
     | arrayType modifier* anyIdentifier
-    | anyIdentifier ('[' expression ']' | '.' anyIdentifier)*
+    | anyIdentifier ('[' expression ']' | '.' anyIdentifier | '.push' '(' ')')*
     | nestedTuplePattern
     ;
 
@@ -535,7 +594,7 @@ tupleSlot
     : typeName modifier* anyIdentifier
     | arrayType modifier* anyIdentifier
     // A bare name, or an index/member lvalue chain `x[0]`, `s.e`, `s.a[0]` (existing target, not a declaration).
-    | anyIdentifier ('[' expression ']' | '.' anyIdentifier)*
+    | anyIdentifier ('[' expression ']' | '.' anyIdentifier | '.push' '(' ')')*
     |
     ;
 
@@ -546,7 +605,8 @@ pushArgument
     ;
 
 deleteStatement
-    : 'delete' Identifier ';'                                      # DeleteLocal
+    : 'delete' Identifier '.push' '(' ')' (second='.push' '(' ')')? ';' # DeletePush
+    | 'delete' Identifier ';'                                      # DeleteLocal
     | 'delete' '(' expression ')' ';'                               # DeleteParenthesized
     | 'delete' 'this' '.' Identifier ';'                           # DeleteState
     | 'delete' 'this' '.' Identifier ('[' expression ']')+ ';'     # DeleteMappingEntry
@@ -653,7 +713,7 @@ yulStatement
     ;
 
 yulVariableDeclaration
-    : 'let' anyIdentifier (',' anyIdentifier)* (':=' yulExpression)?
+    : 'let' yulIdentifier (',' yulIdentifier)* (':=' yulExpression)?
     ;
 
 yulAssignment
@@ -681,7 +741,8 @@ yulForLoop
     ;
 
 yulFunctionDefinition
-    : 'function' Identifier '(' (Identifier (',' Identifier)*)? ')' ('->' Identifier (',' Identifier)*)? yulBlock
+    : 'function' yulIdentifier '(' (yulIdentifier (',' yulIdentifier)*)? ')'
+      ('->' yulIdentifier (',' yulIdentifier)*)? yulBlock
     ;
 
 yulExpression
@@ -702,11 +763,16 @@ yulFunctionName
     | BoundedBytes
     ;
 
+yulIdentifier
+    : anyIdentifier
+    | {this.isYulSolidityKeyword(this._input.LT(1).text ?? '')}? .
+    ;
+
 yulPath
     // `.length`/`.slot`/`.offset` calldata & storage accessors: `.offset` lexes as `.` + identifier, but
     // `.length` is a single DotLength token (like `.value`), so accept it explicitly in the member chain.
     // `address` is a keyword token but is also the EVM external-function-pointer component `fp.address`.
-    : anyIdentifier ('.' anyIdentifier | '.length' | '.' 'address')*
+    : yulIdentifier ('.' yulIdentifier | '.length' | '.' 'address')*
     ;
 
 yulLiteral
@@ -806,7 +872,8 @@ expressionList
 // e.g. BentoBox `_calculateDomainSeparator(DOMAIN_SEPARATOR_CHAIN_ID = chainId)`). The AstBuilder wraps the tail
 // form in an AssignmentExpressionNode; DesugarAssignmentArguments hoists it to `x = v;` before the call statement.
 callArgument
-    : expression (aop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain)?
+    : pushBase=Identifier '.push' '(' ')'
+    | expression (aop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain)?
     ;
 
 callOptions
@@ -833,7 +900,6 @@ expression
     | '(' expression ')' # Parenthesised
     | '(' ')' # TupleExpression
     | '(' expression (',' expression)+ ')' # TupleExpression
-    | typeCast '(' castable=expression ','? ')' # Cast
     | arrayCastType '(' castable=expression ','? ')' # Cast
     | functionCall expressionList+ # ChainedFunctionCall
     | functionCall # FunctionCallExpression
@@ -849,7 +915,8 @@ expression
     | 'abi.encodePacked' expressionList # AbiEncodePacked
     | 'abi.encodeWithSelector' expressionList # AbiEncodeWithSelector
     | 'abi.encodeWithSignature' expressionList # AbiEncodeWithSignature
-    | 'abi.encodeCall' '(' (('this' | Identifier) '.' Identifier | Identifier | Identifier '(' ')') ',' abiEncodeCallArguments ')' # AbiEncodeCall
+    | 'abi.encodeCall' '(' (('this' | Identifier) '.' Identifier | Identifier '[' NumberLiteral ']'
+      | Identifier | Identifier '(' ')') ',' abiEncodeCallArguments ')' # AbiEncodeCall
     | 'bytes.concat' expressionList # BytesConcat
     | 'string.concat' expressionList # StringConcat
     | 'abi.decode' '(' expression ',' typeList ')' # AbiDecode
@@ -881,7 +948,7 @@ expression
     // Applying options to a function value without calling it still yields a function value; Solidity permits
     // reading its address/selector component in a larger expression (`this.f{gas: 1}.selector == this.f.selector`).
     | expression '.' Identifier callOptions memberName # CallOptionsMember
-    | base=expression '[' index=expression ']' expressionList # IndexedFunctionCall
+    | base=expression '[' index=expression ']' callOptions? expressionList # IndexedFunctionCall
     | expression memberName # FieldAccess
     | expression op=('++' | '--') # PostfixOp
     | op=('++' | '--') expression # PrefixOp
@@ -1003,12 +1070,18 @@ typeName
     | 'ufixed'
     | BoundedSignedFixed
     | BoundedUnsignedFixed
-    | 'function' '(' (functionTypeParameter (',' functionTypeParameter)*)? ')' ('pure' | 'view' | 'internal' | 'external' | 'payable')* ('returns' '(' functionTypeReturnParameter (',' functionTypeReturnParameter)* ')')?
+    | functionType
     | Identifier '.' Identifier
     // Legacy Solidity permits `struct error { ... }` and then `error value;` (with a warning that `error`
     // may become reserved). Keep this one soft keyword usable in a type position.
     | 'error'
     | Identifier
+    ;
+
+functionType
+    : 'function' '(' (functionTypeParameter (',' functionTypeParameter)*)? ')'
+      ('pure' | 'view' | 'internal' | 'external' | 'payable')*
+      ('returns' '(' functionTypeReturnParameter (',' functionTypeReturnParameter)* ')')?
     ;
 
 // Solidity still accepts names on function-type parameters (deprecated), including future soft keywords such
@@ -1023,6 +1096,7 @@ functionTypeReturnParameter
 
 typeCast
     : PrimitiveType
+    | {this._input.LT(1).text === 'uint'}? Identifier
     | CryptoType
     | UnboundedBytes
     | BoundedBytes
@@ -1040,7 +1114,7 @@ typeCast
 // Explicit array conversions whose base is a primitive/cast type, e.g. `uint256[](x[s:e])`. Keeping this
 // distinct from general `arrayType` prevents `callbacks[i](arg)` from being consumed as a cast to `callbacks[i]`.
 arrayCastType
-    : typeCast ('[' expression? ']')+
+    : typeCast ('[' expression? ']')*
     ;
 
 VersionLiteral

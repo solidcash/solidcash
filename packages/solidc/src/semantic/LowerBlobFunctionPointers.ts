@@ -410,7 +410,7 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
     if (existing) return existing.name;
     const name = `__FnPtr_B${this.counter++}`;
     const params = ft.parameterTypes.map((t, i) => new ParameterNode(t, `p${i}`));
-    const method = new InterfaceFunctionNode('__call', params, ft.returnTypes);
+    const method = new InterfaceFunctionNode('__call', params, ft.returnTypes, ft.stateMutability);
     const iface = new InterfaceNode(name, [], [], [method]);
     (iface as InterfaceNode & { __sig?: string }).__sig = sig;
     this.synthIfaces.push(iface);

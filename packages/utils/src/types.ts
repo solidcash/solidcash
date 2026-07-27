@@ -187,6 +187,7 @@ export class FunctionType {
     public parameterTypes: Type[],
     public returnTypes: Type[],
     public isExternal: boolean = false,
+    public stateMutability: 'pure' | 'view' | 'payable' | 'nonpayable' = 'nonpayable',
   ) {}
 
   toString(): string {
@@ -670,6 +671,7 @@ export function isFixedWidthType(type: Type | string): boolean {
   if (t === PrimitiveType.BOOL || t === PrimitiveType.PUBKEY) return true;
   if (t instanceof BytesType) return t.bound !== undefined;
   if (t instanceof IntType || t instanceof FixedType) return true;
+  if (t instanceof ValueType) return isFixedWidthType(t.underlyingType);
   if (t instanceof StructType) return t.fields.every((f) => isFixedWidthType(f.type));
   // A bounded array of fixed-width elements is itself fixed-width (bound * elementWidth). This lets a fixed-inner
   // nested array (`uint256[N][]`) back a chunk-packed dynamic array whose element is the N-wide row.
@@ -691,6 +693,7 @@ export function isChunkPackableElementType(type: Type | string): boolean {
   if (t === PrimitiveType.BIGINT || t === PrimitiveType.STRING) return true;
   if (t instanceof BytesType) return true; // unbounded bytes (bounded bytesN already fixed-width above)
   if (t instanceof AddressType) return true; // variable-width locking bytecode -> framed layout (like bytes)
+  if (t instanceof ValueType) return isChunkPackableElementType(t.underlyingType);
   if (t instanceof StructType) return true; // variable-width struct -> framed layout (fixed-width handled above)
   // A nested array element (`uint256[][]`: a variable-length `uint256[]` row) uses the framed layout too, as
   // long as its own element type is chunk-packable. Fixed-inner rows (`uint256[N]`) are caught by isFixedWidthType.
@@ -705,6 +708,7 @@ export function fixedWidthBytes(type: Type | string): number {
   if (t === PrimitiveType.PUBKEY) return 33;
   if (t instanceof BytesType && t.bound !== undefined) return t.bound;
   if (t instanceof IntType || t instanceof FixedType) return t.byteWidth;
+  if (t instanceof ValueType) return fixedWidthBytes(t.underlyingType);
   if (t instanceof StructType) return t.fields.reduce((sum, f) => sum + fixedWidthBytes(f.type), 0);
   if (t instanceof ArrayType && t.bound !== undefined) return t.bound * fixedWidthBytes(t.elementType);
   throw new Error(`Type is not fixed-width: ${t}`);
@@ -719,10 +723,16 @@ function parseFunctionType(str: string): FunctionType {
   const [paramsInner, restRaw] = splitParenGroup(afterKeyword);
   let rest = restRaw;
   let isExternal = false;
+  let stateMutability: 'pure' | 'view' | 'payable' | 'nonpayable' = 'nonpayable';
   for (let stripped = true; stripped;) {
     stripped = false;
     for (const mod of FUNCTION_TYPE_MODIFIERS) {
-      if (rest.startsWith(mod)) { if (mod === 'external') isExternal = true; rest = rest.slice(mod.length); stripped = true; }
+      if (rest.startsWith(mod)) {
+        if (mod === 'external') isExternal = true;
+        if (mod === 'pure' || mod === 'view' || mod === 'payable') stateMutability = mod;
+        rest = rest.slice(mod.length);
+        stripped = true;
+      }
     }
   }
   let returnTypes: Type[] = [];
@@ -730,7 +740,9 @@ function parseFunctionType(str: string): FunctionType {
     const [retsInner] = splitParenGroup(rest.slice('returns'.length));
     returnTypes = splitTopLevelCommas(retsInner).map(parseFunctionTypeMember);
   }
-  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseFunctionTypeMember), returnTypes, isExternal);
+  return new FunctionType(
+    splitTopLevelCommas(paramsInner).map(parseFunctionTypeMember), returnTypes, isExternal, stateMutability,
+  );
 }
 
 // Parse one param/return type of a function TYPE. The source string comes from grammar getText() with no

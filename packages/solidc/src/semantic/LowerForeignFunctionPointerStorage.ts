@@ -271,7 +271,7 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
     // fnPtrCall gate (collectExternalCalls) matches.
     const name = `__FnPtr_S${this.counter++}`;
     const params = ft.parameterTypes.map((t, i) => new ParameterNode(t, `p${i}`));
-    const method = new InterfaceFunctionNode('__call', params, ft.returnTypes);
+    const method = new InterfaceFunctionNode('__call', params, ft.returnTypes, ft.stateMutability);
     const iface = new InterfaceNode(name, [], [], [method]);
     (iface as InterfaceNode & { __sig?: string }).__sig = sig;
     this.synthIfaces.push(iface);

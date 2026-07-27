@@ -1,4 +1,4 @@
-import { BytesType, IntType, Type } from '@solidcash/utils';
+import { BytesType, IntType, Type, ValueType } from '@solidcash/utils';
 import {
   Node,
   AssignNode,
@@ -127,5 +127,7 @@ export function memGrowTo(need: OffFactory, src?: Src): StatementNode {
 // Re-exported so callers can build the element decode type inline (int element keeps its type; anything else reads
 // back as a raw 256-bit word).
 export function wordDecodeType(elemType: Type): Type {
-  return elemType instanceof IntType ? elemType : new IntType(false, 256);
+  if (elemType instanceof IntType) return elemType;
+  if (elemType instanceof ValueType && elemType.underlyingType instanceof IntType) return elemType.underlyingType;
+  return new IntType(false, 256);
 }

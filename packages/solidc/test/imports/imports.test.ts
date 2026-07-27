@@ -2977,6 +2977,27 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('AccessControl');
     });
 
+    it('should resolve selective enum aliases and namespace-qualified file enums', () => {
+      const files: Record<string, string> = {
+        '/lib/enums.scash': 'enum Weather { Sunny, Rainy } enum Color { Red, Blue }',
+      };
+      const code = `
+        import { Weather as Wetter } from "./lib/enums.scash";
+        import "./lib/enums.scash" as That;
+        contract Forecast {
+          function f() public pure returns (Wetter, That.Color) {
+            return (Wetter.Sunny, That.Color.Red);
+          }
+        }
+      `;
+      const artifact = compileString(code, {
+        importResolver: createMapResolver(files),
+        rootFileId: '/main.scash',
+        solidityImportCompat: true,
+      });
+      expect(artifact.contractName).toBe('Forecast');
+    });
+
     it('should import enum from file-level via selective import', () => {
       const files: Record<string, string> = {
         '/lib/enums.scash': `

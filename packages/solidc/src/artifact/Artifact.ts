@@ -327,7 +327,9 @@ export function generateArtifact(
 
   // Mirror the stateLayout gate below: writesState is only meaningful (and only emitted) for stateful contracts.
   const isStateful = contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
+    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || contract.deploysWithValue
+    || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
@@ -405,7 +407,9 @@ export function generateArtifact(
   // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
   if (contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild) {
+    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || contract.deploysWithValue
+    || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))) {
     stateLayout = {
       variables: contract.stateVariables.map((sv) => ({
         name: sv.name,

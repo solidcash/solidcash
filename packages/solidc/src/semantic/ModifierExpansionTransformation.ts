@@ -21,6 +21,7 @@ import {
   ArrayAssignNode,
   AssemblyStatementNode,
   TupleAssignmentNode,
+  ReturnNode,
 } from '../ast/AST.js';
 import {
   YulNode,
@@ -133,7 +134,8 @@ export function tagModifierStateAccess(nodes: (Node | undefined)[], definingCont
     if (n instanceof StateAccessNode || n instanceof StateAssignNode || n instanceof DeleteStateNode
       || n instanceof AssignNode || n instanceof IdentifierNode
       || n instanceof MappingAccessNode || n instanceof MappingAssignNode
-      || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode || n instanceof ArrayAssignNode) {
+      || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode || n instanceof ArrayAssignNode
+      || n instanceof ReturnNode) {
       if (n.fromModifier === undefined) n.fromModifier = definingContract;
     }
     for (const [key, value] of Object.entries(n)) {
@@ -353,7 +355,10 @@ function expandFunctionModifiers(
     // Tag state accesses in the modifier's OWN body with the contract that defined the modifier, so the
     // private-var visibility check allows an inherited modifier to touch its own contract's private state even
     // once inlined into a derived contract. (The placeholder expands to the caller body, which stays untagged.)
-    if (modDef.inheritedFrom) tagModifierStateAccess(clonedStatements, modDef.inheritedFrom);
+    tagModifierStateAccess(
+      clonedStatements,
+      modDef.inheritedFrom ?? func.inheritedFrom ?? '__local_modifier__',
+    );
 
     // Validate argument count matches parameter count
     if (invocation.args.length !== modDef.parameters.length) {

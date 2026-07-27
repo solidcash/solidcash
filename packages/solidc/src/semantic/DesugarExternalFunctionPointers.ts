@@ -56,6 +56,7 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     this.aliases = new Map();
     if (node.body) {
       this.collectAliases(node.body);
+      node.externalPointerAliases = Object.fromEntries(this.aliases);
       node.body = this.visit(node.body) as BlockNode;
     }
     this.aliases = saved;

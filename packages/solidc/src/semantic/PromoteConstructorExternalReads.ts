@@ -121,13 +121,16 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
       if (dot > 0) {
         const varName = name.slice(0, dot);
         const method = name.slice(dot + 1);
-        if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)) {
+        const contractType = this.stateVarIface.get(varName);
+        // This pass promotes READS only. A zero-argument void method is an external call, not a getter; treating
+        // `c.f()` as a deploy input replaces the call with a bare identifier and loses its effects entirely.
+        if (contractType && this.readReturnType(contractType, method) && !ADDRESS_METHODS.has(method)) {
           const paramName = `__ctorread_${varName}_${method}_${this.counter++}`;
           this.promoted.push({
             param: paramName,
             read: method,
             addressInput: this.addressSource.get(varName),
-            contractType: this.stateVarIface.get(varName)!,
+            contractType,
           });
           const id = new IdentifierNode(paramName);
           id.location = node.location;

@@ -2,12 +2,17 @@ import {
   ArrayType, BytesType, MappingType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
-  AssignNode, BranchNode, ContractNode, FunctionDefinitionNode, FunctionModifier, IdentifierNode, Node,
-  SourceFileNode, TupleAssignmentNode, VariableDefinitionNode,
+  AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionDefinitionNode,
+  FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode, StateAssignNode, TupleAssignmentNode,
+  TupleIndexOpNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
-import { InvalidDataLocationError, InvalidModifierCombinationError } from '../Errors.js';
+import { NullaryOperator } from '../ast/Operator.js';
+import {
+  ImmutableStateVariableAssignmentError, InvalidDataLocationError, InvalidModifierCombinationError,
+  UnsupportedAbiV1TypeError,
+} from '../Errors.js';
 
 type Context = 'parameter' | 'return' | 'local';
 
@@ -16,25 +21,103 @@ export default class ValidateDataLocations extends AstTraversal {
   private currentFunction?: FunctionDefinitionNode;
   private currentContractIsAbstract = false;
   private bindingLocations = new Map<string, string>();
+  private bindingTypes = new Map<string, Type>();
+  private stateTypes = new Map<string, Type>();
   private calldataLocals = new Set<string>();
   private initializedCalldataLocals = new Set<string>();
+  private immutableStateNames = new Set<string>();
+
+  constructor(private solidityImportCompat = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
+    if (node.abiCoderVersion === 'v1') this.validateAbiV1Source(node);
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
     node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
+  private validateAbiV1Source(node: SourceFileNode): void {
+    const validateTypes = (owner: Node, types: Type[]): void => {
+      const unsupported = types.find((type) => this.isUnsupportedAbiV1Type(type));
+      if (unsupported) throw new UnsupportedAbiV1TypeError(owner, unsupported.toString());
+    };
+    const validateEventsAndErrors = (
+      events: Array<{ parameters: Array<{ type: Type }> }>,
+      errors: Array<{ parameters: Array<{ type: Type }> }>,
+    ): void => {
+      for (const event of events) validateTypes(event as unknown as Node, event.parameters.map((p) => p.type));
+      for (const error of errors) validateTypes(error as unknown as Node, error.parameters.map((p) => p.type));
+    };
+    const validateContract = (contract: ContractNode): void => {
+      // An abstract contract's constructor is never itself ABI-decoded; a concrete derived constructor supplies
+      // its arguments internally, so Solidity permits ABI-v2-only shapes here even under an explicit v1 coder.
+      if (contract.constructorDef && !contract.isAbstract) validateTypes(contract.constructorDef,
+        contract.constructorDef.parameters.map((parameter) => parameter.type));
+      for (const fn of contract.functions) {
+        if (!fn.isEntryPoint) continue;
+        validateTypes(fn, [
+          ...fn.parameters.map((parameter) => parameter.type),
+          ...fn.returnTypes,
+        ]);
+      }
+      validateEventsAndErrors(contract.eventDefinitions, contract.errorDefinitions);
+    };
+
+    validateTypes(node.contract, []);
+    validateContract(node.contract);
+    node.importedContracts.forEach(validateContract);
+    validateEventsAndErrors(node.eventDefinitions, node.errorDefinitions);
+    for (const iface of node.interfaceDefinitions) {
+      for (const fn of iface.functions) {
+        validateTypes(fn, [
+          ...fn.parameters.map((parameter) => parameter.type),
+          ...fn.returnTypes,
+        ]);
+      }
+      validateEventsAndErrors(iface.eventDefinitions, iface.errorDefinitions);
+    }
+  }
+
+  private isUnsupportedAbiV1Type(type: Type): boolean {
+    if (type instanceof StructType || type instanceof MappingType) return true;
+    if (!(type instanceof ArrayType)) return false;
+    const element = type.elementType;
+    return element instanceof ArrayType
+      || element instanceof StructType
+      || element instanceof MappingType
+      || (element instanceof BytesType && element.bound === undefined)
+      || element === PrimitiveType.STRING
+      || this.isUnsupportedAbiV1Type(element);
+  }
+
   visitContract(node: ContractNode): Node {
     const previousAbstract = this.currentContractIsAbstract;
+    const previousImmutableStateNames = this.immutableStateNames;
+    const previousStateTypes = this.stateTypes;
     this.currentContractIsAbstract = node.isAbstract;
+    this.immutableStateNames = new Set(node.stateVariables.filter((state) => state.immutable).map((state) => state.name));
+    this.stateTypes = new Map([
+      ...node.stateVariables.map((state) => [state.name, state.type] as const),
+      ...node.collections.map((collection) => [collection.name, collection.type] as const),
+    ]);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     this.currentContractIsAbstract = previousAbstract;
+    this.immutableStateNames = previousImmutableStateNames;
+    this.stateTypes = previousStateTypes;
     return node;
+  }
+
+  visitStateAssign(node: StateAssignNode): Node {
+    if (this.immutableStateNames.has(node.name) && this.currentFunction?.name !== '__construct') {
+      throw new ImmutableStateVariableAssignmentError(node, node.name);
+    }
+    return super.visitStateAssign(node);
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
@@ -55,6 +138,7 @@ export default class ValidateDataLocations extends AstTraversal {
     });
     const previous = this.currentFunction;
     const previousLocations = this.bindingLocations;
+    const previousTypes = this.bindingTypes;
     const previousCalldataLocals = this.calldataLocals;
     const previousInitializedCalldataLocals = this.initializedCalldataLocals;
     this.currentFunction = node;
@@ -62,11 +146,13 @@ export default class ValidateDataLocations extends AstTraversal {
       parameter.name,
       this.locations(parameter.modifier)[0],
     ]));
+    this.bindingTypes = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type]));
     this.calldataLocals = new Set();
     this.initializedCalldataLocals = new Set();
     node.body = this.visit(node.body) as typeof node.body;
     this.currentFunction = previous;
     this.bindingLocations = previousLocations;
+    this.bindingTypes = previousTypes;
     this.calldataLocals = previousCalldataLocals;
     this.initializedCalldataLocals = previousInitializedCalldataLocals;
     return node;
@@ -82,6 +168,7 @@ export default class ValidateDataLocations extends AstTraversal {
     }
     const visited = super.visitVariableDefinition(node) as VariableDefinitionNode;
     this.bindingLocations.set(node.name, location);
+    this.bindingTypes.set(node.name, node.type);
     if (location === Modifier.CALLDATA) {
       this.calldataLocals.add(node.name);
       if (node.expression) this.initializedCalldataLocals.add(node.name);
@@ -89,7 +176,68 @@ export default class ValidateDataLocations extends AstTraversal {
     return visited;
   }
 
+  visitAbiDecode(node: AbiDecodeNode): Node {
+    if (this.solidityImportCompat && node.schema.some((type) => this.isTooLargeForMemory(type))) {
+      throw new InvalidDataLocationError(node, 'Type too large for memory');
+    }
+    return super.visitAbiDecode(node);
+  }
+
+  visitSlice(node: SliceNode): Node {
+    if (node.isSolidityIndexRange) {
+      const sourceType = this.sliceSourceType(node.element);
+      const dynamicArray = (sourceType instanceof ArrayType && sourceType.bound === undefined)
+        || (sourceType instanceof BytesType && sourceType.bound === undefined)
+        || sourceType === PrimitiveType.STRING
+        // Nested calldata arrays retain their location through indexing. Their inner bound is normalized later,
+        // so source-level validation keys on the indexed calldata root and lets ordinary type checking validate
+        // that the selected inner value is itself sliceable.
+        || node.element instanceof ArrayAccessNode
+        || node.element instanceof TupleIndexOpNode;
+      if (!dynamicArray || this.sliceSourceLocation(node.element) !== Modifier.CALLDATA) {
+        throw new InvalidDataLocationError(node,
+          'Index range access is only supported for dynamic calldata arrays');
+      }
+    }
+    return super.visitSlice(node);
+  }
+
+  private sliceSourceType(node: ExpressionNode): Type | undefined {
+    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_DATA) return new BytesType();
+    if (node instanceof IdentifierNode) return this.bindingTypes.get(node.name) ?? this.stateTypes.get(node.name);
+    if (node instanceof ArrayAccessNode) {
+      const parent = this.sliceSourceType(node.array);
+      return parent instanceof ArrayType ? parent.elementType : undefined;
+    }
+    if (node instanceof TupleIndexOpNode) {
+      const parent = this.sliceSourceType(node.tuple);
+      return parent instanceof ArrayType ? parent.elementType : undefined;
+    }
+    if (node instanceof SliceNode) {
+      const parent = this.sliceSourceType(node.element);
+      return parent instanceof ArrayType ? new ArrayType(parent.elementType) : parent;
+    }
+    return undefined;
+  }
+
+  private sliceSourceLocation(node: ExpressionNode): string | undefined {
+    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_DATA) return Modifier.CALLDATA;
+    if (node instanceof IdentifierNode) {
+      return this.bindingLocations.get(node.name) ?? (this.stateTypes.has(node.name) ? Modifier.STORAGE : undefined);
+    }
+    if (node instanceof ArrayAccessNode) return this.sliceSourceLocation(node.array);
+    if (node instanceof TupleIndexOpNode) return this.sliceSourceLocation(node.tuple);
+    if (node instanceof SliceNode) return this.sliceSourceLocation(node.element);
+    return undefined;
+  }
+
   visitAssign(node: AssignNode): Node {
+    // Bare state writes are still AssignNodes at this pre-semantic stage. Reject immutable writes here before
+    // internal-function inlining can move one into a constructor and erase the source-level function boundary.
+    if (this.immutableStateNames.has(node.identifier.name) && !this.bindingLocations.has(node.identifier.name)
+      && this.currentFunction?.name !== '__construct') {
+      throw new ImmutableStateVariableAssignmentError(node, node.identifier.name);
+    }
     if (this.bindingLocations.get(node.identifier.name) === Modifier.CALLDATA
       && node.expression instanceof IdentifierNode
       && this.bindingLocations.get(node.expression.name) !== Modifier.CALLDATA) {
@@ -159,11 +307,23 @@ export default class ValidateDataLocations extends AstTraversal {
   private validateLocation(type: Type, modifiers: string[], node: Node, context: Context, visibility?: string,
     isConstructor = false, isLibraryFunction = false, isAbstractConstructor = false): void {
     const locations = this.locations(modifiers);
-    if (locations.length === 0) return;
+    if (locations.length === 0) {
+      if (this.solidityImportCompat && this.isReferenceType(type)
+        && (context === 'parameter' || context === 'return')) {
+        throw new InvalidDataLocationError(
+          node,
+          `Data location must be 'storage', 'memory' or 'calldata' for ${context} in function, but none was given`,
+        );
+      }
+      return;
+    }
     if (locations.length > 1) {
       throw new InvalidDataLocationError(node, `multiple data locations specified (${locations.join(', ')})`);
     }
     const location = locations[0];
+    if (this.solidityImportCompat && location === Modifier.MEMORY && this.isTooLargeForMemory(type)) {
+      throw new InvalidDataLocationError(node, 'Type too large for memory');
+    }
     if (!this.isReferenceType(type)) {
       throw new InvalidDataLocationError(node,
         `data location '${location}' is only valid for reference types, not '${type}'`);
@@ -196,6 +356,38 @@ export default class ValidateDataLocations extends AstTraversal {
     if (this.containsMapping(type) && location !== Modifier.STORAGE) {
       throw new InvalidDataLocationError(node, "mapping-containing parameters must have 'storage' location");
     }
+  }
+
+  // Solidity's memory type layout uses 32-byte words and rejects a statically materializable component whose
+  // head exceeds the 32-bit memory-size limit. Dynamic members occupy one pointer word in their parent, but their
+  // element type must itself be representable because decoding/allocating one element can materialize it.
+  private isTooLargeForMemory(type: Type): boolean {
+    const maxMemoryBytes = 0xffff_ffffn;
+    const size = (candidate: Type, seen: Set<string>): bigint => {
+      if (candidate instanceof ArrayType) {
+        const elementSize = size(candidate.elementType, seen);
+        if (elementSize > maxMemoryBytes) return elementSize;
+        if (candidate.bound === undefined) return 32n;
+        if (!Number.isFinite(candidate.bound) || candidate.bound < 0) return maxMemoryBytes + 1n;
+        return BigInt(Math.trunc(candidate.bound)) * elementSize;
+      }
+      if (candidate instanceof StructType) {
+        if (seen.has(candidate.name)) return 32n;
+        const next = new Set(seen).add(candidate.name);
+        let total = 0n;
+        for (const field of candidate.fields) {
+          const fieldSize = size(field.type, next);
+          if (fieldSize > maxMemoryBytes) return fieldSize;
+          total += fieldSize;
+          if (total > maxMemoryBytes) return total;
+        }
+        return total;
+      }
+      // Dynamic bytes/string, mappings (which are rejected separately), and scalar values occupy one memory word
+      // in a containing aggregate's head.
+      return 32n;
+    };
+    return size(type, new Set()) > maxMemoryBytes;
   }
 
   private validateFunctionModifiers(node: FunctionDefinitionNode): void {

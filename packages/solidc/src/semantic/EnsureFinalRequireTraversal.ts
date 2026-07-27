@@ -59,7 +59,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   visitContract(node: ContractNode): ContractNode {
     this.isStatefulContract = node.stateVariables.length > 0
       || node.collections.length > 0
-      || node.eventDefinitions.length > 0;
+      || node.eventDefinitions.length > 0
+      || node.deploysWithValue
+      || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     if (node.constructorDef) {

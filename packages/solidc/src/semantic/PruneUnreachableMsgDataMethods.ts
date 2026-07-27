@@ -1,18 +1,18 @@
 import {
   ContractNode, FunctionDefinitionNode, FunctionCallNode, MethodCallNode, IdentifierNode,
-  NullaryOpNode, Node, SourceFileNode,
+  NullaryOpNode, InstantiationNode, ContractReferenceNode, TypeIntrospectionNode, Node, SourceFileNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { ArrayType, MappingType, Type } from '@solidcash/utils';
 
 /**
- * Drops internal/private contract methods that BOTH read `msg.data` (transitively) AND are unreachable from any
- * entry point. Inherited OZ boilerplate ships `Context._msgData() { return msg.data; }` that most contracts never
- * call; msg.data is only reconstructible AT an entry point (the `__internal__redeemPushSize` covenant value is
- * out of reach inside an OP_DEFINE subroutine), so a DEAD `_msgData` would otherwise fail the whole compile with
- * MsgDataInSubroutineError even though it never runs.
+ * Drops unreachable internal/private contract methods in two fail-closed subgraphs:
+ * - methods that transitively read `msg.data` (unavailable inside an OP_DEFINE subroutine);
+ * - methods that transitively embed/deploy another contract's bytecode (a dead `new D()` must not create a false
+ *   dependency cycle, and its unavailable bytecode must not be emitted).
  *
- * Scoped to the msg.data subgraph so nothing else is removed. Reachability is conservative by NAME (any call /
+ * Scoped to those subgraphs so nothing else is removed. Reachability is conservative by NAME (any call /
  * method / bare identifier keeps every method of that name) and every non-(internal|private) method is a root,
  * so a live method is never cut - a wrong prune surfaces as an undefined-reference error, never a silent
  * miscompile. Runs after inheritance + modifier expansion (so the flattened contract holds every inherited
@@ -31,10 +31,13 @@ export default class PruneUnreachableMsgDataMethods extends AstTraversal {
     const byName = new Map<string, FunctionDefinitionNode[]>();
     for (const fn of fns) { const l = byName.get(fn.name) ?? []; l.push(fn); byName.set(fn.name, l); }
 
-    // Tainted = transitively reads msg.data. Seed with direct readers, then propagate to any method that calls a
-    // tainted one (fixpoint), so a dead delegator to `_msgData` is caught too.
+    // Tainted = transitively reads msg.data or embeds/deploys contract bytecode. Seed with direct users, then
+    // propagate to callers (fixpoint), so dead delegators are caught too.
     const tainted = new Set<FunctionDefinitionNode>();
-    for (const fn of fns) if (this.readsMsgData(fn)) tainted.add(fn);
+    for (const fn of fns) {
+      if (this.readsMsgData(fn) || this.referencesContractBytecode(fn)
+        || this.returnsMappingStoragePointer(fn)) tainted.add(fn);
+    }
     if (tainted.size === 0) return;
     for (let changed = true; changed;) {
       changed = false;
@@ -62,7 +65,7 @@ export default class PruneUnreachableMsgDataMethods extends AstTraversal {
       }
     }
 
-    // Prune only tainted-AND-unreachable methods (keep everything reachable OR not a msg.data reader).
+    // Prune only tainted-AND-unreachable methods.
     contract.functions = fns.filter((f) => reachable.has(f) || !tainted.has(f));
   }
 
@@ -77,6 +80,26 @@ export default class PruneUnreachableMsgDataMethods extends AstTraversal {
       if (n instanceof NullaryOpNode && n.operator === NullaryOperator.MSG_DATA) found = true;
     });
     return found;
+  }
+
+  private referencesContractBytecode(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (n instanceof InstantiationNode || n instanceof ContractReferenceNode
+        || (n instanceof TypeIntrospectionNode
+          && (n.property === 'creationCode' || n.property === 'runtimeCode'))) found = true;
+    });
+    return found;
+  }
+
+  // A mapping-bearing storage pointer has no standalone VM value. Reachable helpers are lowered/inlined by the
+  // storage-pointer passes; an unreachable one must not fail semantic analysis merely because its dead `return m`
+  // cannot be represented on the stack.
+  private returnsMappingStoragePointer(fn: FunctionDefinitionNode): boolean {
+    const containsMapping = (type: Type): boolean => type instanceof MappingType
+      || (type instanceof ArrayType && containsMapping(type.elementType));
+    return fn.returnTypes.some((type, index) =>
+      fn.returnModifiers?.[index]?.includes('storage') === true && containsMapping(type));
   }
 
   private referencedNames(body: Node | undefined): string[] {

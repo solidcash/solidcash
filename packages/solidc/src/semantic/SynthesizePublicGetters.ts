@@ -108,6 +108,20 @@ export default class SynthesizePublicGetters extends AstTraversal {
     return recursive;
   }
 
+  private isSafeFlattenedGetterType(type: Type): boolean {
+    if (isSafeGetterType(type) || this.isContractAddr(type) || type instanceof EnumType) return true;
+    if (!(type instanceof StructType) || this.isRecursiveStruct(type)) return false;
+    return type.fields.every((field) => !(field.type instanceof MappingType)
+      && !(field.type instanceof ArrayType) && this.isSafeFlattenedGetterType(field.type));
+  }
+
+  private hasUnmaterializableArray(type: Type): boolean {
+    if (type instanceof MappingType) return this.hasUnmaterializableArray(type.valueType);
+    if (!(type instanceof ArrayType)) return false;
+    return (type.bound !== undefined && type.bound > 10_000)
+      || this.hasUnmaterializableArray(type.elementType);
+  }
+
   // Build the ABI shape and ordinary expression tree for a public nested array/mapping getter:
   //   mapping(K => V[][]) m -> m(K,uint256,uint256) returns (V)
   //   mapping(K => V)[] a  -> a(uint256,K) returns (V)
@@ -224,6 +238,33 @@ export default class SynthesizePublicGetters extends AstTraversal {
     const fallback = node.location;
     const getters: FunctionDefinitionNode[] = [];
 
+    // AstBuilder flattens a struct containing dynamic storage into `root__field` leaves before this pass. The
+    // original public declaration is retained on the contract so its Solidity getter can still return every
+    // ABI-visible field (arrays/mappings omitted). Only exact value leaves are used here; a recursively-flattened
+    // nested field remains gated until it has a proven whole-value reconstruction.
+    for (const spec of node.flattenedPublicStructGetters) {
+      if (existing.has(spec.name)) continue;
+      const kept = spec.type.fields.filter((field) => !(field.type instanceof MappingType)
+        && !(field.type instanceof ArrayType));
+      if (kept.length === 0 || !kept.every((field) => this.isSafeFlattenedGetterType(field.type))) continue;
+      const leaves = kept.map((field) => node.stateVariables.find(
+        (state) => state.name === `${spec.name}__${field.name}`,
+      ));
+      if (leaves.some((leaf) => !leaf)) continue;
+      const reads = leaves.map((leaf) => {
+        const read = new StateAccessNode(leaf!.name);
+        read.location = fallback;
+        return read;
+      });
+      const ret = new ReturnNode(reads); ret.location = fallback;
+      const body = new BlockNode([ret]); body.location = fallback;
+      const fn = new FunctionDefinitionNode(spec.name, [], body);
+      fn.returnTypes = kept.map((field) => field.type);
+      fn.modifiers = [FunctionModifier.VIEW];
+      fn.location = fallback;
+      getters.push(fn);
+    }
+
     // Public constants have an ABI getter just like public state variables, but their body returns the baked
     // constant identifier rather than reading state. Constants parsed from file-level/dedicated declarations
     // carry no visibility and therefore do not gain a getter.
@@ -242,7 +283,10 @@ export default class SynthesizePublicGetters extends AstTraversal {
     }
 
     for (const sv of node.stateVariables) {
-      if (!isPub(sv.visibility) || existing.has(sv.name)) continue;
+      // Avoid materializing an enormous hidden storage type solely for a compatibility getter. Ordinary
+      // omitted-visibility getters remain synthesized because later storage lowering currently relies on them.
+      if ((!sv.visibilityExplicit && this.hasUnmaterializableArray(sv.type))
+        || !isPub(sv.visibility) || existing.has(sv.name)) continue;
       const loc = sv.location ?? fallback;
       // A public array's getter takes a uint index and returns the element (`function a(uint i) returns (T)
       // { return this.a[i]; }`), like Solidity. Nested arrays/mappings contribute one ABI key per level.
@@ -289,16 +333,22 @@ export default class SynthesizePublicGetters extends AstTraversal {
         const fields = sv.type.fields ?? [];
         if (fields.some((f) => f.type instanceof MappingType)) continue;
         const kept = fields.filter((f) => !(f.type instanceof ArrayType));
+        const usedGetter = this.hasSelfGetterCall(node, sv.name);
         // Scalar members only: a struct-typed member would make the getter RETURN a struct value from an
         // entry point - unproven machinery a synthesized body must not depend on (declarations that compile
         // fine unused would start failing).
-        if (kept.length === 0 || !kept.every((f) => isSafeGetterType(f.type))) continue;
+        if (kept.length === 0 || !kept.every((f) => isSafeGetterType(f.type)
+          || this.isContractAddr(f.type) || f.type instanceof EnumType
+          || (usedGetter && f.type instanceof FunctionType && f.type.isExternal))) continue;
         const reads = kept.map((f) => {
           const stateRead = Object.assign(new StateAccessNode(sv.name), { location: loc });
           return Object.assign(new FieldAccessNode(stateRead, f.name), { location: loc });
         });
-        const body = Object.assign(new BlockNode([Object.assign(new ReturnNode(reads), { location: loc })]),
-          { location: loc });
+        const ret = Object.assign(new ReturnNode(reads), {
+          location: loc,
+          externalFunctionGetterBridge: kept.some((f) => f.type instanceof FunctionType && f.type.isExternal),
+        });
+        const body = Object.assign(new BlockNode([ret]), { location: loc });
         const fn = new FunctionDefinitionNode(sv.name, [], body);
         fn.returnTypes = kept.map((f) => f.type);
         fn.modifiers = [FunctionModifier.VIEW];
@@ -339,7 +389,8 @@ export default class SynthesizePublicGetters extends AstTraversal {
     }
 
     for (const coll of node.collections) {
-      if (!isPub(coll.visibility) || existing.has(coll.name)) continue;
+      if ((!coll.visibilityExplicit && this.hasUnmaterializableArray(coll.type))
+        || !isPub(coll.visibility) || existing.has(coll.name)) continue;
       const loc = coll.location ?? fallback;
       const indexed = this.buildIndexedGetter(coll.name, coll.type, loc, true);
       if (!indexed) continue; // complex terminal getter (struct/enum placeholder)

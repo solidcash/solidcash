@@ -145,7 +145,18 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
       const tmp = `__inlv_${this.counter++}`;
       const decl = new VariableDefinitionNode(field.type, [], tmp, fieldOf(node.name, node.fieldName));
       decl.location = loc;
-      const elemAssign = new ArrayAssignNode(tmp, node.keys[0], node.expression);
+      let elementValue = node.expression;
+      // `s.rows[i].field = v`: the indexed target is a struct element, not the whole `rows[i]` value.
+      // Rebuild that selected element before writing it into the temporary array.
+      if (node.trailingMembers?.length && field.type instanceof ArrayType
+        && field.type.elementType instanceof StructType) {
+        const selected = new ArrayAccessNode(id(tmp), cloneNode(node.keys[0]) as ExpressionNode);
+        selected.location = loc;
+        elementValue = this.rebuildNestedExpr(
+          selected, field.type.elementType, node.trailingMembers, node.expression,
+        );
+      }
+      const elemAssign = new ArrayAssignNode(tmp, node.keys[0], elementValue);
       elemAssign.location = loc;
       stmts.push(decl as StatementNode, elemAssign);
       newFieldValue = id(tmp);

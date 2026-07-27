@@ -286,9 +286,20 @@ unbranded delegate/library is byte-identical (no regression). `__brand` is the c
 order, reversed from the display categoryId. Pure libraries are never branded. Proven e2e: a branded library
 accepts its owning consumer's master and rejects a foreign master (LibraryDelegate.test.ts).
 
+**Consumer-side co-spend pin [DONE 2026-07-27, SEC-4].** The desugar produces a delegatecall AST node marked
+`synthesizedFromLibraryCall`, and every delegatecall security rule keyed off `hasExplicitDelegatecall`, which
+excludes exactly that node. So `pinsDelegateCoSpend` was FALSE for a pure `L.f()` function: the callsite emitted
+NO covenant while the per-function `!functionHasDelegatecall` gate still skipped the consumer's ENTIRE state
+covenant. Measured on the BCH-2026 VM, a consumer of a one-line delegate library settled `count 0 -> 999` with a
+HOSTILE library co-spent, and also with NO delegate co-spent at all. The consumer now pins
+`OP_UTXOBYTECODE[<reserved delegate slot>] == __libAddr_L` (plus the forwarded selector when the library has
+>= 2 public functions), deriving the index from its own block layout rather than a witness, so the consumer ABI
+is unchanged. `L.f()` beside a `this.x = ...` and `L.f()` inside a loop are now compile errors, as they already
+were for a hand-written delegatecall. See docs/delegatecall-security.md rule E.
+
 The library-contract feature is now COMPLETE: lower -> deploy -> `L.f(args)` -> auto-wire -> compile-time +
-runtime layout guard -> branded master-gate. Returns are by design via shared state (delegate has no synchronous
-return); pure value-returning helpers use the precompile path.
+runtime layout guard -> branded master-gate -> consumer-side co-spend pin. Returns are by design via shared state
+(delegate has no synchronous return); pure value-returning helpers use the precompile path.
 
 2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
    the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them

@@ -36,6 +36,11 @@ import {
  * The Router additionally writes scalar state, emits an ordinary event NFT and moves satoshis out of its
  * container; the Vault publishes a return-event NFT; the Accrue post-state is a function of that authenticated
  * result. Every one of those is settled by one 35-slot transaction.
+ *
+ * Scope of the continuation claim: the result-dependent continuation here is a result-dependent STATE
+ * TRANSITION, not a result-dependent onward CALL. A handler that consumes a result may not carry a second edge
+ * at all, so the onward-call form is a compiler refusal - see the boundary block at the bottom of this file.
+ * A middle participant that consumes a result and returns a derived one does compile; C1 does not exercise it.
  */
 
 const raw = (builder: TransactionBuilder): string =>
@@ -133,7 +138,9 @@ type Hostile =
   /** The router's satoshi effect pays a different amount than the compiled call. */
   | 'resource'
   /** The ordinary event NFT is sent somewhere other than its event covenant. */
-  | 'event';
+  | 'event'
+  /** The ordinary event NFT publishes an argument the handler did not emit. */
+  | 'event-argument';
 
 /**
  * Ordinary BCH-2026 capacity, for the F1-style measurement below. Two deliberate deviations, both stated:
@@ -409,7 +416,9 @@ async function buildC1(
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
 
   // ---- Outputs (one per input, same index) ------------------------------------------------------------
-  const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(TOTAL_AMOUNT)]));
+  const eventCommitment = binToHex(scriptToBytecode([
+    bigIntToVmNumber(hostile === 'event-argument' ? TOTAL_AMOUNT + 1n : TOTAL_AMOUNT),
+  ]));
   const eventAddress = getEventNftAddress(
     router, routerSetup.categoryId, routerArtifact.events![0].signature,
   );
@@ -669,6 +678,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
     { hostile: 'continuation' as const, input: 24 },
     { hostile: 'resource' as const, input: 0 },
     { hostile: 'event' as const, input: 0 },
+    { hostile: 'event-argument' as const, input: 0 },
   ])(
     'HOSTILE: substituting the $hostile field is rejected at input $input',
     async ({ hostile, input }) => {

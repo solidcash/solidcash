@@ -450,4 +450,45 @@ describe('Layer-3 occurrence ordering and exact exhaustion (SEMANTIC)', () => {
       dynamicCall: () => ({ participant: root, function: 'inc' }),
     })).toThrow('layer3: callsite 0 lacks a valid loop occurrence proof');
   });
+
+  /**
+   * Recorded GAP, reported rather than changed here. `ExpandBoundedPointerTableLoop` inspects only POINTER
+   * dispatches, so a loop holding an ordinary interface call is neither expanded nor refused, and publishes
+   * `occurrence: 'loop'` with no `maximumOccurrences`. The planner then validates the count as
+   * `maximumOccurrences === undefined || count <= maximumOccurrences`, so it accepts any count for this shape -
+   * here six rows from a source that publishes no ceiling at all. The caller covenant still emits exactly the
+   * rows the source executes, so an inflated count is rejected on-chain; what is missing is the compiler-proven
+   * per-callsite bound the derivation is supposed to check against.
+   */
+  it('GAP: plans an arbitrary loop occurrence count when no ceiling is published', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+interface IFoo { function bar(uint value); }
+contract UnboundedLoopPlainCall() {
+  int n;
+  function fireAll(uint value, address target) public {
+    for (int i = 0; i < n; i = i + 1) { IFoo(target).bar(value); }
+    require(value >= 0);
+  }
+}`, options);
+    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+contract PlainTarget() {
+  function bar(uint value) public pure { require(value > 0); }
+}`, options);
+    expect(callerArtifact.abi.find((fn) => fn.name === 'fireAll')!.externalCalls![0].maximumOccurrences)
+      .toBeUndefined();
+    const plan = layer3.deriveCompiledGraphPlan({
+      root: { artifact: callerArtifact, lockingBytecode: '51' },
+      function: 'fireAll',
+      args: [CALL_VALUE, hexToBin('52')],
+      targets: { IFoo: { artifact: calleeArtifact, lockingBytecode: '52' } },
+      occurrence: () => 6,
+    });
+    expect(plan.invocations).toHaveLength(7);
+  });
 });

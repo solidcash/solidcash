@@ -1366,6 +1366,16 @@ function compileResolvedAst(
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
 
+  // Hidden-batch synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
+  // visible to its wrapper. Beta-reduce side-effect-free foreign function-pointer return/pass helpers before that
+  // snapshot too; otherwise the source entry point is lowered later to an external edge while its already-cloned
+  // SCB1 wrapper still calls the pre-lowering higher-order signature (and lacks the generated edge witnesses).
+  // The normal later pass remains: this early application is intentionally idempotent and covers only candidates
+  // already visible after modifier expansion.
+  if (mergedCompilerOptions.experimentalHiddenBatch) {
+    ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
+  }
+
   // The compiler-owned route must participate in the same helper/state
   // lowerings as source entry points. In particular, collection-bearing
   // handlers need their authenticated entry operations inlined into this

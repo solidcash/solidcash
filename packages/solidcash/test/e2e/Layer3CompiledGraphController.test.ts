@@ -187,6 +187,18 @@ contract CompiledPointerTarget(int brand) {
   function inc(uint value) public pure { require(value > 0); }
   function dec(uint value) public pure { require(value > 0); }
 }`;
+const RETURNED_POINTER_CALLER = `pragma solidcash >=0.8.0;
+interface IReturnedPointerTarget { function inc(uint value); function dec(uint value); }
+contract CompiledReturnedPointerCaller(int brand) {
+  function choose(address target) internal returns (function(uint) external) {
+    return IReturnedPointerTarget(target).dec;
+  }
+  function fire(address target, uint value) public {
+    function(uint) external handler = choose(target);
+    handler(value);
+    require(value >= 0);
+  }
+}`;
 const COMBINED_A = `pragma solidcash >=0.8.0;
 interface ICombinedB { function step(address callback, bytes recipient, bigint amount); }
 contract CombinedA() {
@@ -539,6 +551,7 @@ async function build(
 
 async function buildPointerGraph(
   tamper: 'none' | 'selector' | 'target' = 'none',
+  returned = false,
 ) {
   const provider = createTestProvider();
   const {
@@ -555,7 +568,7 @@ async function buildPointerGraph(
   const baseB = new Contract(artifactB, [2n], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
-  const artifactA = compileString(POINTER_CALLER, options);
+  const artifactA = compileString(returned ? RETURNED_POINTER_CALLER : POINTER_CALLER, options);
   const baseA = new Contract(artifactA, [1n], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
@@ -563,18 +576,31 @@ async function buildPointerGraph(
   const incSelector = artifactB.abi.find((fn) => fn.name === 'inc')!.selector!;
   const pointerTarget = tamper === 'target' ? hexToBin(`aa20${'44'.repeat(32)}87`) : b.lockingBytecode;
   const pointerSelector = hexToBin(tamper === 'selector' ? incSelector : decSelector);
-  const plan = layer3.deriveCompiledGraphPlan({
-    root: {
-      artifact: artifactA, lockingBytecode: a.lockingBytecode, constructorArgs: [1n],
-    },
-    function: 'fire',
-    args: [pointerTarget, pointerSelector, 4n],
-    targets: {},
-    dynamicCall: () => ({
-      participant: { artifact: artifactB, lockingBytecode: b.lockingBytecode, constructorArgs: [2n] },
-      function: 'dec',
-    }),
-  });
+  const participantA = {
+    artifact: artifactA, lockingBytecode: a.lockingBytecode, constructorArgs: [1n],
+  };
+  const participantB = {
+    artifact: artifactB, lockingBytecode: b.lockingBytecode, constructorArgs: [2n],
+  };
+  const plan = returned
+    ? (tamper === 'selector'
+      ? layer3.planCompiledGraph([participantA, participantB], [
+        { parent: null, callee: 0, function: 'fire', args: [pointerTarget, 4n] },
+        { parent: 0, callee: 1, function: 'inc', args: [4n] },
+      ])
+      : layer3.deriveCompiledGraphPlan({
+        root: participantA,
+        function: 'fire',
+        args: [pointerTarget, 4n],
+        targets: { IReturnedPointerTarget: participantB },
+      }))
+    : layer3.deriveCompiledGraphPlan({
+      root: participantA,
+      function: 'fire',
+      args: [pointerTarget, pointerSelector, 4n],
+      targets: {},
+      dynamicCall: () => ({ participant: participantB, function: 'dec' }),
+    });
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
@@ -2851,6 +2877,19 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a function-pointer %s choice which disagrees with the canonical child row',
     async (tamper) => {
       const { provider, transaction } = await buildPointerGraph(tamper);
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    },
+  );
+
+  it('executes a compiler-authenticated pointer returned through an internal helper', async () => {
+    const { provider, transaction } = await buildPointerGraph('none', true);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it.each(['selector', 'target'] as const)(
+    'rejects a returned-pointer %s disagreement with the compiler-reduced child row',
+    async (tamper) => {
+      const { provider, transaction } = await buildPointerGraph(tamper, true);
       await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
     },
   );

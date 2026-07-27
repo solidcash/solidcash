@@ -231,6 +231,46 @@ describe('layer3.planCompiledGraph', () => {
     expect(() => derive(false)).toThrow(/lacks a dynamic call proof/);
   });
 
+  it('expands a foreign function pointer returned through an internal helper', () => {
+    const options = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      solidityImportCompat: true,
+    };
+    const caller = compileString(`pragma solidcash >=0.8.0;
+      interface IH { function inc(uint value); function dec(uint value); }
+      contract ReturnedPointerCaller() {
+        function choose(address target) internal returns (function(uint) external) {
+          return IH(target).dec;
+        }
+        function fire(address target, uint value) public {
+          function(uint) external handler = choose(target);
+          handler(value);
+          require(value >= 0);
+        }
+      }`, options);
+    const handler = compileString(`pragma solidcash >=0.8.0;
+      contract ReturnedPointerHandler() {
+        function inc(uint value) public pure { require(value > 0); }
+        function dec(uint value) public pure { require(value > 0); }
+      }`, options);
+    const root = { artifact: caller, lockingBytecode: '51' };
+    const target = { artifact: handler, lockingBytecode: '52' };
+    const plan = layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fire',
+      args: [new Uint8Array([0x52]), 4n],
+      targets: { IH: target },
+    });
+    expect(plan.invocations.map(({ parent, callee, function: name, argsHex }) =>
+      ({ parent, callee, name, argsHex }))).toEqual([
+      { parent: null, callee: 0, name: 'fire', argsHex: '015254' },
+      { parent: 0, callee: 1, name: 'dec', argsHex: '54' },
+    ]);
+  });
+
   it('resolves canonical low-level calldata into one authenticated typed edge', () => {
     const options = {
       forceStateful: true,

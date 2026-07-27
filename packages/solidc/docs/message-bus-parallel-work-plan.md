@@ -150,7 +150,7 @@ task-specific report, not in this table.
 | X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
 | X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
-| X6 | Stable diagnostics for unadmitted low-level shapes | A (wiring) | E2 | LEASED | round 5; module landed by B, A holds the call site |
+| X6 | Stable diagnostics for unadmitted low-level shapes | A (wiring) | E2 | INTEGRATED | 8 shapes named, incl. one in a modifier body; ONE admitted-class leak remains |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
@@ -160,7 +160,9 @@ task-specific report, not in this table.
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
 | X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | INTEGRATED (layer-3 only) | direct-route wiring DEFERRED to the owner - would reject 44.5% of settling sends |
 | X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **TODO (owner decision)** | 1,014 of 2,278 describable sends would be rejected; see 4.15 |
-| X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | LEASED | round 5; silence is the one unacceptable outcome |
+| X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | INTEGRATED | REFUSED with a named reason and a remedy; silence ended |
+| X18 | Void `target.call(payload)` leaks on the bus route | — | X6 | TODO | B's module says ADMITTED; the compiler does not admit it |
+| X19 | `m[k]` and `this.m[k]` diverge on the bus route | — | X15 | TODO | Byte-identical direct artifacts, identical ABI, one compiles and one throws |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -171,6 +173,48 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.16 FULL REPOSITORY GREEN - all six packages, measured in one run
+
+| Package | Result |
+|---|---|
+| `@solidcash/utils` | 295 passed |
+| `solidc` | **2,417 passed / 0 failed** |
+| `solidcash` | **3,809 passed / 0 failed** (448 files, 4 skipped) |
+| `@solidcash/testing` | 19 passed |
+| `@solidcash/solidhat` | 24 passed |
+| `@solidcash/create-solidhat` | no tests |
+
+This is the first genuinely complete green run. Every earlier "fully green" figure in this document covered
+`solidc` and `solidcash` only - three of six workspaces - because `yarn test` HALTS at the first failing package
+and never reached the rest. The integration owner was reporting a partial number as a total until Worker B's
+packet mentioned a package outside that set.
+
+`packages/solidc/vitest.config.ts` now sets `testTimeout: 30_000`. Nine failures in the previous full run were
+`Test timed out in 5000ms` with zero assertion failures, each passing in isolation; Worker A independently
+measured ten such failures at load average 29, where the same file took 168s against a usual 54s. A suite that
+is red only from timeouts cannot serve as a regression gate, because a real failure is indistinguishable from
+load. 30s still fails a genuine hang.
+
+### 4.17 Two cross-worker catches worth keeping
+
+**Worker A caught Worker B asserting a class it never verified.** B's X6 module lists an unconditional
+option-free void `target.call(payload)` as ADMITTED. It compiles on the direct route - but on the bus route it
+leaks `Block slot not found: lowLevelCall[0]`. A verified the leak is pre-existing by reverting the wiring and
+rebuilding, and named the failure mode precisely: the module asserted ADMITTED without asking whether the
+compiler admits it, which is board section 4.12's lesson in a different file. Pinned `OPEN:` rather than left
+inside an unqualified claim, and BLOCKED on Worker C's lease. Recorded as X18.
+
+**Worker A caught its own probes being misleading, and found a real divergence doing it.** `balances[who] = x`
+and `this.balances[who] = x` produce a BYTE-IDENTICAL direct-route artifact with an identical ABI, yet on the bus
+route the dotted form compiles to a route while the bare form throws. Add a read-modify-write and the two
+spellings diverge on the DIRECT route too, one publishing `read` where the other publishes `write`. A's original
+X15 probes used the bare spelling and were misleading until it caught this. Recorded as X19.
+
+X15 itself is closed by refusal, not admission: `synthesizeHiddenBatchRoute` computed a stable reason for every
+entry point but published reasons only through `hiddenBatch.handlers`, an object never built when every handler
+is rejected - so the absence was observable and the reason was not. It now names each entry point, its reason,
+and a remedy.
 
 ### 4.15 X14 stops at a decision the integration owner has to make
 

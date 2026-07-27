@@ -6,13 +6,17 @@ import { Ast } from '../src/ast/AST.js';
 /**
  * X6 - stable diagnostics for unadmitted low-level call shapes.
  *
- * Each case here pairs the leaked internal message a user sees TODAY with the named diagnostic the new module
- * produces for the same source. The pairing is the point: without it, "the module throws something" would not
- * show that it replaces a specific leak.
+ * WIRED. `compileString` calls `validateLowLevelCallShapes` in message-bus graph mode, immediately after that
+ * mode is computed and before any bus lowering. Each case below pairs the internal message the same source
+ * leaked BEFORE the wiring with the named diagnostic `compileString` produces now. The pairing is the point:
+ * without it, "the compiler throws something" would not show that a specific leak was replaced.
  *
- * The module is NOT wired into the compiler pipeline - the message-bus route lives entirely inside
- * `compiler.ts`, a single-writer collision file - so `compileString` below still shows the leak.
+ * The leaked messages are recorded as `WAS` constants rather than asserted, because they no longer occur; the
+ * assertion is that the compiler no longer produces them.
  */
+const WAS_BLOCK_SLOT = 'Block slot not found: lowLevelCall[0]';
+const WAS_RUNTIME_GRAPH_HANDLER =
+  "Runtime graph handler '__scb_graph_run' requires void calls with parameter- or state-pinned targets";
 
 const busOptions = {
   forceStateful: true,
@@ -30,7 +34,7 @@ ${body}
 }`;
 
 /** What the user sees today, straight from `compileString`. */
-const leakedMessage = (code: string): string => {
+const compilerMessage = (code: string): string => {
   try {
     compileString(code, busOptions);
     return 'COMPILED';
@@ -61,7 +65,10 @@ describe('X6 low-level call shape diagnostics', () => {
       + '    require(ok && result.length >= 0);', ', int g');
 
     it('replaces the leaked block-slot error for a value option', () => {
-      expect(leakedMessage(valueOption)).toBe('Block slot not found: lowLevelCall[0]');
+      expect(compilerMessage(valueOption)).not.toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(valueOption)).toMatch(
+        /Message-bus low-level call shape is not admitted: function 'run' issues a low-level 'call' carrying/,
+      );
       expect(namedDiagnostic(valueOption)).toMatch(
         /Message-bus low-level call shape is not admitted: function 'run' issues a low-level 'call' carrying/,
       );
@@ -69,12 +76,14 @@ describe('X6 low-level call shape diagnostics', () => {
     });
 
     it('replaces the leaked block-slot error for a gas option', () => {
-      expect(leakedMessage(gasOption)).toBe('Block slot not found: lowLevelCall[0]');
+      expect(compilerMessage(gasOption)).not.toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(gasOption)).toContain("carrying the call option(s) 'gas'");
       expect(namedDiagnostic(gasOption)).toContain("carrying the call option(s) 'gas'");
     });
 
     it('replaces the leaked block-slot error for a staticcall gas option', () => {
-      expect(leakedMessage(staticGasOption)).toBe('Block slot not found: lowLevelCall[0]');
+      expect(compilerMessage(staticGasOption)).not.toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(staticGasOption)).toContain("issues a low-level 'staticcall' carrying the call");
       expect(namedDiagnostic(staticGasOption)).toContain("issues a low-level 'staticcall' carrying the call");
     });
 
@@ -98,14 +107,16 @@ describe('X6 low-level call shape diagnostics', () => {
     );
 
     it('replaces the leaked runtime-graph-handler error for a returning loop callsite', () => {
-      expect(leakedMessage(returningLoop))
-        .toBe("Runtime graph handler '__scb_graph_run' requires void calls with parameter- or state-pinned targets");
+      expect(compilerMessage(returningLoop)).not.toBe(WAS_RUNTIME_GRAPH_HANDLER);
+      expect(compilerMessage(returningLoop))
+        .toContain("function 'run' issues a low-level 'call' inside a loop");
       expect(namedDiagnostic(returningLoop))
         .toContain("function 'run' issues a low-level 'call' inside a loop");
     });
 
     it('replaces the leaked block-slot error for a void loop callsite', () => {
-      expect(leakedMessage(voidLoop)).toBe('Block slot not found: lowLevelCall[0]');
+      expect(compilerMessage(voidLoop)).not.toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(voidLoop)).toContain("issues a low-level 'call' inside a loop");
       expect(namedDiagnostic(voidLoop)).toContain("issues a low-level 'call' inside a loop");
     });
 
@@ -131,14 +142,16 @@ describe('X6 low-level call shape diagnostics', () => {
     );
 
     it('replaces the leaked runtime-graph-handler error for a returning branch callsite', () => {
-      expect(leakedMessage(returningBranch))
-        .toBe("Runtime graph handler '__scb_graph_run' requires void calls with parameter- or state-pinned targets");
+      expect(compilerMessage(returningBranch)).not.toBe(WAS_RUNTIME_GRAPH_HANDLER);
+      expect(compilerMessage(returningBranch))
+        .toContain("function 'run' issues a low-level 'call' inside a branch");
       expect(namedDiagnostic(returningBranch))
         .toContain("function 'run' issues a low-level 'call' inside a branch");
     });
 
     it('replaces the leaked block-slot error for a void branch callsite', () => {
-      expect(leakedMessage(voidBranch)).toBe('Block slot not found: lowLevelCall[0]');
+      expect(compilerMessage(voidBranch)).not.toBe(WAS_BLOCK_SLOT);
+      expect(compilerMessage(voidBranch)).toContain("issues a low-level 'call' inside a branch");
       expect(namedDiagnostic(voidBranch)).toContain("issues a low-level 'call' inside a branch");
     });
 
@@ -159,17 +172,26 @@ describe('X6 low-level call shape diagnostics', () => {
     const voidSingular = source('    target.call(payload);');
 
     it('admits one unconditional option-free call', () => {
-      expect(leakedMessage(singular)).toBe('COMPILED');
+      expect(compilerMessage(singular)).toBe('COMPILED');
       expect(namedDiagnostic(singular)).toBe('ADMITTED');
     });
 
     it('admits one unconditional option-free staticcall', () => {
-      expect(leakedMessage(singularStatic)).toBe('COMPILED');
+      expect(compilerMessage(singularStatic)).toBe('COMPILED');
       expect(namedDiagnostic(singularStatic)).toBe('ADMITTED');
     });
 
-    it('admits one unconditional void call', () => {
+    /**
+     * OPEN: the shape module admits an unconditional VOID low-level call, and the direct route compiles it,
+     * but the message-bus route still leaks `Block slot not found: lowLevelCall[0]` from code generation for
+     * it. That leak predates the wiring (verified on the integration commit with the wiring reverted) and its
+     * repair is in `GenerateTargetTraversal.ts`, which is leased elsewhere. Pinned so the admitted class is
+     * not read as compiling when one member of it does not.
+     */
+    it('OPEN: admits one unconditional void call, which the bus route still cannot compile', () => {
       expect(namedDiagnostic(voidSingular)).toBe('ADMITTED');
+      expect(compilerMessage(voidSingular)).toBe(WAS_BLOCK_SLOT);
+      expect(compileString(voidSingular, { forceStateful: true }).bytecode.length).toBeGreaterThan(0);
     });
 
     it('admits a contract with no low-level call at all', () => {

@@ -59,6 +59,7 @@ import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionP
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
 import ExpandBoundedPointerTableLoop from './semantic/ExpandBoundedPointerTableLoop.js';
+import { validateLowLevelCallShapes } from './semantic/LowLevelCallShapes.js';
 import {
   PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
@@ -1423,6 +1424,12 @@ function compileResolvedAst(
   // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
   const messageBusGraphMode = !!mergedCompilerOptions.experimentalHiddenBatch
     && !!mergedCompilerOptions.experimentalMessageBusController;
+  // Reject the low-level call shapes the transcript row cannot bind (call options, iterated and conditional
+  // callsites, more than one per handler) against the SOURCE construct, before any bus lowering unrolls a loop
+  // or renames a handler. Without this the same sources reach the user as `Block slot not found: lowLevelCall[0]`
+  // or as a rule naming the synthesized `__scb_graph_run`. Graph mode only: the direct route compiles call
+  // options and iterated low-level calls today and must keep doing so.
+  if (messageBusGraphMode) validateLowLevelCallShapes(ast.contract);
   const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
   const rolledLoopCeilings: ProvenLoopCeilingMap = new Map<string, number[]>();
   if (messageBusGraphMode) {

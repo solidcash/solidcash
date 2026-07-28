@@ -169,6 +169,8 @@ task-specific report, not in this table.
 | **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
 | **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (REPAIRED)** | refusal replaced by X29's real repair - see 4.33 |
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
+| **SEC-8** | **X29's shared reached flag permits satoshi-container theft** | — | X29 | **TODO (security, LIVE)** | VM-settled and broadcast; emit-only handler arms a transfer flag - see 4.35 |
+| X30 | Frame width > 1 is UNREACHABLE, not merely unmeasured | — | X29 | TODO | a mid-chain participant owning two rows rejects at input 2, independent of X29 |
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED** | effect-carrying handlers keep binding AND keep their effects; routes SHRANK |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
@@ -186,6 +188,49 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.35 SEC-8: X29's own repair introduced a satoshi-container theft
+
+Found by Worker A reviewing X29, which it did not implement. **VM-settled and broadcast-accepted.** This is the
+strongest argument in the whole effort for the rule that INTEGRATED is not PROVEN: X29 was a careful, measured
+security repair whose author found and closed a hole it opened - and it still shipped a second one that only an
+independent attacker found.
+
+**Mechanism.** `planGraphEffectFrames` builds ONE `GraphEffectFrame` shared by every effect-carrying handler,
+with `transferWidth = max(...)` across them. `GenerateTargetTraversal.ts:6273` writes the route-local reached
+flag from that SHARED width. So dispatching an **emit-only** handler sets `GRAPH_TRANSFER_REACHED = 1`. Its
+subroutine settles nothing, because that guard requires `pendingTransfers.length > 0`. And the route epilogue's
+not-reached preservation guard is skipped, because the flag reads 1. The co-spent satoshi container then has
+**no identity check and no value check at all**.
+
+**Measured**, one row selecting an emit-only sibling, container 5,000 satoshis at input 2:
+
+| `sibling` body | container output | result |
+|---|---|---|
+| `emit` + outgoing call | preserved 5,000 | ACCEPTED (honest control) |
+| `emit` + outgoing call | **drained to 0** | **ACCEPTED, broadcast on chain** |
+| `emit` only, no call | preserved 5,000 | ACCEPTED |
+| `emit` only, no call | drained to 0 | REJECTS at input 0 |
+
+The source control differs by exactly one line - deleting the outgoing call from the sibling's body - and the
+route's block layout is identical. Attributed by ablation: adding `transferInfos.length > 0` to the flag
+condition flips the drain from broadcast-accepted to a rejection at input 0, with all three controls unchanged.
+
+**Blast radius, and a caution for future readers.** Worker A instrumented `planGraphEffectFrames` and found that
+C1's Router and Notifier and C3's Sink all receive **no frame** - so this shape is absent from every shipped
+capstone, and `Layer3EmissionEffectEscape` is the ONLY fixture that exercises X29's frame path at all. The 8
+conditional event/transfer slots on C1 and C3 routes come from row reservation, not from `graphEffectFrame`;
+**slot counts are not evidence that a route uses X29**.
+
+**A named-unproven surface turned out to be unreachable, not merely unmeasured.** Frame width > 1 requires a
+mid-chain participant owning two rows AND making an outgoing call per row. Measured with X29 entirely inactive:
+one row ACCEPTED, two rows REJECTS at input 2, while a leaf owning two rows is ACCEPTED. So `site` is 0 in every
+settleable bus graph, the `site * width` multiply is never exercised at runtime, and per-site frame separation
+has zero VM evidence. That blocker predates X29 and is not charged against it.
+
+**Three surfaces attacked clean**: SEC-7's drop condition held against seven shapes; branch-guarded emits and
+transfers are properly guarded on both paths; and the site ordinal is a compile-time literal a caller cannot
+influence.
 
 ### 4.2h Round-11 dispatch, base `d83f3795` - close the review gap
 

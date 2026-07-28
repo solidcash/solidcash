@@ -155,6 +155,15 @@ export interface BalancedAssemblyInputView {
   unlocker?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
 }
 
+/** The block layout an input publishes as a participant master, or `undefined` when it publishes none. */
+const publishedMasterBlock = (
+  input: BalancedAssemblyInputView | undefined,
+): FunctionBlockLayout | undefined => {
+  const layout = input?.unlocker?.abiFunction?.blockLayout;
+  if (!layout || !layout.slots.some((slot) => slot.kind === 'master' && slot.offset === 0)) return undefined;
+  return layout;
+};
+
 /**
  * Derive the physical index space from the transaction itself.
  *
@@ -163,28 +172,67 @@ export interface BalancedAssemblyInputView {
  * no cooperation from the caller - which is what makes the preflight a GATE rather than a capability the caller
  * may decline to use.
  *
- * Returns `undefined` when the transaction is not describable by this model, so the gate stays silent instead of
- * guessing: no participant block at index 0 (an ordinary or stateless transaction); a block running past the
- * transaction; or a participant region leaving no slot for the fee input / terminal change output.
+ * Returns `undefined` only when NO input publishes a participant master, which is an ordinary or stateless
+ * transaction the block model was never meant to judge. Once any input does publish one the transaction is in
+ * scope, and a shape the model cannot describe is REFUSED rather than skipped: the field it reads is owned by
+ * the caller, so an unlocker that produces byte-identical unlocking bytecode without re-exposing `abiFunction`
+ * used to erase the whole gate by making it report "nothing to check".
+ *
+ * SCOPE, measured rather than assumed: a published master AFTER the participant region (an injected extra
+ * block) is not refused here. That shape is already refused by the token-outside-the-region check when its
+ * outputs carry tokens, and by the graph-root controller's exhaustive participant table when they do not, and
+ * both refusals name the defect more precisely than this derivation could.
  */
 export function deriveBalancedAssemblyFromInputs(
   inputs: readonly BalancedAssemblyInputView[], totalSlots: number,
 ): BalancedAssembly | undefined {
   if (!Number.isInteger(totalSlots) || totalSlots < 1) return undefined;
+  const published: number[] = [];
+  for (let index = 0; index < totalSlots; index += 1) {
+    if (publishedMasterBlock(inputs[index])) published.push(index);
+  }
+  if (published.length === 0) return undefined;
   const blocks: BalancedBlockPlacement[] = [];
   let cursor = 0;
   while (cursor < totalSlots) {
-    const layout = inputs[cursor]?.unlocker?.abiFunction?.blockLayout;
-    if (!layout || !layout.slots.some((slot) => slot.kind === 'master' && slot.offset === 0)) break;
+    const layout = publishedMasterBlock(inputs[cursor]);
+    if (!layout) break;
     blocks.push({ participant: blocks.length, base: cursor, blockLayout: layout });
     cursor += layout.blockSize;
   }
-  if (blocks.length === 0 || cursor > totalSlots) return undefined;
-  // The model puts the fee input and the terminal change output past every relocatable block; a transaction whose
-  // participant region covers every slot has no such tail and is out of this model's scope.
-  if (cursor > totalSlots - 1) return undefined;
+  if (blocks.length === 0) {
+    fail(
+      `input ${published[0]} publishes a participant master block but no block starts at index 0; `
+      + 'the participant region must be concatenated from index 0',
+    );
+  }
+  const bases = new Set(blocks.map((block) => block.base));
+  const swallowed = published.find((index) => index < cursor && !bases.has(index));
+  if (swallowed !== undefined) {
+    fail(`input ${swallowed} publishes a participant master block inside another block's span`);
+  }
+  if (cursor > totalSlots) {
+    fail(`participant ${blocks.length - 1} block runs past the transaction's ${totalSlots} slots`);
+  }
+  // The model puts the fee input and the terminal change output past every relocatable block.
+  if (cursor > totalSlots - 1) {
+    fail(`the participant region covers all ${totalSlots} slots, leaving no fee input or change output`);
+  }
+  // The canonical composed tail is one projection proof per participant, then the graph-root controller, then
+  // the fee/change slot. Reporting no auxiliary slots at all silently disabled both auxiliary checks, one of
+  // which the sidecar covenants require. A tail of any other width is NOT that region - an injected extra
+  // participant block lands there too - so it is left unclaimed rather than mislabelled as sidecars; the
+  // controller's exhaustive `tx.inputs.length == activeInputIndex + 2` rule is what refuses that shape.
+  const sidecars = blocks.length + 1;
+  const canonicalTail = cursor + sidecars === totalSlots - 1;
   return {
-    blocks, auxiliaryInputs: [], feeInput: totalSlots - 1, changeOutput: totalSlots - 1, totalSlots,
+    blocks,
+    auxiliaryInputs: canonicalTail
+      ? Array.from({ length: sidecars }, (_unused, index) => cursor + index)
+      : [],
+    feeInput: totalSlots - 1,
+    changeOutput: totalSlots - 1,
+    totalSlots,
   };
 }
 

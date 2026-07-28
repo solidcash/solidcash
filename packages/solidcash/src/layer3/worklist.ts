@@ -5,7 +5,8 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
-  planCompiledGraph, type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
+  assertNoUnboundCallOptions, planCompiledGraph, resolveGraphAbiFunction,
+  type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
 
 export interface WorklistParticipant extends CompiledGraphParticipant {
@@ -60,44 +61,17 @@ export interface DeriveCompiledGraphOptions {
 }
 
 const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
-  const matches = participant.artifact.abi.filter((candidate) => candidate.name === name);
-  if (matches.length !== 1) {
-    throw new Error(`layer3: symbolic worklist requires one ABI function '${name}'`);
-  }
-  return matches[0];
-};
-
-/** Block slots that carry a call option or an unconditioned value movement the transcript row cannot bind. */
-const OPTION_SLOT_KINDS = new Set(['satoshiContainer', 'transfer', 'tokenContainer', 'tcTransfer']);
-
-/**
- * Reject a graph invocation whose function carries a call option.
- *
- * `IFoo(addr).m{value: v}()` and an explicit `transfer(..)` both add `transferCount` plus `satoshiContainer` /
- * `transfer` slots to the DIRECT block layout, while the SCB1 route layout and the transcript row are byte
- * identical to the option-free form. Executing such a function as a graph row would therefore drop the option
- * silently: no covenant byte enforces it and no transcript field commits it. Fail closed until the option is a
- * committed row field.
- */
-const assertNoUnboundCallOptions = (
-  participant: WorklistParticipant, fn: AbiFunction, name: string,
-): void => {
-  const slots = fn.blockLayout?.slots?.filter((slot) => OPTION_SLOT_KINDS.has(slot.kind)) ?? [];
-  if ((fn.transferCount ?? 0) === 0 && slots.length === 0) return;
-  const detail = (fn.transferCount ?? 0) > 0
-    ? `${fn.transferCount} value option(s)/transfer(s)`
-    : `block slots ${[...new Set(slots.map((slot) => slot.kind))].join(', ')}`;
-  throw new Error(
-    `layer3: function '${name}' of participant ${participant.lockingBytecode.slice(0, 12)} declares `
-    + `${detail}, which the transcript row does not bind; call options are not an admitted graph edge`,
-  );
+  const resolved = resolveGraphAbiFunction(participant.artifact, name);
+  if (!resolved) throw new Error(`layer3: symbolic worklist requires one ABI function '${name}'`);
+  return resolved;
 };
 
 /**
  * Compiler-authored mode of one graph edge.
  *
- * Never coerce: `planCompiledGraph` only reaches its `delegatecall` rejection when the mode is absent, so a
- * silent `mode ?? 'call'` here would let a delegate edge execute as an ordinary call.
+ * Never coerce. `planCompiledGraph` now refuses an explicit mode outside `call`/`staticcall`, but this helper
+ * always supplies one, which bypasses that planner's INFERENCE path - so a silent `mode ?? 'call'` here would
+ * still let a delegate edge execute as an ordinary call, unseen by either check.
  */
 const edgeCallMode = (call: ExternalCallAbi): 'call' | 'staticcall' => {
   const mode = call.callMode ?? 'call';
@@ -221,7 +195,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const invocation = invocations.length;
     invocations.push({ parent, callee: owner, function: functionName, args, ...(callMode && { callMode }) });
     const fn = functionAbi(participant, functionName);
-    assertNoUnboundCallOptions(participant, fn, functionName);
+    assertNoUnboundCallOptions(
+      participant.lockingBytecode, participant.artifact, fn, functionName,
+    );
     const key = `${owner}:${functionName}`;
     if (active.has(key)) {
       throw new Error(

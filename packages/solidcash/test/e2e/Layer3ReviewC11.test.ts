@@ -707,10 +707,11 @@ const busOnly = {
 };
 
 describe('C-R11 / E2: do call options and iterated low-level calls fail closed for every spelling?', () => {
-  // FINDING. The refusal lives in `deriveCompiledGraphPlan` only. `planCompiledGraph` is the other public
-  // `layer3` planning entry point - the one every committed capstone fixture (C1, C2, C3, X7, E4) uses - and
-  // it carries no option check at all. Honest control: the same source with `{value: amount}` deleted.
-  it('planCompiledGraph accepts the value option that deriveCompiledGraphPlan refuses', () => {
+  // X31, CLOSED. The refusal used to live in `deriveCompiledGraphPlan` only, while `planCompiledGraph` - the
+  // other public `layer3` planning entry point, and the one every committed capstone fixture (C1, C2, C3, X7,
+  // E4) uses - carried no option check at all. Both now run the SAME refusal, so the diagnostic below is one
+  // string produced by one function. Honest control: the same source with `{value: amount}` deleted.
+  it('both planning entry points refuse the value option with the same diagnostic', () => {
     const withOption = compileString(VALUE_OPTION_ROOT, busOnly);
     const optionFree = compileString(OPTION_FREE_ROOT, busOnly);
     const sink = compileString(SINK_CHILD, busOnly);
@@ -720,10 +721,11 @@ describe('C-R11 / E2: do call options and iterated low-level calls fail closed f
     expect(optionFree.abi.find((fn) => fn.name === 'go')!.transferCount).toBeUndefined();
     // The SCB1 route the graph actually executes is byte-identical between the two.
     expect(JSON.stringify(withOption.hiddenBatch)).toBe(JSON.stringify(optionFree.hiddenBatch));
+    const expected = /declares 1 value option\(s\)\/transfer\(s\), which the transcript row does not bind/;
     expect(() => layer3.deriveCompiledGraphPlan({
       root: { artifact: withOption, lockingBytecode: rootLbc },
       function: 'go', args: [5n], targets: { IC11Sink: { artifact: sink, lockingBytecode: sinkLbc } },
-    } as any)).toThrow(/value option\(s\)\/transfer\(s\)/);
+    } as any)).toThrow(expected);
     const viaPlan = (): unknown => layer3.planCompiledGraph([
       { artifact: withOption, lockingBytecode: rootLbc },
       { artifact: sink, lockingBytecode: sinkLbc },
@@ -731,24 +733,100 @@ describe('C-R11 / E2: do call options and iterated low-level calls fail closed f
       { parent: null, callee: 0, function: 'go', args: [5n] },
       { parent: 0, callee: 1, function: 'take', args: [5n] },
     ]);
-    expect(viaPlan).not.toThrow();
+    expect(viaPlan).toThrow(expected);
+    // Honest control for the same entry point: the option-free source plans through it.
+    expect(() => layer3.planCompiledGraph([
+      { artifact: optionFree, lockingBytecode: rootLbc },
+      { artifact: sink, lockingBytecode: sinkLbc },
+    ], [
+      { parent: null, callee: 0, function: 'go', args: [5n] },
+      { parent: 0, callee: 1, function: 'take', args: [5n] },
+    ])).not.toThrow();
   });
 
-  // The end-to-end consequence of the entry point above: the option-bearing source settles as a graph, and
-  // the route block it executes has no satoshi slot at all, so the promised value never moves.
-  it('a value-option graph settles with the option silently dropped', async () => {
-    const built = await buildPairGraph(VALUE_OPTION_ROOT, SINK_CHILD, 'take', {
-      rootArgs: [5n], childArgs: [5n],
-    });
-    const direct = built.rootArtifact.abi.find((fn: any) => fn.name === 'go');
-    expect(direct.blockLayout.slots.map((slot: any) => slot.kind))
+  // The end-to-end consequence, inverted. The option-bearing source used to SETTLE as a graph while the route
+  // block it executes has no satoshi slot at all, so the promised value never moved. The compiler asymmetry
+  // that made the drop invisible is unchanged; what changed is that the transaction can no longer be built.
+  it('the value-option graph can no longer be assembled at all', async () => {
+    const withOption = compileString(VALUE_OPTION_ROOT, busOnly);
+    const direct = withOption.abi.find((fn) => fn.name === 'go')!;
+    expect(direct.blockLayout!.slots.map((slot) => slot.kind))
       .toEqual(['master', 'satoshiContainer', 'transfer']);
-    // The SCB1 route block the graph runs carries neither slot: nothing can move the option's value.
-    expect(built.rootArtifact.hiddenBatch.route.blockLayout.slots.map((slot: any) => slot.kind))
-      .toEqual(['master']);
-    expect(evaluateEachInput(built.builder)).toEqual(new Array(6).fill(null));
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    // The SCB1 route block the graph would run carries neither slot: nothing could move the option's value.
+    expect(withOption.hiddenBatch!.route.blockLayout!.slots.map((slot) => slot.kind)).toEqual(['master']);
+    await expect(buildPairGraph(VALUE_OPTION_ROOT, SINK_CHILD, 'take', {
+      rootArgs: [5n], childArgs: [5n],
+    })).rejects.toThrow(/value option\(s\)\/transfer\(s\)/);
   }, 120_000);
+
+  /**
+   * The refusal must not be wider than the defect, and this is the exact line it must not cross.
+   *
+   * A first-party `this.transfer(..)` publishes the SAME direct-mode `transferCount` and the same
+   * `satoshiContainer`/`transfer` block slots as the call option, so a guard keyed on the direct layout alone
+   * refuses both. It must not: the compiler CARRIES a first-party transfer into the route (one
+   * `handler.transfers` entry plus eight route `transfer` slots) and the C1/C3/Controller capstones settle
+   * exactly that shape on the VM, with a hostile case pinning the paid amount. Measured: refusing the whole
+   * class fails 40 tests across five committed Layer-3 files.
+   */
+  it('admits a first-party transfer, which the route carries, through both entry points', () => {
+    const payer = compileString(`pragma solidcash >=0.8.0;
+interface IC11Sink { function take(int amount); }
+contract C11Payer(bytes payee, address peer) {
+  bigint total;
+  function go(bigint amount) public {
+    this.total = this.total + amount;
+    this.transfer(payee, 10);
+    IC11Sink(peer).take(amount);
+    require(amount > 0);
+  }
+}`, busOnly);
+    const sink = compileString(SINK_CHILD, busOnly);
+    const fn = payer.abi.find((candidate) => candidate.name === 'go')!;
+    const handler = payer.hiddenBatch!.handlers.find((candidate) => candidate.name === 'go')!;
+    // Direct mode is INDISTINGUISHABLE from the refused option; the handler projection is the discriminator.
+    expect(fn.transferCount).toBe(1);
+    expect(fn.blockLayout!.slots.map((slot) => slot.kind))
+      .toEqual(['master', 'dataNft', 'satoshiContainer', 'transfer']);
+    expect(handler.transfers).toHaveLength(1);
+    expect(payer.hiddenBatch!.route.blockLayout!.slots.filter((slot) => slot.kind === 'transfer').length)
+      .toBeGreaterThan(0);
+    const rootLbc = `aa20${'ce'.repeat(32)}87`;
+    const sinkLbc = `aa20${'ab'.repeat(32)}87`;
+    expect(() => layer3.planCompiledGraph([
+      { artifact: payer, lockingBytecode: rootLbc },
+      { artifact: sink, lockingBytecode: sinkLbc },
+    ], [
+      { parent: null, callee: 0, function: 'go', args: [5n] },
+      { parent: 0, callee: 1, function: 'take', args: [5n] },
+    ])).not.toThrow();
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: { artifact: payer, lockingBytecode: rootLbc },
+      function: 'go', args: [5n], targets: { IC11Sink: { artifact: sink, lockingBytecode: sinkLbc } },
+    } as any)).not.toThrow();
+  });
+
+  // The OTHER divergence the same reconciliation closed: a caller-authored call mode outside the admitted
+  // pair. `deriveCompiledGraphPlan` refuses it at the callsite; `planCompiledGraph` used to skip its
+  // delegatecall rejection entirely whenever the mode was supplied rather than inferred, and the transcript
+  // encodes any non-staticcall mode as a plain call.
+  it('refuses a caller-authored call mode outside call/staticcall', () => {
+    const root = compileString(OPTION_FREE_ROOT, busOnly);
+    const sink = compileString(SINK_CHILD, busOnly);
+    const rows = [
+      { artifact: root, lockingBytecode: `aa20${'cd'.repeat(32)}87` },
+      { artifact: sink, lockingBytecode: `aa20${'ab'.repeat(32)}87` },
+    ];
+    expect(() => layer3.planCompiledGraph(rows, [
+      { parent: null, callee: 0, function: 'go', args: [5n] },
+      { parent: 0, callee: 1, function: 'take', args: [5n], callMode: 'delegatecall' as any },
+    ])).toThrow(/invocation 1 declares call mode 'delegatecall', which is not a participant-graph edge/);
+    // Honest control: the admitted mode on the same row plans.
+    expect(() => layer3.planCompiledGraph(rows, [
+      { parent: null, callee: 0, function: 'go', args: [5n] },
+      { parent: 0, callee: 1, function: 'take', args: [5n], callMode: 'call' },
+    ])).not.toThrow();
+  });
 
   // Honest control for the case above: the same source with the option deleted produces the same settlement.
   it('honest control: the option-free source settles identically', async () => {
@@ -815,8 +893,8 @@ contract C11ModernValue() {
   });
 
   // A value option written in only ONE arm of a branch still publishes the transfer, so the branch spelling
-  // does not slip past `deriveCompiledGraphPlan` - and still slips past `planCompiledGraph`.
-  it('a branch-local value option is refused by one entry point and admitted by the other', () => {
+  // does not slip past either entry point now that both run the same refusal.
+  it('a branch-local value option is refused by both entry points', () => {
     const branched = compileString(`pragma solidcash >=0.8.0;
 interface IC11Sink { function take(int amount); }
 contract C11BranchValue(int brand, address peer) {
@@ -840,7 +918,7 @@ contract C11BranchValue(int brand, address peer) {
     ], [
       { parent: null, callee: 0, function: 'go', args: [5n] },
       { parent: 0, callee: 1, function: 'take', args: [5n] },
-    ])).not.toThrow();
+    ])).toThrow(/value option\(s\)\/transfer\(s\)/);
   });
 
   describe('iterated low-level calls', () => {

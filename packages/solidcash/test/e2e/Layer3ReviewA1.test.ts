@@ -249,6 +249,29 @@ type Rewrite = (
   transcript: layer3.FinalizedCompiledGraph,
 ) => layer3.FinalizedCompiledGraph;
 
+/**
+ * A physical substitution that leaves the transcript entirely honest and moves exactly one property of one
+ * settled output. These are the preservation properties the review checklist names: value, category,
+ * capability, commitment and locking bytecode.
+ */
+type Physical =
+  /** The leaf's state authority is downgraded from a minting master to an ordinary mutable NFT. */
+  | 'master-capability'
+  /** The leaf's master output is re-branded with another participant's token category. */
+  | 'master-category'
+  /** The leaf's master output keeps one satoshi less than the input it continues. */
+  | 'master-value'
+  /** The leaf's data NFT is sent to an ordinary p2pkh token address, not its own state covenant. */
+  | 'data-locking-bytecode'
+  /** The leaf's data NFT carries a post-state commitment the handler did not compute. */
+  | 'data-commitment'
+  /** The oracle's return-event NFT is published as a mutable NFT rather than an immutable one. */
+  | 'return-capability'
+  /** The graph-root controller's own continuation output is paid 1,200 satoshis instead of 1,000. */
+  | 'controller-slot-value'
+  /** The first projection proof's own continuation output is paid 1,200 satoshis instead of 1,000. */
+  | 'projection-slot-value';
+
 interface BuiltA1 {
   provider: ReturnType<typeof createLayer3SemanticTestProvider>;
   builder: TransactionBuilder;
@@ -267,7 +290,7 @@ interface BuiltA1 {
  * the controller is rooted with and every covenant is handed - exactly the freedom a real attacker has, since
  * the transcript is witness data and its commitment is whatever the attacker committed.
  */
-async function buildA1(rewrite?: Rewrite): Promise<BuiltA1> {
+async function buildA1(rewrite?: Rewrite, physical?: Physical): Promise<BuiltA1> {
   const provider = createLayer3SemanticTestProvider();
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
   const controller = new Contract(
@@ -393,17 +416,32 @@ async function buildA1(rewrite?: Rewrite): Promise<BuiltA1> {
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
 
   const settled: { label: string; address: string; commitment: string }[] = [];
+  // Every physical substitution below targets participant 1 (the leaf) except the return-event one, which can
+  // only target participant 3 (the oracle) because it is the graph's only returning participant.
+  const participantOf = (kind: Physical): number => (kind === 'return-capability' ? 3 : 1);
+  const attacked = (target: number, kind: Physical): boolean =>
+    physical === kind && participantOf(kind) === target;
   rows.forEach((row, participant) => {
-    const next = buildInitialStateCommitments(row.artifact.stateLayout!, { [row.field]: row.value })[0];
+    const honest = buildInitialStateCommitments(row.artifact.stateLayout!, { [row.field]: row.value })[0];
+    const next = attacked(participant, 'data-commitment')
+      ? buildInitialStateCommitments(row.artifact.stateLayout!, { [row.field]: row.value + 1n })[0]
+      : honest;
     tx.addOutput({
       to: row.contract.tokenAddress,
-      amount: row.setup.masterUtxo.satoshis,
+      amount: row.setup.masterUtxo.satoshis - (attacked(participant, 'master-value') ? 1n : 0n),
       token: {
-        category: row.setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' },
+        category: attacked(participant, 'master-category')
+          ? rows[0].setup.categoryId : row.setup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: attacked(participant, 'master-capability') ? 'mutable' : 'minting',
+          commitment: '',
+        },
       },
     });
     tx.addOutput({
-      to: getDataNftAddress(row.contract, row.setup.categoryId),
+      to: attacked(participant, 'data-locking-bytecode')
+        ? p2pkh.tokenAddress : getDataNftAddress(row.contract, row.setup.categoryId),
       amount: row.setup.dataNftUtxos[0].satoshis,
       token: {
         category: row.setup.categoryId, amount: 0n,
@@ -413,7 +451,7 @@ async function buildA1(rewrite?: Rewrite): Promise<BuiltA1> {
     settled.push({
       label: `p${participant}.${row.field}`,
       address: getDataNftAddress(row.contract, row.setup.categoryId),
-      commitment: next,
+      commitment: honest,
     });
     if (layout.returnOutputs![participant] !== null) {
       tx.addOutput({
@@ -421,13 +459,21 @@ async function buildA1(rewrite?: Rewrite): Promise<BuiltA1> {
         amount: 1000n,
         token: {
           category: row.setup.categoryId, amount: 0n,
-          nft: { capability: 'none', commitment: binToHex(aggregateResult(SCORE)) },
+          nft: {
+            capability: attacked(participant, 'return-capability') ? 'mutable' : 'none',
+            commitment: binToHex(aggregateResult(SCORE)),
+          },
         },
       });
     }
   });
-  projectionUtxos.forEach(() => tx.addOutput({ to: p2pkh.address, amount: 1000n }));
-  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  projectionUtxos.forEach((_proof, slot) => tx.addOutput({
+    to: p2pkh.address,
+    amount: physical === 'projection-slot-value' && slot === 0 ? 1200n : 1000n,
+  }));
+  tx.addOutput({
+    to: p2pkh.address, amount: physical === 'controller-slot-value' ? 1200n : 1000n,
+  });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
 
   return {
@@ -732,6 +778,46 @@ describe('A1 review: unattacked transcript fields', () => {
     expect(failingInput(attacked)).toBe(input);
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
   }, 120_000);
+});
+
+/**
+ * Preservation of the settled resource itself, with an entirely honest transcript.
+ *
+ * C1 attacks a satoshi amount, a state commitment and an event NFT's destination. Neither capstone attacks a
+ * token CATEGORY or a token CAPABILITY, and neither moves a state NFT out of its own covenant. Each case below
+ * changes exactly one property of exactly one settled output and nothing else.
+ */
+describe('A1 review: state and resource preservation', () => {
+  const cases: { property: string; physical: Physical; input: number }[] = [
+    { property: 'master NFT capability', physical: 'master-capability', input: INPUT.leaf },
+    { property: 'master NFT category', physical: 'master-category', input: INPUT.root },
+    { property: 'master output value', physical: 'master-value', input: INPUT.leaf },
+    { property: 'data NFT locking bytecode', physical: 'data-locking-bytecode', input: INPUT.leaf },
+    { property: 'data NFT state commitment', physical: 'data-commitment', input: INPUT.leaf },
+    { property: 'return-event NFT capability', physical: 'return-capability', input: INPUT.oracle },
+    // The 1,000-satoshi slot value is often described as an SDK assembly convention. For the two SIDECAR
+    // slot kinds it is not: both generated covenants require `tx.outputs[activeInputIndex].value == 1000`
+    // for their own continuation output, so paying 1,200 there is refused by the covenant itself.
+    { property: 'projection slot 1,000-satoshi value', physical: 'projection-slot-value', input: INPUT.projection0 },
+    { property: 'controller slot 1,000-satoshi value', physical: 'controller-slot-value', input: INPUT.controller },
+  ];
+
+  // NOTE for the review record: unlike C1's matrix, the covenant that refuses is not always the one that owns
+  // the field. Re-branding the leaf's master output with the root's token category is refused at input 0, the
+  // ROOT's route, before the leaf's own route at input 2 is ever reached.
+  it.each(cases)('HOSTILE: not preserving the $property is rejected at input $input', async (
+    { physical, input },
+  ) => {
+    const control = await buildA1();
+    expect(preflightOutcome(control)).toBe('ACCEPTED');
+
+    const built = await buildA1(undefined, physical);
+    // The transcript is byte-identical to an honest one: only a physical output property moved.
+    expect(patchedByteIndices(built)).toEqual([]);
+    expect(built.transaction.length).toBe(control.transaction.length);
+    expect(failingInput(built)).toBe(input);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 240_000);
 });
 
 /**

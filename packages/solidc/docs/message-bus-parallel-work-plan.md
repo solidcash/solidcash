@@ -171,6 +171,10 @@ task-specific report, not in this table.
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
 | **SEC-8** | **X29's shared reached flag permits satoshi-container theft** | — | X29 | **TODO (security, LIVE)** | VM-settled and broadcast; emit-only handler arms a transfer flag - see 4.35 |
 | X30 | Frame width > 1 is UNREACHABLE, not merely unmeasured | — | X29 | TODO | a mid-chain participant owning two rows rejects at input 2, independent of X29 |
+| **SEC-9** | No event analogue of X29's not-reached guard | — | SEC-8 | **TODO (security)** | `eventWidth` is a group max; a transfer-only handler leaves event slots unverified |
+| X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | — | E2 | TODO | `planCompiledGraph`, which every capstone uses, has no check |
+| X32 | L2's derived gate is silenced by a bare `Unlocker` | — | L2 | TODO | `abiFunction` is optional on the base type; preflight returns undefined and broadcasts |
+| X33 | S2's `touchesCollection` does not descend through calls | — | S2 | TODO | one callee deeper restores the pre-S2 internal error |
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED** | effect-carrying handlers keep binding AND keep their effects; routes SHRANK |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
@@ -188,6 +192,57 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.37 Round-11 review of X23/X27/E2/E4: a gap its own author could not close, and one real hole
+
+**Worker C closed X23's recorded evidence limit** - the one its author tried three fixture variants on and
+failed. The author read it as a fixture problem; it was an instrument problem. `preflightLayer3Transaction`
+throws on the FIRST failing input, but the projection verifier never reads `tx.inputs[i].unlockingBytecode` -
+only `attest` does - so evaluating each input SEPARATELY on the same transaction isolates each covenant.
+Measured discriminating power: on every emission forgery exactly inputs 0 and 4 fail while 1, 2, 3, 5, 6 and 7
+pass, on the same forged transaction.
+
+**X23 clean, with stronger evidence than the system-level kind it previously had.** The rewritten one-slice
+emission comparison refuses forged target, call mode, selector and target-length-frame bytes ON ITS OWN. For a
+forged depth and a forged callee, **no participant route refuses at all** - only the rewritten
+`activeCallees`/`usedMask` tables and the controller do. A term-by-term read found no dropped check, two
+coalesced bounds strictly stronger, and the callee range silently tightened from `< 8` to `< participantCount`.
+
+**X27 clean**, with five cases driving `cursor`/`tail` to the `frame.length` boundary including
+`invocationCount + 1`, where the split lands at `tail == transcriptLength` exactly - the tight case for the
+in-range claim.
+
+**E2 FINDING - the guard is on the wrong entry point.** The call-option refusal lives only in
+`deriveCompiledGraphPlan`. `planCompiledGraph` - the other public `layer3` entry point, and **the one every
+committed capstone fixture uses** - has no option check, and a `{value:}` graph settles through it with the
+option silently dropped. Iterated low-level calls do fail closed on every spelling tested.
+
+**E4 - the recorded reason for its one open row is wrong.** `SignatureTemplate.unlockP2PKH()` does give a real
+25-byte origin, so the positive branch is satisfiable and a not-the-origin caller refuses WITH an origin
+present, which the committed case could not separate from "no origin exists". But a ROOT handler that READS
+`msg.sender` cannot execute at all: a tautology over it fails at input 0 with `OP_SPLIT ... stack item length:
+25; requested split index: 73`, one token from a passing control. It fails closed, but as a malformed-script
+failure rather than a designed refusal.
+
+### 4.38 SEC-8: the obvious repair does NOT close it, reported rather than shipped
+
+Worker C reproduced the drain on its own fixture, confirmed the shared-frame mechanism, and **deliberately did
+not apply Worker A's ablation** - keying on `transferInfos.length` alone would arm the flag for a
+`{value:}`-option-only handler, which the frame grouping deliberately excludes because nothing settles those.
+That is the caveat Worker A raised when offering the ablation as attribution rather than a fix.
+
+It built the principled version instead - a per-handler `graphEffectSettlesTransfers` set only for frame members
+- and **it does not work**. The fix is confirmed present in the built compiler, 26 of 27 escape cases pass, and
+the drain is still ACCEPTED. So the dispatch-site flag write is not the only path to the unguarded container,
+and Worker A's ablation moved more than the single condition it names.
+
+The attempt is committed on a branch as `it.fails` so the drain stays visible, and the worker said explicitly:
+**do not integrate it as a fix.** It was NOT merged. SEC-8 remains open, and the next step is to measure which
+of `graphTransferFlagActive`, frame membership, or the epilogue's stack condition differs on this shape.
+
+**A second lead from the same construction, unchased: `eventWidth` is a group maximum too, and there is no event
+analogue of the not-reached guard.** A transfer-only handler dispatched at a site leaves `eventWidth` reserved
+event slots with nothing verifying them. Opened as SEC-9.
 
 ### 4.36 Round-11 review of S2, L1, L2: two real findings, and X28's own figure was stale
 

@@ -781,6 +781,37 @@ describe('A1 review: unattacked transcript fields', () => {
 });
 
 /**
+ * What an "identical control" can and cannot mean for a fixture built twice.
+ *
+ * C1's hostile matrix compares an attacked build against a control produced by a SECOND call to the same
+ * builder, and asserts the two serialize to the same LENGTH. C1's own comment goes further and states that
+ * "every other byte of the transaction is identical to the `none` control produced by the same function".
+ * These builders draw fresh outpoints and mint fresh token categories per call, so that stronger statement
+ * cannot hold. This test measures it on a fixture that uses exactly the same helpers.
+ */
+describe('A1 review: what a same-length control proves', () => {
+  it('two honest builds are the same LENGTH but are NOT the same bytes', async () => {
+    const first = await buildA1();
+    const second = await buildA1();
+
+    // Same length: this is the property that supports "no input, output or witness was added or removed".
+    expect(second.transaction.length).toBe(first.transaction.length);
+
+    // Not the same bytes: fresh categories and fresh outpoints per build. A same-length control is therefore
+    // evidence about SHAPE, and is not evidence that only the named field differs.
+    expect(second.transaction).not.toBe(first.transaction);
+    let differing = 0;
+    for (let index = 0; index < first.transaction.length; index += 1) {
+      if (first.transaction[index] !== second.transaction[index]) differing += 1;
+    }
+    expect(differing).toBeGreaterThan(first.transaction.length / 100);
+    // The transcripts differ too, for the same reason - which is why every byte-level claim in this file is
+    // measured against the honest transcript of the SAME build.
+    expect(binToHex(second.honestTranscript.bytes)).not.toBe(binToHex(first.honestTranscript.bytes));
+  }, 240_000);
+});
+
+/**
  * Preservation of the settled resource itself, with an entirely honest transcript.
  *
  * C1 attacks a satoshi amount, a state commitment and an event NFT's destination. Neither capstone attacks a

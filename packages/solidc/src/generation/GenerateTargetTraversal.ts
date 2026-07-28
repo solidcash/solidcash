@@ -206,6 +206,10 @@ const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 // X29. Hidden context an SCB1 route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
+// X29. Route-local flag: did ANY dispatch site reach a transfer-carrying graph emission handler? The satoshi
+// container's identity and conservation are settled inside that subroutine, so a batch whose rows all select a
+// transfer-free sibling would otherwise co-spend the container with nothing verifying its output at all.
+const GRAPH_TRANSFER_REACHED = '__internal__graphTransferReached';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -699,6 +703,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // conditional delegatecall. The epilogue requires the proxy's own state to be untouched wherever it is 0.
   private static readonly DELEGATE_TAKEN = '__internal__delegateTaken';
   private delegateTakenFlagActive: boolean = false;
+
+  // X29: the route allocated GRAPH_TRANSFER_REACHED for this function.
+  private graphTransferFlagActive: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
@@ -2816,6 +2823,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.delegateTakenFlagActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.DELEGATE_TAKEN);
+    }
+
+    // X29. Same shape, same reason, for the satoshi container. A transfer-carrying graph handler settles the
+    // container inside its OP_INVOKE subroutine, which only runs on a reached dispatch site - and a route may
+    // admit a transfer-FREE sibling handler, so a batch of rows selecting only that sibling reaches no site.
+    // The flag lets the epilogue preserve the container on exactly that path.
+    this.graphTransferFlagActive = !this.isDefineSubTraversal && node.hiddenBatchRoute === true
+      && (node.graphEffectFrame?.transferWidth ?? 0) > 0;
+    if (this.graphTransferFlagActive) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GRAPH_TRANSFER_REACHED);
     }
 
     this.c2WitnessSnapshotsRestored = false;
@@ -6248,6 +6266,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (let i = 0; i < targetFunc.returnTypes.length; i++) {
       this.pushToStack('(value)');
+    }
+    // X29. This dispatch site reached a handler that settles the satoshi container itself, so the route's
+    // epilogue must NOT also preserve it. Written through emitReplace so a site inside a dispatch branch keeps
+    // the frame depth-balanced, the same way a conditional emit's pre-allocated blob slot is written.
+    if (this.graphTransferFlagActive && (targetFunc.graphEffectFrame?.transferWidth ?? 0) > 0
+      && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
+      this.emit(Op.OP_1, locationData);
+      this.pushToStack('(graph_transfer_reached_new)');
+      this.emitReplace(this.getStackIndex(GRAPH_TRANSFER_REACHED), node);
+      this.popFromStack();
     }
 
     return node;
@@ -20723,6 +20751,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.emit(Op.OP_VERIFY, locationData);
       this.popFromStack();
+    }
+
+    // X29. The route's own pendingTransfers is empty when the transfers live in a graph handler's frames, so
+    // neither block above runs - yet the container slot IS in the block and the container's own covenant does
+    // not protect its output on the master-spend path. The subroutine settles it, but only on a dispatch site
+    // that reached it, and a route may admit a transfer-FREE sibling handler. On the path where no site was
+    // reached, preserve the container here instead: identity plus inputValue <= outputValue, so a batch of
+    // sibling-only rows cannot co-spend the container and pay its satoshis anywhere.
+    if (this.graphTransferFlagActive && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emitSatoshiContainerIdentity(locationData);
+      this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
+      this.emit(Op.OP_UTXOVALUE, locationData);
+      this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
+      this.emit(Op.OP_OUTPUTVALUE, locationData);
+      this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+      this.emit(Op.OP_VERIFY, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
     }
   }
 

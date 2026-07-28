@@ -374,6 +374,146 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   };
 }
 
+/**
+ * X29's own hostile case, on the half the substitution cases do not reach.
+ *
+ * A transfer-carrying handler settles the satoshi container INSIDE its OP_INVOKE subroutine, which only runs on
+ * a dispatch site that reached it - and this route also admits `note`, which carries no transfer. A batch whose
+ * only row selects `note` therefore reaches no site, so nothing in the subroutine runs, while the container slot
+ * is still in the block and the container's own covenant does not protect its output on the master-spend path.
+ * Left unguarded that is a drain: co-spend the container, dispatch the sibling, keep the satoshis.
+ *
+ * `drain` is the single variable - whether the container output preserves the container or is a 0-value stub
+ * with the satoshis taken to the fee change.
+ */
+async function buildSiblingOnlyBatch(drain: boolean): Promise<{
+  builder: TransactionBuilder; transaction: string; provider: SemanticProvider; callerInput: number;
+}> {
+  const provider = createLayer3SemanticTestProvider();
+  const outpoints = new Set<string>();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const hubArtifact = compileString(hubSource(false, true), options);
+  const hubBase = new Contract(hubArtifact, [], { provider });
+  const hubSetup = await setupStatefulUtxos(provider, hubBase, hubArtifact.stateLayout!, { total: 0n });
+  const hub = hubBase.withCategory(hexToBin(hubSetup.categoryId));
+
+  const plan = layer3.planCompiledGraph(
+    [{ artifact: hubArtifact, lockingBytecode: hub.lockingBytecode }],
+    [{ parent: null, callee: 0, function: 'note', args: [CALL_VALUE] }],
+  );
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, plan.participants.map(() => null),
+    plan.participants.map(() => ''), layout.projectionInputs,
+  );
+
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const initFee = uniqueUtxo(outpoints, { satoshis: 20_000n });
+  await provider.addUtxo(p2pkh.address, initFee);
+  const initTx = new TransactionBuilder({ provider });
+  initTx.addInput(genesisUtxo, controller.unlock.initialize(hexToBin(transcript.root), alicePub, signature()));
+  initTx.addInput(initFee, p2pkh.unlock.spend(alicePub, signature()));
+  initTx.addOutput({
+    to: controller.tokenAddress, amount: genesisUtxo.satoshis,
+    token: {
+      category: controllerCategory, amount: 0n,
+      nft: { capability: 'mutable', commitment: transcript.root },
+    },
+  });
+  initTx.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(initTx));
+  const rootedController = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo: any) => utxo.token?.nft?.commitment === transcript.root);
+
+  const projections = plan.participants.map(() => uniqueUtxo(outpoints, { satoshis: 1000n }));
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+  const fee = uniqueUtxo(outpoints, { satoshis: 300_000n });
+  await provider.addUtxo(p2pkh.address, fee);
+
+  const hubLayout = hubArtifact.hiddenBatch!.route.blockLayout!;
+  const hubSlotKind = new Map<number, string>(hubLayout.slots.map((slot: any) => [slot.offset, slot.kind]));
+  const fillers = Array.from(
+    { length: hubLayout.blockSize }, () => uniqueUtxo(outpoints, { satoshis: 1000n }),
+  );
+  for (const funding of fillers) await provider.addUtxo(p2pkh.address, funding);
+  const CONTAINER_SATS = 5_000n;
+  const container = uniqueUtxo(outpoints, { satoshis: CONTAINER_SATS });
+  await provider.addUtxo(getSatoshiContainerAddress(hub, hubSetup.categoryId), container);
+
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  let fillerCursor = 0;
+  for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
+    const kind = hubSlotKind.get(offset);
+    if (kind === 'master') {
+      tx.addInput(hubSetup.masterUtxo, hub.createCompilerRouteUnlocker(
+        hubArtifact.hiddenBatch!.route, hexToBin(hubArtifact.hiddenBatch!.selector),
+      )(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any));
+    } else if (kind === 'dataNft') {
+      tx.addInput(
+        hubSetup.dataNftUtxos[0],
+        createDataNftUnlocker(hub, layout.participantInputs[0], hubSetup.categoryId),
+      );
+    } else if (kind === 'satoshiContainer') {
+      tx.addInput(container, createSatoshiContainerUnlocker(
+        hub, layout.participantInputs[0], hubSetup.categoryId,
+      ));
+    } else {
+      tx.addInput(fillers[fillerCursor], p2pkh.unlock.spend(alicePub, signature()));
+      fillerCursor += 1;
+    }
+  }
+  projections.forEach((proof, participant) => tx.addInput(
+    proof, projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
+    const kind = hubSlotKind.get(offset);
+    if (kind === 'master') {
+      tx.addOutput({
+        to: hub.tokenAddress, amount: hubSetup.masterUtxo.satoshis,
+        token: { category: hubSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+    } else if (kind === 'dataNft') {
+      tx.addOutput({
+        to: getDataNftAddress(hub, hubSetup.categoryId), amount: hubSetup.dataNftUtxos[0].satoshis,
+        token: {
+          category: hubSetup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: buildInitialStateCommitments(hubArtifact.stateLayout!, { total: CALL_VALUE })[0],
+          },
+        },
+      });
+    } else if (kind === 'satoshiContainer') {
+      // THE variable: preserve the container, or take its satoshis and leave a 0-value stub behind.
+      tx.addOutput(drain
+        ? { to: p2pkh.address, amount: 0n }
+        : { to: getSatoshiContainerAddress(hub, hubSetup.categoryId), amount: CONTAINER_SATS });
+    } else {
+      tx.addOutput({ to: p2pkh.address, amount: 1000n });
+    }
+  }
+  for (let slot = 0; slot < projections.length + 1; slot += 1) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: drain ? 35_000n : 30_000n });
+
+  return {
+    builder: tx, transaction: raw(tx), provider, callerInput: layout.participantInputs[0],
+  };
+}
+
 const outcomeOf = (builder: TransactionBuilder): string => {
   try {
     layer3.preflightLayer3Transaction(builder);
@@ -482,6 +622,24 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
     }, 600_000,
   );
+
+  /**
+   * X29's own hostile case. Moving the container settlement into the subroutine leaves the not-reached path
+   * unguarded unless the route preserves the container there, so this is the guard's negative control AND its
+   * honest control, one variable apart. Both rows are the SAME batch selecting the transfer-free sibling.
+   */
+  it('settles a sibling-only batch that preserves the co-spent container', async () => {
+    const built = await buildSiblingOnlyBatch(false);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  it('rejects a sibling-only batch that drains the co-spent container', async () => {
+    const built = await buildSiblingOnlyBatch(true);
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
 
   // Both effects at once - the shape C1's router and C3's hub actually have.
   it('settles the honest graph with an emit AND a transfer', async () => {

@@ -3406,6 +3406,39 @@ export default class AstBuilder
   }
 
   visitUncheckedStatement(ctx: UncheckedStatementContext): UncheckedNode {
+    if (this.solidityImportCompat) {
+      let parent = ctx.parentCtx;
+      let containingBlock: ParserRuleContext | undefined;
+      while (parent) {
+        if (parent.constructor.name === 'UncheckedStatementContext') {
+          throw new ParseError('Unchecked blocks cannot be nested', Location.fromCtx(ctx));
+        }
+        if (parent.constructor.name === 'BlockContext') {
+          containingBlock = parent;
+          break;
+        }
+        parent = parent.parentCtx;
+      }
+      // `block` also accepts one unbraced statement for control-flow bodies. Solidity permits `unchecked`
+      // only as a statement inside a regular `{ ... }` block, never as that direct body.
+      if (containingBlock && !containingBlock.getText().startsWith('{')) {
+        throw new ParseError(
+          'Unchecked blocks can only be used inside regular blocks',
+          Location.fromCtx(ctx),
+        );
+      }
+      const containsPlaceholder = (tree: ParseTree): boolean => {
+        if (tree.constructor.name === 'PlaceholderStatementContext') return true;
+        const children = (tree as ParseTree & { children?: ParseTree[] }).children ?? [];
+        return children.some(containsPlaceholder);
+      };
+      if (containsPlaceholder(ctx)) {
+        throw new ParseError(
+          'Modifier placeholders cannot be used inside unchecked blocks',
+          Location.fromCtx(ctx),
+        );
+      }
+    }
     const statements = ctx.statement_list().map((s) => this.visit(s) as StatementNode);
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);

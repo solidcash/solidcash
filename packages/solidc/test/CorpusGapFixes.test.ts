@@ -3115,6 +3115,30 @@ describe('function-type and state-variable modifier consistency', () => {
   });
 });
 
+describe('unchecked block placement', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects nested unchecked blocks', () => {
+    expect(() => cc('contract C { function f() public pure { unchecked { unchecked { uint x = 1; } } } }'))
+      .toThrow(/Unchecked blocks cannot be nested/);
+  });
+
+  it('rejects unchecked as an unbraced control-flow body', () => {
+    expect(() => cc('contract C { function f() public pure { while (true) unchecked { } } }'))
+      .toThrow(/only be used inside regular blocks/);
+  });
+
+  it('rejects modifier placeholders inside unchecked blocks', () => {
+    expect(() => cc('contract C { modifier m() { unchecked { _; } } }'))
+      .toThrow(/Modifier placeholders cannot be used inside unchecked blocks/);
+  });
+
+  it('retains a non-nested unchecked block inside a regular block', () => {
+    expect(cc('contract C { function f() public pure returns (uint) { unchecked { return 1 + 2; } } }'))
+      .toBe('C');
+  });
+});
+
 describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles fixed-point arithmetic that solc rejects (UnimplementedFeatureError)', () => {

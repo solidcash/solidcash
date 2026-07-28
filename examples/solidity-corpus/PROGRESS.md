@@ -5093,3 +5093,13 @@ The focused suite is **1028/1028**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1031/1031**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 443, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Unchecked-block placement loop: 4443 flat, NEG-ACCEPTED 443 -> 440 (-3)
+
+- Solidity-compatible unchecked blocks now reject nested unchecked regions and direct unbraced use as a control-flow
+  body; they remain valid as non-nested statements inside regular blocks.
+- Modifier placeholders are rejected anywhere inside an unchecked block before modifier expansion erases the
+  original source nesting.
+
+The focused suite is **1035/1035**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+440, plus 275 multifile and 289 cmdline fixtures excluded.

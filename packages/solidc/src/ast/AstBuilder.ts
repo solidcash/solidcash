@@ -4067,6 +4067,12 @@ export default class AstBuilder
     // Ethereum. Literal ids fold at parse time; runtime string/bytes expressions lower to the specification's
     // hash/arithmetic expression (Solidity accepts calldata, memory, storage, concat, ternary, and pure-call ids).
     if (identifiers.length === 1 && name === 'erc7201' && parameters.length === 1) {
+      if (this.solidityImportCompat && ctx.callOptions()) {
+        throw new ParseError(
+          'Function call options can only be set on external function calls or contract creations',
+          Location.fromCtx(ctx),
+        );
+      }
       let arg = parameters[0];
       if (arg instanceof IdentifierNode) {
         const constantValue = this.constantStringValues.get(arg.name);

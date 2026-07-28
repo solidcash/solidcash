@@ -2471,6 +2471,13 @@ describe('erc7201(id) -> spec-conformant ERC-7201 namespaced storage slot (real 
     expect(cc('contract C { function f(string memory id) external pure returns (uint256) {'
       + ' return erc7201(id); } }')).toBe('C');
   });
+  it('rejects gas and value call options on the builtin', () => {
+    for (const option of ['gas: 10', 'value: 1']) {
+      expect(() => cc('contract C { function f() public pure returns (uint) {'
+        + ` return erc7201{${option}}("x"); } }`))
+        .toThrow(/call options can only be set on external function calls or contract creations/i);
+    }
+  });
   it('ignores a `contract C layout at erc7201(...)` storage-layout clause', () => {
     expect(cc('contract C layout at erc7201("x") { uint256 n; function f() external { this.n = 1; } }')).toBe('C');
   });

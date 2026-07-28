@@ -5330,3 +5330,13 @@ The focused suite is **1095/1095**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1097/1097**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 353, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### ERC-7201 call-options loop: 4443 flat, NEG-ACCEPTED 353 -> 352 (-1)
+
+- Solidity-compatible `erc7201{gas: ...}(...)` and `erc7201{value: ...}(...)` calls now reject function-call
+  options because the builtin is neither an external call nor a contract creation.
+- Validation happens before the ERC-7201 constant/runtime lowering can discard those options. Ordinary literal,
+  constant, and runtime namespace expressions retain their existing spec-conformant lowering.
+
+The focused suite is **1098/1098**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+352, plus 275 multifile and 289 cmdline fixtures excluded.

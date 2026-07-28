@@ -167,13 +167,15 @@ task-specific report, not in this table.
 | X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C+A | X15 | INTEGRATED (scoped) | bare spelling admitted; a second key alternative or `msg.sender` key still needs `bindEntryKeyParameters` |
 | **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
-| **SEC-6** | Emission handler with a transfer/emit/token-container is still unbound | C | SEC-5 | **LEASED (security)** | round 8; build the forgery first, then fix or fail closed |
+| **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (fail-closed)** | CONFIRMED live forgery; refused by name, NOT repaired - see 4.30 |
+| **SEC-7** | Token-container spelling does not reach SEC-6's refusal | — | SEC-6 | **TODO (security)** | `this.tokens[c].transfer(..)` stays a MethodCallStatement; edge bound but route reserves no slot |
+| X29 | Thread a per-call-site output index into the subroutine | — | SEC-6 | TODO | the real repair SEC-6 fails closed in place of |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
 | X22 | Result-consuming handler that also carries an effect | A | C1 | LEASED | round 9; name it or admit it - silence and sentinels both unacceptable |
 | X23 | Reduce projection-verifier operation density | B | C1 | INTEGRATED | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
-| X24 | Unroll the constant-depth stack-write shuttle | C | X23 | LEASED | round 8, after SEC-6; ~7x on EVERY variable write in EVERY contract |
+| X24 | Unroll the constant-depth stack-write shuttle | C | X23 | INTEGRATED | -17.5% on projections, NOT the ~7x estimated - see 4.30 |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -184,6 +186,60 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.30 SEC-6 is a live forgery, refused rather than repaired - and it turns two capstones red
+
+Worker C built the one-variable control that settles it. At `9bf3e5ea`, changing ONLY whether the caller's
+handler carries an `emit` or `transfer`:
+
+| caller body | graph clone | emission binding sites | honest | argument sub | selector sub |
+|---|---|---|---|---|---|
+| effect-free | behind `OP_INVOKE` | 4 | SETTLES | REJECTS @0 | REJECTS @0 |
+| emit-carrying | flattened into `__scb1` | **0** | SETTLES | **SETTLED** | **SETTLED** |
+
+Adding `msg.sender == hub` to every callee changed nothing. Both substitutions still settled.
+
+**It reaches a capstone this board already integrated.** `C1Router.settle` measures **0** emission-binding sites
+for its three outgoing edges, and deleting its `emit` + `transfer` restores 4. C1's seven hostile cases all
+reject - but none of them attacks the caller's own emission row, which is the surface this opens. That is not a
+defect in C1's matrix; it is a surface nobody knew existed until the one-variable control was built. **C2 is
+NOT affected** - its fixtures carry no effects at all, verified, so its `PROVEN` promotion stands.
+
+**Refused by name, not repaired, and the reason is measured.** Keeping the clone behind `OP_INVOKE` restores
+binding - 0 to 32 sites - but then silently DROPS the effect: the honest graph settled with zero event slots and
+no event output. Trading a forgeable edge for a silently dropped transfer is not a fix. The real repair needs a
+per-call-site output index threaded from the route into the subroutine, opened as X29.
+
+**This deliberately turns 26 fixtures red**: `Layer3DefiCapstoneC1` (11), `Layer3BoundedMaximumGraphC3` (11),
+`Layer3CompiledGraphController` (4). Every one is the emit-carrying shape measured forgeable. The integration
+owner accepted a temporarily red SDK tree because **a live forgery outranks a green suite**, and notified the
+two workers already mid-flight on those capstones' CHANGES rather than letting them finish against a base that
+was about to change under them.
+
+**SEC-7 opened:** the token-container spelling `this.tokens[c].transfer(..)` does NOT reach the refusal - it is
+still a `MethodCallStatement` at that pass, so the clone is never flattened and its edge stays bound - but its
+route reserves no token slot either, i.e. the same silent-effect-drop shape from the other direction. Pinned by
+the worker rather than claimed as covered.
+
+### 4.31 X24 lands at -17.5%, and corrects the estimate that motivated it
+
+X24 unrolls the deep stack-variable write. Measured run-to-completion, never on an aborted evaluation:
+projection proofs **-17.5%**, root controller -11.3%, participant routes -12.0%, and a p2pkh control at exactly
+**0** change.
+
+**It is NOT the ~7x the earlier estimate suggested, and the worker said so directly.** That 84% figure was
+measured on the PRE-rewrite covenant; after X23's own rewrite the remaining share is 17.5%. Fully accounted for:
+8 deep replacements totalling 139 shuttled items, 139 x (22-3) x 100 = 264,100 predicted against 261,695
+measured.
+
+**The corpus number is again declared meaningless by its own author.** The 329-contract `.scash` corpus reports
+0 changed - and instrumenting `emitReplace` shows **0 of 638 `.scash` files reach depth 14 at all**, so the
+branch never fires. The discriminating corpus is real Solidity: 2 of 167 compiling `.sol` files, `Unicrow.sol`
+(10 deep sites, 148 items, max depth 20) and `UnicrowClaim.sol`.
+
+It buys operation count with emitted bytes: the projection verifier goes 9,002 to 9,268, inside the 10,000-byte
+limit but with less headroom, while the root controller SHRANK. The counted-loop path is retained behind
+`UNROLL_DEEP_REPLACE`, so the trade is one byte-exact line to revert.
 
 ### 4.29 FOUR ROWS PROMOTED TO PROVEN at `16979e0e`
 

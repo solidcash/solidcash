@@ -167,9 +167,9 @@ task-specific report, not in this table.
 | X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C+A | X15 | INTEGRATED (scoped) | bare spelling admitted; a second key alternative or `msg.sender` key still needs `bindEntryKeyParameters` |
 | **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
-| **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (fail-closed)** | CONFIRMED live forgery; refused by name, NOT repaired - see 4.30 |
-| **SEC-7** | Token-container spelling does not reach SEC-6's refusal | C | SEC-6 | **LEASED (security)** | round 10; edge stays bound but route reserves no slot |
-| X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | LEASED | round 10; if it lands, C1 and C3 reshape BACK rather than being reduced |
+| **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (REPAIRED)** | refusal replaced by X29's real repair - see 4.33 |
+| **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
+| X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED** | effect-carrying handlers keep binding AND keep their effects; routes SHRANK |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
@@ -186,6 +186,43 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.33 X29 lands: the repair beats the refusal, and the sequencing bet paid off
+
+The bet recorded in 4.32 was to build the repair BEFORE reducing the capstones. It paid off.
+
+X29 threads a per-call-site output frame from the route into the shared subroutine, so an effect-carrying
+handler stays behind `OP_INVOKE` - keeping its emission binding - AND still produces its event and satoshi
+transfer. Measured on one fixture with one variable:
+
+| caller body | clone | emission recomputations | honest | argument sub | selector sub |
+|---|---|---|---|---|---|
+| effect-free | `OP_INVOKE` | 3 | SETTLES | REJECTS@0 | REJECTS@0 |
+| emit, at `9bf3e5ea` | flattened | **0** | SETTLES | **SETTLED** | **SETTLED** |
+| emit, with X29 | `OP_INVOKE` | 3 | SETTLES | REJECTS@0 | REJECTS@0 |
+| transfer, with X29 | `OP_INVOKE` | 3 | SETTLES | REJECTS@0 | REJECTS@0 |
+
+Two guard controls attack the PRESENCE of the effect - event output replaced by a plain funder, transfer paid
+the wrong amount - so the repair is shown not to have re-introduced the silent-drop failure mode it replaced.
+
+**It also shrinks what it fixes.** C1's real router goes 3,457 to **2,430 bytes (-29.7%)**, and block layouts are
+byte-identical to the flattened form, which is why the capstone fixtures needed no wiring change. The controller
+and projection verifier are byte-identical - X29 cannot reach them - so Worker B's 9,268/10,000 headroom is
+untouched.
+
+**Three self-corrections, all found by measurement, one of them a hole the fix itself opened.** Keeping EVERY
+effect-carrying clone behind `OP_INVOKE` broke an edge-free `msg.value` batch; scoped to clones with an outgoing
+call. Reserving frames after the route's own slots doubled an existing route's event slots; frames now share
+base 0. And moving container settlement into the subroutine left the not-reached path unguarded - a batch
+**settled with the container's satoshis taken**. Found, closed with a route-local reached flag, and attributed by
+ablation.
+
+**SEC-7 fails closed, and its stated cause was wrong twice - by its own author.** It is not "still a
+`MethodCallStatement`", and the message bus was never the variable. The discriminator is whether the handler
+also READS its container: without the read the route reserves no transfer slot and settles with no transfer, on
+a plain hidden batch exactly as on the bus. It is exploitable rather than merely lossy because the same function
+called DIRECTLY does enforce the transfer, the routed entry does not, and **the spender picks the entry**. The
+guard is written on the drop condition rather than the spelling.
 
 ### 4.32 Round-10 dispatch: the tree is RED by design, and that is the sequencing
 

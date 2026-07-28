@@ -3,8 +3,8 @@ import { binToHex } from '@bitauth/libauth';
 import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
-  Ast, ContractNode, ContractReferenceNode, FunctionDefinitionNode, FunctionModifier, IdentifierNode,
-  InstantiationNode, MethodCallNode, Node, ParameterNode, SourceFileNode, TypeIntrospectionNode,
+  Ast, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode, FunctionModifier,
+  IdentifierNode, InstantiationNode, MethodCallNode, Node, ParameterNode, SourceFileNode, TypeIntrospectionNode,
   VariableDefinitionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -79,7 +79,9 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
-import { AbstractContractInstantiationError, CircularContractReferenceError } from './Errors.js';
+import {
+  AbstractContractInstantiationError, CircularContractReferenceError, UndefinedReferenceError,
+} from './Errors.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -205,7 +207,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     }
   }
 
-  if (mergedCompilerOptions.solidityImportCompat) validateAbstractContractInstantiations(ast);
+  if (mergedCompilerOptions.solidityImportCompat) {
+    validateAbstractContractInstantiations(ast);
+    validateFunctionNamespaceShadows(ast);
+  }
 
   // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
   // inline+substitute parent constructors/modifiers. A parent ctor's `name.toShortStringWithFallback(fb)` becomes
@@ -570,6 +575,39 @@ function validateAbstractContractInstantiations(ast: Ast): void {
     }
   };
   for (const contract of contracts) walk(contract);
+}
+
+// Solidity resolves a contract-scope function before a type namespace with the same name. Perform this check on
+// the source AST, before inheritance expansion rewrites `Base.f()` to an internal base-dispatch alias and loses
+// the original ambiguous spelling.
+function validateFunctionNamespaceShadows(ast: Ast): void {
+  const contracts = [ast.contract, ...ast.importedContracts];
+  const contractsByName = new Map(contracts.map((contract) => [contract.name, contract]));
+
+  for (const contract of contracts) {
+    const functionNames = new Set(contract.functions.map((fn) => fn.name));
+    if (functionNames.size === 0) continue;
+    const visited = new WeakSet<Node>();
+    const walk = (node: Node): void => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      if (node instanceof FunctionCallNode && node.identifier.name.includes('.')) {
+        const [qualifier, member] = node.identifier.name.split('.', 2);
+        const namespace = contractsByName.get(qualifier);
+        if (functionNames.has(qualifier)
+          && namespace?.functions.some((candidate) => candidate.name === member)) {
+          throw new UndefinedReferenceError(node.identifier);
+        }
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) walk(item);
+        }
+      }
+    };
+    walk(contract);
+  }
 }
 
 /**

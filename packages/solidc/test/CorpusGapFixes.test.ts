@@ -9532,3 +9532,22 @@ describe('direct-base effective function origins', () => {
     ).contractName).toBe('D');
   });
 });
+
+describe('function declarations shadow contract namespaces', () => {
+  it('rejects a base-qualified call when the qualifier resolves to a function', () => {
+    expect(() => compileString(
+      'contract A { function f() public {} }'
+      + ' contract B is A { function A() public pure returns (uint8) {}'
+      + ' function g() public { A.f(); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/Undefined reference to symbol A\.f/);
+  });
+
+  it('retains an ordinary explicit base-qualified call', () => {
+    expect(compileString(
+      'contract A { function f() public {} }'
+      + ' contract B is A { function g() public { A.f(); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('B');
+  });
+});

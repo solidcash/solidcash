@@ -5320,3 +5320,13 @@ The focused suite is **1093/1093**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1095/1095**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 354, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Function/contract namespace-shadowing loop: 4443 flat, NEG-ACCEPTED 354 -> 353 (-1)
+
+- Solidity-compatible source units now resolve a contract-scope function before a same-named contract namespace,
+  so `function A() ...; A.f()` no longer falls through to an inherited `A.f` base-dispatch alias.
+- The check runs on the source AST before inheritance expansion erases the ambiguous spelling and is limited to
+  real members of the shadowed contract namespace. Ordinary explicit base-qualified calls remain valid.
+
+The focused suite is **1097/1097**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+353, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -685,9 +685,11 @@ describe('layer3.planCompiledGraph', () => {
     const projectionArtifact = compileString(projection);
     // Freeze the actual redeem-script cost of the variable-table parsers. `Artifact.bytecode` is ASM text;
     // `debug.bytecode` is the hex-encoded script and is the consensus/deployment size.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_897);
-    // 7,025 before X7; the result-cursor exhaustion assertion costs 8 bytes.
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(7_033);
+    // X23 rewrote both walks to make fewer and shallower stack-variable writes - the dominant BCH-2026
+    // operation-cost term - with no check removed. 1,897 before X23.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_504);
+    // 7,025 before X7; the result-cursor exhaustion assertion costs 8 bytes. 7,033 before X23.
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_501);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

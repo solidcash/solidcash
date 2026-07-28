@@ -333,6 +333,7 @@ export default class AstBuilder
   // instead produce Solidity's "Name has to refer to a user-defined type" error in a type position.
   private sourceNonTypeNames = new Set<string>();
   private nonTypeNames = new Set<string>();
+  private fileErrorNames = new Set<string>();
   // Straight-line aliases from external function-pointer variables to a declared self method. Used by
   // abi.encodeCall(pointer, tuple), whose selector is statically known for these direct Solidity assignments.
   private selfExternalFunctionAliases: Map<string, string> = new Map();
@@ -574,6 +575,7 @@ export default class AstBuilder
     const errorDefinitions = ctx.errorDefinition_list().map(
       (e) => this.visitErrorDefinition(e),
     );
+    this.fileErrorNames = new Set(errorDefinitions.map((definition) => definition.name));
 
     const interfaceDefinitions = ctx.interfaceDefinition_list().map(
       (i) => this.visitInterfaceDefinition(i),
@@ -3520,6 +3522,12 @@ export default class AstBuilder
       const name = identifiers.length > 1
         ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
         : identifiers[0].getText();
+      if (this.solidityImportCompat && this.fileErrorNames.has(name)) {
+        throw new ParseError(
+          `Error '${name}' can only be used with a revert statement or as a require error`,
+          Location.fromCtx(ctx),
+        );
+      }
       const identifier = new IdentifierNode(name);
       identifier.location = Location.fromToken(identifiers[0].symbol);
       const namedArgs = ctx.namedArg_list();
@@ -3534,6 +3542,12 @@ export default class AstBuilder
     const name = identifiers.length > 1
       ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
       : identifiers[0]?.getText() ?? ctx.start.text;
+    if (this.solidityImportCompat && this.fileErrorNames.has(name)) {
+      throw new ParseError(
+        `Error '${name}' can only be used with a revert statement or as a require error`,
+        Location.fromCtx(ctx),
+      );
+    }
     const identifier = new IdentifierNode(name);
     identifier.location = Location.fromToken(identifiers[0]?.symbol ?? ctx.start);
     const parameters = this.buildCallArguments(ctx.expressionList()!);

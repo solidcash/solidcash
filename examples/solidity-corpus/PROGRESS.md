@@ -4908,3 +4908,13 @@ The focused suite is **972/972**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **975/975**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 505, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Custom-error call-context loop: 4443 flat, NEG-ACCEPTED 505 -> 502 (-3)
+
+- Declared custom errors now reject when invoked as ordinary function calls or nested as expression values.
+- Source construction validates file-level free functions that return before the full semantic contract pipeline.
+- Contract and namespaced library calls share the semantic diagnostic, while `revert` and `require` uses remain
+  valid.
+
+The focused suite is **978/978**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+502, plus 275 multifile and 289 cmdline fixtures excluded.

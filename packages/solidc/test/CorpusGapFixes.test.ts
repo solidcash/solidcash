@@ -488,6 +488,37 @@ describe('Solidity custom-error selector collisions', () => {
   });
 });
 
+describe('Solidity custom-error call contexts', () => {
+  const cc = (body: string): string => compileString(
+    `error E(uint value); contract C { function f() public { ${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it('rejects a custom error used as an ordinary call or assert argument', () => {
+    expect(() => cc('E(1);')).toThrow(/only be used with a revert statement.*require error/i);
+    expect(() => cc('assert(E(1));')).toThrow(/only be used with a revert statement.*require error/i);
+    expect(() => compileString(
+      'error FreeError(); function f() pure { FreeError(); }',
+      { solidityImportCompat: true },
+    )).toThrow(/only be used with a revert statement.*require error/i);
+    expect(() => compileString(
+      'error FreeError(); function f() pure { assert(FreeError()); }',
+      { solidityImportCompat: true },
+    )).toThrow(/only be used with a revert statement.*require error/i);
+  });
+
+  it('rejects a namespaced library error used as an ordinary call', () => {
+    expect(() => compileString(
+      'library L { error Bad(); } contract C { function f() public { L.Bad(); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/only be used with a revert statement.*require error/i);
+  });
+
+  it('retains custom errors in revert and require contexts', () => {
+    expect(cc('if (false) revert E(1); require(true, E(2));')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

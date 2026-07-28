@@ -753,6 +753,15 @@ export class ErrorSelectorCollisionError extends RedefinitionError {
   }
 }
 
+export class InvalidErrorUsageError extends SolidCashError {
+  constructor(node: FunctionCallNode, errorName: string) {
+    super(
+      node,
+      `Error '${errorName}' can only be used with a revert statement or as a require error`,
+    );
+  }
+}
+
 export class UndefinedErrorError extends SolidCashError {
   constructor(node: RevertNode | RequireNode) {
     super(node, `Undefined error '${node.errorName}'`);

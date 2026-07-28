@@ -143,6 +143,7 @@ import {
   ErrorRedefinitionError,
   ReservedErrorSelectorError,
   ErrorSelectorCollisionError,
+  InvalidErrorUsageError,
   UndefinedErrorError,
   TokenContainerKeyMustBeParameterError,
   TokenContainerTransferInConstructorError,
@@ -6248,7 +6249,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private isDeclaredErrorCall(callName: string): boolean {
+    const [qualifier, errorName] = callName.includes('.') ? callName.split('.', 2) : [undefined, callName];
+    return !!(qualifier
+      ? this.libraryErrorSignatures.has(`${qualifier}.${errorName}`)
+        || (this.contractMap.get(qualifier) ?? this.interfaceMap.get(qualifier))
+          ?.errorDefinitions.some((definition) => definition.name === errorName)
+      : this.currentContract?.errorDefinitions.some((definition) => definition.name === errorName)
+        || [...this.errorMap.values()].some((definition) => definition.name === errorName));
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
+    if (this.compilerOptions.solidityImportCompat && this.isDeclaredErrorCall(node.identifier.name)) {
+      throw new InvalidErrorUsageError(node, node.identifier.name);
+    }
     this.qualifyLibrarySiblingCall(node.identifier);
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
     // dest.call(data), dest.staticcall(data)
@@ -6684,6 +6698,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // instead of crashing on the missing identifier.
     if (!node.call.identifier) {
       throw new MethodCallNotSupportedError(node);
+    }
+    if (this.compilerOptions.solidityImportCompat && this.isDeclaredErrorCall(node.call.identifier.name)) {
+      throw new InvalidErrorUsageError(node.call, node.call.identifier.name);
     }
     // A library sibling called in statement position (void call, return unused) needs qualifying too - the
     // qualifier is otherwise only wired into the expression-form visitor, so `_throwError(x);` inside `L.f`

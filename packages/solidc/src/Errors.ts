@@ -1329,6 +1329,12 @@ export class UsingForPrivateFunctionError extends SolidCashError {
   }
 }
 
+export class DeprecatedNowError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '"now" has been deprecated. Use "block.timestamp" instead');
+  }
+}
+
 export class GlobalUsingForNonUDVTError extends SolidCashError {
   constructor(node: Node, typeName: string) {
     super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);

@@ -94,6 +94,8 @@ export class ImportNode extends Node {
 }
 
 export class SourceFileNode extends Node {
+  // Solidity versions before 0.7 expose the deprecated global `now` alias for block.timestamp.
+  solidityLegacyNow = false;
   // Explicit source-unit ABI coder selection. Undefined means the compiler/default coder; only explicit v1
   // requires the legacy ABI type restrictions.
   abiCoderVersion?: 'v1' | 'v2';

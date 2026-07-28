@@ -5278,3 +5278,13 @@ The focused suite is **1086/1086**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1087/1087**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 362, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Version-aware deprecated `now` loop: 4443 flat, NEG-ACCEPTED 362 -> 361 (-1)
+
+- Solidity-compatible sources without a pre-0.7 pragma now reject the removed global `now` and direct users to
+  `block.timestamp`.
+- Explicit Solidity 0.4–0.6 pragmas retain the historical timestamp alias, and parameters or locals named `now`
+  remain ordinary shadowing declarations.
+
+The focused suite is **1088/1088**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+361, plus 275 multifile and 289 cmdline fixtures excluded.

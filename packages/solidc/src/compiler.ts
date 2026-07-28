@@ -455,7 +455,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
-  const blockOracle = new SynthesizeBlockOracle();
+  const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat ?? false);
   ast = ast.accept(blockOracle) as Ast;
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
@@ -677,7 +677,9 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
-    singleAst = singleAst.accept(new SynthesizeBlockOracle()) as Ast;
+    singleAst = singleAst.accept(new SynthesizeBlockOracle(
+      compilerOptions.solidityImportCompat ?? false,
+    )) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
     // inline passes have run (so their already-desugared bodies are not re-desugared, which duplicated locals).
     // This lets a child's own `using L for T` calls (`funding.sub(x)`) bind + resolve, instead of falling through

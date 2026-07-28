@@ -18,6 +18,7 @@ import {
   BinaryOpNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
+import { DeprecatedNowError } from '../Errors.js';
 import { IntType, AddressType, Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { TimeOp, GlobalFunction } from '../ast/Globals.js';
@@ -64,6 +65,7 @@ function setterParam(varName: string): string {
 }
 
 export default class SynthesizeBlockOracle extends AstTraversal {
+  private legacyNow = false;
   private used = new Set<string>();
   private loc: unknown;
   // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
@@ -82,6 +84,9 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private warnedShims = new Set<string>();
   private userGasleft = false;
 
+  constructor(private strictSolidityValidation = false) {
+    super();
+  }
 
   // One-time compiler warning for an EVM primitive that has no BCH analogue and is lowered as a shim.
   private warnShim(key: string, message: string): void {
@@ -165,6 +170,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // a NON-shadowed bare `now` and re-visit so it flows through the same block.timestamp lowering as an explicit ref.
   visitIdentifier(node: IdentifierNode): Node {
     if (node.name === 'now' && !this.fnDeclaredNames.has('now')) {
+      if (this.strictSolidityValidation && !this.legacyNow) throw new DeprecatedNowError(node);
       const ts = new NullaryOpNode(NullaryOperator.BLOCK_TIMESTAMP);
       ts.location = node.location;
       return this.visit(ts);
@@ -173,6 +179,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.legacyNow = node.solidityLegacyNow;
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }

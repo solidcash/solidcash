@@ -4909,6 +4909,12 @@ describe('Solidity <0.7 `now` aliases block.timestamp (shadowing respected)', ()
     ok('pragma solidity ^0.8.0; contract T {'
       + ' function f(uint256 now) public pure returns (uint256) { return now; } }');
   });
+  it('rejects the removed global without a legacy pragma', () => {
+    expect(() => compileString(
+      'contract T { function f() public view returns (uint256) { return now; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/now.*deprecated.*block\.timestamp/i);
+  });
 });
 
 describe('nested mapping to a struct value, outer index a number literal (COMP checkpoints)', () => {

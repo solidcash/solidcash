@@ -441,6 +441,10 @@ export default class AstBuilder
     return this.visit(this.tree);
   }
 
+  private usesLegacySolidityNow(): boolean {
+    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
+  }
+
   private validateFunctionTypeModifiers(root: ParseTree): void {
     const structNames = new Set<string>();
     const collectStructNames = (tree: ParseTree): void => {
@@ -1108,6 +1112,7 @@ export default class AstBuilder
         errorDefinitions, allLibEventDefs, interfaceDefinitions, freeFunctions, imports, usingForDirectives,
       );
       node.isLibrary = true;
+      node.solidityLegacyNow = this.usesLegacySolidityNow();
       node.libraryName = libName;
       node.declaredLibraryNames = declaredLibraryNames;
       node.libraryFunctionSignatures = libraryFunctionSignatures;
@@ -1192,6 +1197,7 @@ export default class AstBuilder
       contract, constantDefinitions, enumDefinitions, structDefinitions, typeDefinitions,
       errorDefinitions, allLibEventDefs, interfaceDefinitions, freeFunctions, imports, usingForDirectives,
     );
+    sourceFileNode.solidityLegacyNow = this.usesLegacySolidityNow();
     sourceFileNode.importedContracts.push(...contracts.slice(0, -1));
     sourceFileNode.declaredLibraryNames = declaredLibraryNames;
     sourceFileNode.libraryFunctionSignatures = libraryFunctionSignatures;

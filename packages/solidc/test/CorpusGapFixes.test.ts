@@ -562,6 +562,31 @@ describe('Solidity base-constructor argument validation', () => {
   });
 });
 
+describe('Solidity free-function duplicate signatures', () => {
+  it('rejects two or more identical file-level function declarations', () => {
+    expect(() => compileString(
+      'function f() pure returns (uint) { return 1; }'
+      + ' function f() pure returns (uint) { return 2; }',
+      { solidityImportCompat: true },
+    )).toThrow(/Redefinition of function 'f\(\)'/i);
+    expect(() => compileString(
+      'function f(uint x) pure returns (uint) { return x; }'
+      + ' function f(uint x) pure returns (uint) { return x + 1; }'
+      + ' function f(uint x) pure returns (uint) { return x + 2; }',
+      { solidityImportCompat: true },
+    )).toThrow(/Redefinition of function 'f\(uint256\)'/i);
+  });
+
+  it('retains file-level overloads with distinct parameter types', () => {
+    expect(compileString(
+      'function f(uint x) pure returns (uint) { return x; }'
+      + ' function f(bytes32 x) pure returns (bytes32) { return x; }'
+      + ' contract C { function g(uint x) public pure returns (uint) { return f(x); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

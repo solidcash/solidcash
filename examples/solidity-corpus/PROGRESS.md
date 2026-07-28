@@ -4940,3 +4940,12 @@ The focused suite is **980/980**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **983/983**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 498, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Duplicate free-function signature loop: 4443 flat, NEG-ACCEPTED 498 -> 496 (-2)
+
+- File-level and namespaced library free-function signatures are now checked before unreachable-function pruning.
+- Exact duplicate parameter signatures reject with the established function-redefinition diagnostic, while
+  distinct overloads remain valid.
+
+The focused suite is **985/985**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+496, plus 275 multifile and 289 cmdline fixtures excluded.

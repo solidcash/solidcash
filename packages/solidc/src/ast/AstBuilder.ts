@@ -738,8 +738,20 @@ export default class AstBuilder
     // user-defined function.
     if (this.solidityImportCompat) {
       const functionCounts = new Map<string, number>();
+      const functionSignatures = new Set<string>();
       for (const fn of freeFunctions) {
         functionCounts.set(fn.name, (functionCounts.get(fn.name) ?? 0) + 1);
+        const parameterTypes = fn.parameters
+          .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))
+          .join(',');
+        const signature = `${fn.name}(${parameterTypes})`;
+        if (functionSignatures.has(signature)) {
+          throw new ParseError(
+            `Redefinition of function '${signature}'`,
+            fn.location,
+          );
+        }
+        functionSignatures.add(signature);
       }
       for (const directive of usingForDirectives) {
         for (const binding of directive.functionBindings ?? []) {

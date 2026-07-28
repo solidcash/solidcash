@@ -1094,6 +1094,9 @@ export class CastNode extends ExpressionNode implements Typed {
   // True only for a cast written by the user. Lowering passes also use
   // CastNode for EVM-word normalization and intentionally have wider rules.
   sourceCast: boolean = false;
+  // Set when this identity cast came from `T.unwrap(x)`: the runtime target is
+  // T's underlying type, but source validation must still require x to be T.
+  sourceUdvtUnwrap?: ValueType;
   constructor(
     public type: Type,
     public expression: ExpressionNode,

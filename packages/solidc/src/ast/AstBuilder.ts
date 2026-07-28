@@ -3820,6 +3820,23 @@ export default class AstBuilder
       const name = identifiers.length > 1
         ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
         : identifiers[0].getText();
+      const directUdvt = identifiers.length === 1 ? this.typeDefMap.get(name) : undefined;
+      const qualifiedUdvt = identifiers.length === 2
+        ? this.typeDefMap.get(identifiers[0].getText()) : undefined;
+      const udvtMethod = identifiers.length === 2 ? identifiers[1].getText() : undefined;
+      if (this.solidityImportCompat && directUdvt) {
+        throw new ParseError(
+          `Explicit type conversion to '${directUdvt.name}' is not allowed; use '${directUdvt.name}.wrap(...)'`,
+          Location.fromCtx(ctx),
+        );
+      }
+      if (this.solidityImportCompat && qualifiedUdvt
+        && (udvtMethod === 'wrap' || udvtMethod === 'unwrap')) {
+        throw new ParseError(
+          `Named arguments are not valid for '${qualifiedUdvt.name}.${udvtMethod}'`,
+          Location.fromCtx(ctx),
+        );
+      }
       if (this.solidityImportCompat && this.fileErrorNames.has(name)) {
         throw new ParseError(
           `Error '${name}' can only be used with a revert statement or as a require error`,
@@ -3849,6 +3866,19 @@ export default class AstBuilder
     const identifier = new IdentifierNode(name);
     identifier.location = Location.fromToken(identifiers[0]?.symbol ?? ctx.start);
     const parameters = this.buildCallArguments(ctx.expressionList()!);
+    const directUdvt = identifiers.length === 1 ? this.typeDefMap.get(name) : undefined;
+    if (this.solidityImportCompat && directUdvt) {
+      if (parameters.length !== 1) {
+        throw new ParseError(
+          `Exactly one argument expected for explicit conversion to '${directUdvt.name}'`,
+          Location.fromCtx(ctx),
+        );
+      }
+      const cast = new CastNode(directUdvt, parameters[0], false);
+      cast.sourceCast = true;
+      cast.location = Location.fromCtx(ctx);
+      return cast;
+    }
 
     // using-for: `recv.method(args)` where recv is a struct var bound to a library -> `Library.method(recv, args)`.
     if (identifiers.length > 1 && this.usingForLibraries.size > 0) {
@@ -3967,19 +3997,29 @@ export default class AstBuilder
     // underlying type, so wrap/unwrap are casts: unwrap -> the underlying type; wrap -> the underlying then the
     // UDVT (wrap takes the underlying type, so a literal arg is first cast to it). The typeDefMap check
     // distinguishes this from a library method named wrap/unwrap (e.g. `LibClock.wrap(d, t)`).
-    if (identifiers.length === 2 && parameters.length === 1) {
+    if (identifiers.length === 2) {
       const udvt = this.typeDefMap.get(identifiers[0].getText());
       const method = identifiers[1].getText();
       if (udvt && (method === 'wrap' || method === 'unwrap')) {
+        if (parameters.length !== 1) {
+          throw new ParseError(
+            `Wrong argument count for '${udvt.name}.${method}': ${parameters.length} given but expected 1`,
+            Location.fromCtx(ctx),
+          );
+        }
         const arg = parameters[0] as ExpressionNode;
         if (method === 'unwrap') {
           const cast = new CastNode(udvt.underlyingType, arg, false);
+          cast.sourceCast = this.solidityImportCompat;
+          if (this.solidityImportCompat) cast.sourceUdvtUnwrap = udvt;
           cast.location = Location.fromCtx(ctx);
           return cast;
         }
         const toUnderlying = new CastNode(udvt.underlyingType, arg, false);
+        toUnderlying.sourceCast = this.solidityImportCompat;
         toUnderlying.location = Location.fromCtx(ctx);
         const cast = new CastNode(udvt, toUnderlying, false);
+        cast.sourceCast = this.solidityImportCompat;
         cast.location = Location.fromCtx(ctx);
         return cast;
       }

@@ -1454,6 +1454,12 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     const from = node.expression.type;
+    if (node.sourceUdvtUnwrap
+      && (!(from instanceof ValueType) || from.name !== node.sourceUdvtUnwrap.name)) {
+      throw new CastTypeError(node);
+    }
+    const validUdvtSelfCast = node.sourceCast
+      && from instanceof ValueType && node.type instanceof ValueType && from.name === node.type.name;
     // Hex literals are mobile numeric literals in Solidity: their temporary
     // bytesN type describes the spelling, not a fixed-bytes value conversion.
     const invalidSoliditySourceCast = node.sourceCast && !node.isUnsafe
@@ -1466,7 +1472,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         && from.bound * 8 !== node.type.bits)
     );
 
-    if (!validPayableLiteral && !node.isUnsafe
+    if (!validPayableLiteral && !validUdvtSelfCast && !node.isUnsafe
       && (invalidSoliditySourceCast || !explicitlyCastable(from, node.type))) {
       throw new CastTypeError(node);
     }

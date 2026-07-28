@@ -7790,6 +7790,35 @@ describe('using-for attachment declaration validation', () => {
   });
 });
 
+describe('user-defined value type construction validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects direct UDVT conversion syntax in favor of wrap', () => {
+    expect(() => cc('type MyT is uint; contract C { function f() public pure { MyT(1); } }'))
+      .toThrow(/not castable to type 'MyT'/);
+  });
+
+  it('requires one positional argument for wrap and unwrap', () => {
+    expect(() => cc('type MyT is uint; contract C { function f() public pure { MyT.wrap(); } }'))
+      .toThrow(/Wrong argument count.*expected 1/);
+    expect(() => cc('type MyT is uint; contract C { function f() public pure {'
+      + ' MyT.unwrap(MyT.wrap(1), MyT.wrap(2)); } }'))
+      .toThrow(/Wrong argument count.*expected 1/);
+  });
+
+  it('requires unwrap to receive the same UDVT', () => {
+    expect(() => cc('type MyT is uint; type MyU is uint; contract C {'
+      + ' function f() public pure { MyT.unwrap(MyU.wrap(1)); } }'))
+      .toThrow(/not castable|conversion/i);
+  });
+
+  it('retains valid Solidity wrap/unwrap', () => {
+    expect(cc('type MyT is uint; function f() pure returns (uint) {'
+      + ' return MyT.unwrap(MyT.wrap(1)); } contract C {}')).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

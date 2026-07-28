@@ -5155,3 +5155,14 @@ The focused suite is **1051/1051**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1055/1055**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 413, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### UDVT construction-validation loop: 4443 flat, NEG-ACCEPTED 413 -> 411 (-2)
+
+- Solidity-compatible user-defined value type construction now validates direct conversions and requires exactly
+  one argument for `T.wrap(...)` and `T.unwrap(...)`, preventing malformed calls from being discarded as unused.
+- `T.unwrap(value)` retains its source UDVT identity through lowering and rejects values of another UDVT even when
+  both types share the same underlying representation. Solidity's valid self-conversion `T(existingT)` remains
+  accepted.
+
+The focused suite is **1059/1059**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+411, plus 275 multifile and 289 cmdline fixtures excluded.

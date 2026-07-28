@@ -8912,11 +8912,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     });
     const sites = Math.max(0, ...siteCounts.values());
     if (sites === 0) return;
+    // Base 0, and the route's OWN effect slots are shared rather than added to. A route reaches exactly one
+    // handler per row, and the unrolled parser gives row `s` the emit/transfer indices [s*width, s*width+width)
+    // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one
+    // dispatch, which is the same reason branchOps takes the max of two arms rather than their sum. Sharing is
+    // what makes the block byte-identical to the flattened form the SDK and the capstone fixtures expect.
     const frame = {
       sites,
-      eventBase: route.emitInfos?.length ?? 0,
+      eventBase: 0,
       eventWidth: Math.max(0, ...handlers.map((fn) => fn.emitInfos?.length ?? 0)),
-      transferBase: route.transferInfos?.length ?? 0,
+      transferBase: 0,
       transferWidth: Math.max(0, ...handlers.map((fn) => fn.transferInfos?.length ?? 0)),
     };
     route.graphEffectFrame = frame;
@@ -9049,10 +9054,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'transfer', offset: offset++, slotIndex: i });
       }
     }
-    for (let i = 0; i < graphTransfers; i++) {
-      slots.push({
-        kind: 'transfer', offset: offset++, slotIndex: (node.transferInfos?.length ?? 0) + i, conditional: true,
-      });
+    for (let i = node.transferInfos?.length ?? 0; i < graphTransfers; i++) {
+      slots.push({ kind: 'transfer', offset: offset++, slotIndex: i, conditional: true });
     }
 
     // TC transfers (output-only - one slot per transfer/transferNft operation)
@@ -9072,10 +9075,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'event', offset: offset++, slotIndex: i });
       }
     }
-    for (let i = 0; i < graphEvents; i++) {
-      slots.push({
-        kind: 'event', offset: offset++, slotIndex: (node.emitInfos?.length ?? 0) + i, conditional: true,
-      });
+    for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {
+      slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
     }
 
     // Return event (output-only)

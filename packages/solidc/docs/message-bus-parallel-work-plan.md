@@ -187,6 +187,33 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.2h Round-11 dispatch, base `d83f3795` - close the review gap
+
+Section 4.34 records the real gap: only 4 rows are `PROVEN`, ~30 are `INTEGRATED`, and `INTEGRATED` means the
+integration owner verified and merged it, not that anyone tried to break it. Round 11 is full cross-review, with
+each reviewer assigned work it did not implement.
+
+| Reviewer | Reviews | Also |
+| --- | --- | --- |
+| A | **X29, SEC-6, SEC-7** (C's) | - |
+| B | **S2, L1, L2** (C's) | X28 measurement, BLOCKED on C's lease |
+| C | **E2, E4, X23, X27** (B's) | first time C reviews B's work |
+
+**X29 gets priority because it is the least-reviewed large change in the effort**: a security repair that
+replaced a fail-closed refusal, landed in a single round, and whose own author found a hole it opened - moving
+container settlement into the subroutine left the not-reached path unguarded, and a batch settled with the
+container's satoshis taken. Each reviewer's brief lists the surfaces the AUTHOR named as unproven, because a
+boundary someone was careful enough to draw is a boundary worth testing: frame width > 1 is compile-level only;
+branch-guarded effects are unmeasured; the container conservation rule is now tighter than the flattened form
+and may refuse batches it allowed.
+
+Worker C is told to attack X23's equivalence CLAIMS rather than its performance, and is pointed at the evidence
+limit X23's own author recorded - four hostile cases that refuse at the caller's route before the verifier is
+reached, with three isolation attempts failed. Isolating it would close a gap the author could not.
+
+All three briefs repeat that **a clean review is a real result**. One review in this effort found nothing and was
+accepted as such; the risk of a reviewer inventing a finding to justify its round is real and worth naming.
+
 ### 4.34 State at the end of the parallel-work effort
 
 Measured at this commit, not carried forward: **solidc 2,444 / 0** (59 files), **solidcash 3,951 / 0** (454

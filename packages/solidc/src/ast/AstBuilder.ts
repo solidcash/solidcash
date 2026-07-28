@@ -429,6 +429,7 @@ export default class AstBuilder
     private solidityImportCompat = false,
     private chunkedArrays = true,
     private sourceCode = '',
+    private allowOmittedFunctionVisibility = false,
   ) {
     super();
   }
@@ -443,6 +444,10 @@ export default class AstBuilder
 
   private usesLegacySolidityNow(): boolean {
     return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
+  }
+
+  private usesLegacySolidityDefaultFunctionVisibility(): boolean {
+    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
   }
 
   private validateFunctionTypeModifiers(root: ParseTree): void {
@@ -1926,6 +1931,19 @@ export default class AstBuilder
     const modifierContexts = ctx.functionModifier_list();
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
+    }
+    if (this.solidityImportCompat && !this.allowOmittedFunctionVisibility
+      && !this.usesLegacySolidityDefaultFunctionVisibility()
+      && !functionDefinition.modifiers.some((modifier) => [
+        FunctionModifier.PUBLIC,
+        FunctionModifier.EXTERNAL,
+        FunctionModifier.INTERNAL,
+        FunctionModifier.PRIVATE,
+      ].includes(modifier))) {
+      throw new ParseError(
+        `No visibility specified for function '${name}'. Did you intend to add 'public'?`,
+        functionDefinition.location,
+      );
     }
     // Parse custom modifier invocations (split/merge are handled specially)
     const customModCtxs = ctx.customModifierInvocation_list();

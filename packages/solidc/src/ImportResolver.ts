@@ -7,7 +7,11 @@ import { UnresolvedImportError, ImportSymbolNotFoundError, UnsafeImportPathError
 export class ImportResolver {
   private resolvedFiles = new Map<string, SourceFileNode>();
 
-  constructor(private resolver: ImportResolverFn, private solidityImportCompat = false) {}
+  constructor(
+    private resolver: ImportResolverFn,
+    private solidityImportCompat = false,
+    private allowOmittedFunctionVisibility = false,
+  ) {}
 
   resolve(ast: SourceFileNode, currentFileId: string): SourceFileNode {
     // Register this file up-front so a cyclic import back to it reuses this in-progress AST (see the loop).
@@ -55,7 +59,13 @@ export class ImportResolver {
       // InheritanceExpansionTransformation / the interface-inheritance check.
       let importedAst = this.resolvedFiles.get(resolvedId);
       if (!importedAst) {
-        importedAst = parseCode(resolved.source, undefined, this.solidityImportCompat);
+        importedAst = parseCode(
+          resolved.source,
+          undefined,
+          this.solidityImportCompat,
+          true,
+          this.allowOmittedFunctionVisibility,
+        );
         this.resolvedFiles.set(resolvedId, importedAst);
         this.resolve(importedAst, resolvedId);
       }

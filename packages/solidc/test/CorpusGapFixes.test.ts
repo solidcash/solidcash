@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { computeErc7201SlotNumber } from '@solidcash/utils';
-import { compileString, compileStringMulti } from '../src/index.js';
+import {
+  compileString as compileStringRaw,
+  compileStringMulti as compileStringMultiRaw,
+} from '../src/index.js';
+
+// Most historical focused fixtures use terse pre-0.5-style declarations. Keep that shorthand explicit here;
+// visibility-parity tests opt back into the production default with allowOmittedFunctionVisibility: false.
+const compileString: typeof compileStringRaw = (code, options = {}) =>
+  compileStringRaw(code, { allowOmittedFunctionVisibility: true, ...options });
+const compileStringMulti: typeof compileStringMultiRaw = (code, options = {}) =>
+  compileStringMultiRaw(code, { allowOmittedFunctionVisibility: true, ...options });
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
@@ -4914,6 +4924,23 @@ describe('Solidity <0.7 `now` aliases block.timestamp (shadowing respected)', ()
       'contract T { function f() public view returns (uint256) { return now; } }',
       { solidityImportCompat: true },
     )).toThrow(/now.*deprecated.*block\.timestamp/i);
+  });
+});
+
+describe('Solidity function visibility version boundary', () => {
+  it('requires explicit visibility in current Solidity compatibility mode', () => {
+    expect(() => compileString(
+      'contract C { function f() pure {} }',
+      { solidityImportCompat: true, allowOmittedFunctionVisibility: false },
+    )).toThrow(/No visibility specified.*public/i);
+  });
+
+  it('retains pre-0.5 and native SolidCash default visibility', () => {
+    expect(compileString(
+      'pragma solidity ^0.4.26; contract C { function f() pure {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+    expect(compileString('contract C { function f() pure {} }').contractName).toBe('C');
   });
 });
 

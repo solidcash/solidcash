@@ -128,7 +128,7 @@ function parseAndResolve(
 ): Ast {
   // Lexing + parsing
   let ast = parseCode(code, errorListener, mergedCompilerOptions.solidityImportCompat,
-    mergedCompilerOptions.chunkedArrays);
+    mergedCompilerOptions.chunkedArrays, mergedCompilerOptions.allowOmittedFunctionVisibility);
   const hadImports = ast.imports.length > 0;
 
   // Resolve imports first, so an imported contract is available for setPrimaryContract (compileStringMulti).
@@ -141,6 +141,7 @@ function parseAndResolve(
     }
     const resolver = new ImportResolver(
       mergedCompilerOptions.importResolver, mergedCompilerOptions.solidityImportCompat,
+      mergedCompilerOptions.allowOmittedFunctionVisibility,
     );
     ast = resolver.resolve(ast, mergedCompilerOptions.rootFileId ?? 'main');
   }
@@ -1009,6 +1010,7 @@ export function parseCode(
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
   solidityImportCompat = false,
   chunkedArrays = true,
+  allowOmittedFunctionVisibility = false,
 ): Ast {
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
@@ -1098,7 +1100,13 @@ export function parseCode(
   syntaxErrorListener.throwFirstError();
 
   // AST building
-  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, code).build() as Ast;
+  const ast = new AstBuilder(
+    parseTree,
+    solidityImportCompat,
+    chunkedArrays,
+    code,
+    allowOmittedFunctionVisibility,
+  ).build() as Ast;
 
   return ast;
 }

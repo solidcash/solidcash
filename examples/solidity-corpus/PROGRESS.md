@@ -5288,3 +5288,14 @@ The focused suite is **1087/1087**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1088/1088**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 361, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Version-aware function-visibility loop: 4443 flat, NEG-ACCEPTED 361 -> 357 (-4)
+
+- Solidity-compatible implemented contract functions now require explicit visibility unless the source selects a
+  pre-0.5 compiler range.
+- Native SolidCash keeps its implicit external/public behavior. An explicit
+  `allowOmittedFunctionVisibility` compiler option preserves the legacy shorthand for known old sources and terse
+  compiler fixtures without weakening the strict production default.
+
+The focused suite is **1090/1090**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+357, plus 275 multifile and 289 cmdline fixtures excluded.

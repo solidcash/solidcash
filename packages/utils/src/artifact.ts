@@ -27,6 +27,9 @@ export interface CompilerOptions {
   // Solidity-source compatibility: resolve `.sol` imports as solidcash sources, accept `pragma solidity`,
   // and skip the pragma version check. For porting Solidity codebases.
   solidityImportCompat?: boolean;
+  // Preserve the pre-0.5 implicit-public rule for Solidity-compatible function declarations even when the
+  // source has no legacy pragma. Intended for explicitly legacy sources and terse compiler fixtures.
+  allowOmittedFunctionVisibility?: boolean;
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];

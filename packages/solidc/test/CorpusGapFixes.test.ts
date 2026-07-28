@@ -519,6 +519,22 @@ describe('Solidity custom-error call contexts', () => {
   });
 });
 
+describe('Solidity free-function contract context', () => {
+  it("rejects 'this' outside a contract", () => {
+    expect(() => compileString(
+      'contract C {} function f() { this; }',
+      { solidityImportCompat: true },
+    )).toThrow(/'this'.*not available.*free function/i);
+  });
+
+  it("retains 'this' inside a contract function", () => {
+    expect(compileString(
+      'contract C { function f() public { address a = address(this); require(a == address(this)); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

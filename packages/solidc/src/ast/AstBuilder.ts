@@ -290,6 +290,7 @@ export default class AstBuilder
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
   private parsingLibraryFunction = false;
+  private parsingFreeFunctionBody = false;
 
   // Contract + interface names, so a contract/interface-namespaced TYPE access `C.T.unwrap` / `I.Enum.Member`
   // strips the `C.`/`I.` to the bare (globally-registered) type, like the library case.
@@ -1825,7 +1826,14 @@ export default class AstBuilder
     this.registerNamedReturnLocals(ctx.returnType());
     const rtCtx = ctx.returnType();
     this.currentFnIsVoid = !rtCtx || rtCtx.returnParam_list().length === 0;
-    const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    const previousParsingFreeFunctionBody = this.parsingFreeFunctionBody;
+    this.parsingFreeFunctionBody = !this.parsingLibraryFunction;
+    let statements: StatementNode[];
+    try {
+      statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    } finally {
+      this.parsingFreeFunctionBody = previousParsingFreeFunctionBody;
+    }
     this.currentFnIsVoid = undefined;
     for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
@@ -4489,6 +4497,12 @@ export default class AstBuilder
   // Solidity `this` (e.g. address(this)): the contract's address is the locking script of the UTXO being
   // spent, i.e. tx.inputs[this.activeInputIndex].lockingBytecode (OP_INPUTINDEX OP_UTXOBYTECODE).
   visitThisExpr(ctx: ThisExprContext): UnaryOpNode {
+    if (this.solidityImportCompat && this.parsingFreeFunctionBody) {
+      throw new ParseError(
+        "'this' is not available in a file-level free function",
+        Location.fromCtx(ctx),
+      );
+    }
     const index = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
     index.location = Location.fromCtx(ctx);
     const node = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, index);

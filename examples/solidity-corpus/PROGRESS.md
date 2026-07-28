@@ -4918,3 +4918,13 @@ The focused suite is **975/975**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **978/978**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 502, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Free-function `this` loop: 4443 flat, NEG-ACCEPTED 502 -> 501 (-1)
+
+- Solidity compatibility mode now rejects `this` in a file-level free-function body, where no contract instance
+  exists.
+- Contract and library function bodies retain their existing `this` behavior, and native SolidCash parsing remains
+  unchanged.
+
+The focused suite is **980/980**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+501, plus 275 multifile and 289 cmdline fixtures excluded.

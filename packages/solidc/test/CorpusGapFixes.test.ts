@@ -7938,6 +7938,33 @@ describe('Solidity source metadata syntax validation', () => {
   });
 });
 
+describe('Solidity constant state eligibility', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('requires every constant state variable to have an initializer', () => {
+    expect(() => cc('contract C { uint constant value; }'))
+      .toThrow(/Uninitialized constant variable/);
+    expect(() => cc('contract C { struct S { uint x; } S public constant value; }'))
+      .toThrow(/Uninitialized constant variable/);
+  });
+
+  it('rejects array, mapping, and struct constants', () => {
+    expect(() => cc('contract C { uint[3] constant values = [uint(1), 2, 3]; }'))
+      .toThrow(/Only constants of value type and byte array type/);
+    expect(() => cc('contract C { mapping(uint => uint) constant values; }'))
+      .toThrow(/Uninitialized constant variable|Only constants of value type and byte array type/);
+    expect(() => cc('contract C { struct S { uint x; } S constant value = S(1); }'))
+      .toThrow(/Only constants of value type and byte array type/);
+  });
+
+  it('retains initialized value, string, and bytes constants plus native aggregate constants', () => {
+    expect(cc('contract C { uint constant N = 1; string constant S = "s";'
+      + ' bytes constant B = hex"01"; }')).toBe('C');
+    expect(compileString('contract C { uint[3] constant values = [uint(1), 2, 3]; }').contractName).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

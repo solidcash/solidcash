@@ -4738,6 +4738,7 @@ export default class AstBuilder
       }
     }
     const isImmutable = allModTexts.includes('immutable');
+    const isConstant = allModTexts.includes('constant');
     const overrideSpec = [
       ...((ctx as any).overrideSpecifier_list?.() ?? []),
       ...plainModifiers.map((m: any) => m.overrideSpecifier?.()),
@@ -4788,6 +4789,25 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    if (this.solidityImportCompat && isConstant && !ctx.expression?.()) {
+      throw new ParseError('Uninitialized constant variable', Location.fromCtx(ctx));
+    }
+    if (this.solidityImportCompat && isConstant && (ctx.mappingType() || ctx.arrayType())) {
+      throw new ParseError(
+        'Only constants of value type and byte array type are implemented',
+        Location.fromCtx(ctx),
+      );
+    }
+    if (this.solidityImportCompat && isConstant && ctx.typeName()) {
+      const constantTypeText = ctx.typeName().getText();
+      const resolvedConstantType = this.resolveType(constantTypeText);
+      if (resolvedConstantType instanceof StructType || this.structMap.has(constantTypeText)) {
+        throw new ParseError(
+          'Only constants of value type and byte array type are implemented',
+          Location.fromCtx(ctx),
+        );
+      }
+    }
 
     // A `constant` state var (`uint public constant ONE = 5`) parses as a state variable because the dedicated
     // constantDefinition rule has no visibility slot. It is a compile-time constant, not stored state - route it
@@ -4795,7 +4815,7 @@ export default class AstBuilder
     // library look state-touching). Constants are value-typed, so only the scalar form applies.
     const scalarTypeCtx = ctx.typeName();
     const constExpr = ctx.expression?.();
-    if (allModTexts.includes('constant') && scalarTypeCtx && constExpr && !this.inLibraryDecl) {
+    if (isConstant && scalarTypeCtx && constExpr && !this.inLibraryDecl) {
       // An unresolved type name is an interface/contract type -> a tagged address handle (as every other
       // declaration site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
       const cType = this.resolveType(scalarTypeCtx.getText()) ?? new AddressType(false, scalarTypeCtx.getText());
@@ -7331,7 +7351,15 @@ export default class AstBuilder
   visitConstantDefinition(ctx: ConstantDefinitionContext): ConstantDefinitionNode {
     // An unresolved type name is an interface/contract type -> a tagged address handle (as every other declaration
     // site does), so `IERC20 constant U = IERC20(0)` type-checks against an address value.
-    const type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false, ctx.typeName().getText());
+    const typeText = ctx.typeName().getText();
+    const resolvedType = this.resolveType(typeText);
+    if (this.solidityImportCompat && (resolvedType instanceof StructType || this.structMap.has(typeText))) {
+      throw new ParseError(
+        'Only constants of value type and byte array type are implemented',
+        Location.fromCtx(ctx),
+      );
+    }
+    const type = resolvedType ?? new AddressType(false, typeText);
     const name = ctx.anyIdentifier().getText();
     this.constantTypes.set(name, type);
     const expression = this.visit(ctx.expression()) as ExpressionNode;

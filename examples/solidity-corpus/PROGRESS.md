@@ -5207,3 +5207,13 @@ The focused suite is **1069/1069**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1071/1071**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 385, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity constant-state eligibility loop: 4443 flat, NEG-ACCEPTED 385 -> 380 (-5)
+
+- Solidity-compatible constant state declarations now require an initializer and reject arrays, mappings, and
+  structs, including the dedicated scalar constant-declaration path.
+- Initialized value, string, and bytes constants remain accepted, while native SolidCash aggregate constants keep
+  their existing behavior. All 136 previously passing corpus sources containing constants still compile.
+
+The focused suite is **1074/1074**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+380, plus 275 multifile and 289 cmdline fixtures excluded.

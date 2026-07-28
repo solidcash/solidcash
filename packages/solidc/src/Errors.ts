@@ -1219,8 +1219,8 @@ export class GraphEmissionEffectError extends SolidCashError {
   constructor(node: Node, handlerName: string, effect: string) {
     super(
       node,
-      `Batched handler '${handlerName}' performs ${effect} the route reserves no output slot for, so the route `
-      + 'would settle WITHOUT it while the same function called directly enforces it - and the spender chooses '
+      `Batched handler '${handlerName}' performs ${effect}, which the route reserves no output slot for, so it `
+      + 'would settle WITHOUT the effect while the same function called directly enforces it - and the spender chooses '
       + 'which entry to use. A token-container transfer needs a co-spent container INPUT slot bound to its '
       + 'category parameter, which the route only reserves when a handler also READS the container: adding '
       + '`require(this.tokens[<category>].tokenAmount >= <amount>)` makes the route settle the transfer. Handlers '

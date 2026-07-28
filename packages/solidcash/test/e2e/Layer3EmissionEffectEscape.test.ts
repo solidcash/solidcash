@@ -771,7 +771,7 @@ ${reading ? '    require(this.tokens[category].tokenAmount >= value);' : ''}
 
   it('refuses a routed token-container transfer the route reserves no slot for', () => {
     expect(() => compileString(TOKEN_HUB(false), BUS_OPTIONS))
-      .toThrow(/performs a token-container operation the route reserves no output slot for/);
+      .toThrow(/performs a token-container operation, which the route reserves no output slot for/);
     expect(() => compileString(TOKEN_HUB(false), BUS_OPTIONS)).toThrow(/'fireAll'/);
   }, 30_000);
 
@@ -788,7 +788,7 @@ contract PlainTokenBatch() {
   }
 }`;
     expect(() => compileString(source, plain))
-      .toThrow(/performs a token-container operation the route reserves no output slot for/);
+      .toThrow(/performs a token-container operation, which the route reserves no output slot for/);
   }, 30_000);
 
   /**

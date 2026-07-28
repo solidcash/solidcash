@@ -303,9 +303,15 @@ Seven hostile cases, each refused by the covenant that OWNS the field and never 
 attacked build is **the same serialized length as its control** - so no input, output or witness was added or
 removed to produce the rejection. That control is what makes the matrix mean something.
 
+**RETRACTED FIGURE - see section 4.22.** The "0.0095% over" below is an ARTIFACT of libauth aborting the moment
+the density check trips, so the reported cost is always within one operation of the budget however much
+evaluation remained. The true overrun was **2.07x**, and all five sidecars were over. C1 has since been brought
+under ordinary capacity by task X23. The original text is kept below only so the error is auditable; do not
+quote the percentage.
+
 **Under ordinary BCH-2026 capacity C1 does NOT fit, and the blocker is not what anyone assumed.** It fails at
 input 29, the first graph projection proof, on operation-cost density: a budget of 6,579,200 for 8,224 density
-bytes, overrun to 6,579,826. That is **0.0095% over**. Participant scripts are comfortably inside the ordinary
+bytes, overrun to 6,579,826. That is **0.0095% over** [RETRACTED - artifact]. Participant scripts are comfortably inside the ordinary
 10,000-byte input limit - Router 4,843 bytes, Token 7,058. So the thing standing between this composition and
 ordinary consensus capacity is the PROJECTION VERIFIER's density, by a hair, and nothing else. Opened as X23;
 it is the highest-value single optimisation target this effort has produced, and it arrives before F1 rather

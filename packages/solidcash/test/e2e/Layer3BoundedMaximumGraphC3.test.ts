@@ -25,22 +25,31 @@ import {
  * the `participantCount <= 8` require in both the graph-root controller and the projection covenant. One
  * transaction settles all eight:
  *
- *   inv0  root      -> P0.run       Router:   three outgoing calls, a scalar write, an event NFT, a satoshi transfer
+ *   inv0  root      -> P0.run       Router:   three outgoing calls, a scalar write
  *   inv1  Router    -> P1.record    Ledger:   reads chunk-backed dynamic storage, writes a scalar
  *   inv2  Router    -> P2.broker    Broker:   consumes the graph's only result, writes a scalar
  *   inv3  Broker    -> P4.score     Oracle:   the only returning handler - effect-free, no outgoing call
  *   inv4  Router    -> P3.hold      Escrow -> Settler -> Reporter -> Sink: a depth-4 chain
  *   inv5  Escrow    -> P5.settle
  *   inv6  Settler   -> P6.report
- *   inv7  Reporter  -> P7.absorb
+ *   inv7  Reporter  -> P7.absorb    Sink:     an event NFT and a satoshi transfer, and no outgoing call
  *
  * Eight independently compiled contract types, eight physical blocks, 108 balanced slots.
  *
- * The shape is constrained by three refusals other tasks already measured, none of which this capstone tries
- * to move: a returning handler may make no outgoing call and carry no effect (C1's boundary block), a handler
- * that consumes a result may not carry ANY second edge (X3 as corrected by C1), and a pointer-table caller
- * stops binding its emission rows once its own contract declares a returning handler (SEC-5). No contract here
- * owns a pointer table, so no claim in this file depends on SEC-5 being fixed.
+ * The shape is constrained by four refusals other tasks measured, none of which this capstone tries to move:
+ * a returning handler may make no outgoing call and carry no effect (C1's boundary block); a handler that
+ * consumes a result may not carry ANY second edge (X3 as corrected by C1) and may not carry an effect either
+ * (X22); a handler that makes an outgoing call may not carry a physical effect, because the effect's block
+ * slot forces it to be flattened into the route and its edges then generate unbound - measured FORGEABLE and
+ * refused by name (SEC-6); and a pointer-table caller stops binding its emission rows once its own contract
+ * declares a returning handler (SEC-5). No contract here owns a pointer table, so no claim in this file
+ * depends on SEC-5 being fixed.
+ *
+ * SEC-6 is why the Router carries no effects. Until that refusal landed, the Router held the event NFT and
+ * the satoshi transfer alongside its three outgoing calls - exactly the forgeable shape - so both moved to
+ * the Sink, the deepest leaf, which makes no outgoing call and is therefore never cloned behind OP_INVOKE.
+ * The composition still settles every physical effect kind; only their owner changed. The 108-slot total is
+ * unchanged, so every sidecar index in this file is unchanged; the participant bases after P1 are not.
  *
  * SEMANTIC evidence only, on the named `layer3-bch2026-semantic-relaxed-v1` profile: BCH-2026 opcodes,
  * introspection and the real 128-byte NFT commitment, relaxed capacity. Not consensus-fit, not policy-fit.
@@ -60,23 +69,31 @@ const SEED_WEIGHT = 7n;
 /** Oracle.score(v) = v + 1. */
 const SCORE = CALL_VALUE + 1n;
 const CONTAINER_SATS = 5_000n;
+/** Where the Sink's compiled satoshi effect pays. A CONSTRUCTOR argument, so `absorb` keeps one parameter. */
+const RECIPIENT = Uint8Array.of(0x51);
 const TRANSFER_SATS = 10n;
 
-/** P0. The graph root: three outgoing calls plus every physical effect kind a block can carry. */
+/**
+ * P0. The graph root: three outgoing calls and a scalar write.
+ *
+ * RESHAPED for SEC-6. This handler used to carry the event NFT and the satoshi transfer as well, which is the
+ * shape SEC-6 measured FORGEABLE: an effect-carrying graph emission clone is flattened into the route wrapper,
+ * its outgoing edges then generate with `__scb1` as the current function, no emission row is ever recomputed,
+ * and the transcript can state any target, selector or arguments for them. The compiler now refuses it by
+ * name. Both effects moved to the Sink, a leaf that makes no outgoing call, so the composition still carries
+ * every physical effect kind - see the note on P7.
+ */
 const ROUTER = `pragma solidcash >=0.8.0;
 interface IC3Ledger { function record(bigint v); }
 interface IC3Broker { function broker(bigint v); }
 interface IC3Escrow { function hold(bigint v); }
 contract C3Router(address ledger, address broker, address escrow) {
   bigint fired;
-  event Fired(bigint amount);
-  function run(bigint v, bytes recipient) public {
+  function run(bigint v) public {
     IC3Ledger(ledger).record(v);
     IC3Broker(broker).broker(v);
     IC3Escrow(escrow).hold(v);
     this.fired = this.fired + v;
-    emit Fired(v);
-    this.transfer(recipient, ${TRANSFER_SATS});
     require(v > 0);
   }
 }`;
@@ -153,12 +170,21 @@ contract C3Reporter(address sink) {
   }
 }`;
 
-/** P7. The deepest leaf, at depth 4. */
+/**
+ * P7. The deepest leaf, at depth 4, and now the participant that carries the physical effects.
+ *
+ * It makes NO outgoing call, so it is not a graph emission handler at all: nothing about it is cloned behind
+ * OP_INVOKE and there is no edge whose emission row could go unbound. That is exactly why SEC-6's refusal does
+ * not reach it, and why the composition can still settle an event NFT and a satoshi transfer.
+ */
 const SINK = `pragma solidcash >=0.8.0;
-contract C3Sink(bigint brand) {
+contract C3Sink(bigint brand, bytes payee) {
   bigint total;
+  event Absorbed(bigint amount);
   function absorb(bigint v) public {
     this.total = this.total + v;
+    emit Absorbed(v);
+    this.transfer(payee, ${TRANSFER_SATS});
     require(v > 0 && brand >= 0);
   }
 }`;
@@ -450,7 +476,7 @@ async function buildC3(
 
   // ---- Compile and instantiate leaf-first: every caller pins its callee's instantiated locking bytecode ----
   const sinkArtifact = compileString(SINK, options);
-  const sinkBase = new Contract(sinkArtifact, [1n], { provider });
+  const sinkBase = new Contract(sinkArtifact, [1n, RECIPIENT], { provider });
   const sinkSetup = await setupStatefulUtxos(provider, sinkBase, sinkArtifact.stateLayout!, { total: 0n });
   const sink = sinkBase.withCategory(hexToBin(sinkSetup.categoryId));
 
@@ -549,9 +575,8 @@ async function buildC3(
   const at = new Map<Label, number>(order.map((label, index) => [label, index]));
 
   // ---- Plan. The edges are declared by label, so a permuted physical order re-indexes them mechanically. ----
-  const recipient = Uint8Array.of(0x51);
   const edges: { parent: number | null; callee: Label; function: string; args: any[] }[] = [
-    { parent: null, callee: 'router', function: 'run', args: [CALL_VALUE, recipient] },
+    { parent: null, callee: 'router', function: 'run', args: [CALL_VALUE] },
     { parent: 0, callee: 'ledger', function: 'record', args: [CALL_VALUE] },
     { parent: 0, callee: 'broker', function: 'broker', args: [CALL_VALUE] },
     { parent: 2, callee: 'oracle', function: 'score', args: [CALL_VALUE] },
@@ -662,16 +687,21 @@ async function buildC3(
 
   // ---- Funding ----
   const container = uniqueUtxo(outpoints, { satoshis: CONTAINER_SATS });
-  await provider.addUtxo(getSatoshiContainerAddress(router, routerSetup.categoryId), container);
-  const routerFunding = Array.from({ length: 16 }, () => uniqueUtxo(outpoints, { satoshis: 1000n }));
+  await provider.addUtxo(getSatoshiContainerAddress(sink, sinkSetup.categoryId), container);
+  const sinkBlockSize = sinkArtifact.hiddenBatch!.route.blockLayout!.blockSize as number;
+  const sinkFunding = Array.from({ length: sinkBlockSize - 3 }, () => uniqueUtxo(outpoints, { satoshis: 1000n }));
   const ledgerFunding = Array.from(
     { length: ledgerLayout.blockSize - 2 - chunks.length }, () => uniqueUtxo(outpoints, { satoshis: 1000n }),
   );
   const returnFunding = uniqueUtxo(outpoints, { satoshis: 1000n });
-  const omissionFunding = Array.from({ length: 2 }, () => uniqueUtxo(outpoints, { satoshis: 1000n }));
+  // The omission case replaces the Sink's WHOLE block with ordinary funding, so it needs one funding slot per
+  // slot of that block - which is now the widest participant block rather than the narrowest.
+  const omissionFunding = Array.from(
+    { length: sinkBlockSize }, () => uniqueUtxo(outpoints, { satoshis: 1000n }),
+  );
   const projectionUtxos = Array.from({ length: 8 }, () => uniqueUtxo(outpoints, { satoshis: 1000n }));
   const fee = uniqueUtxo(outpoints, { satoshis: 3_000_000n });
-  for (const utxo of [...routerFunding, ...ledgerFunding, returnFunding, ...omissionFunding, fee]) {
+  for (const utxo of [...sinkFunding, ...ledgerFunding, returnFunding, ...omissionFunding, fee]) {
     await provider.addUtxo(p2pkh.address, utxo);
   }
   for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
@@ -682,7 +712,7 @@ async function buildC3(
   let injected: any;
   let injectedContract: Contract | undefined;
   if (injecting) {
-    const injectedBase = new Contract(sinkArtifact, [2n], { provider });
+    const injectedBase = new Contract(sinkArtifact, [2n, RECIPIENT], { provider });
     injected = await setupStatefulUtxos(provider, injectedBase, sinkArtifact.stateLayout!, { total: 0n });
     injectedContract = injectedBase.withCategory(hexToBin(injected.categoryId));
   }
@@ -710,14 +740,8 @@ async function buildC3(
   };
 
   const inputBlock: Record<Label, () => void> = {
-    // [master, dataNft, satoshiContainer, 8 x transfer, 8 x event]
-    router: () => {
-      openBlock('router');
-      tx.addInput(
-        container, createSatoshiContainerUnlocker(router, base('router'), routerSetup.categoryId),
-      );
-      routerFunding.forEach(funding);
-    },
+    // [master, dataNft]
+    router: () => openBlock('router'),
     // [master, dataNft, 64 x trailing], with the chunk UTXOs at the head of the trailing region
     ledger: () => {
       openBlock('ledger');
@@ -735,11 +759,14 @@ async function buildC3(
     oracle: () => { openBlock('oracle'); funding(returnFunding); },
     settler: () => openBlock('settler'),
     reporter: () => openBlock('reporter'),
+    // [master, dataNft, satoshiContainer, 8 x transfer, 8 x event]
     sink: () => {
-      // The table still commits the Sink at this base, but under `omission` the two slots carry ordinary
+      // The table still commits the Sink at this base, but under `omission` every slot carries ordinary
       // funding: the Sink's state never moves, and the block is exactly as wide as its control's.
-      if (hostile === 'omission') omissionFunding.forEach(funding);
-      else openBlock('sink');
+      if (hostile === 'omission') { omissionFunding.forEach(funding); return; }
+      openBlock('sink');
+      tx.addInput(container, createSatoshiContainerUnlocker(sink, base('sink'), sinkSetup.categoryId));
+      sinkFunding.forEach(funding);
     },
   };
   for (const label of order) {
@@ -811,27 +838,7 @@ async function buildC3(
     + currentLedgerCommitment.slice(zeroField.length);
 
   const outputBlock: Record<Label, () => void> = {
-    router: () => {
-      settleBlock('router', 'fired', CALL_VALUE);
-      containerOutput = tx.outputs.length;
-      tx.addOutput({
-        to: getSatoshiContainerAddress(router, routerSetup.categoryId),
-        amount: CONTAINER_SATS - TRANSFER_SATS,
-      });
-      transferOutput = tx.outputs.length;
-      tx.addOutput({ to: recipient, amount: TRANSFER_SATS });
-      for (let slot = 1; slot < 8; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
-      eventOutput = tx.outputs.length;
-      tx.addOutput({
-        to: getEventNftAddress(router, routerSetup.categoryId, routerArtifact.events![0].signature),
-        amount: 1000n,
-        token: {
-          category: routerSetup.categoryId, amount: 0n,
-          nft: { capability: 'none', commitment: eventCommitment },
-        },
-      });
-      for (let slot = 1; slot < 8; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
-    },
+    router: () => settleBlock('router', 'fired', CALL_VALUE),
     ledger: () => {
       settleBlock('ledger', 'seen', CALL_VALUE + SEED_WEIGHT, ledgerNext);
       for (const chunk of chunks) {
@@ -858,7 +865,27 @@ async function buildC3(
     sink: () => {
       if (hostile === 'omission') {
         omissionFunding.forEach(() => tx.addOutput({ to: p2pkh.address, amount: 1000n }));
-      } else settleBlock('sink', 'total', CALL_VALUE);
+        return;
+      }
+      settleBlock('sink', 'total', CALL_VALUE);
+      containerOutput = tx.outputs.length;
+      tx.addOutput({
+        to: getSatoshiContainerAddress(sink, sinkSetup.categoryId),
+        amount: CONTAINER_SATS - TRANSFER_SATS,
+      });
+      transferOutput = tx.outputs.length;
+      tx.addOutput({ to: RECIPIENT, amount: TRANSFER_SATS });
+      for (let slot = 1; slot < 8; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+      eventOutput = tx.outputs.length;
+      tx.addOutput({
+        to: getEventNftAddress(sink, sinkSetup.categoryId, sinkArtifact.events![0].signature),
+        amount: 1000n,
+        token: {
+          category: sinkSetup.categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: eventCommitment },
+        },
+      });
+      for (let slot = 1; slot < 8; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
     },
   };
   for (const label of order) outputBlock[label]();
@@ -986,14 +1013,20 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
       offset >= ledgerLayout.trailingBase
       && offset < ledgerLayout.trailingBase + ledgerLayout.trailingCapacity)).toBe(true);
 
-    // EVENT NFT and RESOURCES: both are the Router's, and this assembly puts both inside the Router's block.
-    // In-block placement and the 1,000-satoshi slot value are SDK assembly conventions, not covenant
-    // invariants, so they are asserted here as facts about this assembly and nothing more.
-    const routerBlock = built.blockSizes[0];
-    expect(built.assembly.eventOutput).toBeGreaterThanOrEqual(built.layout.participantInputs[0]);
-    expect(built.assembly.eventOutput).toBeLessThan(built.layout.participantInputs[0] + routerBlock);
-    expect(built.assembly.containerOutput).toBeLessThan(built.layout.participantInputs[0] + routerBlock);
-    expect(built.assembly.transferOutput).toBeLessThan(built.layout.participantInputs[0] + routerBlock);
+    // EVENT NFT and RESOURCES: both are the SINK's since the SEC-6 reshape, and this assembly puts both
+    // inside the Sink's block. In-block placement and the 1,000-satoshi value of THESE slots are SDK assembly
+    // conventions, so they are asserted here as facts about this assembly and nothing more. That is a claim
+    // about event, transfer and funding slots only: the two SIDECAR slot kinds are different, and both
+    // generated covenants really do require `tx.outputs[this.activeInputIndex].value == 1000` at a projection
+    // slot and at the controller slot (layer3/graph.ts:580 and :786).
+    const sinkBase = built.layout.participantInputs[7];
+    const sinkBlock = built.blockSizes[7];
+    expect(built.assembly.eventOutput).toBeGreaterThanOrEqual(sinkBase);
+    expect(built.assembly.eventOutput).toBeLessThan(sinkBase + sinkBlock);
+    expect(built.assembly.containerOutput).toBeGreaterThanOrEqual(sinkBase);
+    expect(built.assembly.containerOutput).toBeLessThan(sinkBase + sinkBlock);
+    expect(built.assembly.transferOutput).toBeGreaterThanOrEqual(sinkBase);
+    expect(built.assembly.transferOutput).toBeLessThan(sinkBase + sinkBlock);
 
     // HONEST ALL-INPUT EXECUTION: `preflightLayer3Transaction` evaluates every one of the 108 inputs on the
     // BCH-2026 VM and throws on the first that fails, so a pass here is whole-transaction evidence and not a
@@ -1043,7 +1076,9 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
     let cursor = 0;
     for (const size of built.blockSizes) { expectedBases.push(cursor); cursor += size; }
     expect([...built.layout.participantInputs]).toEqual(expectedBases);
-    expect(built.blockSizes).toEqual([19, 66, 2, 2, 3, 2, 2, 2]);
+    // The Sink's block is the wide one since the SEC-6 reshape moved the two physical effects onto it; the
+    // Router's is now a bare [master, dataNft]. The total is unchanged, so every sidecar index is unchanged.
+    expect(built.blockSizes).toEqual([2, 66, 2, 2, 3, 2, 2, 19]);
     expect(built.layout.participantInputs[0]).toBe(0);
     expect([...built.layout.projectionInputs]).toEqual(
       Array.from({ length: 8 }, (_unused, index) => cursor + index),
@@ -1062,8 +1097,8 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
 
     // The return-event slot is inside its producer's block. WHERE inside is an SDK assembly choice - the
     // covenant only requires membership of the block - so this asserts what the SDK did, not a covenant rule.
-    expect(built.layout.returnOutputs).toEqual([null, null, null, null, 91, null, null, null]);
-    expect(built.assembly.returnOutput).toBe(91);
+    expect(built.layout.returnOutputs).toEqual([null, null, null, null, 74, null, null, null]);
+    expect(built.assembly.returnOutput).toBe(74);
   }, 900_000);
 
   it('SEMANTIC: the same eight blocks compose at eight different bases when the order is permuted', async () => {
@@ -1081,7 +1116,7 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
     for (const label of DEFAULT_ORDER) {
       expect(baseOf(built, label), `${label} base`).not.toBe(baseOf(control, label));
     }
-    expect([...built.layout.participantInputs]).toEqual([0, 2, 4, 23, 25, 28, 30, 32]);
+    expect([...built.layout.participantInputs]).toEqual([0, 19, 21, 23, 25, 28, 30, 32]);
     expect(built.layout.totalSlots).toBe(control.layout.totalSlots);
     // Block sizes are a property of the compiled source, so the permutation only reorders them.
     expect([...built.blockSizes].sort((a, b) => a - b))
@@ -1206,7 +1241,7 @@ describe('C3 hostile cases', () => {
       expect(broadcast).toContain('error in evaluating input index 98');
     }, 900_000);
 
-  it('HOSTILE: a table row that names the wrong owner for its base is refused at input 96', async () => {
+  it('HOSTILE: a table row that names the wrong owner for its base is refused at input 79', async () => {
     const control = await honestControl();
 
     // 35 patched bytes: participant 7's row now names participant 6's locking bytecode. Every other byte of
@@ -1236,11 +1271,11 @@ describe('C3 hostile cases', () => {
       ),
     ))).size).toBe(8);
 
-    // Input 96 is the impersonated slot's OWN master route: the participant at that base refuses a table
+    // Input 79 is the impersonated slot's OWN master route: the participant at that base refuses a table
     // whose row for it names somebody else as its owner.
-    expect(attacked.layout.participantInputs[7]).toBe(96);
+    expect(attacked.layout.participantInputs[7]).toBe(79);
     const outcome = preflightOutcome(attacked);
-    expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 96');
+    expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 79');
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
 
     // CONTROL (A1 finding C3-R2), reproduced here at eight-participant width. The same field of the same row,
@@ -1256,7 +1291,7 @@ describe('C3 hostile cases', () => {
     expect(new Set(Array.from({ length: 8 }, (_unused, index) => strangerRow(index))).size).toBe(8);
     expect(patchedByteIndices(stranger).every((index) =>
       index >= forged.lbcStart && index < forged.lbcStart + forged.lbcLength)).toBe(true);
-    expect(preflightOutcome(stranger)).toContain('layer3: BCH-2026 preflight failed at input 96');
+    expect(preflightOutcome(stranger)).toContain('layer3: BCH-2026 preflight failed at input 79');
     await expect(stranger.provider.sendRawTransaction(stranger.transaction)).rejects.toThrow();
 
     // Neither generated covenant ever compares two participant rows to each other: a pairwise comparison
@@ -1280,7 +1315,7 @@ describe('C3 hostile cases', () => {
     // evidence that the covenants enforce OWNER UNIQUENESS. They do not, and this construction never tested
     // it - the stranger control above is what shows that.
     //
-    // What is actually proven here is the row-to-base binding: the participant at input 96 refuses a table
+    // What is actually proven here is the row-to-base binding: the participant at input 79 refuses a table
     // whose row for its own base names a locking bytecode other than the one physically co-spent there. The
     // duplication contributes nothing; naming ANY wrong owner is what fails. That is the same invariant the
     // omission case above attacks from the other side.
@@ -1340,7 +1375,7 @@ describe('C3 hostile cases', () => {
     // at a projection proof, so it is a different covenant at a different input. The next case is that build.
   }, 900_000);
 
-  it('HOSTILE: re-rooting an edge AND stripping its caller emission row is refused at the caller, input 87',
+  it('HOSTILE: re-rooting an edge AND stripping its caller emission row is refused at the caller, input 70',
     async () => {
       const control = await honestControl();
 
@@ -1364,7 +1399,7 @@ describe('C3 hostile cases', () => {
 
       // The refusal names the Escrow's own master route, not a projection proof and not the controller.
       const escrow = attacked.layout.participantInputs[attacked.order.indexOf('escrow')];
-      expect(escrow).toBe(87);
+      expect(escrow).toBe(70);
       expect(escrow).not.toBe(attacked.layout.projectionInputs[0]);
       expect(escrow).not.toBe(attacked.layout.controllerInput);
       const outcome = preflightOutcome(attacked);
@@ -1378,9 +1413,10 @@ describe('C3 hostile cases', () => {
 describe('C3 capacity measurement', () => {
   it('MEASURED: reports the honest participant route sizes on the relaxed semantic profile', async () => {
     const built = await buildC3();
-    // Measured at this commit, in the default order: router 4,746, ledger 3,556, broker 3,114, escrow 3,085,
-    // oracle 3,183, settler 3,085, reporter 3,082, sink 2,864 bytes; whole transaction 119,427 bytes;
-    // transcript blob 1,329 bytes. Every compiled participant route sits under the ordinary 10,000-byte input
+    // Re-measured after the SEC-6 reshape, in the default order: router 3,294, ledger 3,552, broker 3,110,
+    // escrow 3,081, oracle 3,179, settler 3,081, reporter 3,078, sink 4,605 bytes; transcript blob 1,325
+    // bytes. The Router shed 1,452 bytes and the Sink gained them, because that is where the two physical
+    // effects moved. Every compiled participant route sits under the ordinary 10,000-byte input
     // limit, so participant script size is NOT what keeps C3 off ordinary capacity - the next test names what
     // is. Bands are asserted rather than exact figures so compiler work elsewhere does not falsely fail here.
     expect(built.routeInputBytes).toHaveLength(8);
@@ -1401,7 +1437,7 @@ describe('C3 capacity measurement', () => {
     // proof on operation-cost density; C3 is strictly larger". Both halves are stale. C1 was brought under
     // ordinary capacity by X23 and settles there now, and C3's projections are not the blocker either: X25
     // measured them run-to-completion at 0.681-0.689 of budget, comfortably inside. The single input over
-    // budget is the GRAPH ROOT CONTROLLER, at 1.2286x - see the X25 test below for the full table. Every
+    // budget is the GRAPH ROOT CONTROLLER, at 1.2310x - see the X25 test below for the full table. Every
     // F-phase statement that names the projection input as the thing to shrink is reading a pre-X23 figure.
     const built = await buildC3('none', DEFAULT_ORDER, createOrdinaryCapacityProvider);
     const outcome = preflightOutcome(built);
@@ -1419,12 +1455,12 @@ describe('C3 capacity measurement', () => {
     const [, maximum, length, cost] = outcome.match(
       /Maximum operation cost: (\d+) \(density control length: (\d+)\).*following operation: (\d+)/,
     )!;
-    // Measured at this commit: budget 2,352,000 for a 2,940-byte controller input, reported cost 2,353,029.
-    // Read naively that is "1,029 operations, 0.04% over" - and that reading is WORTHLESS, for exactly the
+    // The budget here is 2,348,800 for a 2,936-byte controller input, and the reported cost is a handful of
+    // operations above it. Read naively that is "0.0x% over" - and that reading is WORTHLESS, for exactly the
     // reason section 4.22 records: the density check runs after every operation and aborts on the first
     // excess, so a reported cost is always within one operation of the budget however much work remained.
-    // The next test runs the same input to completion and reads the real figure.
-    // Bands are asserted rather than the exact figures.
+    // The next test runs the same input to completion and reads the real figure: 2,891,475, or 1.2310x.
+    // Bands are asserted rather than the exact figures, and no near-miss percentage is quoted.
     expect(Number(length)).toBeLessThan(10_000);
     expect(Number(cost) - Number(maximum)).toBeGreaterThan(0);
     expect(Number(cost) - Number(maximum)).toBeLessThan(Number(maximum) / 1_000);
@@ -1437,25 +1473,30 @@ describe('C3 capacity measurement', () => {
     const projections = built.layout.projectionInputs.map(at);
     const controller = at(built.layout.controllerInput);
 
-    // Measured at this commit, run to completion, ratio against the ORDINARY 800/byte budget:
+    // RE-MEASURED after the SEC-6 reshape, run to completion, ratio against the ORDINARY 800/byte budget:
     //
     //   input          bytes   cost        budget      ratio
-    //   0    P0 Router  4,787  1,289,361   3,829,600   0.337
-    //   19   P1 Ledger  3,597  1,362,437   2,877,600   0.474
-    //   85   P2 Broker  3,155  1,206,131   2,524,000   0.478
-    //   87   P3 Escrow  3,126  1,191,226   2,500,800   0.476
-    //   89   P4 Oracle  3,224  1,163,193   2,579,200   0.451
-    //   92   P5 Settler 3,126  1,191,494   2,500,800   0.476
-    //   94   P6 Reporter 3,123 1,191,514   2,498,400   0.477
-    //   96   P7 Sink    2,905  1,176,051   2,324,000   0.506
-    //   98-105 projections 5,880 each, 3,202,905-3,242,314, budget 4,704,000, ratio 0.681-0.689
-    //   106  controller 2,940  2,889,555   2,352,000   1.2286   <- the ONLY input over budget
+    //   0    P0 Router  3,335  1,222,779   2,668,000   0.458
+    //   2    P1 Ledger  3,593  1,362,375   2,874,400   0.474
+    //   68   P2 Broker  3,151  1,206,069   2,520,800   0.478
+    //   70   P3 Escrow  3,122  1,191,164   2,497,600   0.477
+    //   72   P4 Oracle  3,220  1,163,139   2,576,000   0.452
+    //   75   P5 Settler 3,122  1,191,432   2,497,600   0.477
+    //   77   P6 Reporter 3,119 1,191,452   2,495,200   0.477
+    //   79   P7 Sink    4,646  1,289,487   3,716,800   0.347
+    //   98-105 projections 5,876 each, 3,201,225-3,240,622, budget 4,700,800, ratio 0.681-0.689
+    //   106  controller 2,936  2,891,475   2,348,800   1.2310   <- the ONLY input over budget
     //
-    // So C3 does not fit by ONE input at 1.2286x. 18.6% has to come off the controller and nothing else.
-    // The projection input is 5,880 bytes, not the 8,412 this file used to record - that figure was measured
-    // before X23 shrank the verifier by 2,532 bytes, and 8,412 - 5,880 is exactly 2,532.
+    // So C3 does not fit by ONE input at 1.2310x. 18.8% has to come off the controller and nothing else.
+    // The reshape moved the two physical effects from the Router to the Sink, which is why P0 and P7 swapped
+    // profiles; it changed nothing else. The projection cost is IDENTICAL to the pre-reshape measurement -
+    // 25,984 instructions, 26,309 for the returning row - which is finding 1 below holding under a fixture
+    // change that moved 1,452 bytes of compiled route from one participant to another.
+    //
+    // The projection input is 5,876 bytes (5,880 before the reshape, which was exactly 2,532 less than the
+    // 8,412 this file used to record - the amount X23 shrank the verifier by). Not 8,412 either way.
     for (const projection of projections) {
-      expect(projection.bytes).toBe(5_880);
+      expect(projection.bytes).toBe(5_876);
       expect(projection.ratio).toBeGreaterThan(0.6);
       expect(projection.ratio).toBeLessThan(0.8);
     }
@@ -1472,8 +1513,8 @@ describe('C3 capacity measurement', () => {
     expect(costs.filter((row) => row.ratio > 1).map((row) => row.input))
       .toEqual([built.layout.controllerInput]);
 
-    // WHERE the controller's cost goes. Two terms only: 65.0% is instruction count (18,771 x 100) and 34.7%
-    // is `stackPushedBytes` (1,001,917 bytes pushed for a 1,329-byte transcript). Arithmetic and hashing are
+    // WHERE the controller's cost goes. Two terms only: 64.9% is instruction count (18,771 x 100) and 34.7%
+    // is `stackPushedBytes` (1,003,837 bytes pushed for a 1,325-byte transcript). Arithmetic and hashing are
     // together under 0.2%. `attest` reads its fields with 160 `transcript.slice(a, b)` calls against the WHOLE
     // blob, and a slice of an L-byte item pushes O(L) no matter how few bytes it extracts, which is what makes
     // the pushed-bytes term grow with rows x transcript length rather than with transcript length alone.
@@ -1481,32 +1522,36 @@ describe('C3 capacity measurement', () => {
     expect(controller.pushedBytes / controller.cost).toBeGreaterThan(0.25);
     expect((controller.arithmetic + controller.hashIterations * 64) / controller.cost).toBeLessThan(0.01);
 
-    // What 18.6% could come off, costed against the measured split. None of these is implemented here.
+    // What 18.8% could come off, costed against the measured split. None of these is implemented here.
     //   - A destructive left-to-right transcript walk in `attest`, so each field is split off a SHRINKING
     //     remainder instead of re-splitting the whole blob. `attest` issues 14 slices per participant and 6
     //     per invocation - 160 for C3 - which is what makes the instruction count track 14P + 6N, and each
-    //     slice pushes O(transcript length) whatever it extracts. Halving the pushed-bytes term saves 500,958,
-    //     which is 17.3%: NOT enough alone, 1.3 points short.
+    //     slice pushes O(transcript length) whatever it extracts. Halving the pushed-bytes term saves 501,918,
+    //     which is 17.4%: NOT enough alone, 1.4 points short.
     //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs: 198,400, 6.9%. The constant
     //     lives in SymbolTableTraversal.ts.
-    //   - X24, the constant-depth stack-write shuttle, against the 65.0% instruction term.
+    //   - X24, the constant-depth stack-write shuttle, against the 64.9% instruction term.
     // The first two together are 24.2% and would bring the controller to about 0.93x. This is arithmetic on
     // measured components, not a proven result.
 
-    // Scaling, against C1 and C2 measured with this identical harness at this same commit. C1 is 4/5 with a
-    // 1,141-byte transcript and 35 slots; C2 is 4/5 with a 743-byte transcript and 79 slots; C3 is 8/8 with
-    // 1,329 bytes and 108 slots. C1 reproduces section 4.22's table exactly - 0.4556/0.4514/0.4510/0.4567 and
-    // controller 0.7268 - which is what validates the harness.
+    // Scaling, against C1 and C2 measured with this identical harness. C1 is 4/5 with a 1,141-byte transcript
+    // and 35 slots; C2 is 4/5 with a 743-byte transcript and 79 slots; C3 is 8/8 with 1,325 bytes and 108
+    // slots. C1 reproduces section 4.22's table exactly - 0.4556/0.4514/0.4510/0.4567 and controller 0.7268 -
+    // which is what validates the harness.
     //
     // C3's authored reading, that "widening buys budget at least as fast as the extra participant frames spend
-    // it", is measured FALSE: from C1 to C3 the budget base grew 3.3% (projection) and 6.8% (controller) while
-    // the cost grew 56.2% and 80.6%.
+    // it", is measured FALSE: from C1 to C3 the budget base grew about 3.3% (projection) and 6.8% (controller)
+    // while the cost grew about 56% and 81%. Those cross-build deltas were computed before the SEC-6 reshape;
+    // the reshape moved C3's projection input by 4 bytes and its controller by 4 bytes and 1,920 operations,
+    // under 0.15% on every term, so none of the comparisons above changes at the stated precision.
     //
     // What the cost DOES track, from the three builds together:
     //   1. The projection verifier is a pure function of participant and invocation count. C1 and C2 share
     //      row counts, differ in composition and differ by 398 transcript bytes, and their projection inputs
     //      evaluate to a byte-identical 17,259 instructions (17,584 for the returning participant's row in
-    //      both). C3, at 8/8, is 25,984. Transcript LENGTH does not enter.
+    //      both). C3, at 8/8, is 25,984 - before AND after the reshape, which moved 1,452 bytes of compiled
+    //      route between two participants and left the projection cost byte-identical. Transcript LENGTH does
+    //      not enter.
     //   2. The controller is that plus a scan of every transaction output, at 32 instructions per output:
     //      10,035 at 35 slots, 11,443 at 79, 18,771 at 108. The two increments fit exactly - C1 to C2 is
     //      44 slots and +1,408 instructions, and both C1 to C3 and C2 to C3 leave the same 6,400 for the
@@ -1516,7 +1561,7 @@ describe('C3 capacity measurement', () => {
     //
     // That prices C3's own structural finding: 66 of its 108 slots are the Ledger's trailing region, held at
     // BALANCED_TRAILING_CAPACITY = 64 for ONE chunk UTXO. At 32 instructions per output those 62 unused slots
-    // cost the controller 198,400 of its 2,889,555 - 6.9%, against the 18.6% that has to come off.
+    // cost the controller 198,400 of its 2,891,475 - 6.9%, against the 18.8% that has to come off.
     expect(built.plan.participants).toHaveLength(8);
     expect(built.plan.invocations).toHaveLength(8);
     expect(built.transcript.bytes.length).toBeGreaterThan(1_100);

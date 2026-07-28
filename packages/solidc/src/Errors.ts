@@ -1214,3 +1214,17 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
     super(node, `Contract type constructor '${typeName}()' expects 1 or 2 arguments (locking bytecode[, address])`);
   }
 }
+
+export class GraphEmissionEffectError extends SolidCashError {
+  constructor(node: Node, handlerName: string, effect: string) {
+    super(
+      node,
+      `Message-bus handler '${handlerName}' makes an external call and also performs ${effect}, which is not `
+      + 'enabled. The handler executes behind OP_INVOKE so its recomputed outgoing edges can be compared '
+      + "against the transcript, but such an effect needs an owner-local slot only the route's own body "
+      + 'declares, so the handler would be flattened into the route and its edges would generate unbound - '
+      + 'the transcript could then state any target, selector or arguments for them. Move the effect to a '
+      + 'handler that makes no external call.',
+    );
+  }
+}

@@ -836,7 +836,12 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     for (const row of [...participants, ...projections, controller]) expect(row.ratio).toBeLessThan(1);
     expect(controller.ratio).toBeGreaterThan(0.6);
     expect(controller.ratio).toBeLessThan(0.95);
-    expect(projections.map((row) => row.instructions)).toEqual([17_259, 17_259, 17_259, 17_584]);
+    expect(projections.map((row) => row.instructions)).toEqual([14_798, 14_798, 14_798, 14_798]);
+    // X24 cut these 14.3% AND removed the +325 returning-row surcharge that used to distinguish the last
+    // entry. That surcharge was measured identically across C1, C2 and C3 and recorded as a property of
+    // authenticating a result; it was an artifact of the counted-loop lowering. All four rows now cost the
+    // same, which is asserted directly so the distinction cannot silently return.
+    expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
   }, 600_000);
 
   it('refuses a staticcall mode on a state-writing handler, before a transcript exists', async () => {

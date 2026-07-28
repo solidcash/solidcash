@@ -402,6 +402,26 @@ describe('Solidity numeric literal syntax', () => {
   });
 });
 
+describe('Solidity UDVT underlying value types', () => {
+  const cc = (definition: string, compat = true): string => compileString(
+    `${definition} contract C { function f() public { require(true); } }`,
+    { solidityImportCompat: compat },
+  ).contractName;
+
+  it.each(['type DynamicBytes is bytes;', 'type Text is string;'])(
+    'rejects a dynamic reference underlying in %s',
+    (definition) => expect(() => cc(definition)).toThrow(/underlying type.*not a value type/i),
+  );
+
+  it('retains elementary value-type underlyings', () => {
+    expect(cc('type Word is bytes32; type Count is uint256; type Account is address;')).toBe('C');
+  });
+
+  it('retains native SolidCash dynamic-byte and string wrappers', () => {
+    expect(cc('type DynamicBytes is bytes; type Text is string;', false)).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

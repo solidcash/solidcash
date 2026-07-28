@@ -4873,3 +4873,12 @@ The focused suite is **956/956**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **963/963**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 511, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### UDVT underlying value-type loop: 4443 flat, NEG-ACCEPTED 511 -> 509 (-2)
+
+- Solidity-compatible user-defined value types now reject dynamic `bytes` and `string` underlyings.
+- Fixed bytes, integers, and addresses remain valid elementary underlyings.
+- Native SolidCash retains its dynamic-byte and string wrapper extension.
+
+The focused suite is **967/967**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+509, plus 275 multifile and 289 cmdline fixtures excluded.

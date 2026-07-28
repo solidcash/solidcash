@@ -5217,3 +5217,13 @@ The focused suite is **1071/1071**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1074/1074**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 380, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### External function-type reference-location loop: 4443 flat, NEG-ACCEPTED 380 -> 376 (-4)
+
+- Solidity-compatible external function types now reject mapping parameters/returns and reference parameters whose
+  data location is omitted or `storage`.
+- Valid `memory` and `calldata` reference locations remain accepted, while native SolidCash storage function types
+  retain their existing behavior. All 96 previously passing external-function-type corpus sources still compile.
+
+The focused suite is **1077/1077**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+376, plus 275 multifile and 289 cmdline fixtures excluded.

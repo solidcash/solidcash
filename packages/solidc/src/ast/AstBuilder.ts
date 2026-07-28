@@ -169,7 +169,6 @@ import type {
   AbiDecodeAtContext,
   MappingTypeContext,
   ArrayTypeContext,
-  StructDefinitionContext,
   EventDefinitionContext,
   EmitStatementContext,
   ForStatementContext,
@@ -235,7 +234,7 @@ import {
   AnyIdentifierContext, ExpressionContext, CastContext, AssignmentExpressionContext,
   StateAccessContext, IdentifierContext, PostfixOpContext, PrefixOpContext, TupleIndexOpContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
-  FunctionTypeContext,
+  FunctionTypeContext, StructDefinitionContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
@@ -441,6 +440,16 @@ export default class AstBuilder
   }
 
   private validateFunctionTypeModifiers(root: ParseTree): void {
+    const structNames = new Set<string>();
+    const collectStructNames = (tree: ParseTree): void => {
+      if (tree instanceof StructDefinitionContext) {
+        structNames.add(tree.anyIdentifier().getText());
+      }
+      for (const child of (tree as ParseTree & { children?: ParseTree[] }).children ?? []) {
+        collectStructNames(child);
+      }
+    };
+    collectStructNames(root);
     const visit = (tree: ParseTree): void => {
       if (tree instanceof FunctionTypeContext) {
         const children = (tree as ParseTree & { children?: ParseTree[] }).children ?? [];
@@ -480,6 +489,26 @@ export default class AstBuilder
             `Function type has multiple state mutability modifiers (${mutability.join(', ')})`,
             Location.fromCtx(tree),
           );
+        }
+        if (visibility.includes('external')) {
+          const params = [
+            ...tree.functionTypeParameter_list(),
+            ...tree.functionTypeReturnParameter_list(),
+          ];
+          for (const param of params) {
+            const typeText = param.typeName()?.getText();
+            const isReference = param.mappingType() !== null || param.arrayType() !== null
+              || typeText === 'string' || typeText === 'bytes'
+              || (typeText !== undefined && structNames.has(typeText));
+            if (!isReference) continue;
+            const location = param.dataLocation()?.getText();
+            if (param.mappingType() !== null || location === undefined || location === 'storage') {
+              throw new ParseError(
+                'External function type reference parameters and returns require memory or calldata',
+                Location.fromCtx(param),
+              );
+            }
+          }
         }
       }
       const children = (tree as ParseTree & { children?: ParseTree[] }).children ?? [];

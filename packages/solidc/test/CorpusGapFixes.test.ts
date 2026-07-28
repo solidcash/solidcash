@@ -7965,6 +7965,36 @@ describe('Solidity constant state eligibility', () => {
   });
 });
 
+describe('external function type reference locations', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects mappings in external function type parameters and returns', () => {
+    expect(() => cc('contract C { function f('
+      + 'function(mapping(uint => uint) storage) external cb) public pure {} }'))
+      .toThrow(/require memory or calldata/);
+    expect(() => cc('contract C { function f('
+      + 'function() external returns (mapping(uint => uint) storage) cb) public pure {} }'))
+      .toThrow(/require memory or calldata/);
+  });
+
+  it('requires memory or calldata for external reference parameters', () => {
+    expect(() => cc('contract C { struct S { uint x; }'
+      + ' function f(function(S storage) external cb) public pure {} }'))
+      .toThrow(/require memory or calldata/);
+    expect(() => cc('contract C { function f('
+      + 'function(uint[] values) external cb) public pure {} }'))
+      .toThrow(/require memory or calldata/);
+  });
+
+  it('retains valid external locations and native storage function types', () => {
+    expect(cc('contract C { struct S { uint x; } function f('
+      + 'function(S calldata) external cb, function(uint[] memory) external other) public pure {} }')).toBe('C');
+    expect(compileString('contract C { function f('
+      + 'function(mapping(uint => uint) storage) external cb) public pure {} }').contractName).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

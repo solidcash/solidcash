@@ -213,6 +213,19 @@ const P2SH20_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
 const P2SH32_LBC_PREFIX = hexToBin('aa20');  // OP_HASH256 OP_PUSHBYTES_32
 const P2SH32_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
 
+// X24. A write to a stack variable at depth N is lowered by rotating the new value beneath the N-1 intervening
+// items. Two counted OP_BEGIN loops do that in 26 fixed bytes but ~22N executed instructions; the unrolled
+// sequence is 3N-2 of both. The depth is a compile-time constant, so the unrolled form is always available.
+//
+// MEASURED, run to completion on a relaxed budget (never on an aborted evaluation - see X23): a three-
+// participant graph's projection-proof inputs fell 1,495,922 -> 1,234,227 (-17.5%), the graph root controller
+// 893,411 -> 792,035 (-11.3%), a participant route 332,418 -> 292,508 (-12.0%). The deployed projection
+// verifier grew 9,002 -> 9,268 bytes (+3.0%, still inside the ordinary 10,000-byte input limit) and the root
+// controller SHRANK 1,528 -> 1,510 - the outliner shares the repeated 3-op runs better than the 26-byte loop.
+// One named constant rather than a compiler option: the lowering is not something a caller should select,
+// and keeping the loop below it makes reverting the trade one byte-exact line.
+const UNROLL_DEEP_REPLACE = true;
+
 /** Split a byte array on each occurrence of `delim`, returning the pieces between/around delimiters. */
 function splitOnDelimiter(bytes: Uint8Array, delim: Uint8Array): Uint8Array[] {
   const out: Uint8Array[] = [];
@@ -3286,11 +3299,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(index)), locationData);
     this.emit(Op.OP_ROLL, locationData);
     this.emit(Op.OP_DROP, locationData);
-    // For deep replacements in an entry body, rotate the new value beneath the intervening items with two counted
-    // loops. OP_DEFINE subroutines already carry OP_INVOKE control state on the altstack; keep their replacements
-    // entirely on the main stack until the counted algorithm has a dedicated nested-invocation proof. The unrolled
-    // path is larger but has no hidden control-stack interaction and is bounded by compiler-owned handler shapes.
-    if (index >= 14) {
+    // X24. The depth is a COMPILE-TIME constant, so the rotation is always unrollable: `index-1` OP_SWAPs
+    // interleaved with `index-2` OP_TOALTSTACKs, then `index-2` OP_FROMALTSTACKs - 3k-2 instructions emitted
+    // AND executed, against the two counted loops' ~22k executed for 26 fixed bytes. The loops are a SIZE
+    // optimization; their runtime cost is what dominates a Layer-3 covenant's operation-density budget.
+    // Retained below UNROLL_DEEP_REPLACE so reverting the trade is a one-line, byte-exact operation.
+    if (index >= 14 && !UNROLL_DEEP_REPLACE) {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);

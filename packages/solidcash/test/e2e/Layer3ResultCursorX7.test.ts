@@ -84,11 +84,17 @@ function patchEmissionByte(
   alsoRouteBlob = true,
 ): layer3.FinalizedCompiledGraph {
   const bytes = new Uint8Array(transcript.bytes);
-  bytes[emissionsOffset(transcript, participant) + index] = value;
+  const at = emissionsOffset(transcript, participant) + index;
+  // A FIXED patch value is a no-op whenever the targeted byte already holds it. Byte 5 of an emission row lies
+  // inside the target's 32-byte hash of a FRESHLY MINTED category, so that collides about 1 time in 256 and the
+  // case passes vacuously - nothing was mutated, so nothing rejects. Flip to the complement when they collide,
+  // which changes the byte in every build while keeping the intended value in the common case.
+  const applied = bytes[at] === value ? value ^ 0xff : value;
+  bytes[at] = applied;
   const emissionsHex = [...transcript.participantEmissionsHex];
   if (alsoRouteBlob) {
     const emissions = new Uint8Array(hexToBin(transcript.participantEmissionsHex[participant]));
-    emissions[index] = value;
+    emissions[index] = applied;
     emissionsHex[participant] = binToHex(emissions);
   }
   return Object.freeze({

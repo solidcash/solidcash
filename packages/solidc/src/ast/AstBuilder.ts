@@ -773,19 +773,27 @@ export default class AstBuilder
             ? [[constant.name, constant.type.interfaceName] as const] : []),
       );
       const interfacesByName = new Map(interfaceDefinitions.map((iface) => [iface.name, iface]));
+      const freeFunctionNames = new Set(freeFunctions.map((functionDefinition) => functionDefinition.name));
       for (const fn of freeFunctions) {
-        if (!fn.modifiers.includes(FunctionModifier.PURE)) continue;
         const walk = (node: Node | undefined): void => {
           if (!node) return;
-          if (node instanceof FunctionCallNode && node.identifier.name.includes('.')) {
-            const [receiver, method] = node.identifier.name.split('.');
-            const iface = interfacesByName.get(constantInterfaces.get(receiver) ?? '');
-            const target = iface?.functions.find((candidate) => candidate.name === method);
-            if (target && target.stateMutability !== 'pure') {
+          if (node instanceof FunctionCallNode) {
+            if (node.callOptions && freeFunctionNames.has(node.identifier.name)) {
               throw new ParseError(
-                `pure function '${fn.name}' cannot call '${target.stateMutability}' external function '${iface!.name}.${method}'`,
+                `Function call options can only be set on external function calls or contract creations`,
                 node.location,
               );
+            }
+            if (fn.modifiers.includes(FunctionModifier.PURE) && node.identifier.name.includes('.')) {
+              const [receiver, method] = node.identifier.name.split('.');
+              const iface = interfacesByName.get(constantInterfaces.get(receiver) ?? '');
+              const target = iface?.functions.find((candidate) => candidate.name === method);
+              if (target && target.stateMutability !== 'pure') {
+                throw new ParseError(
+                  `pure function '${fn.name}' cannot call '${target.stateMutability}' external function '${iface!.name}.${method}'`,
+                  node.location,
+                );
+              }
             }
           }
           for (const [key, value] of Object.entries(node)) {

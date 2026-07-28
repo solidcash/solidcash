@@ -8,7 +8,7 @@
   ...4500/7343
   ...5500/7343
 
-=== SOLC-CORPUS SCORECARD: 4443/4587 single-file in-scope compiled (144 failed) | 2192 negative-skipped (solc rejects; 496 of them we also accept, diagnostic) | 275 multifile-skipped | 289 cmdline-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 4443/4587 single-file in-scope compiled (144 failed) | 2192 negative-skipped (solc rejects; 495 of them we also accept, diagnostic) | 275 multifile-skipped | 289 cmdline-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
    19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not y

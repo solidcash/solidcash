@@ -587,6 +587,26 @@ describe('Solidity free-function duplicate signatures', () => {
   });
 });
 
+describe('Solidity free-function call options', () => {
+  it('rejects gas and value options on direct free-function calls', () => {
+    for (const option of ['gas: 1', 'value: 1']) {
+      expect(() => compileString(
+        `function f() { f{${option}}(); }`,
+        { solidityImportCompat: true },
+      )).toThrow(/call options.*external function calls or contract creations/i);
+    }
+  });
+
+  it('retains call options on an external interface call from a free function', () => {
+    expect(compileString(
+      'interface I { function f() external payable; }'
+      + ' function call(I target) { target.f{gas: 1, value: 1}(); }'
+      + ' contract C { function run(I target) public { call(target); require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

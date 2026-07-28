@@ -4949,3 +4949,12 @@ The focused suite is **983/983**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **985/985**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 496, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Free-function call-options loop: 4443 flat, NEG-ACCEPTED 496 -> 495 (-1)
+
+- Direct file-level and namespaced library calls now reject `{gas: ...}` and `{value: ...}` before unreachable
+  free-function pruning can erase the invalid call.
+- External interface calls from free functions retain their call options.
+
+The focused suite is **987/987**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+495, plus 275 multifile and 289 cmdline fixtures excluded.

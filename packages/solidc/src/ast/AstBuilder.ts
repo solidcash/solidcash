@@ -235,6 +235,7 @@ import {
   AnyIdentifierContext, ExpressionContext, CastContext, AssignmentExpressionContext,
   StateAccessContext, IdentifierContext, PostfixOpContext, PrefixOpContext, TupleIndexOpContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
+  FunctionTypeContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
@@ -434,7 +435,56 @@ export default class AstBuilder
     return this.visit(this.tree);
   }
 
+  private validateFunctionTypeModifiers(root: ParseTree): void {
+    const visit = (tree: ParseTree): void => {
+      if (tree instanceof FunctionTypeContext) {
+        const children = (tree as ParseTree & { children?: ParseTree[] }).children ?? [];
+        const modifiers = children
+          .map((child) => child.getText())
+          .filter((text) => ['pure', 'view', 'payable', 'internal', 'external'].includes(text));
+        const visibility = modifiers.filter((modifier) => modifier === 'internal' || modifier === 'external');
+        const mutability = modifiers.filter((modifier) =>
+          modifier === 'pure' || modifier === 'view' || modifier === 'payable');
+        const duplicateMutability = mutability.find((modifier, index) => mutability.indexOf(modifier) !== index);
+        if (duplicateMutability) {
+          throw new ParseError(
+            `Function type modifier '${duplicateMutability}' specified more than once`,
+            Location.fromCtx(tree),
+          );
+        }
+        let parent = tree.parentCtx;
+        let stateVariableContext = false;
+        while (parent) {
+          if (parent.constructor.name === 'StateVariableDeclarationContext') {
+            stateVariableContext = true;
+            break;
+          }
+          parent = parent.parentCtx;
+        }
+        // The compatibility grammar greedily includes a state variable's trailing visibility in functionType:
+        // `function() internal internal f` is type visibility + variable visibility and is valid Solidity.
+        const visibilityLimit = stateVariableContext ? 2 : 1;
+        if (visibility.length > visibilityLimit) {
+          throw new ParseError(
+            `Function type has multiple visibility modifiers (${visibility.join(', ')})`,
+            Location.fromCtx(tree),
+          );
+        }
+        if (mutability.length > 1) {
+          throw new ParseError(
+            `Function type has multiple state mutability modifiers (${mutability.join(', ')})`,
+            Location.fromCtx(tree),
+          );
+        }
+      }
+      const children = (tree as ParseTree & { children?: ParseTree[] }).children ?? [];
+      for (const child of children) visit(child);
+    };
+    visit(root);
+  }
+
   visitSourceFile(ctx: SourceFileContext): SourceFileNode {
+    if (this.solidityImportCompat) this.validateFunctionTypeModifiers(ctx);
     if (this.solidityImportCompat) {
       const declared = new Map<string, string>();
       const register = (name: string, kind: string, locationCtx: ParserRuleContext): void => {
@@ -4376,6 +4426,15 @@ export default class AstBuilder
       if (visChild) {
         visibility = visChild.getText() as StateVariableVisibility;
         visibilityExplicit = true;
+      }
+    }
+    if (this.solidityImportCompat) {
+      const mutability = allModTexts.filter((modifier) => modifier === 'constant' || modifier === 'immutable');
+      if (mutability.length > 1) {
+        throw new ParseError(
+          `State variable mutability specified more than once (${mutability.join(', ')})`,
+          Location.fromCtx(ctx),
+        );
       }
     }
     const isImmutable = allModTexts.includes('immutable');

@@ -3093,6 +3093,28 @@ describe('bounded integer state assignments and unsigned negation', () => {
   });
 });
 
+describe('function-type and state-variable modifier consistency', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects repeated or conflicting function-type modifiers', () => {
+    for (const modifiers of ['pure pure', 'pure view', 'internal external']) {
+      expect(() => cc(`contract C { function f() public pure { function() ${modifiers} g; } }`))
+        .toThrow(/Function type (modifier|has multiple)/);
+    }
+  });
+
+  it('retains one visibility and one mutability modifier', () => {
+    expect(cc('contract C { function f(function() external payable g) public pure {} }')).toBe('C');
+  });
+
+  it('rejects repeated or conflicting constant and immutable state modifiers', () => {
+    for (const modifiers of ['constant constant', 'immutable immutable', 'constant immutable']) {
+      expect(() => cc(`contract C { uint ${modifiers} x; }`))
+        .toThrow(/State variable mutability specified more than once/);
+    }
+  });
+});
+
 describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles fixed-point arithmetic that solc rejects (UnimplementedFeatureError)', () => {

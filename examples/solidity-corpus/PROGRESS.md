@@ -5084,3 +5084,12 @@ The focused suite is **1025/1025**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1028/1028**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 445, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Declaration-modifier consistency loop: 4443 flat, NEG-ACCEPTED 445 -> 443 (-2)
+
+- Function types now reject repeated/conflicting mutability and excess visibility tokens, while correctly
+  distinguishing a state variable's trailing visibility from its function type's visibility.
+- State variables now reject repeated or conflicting `constant` and `immutable` mutability declarations.
+
+The focused suite is **1031/1031**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+443, plus 275 multifile and 289 cmdline fixtures excluded.

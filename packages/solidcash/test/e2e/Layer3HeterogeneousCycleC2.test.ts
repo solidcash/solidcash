@@ -5,9 +5,10 @@ import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
+  Contract, MockNetworkProvider, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
 } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -137,6 +138,32 @@ const FOREIGN_TARGET = `aa20${'44'.repeat(32)}87`;
 type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
 
 /**
+ * Ordinary BCH-2026 capacity, and a relaxed density ceiling for reading a true cost. Both are the ones C1 and
+ * C3 already state: relay dust stays off (dust is policy, not consensus) and the hash-iteration allowance is 3
+ * rather than 3.5, because the mock feeds one integer to both the standard and nonstandard knobs.
+ */
+const createOrdinaryCapacityProvider = (): SemanticProvider => new MockNetworkProvider({
+  consensusLimits: {
+    maximumInputBytes: 10_000,
+    maximumStackItemBytes: 10_000,
+    maximumTransactionBytes: 1_000_000,
+    maximumNftCommitmentBytes: 128,
+    operationCostBudgetPerByte: 800,
+    hashDigestIterationsPerByte: 3,
+  },
+  policy: { enforceDust: false },
+});
+
+const RELAXED_BUDGET_LIMITS = {
+  maximumInputBytes: 10_000,
+  maximumStackItemBytes: 10_000,
+  maximumTransactionBytes: 1_000_000,
+  maximumNftCommitmentBytes: 128,
+  operationCostBudgetPerByte: 800_000,
+  hashDigestIterationsPerByte: 3_000,
+};
+
+/**
  * The one field each hostile case attacks. Every mode differs from `none` in exactly one authenticated field;
  * the sources, the compiled artifacts, the physical layout and every other field stay honest.
  */
@@ -149,7 +176,26 @@ type Tamper =
   | 'hubPostState'
   | 'legPostState'
   | 'reordered'
-  | 'missingReturnEdge';
+  | 'missingReturnEdge'
+  // ---- A1 review additions: fields the capstone authenticates but did not attack ----
+  /** The persisted table holds ONE slot while the transcript declares two table occurrences. */
+  | 'tableOverRun'
+  /** The persisted table holds THREE slots while the transcript still declares two. */
+  | 'tableUnderRun'
+  /** The transcript names leg B's data NFT input as leg B's master input. */
+  | 'participantInputLie'
+  /** The transcript names a projection slot the auditor's proof does not physically occupy. */
+  | 'projectionInputLie'
+  /** The transcript names an output the return-event NFT does not physically occupy. */
+  | 'returnOutputLie'
+  /** Leg B's settled master keeps its commitment but loses its minting capability. */
+  | 'masterCapability'
+  /** Leg B's settled master keeps everything but its satoshi value. */
+  | 'masterValue'
+  /** Leg B's settled data NFT carries the honest commitment under the auditor's category. */
+  | 'foreignCategory'
+  /** Leg B's settled master carries the honest token to a locking bytecode leg B does not own. */
+  | 'foreignOwner';
 
 async function createGraphAuthority(provider: SemanticProvider): Promise<any> {
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -191,6 +237,8 @@ interface BuiltCycle {
   transaction: string;
   transcript: layer3.FinalizedCompiledGraph;
   artifacts: readonly any[];
+  /** The HONEST physical layout, which every build assembles its transaction from. */
+  layout: layer3.CompiledGraphPhysicalLayout;
   /** Physical master input of each participant, in participant order. */
   participantInputs: readonly number[];
   /** The hub's persisted dispatch table, read back from settled state: one target and one selector per slot. */
@@ -202,8 +250,11 @@ interface BuiltCycle {
   claimedResultHex: string;
 }
 
-async function buildCycleGraph(tamper: Tamper = 'none'): Promise<BuiltCycle> {
-  const provider = createLayer3SemanticTestProvider();
+async function buildCycleGraph(
+  tamper: Tamper = 'none',
+  createProvider: () => SemanticProvider = createLayer3SemanticTestProvider,
+): Promise<BuiltCycle> {
+  const provider = createProvider();
   const outpoints = new Set<string>();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -241,9 +292,17 @@ async function buildCycleGraph(tamper: Tamper = 'none'): Promise<BuiltCycle> {
   // slot 1 through the SAME registration handler, so the selector it writes is the honest one.
   const hubStateful = StatefulContract.withCategory(hubBase, hubSetup.categoryId);
   await hubStateful.registerCredit(legB.lockingBytecode).send();
-  await hubStateful.registerDebit(
-    tamper === 'target' ? hexToBin(FOREIGN_TARGET) : legC.lockingBytecode,
-  ).send();
+  // 'tableOverRun' leaves slot 1 unwritten, so the persisted table holds ONE entry while the transcript below
+  // still declares two table occurrences. Every other field of both occurrences stays honest.
+  if (tamper !== 'tableOverRun') {
+    await hubStateful.registerDebit(
+      tamper === 'target' ? hexToBin(FOREIGN_TARGET) : legC.lockingBytecode,
+    ).send();
+  }
+  // 'tableUnderRun' writes a THIRD slot the transcript never answers. Both table entries the transcript does
+  // declare stay byte-identical to the control's, and the physical shape is unchanged: three 35-byte targets
+  // still fit the one chunk two of them occupied.
+  if (tamper === 'tableUnderRun') await hubStateful.registerCredit(legB.lockingBytecode).send();
   const currentHub = await hubStateful.getFullState();
   if (!currentHub.masterUtxo || currentHub.dataNftUtxos.length !== 1) {
     throw new Error('cycle fixture did not materialize the hub master/data state');
@@ -295,9 +354,22 @@ async function buildCycleGraph(tamper: Tamper = 'none'): Promise<BuiltCycle> {
       invocationResults[invocation.index] = binToHex(packedResult(claimedScore));
     }
   });
+  // Physical binding lies. The transaction is assembled from the HONEST `layout` throughout; only the numbers
+  // the transcript states about where each participant, proof and return NFT physically sits are moved. Each
+  // stays inside what `finalizeCompiledGraph` will accept - strictly increasing, uint16, no collision with a
+  // participant input - so the SDK admits them and only a covenant can refuse.
+  const claimedParticipantInputs = tamper === 'participantInputLie'
+    ? layout.participantInputs.map((input, index) => (index === 1 ? input + 1 : input))
+    : layout.participantInputs;
+  const claimedProjectionInputs = tamper === 'projectionInputLie'
+    ? layout.projectionInputs.map((input, index) => (index === 3 ? input + 1 : input))
+    : layout.projectionInputs;
+  const claimedReturnOutputs = tamper === 'returnOutputLie'
+    ? layout.returnOutputs!.map((output, index) => (index === 3 ? output! - 1 : output))
+    : layout.returnOutputs!;
   const transcript = layer3.finalizeCompiledGraph(
-    plan, invocationResults, layout.participantInputs, layout.returnOutputs!, resultVectors,
-    layout.projectionInputs,
+    plan, invocationResults, claimedParticipantInputs, claimedReturnOutputs, resultVectors,
+    claimedProjectionInputs,
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -432,17 +504,33 @@ async function buildCycleGraph(tamper: Tamper = 'none'): Promise<BuiltCycle> {
       tx.addOutput({ to: p2pkh.address, amount: 1000n });
     }
   }
-  const settle = (contract: Contract, setup: any, commitment: string): void => {
+  // `attacked` is leg B only: each resource-preservation mode moves exactly ONE property of leg B's settled
+  // pair - capability, satoshi value, category or owning locking bytecode - and leaves the commitment, the
+  // transcript and every other participant's block untouched.
+  const settle = (contract: Contract, setup: any, commitment: string, attacked = false): void => {
     tx.addOutput({
-      to: contract.tokenAddress, amount: setup.masterUtxo.satoshis,
-      token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      to: attacked && tamper === 'foreignOwner' ? audit.tokenAddress : contract.tokenAddress,
+      amount: attacked && tamper === 'masterValue'
+        ? setup.masterUtxo.satoshis - 100n : setup.masterUtxo.satoshis,
+      token: {
+        category: setup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: attacked && tamper === 'masterCapability' ? 'mutable' : 'minting',
+          commitment: '',
+        },
+      },
     });
     tx.addOutput({
       to: getDataNftAddress(contract, setup.categoryId), amount: setup.dataNftUtxos[0].satoshis,
-      token: { category: setup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
+      token: {
+        category: attacked && tamper === 'foreignCategory' ? auditSetup.categoryId : setup.categoryId,
+        amount: 0n,
+        nft: { capability: 'mutable', commitment },
+      },
     });
   };
-  settle(legB, legBSetup, legBNext);
+  settle(legB, legBSetup, legBNext, true);
   settle(legC, legCSetup, legCNext);
   settle(audit, auditSetup, auditNext);
   tx.addOutput({
@@ -463,6 +551,7 @@ async function buildCycleGraph(tamper: Tamper = 'none'): Promise<BuiltCycle> {
     transaction: raw(tx),
     transcript,
     artifacts: [hubArtifact, legBArtifact, legCArtifact, auditArtifact],
+    layout,
     participantInputs: layout.participantInputs,
     persistedTargets: (currentHub.state.legs as unknown[]).map(asHex),
     persistedSelectors: (currentHub.state.__fnsel_legs as unknown[]).map(asHex),
@@ -513,6 +602,253 @@ function expectRejectionAtInput(built: BuiltCycle, input: number): string {
 
 const abiSelector = (artifact: any, name: string): string =>
   artifact.abi.find((entry: any) => entry.name === name).selector.toLowerCase();
+
+/**
+ * The honest target/selector/argument shape of a build, read out of that SAME build. Two builds mint fresh
+ * categories, so every participant locking bytecode differs between them and cross-build comparison of these
+ * fields is meaningless - the capstone's own note, and it applies to the review cases below too.
+ */
+const honestShapeOf = (built: BuiltCycle): { targets: string[]; selectors: string[]; args: string[] } => ({
+  targets: [
+    built.transcript.plan.participants[1].lockingBytecode,
+    built.transcript.plan.participants[2].lockingBytecode,
+  ],
+  selectors: [abiSelector(built.artifacts[1], 'credit'), abiSelector(built.artifacts[2], 'debit')],
+  args: [binToHex(packedResult(CALL_VALUE)), binToHex(packedResult(CALL_VALUE))],
+});
+
+/** The physical input a covenant refused at, or `null` when the whole transaction was accepted. */
+function rejectionIndex(built: BuiltCycle): number | null {
+  try {
+    layer3.preflightLayer3Transaction(built.builder);
+    return null;
+  } catch (error) {
+    const match = (error as Error).message.match(/preflight failed at input (\d+)/);
+    if (!match) throw error;
+    return Number(match[1]);
+  }
+}
+
+/**
+ * A1 - independent hostile review of C2. Written by the worker that built C1, not by C2's author.
+ *
+ * Every case below attacks a field C2 authenticates but did not attack, and each is measured against an
+ * honest control built by the same function, differing in exactly the named field. Each names the physical
+ * input that refused it.
+ */
+describe('A1 review of C2: fields the capstone authenticates but did not attack', () => {
+  // WHOLE-TABLE EXHAUSTION, over-run. The persisted table holds ONE slot; the transcript still declares two
+  // table occurrences with honest targets, selectors and arguments. Nothing else moves: three participants
+  // still settle, the block shapes are identical, and both dynamic fields still occupy one chunk each.
+  //
+  // This is the direction C2's own scoping note leaves open. C2 records that `minimumOccurrences` is
+  // undefined for a runtime-sized table, so nothing in the file proves the loop must run at all - and it does
+  // not test omitting or adding an occurrence. Claiming a dispatch the persisted table does not authorize is
+  // the exploitable half of that gap, and it is refused by the hub's own route, at input 0.
+  it('rejects a transcript that claims more table occurrences than the persisted table holds', async () => {
+    const built = await buildCycleGraph('tableOverRun');
+    const honestBuild = await buildCycleGraph();
+    expect(rejectionIndex(honestBuild)).toBeNull();
+    // One field differs: the table's length. Both declared occurrences are still the honest pair.
+    expect(honestBuild.persistedTargets).toHaveLength(2);
+    expect(built.persistedTargets).toHaveLength(1);
+    const rows = decodeEmissionRows(built.transcript.participantEmissionsHex[0]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].targetHex).toBe(built.transcript.plan.participants[1].lockingBytecode);
+    expect(rows[1].targetHex).toBe(built.transcript.plan.participants[2].lockingBytecode);
+    expect(rows[0].selectorHex).toBe(abiSelector(built.artifacts[1], 'credit'));
+    expect(rows[1].selectorHex).toBe(abiSelector(built.artifacts[2], 'debit'));
+    expect(rows.map((row) => row.argsHex))
+      .toEqual([binToHex(packedResult(CALL_VALUE)), binToHex(packedResult(CALL_VALUE))]);
+    expect(built.participantInputs).toEqual(honestBuild.participantInputs);
+    expect(rejectionIndex(built)).toBe(built.participantInputs[0]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  // WHOLE-TABLE EXHAUSTION, under-run. The persisted table holds THREE slots and the transcript answers two.
+  //
+  // SCOPED: this case does NOT isolate which check refuses it. With three entries the hub's own source guard
+  // `require(legs.length <= 2)` also fails, so a row-count comparison and the guard are both in a position to
+  // reject. Isolating the comparison needs a table of two answered by one occurrence, and that cannot be built
+  // inside this fixture: dropping occurrence 1 leaves leg C and the auditor with no invocation, which the
+  // planner refuses outright, so the participant count and the whole physical shape would have to change.
+  it('rejects a transcript that answers fewer table occurrences than the persisted table holds', async () => {
+    const built = await buildCycleGraph('tableUnderRun');
+    const honestBuild = await buildCycleGraph();
+    expect(rejectionIndex(honestBuild)).toBeNull();
+    const shape = honestShapeOf(built);
+    expect(built.persistedTargets).toHaveLength(3);
+    expect(built.persistedTargets.slice(0, 2)).toEqual(shape.targets);
+    expect(built.persistedSelectors.slice(0, 2)).toEqual(shape.selectors);
+    // The unanswered third slot repeats slot 0's pair, so no new target or selector enters the fixture.
+    expect(built.persistedTargets[2]).toBe(shape.targets[0]);
+    expect(built.persistedSelectors[2]).toBe(shape.selectors[0]);
+    const rows = decodeEmissionRows(built.transcript.participantEmissionsHex[0]);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.targetHex)).toEqual(shape.targets);
+    expect(rows.map((row) => row.selectorHex)).toEqual(shape.selectors);
+    expect(rows.map((row) => row.argsHex)).toEqual(shape.args);
+    expect(built.participantInputs).toEqual(honestBuild.participantInputs);
+    expect(rejectionIndex(built)).toBe(built.participantInputs[0]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  // PHYSICAL INPUT BINDING. The transcript names leg B's DATA NFT input as leg B's master input - one index
+  // higher, still strictly increasing, still not colliding with another participant, so the SDK admits it.
+  // The transaction itself is assembled from the honest layout, so leg B's route really does execute one
+  // input below where the transcript says it does.
+  it('rejects a transcript that names the wrong physical input for a participant', async () => {
+    const built = await buildCycleGraph('participantInputLie');
+    const honestBuild = await buildCycleGraph();
+    expect(rejectionIndex(honestBuild)).toBeNull();
+    expect(built.transcript.participantInputs[1]).toBe(built.layout.participantInputs[1] + 1);
+    expect([...built.transcript.participantInputs].filter(
+      (input, index) => input !== built.layout.participantInputs[index],
+    )).toHaveLength(1);
+    expect(built.claimedPostStates).toEqual(honestBuild.claimedPostStates.map(
+      (state, index) => (index === 0 ? built.claimedPostStates[0] : state),
+    ));
+    expect(rejectionIndex(built)).toBe(built.layout.participantInputs[1]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  // PHYSICAL PROOF BINDING. The transcript names a projection slot the auditor's proof does not occupy.
+  // Note WHERE this is caught: not at the moved slot, but at the FIRST projection input, so the projection
+  // covenant validates the whole declared proof region rather than only its own row.
+  it('rejects a transcript that names the wrong projection slot for a participant', async () => {
+    const built = await buildCycleGraph('projectionInputLie');
+    const honestBuild = await buildCycleGraph();
+    expect(rejectionIndex(honestBuild)).toBeNull();
+    expect(built.transcript.projectionInputs[3]).toBe(built.layout.projectionInputs[3] + 1);
+    expect([...built.transcript.projectionInputs].filter(
+      (input, index) => input !== built.layout.projectionInputs[index],
+    )).toHaveLength(1);
+    expect(rejectionIndex(built)).toBe(built.layout.projectionInputs[0]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  // PHYSICAL OUTPUT BINDING. The transcript names an output the return-event NFT does not occupy, while the
+  // auditor's own route unlocker is still handed the honest index.
+  //
+  // Worth recording for the F phase: the auditor's route at input 70 accepts this transaction - it checks the
+  // output index it was handed, which is honest - and the GRAPH ROOT CONTROLLER is what refuses it. The
+  // return-output binding is enforced centrally, not by the participant that produces the result.
+  it('rejects a transcript that names the wrong return-event output', async () => {
+    const built = await buildCycleGraph('returnOutputLie');
+    const honestBuild = await buildCycleGraph();
+    expect(rejectionIndex(honestBuild)).toBeNull();
+    expect(built.transcript.returnOutputs[3]).toBe(built.layout.returnOutputs![3]! - 1);
+    expect(built.transcript.returnOutputs.slice(0, 3)).toEqual([null, null, null]);
+    expect(built.claimedResultHex).toBe(honestBuild.claimedResultHex);
+    expect(rejectionIndex(built)).toBe(built.layout.controllerInput);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  // RESOURCE PRESERVATION. Four properties of one settled pair, one per case, with the authenticated post-state
+  // commitment and the whole transcript held honest in all four.
+  it.each([
+    ['capability', 'masterCapability' as Tamper],
+    ['satoshi value', 'masterValue' as Tamper],
+    ['token category', 'foreignCategory' as Tamper],
+    ['owning locking bytecode', 'foreignOwner' as Tamper],
+  ])('rejects a settled participant whose %s is not preserved', async (_label, tamper) => {
+    const built = await buildCycleGraph(tamper);
+    const honestBuild = await buildCycleGraph();
+    expect(rejectionIndex(honestBuild)).toBeNull();
+    // The commitment - the only resource property C2 already attacked - is the honest one in all four, and so
+    // is every dispatch field, checked inside this build.
+    const shape = honestShapeOf(built);
+    const rows = decodeEmissionRows(built.transcript.participantEmissionsHex[0]);
+    expect(built.claimedPostStates[1]).toBe(honestBuild.claimedPostStates[1]);
+    expect(rows.map((row) => row.targetHex)).toEqual(shape.targets);
+    expect(rows.map((row) => row.selectorHex)).toEqual(shape.selectors);
+    expect(rows.map((row) => row.argsHex)).toEqual(shape.args);
+    expect(built.persistedTargets).toEqual(shape.targets);
+    expect(rejectionIndex(built)).toBe(built.layout.participantInputs[1]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  // OWNER UNIQUENESS. C3 attacks this at the VM by patching a transcript; C2 has no such case. Within C2's
+  // shape the planner refuses it before a transcript exists, so the VM-level form is not reachable from here.
+  it('refuses two participant rows naming one physical owner, before a transcript exists', async () => {
+    const built = await buildCycleGraph();
+    const rows = built.transcript.plan.participants.map((participant, index) => ({
+      artifact: built.artifacts[index], lockingBytecode: participant.lockingBytecode,
+    }));
+    expect(() => layer3.planCompiledGraph([...rows, rows[1]] as any, [
+      { parent: null, callee: 0, function: 'fireAll', args: [CALL_VALUE] },
+      { parent: 0, callee: 1, function: 'credit', args: [CALL_VALUE], callMode: 'call' },
+      { parent: 1, callee: 0, function: 'absorb', args: [CALL_VALUE], callMode: 'call' },
+      { parent: 0, callee: 4, function: 'credit', args: [CALL_VALUE], callMode: 'call' },
+    ] as any)).toThrow(/two participant rows name the same physical locking bytecode/);
+  }, 600_000);
+
+  // CALL MODE. The transcript commits a per-invocation call mode C2 never substitutes. Within this fixture
+  // the substitution is unreachable at the VM: every handler here writes state, so the planner refuses to
+  // call any of them `staticcall`. Recorded as a fail-closed planner refusal, not as VM evidence.
+  // RELAXED LIMITS. C2 carries no capacity measurement at all, so nothing in the file establishes that the
+  // relaxed profile is the ONLY reason it is semantic-only evidence. This measures it, with the same
+  // run-to-completion method X25 used: build under ORDINARY BCH-2026 capacity, then read the true operation
+  // cost of every input by re-evaluating those exact bytes against a relaxed density ceiling.
+  it('MEASURED: C2 under ordinary BCH-2026 capacity, and the true cost of every sidecar input', async () => {
+    const built = await buildCycleGraph('none', createOrdinaryCapacityProvider);
+    const outcome = rejectionIndex(built);
+    const transaction = built.builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
+    const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: RELAXED_BUDGET_LIMITS } as never);
+    const measure = (input: number): { bytes: number; cost: number; ratio: number; instructions: number } => {
+      const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as any;
+      expect(state.error).toBeUndefined();
+      const { densityControlLength: bytes, operationCost: cost } = state.metrics;
+      return {
+        bytes, cost, ratio: cost / (bytes * 800), instructions: state.metrics.evaluatedInstructionCount,
+      };
+    };
+    const controller = measure(built.layout.controllerInput);
+    const projections = built.layout.projectionInputs.map(measure);
+    const participants = built.layout.participantInputs.map(measure);
+
+    // Measured at this commit. 4 participants, 5 invocations, a 743-byte transcript, 79 slots:
+    //
+    //   hub        4,709 B  2,234,254  0.5931   projections  5,294 B each  1,951,194-1,980,786  0.4607-0.4677
+    //   leg B      2,602 B    935,055  0.4492   controller   2,354 B       1,538,567            0.8170
+    //   leg C      2,739 B    949,332  0.4332
+    //   auditor    2,682 B    905,373  0.4220
+    //
+    // EVERY input fits. C2 settles under ordinary BCH-2026 capacity today, so the relaxed profile is NOT what
+    // this composition needs - its SEMANTIC-only label is conservative rather than forced.
+    //
+    // This is also the control X25 needed. C1 and C2 have the SAME row counts - 4 participants, 5 invocations
+    // - with different compositions and very different transcripts (1,141 vs 743 bytes). Their projection
+    // inputs evaluate to a BYTE-IDENTICAL 17,259 instructions, and the fourth projection, the one covering the
+    // returning participant, is 17,584 in both. So the projection verifier's cost is a pure function of
+    // participant and invocation count: it depends on neither transcript length nor on what the participants
+    // do. The controller differs - 10,035 against 11,443 - because it additionally scans every transaction
+    // output, at a measured 32 instructions per output over C1's 35 slots, C2's 79 and C3's 108.
+    expect(outcome).toBeNull();
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    expect(built.transcript.plan.participants).toHaveLength(4);
+    expect(built.transcript.plan.invocations).toHaveLength(5);
+    for (const row of [...participants, ...projections, controller]) expect(row.ratio).toBeLessThan(1);
+    expect(controller.ratio).toBeGreaterThan(0.6);
+    expect(controller.ratio).toBeLessThan(0.95);
+    expect(projections.map((row) => row.instructions)).toEqual([17_259, 17_259, 17_259, 17_584]);
+  }, 600_000);
+
+  it('refuses a staticcall mode on a state-writing handler, before a transcript exists', async () => {
+    const built = await buildCycleGraph();
+    const rows = built.transcript.plan.participants.map((participant, index) => ({
+      artifact: built.artifacts[index], lockingBytecode: participant.lockingBytecode,
+    }));
+    expect(() => layer3.planCompiledGraph(rows as any, [
+      { parent: null, callee: 0, function: 'fireAll', args: [CALL_VALUE] },
+      { parent: 0, callee: 1, function: 'credit', args: [CALL_VALUE], callMode: 'call' },
+      { parent: 1, callee: 0, function: 'absorb', args: [CALL_VALUE], callMode: 'call' },
+      { parent: 0, callee: 2, function: 'debit', args: [CALL_VALUE], callMode: 'staticcall' },
+      { parent: 3, callee: 3, function: 'score', args: [CALL_VALUE], callMode: 'call' },
+    ] as any)).toThrow(/staticcall target 'debit' is not compiler-proven read-only/);
+  }, 600_000);
+});
 
 describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
   /**

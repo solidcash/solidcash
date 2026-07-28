@@ -4958,3 +4958,12 @@ The focused suite is **985/985**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **987/987**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 495, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Pure free-function storage-mutation loop: 4443 flat, NEG-ACCEPTED 495 -> 494 (-1)
+
+- Pure file-level and library free functions now reject array, mapping, assignment, and delete mutations rooted
+  in a `storage` reference parameter before unreachable-function pruning.
+- Equivalent storage mutations remain valid in non-pure helpers.
+
+The focused suite is **989/989**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+494, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -775,8 +775,27 @@ export default class AstBuilder
       const interfacesByName = new Map(interfaceDefinitions.map((iface) => [iface.name, iface]));
       const freeFunctionNames = new Set(freeFunctions.map((functionDefinition) => functionDefinition.name));
       for (const fn of freeFunctions) {
+        const storageParameters = new Set(
+          fn.parameters
+            .filter((parameter) => parameter.modifier.includes(Modifier.STORAGE))
+            .map((parameter) => parameter.name),
+        );
         const walk = (node: Node | undefined): void => {
           if (!node) return;
+          const mutatedName = node instanceof AssignNode ? node.identifier.name
+            : node instanceof ArrayAssignNode || node instanceof ArrayPushNode
+              || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode
+              || node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+              || node instanceof MappingDeleteNode
+              ? node.name
+              : node instanceof DeleteLocalNode ? node.identifier.name : undefined;
+          if (fn.modifiers.includes(FunctionModifier.PURE)
+            && mutatedName !== undefined && storageParameters.has(mutatedName)) {
+            throw new ParseError(
+              `pure function '${fn.name}' cannot modify storage parameter '${mutatedName}'`,
+              node.location,
+            );
+          }
           if (node instanceof FunctionCallNode) {
             if (node.callOptions && freeFunctionNames.has(node.identifier.name)) {
               throw new ParseError(

@@ -607,6 +607,22 @@ describe('Solidity free-function call options', () => {
   });
 });
 
+describe('Solidity pure free-function storage mutation', () => {
+  it('rejects writes through a storage reference parameter', () => {
+    expect(() => compileString(
+      'function g(uint[] storage x) pure { x[0] = 1; }',
+      { solidityImportCompat: true },
+    )).toThrow(/pure function 'g'.*cannot modify storage parameter 'x'/i);
+  });
+
+  it('retains the same storage mutation in a non-pure free function', () => {
+    expect(compileString(
+      'function g(uint[] storage x) { x[0] = 1; }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('definitions');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

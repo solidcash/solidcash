@@ -7,6 +7,7 @@ import {
   ExpressionNode,
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
@@ -463,24 +464,62 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }[] = [];
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
-      const directKeys = new Map<string, number[][]>();
+      // X19: a BARE `m[k] = v` / `m[k]` is an ArrayAssign / ArrayAccess until symbol resolution decides
+      // state-vs-local; only the `this.`-prefixed spelling reaches here as a Mapping* node. Walking the
+      // Mapping* forms alone therefore left that spelling with an EMPTY directKeys while the footprint had
+      // already reported the collection, and every such handler was rejected 'collection-helper-route-not-enabled'
+      // - no SCB1 route at all, for a write the direct route compiles. A name bound locally in this function is a
+      // LOCAL array element, not a collection entry; that is the same test analyseFunctionFootprint applies.
+      const locallyBound = new Set<string>(fn.parameters.map((parameter) => parameter.name));
       walkInvocationAst(fn.body, (node) => {
-        if (!(node instanceof MappingAccessNode || node instanceof MappingAssignNode
-          || node instanceof MappingDeleteNode)) return;
-        const collection = collectionByName.get(node.name);
-        if (!collection) return;
-        const indices = node.keys.map((key) => {
-          if (key instanceof IdentifierNode) {
-            return fn.parameters.findIndex((parameter) => parameter.name === key.name);
-          }
-          if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return -2;
-          return -1;
-        });
-        const group = directKeys.get(node.name) ?? [];
-        if (!group.some((prior) => prior.length === indices.length
-          && prior.every((value, index) => value === indices[index]))) group.push(indices);
-        directKeys.set(node.name, group);
+        if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
       });
+      const bareAccessOf = (node: Node): { name: string; keys: ExpressionNode[] } | undefined => {
+        if (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) {
+          return locallyBound.has(node.name) ? undefined : { name: node.name, keys: [node.index] };
+        }
+        if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode) {
+          return locallyBound.has(node.array.name)
+            ? undefined : { name: node.array.name, keys: [node.index] };
+        }
+        return undefined;
+      };
+      const collectKeys = (includeBare: boolean): Map<string, number[][]> => {
+        const collected = new Map<string, number[][]>();
+        walkInvocationAst(fn.body, (node) => {
+          const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
+            || node instanceof MappingDeleteNode
+            ? { name: node.name, keys: node.keys as ExpressionNode[] }
+            : (includeBare ? bareAccessOf(node) : undefined);
+          if (!access || !collectionByName.has(access.name)) return;
+          const indices = access.keys.map((key) => {
+            if (key instanceof IdentifierNode) {
+              return fn.parameters.findIndex((parameter) => parameter.name === key.name);
+            }
+            if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return -2;
+            return -1;
+          });
+          const group = collected.get(access.name) ?? [];
+          if (!group.some((prior) => prior.length === indices.length
+            && prior.every((value, index) => value === indices[index]))) group.push(indices);
+          collected.set(access.name, group);
+        });
+        return collected;
+      };
+      // Admit the bare spelling only where the route reaches the entry through the handler ITSELF. Every other
+      // shape - a second key alternative (resource-shaped), a msg.sender key, a non-parameter key - is served by
+      // a cloned handler whose keys are rewritten to synthetic entry-key parameters, and that rewrite still only
+      // matches the `this.`-prefixed nodes. Admitting a bare access there turns today's silent route-less
+      // artifact into a hard 'Block slot not found' / 'stable key expression' compile failure, so those shapes
+      // keep exactly the behaviour they have; converging them means converging bindEntryKeyParameters too.
+      const mappingOnlyKeys = collectKeys(false);
+      const withBareKeys = collectKeys(true);
+      const bareShapeIsSelfReached = [...withBareKeys].every(([name, alternatives]) => {
+        const collection = collectionByName.get(name)!;
+        return alternatives.length === 1 && alternatives[0].length === collection.allKeyTypes.length
+          && alternatives[0].every((index) => index >= 0);
+      });
+      const directKeys = bareShapeIsSelfReached ? withBareKeys : mappingOnlyKeys;
       const closure = collectNamedFunctionClosure(fn, byName);
       const nonEntryCollectionOnly = directKeys.size === 0
         && [...footprint.reads, ...footprint.writes]

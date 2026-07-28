@@ -185,6 +185,7 @@ import {
   AbiEncodeCallUndefinedFunctionError,
   AbiEncodeCallArgCountError,
   GraphEmissionEffectError,
+  SolidCashError,
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
@@ -8956,6 +8957,33 @@ export default class SymbolTableTraversal extends AstTraversal {
         'an effect on a route with fewer dispatch sites than rows',
       );
     }
+    // SEC-9. `eventWidth` below is a group MAXIMUM, and a member narrower than it settles only part of its own
+    // site's slots: the rest are reserved outputs inside the route's block that NOTHING verifies, while the
+    // co-spent master is a minting NFT - so a spender mints a forged own-category event NFT there and the batch
+    // settles. Measured ACCEPTED on the reached site's second slot, which is what separates it from the
+    // unreached conditional slots of a short batch.
+    //
+    // The route's ELIGIBILITY gate does require uniform event counts, but it counts DIRECT `emit` statements
+    // BEFORE lowering while this reservation counts `emitInfos` AFTER it, so an emit reached through an
+    // internal call is invisible to it. Transfers already assert exactly this (framesSettleEveryTransfer
+    // compares direct against declared); events asserted nothing. Fail closed rather than reserve a slot no
+    // handler settles - the alternative repair, verifying each unused slot carries no own-category token, is
+    // new covenant surface for a shape no capstone has.
+    const eventWidths = new Set(handlers.map((fn) => fn.emitInfos?.length ?? 0));
+    if (eventWidths.size > 1) {
+      const narrowest = handlers.reduce((a, b) =>
+        ((a.emitInfos?.length ?? 0) <= (b.emitInfos?.length ?? 0) ? a : b));
+      throw new SolidCashError(
+        narrowest,
+        `Batched handler '${narrowest.name.replace(/^__scb_(graph|resource|handler|array)_/, '')}' emits `
+        + `${narrowest.emitInfos?.length ?? 0} event(s) while a sibling handler on the same route emits `
+        + `${Math.max(...eventWidths)}. Routed handlers share ONE per-dispatch-site output frame whose width is `
+        + 'the maximum, so the narrower handler would leave reserved event outputs that nothing verifies and a '
+        + 'spender could mint a forged event NFT into them. Give every effect-carrying handler on this route the '
+        + 'same number of events - counting the ones reached through an internal call, which the route\'s '
+        + 'eligibility check cannot see',
+      );
+    }
     // Base 0, and the route's OWN effect slots are shared rather than added to. A route reaches exactly one
     // handler per row, and the unrolled parser gives row `s` the emit/transfer indices [s*width, s*width+width)
     // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one
@@ -8969,7 +8997,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       transferWidth: Math.max(0, ...handlers.map((fn) => fn.transferInfos?.length ?? 0)),
     };
     route.graphEffectFrame = frame;
-    for (const fn of handlers) fn.graphEffectFrame = frame;
+    for (const fn of handlers) {
+      fn.graphEffectFrame = frame;
+      // SEC-8. `frame` is SHARED, so its widths are group maxima. Whether the route's not-reached container
+      // preservation may be skipped at a dispatch site depends on whether the handler reached THERE settles the
+      // container, which it does exactly when its own subroutine has pending transfers. Group membership
+      // already establishes `direct === declared` (framesSettleEveryTransfer), so the declared count IS that
+      // fact for a member; a handler whose transfers are all `{value:}` call options never joins the group and
+      // never gets this flag.
+      fn.graphEffectSettlesTransfers = (fn.transferInfos?.length ?? 0) > 0;
+    }
     // Recompute rather than patch: slot ORDER inside a block is canonical (the SDK builds outputs from it and
     // countOutputOnlySlotsBefore reads it), so the frames must land in the same position a flattened handler's
     // own effects would have.

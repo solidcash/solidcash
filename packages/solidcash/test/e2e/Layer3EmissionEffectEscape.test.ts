@@ -524,6 +524,448 @@ async function buildSiblingOnlyBatch(drain: boolean): Promise<{
   };
 }
 
+/**
+ * SEC-8. The sibling batch again, with the sibling itself a FRAME MEMBER.
+ *
+ * `buildSiblingOnlyBatch`'s `note` carries no effect at all, so it joins no frame group and is flattened into
+ * the route - the reached flag is never written and the route's not-reached guard fires. Give the sibling an
+ * `emit` and an outgoing call and it becomes a frame member sharing ONE `GraphEffectFrame` with the
+ * transfer-carrying handler, whose `transferWidth` is the group MAXIMUM. The dispatch site then claims the
+ * container was settled while the sibling's subroutine settles nothing.
+ *
+ * Both handlers must emit: `eventMode` refuses any eligible handler with no direct emit, so a route admitting
+ * an emit-carrying sibling drops a purely transfer-carrying one from the ABI and reserves no container at all.
+ * That is the shape Worker C measured, and it is why its drain was accepted with no container in the
+ * transaction. Here the container slot is asserted present before the batch is built.
+ *
+ * `drain` is the single variable, exactly as in the transfer-free pair above.
+ */
+const sec8HubSource = `pragma solidcash >=0.8.0;
+interface IEffectLeg { function credit(uint value); }
+contract Sec8EffectHub() {
+  uint total;
+  event Fired(uint value);
+  function fireAll(address first, uint value, bytes recipient) public {
+    emit Fired(value);
+    this.transfer(recipient, ${TRANSFER_SATS});
+    IEffectLeg(first).credit(value);
+    require(true);
+  }
+  function note(address first, uint credited) public {
+    emit Fired(credited);
+    IEffectLeg(first).credit(credited);
+    this.total = this.total + credited;
+    require(credited > 0);
+  }
+}`;
+
+async function buildSec8ContainerBatch(drain: boolean): Promise<{
+  builder: TransactionBuilder; transaction: string; provider: SemanticProvider;
+  callerInput: number; containerSlots: number;
+}> {
+  const provider = createLayer3SemanticTestProvider();
+  const outpoints = new Set<string>();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const hubArtifact = compileString(sec8HubSource, options);
+  const hubBase = new Contract(hubArtifact, [], { provider });
+  const hubSetup = await setupStatefulUtxos(provider, hubBase, hubArtifact.stateLayout!, { total: 0n });
+  const hub = hubBase.withCategory(hexToBin(hubSetup.categoryId));
+  const legBArtifact = compileString(legBSource(false), options);
+  const legBBase = new Contract(legBArtifact, [hub.lockingBytecode], { provider });
+  const legBSetup = await setupStatefulUtxos(provider, legBBase, legBArtifact.stateLayout!, { seen: 0n });
+  const legB = legBBase.withCategory(hexToBin(legBSetup.categoryId));
+
+  const plan = layer3.planCompiledGraph([
+    { artifact: hubArtifact, lockingBytecode: hub.lockingBytecode },
+    { artifact: legBArtifact, lockingBytecode: legB.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'note', args: [legB.lockingBytecode, CALL_VALUE] },
+    { parent: 0, callee: 1, function: 'credit', args: [CALL_VALUE], callMode: 'call' },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, plan.participants.map(() => null),
+    plan.participants.map(() => ''), layout.projectionInputs,
+  );
+
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const initFee = uniqueUtxo(outpoints, { satoshis: 20_000n });
+  await provider.addUtxo(p2pkh.address, initFee);
+  const initTx = new TransactionBuilder({ provider });
+  initTx.addInput(genesisUtxo, controller.unlock.initialize(hexToBin(transcript.root), alicePub, signature()));
+  initTx.addInput(initFee, p2pkh.unlock.spend(alicePub, signature()));
+  initTx.addOutput({
+    to: controller.tokenAddress, amount: genesisUtxo.satoshis,
+    token: {
+      category: controllerCategory, amount: 0n,
+      nft: { capability: 'mutable', commitment: transcript.root },
+    },
+  });
+  initTx.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(initTx));
+  const rootedController = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo: any) => utxo.token?.nft?.commitment === transcript.root);
+
+  const projections = plan.participants.map(() => uniqueUtxo(outpoints, { satoshis: 1000n }));
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+  const fee = uniqueUtxo(outpoints, { satoshis: 300_000n });
+  await provider.addUtxo(p2pkh.address, fee);
+
+  const hubLayout = hubArtifact.hiddenBatch!.route.blockLayout!;
+  const hubSlotKind = new Map<number, string>(hubLayout.slots.map((slot: any) => [slot.offset, slot.kind]));
+  const fillers = Array.from(
+    { length: hubLayout.blockSize }, () => uniqueUtxo(outpoints, { satoshis: 1000n }),
+  );
+  for (const funding of fillers) await provider.addUtxo(p2pkh.address, funding);
+  const CONTAINER_SATS = 5_000n;
+  const container = uniqueUtxo(outpoints, { satoshis: CONTAINER_SATS });
+  await provider.addUtxo(getSatoshiContainerAddress(hub, hubSetup.categoryId), container);
+
+  const routeFor = (contract: Contract, artifact: any): any =>
+    (...args: any[]): any => contract.createCompilerRouteUnlocker(
+      artifact.hiddenBatch.route, hexToBin(artifact.hiddenBatch.selector),
+    )(...args);
+
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  let fillerCursor = 0;
+  for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
+    const kind = hubSlotKind.get(offset);
+    if (kind === 'master') {
+      tx.addInput(hubSetup.masterUtxo, routeFor(hub, hubArtifact)(
+        ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+      ));
+    } else if (kind === 'dataNft') {
+      tx.addInput(
+        hubSetup.dataNftUtxos[0],
+        createDataNftUnlocker(hub, layout.participantInputs[0], hubSetup.categoryId),
+      );
+    } else if (kind === 'satoshiContainer') {
+      tx.addInput(container, createSatoshiContainerUnlocker(
+        hub, layout.participantInputs[0], hubSetup.categoryId,
+      ));
+    } else {
+      tx.addInput(fillers[fillerCursor], p2pkh.unlock.spend(alicePub, signature()));
+      fillerCursor += 1;
+    }
+  }
+  tx.addInput(legBSetup.masterUtxo, routeFor(legB, legBArtifact)(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+  ));
+  tx.addInput(
+    legBSetup.dataNftUtxos[0],
+    createDataNftUnlocker(legB, layout.participantInputs[1], legBSetup.categoryId),
+  );
+  projections.forEach((proof, participant) => tx.addInput(
+    proof, projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  const eventCommitment = binToHex(packed(CALL_VALUE));
+  const eventAddress = getEventNftAddress(hub, hubSetup.categoryId, hubArtifact.events![0].signature);
+  let eventCursor = 0;
+  for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
+    const kind = hubSlotKind.get(offset);
+    if (kind === 'master') {
+      tx.addOutput({
+        to: hub.tokenAddress, amount: hubSetup.masterUtxo.satoshis,
+        token: { category: hubSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+    } else if (kind === 'dataNft') {
+      tx.addOutput({
+        to: getDataNftAddress(hub, hubSetup.categoryId), amount: hubSetup.dataNftUtxos[0].satoshis,
+        token: {
+          category: hubSetup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: buildInitialStateCommitments(hubArtifact.stateLayout!, { total: CALL_VALUE })[0],
+          },
+        },
+      });
+    } else if (kind === 'satoshiContainer') {
+      // THE variable: preserve the container, or take its satoshis and leave a 0-value stub behind.
+      tx.addOutput(drain
+        ? { to: p2pkh.address, amount: 0n }
+        : { to: getSatoshiContainerAddress(hub, hubSetup.categoryId), amount: CONTAINER_SATS });
+    } else if (kind === 'event') {
+      const reached = eventCursor === 0;
+      eventCursor += 1;
+      tx.addOutput(reached ? {
+        to: eventAddress, amount: 1000n,
+        token: {
+          category: hubSetup.categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: eventCommitment },
+        },
+      } : { to: p2pkh.address, amount: 1000n });
+    } else {
+      tx.addOutput({ to: p2pkh.address, amount: 1000n });
+    }
+  }
+  tx.addOutput({
+    to: legB.tokenAddress, amount: legBSetup.masterUtxo.satoshis,
+    token: { category: legBSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(legB, legBSetup.categoryId), amount: legBSetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: legBSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(legBArtifact.stateLayout!, { seen: CALL_VALUE })[0],
+      },
+    },
+  });
+  for (let slot = 0; slot < projections.length + 1; slot += 1) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: drain ? 35_000n : 30_000n });
+
+  return {
+    builder: tx,
+    transaction: raw(tx),
+    provider,
+    callerInput: layout.participantInputs[0],
+    containerSlots: hubLayout.slots.filter((slot: any) => slot.kind === 'satoshiContainer').length,
+  };
+}
+
+/**
+ * SEC-9. `eventWidth` is a group MAXIMUM by the same construction that produced SEC-8, and there is no event
+ * analogue of the not-reached container guard.
+ *
+ * The route's ELIGIBILITY gate does require uniform event counts, but it counts DIRECT `emit` statements before
+ * lowering while the frame reservation counts `emitInfos` after it, so an emit reached through an INTERNAL CALL
+ * is invisible to it. Measured on `Sec9EffectHub` with `note`'s `this.chirp(credited)` line deleted: both
+ * handlers show one direct emit and are admitted, `fireAll` carries two `emitInfos` and `note` one, the shared
+ * frame reserves TWO event slots per dispatch site, and a row selecting `note` settles ONE of them. An
+ * own-category event NFT minted by the spender into the REACHED site's second slot - commitment 999999, one
+ * variable from an otherwise identical honest batch - was **ACCEPTED**. The unsettled slot belonging to a
+ * reached site is what separates this from the unreached conditional slots of a short batch, which are
+ * unconstrained already and predate X29.
+ *
+ * That shape is now REFUSED (see the compile-level case below), so the surviving VM evidence is the UNIFORM
+ * width-2 route: `mode` varies only what the reached site's SECOND event slot carries, which is the slot the
+ * divergent shape left unverified.
+ */
+const sec9HubSource = (uniform: boolean): string => `pragma solidcash >=0.8.0;
+interface IEffectLeg { function credit(uint value); }
+contract Sec9EffectHub() {
+  uint total;
+  event Fired(uint value);
+  function chirp(uint v) internal { emit Fired(v + 7); }
+  function fireAll(address first, uint value, bytes recipient) public {
+    emit Fired(value);
+    this.chirp(value);
+    this.transfer(recipient, ${TRANSFER_SATS});
+    IEffectLeg(first).credit(value);
+    require(true);
+  }
+  function note(address first, uint credited) public {
+    emit Fired(credited);
+${uniform ? '    this.chirp(credited);' : ''}
+    IEffectLeg(first).credit(credited);
+    this.total = this.total + credited;
+    require(credited > 0);
+  }
+}`;
+
+type Sec9Mode = 'honest' | 'dropSecond' | 'forgeSecond';
+
+async function buildSec9EventBatch(mode: Sec9Mode): Promise<{
+  builder: TransactionBuilder; transaction: string; provider: SemanticProvider;
+  callerInput: number; eventSlots: number;
+}> {
+  const provider = createLayer3SemanticTestProvider();
+  const outpoints = new Set<string>();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const hubArtifact = compileString(sec9HubSource(true), options);
+  const hubBase = new Contract(hubArtifact, [], { provider });
+  const hubSetup = await setupStatefulUtxos(provider, hubBase, hubArtifact.stateLayout!, { total: 0n });
+  const hub = hubBase.withCategory(hexToBin(hubSetup.categoryId));
+  const legBArtifact = compileString(legBSource(false), options);
+  const legBBase = new Contract(legBArtifact, [hub.lockingBytecode], { provider });
+  const legBSetup = await setupStatefulUtxos(provider, legBBase, legBArtifact.stateLayout!, { seen: 0n });
+  const legB = legBBase.withCategory(hexToBin(legBSetup.categoryId));
+
+  const plan = layer3.planCompiledGraph([
+    { artifact: hubArtifact, lockingBytecode: hub.lockingBytecode },
+    { artifact: legBArtifact, lockingBytecode: legB.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'note', args: [legB.lockingBytecode, CALL_VALUE] },
+    { parent: 0, callee: 1, function: 'credit', args: [CALL_VALUE], callMode: 'call' },
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, plan.participants.map(() => null),
+    plan.participants.map(() => ''), layout.projectionInputs,
+  );
+
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const initFee = uniqueUtxo(outpoints, { satoshis: 20_000n });
+  await provider.addUtxo(p2pkh.address, initFee);
+  const initTx = new TransactionBuilder({ provider });
+  initTx.addInput(genesisUtxo, controller.unlock.initialize(hexToBin(transcript.root), alicePub, signature()));
+  initTx.addInput(initFee, p2pkh.unlock.spend(alicePub, signature()));
+  initTx.addOutput({
+    to: controller.tokenAddress, amount: genesisUtxo.satoshis,
+    token: {
+      category: controllerCategory, amount: 0n,
+      nft: { capability: 'mutable', commitment: transcript.root },
+    },
+  });
+  initTx.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(initTx));
+  const rootedController = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo: any) => utxo.token?.nft?.commitment === transcript.root);
+
+  const projections = plan.participants.map(() => uniqueUtxo(outpoints, { satoshis: 1000n }));
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+  const fee = uniqueUtxo(outpoints, { satoshis: 300_000n });
+  await provider.addUtxo(p2pkh.address, fee);
+
+  const hubLayout = hubArtifact.hiddenBatch!.route.blockLayout!;
+  const hubSlotKind = new Map<number, string>(hubLayout.slots.map((slot: any) => [slot.offset, slot.kind]));
+  const fillers = Array.from(
+    { length: hubLayout.blockSize }, () => uniqueUtxo(outpoints, { satoshis: 1000n }),
+  );
+  for (const funding of fillers) await provider.addUtxo(p2pkh.address, funding);
+  const CONTAINER_SATS = 5_000n;
+  const container = uniqueUtxo(outpoints, { satoshis: CONTAINER_SATS });
+  await provider.addUtxo(getSatoshiContainerAddress(hub, hubSetup.categoryId), container);
+
+  const routeFor = (contract: Contract, artifact: any): any =>
+    (...args: any[]): any => contract.createCompilerRouteUnlocker(
+      artifact.hiddenBatch.route, hexToBin(artifact.hiddenBatch.selector),
+    )(...args);
+
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  let fillerCursor = 0;
+  for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
+    const kind = hubSlotKind.get(offset);
+    if (kind === 'master') {
+      tx.addInput(hubSetup.masterUtxo, routeFor(hub, hubArtifact)(
+        ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+      ));
+    } else if (kind === 'dataNft') {
+      tx.addInput(
+        hubSetup.dataNftUtxos[0],
+        createDataNftUnlocker(hub, layout.participantInputs[0], hubSetup.categoryId),
+      );
+    } else if (kind === 'satoshiContainer') {
+      tx.addInput(container, createSatoshiContainerUnlocker(
+        hub, layout.participantInputs[0], hubSetup.categoryId,
+      ));
+    } else {
+      tx.addInput(fillers[fillerCursor], p2pkh.unlock.spend(alicePub, signature()));
+      fillerCursor += 1;
+    }
+  }
+  tx.addInput(legBSetup.masterUtxo, routeFor(legB, legBArtifact)(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+  ));
+  tx.addInput(
+    legBSetup.dataNftUtxos[0],
+    createDataNftUnlocker(legB, layout.participantInputs[1], legBSetup.categoryId),
+  );
+  projections.forEach((proof, participant) => tx.addInput(
+    proof, projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  const eventAddress = getEventNftAddress(hub, hubSetup.categoryId, hubArtifact.events![0].signature);
+  const eventNft = (value: bigint): any => ({
+    to: eventAddress, amount: 1000n,
+    token: {
+      category: hubSetup.categoryId, amount: 0n,
+      nft: { capability: 'none' as const, commitment: binToHex(packed(value)) },
+    },
+  });
+  let eventCursor = 0;
+  for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
+    const kind = hubSlotKind.get(offset);
+    if (kind === 'master') {
+      tx.addOutput({
+        to: hub.tokenAddress, amount: hubSetup.masterUtxo.satoshis,
+        token: { category: hubSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+    } else if (kind === 'dataNft') {
+      tx.addOutput({
+        to: getDataNftAddress(hub, hubSetup.categoryId), amount: hubSetup.dataNftUtxos[0].satoshis,
+        token: {
+          category: hubSetup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: buildInitialStateCommitments(hubArtifact.stateLayout!, { total: CALL_VALUE })[0],
+          },
+        },
+      });
+    } else if (kind === 'satoshiContainer') {
+      tx.addOutput({
+        to: getSatoshiContainerAddress(hub, hubSetup.categoryId), amount: CONTAINER_SATS,
+      });
+    } else if (kind === 'event') {
+      // Slots 0 and 1 are the REACHED site's two frame slots - `emit Fired(credited)` then the internal
+      // `chirp`'s `emit Fired(credited + 7)`. Slot 1 is THE variable. Every further slot belongs to an
+      // unreached site and stays a plain funding output in all three modes.
+      const index = eventCursor;
+      eventCursor += 1;
+      if (index === 0) tx.addOutput(eventNft(CALL_VALUE));
+      else if (index === 1 && mode === 'honest') tx.addOutput(eventNft(CALL_VALUE + 7n));
+      else if (index === 1 && mode === 'forgeSecond') tx.addOutput(eventNft(999_999n));
+      else tx.addOutput({ to: p2pkh.address, amount: 1000n });
+    } else {
+      tx.addOutput({ to: p2pkh.address, amount: 1000n });
+    }
+  }
+  tx.addOutput({
+    to: legB.tokenAddress, amount: legBSetup.masterUtxo.satoshis,
+    token: { category: legBSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(legB, legBSetup.categoryId), amount: legBSetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: legBSetup.categoryId,
+      amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(legBArtifact.stateLayout!, { seen: CALL_VALUE })[0],
+      },
+    },
+  });
+  for (let slot = 0; slot < projections.length + 1; slot += 1) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
+  tx.addOutput({ to: p2pkh.address, amount: 30_000n });
+
+  return {
+    builder: tx,
+    transaction: raw(tx),
+    provider,
+    callerInput: layout.participantInputs[0],
+    eventSlots: hubLayout.slots.filter((slot: any) => slot.kind === 'event').length,
+  };
+}
+
 const outcomeOf = (builder: TransactionBuilder): string => {
   try {
     layer3.preflightLayer3Transaction(builder);
@@ -650,6 +1092,68 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
+
+  /**
+   * SEC-8. The same pair with the sibling upgraded to a FRAME MEMBER, which is the case the shared frame's
+   * group-maximum `transferWidth` cannot distinguish. One variable against its honest control: whether the
+   * container output preserves the container. The container slot is asserted present so an ACCEPTED drain
+   * cannot be credited to a batch that co-spends no container.
+   */
+  it('settles an effect-carrying sibling batch that preserves the co-spent container', async () => {
+    const built = await buildSec8ContainerBatch(false);
+    expect(built.containerSlots).toBe(1);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  it('rejects an effect-carrying sibling batch that drains the co-spent container', async () => {
+    const built = await buildSec8ContainerBatch(true);
+    expect(built.containerSlots).toBe(1);
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  /**
+   * SEC-9's positive control, and the first VM settlement of an effect frame at width > 1: the reached site
+   * owns TWO event slots and both carry the handler's own events, one of them emitted through an internal call.
+   */
+  it('settles a uniform width-2 event frame with both reached slots settled', async () => {
+    const built = await buildSec9EventBatch('honest');
+    expect(built.eventSlots).toBe(16);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  // The guard negative controls for the SAME slot the divergent shape left unverified: dropping it and forging
+  // it must both reject, so an accepted forgery in the divergent shape is attributable to the missing frame
+  // width and not to event slots being unchecked in general.
+  it('rejects the width-2 batch with the reached site second event dropped', async () => {
+    const built = await buildSec9EventBatch('dropSecond');
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  it('rejects a forged event NFT in the reached site second event slot', async () => {
+    const built = await buildSec9EventBatch('forgeSecond');
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  /**
+   * SEC-9's repair, failing closed. The divergent shape reserved a slot no reached handler settles; it is now
+   * refused at compile time. The uniform shape one line away still compiles and still reserves both slots, so
+   * the refusal is not a blanket ban on emits reached through an internal call.
+   */
+  it('refuses a route whose sibling handlers do not settle the same number of events', () => {
+    expect(() => compileString(sec9HubSource(false), BUS_OPTIONS))
+      .toThrow(/emits 1 event\(s\) while a sibling handler on the same route emits 2/);
+    const uniform = compileString(sec9HubSource(true), BUS_OPTIONS);
+    expect(uniform.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);
+  }, 60_000);
 
   // Both effects at once - the shape C1's router and C3's hub actually have.
   it('settles the honest graph with an emit AND a transfer', async () => {

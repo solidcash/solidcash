@@ -398,6 +398,16 @@ export class FunctionDefinitionNode extends Node implements Named {
   // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
   // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
   graphEffectFrame?: GraphEffectFrame;
+  /**
+   * SEC-8. Does THIS handler's subroutine settle the co-spent satoshi container?
+   *
+   * `graphEffectFrame` is ONE object shared by every framed handler, so its `transferWidth` is the group
+   * maximum and says nothing about the handler reached at a given dispatch site. The route's not-reached
+   * container preservation is skipped on the strength of a reached flag, so that flag must be written from a
+   * PER-HANDLER fact - otherwise an emit-only sibling suppresses a guard it never replaces and the co-spent
+   * container gets no identity check and no value check. Set only where frame membership is decided.
+   */
+  graphEffectSettlesTransfers?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)

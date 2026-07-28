@@ -8880,6 +8880,35 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * X29. Is every entry in this handler's `transferInfos` one the per-site frames actually settle?
+   *
+   * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer, and that transfer is the
+   * callee's payment on an external-call slot, not a `this.transfer(..)` output the frame mechanism verifies.
+   * A handler carrying only such an option keeps its pre-X29 shape exactly - kept behind OP_INVOKE with no
+   * frames - which is what makes a value-option caller's artifact byte-identical to the option-free one
+   * (Layer3CallOptions pins that, and the SDK refuses to PLAN the option anyway: a transcript row has no field
+   * to bind it). One carrying an option ALONGSIDE a settled effect has no status quo - SEC-6 refused it - and
+   * framing only half of its effects would be exactly the silent drop X29 exists to remove, so it is refused.
+   */
+  private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
+    const declared = fn.transferInfos?.length ?? 0;
+    if (declared === 0) return true;
+    let direct = 0;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) direct += 1;
+    });
+    if (direct === declared) return true;
+    if (direct > 0 || (fn.emitInfos?.length ?? 0) > 0) {
+      throw new GraphEmissionEffectError(
+        fn, fn.name.replace(/^__scb_(graph|resource|handler|array)_/, ''),
+        'a value call option alongside an emit or transfer',
+      );
+    }
+    return false;
+  }
+
+  /**
    * X29. Plan the owner-local effect frames the SCB1 route owes its effect-carrying graph emission handlers.
    *
    * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
@@ -8898,7 +8927,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const route = contract.functions.find((fn) => fn.hiddenBatchRoute);
     if (!route?.body || !route.blockLayout) return;
     const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
-      && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0));
+      && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0)
+      && this.framesSettleEveryTransfer(fn));
     if (handlers.length === 0) return;
     const byName = new Map(handlers.map((fn) => [fn.name, fn]));
     const siteCounts = new Map<string, number>();

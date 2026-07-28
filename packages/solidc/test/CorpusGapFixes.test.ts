@@ -9634,3 +9634,23 @@ describe('library self-external calls through using-for', () => {
     ).contractName).toBe('L2');
   });
 });
+
+describe('inherited private function visibility', () => {
+  it('rejects bare and explicitly qualified access from a derived source body', () => {
+    for (const call of ['f()', 'Base.f()']) {
+      expect(() => compileString(
+        'contract Base { function f() private {} }'
+          + ` contract Derived is Base { function g() public { ${call}; } }`,
+        { solidityImportCompat: true },
+      )).toThrow(/Undefined reference to symbol/);
+    }
+  });
+
+  it('retains private calls in inherited base bodies and same-named derived functions', () => {
+    expect(compileString(
+      'contract Base { function f() private {} function g() public { f(); } }'
+        + ' contract Derived is Base { function h() private {} function i() public { h(); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('Derived');
+  });
+});

@@ -213,6 +213,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     validateFunctionNamespaceShadows(ast);
     validateLibrarySelfExternalCalls(ast);
     validateKnownUserTypes(ast);
+    validateInheritedPrivateFunctionAccess(ast);
   }
 
   // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
@@ -728,6 +729,66 @@ function validateKnownUserTypes(ast: Ast): void {
     }
   };
   walk(ast);
+}
+
+// Private ancestor functions are cloned during inheritance flattening so an inherited PUBLIC function can keep
+// calling its own private helper. They must not thereby enter the derived contract's lexical lookup scope.
+function validateInheritedPrivateFunctionAccess(ast: Ast): void {
+  const contracts = [ast.contract, ...ast.importedContracts];
+  const byName = new Map(contracts.map((contract) => [contract.name, contract]));
+  const ancestorsOf = (contract: ContractNode): ContractNode[] => {
+    const result: ContractNode[] = [];
+    const seen = new Set<string>();
+    const visit = (name: string): void => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      const ancestor = byName.get(name);
+      if (!ancestor) return;
+      result.push(ancestor);
+      for (const parent of ancestor.implements) visit(parent);
+    };
+    for (const parent of contract.implements) visit(parent);
+    return result;
+  };
+
+  for (const contract of contracts) {
+    const ancestors = ancestorsOf(contract);
+    if (ancestors.length === 0) continue;
+    const ownFunctionNames = new Set(contract.functions.map((fn) => fn.name));
+    const privateByName = new Map<string, Set<string>>();
+    for (const ancestor of ancestors) {
+      for (const fn of ancestor.functions.filter((candidate) => candidate.visibility === 'private')) {
+        const origins = privateByName.get(fn.name) ?? new Set<string>();
+        origins.add(ancestor.name);
+        privateByName.set(fn.name, origins);
+      }
+    }
+    if (privateByName.size === 0) continue;
+
+    for (const fn of contract.functions) {
+      const visited = new WeakSet<Node>();
+      const walk = (node: Node): void => {
+        if (visited.has(node)) return;
+        visited.add(node);
+        if (node instanceof FunctionCallNode) {
+          const dot = node.identifier.name.indexOf('.');
+          const qualifier = dot >= 0 ? node.identifier.name.slice(0, dot) : undefined;
+          const name = dot >= 0 ? node.identifier.name.slice(dot + 1) : node.identifier.name;
+          const privateOrigins = privateByName.get(name);
+          const invalidBare = qualifier === undefined && !ownFunctionNames.has(name) && !!privateOrigins;
+          const invalidQualified = qualifier !== undefined && !!privateOrigins?.has(qualifier);
+          if (invalidBare || invalidQualified) throw new UndefinedReferenceError(node.identifier);
+        }
+        for (const value of Object.values(node)) {
+          if (value instanceof Node) walk(value);
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node) walk(item);
+          }
+        }
+      };
+      walk(fn);
+    }
+  }
 }
 
 /**

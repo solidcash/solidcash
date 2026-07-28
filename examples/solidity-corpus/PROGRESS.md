@@ -5382,3 +5382,13 @@ The focused suite is **1103/1103**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1104/1104**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 343, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Inherited private-function visibility loop: 4443 flat, NEG-ACCEPTED 343 -> 341 (-2)
+
+- Solidity-compatible derived source bodies can no longer resolve private ancestor functions through either bare
+  or explicitly base-qualified syntax.
+- Validation runs before inheritance flattening, preserving private helper bodies so inherited base methods can
+  still call their own private functions; derived functions can call their own private helpers.
+
+The focused suite is **1106/1106**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+341, plus 275 multifile and 289 cmdline fixtures excluded.

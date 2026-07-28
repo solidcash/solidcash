@@ -440,6 +440,32 @@ describe('Solidity enum member limit', () => {
   });
 });
 
+describe('Solidity custom-error ABI parameter types', () => {
+  const cc = (source: string): string => compileString(
+    `${source} contract C { function f() public { require(true); } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it('rejects internal function pointers', () => {
+    expect(() => cc('error Bad(function() internal callback);'))
+      .toThrow(/internal or recursive type.*error parameter/i);
+  });
+
+  it('rejects directly and indirectly recursive structs', () => {
+    expect(() => cc('struct S { S[] children; } error Bad(S value);'))
+      .toThrow(/internal or recursive type.*error parameter/i);
+    expect(() => cc('struct A { B[] children; } struct B { A parent; } error Bad(A value);'))
+      .toThrow(/internal or recursive type.*error parameter/i);
+  });
+
+  it('retains nonrecursive structs and external function handles', () => {
+    expect(cc(
+      'struct S { uint value; bytes data; }'
+      + ' error Structured(S value); error Callback(function() external callback);',
+    )).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

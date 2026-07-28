@@ -6702,9 +6702,29 @@ export default class AstBuilder
         ? this.resolveType(paramCtx.typeName().getText())
         : this.buildArrayType(paramCtx.arrayType()!),
     }));
+    if (this.solidityImportCompat && parameters.some((parameter) =>
+      !this.isValidSolidityErrorParameter(parameter.type))) {
+      throw new ParseError(
+        'Internal or recursive type is not allowed as error parameter type',
+        Location.fromCtx(ctx),
+      );
+    }
     const node = new ErrorDefinitionNode(errorName, parameters);
     node.location = Location.fromCtx(ctx);
     return node;
+  }
+
+  private isValidSolidityErrorParameter(type: Type | undefined, activeStructs = new Set<string>()): boolean {
+    if (!type) return false;
+    if (type instanceof FunctionType) return type.isExternal;
+    if (type instanceof MappingType) return false;
+    if (type instanceof ArrayType) return this.isValidSolidityErrorParameter(type.elementType, activeStructs);
+    if (type instanceof StructType) {
+      if (activeStructs.has(type.name)) return false;
+      const nested = new Set(activeStructs).add(type.name);
+      return (type.fields ?? []).every((field) => this.isValidSolidityErrorParameter(field.type, nested));
+    }
+    return true;
   }
 
   visitSelfdestructStatement(ctx: SelfdestructStatementContext): SelfdestructStatementNode {

@@ -4890,3 +4890,12 @@ The focused suite is **967/967**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **969/969**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 508, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Custom-error ABI parameter loop: 4443 flat, NEG-ACCEPTED 508 -> 507 (-1)
+
+- Solidity-compatible custom errors now reject internal function-pointer parameters.
+- Recursive struct shapes reject across direct, indirect, and array-nested recursion.
+- Nonrecursive structs and external function handles remain valid error parameter types.
+
+The focused suite is **972/972**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+507, plus 275 multifile and 289 cmdline fixtures excluded.

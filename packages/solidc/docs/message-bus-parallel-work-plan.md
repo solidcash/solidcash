@@ -134,13 +134,13 @@ task-specific report, not in this table.
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
-| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
+| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | **CHANGES** | claims verify; fixture comment over-claims byte-identity (C1-R1) and under-claims binding (C1-R4) |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
-| C3 | Eight-participant semantic capstone | C | C1,C2 | INTEGRATED | 5/5; saturates the PARTICIPANT bound only (8/24 invocations, depth 4/7) |
+| C3 | Eight-participant semantic capstone | C | C1,C2 | **CHANGES** | test was RED when marked INTEGRATED (fixed by B); two scope notes wrong (C3-R2, C3-R3) |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | INTEGRATED | blocker is the CONTROLLER at 1.2286x, not the projection |
 | X27 | Destructive left-to-right walk in `attest` | — | X25 | TODO | costed at -17.3%; 1.3 points short alone |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
-| A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | LEASED | round 8; A reviews C1+C3, B reviews C2 - neither reviews its own |
+| A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
@@ -184,6 +184,47 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.27 A1 review of C1 and C3: no escape found, four real findings, one correcting this plan
+
+Worker A reviewed the two capstones it did not build, added 26 hostile cases - 17 transcript fields neither
+capstone reaches, the root caller row, and 8 preservation properties - and **every one rejects**. No escape was
+found. A states plainly that this is evidence the fields are bound, not proof they are bound correctly for
+shapes it did not build.
+
+**BOTH-R1 corrects a premise the integration owner wrote into several briefs.** The 1,000-satoshi slot value is
+NOT purely an SDK assembly convention. Both generated covenants carry
+`require(tx.outputs[this.activeInputIndex].value == 1000)` - verified by the owner at `graph.ts:580` and `:786` -
+so paying 1,200 satoshis at a projection slot is refused by the projection verifier and at the controller slot by
+the controller. It is an SDK convention for **event, transfer and funding slots only**, not for the two sidecar
+slot kinds. Neither capstone asserted it as authenticated, so nothing is over-claimed downstream - but the
+premise itself was too broad, and it was repeated in three worker briefs. Directly relevant to open task X21.
+
+**C1-R1 (documentation).** C1's fixture comment claims every other byte of a hostile build is identical to its
+control. That is false: two HONEST builds of the same length differ in 15,158 of 101,714 hex characters, because
+the builders draw fresh outpoints and mint fresh categories per call. The assertion the test actually makes -
+equal serialized length - is sound, and supports the weaker claim this plan recorded ("no input, output or
+witness was added or removed"). The in-file comment overclaims and needs correcting.
+
+**C1-R4 (under-claim, conservative direction).** C1 states the return-event position is covenant-unbound. It is
+not: the controller binds it to block membership, strict monotonicity across participants, and the committed
+result commitment. Moving the return output to another output INSIDE the same block is refused at the
+controller. C1 under-claims its own authentication.
+
+**C3-R2 (evidence gap).** C3's `duplicate-owner` case does not test owner uniqueness. Worker A ran the control:
+an identical-shape edit installing a STRANGER script belonging to no participant - so all owners stay distinct -
+is refused at the same input by the same covenant with the same failure class. The duplication contributes
+nothing; the refusal is caused by a row naming a locking bytecode other than the one co-spent at that base,
+which is the invariant the omission case already attacks. A confirmed the mechanism: **neither generated covenant
+ever compares two participant rows.** Owner uniqueness is enforced only by `planCompiledGraph` in the SDK.
+
+**C3-R3 (scope note wrong).** C3 says stripping the leftover emission row is the omission case. Measured, it is
+not: re-rooting the edge AND stripping the caller's emission row refuses at the caller's own master route, a
+different covenant and a different input from the 3-byte version. The stricter attacker is a distinct,
+uncovered case.
+
+C1's substantive claims all verify, including X23's ordinary-capacity result reproduced independently
+run-to-completion to four decimals.
 
 ### 4.25 X25 answers the scaling question, and moves the blocker off the projection entirely
 
@@ -301,12 +342,17 @@ remained. Its companion observation - that C3 "misses by less than C1, 70 agains
 therefore compares two artifacts and means nothing. The worker already declined to call it a scaling law and
 asked for an F1 measurement, which was the right instinct on numbers that turned out to be unusable.
 
-**CORRECTION (X25): the sentence that stood here was wrong twice over.** The integration owner wrote that C3
-"still passes 11/11" after X23. That was measured immediately after C3 merged and then recorded as a durable
-fact - but SEC-5 landed afterwards and moved the failing input from 98 to 106, so the capacity test was RED at
-`9bf3e5ea` while the board asserted it passed. Worker B found it during the review round and fixed the test. A
-point-in-time measurement is not a standing claim; anything asserted about a suite has to be re-checked after
-the next merge that touches its compiler path.
+**CORRECTION (X25 and A1), and the first version of this correction was itself wrong.** The integration owner
+wrote that C3 "still passes 11/11" after X23. It did not: the capacity test asserts a refusal at input 98 while
+the tree refuses at input 106. Worker B found it during the review round and fixed the test.
+
+The owner's first correction then guessed at a cause - that SEC-5 had moved the failing input afterwards. Worker
+A measured it instead and **pinned the same failure, with byte-identical numbers, at C3's own integration
+commit**. So the test was RED when C3 was marked INTEGRATED, and the SEC-5 explanation was an unverified guess
+layered on top of an unverified claim.
+
+Two lessons, both earned rather than asserted: a point-in-time measurement is not a standing claim, and a
+correction is not exempt from needing evidence.
 
 **Two structural findings worth carrying into the F phase.** The projection input is 8,412 bytes, under the
 10,000-byte limit, so input size is not the blocker at eight wide either - density is, again. And

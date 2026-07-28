@@ -290,6 +290,7 @@ export default class AstBuilder
   private enumMap: Map<string, EnumType> = new Map();
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
+  private sourceHasImports = false;
   private parsingLibraryFunction = false;
   private parsingFreeFunctionBody = false;
 
@@ -652,6 +653,7 @@ export default class AstBuilder
     const imports = ctx.importDirective_list().map(
       (i) => this.visit(i) as ImportNode,
     );
+    this.sourceHasImports = imports.length > 0;
 
     // Enums before constants: a file-level enum-typed constant (`E constant c = E.M;`) resolves its declared
     // type via resolveType -> enumMap, so the enum must be registered first.
@@ -680,6 +682,11 @@ export default class AstBuilder
       (c) => this.visitConstantDefinition(c),
     );
 
+    // `using L for T` may precede L's declaration, so make every source-local library name available before
+    // validating file-level directives.
+    for (const library of ctx.libraryDefinition_list()) {
+      this.libraryNames.add(library.Identifier().getText());
+    }
     const fileUsingForDirectives = ctx.usingForDirective_list().map(
       (u) => this.visit(u) as UsingForDirectiveNode,
     );
@@ -6526,6 +6533,12 @@ export default class AstBuilder
       : arrayTypeCtx ? this.buildArrayType(arrayTypeCtx).toString()
         : mappingTypeCtx ? this.buildMappingType(mappingTypeCtx).toString()
           : typeNameCtx!.getText();
+    if (this.solidityImportCompat && !this.libraryNames.has(libraryName) && !this.sourceHasImports) {
+      throw new ParseError(`Identifier '${libraryName}' is not a library name`, Location.fromCtx(ctx));
+    }
+    if (this.solidityImportCompat && targetTypeName && this.libraryNames.has(targetTypeName)) {
+      throw new ParseError('Invalid use of a library name as a using-for target type', Location.fromCtx(ctx));
+    }
     const isGlobal = ctx.getText().includes('global');
     if (this.solidityImportCompat && isGlobal
       && (!targetTypeName || !this.typeDefMap.has(targetTypeName))) {

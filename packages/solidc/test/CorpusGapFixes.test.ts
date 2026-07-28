@@ -8055,6 +8055,28 @@ describe('Solidity fixed-bytes literal conversion widths', () => {
   });
 });
 
+describe('Solidity using-for declaration eligibility', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('requires a source-local using name to denote a declared library', () => {
+    expect(() => cc('using Missing for uint; contract C {}'))
+      .toThrow(/not a library name/);
+    expect(cc('using L for uint; library L {'
+      + ' function f(uint x) internal pure returns (uint) { return x; } } contract C {}')).toBe('C');
+  });
+
+  it('rejects library types as using-for targets while retaining imports and native syntax', () => {
+    expect(() => cc('library L {} library M {} contract C { using L for M; }'))
+      .toThrow(/Invalid use of a library name/);
+    expect(() => cc('library L {} contract C { using L for L; }'))
+      .toThrow(/Invalid use of a library name/);
+    expect(compileString('library L {} interface I { using L for uint; function g(); }', {
+      solidityImportCompat: false,
+    }).contractName).toBeTruthy();
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

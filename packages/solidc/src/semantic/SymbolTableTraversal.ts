@@ -184,6 +184,7 @@ import {
   AbiEncodeCallUndefinedInterfaceError,
   AbiEncodeCallUndefinedFunctionError,
   AbiEncodeCallArgCountError,
+  GraphEmissionEffectError,
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
@@ -1019,6 +1020,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
     // one frame per dispatch site, and record the frame on both. Runs after every function is visited because
     // it needs each handler's own emit/transfer counts, which are assigned during that function's visit.
+    this.refuseUnframedGraphEffects(node);
     this.planGraphEffectFrames(node);
 
     if (node.fallbackDef) {
@@ -8836,6 +8838,45 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {
     return createDefaultValueExpression(type, contextNode.location);
+  }
+
+  /**
+   * SEC-7. Refuse a routed graph emission handler whose effect the route has no frame for.
+   *
+   * `this.tokens[c].transfer(..)` never reaches InlineStoragePointerCalls' refusal, and not because it is the
+   * wrong node kind: for this shape route synthesis runs AFTER lowering, so that pass never sees the clone at
+   * all. The clone is therefore never flattened and its edges stay bound (2 recomputations, measured) - but the
+   * route reserves no tokenContainer input slot and no tcTransfer outputs, so the transfer the handler states
+   * simply does not happen. Measured on the same contract: the DIRECT entry point's block goes from [master] to
+   * [master, tokenContainer, tcTransfer] when the transfer is added, while the ROUTE's block stays
+   * [master, dataNft] either way. Same function, two entries, and the SPENDER picks which one - so this is not
+   * merely lossy, it is spender-selected effect omission, and a counterparty called in the same graph advances
+   * its state as though the payment happened.
+   *
+   * X29's per-site output frames cannot express it: a token container is a CO-SPENT INPUT bound to a category
+   * parameter's stack identity, one for the whole route rather than one per dispatch site, and route synthesis
+   * deliberately keeps token handlers off the clone path for that reason. So this fails closed here, where the
+   * clone and its accesses are both visible whichever order synthesis ran in.
+   */
+  private refuseUnframedGraphEffects(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.hiddenBatchRoute);
+    if (!route?.blockLayout) return;
+    // The condition is the DROP itself, not a spelling: the route settles token-container transfers through
+    // tcTransfer slots, so a routed handler that performs one while the route reserves none is a handler whose
+    // effect cannot happen. Measured discriminator, and it is NOT the message bus: a handler that also READS
+    // its container (`this.tokens[c].tokenAmount`) does get [tokenContainer, 8 x tcTransfer] on the route and
+    // is settled end-to-end (HiddenBatchRelease4); one that only WRITES it gets [master, dataNft] and is not,
+    // on the plain hidden batch exactly as on the bus.
+    if (route.blockLayout.slots.some((slot) => slot.kind === 'tcTransfer')) return;
+    for (const fn of contract.functions) {
+      const transfers = (fn.tokenContainerAccesses ?? [])
+        .reduce((total, access) => total + access.transferCount + access.transferNftCount, 0);
+      if (transfers === 0) continue;
+      if (!fn.graphEmissionHandler && fn.hiddenBatchEligible !== true) continue;
+      throw new GraphEmissionEffectError(
+        fn, fn.name.replace(/^__scb_(graph|resource|handler|array)_/, ''), 'a token-container operation',
+      );
+    }
   }
 
   /**

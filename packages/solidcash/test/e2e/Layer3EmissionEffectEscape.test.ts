@@ -526,9 +526,11 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
    * frames. The pre-SEC-6 flattened form scored 0 recomputations for the emit-carrying caller.
    */
   it('keeps the emit-carrying route bound AND gives it event slots', () => {
-    const mark = '76827752807c7e'; // verifyGraphEmissionRow's target||len||mode frame construction
+    // verifyGraphEmissionRow's target||len||mode frame construction, counted on debug.bytecode - the hex
+    // script, i.e. the deployed form (artifact.bytecode is ASM). 0 here is the pre-SEC-6 flattened form.
+    const mark = '76827752807c7e';
     const marks = (source: string): number =>
-      compileString(source, BUS_OPTIONS).bytecode.split(mark).length - 1;
+      (compileString(source, BUS_OPTIONS).debug!.bytecode as string).split(mark).length - 1;
     expect(marks(hubSource(false))).toBeGreaterThan(0);
     expect(marks(hubSource(true))).toBe(marks(hubSource(false)));
     const emitting = compileString(hubSource(true), BUS_OPTIONS);
@@ -537,19 +539,31 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
   }, 60_000);
 
   /**
-   * The token-container spelling of the same idea does NOT reach the refusal, and the reason is worth pinning:
-   * `this.tokens[c].transfer(..)` is still a MethodCallStatement when InlineStoragePointerCalls runs, so
-   * `hasTokenContainerEffects` is false, the clone is never flattened and its edge stays bound (2 sites,
-   * measured). But the route reserves no tokenContainer/tcTransfer slot either - its block is master+dataNft
-   * only - which is the same silent-effect-drop the un-flattened emit showed. NOT part of SEC-6's claim; pinned
-   * so the next reader does not mistake "compiles" for "the transfer happened".
+   * SEC-7, and it turned out NOT to be a message-bus property at all.
+   *
+   * SEC-6 pinned `this.tokens[c].transfer(..)` as bound-but-slotless and left it open. Probing it named the
+   * real discriminator, which is whether the handler also READS its container:
+   *
+   *   handler body                                   route block
+   *   require(tokens[c].tokenAmount >= a); transfer   [master, dataNft, tokenContainer, 8 x tcTransfer]
+   *   transfer only                                   [master, dataNft]
+   *
+   * The read is what reserves the container INPUT slot, and without it the route settles with no transfer at
+   * all - on the PLAIN hidden batch exactly as on the bus, so the message bus was never the variable. The same
+   * function called DIRECTLY does enforce it ([master] -> [master, tokenContainer, tcTransfer] when the
+   * transfer is added), and the spender picks which entry to use, so this is spender-selected effect omission
+   * rather than a loss the caller absorbs.
+   *
+   * X29's per-site frames cannot repair it: a container is a co-spent INPUT bound to a category parameter, one
+   * for the whole route rather than one per dispatch site. So it fails closed, on the drop condition itself
+   * (routed handler transfers a container + route reserves no tcTransfer) rather than on a spelling.
    */
-  it('leaves the token-container spelling bound, with no token slot in its block', () => {
-    const source = `pragma solidcash >=0.8.0;
+  const TOKEN_HUB = (reading: boolean): string => `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(int value); }
 contract EscapeTokenHub() {
   int total;
   function fireAll(bytes32 category, bytes20 recipient, address first, int value) public {
+${reading ? '    require(this.tokens[category].tokenAmount >= value);' : ''}
     this.tokens[category].transfer(recipient, value);
     IEffectLeg(first).credit(value);
     require(true);
@@ -559,11 +573,58 @@ contract EscapeTokenHub() {
     require(credited > 0);
   }
 }`;
-    const artifact = compileString(source, BUS_OPTIONS);
-    expect(artifact.hiddenBatch?.handlers.map((handler: any) => [handler.name, handler.eligible]))
-      .toEqual([['fireAll', true], ['note', true]]);
+
+  it('refuses a routed token-container transfer the route reserves no slot for', () => {
+    expect(() => compileString(TOKEN_HUB(false), BUS_OPTIONS))
+      .toThrow(/performs a token-container operation the route reserves no output slot for/);
+    expect(() => compileString(TOKEN_HUB(false), BUS_OPTIONS)).toThrow(/'fireAll'/);
+  }, 30_000);
+
+  // The refusal is on the drop, not on the bus: the same handler under a PLAIN hidden batch (no message-bus
+  // controller, so no graph handler at all) drops the transfer identically and is refused identically.
+  it('refuses the same drop on a plain hidden batch, with no message bus involved', () => {
+    const plain = { forceStateful: true, experimentalHiddenBatch: true };
+    const source = `pragma solidcash >=0.8.0;
+contract PlainTokenBatch() {
+  int calls;
+  function send(bytes32 category, bytes20 recipient, int amount) public {
+    this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
+    this.calls = this.calls + 1;
+  }
+}`;
+    expect(() => compileString(source, plain))
+      .toThrow(/performs a token-container operation the route reserves no output slot for/);
+  }, 30_000);
+
+  /**
+   * The over-refusal negative control, and the repair the error message names. Adding the container READ
+   * reserves the input slot and the eight tcTransfer outputs, and the shape compiles unchanged - this is
+   * Release 4's routed token batch, which is settled end-to-end (forged amount and forged recipient both
+   * reject) in HiddenBatchRelease4. The refusal is therefore on the DROP, not on token containers.
+   *
+   * Kept on the plain hidden batch deliberately: the same body plus an outgoing external call is refused by
+   * the OTHER guard (SEC-6's, in InlineStoragePointerCalls), because that clone would be flattened and its
+   * edges would generate unbound - a different defect with a different refusal.
+   */
+  it('still admits a routed token-container transfer whose handler reads the container', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+contract TokenContainerReadBatch() {
+  int calls;
+  function send(bytes32 category, bytes20 recipient, int amount) public {
+    require(this.tokens[category].tokenAmount >= amount);
+    this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
+    this.calls = this.calls + 1;
+  }
+}`, { forceStateful: true, experimentalHiddenBatch: true });
     expect(artifact.hiddenBatch!.route.blockLayout!.slots.map((slot: any) => slot.kind))
-      .toEqual(['master', 'dataNft']);
+      .toEqual(['master', 'dataNft', 'tokenContainer', ...Array.from({ length: 8 }, () => 'tcTransfer')]);
+  }, 30_000);
+
+  // And the bus + external call spelling of the SAME body is refused too, by SEC-6's guard rather than this
+  // one: an effect-carrying clone with an outgoing edge that no output frame can settle stays refused.
+  it('refuses the read-and-transfer spelling once it also makes an outgoing call', () => {
+    expect(() => compileString(TOKEN_HUB(true), BUS_OPTIONS))
+      .toThrow(/token-container operation/);
   }, 30_000);
 
   /**

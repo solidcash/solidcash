@@ -285,8 +285,15 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // site, so leaving them subroutines no longer loses the effect. A token-container operation still needs a
   // co-spent INPUT slot, which no per-site output frame can express, so it stays excluded (refused above).
   private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
-    return !!fn.graphEmissionHandler && !this.hasTokenContainerEffects(fn)
-      && !this.hasStoragePointerParam(fn);
+    if (!fn.graphEmissionHandler || this.hasTokenContainerEffects(fn) || this.hasStoragePointerParam(fn)) {
+      return false;
+    }
+    // Effect-carrying clones are kept ONLY when they have an outgoing edge, which is the whole defect surface:
+    // an edge is what a transcript can misstate. `graphTailHandlers` also admits an edge-free handler that
+    // merely reads msg.value or msg.sender (Release 4's value batch is exactly that), and flattening one loses
+    // nothing while un-flattening it moves its transfer covenant behind OP_INVOKE - measured to break the SDK's
+    // auto-derivation of the transfer outputs. Keep every edge-free clone on the established path.
+    return !this.hasPhysicalEffects(fn) || this.hasOutgoingCall(fn);
   }
 
   // An outgoing external edge, in the pre-semantic shapes this pass sees: `IFoo(a).m()` is a MethodCall until

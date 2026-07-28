@@ -1311,6 +1311,11 @@ describe('C3 capacity measurement', () => {
       expect(projection.ratio).toBeGreaterThan(0.6);
       expect(projection.ratio).toBeLessThan(0.8);
     }
+    // The projection covering the RETURNING participant - the Oracle, at participant index 4 - costs exactly
+    // 325 instructions more than the other seven. C1 and C2 show the same 325 surcharge on their own
+    // returning row (17,584 against 17,259), in three independent compositions.
+    expect(projections.map((row) => row.instructions))
+      .toEqual([25_984, 25_984, 25_984, 25_984, 26_309, 25_984, 25_984, 25_984]);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);
     }

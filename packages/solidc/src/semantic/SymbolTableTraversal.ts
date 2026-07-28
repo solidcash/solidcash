@@ -7158,8 +7158,29 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitEmitStatement(node: EmitStatementNode): Node {
-    // Find all events matching by name
-    const candidates = [...this.eventMap.values()].filter((ev) => ev.name === node.eventName);
+    // Solidity lexical lookup: any event with this name in the effective contract namespace shadows file-level
+    // and library events of the same name. Only fall back to the global event map when the contract has no such
+    // declaration; otherwise `event E(uint)` incorrectly remained overloaded with file-level `event E()`.
+    const qualifiedHolder = node.eventQualifier
+      ? this.contractMap.get(node.eventQualifier) ?? this.interfaceMap.get(node.eventQualifier)
+      : undefined;
+    const qualifiedLibrarySignature = node.eventQualifier
+      ? this.libraryEventSignatures.get(`${node.eventQualifier}.${node.eventName}`)
+      : undefined;
+    const qualifiedLibraryEvent = qualifiedLibrarySignature
+      ? this.eventMap.get(computeEventSignature(node.eventName, qualifiedLibrarySignature))
+      : undefined;
+    const lexicalContract = !node.eventQualifier && this.currentFunction?.inheritedFrom
+      ? this.contractMap.get(this.currentFunction.inheritedFrom)
+      : this.currentContract;
+    const contractCandidates = lexicalContract?.eventDefinitions
+      .filter((event) => event.name === node.eventName) ?? [];
+    const candidates = node.eventQualifier
+      ? qualifiedHolder?.eventDefinitions.filter((event) => event.name === node.eventName)
+        ?? (qualifiedLibraryEvent ? [qualifiedLibraryEvent] : [])
+      : contractCandidates.length > 0
+        ? contractCandidates
+        : [...this.eventMap.values()].filter((event) => event.name === node.eventName);
     if (candidates.length === 0) {
       throw new UndefinedEventError(node);
     }

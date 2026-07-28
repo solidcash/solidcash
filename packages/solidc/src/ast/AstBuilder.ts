@@ -6895,6 +6895,9 @@ export default class AstBuilder
       const args = this.buildCallArguments(ctx.expressionList()!);
       node = new EmitStatementNode(eventName, args);
     }
+    if (identifiers.length > 1) {
+      node.eventQualifier = identifiers.slice(0, -1).map((identifier) => identifier.getText()).join('.');
+    }
     node.location = Location.fromCtx(ctx);
     return node;
   }

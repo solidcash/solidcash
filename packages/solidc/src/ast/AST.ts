@@ -2213,6 +2213,7 @@ export interface CollectionIterationInfo {
 export class EmitStatementNode extends StatementNode {
   eventDefinition?: EventDefinitionNode;
   eventCandidates?: EventDefinitionNode[];
+  eventQualifier?: string;
   emitIndex: number = 0;
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 

@@ -693,6 +693,32 @@ describe('Solidity named event overload ambiguity', () => {
   });
 });
 
+describe('Solidity contract event shadowing', () => {
+  it('hides a same-named file event from bare emit lookup', () => {
+    expect(() => compileString(
+      'event E(); contract C { event E(uint value); function f() public { emit E(); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/expects 1 arguments.*got 0/i);
+  });
+
+  it('retains a file-level event when the contract does not shadow its name', () => {
+    expect(compileString(
+      'event E(); contract C { function f() public { emit E(); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('retains qualified and inherited lexical event lookup', () => {
+    expect(compileString(
+      'event F(uint value); library L { event E(uint value); } interface I { event E(uint value); }'
+      + ' contract Base { function f() public { emit I.E(1); emit F(1); } }'
+      + ' contract C is Base { event E(string value); event F(string value);'
+      + ' function g() public { emit E("ok"); emit L.E(1); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

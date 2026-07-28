@@ -4995,3 +4995,13 @@ The focused suite is **993/993**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **996/996**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 489, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Contract event-shadowing loop: 4443 flat, NEG-ACCEPTED 489 -> 488 (-1)
+
+- Bare emits now resolve against the defining contract's effective event namespace before file-level events of
+  the same name.
+- Qualified interface, contract, and library emits preserve their qualifier, while inherited functions retain
+  their defining lexical event scope.
+
+The focused suite is **999/999**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+488, plus 275 multifile and 289 cmdline fixtures excluded.

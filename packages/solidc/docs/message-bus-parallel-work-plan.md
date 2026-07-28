@@ -175,7 +175,9 @@ task-specific report, not in this table.
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | — | E2 | TODO | `planCompiledGraph`, which every capstone uses, has no check |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | — | L2 | TODO | `abiFunction` is optional on the base type; preflight returns undefined and broadcasts |
-| X33 | S2's `touchesCollection` does not descend through calls | — | S2 | TODO | one callee deeper restores the pre-S2 internal error |
+| X33 | S2's `touchesCollection` does not descend through calls | C | S2 | **INTEGRATED** | BFS over the call graph; caught its own fn-pointer over-approximation |
+| X34 | Relax the over-strict `this.`-spelled dynamic+collection refusal | — | X33 | TODO | admitted form PROVEN sound on the VM; bus-mode leg unsettled |
+| X35 | Eligibility oddity: stricter combination admitted, simpler refused | — | X33 | TODO | dyn+collection `eligible: true` while dyn-only is refused |
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED** | effect-carrying handlers keep binding AND keep their effects; routes SHRANK |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
@@ -193,6 +195,36 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.39 The S2 "dialect divergence" was a SPELLING divergence, and the admitted side is the correct one
+
+Worker B measured that the same program is refused in `.scash` and admitted in Solidity, and correctly labelled
+it UNDETERMINED. Worker C settled it, and the label itself was wrong.
+
+**It is not the dialect. It is the spelling of the dynamic state write.** `this.note = tag` is a
+`StateAssignNode` from the parser; bare `note = tag` is an `AssignNode` over an `IdentifierNode` until symbol
+resolution - which runs AFTER these lowerings. So `analyseFunctionFootprint` never records `state:note`, no
+`__scb_dynamic_` clone is synthesized, the dynamic journal converts nothing, and the guard has no `__dj_`
+parameter to fire on. **This is X19's own gap, one resource kind over** - X19's comment records exactly this for
+bare `m[k] = v`. Four cells rule the front end out: Solidity spelled `this.note` is REFUSED, `.scash` spelled
+bare is ADMITTED, and it reproduces with no message-bus options at all.
+
+**The admitted side is right, established on the VM rather than argued.** The chunk output settles beside the C2
+insert node, and forged chunk, forged entry value, dropped chunk and an extra chunk minted at the dynamic
+address all reject at input 0. So the refusal is over-strict.
+
+**The worker did NOT remove the boundary, and the reason is the good kind.** It measured the removal: the `this.`
+program then compiles BYTE-IDENTICAL to the bare form already settled above - settlement-by-identity for the
+plain path. But in message-bus mode the `__scb_dynamic_` clone still exists and that artifact is 4,845 bytes
+against the bare form's 4,397, so that leg is a different script and was never settled. Shipping half would
+leave a mode-dependent boundary and make the X33 guard it had just strengthened unreachable. Opened as X34 with
+the premise recorded.
+
+**A limit of this board's own corpus convention, stated by the worker who established it.** The X33 corpus check
+covered 7,343 files with **zero** status moves, message diffs or over-accept diffs - and that held for an
+aggressive version of the fix that WAS wrong. Worker C's first repair rejected every function-pointer callsite,
+refusing two shapes that compile at baseline. **The corpus could not have caught that; a targeted probe did.**
+Corpus size is not discriminating power, and a clean corpus is not a clean change.
 
 ### 4.37 Round-11 review of X23/X27/E2/E4: a gap its own author could not close, and one real hole
 

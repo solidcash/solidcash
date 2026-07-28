@@ -235,16 +235,27 @@ const dropAbiFunction = (builder: TransactionBuilder, index: number): void => {
   };
 };
 
+/** Strip `abiFunction` from every input whose unlocker carries one. */
+const dropEveryAbiFunction = (builder: TransactionBuilder): void => {
+  (builder.inputs as any).forEach((input: any, index: number) => {
+    if (input.unlocker?.abiFunction) dropAbiFunction(builder, index);
+  });
+};
+
 describe('B/round-11 review of L2: the derived block-assembly gate', () => {
   /**
-   * FINDING. The derivation keys on `input.unlocker.abiFunction`, an object field the CALLER owns. An unlocker
-   * that produces byte-identical unlocking bytecode but does not re-expose `abiFunction` makes
-   * `deriveBalancedAssemblyFromInputs` return `undefined`, so the wired gate skips the transaction entirely.
+   * X32, CLOSED. The derivation keys on `input.unlocker.abiFunction`, an object field the CALLER owns. An
+   * unlocker that produces byte-identical unlocking bytecode but does not re-expose `abiFunction` used to make
+   * `deriveBalancedAssemblyFromInputs` return `undefined`, so the wired gate skipped the transaction entirely.
    *
    * The shape used is L2's own `event-cloned-to-tail`, which L2 records as preflight-only: the BCH-2026 VM
-   * ACCEPTS it. So silencing the derivation is not merely a missed warning - it is the whole protection.
+   * ACCEPTS it. So silencing the derivation was not merely a missed warning - it was the whole protection.
+   *
+   * The repair separates "out of scope" from "in scope but underivable": once ANY input publishes a
+   * participant master the transaction is in scope, and a region that does not start at index 0 is refused
+   * rather than skipped.
    */
-  it('REVIEW-L2-1: dropping `abiFunction` on input 0 silences the wired gate on a shape the VM accepts', async () => {
+  it('REVIEW-L2-1: dropping `abiFunction` on input 0 is refused, not silently skipped', async () => {
     // Honest control: the unlocker is untouched, the gate fires and names the escaped NFT.
     const control = await build('event-cloned-to-tail');
     expect(() => layer3.preflightLayer3BlockAssembly(control.builder))
@@ -257,22 +268,56 @@ describe('B/round-11 review of L2: the derived block-assembly gate', () => {
     dropAbiFunction(attacked.builder, 0);
     expect(raw(attacked.builder)).toBe(before);
 
-    // The gate is now silent, and the production send path broadcasts the shape the control refuses.
-    expect(layer3.preflightLayer3BlockAssembly(attacked.builder)).toBeUndefined();
+    // The gate now names the participant master it cannot place, and the production send path refuses before
+    // it asks any unlocker for bytecode.
+    expect(() => layer3.preflightLayer3BlockAssembly(attacked.builder))
+      .toThrow(/input 2 publishes a participant master block but no block starts at index 0/);
+    attacked.signatureRequests.count = 0;
     await expect(layer3.sendPreflightedLayer3Transaction(attacked.builder))
-      .resolves.toMatch(/^[0-9a-f]{64}$/);
+      .rejects.toThrow(/input 2 publishes a participant master block but no block starts at index 0/);
+    expect(attacked.signatureRequests.count).toBe(0);
   }, 180_000);
 
   /**
-   * FINDING. `deriveBalancedAssemblyFromInputs` returns `auxiliaryInputs: []`, so on the wired path the two
-   * checks `preflightBalancedBlockAssembly` performs against auxiliary slots never run - including the one the
-   * module documents as covenant-required ("both generated sidecar covenants carry
+   * The residual of the same attack: strip `abiFunction` from EVERY master and no input publishes one, so the
+   * derivation genuinely has no evidence and stays out of scope. The Layer-3 SEND paths refuse anyway, because
+   * reaching them is itself the caller's assertion that this transaction IS a participant composition.
+   * `preflightLayer3BlockAssembly` keeps its silent contract: it is also a standalone capability.
+   */
+  it('REVIEW-L2-1b: stripping every master leaves the send path with nothing to check, and it refuses', async () => {
+    const attacked = await build('event-cloned-to-tail');
+    const before = raw(attacked.builder);
+    dropEveryAbiFunction(attacked.builder);
+    expect(raw(attacked.builder)).toBe(before);
+    expect(layer3.preflightLayer3BlockAssembly(attacked.builder)).toBeUndefined();
+    attacked.signatureRequests.count = 0;
+    await expect(layer3.sendPreflightedLayer3Transaction(attacked.builder))
+      .rejects.toThrow(/no participant master block could be derived from this transaction/);
+    expect(attacked.signatureRequests.count).toBe(0);
+
+    // Guard negative control: an ordinary P2PKH transfer publishes no master either, and the standalone
+    // capability still declines to judge it rather than refusing it.
+    const provider = createLayer3SemanticTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const coin = randomUtxo({ satoshis: 20_000n });
+    await provider.addUtxo(p2pkh.address, coin);
+    const plain = new TransactionBuilder({ provider });
+    plain.addInput(coin, p2pkh.unlock.spend(alicePub, signature()));
+    plain.addOutput({ to: p2pkh.address, amount: 15_000n });
+    expect(layer3.preflightLayer3BlockAssembly(plain)).toBeUndefined();
+    await expect(provider.sendRawTransaction(raw(plain))).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  /**
+   * L2 FINDING 2, CLOSED. `deriveBalancedAssemblyFromInputs` used to return `auxiliaryInputs: []`, so on the
+   * wired path the two checks `preflightBalancedBlockAssembly` performs against auxiliary slots never ran -
+   * including the one the module documents as covenant-required ("both generated sidecar covenants carry
    * `require(tx.outputs[this.activeInputIndex].value == 1000)`").
    *
-   * The declared-layout call and the derived call disagree on the same builder: one rejects at slot 4, the
-   * other reports clean.
+   * The derived sidecar region is every slot between the participant region and the fee/change tail, which on
+   * this builder is exactly the declared layout's, so the two calls now agree instead of disagreeing.
    */
-  it('REVIEW-L2-2: the derived assembly drops every auxiliary slot, so the sidecar value check is dead', async () => {
+  it('REVIEW-L2-2: the derived assembly names the auxiliary slots, so the sidecar value check runs', async () => {
     const attacked = await build('aux-value-999');
     expect(attacked.builder.outputs[4].amount).toBe(999n);
 
@@ -281,22 +326,22 @@ describe('B/round-11 review of L2: the derived block-assembly gate', () => {
       .toThrow(/auxiliary slot 4 output is 999 satoshis, the sidecar covenant requires 1000/);
     expect(attacked.assembly.auxiliaryInputs).toEqual([4, 5, 6]);
 
-    // The wired gate, on the same builder, sees no auxiliary slots at all and reports clean.
-    const derived = layer3.preflightLayer3BlockAssembly(attacked.builder);
-    expect(derived).toBeDefined();
-    expect(derived!.auxiliaryInputs).toEqual([]);
+    // The wired gate, on the same builder, derives the same three slots and rejects the same one.
+    expect(() => layer3.preflightLayer3BlockAssembly(attacked.builder))
+      .toThrow(/auxiliary slot 4 output is 999 satoshis, the sidecar covenant requires 1000/);
 
-    // The VM does enforce it - but only after `build()` has taken every signature.
+    // It rejects BEFORE `build()` takes any signature; the VM only enforced it afterwards.
     attacked.signatureRequests.count = 0;
     await expect(layer3.sendPreflightedLayer3Transaction(attacked.builder))
-      .rejects.toThrow(/preflight failed at input 4/);
-    expect(attacked.signatureRequests.count).toBeGreaterThan(0);
+      .rejects.toThrow(/auxiliary slot 4 output is 999 satoshis/);
+    expect(attacked.signatureRequests.count).toBe(0);
 
     // Honest control: the same build differing only in that slot's value settles and preflights clean both ways.
     const control = await build();
     expect(control.builder.outputs[4].amount).toBe(1000n);
     preflightBalancedBlockAssembly(control.builder, control.assembly);
-    expect(layer3.preflightLayer3BlockAssembly(control.builder)).toBeDefined();
+    const derived = layer3.preflightLayer3BlockAssembly(control.builder);
+    expect(derived!.auxiliaryInputs).toEqual([4, 5, 6]);
     await expect(control.provider.sendRawTransaction(control.transaction)).resolves.toBeTypeOf('string');
   }, 180_000);
 });

@@ -7,7 +7,8 @@ import { compileString } from 'solidc';
 import {
   Contract, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -545,9 +546,29 @@ function preflightOutcome(built: BuiltA1): string {
   }
 }
 
+/**
+ * First input whose covenant refuses the transaction, evaluated directly.
+ *
+ * `preflightLayer3Transaction` now runs the structural block-assembly gate ahead of the VM, and that gate
+ * refuses some shapes on its own - the sidecar 1,000-satoshi slot value is one of them, since closing L2's
+ * FINDING 2 made the derived assembly name its auxiliary slots. A structural refusal is a DIFFERENT layer, so
+ * it must not be read as "no covenant refused this": the per-input evaluation below is what pins the covenant.
+ */
+function covenantFailingInput(built: BuiltA1): number | null {
+  const transaction = built.builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
+  const vm = createVirtualMachineBch2026ForProvider(built.builder.provider);
+  for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+    const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+    if (state.error !== undefined) return inputIndex;
+  }
+  return null;
+}
+
 function failingInput(built: BuiltA1): number | null {
   const outcome = preflightOutcome(built);
   if (outcome === 'ACCEPTED') return null;
+  if (/^balanced assembly: /.test(outcome)) return covenantFailingInput(built);
   const match = /failed at input (\d+)/.exec(outcome);
   if (!match) throw new Error(`A1: refusal did not name an input: ${outcome}`);
   return Number(match[1]);
@@ -923,6 +944,8 @@ describe('A1 review: state and resource preservation', () => {
     // The 1,000-satoshi slot value is often described as an SDK assembly convention. For the two SIDECAR
     // slot kinds it is not: both generated covenants require `tx.outputs[activeInputIndex].value == 1000`
     // for their own continuation output, so paying 1,200 there is refused by the covenant itself.
+    // These two are now ALSO refused structurally, before the VM, because the derived block assembly names
+    // its auxiliary slots (X32/L2 FINDING 2); `failingInput` evaluates each input to keep pinning the covenant.
     { property: 'projection slot 1,000-satoshi value', physical: 'projection-slot-value', input: INPUT.projection0 },
     { property: 'controller slot 1,000-satoshi value', physical: 'controller-slot-value', input: INPUT.controller },
   ];

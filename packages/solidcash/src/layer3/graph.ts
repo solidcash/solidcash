@@ -1,4 +1,4 @@
-import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
+import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
   encodeHiddenBatch, type EncodedHiddenBatch, type HiddenBatchInvocation,
@@ -874,6 +874,69 @@ function bindConsumerCallsites(
   });
 }
 
+/** Block slots that carry a call option or an unconditioned value movement. */
+const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
+  'satoshiContainer', 'transfer', 'tokenContainer', 'tcTransfer',
+]);
+
+/**
+ * Resolve the single ABI function one graph row names.
+ *
+ * Overloads share a name, so a name alone can select a different dispatch target than the caller meant, and
+ * the transcript would then commit the wrong selector and argument vector consistently. Entries agreeing on
+ * their selector are the same target and are not ambiguous.
+ */
+export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFunction | undefined {
+  const matches = artifact.abi.filter((candidate) => candidate.name === name);
+  if (matches.length > 1
+    && new Set(matches.map((candidate) => candidate.selector ?? '')).size > 1) {
+    throw new Error(
+      `layer3: participant artifact declares ${matches.length} distinct ABI functions named '${name}'`,
+    );
+  }
+  return matches[0];
+}
+
+/**
+ * Reject a graph invocation whose function carries an effect the executed SCB1 route does not.
+ *
+ * `IFoo(addr).m{value: v}()` publishes `transferCount` and `satoshiContainer`/`transfer` slots on the DIRECT
+ * block layout, while the SCB1 route layout, the handler projection and the transcript row stay byte identical
+ * to the option-free form. Executing such a function as a graph row therefore drops the option silently: no
+ * covenant byte enforces it and no transcript field commits it.
+ *
+ * A first-party `this.transfer(..)` publishes the SAME direct-mode fields yet is carried into the route, which
+ * is why the direct block layout alone cannot tell a bound effect from a dropped one and why this compares the
+ * two projections instead of refusing every value-moving function. The measured discriminator is the SCB1
+ * handler: an option contributes nothing to `handler.transfers`, a first-party transfer contributes one entry
+ * and eight route `transfer` slots. Dropped token-container operations are already refused at compile time;
+ * the container arm here is the SDK-side backstop for the same class.
+ */
+export function assertNoUnboundCallOptions(
+  lockingBytecode: string, artifact: Artifact, fn: AbiFunction, name: string,
+): void {
+  const handler = artifact.hiddenBatch?.handlers.find((candidate) => candidate.name === name);
+  const routeKinds = new Set((artifact.hiddenBatch?.route.blockLayout?.slots ?? [])
+    .map((slot) => slot.kind as string));
+  const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0);
+  const unboundContainer = (fn.tokenContainerAccesses?.length ?? 0)
+    - (handler?.tokenContainerAccesses?.length ?? 0);
+  // Backstop for an artifact whose per-handler projection is absent or understated: a direct-mode option slot
+  // kind the route never reserves cannot be settled by the row, whatever the counts claim.
+  const droppedKinds = [...new Set((fn.blockLayout?.slots ?? [])
+    .filter((slot) => OPTION_SLOT_KINDS.has(slot.kind) && !routeKinds.has(slot.kind))
+    .map((slot) => slot.kind))];
+  let detail: string | undefined;
+  if (unboundValue > 0) detail = `${unboundValue} value option(s)/transfer(s)`;
+  else if (unboundContainer > 0) detail = `${unboundContainer} token-container operation(s)`;
+  else if (droppedKinds.length > 0) detail = `block slots ${droppedKinds.join(', ')}`;
+  if (detail === undefined) return;
+  throw new Error(
+    `layer3: function '${name}' of participant ${lockingBytecode.slice(0, 12)} declares `
+    + `${detail}, which the transcript row does not bind; call options are not an admitted graph edge`,
+  );
+}
+
 /**
  * Group a finite logical graph by physical owner while preserving global invocation order.
  *
@@ -944,6 +1007,26 @@ export function planCompiledGraph(
       }),
     });
     globalByOwner[invocation.callee].push(index);
+  });
+
+  // X31: the policy checks `deriveCompiledGraphPlan` runs during expansion. They live here too because this is
+  // the other public planning entry point and every committed capstone fixture uses it - an option-bearing
+  // graph used to settle through it with the option silently dropped. Ordered after the structural walk so a
+  // malformed graph still reports its structural defect first.
+  invocations.forEach((invocation, index) => {
+    if (invocation.callMode !== undefined
+      && invocation.callMode !== 'call' && invocation.callMode !== 'staticcall') {
+      throw new Error(
+        `layer3: invocation ${index} declares call mode '${invocation.callMode}', `
+        + 'which is not a participant-graph edge',
+      );
+    }
+    const participant = participants[invocation.callee];
+    const abiFunction = resolveGraphAbiFunction(participant.artifact, invocation.function);
+    if (abiFunction === undefined) return;
+    assertNoUnboundCallOptions(
+      participant.lockingBytecode, participant.artifact, abiFunction, invocation.function,
+    );
   });
 
   const executions = participants.map((participant, owner) => {

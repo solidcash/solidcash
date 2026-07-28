@@ -171,7 +171,8 @@ task-specific report, not in this table.
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
 | **SEC-8** | X29's shared reached flag permitted satoshi-container theft | A | X29 | **INTEGRATED (closed)** | per-handler flag; design credited to C, validated by A |
 | X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
-| **SEC-10** | One-armed conditional emit reserves an unsettled slot | — | SEC-9 | **TODO (security)** | same forgery capability as SEC-9; predates X29; NOT VM-measured |
+| **SEC-10** | One-armed conditional emit reserves an unsettled slot | — | SEC-9 | **TODO (security, LIVE)** | MEASURED: forged event NFT accepted and broadcast; **NOT bus-specific** - see 4.43 |
+| **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | — | SEC-9 | **TODO (security, LIVE)** | forged NFT at a reserved TRANSFER slot accepted; reads back on chain |
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
@@ -196,6 +197,54 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.43 SEC-10 is LIVE and reaches plain contracts; SEC-9's refusal is incomplete
+
+Worker B measured what nobody had, and the result is the widest-reaching finding of the effort.
+
+**SEC-10 is a live forgery.** `collectEmitStatements` reserves a slot for a no-else branch arm, and
+`emitEventCovenantVerification` wraps that slot's ENTIRE verification - commitment, locking bytecode, category,
+capability, FT amount, value cap - inside `OP_IF <blob non-empty>`. On a row where the branch is not taken, the
+reserved output is checked by nothing.
+
+| row | slot content | result |
+|---|---|---|
+| branch taken | honest | ACCEPTED |
+| branch taken | forged | REJECTS @0 - the slot IS bound when the branch runs |
+| branch NOT taken | plain funding | ACCEPTED |
+| branch NOT taken | forged at the REACHED slot | REJECTS @0 |
+| **branch NOT taken** | **forged at the reserved slot** | **ACCEPTED, broadcast** |
+
+**It is not bus-specific and does not need X29's frames.** It reproduces with one handler, one emit and frame
+width 1 - no sibling, no divergence - and on a **plain stateful function with no bus, no route and no frame at
+all**. So it predates X29 and reaches any contract containing `if (c) { emit E(); }`. The impact is a real log,
+not a stray output: `readEventsFromChain` returns the forged value both on and off the bus.
+
+**SEC-9's refusal is sound but incomplete on two axes.** Worker B confirmed `emitInfos`-after-lowering IS the
+right comparison - it is literally what `eventWidth` is computed from - and credited it with catching a second
+vector the pre-lowering gate misses. But:
+
+- **static count is not settled count.** A one-armed emit contributes to `emitInfos` while settling nothing, so
+  both handlers report the same width, the refusal stays silent, and SEC-10 lands.
+- **it is EVENT-ONLY.** `transferWidth` is a group maximum by the identical construction and is never compared,
+  and the gate counts only one of five transfer spellings. Measured: 16 transfer slots reserved, a forged
+  own-category event NFT at the **settled** slot rejects, at the **reserved** slot is **ACCEPTED**, and reads
+  back on chain. Opened as SEC-11.
+
+**SEC-8's fix is CLEAN** on every vector Worker B could construct, including the `{value:}`-option case that
+made the naive ablation wrong - unreachable because such a handler is dropped before frame planning.
+
+**A limit on the width-2 evidence, found by the reviewer.** Worker A's positive control reproduces, and B added
+the negative control it lacked (forging slot 0 also rejects). But both fixtures use row 0, so the reached site
+is ordinal 0 and `site * width` is multiplied by zero. What is proven is that **two consecutive slots at the
+frame base are bound** - not per-site striding. A width-2 settlement at ordinal >= 1 needs the multi-row batch
+X30 records as still rejecting.
+
+**Repair handoff, already located:** `minCounts.emits` sets `conditional` exactly when some path leaves a slot
+unsettled, and correctly does not mark a two-armed if/else - so a repair keyed on it would not over-refuse. On a
+route it is unusable as published, because every frame slot already carries `conditional: true` for the
+unreached-site reason and the recompute is gated on `isEntryPoint`. `branchOps.minEmitCount` is the available
+signal.
 
 ### 4.42 Round-13: E3's two ADMITTED classes both escape; G2/G3/C3 clean; two recorded figures wrong
 

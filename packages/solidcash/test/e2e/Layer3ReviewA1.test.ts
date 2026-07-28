@@ -198,6 +198,19 @@ function transcriptFields(bytes: Uint8Array): TranscriptFields {
 interface Patch { at: number; bytes: Uint8Array }
 
 /**
+ * Every LATER participant's frame start moves when an earlier participant's region changes length.
+ * `compiledGraphRouteArgs` hands each route its own frame offset, so a length-changing patch that does not
+ * fix these would make later routes read the wrong frame - a fixture artifact, not a covenant result.
+ */
+function shiftedOffsets(
+  transcript: layer3.FinalizedCompiledGraph, participant: number, delta: number,
+): readonly number[] {
+  return Object.freeze(transcript.participantOffsets.map(
+    (offset, index) => (index > participant ? offset + delta : offset),
+  ));
+}
+
+/**
  * Rewrite one participant's emissions region to a NEW length, fixing the region's own length frame and
  * re-deriving the root. Also rewrites the blob that participant's compiled route is handed, so the attacker
  * is not caught by a mismatch between the two copies it controls.
@@ -220,7 +233,39 @@ function replaceEmissions(
     ...transcript,
     bytes,
     root: binToHex(sha256.hash(bytes)),
+    participantOffsets: shiftedOffsets(transcript, participant, replacement.length - frame.emissionsLength),
     participantEmissionsHex: Object.freeze(emissionsHex),
+  } as layer3.FinalizedCompiledGraph;
+}
+
+/**
+ * Rewrite one participant's logical CALLER region to a new length, in both copies the attacker owns.
+ *
+ * The root invocation's caller row is the transcript's `tx.origin` binding, and `finalizeCompiledGraph`
+ * leaves it EMPTY by default - `rootCallerLockingBytecode` defaults to `''` - which takes the verifier's
+ * `logicalCallerLength == 0 ||` early-out. C1, C3 and this fixture all inherit that default, so no committed
+ * test exercises a non-empty root caller row.
+ */
+function replaceCallers(
+  transcript: layer3.FinalizedCompiledGraph, participant: number, replacement: Uint8Array,
+): layer3.FinalizedCompiledGraph {
+  const frame = transcriptFields(transcript.bytes).participants[participant];
+  const head = transcript.bytes.subarray(0, frame.callersStart - 2);
+  const tail = transcript.bytes.subarray(frame.callersStart + frame.callersLength);
+  const bytes = new Uint8Array(head.length + 2 + replacement.length + tail.length);
+  bytes.set(head, 0);
+  bytes[head.length] = replacement.length & 0xff;
+  bytes[head.length + 1] = (replacement.length >>> 8) & 0xff;
+  bytes.set(replacement, head.length + 2);
+  bytes.set(tail, head.length + 2 + replacement.length);
+  const callersHex = [...transcript.participantCallersHex];
+  callersHex[participant] = binToHex(replacement);
+  return {
+    ...transcript,
+    bytes,
+    root: binToHex(sha256.hash(bytes)),
+    participantOffsets: shiftedOffsets(transcript, participant, replacement.length - frame.callersLength),
+    participantCallersHex: Object.freeze(callersHex),
   } as layer3.FinalizedCompiledGraph;
 }
 
@@ -789,6 +834,44 @@ describe('A1 review: unattacked transcript fields', () => {
   // none of these cases isolates an exhaustion assertion. They are system-level evidence that no field is
   // unbound; they are not evidence about the exhaustion assertions on their own. This is the same structural
   // caveat X23 recorded for the emission comparison.
+});
+
+/**
+ * The ROOT invocation's caller row - the transcript's `tx.origin` binding - which no capstone reaches.
+ *
+ * `finalizeCompiledGraph` defaults `rootCallerLockingBytecode` to `''`, so every committed graph fixture
+ * encodes an EMPTY root caller row and takes the verifier's `logicalCallerLength == 0 ||` early-out. The
+ * binding therefore exists but has never been exercised by a settling fixture.
+ */
+describe('A1 review: the root caller row and its tx.origin binding', () => {
+  it('every committed fixture leaves the root caller row EMPTY, so the binding is never reached', async () => {
+    const built = await buildA1();
+    // Participant 0 is the root's owner; its callers region holds exactly one row, for invocation 0.
+    // The region holds exactly one row for invocation 0, and that row is a two-byte ZERO-LENGTH frame, so
+    // the verifier's `logicalCallerLength == 0 ||` early-out is what every committed fixture takes.
+    expect(built.fields.participants[0].callersLength).toBe(2);
+    expect(built.transcript.participantCallersHex[0]).toBe('0000');
+    // Every non-root participant carries a real 35-byte framed caller row, so the region is otherwise used.
+    for (const participant of [1, 2, 3]) {
+      expect(built.fields.participants[participant].callersLength).toBe(37);
+    }
+  }, 120_000);
+
+  it('HOSTILE: a non-empty root caller row that is not tx.origin is rejected', async () => {
+    // Give the root a caller row naming the leaf, in both copies the attacker owns. This is the shape the
+    // `== tx.origin` require exists for, and the first case anywhere to reach it.
+    const built = await buildA1((transcript) => {
+      const frames = transcriptFields(transcript.bytes).participants;
+      const framedLeaf = transcript.bytes.slice(
+        frames[1].lbcLengthStart, frames[1].lbcStart + frames[1].lbcLength,
+      );
+      expect(framedLeaf.length).toBe(37);
+      return replaceCallers(transcript, 0, framedLeaf);
+    });
+    expect(built.transcript.participantCallersHex[0].length).toBe(74);
+    expect(failingInput(built)).toBe(INPUT.projection0);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 120_000);
 });
 
 /**

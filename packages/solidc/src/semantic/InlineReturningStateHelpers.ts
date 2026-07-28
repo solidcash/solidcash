@@ -764,7 +764,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
       // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
-      return this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
+      const result = this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
+      if (node.fromThisCall) result.fromExternalSelfCall = true;
+      return result;
     }
     return node;
   }

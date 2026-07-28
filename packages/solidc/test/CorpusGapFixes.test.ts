@@ -7294,6 +7294,47 @@ describe('try/catch clause validation', () => {
   });
 });
 
+describe('try expression and return-clause typing', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects try on an internal function call', () => {
+    expect(() => cc('contract C { function f() public returns (uint) { try f() {} catch {} return 1; } }'))
+      .toThrow(/Try can only be used with external function calls and contract creation/);
+  });
+
+  it('requires the returns clause to match the external call arity', () => {
+    expect(() => cc('contract C { function f() public returns (uint, uint) {'
+      + ' try this.f() returns (uint x) { return (x, x); } catch {} } }'))
+      .toThrow(/declares 1 values, but the expression returns 2/);
+  });
+
+  it('requires exact return types rather than implicit convertibility', () => {
+    expect(() => cc('contract C { function f() public returns (uint8, uint256) {'
+      + ' try this.f() returns (uint256 x, int256 y) { return (uint8(x), uint256(y)); } catch {} } }'))
+      .toThrow(/Try return type must exactly match/);
+  });
+
+  it('rejects storage data locations on try-return bindings', () => {
+    expect(() => cc('contract C { function f() public returns (string memory) {'
+      + ' try this.f() returns (string storage value) { return value; } catch {} } }'))
+      .toThrow(/storage.*only valid on internal or private functions/);
+  });
+
+  it('retains an exact external self-call returns clause', () => {
+    expect(cc('contract C { function f() public returns (uint8, uint256) {'
+      + ' try this.f() returns (uint8 x, uint256 y) { return (x, y); } catch {} } }')).toBe('C');
+  });
+
+  it('retains library calls and contract creation as valid try targets', () => {
+    expect(cc('library L { function f(uint x) public returns (uint) { return x; } }'
+      + ' contract C { function run() public returns (uint) {'
+      + ' try L.f(1) returns (uint x) { return x; } catch { return 0; } } }')).toBe('C');
+    expect(cc('contract D { constructor(uint x) {} } contract C {'
+      + ' function run() public returns (bytes memory) {'
+      + ' try new D(1) returns (D d) { return address(d); } catch { return ""; } } }')).toBe('C');
+  });
+});
+
 describe('abi.encodeWithSelector contextual zero', () => {
   it('implicitly converts literal zero to bytes4', () => {
     expect(compileString('contract C { function f() public pure returns (bytes memory) {'

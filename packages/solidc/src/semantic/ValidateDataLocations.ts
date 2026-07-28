@@ -4,7 +4,7 @@ import {
 import {
   AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionDefinitionNode,
   FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode, StateAssignNode, TupleAssignmentNode,
-  ReturnNode, TupleIndexOpNode, VariableDefinitionNode,
+  ReturnNode, TupleIndexOpNode, VariableDefinitionNode, TryCatchNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -225,6 +225,16 @@ export default class ValidateDataLocations extends AstTraversal {
       if (node.expression) this.initializedCalldataLocals.add(node.name);
     }
     return visited;
+  }
+
+  visitTryCatch(node: TryCatchNode): Node {
+    if (this.solidityImportCompat) {
+      for (const parameter of node.returnParameters ?? []) {
+        // Try-return bindings mirror an external return ABI and cannot introduce storage pointers.
+        this.validateLocation(parameter.type, parameter.modifier, parameter, 'parameter', 'external');
+      }
+    }
+    return super.visitTryCatch(node);
   }
 
   visitAbiDecode(node: AbiDecodeNode): Node {

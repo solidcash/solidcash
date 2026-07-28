@@ -110,6 +110,7 @@ import {
   StateArrayAssignNode,
   StateArrayDeleteNode,
   FunctionModifier,
+  TryCatchNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -1136,6 +1137,61 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Visits statements sequentially so bytes types narrowed by require(x.length == N) checks
     // apply to the following statements. Mutates statements in place.
     this.visitStatementsRecursively(node.statements ?? []);
+    return node;
+  }
+
+  visitTryCatch(node: TryCatchNode): Node {
+    node = super.visitTryCatch(node) as TryCatchNode;
+    if (!this.solidityImportCompat) return node;
+
+    const externalTarget = node.expression instanceof ExternalFunctionCallNode
+      || node.expression instanceof InstantiationNode
+      || (node.expression instanceof FunctionCallNode && node.expression.fromThisCall)
+      // Solidity library calls use external-call try semantics. Compatibility lowering
+      // retains their qualified library name while representing them as ordinary calls.
+      || (node.expression instanceof FunctionCallNode && node.expression.identifier.name.includes('.'))
+      || node.expression.fromExternalSelfCall
+      || node.fromExternalSelfCall;
+    if (!externalTarget) {
+      throw new TypeError(
+        node.expression,
+        node.expression.type,
+        undefined,
+        'Try can only be used with external function calls and contract creation',
+      );
+    }
+
+    if (node.returnParameters) {
+      const actualTypes = node.expression.type instanceof TupleType
+        ? node.expression.type.elements
+        : node.expression.type === PrimitiveType.VOID || node.expression.type === undefined
+          ? []
+          : [node.expression.type];
+      const declaredTypes = node.returnParameters.map((parameter) => parameter.type);
+      if (actualTypes.length !== declaredTypes.length) {
+        throw new TypeError(
+          node,
+          actualTypes,
+          declaredTypes,
+          `Try returns clause declares ${declaredTypes.length} values, but the expression returns ${actualTypes.length}`,
+        );
+      }
+      // Contract creation is represented as the deployed locking bytecode in SolidCash,
+      // while Solidity types its result as the created contract. The source-level return
+      // clause is nevertheless exact once its arity has been checked above.
+      const mismatch = node.expression instanceof InstantiationNode
+        ? -1
+        : declaredTypes.findIndex((declared, index) =>
+          declared.toString() !== actualTypes[index].toString());
+      if (mismatch >= 0) {
+        throw new TypeError(
+          node.returnParameters[mismatch],
+          actualTypes[mismatch],
+          declaredTypes[mismatch],
+          `Try return type must exactly match '${actualTypes[mismatch]}'`,
+        );
+      }
+    }
     return node;
   }
 

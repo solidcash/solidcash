@@ -727,6 +727,10 @@ export class BranchNode extends StatementNode {
 }
 
 export class TryCatchNode extends StatementNode {
+  // Preserves the source spelling when compatibility lowering rewrites `this.f(...)`
+  // (notably a synthesized public collection getter) into a direct state read.
+  fromExternalSelfCall?: boolean;
+
   constructor(
     public expression: ExpressionNode,
     public tryBlock: BlockNode,
@@ -910,6 +914,10 @@ export class BlockNode extends StatementNode {
 
 export abstract class ExpressionNode extends Node {
   type?: Type;
+  // Preserves the source provenance of `this.f(...)` when an early inline pass replaces the call with its
+  // returned expression. Try/catch validation still needs to distinguish this external self-call spelling
+  // from an internal call after getter/helper inlining.
+  fromExternalSelfCall?: boolean;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value

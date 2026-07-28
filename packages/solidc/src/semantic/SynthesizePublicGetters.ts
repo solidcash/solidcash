@@ -17,6 +17,7 @@ import {
   TupleAssignmentNode,
   StateVariableVisibility,
   FunctionModifier,
+  TryCatchNode,
 } from '../ast/AST.js';
 import {
   MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, StructType, EnumType, FunctionType, Type,
@@ -185,7 +186,15 @@ export default class SynthesizePublicGetters extends AstTraversal {
     for (const key of visited.parameters) {
       read = Object.assign(new ArrayAccessNode(read, key), { location: visited.location });
     }
+    read.fromExternalSelfCall = true;
     return read;
+  }
+
+  visitTryCatch(node: TryCatchNode): Node {
+    if (node.expression instanceof FunctionCallNode && node.expression.fromThisCall) {
+      node.fromExternalSelfCall = true;
+    }
+    return super.visitTryCatch(node);
   }
 
   // A self-call to a public collection getter whose terminal value is a struct returns the ABI-visible scalar

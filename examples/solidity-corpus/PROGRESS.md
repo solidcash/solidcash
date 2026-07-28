@@ -5112,3 +5112,14 @@ The focused suite is **1035/1035**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1038/1038**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 438, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Try-expression validation loop: 4443 flat, NEG-ACCEPTED 438 -> 434 (-4)
+
+- Solidity-compatible try statements now require an external call, public library call, or contract creation;
+  ordinary internal calls are rejected even when their function is public.
+- Try return bindings now require the expression's exact return arity and types, and reference bindings use
+  external-return data-location rules. Contract creation retains its source-level contract return type despite
+  SolidCash's locking-bytecode representation.
+
+The focused suite is **1044/1044**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+434, plus 275 multifile and 289 cmdline fixtures excluded.

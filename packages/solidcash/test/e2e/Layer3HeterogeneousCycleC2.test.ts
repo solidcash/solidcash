@@ -645,6 +645,10 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
   // undefined for a runtime-sized table, so nothing in the file proves the loop must run at all - and it does
   // not test omitting or adding an occurrence. Claiming a dispatch the persisted table does not authorize is
   // the exploitable half of that gap, and it is refused by the hub's own route, at input 0.
+  //
+  // SCOPED the same way as the under-run case below: this establishes the PROPERTY, not the mechanism. With
+  // one slot persisted, a row-count comparison and an in-range check on `legs[1]` are both in a position to
+  // reject, and this case does not separate them.
   it('rejects a transcript that claims more table occurrences than the persisted table holds', async () => {
     const built = await buildCycleGraph('tableOverRun');
     const honestBuild = await buildCycleGraph();

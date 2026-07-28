@@ -691,15 +691,17 @@ describe('Release 4 compiler-hidden local batch', () => {
   });
 
   /**
-   * SEC-6. This route WAS admitted, with 8 transfer slots, 8 event slots and a satoshi container - and its
-   * outgoing edge was unbound. `start` is a graph emission handler that also emits and transfers, so
+   * SEC-6 / X29. This route WAS admitted with 8 transfer slots, 8 event slots and a satoshi container - and its
+   * outgoing edge was UNBOUND. `start` is a graph emission handler that also emits and transfers, so
    * InlineStoragePointerCalls flattened its clone into the route wrapper, after which the external call
    * generated with __scb1 as the current function and no emission row was ever recomputed and compared.
    * Measured on the semantic VM (packages/solidcash/test/e2e/Layer3EmissionEffectEscape.test.ts) an argument
-   * substitution AND a selector substitution both settled on exactly this shape.
+   * substitution AND a selector substitution both settled on exactly this shape. SEC-6 refused it.
    *
-   * The route is refused until the un-flattened form can declare those owner-local slots itself. The
-   * effect-carrying handler with NO outgoing call is unaffected - the next cell pins that.
+   * X29 restores it: the clone stays behind OP_INVOKE, which is what binds the edge, and the route reserves the
+   * SAME owner-local slots on its behalf - one event/transfer frame per dispatch site, selected at runtime by a
+   * site ordinal the route pushes as hidden context. The block below is byte-for-byte the layout the flattened
+   * form produced, so the route is settled with its effects and its edges recomputed, not one or the other.
    */
   const COMBINED_EFFECTS = `interface IPeer {
       function step(address callback, bytes recipient, bigint amount);
@@ -727,17 +729,37 @@ describe('Release 4 compiler-hidden local batch', () => {
     experimentalMessageBusControllerCategory: '22'.repeat(32),
   };
 
-  it('refuses a uniform event route whose emitting handler also makes an outgoing call', () => {
-    expect(() => compileString(COMBINED_EFFECTS, BUS))
-      .toThrow(/'start' makes an external call and also performs an emit or transfer/);
+  const effectSlots = (source: string): Record<string, number> => {
+    const artifact = compileString(source, BUS);
+    const counts: Record<string, number> = {};
+    for (const slot of artifact.hiddenBatch!.route.blockLayout!.slots) {
+      counts[slot.kind] = (counts[slot.kind] ?? 0) + 1;
+    }
+    return counts;
+  };
+  const WITHOUT_EDGE = COMBINED_EFFECTS.replace(
+    '        IPeer(peer).step(callback, recipient, amount);\n', '',
+  );
+
+  it('admits a uniform event route whose emitting handler also makes an outgoing call', () => {
+    const artifact = compileString(COMBINED_EFFECTS, BUS);
+    expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['start', true], ['finish', true]]);
+    // X29's frames, and the discriminator against the silent-drop shape: an un-flattened handler whose route
+    // reserved nothing would show ZERO event and transfer slots here while still publishing a route.
+    expect(effectSlots(COMBINED_EFFECTS)).toEqual({
+      master: 1, dataNft: 1, satoshiContainer: 1, transfer: 8, event: 8,
+    });
   });
 
-  // The same contract WITHOUT the outgoing edge keeps its route, its 8 event slots, its 8 transfer slots and
-  // its satoshi container: the refusal is scoped to the edge that had no binding, not to the effects.
+  // The same layout the FLATTENED (forgeable) form produced, so X29 changed what settles the effects, not
+  // where they sit. Removing the outgoing edge keeps the handler on the established flattened path.
+  it('gives the outgoing-call route the same block as the edge-free one', () => {
+    expect(effectSlots(COMBINED_EFFECTS)).toEqual(effectSlots(WITHOUT_EDGE));
+  });
+
   it('still admits a uniform event route with a sparse value-transfer effect and no outgoing call', () => {
-    const artifact = compileString(
-      COMBINED_EFFECTS.replace('        IPeer(peer).step(callback, recipient, amount);\n', ''), BUS,
-    );
+    const artifact = compileString(WITHOUT_EDGE, BUS);
     expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
       .toEqual([['start', true], ['finish', true]]);
     const slots = artifact.hiddenBatch!.route.blockLayout!.slots;

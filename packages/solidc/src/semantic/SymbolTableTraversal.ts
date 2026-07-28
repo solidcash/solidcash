@@ -184,6 +184,7 @@ import {
   AbiEncodeCallUndefinedInterfaceError,
   AbiEncodeCallUndefinedFunctionError,
   AbiEncodeCallArgCountError,
+  GraphEmissionEffectError,
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
@@ -194,6 +195,7 @@ import {
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
+import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 // Deployment-oriented density tuning may lower this per artifact after measurement.
@@ -1012,6 +1014,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+
+    // X29 / SEC-7. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep
+    // their transcript binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
+    // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
+    // one frame per dispatch site; refuse the effects no frame can express. Both run after every function is
+    // visited, because both need per-handler metadata assigned during that function's own visit.
+    this.refuseUnframedGraphEffects(node);
+    this.planGraphEffectFrames(node);
 
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
@@ -8831,12 +8841,152 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * SEC-7. Refuse a routed graph emission handler whose effect the route has no frame for.
+   *
+   * `this.tokens[c].transfer(..)` never reaches InlineStoragePointerCalls' refusal, and not because it is the
+   * wrong node kind: for this shape route synthesis runs AFTER lowering, so that pass never sees the clone at
+   * all. The clone is therefore never flattened and its edges stay bound (2 recomputations, measured) - but the
+   * route reserves no tokenContainer input slot and no tcTransfer outputs, so the transfer the handler states
+   * simply does not happen. Measured on the same contract: the DIRECT entry point's block goes from [master] to
+   * [master, tokenContainer, tcTransfer] when the transfer is added, while the ROUTE's block stays
+   * [master, dataNft] either way. Same function, two entries, and the SPENDER picks which one - so this is not
+   * merely lossy, it is spender-selected effect omission, and a counterparty called in the same graph advances
+   * its state as though the payment happened.
+   *
+   * X29's per-site output frames cannot express it: a token container is a CO-SPENT INPUT bound to a category
+   * parameter's stack identity, one for the whole route rather than one per dispatch site, and route synthesis
+   * deliberately keeps token handlers off the clone path for that reason. So this fails closed here, where the
+   * clone and its accesses are both visible whichever order synthesis ran in.
+   */
+  private refuseUnframedGraphEffects(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.hiddenBatchRoute);
+    if (!route?.blockLayout) return;
+    // The condition is the DROP itself, not a spelling: the route settles token-container transfers through
+    // tcTransfer slots, so a routed handler that performs one while the route reserves none is a handler whose
+    // effect cannot happen. Measured discriminator, and it is NOT the message bus: a handler that also READS
+    // its container (`this.tokens[c].tokenAmount`) does get [tokenContainer, 8 x tcTransfer] on the route and
+    // is settled end-to-end (HiddenBatchRelease4); one that only WRITES it gets [master, dataNft] and is not,
+    // on the plain hidden batch exactly as on the bus.
+    if (route.blockLayout.slots.some((slot) => slot.kind === 'tcTransfer')) return;
+    for (const fn of contract.functions) {
+      const transfers = (fn.tokenContainerAccesses ?? [])
+        .reduce((total, access) => total + access.transferCount + access.transferNftCount, 0);
+      if (transfers === 0) continue;
+      if (!fn.graphEmissionHandler && fn.hiddenBatchEligible !== true) continue;
+      throw new GraphEmissionEffectError(
+        fn, fn.name.replace(/^__scb_(graph|resource|handler|array)_/, ''), 'a token-container operation',
+      );
+    }
+  }
+
+  /**
+   * X29. Is every entry in this handler's `transferInfos` one the per-site frames actually settle?
+   *
+   * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer, and that transfer is the
+   * callee's payment on an external-call slot, not a `this.transfer(..)` output the frame mechanism verifies.
+   * A handler carrying only such an option keeps its pre-X29 shape exactly - kept behind OP_INVOKE with no
+   * frames - which is what makes a value-option caller's artifact byte-identical to the option-free one
+   * (Layer3CallOptions pins that, and the SDK refuses to PLAN the option anyway: a transcript row has no field
+   * to bind it). One carrying an option ALONGSIDE a settled effect has no status quo - SEC-6 refused it - and
+   * framing only half of its effects would be exactly the silent drop X29 exists to remove, so it is refused.
+   */
+  private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
+    const declared = fn.transferInfos?.length ?? 0;
+    if (declared === 0) return true;
+    let direct = 0;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) direct += 1;
+    });
+    if (direct === declared) return true;
+    if (direct > 0 || (fn.emitInfos?.length ?? 0) > 0) {
+      throw new GraphEmissionEffectError(
+        fn, fn.name.replace(/^__scb_(graph|resource|handler|array)_/, ''),
+        'a value call option alongside an emit or transfer',
+      );
+    }
+    return false;
+  }
+
+  /**
+   * X29. Plan the owner-local effect frames the SCB1 route owes its effect-carrying graph emission handlers.
+   *
+   * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
+   * recompute its outgoing edges and compare them against the authenticated transcript. Flattening it makes
+   * `__scb1` the current function at code generation and every edge generates unbound. But a handler carrying
+   * an `emit` or a `transfer` produces OUTPUTS, and outputs are addressed through a block layout that only an
+   * ENTRY POINT has - so the un-flattened handler had nowhere to put them and the effect was silently dropped.
+   *
+   * The route owns the block, so the route reserves the slots. The handler is ONE shared subroutine invoked
+   * once per dispatch site, so a compile-time output index cannot distinguish the sites: each site gets a
+   * consecutive frame `[base + site * width, ... + width)` and the site ordinal rides to the subroutine as
+   * hidden context (GenerateTargetTraversal). Sites that dispatch DIFFERENT handlers share a frame ordinal on
+   * purpose - one row reaches exactly one handler, so their frames are mutually exclusive.
+   */
+  private planGraphEffectFrames(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.hiddenBatchRoute);
+    if (!route?.body || !route.blockLayout) return;
+    const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
+      && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0)
+      && this.framesSettleEveryTransfer(fn));
+    if (handlers.length === 0) return;
+    const byName = new Map(handlers.map((fn) => [fn.name, fn]));
+    const siteCounts = new Map<string, number>();
+    walkInvocationAst(route.body, (candidate) => {
+      if (!(candidate instanceof FunctionCallNode)) return;
+      const target = byName.get(candidate.identifier.name);
+      if (!target) return;
+      const ordinal = siteCounts.get(target.name) ?? 0;
+      candidate.graphEffectSite = ordinal;
+      siteCounts.set(target.name, ordinal + 1);
+    });
+    const sites = Math.max(0, ...siteCounts.values());
+    if (sites === 0) return;
+    // Fail closed if the route could reach a handler more often than it has dispatch sites. That happens only
+    // under the LOOP parser (`for (row = 0; row < rowCount; ..)`), where one syntactic call site serves every
+    // row: two rows would then share one frame, two emits would verify against ONE output, and equal blobs
+    // would settle with an event missing - a partial silent drop rather than a rejection. Unreachable today
+    // (an emit or a transfer forces `eventMode`/`valueEffectMode`, which unroll the parser to one site per row)
+    // and asserted rather than assumed so a future parser change cannot reintroduce the drop quietly.
+    for (const [name, count] of siteCounts) {
+      if (count >= (route.hiddenBatchMaximumRows ?? count)) continue;
+      throw new GraphEmissionEffectError(
+        contract.functions.find((fn) => fn.name === name) ?? route,
+        name.replace(/^__scb_(graph|resource|handler|array)_/, ''),
+        'an effect on a route with fewer dispatch sites than rows',
+      );
+    }
+    // Base 0, and the route's OWN effect slots are shared rather than added to. A route reaches exactly one
+    // handler per row, and the unrolled parser gives row `s` the emit/transfer indices [s*width, s*width+width)
+    // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one
+    // dispatch, which is the same reason branchOps takes the max of two arms rather than their sum. Sharing is
+    // what makes the block byte-identical to the flattened form the SDK and the capstone fixtures expect.
+    const frame = {
+      sites,
+      eventBase: 0,
+      eventWidth: Math.max(0, ...handlers.map((fn) => fn.emitInfos?.length ?? 0)),
+      transferBase: 0,
+      transferWidth: Math.max(0, ...handlers.map((fn) => fn.transferInfos?.length ?? 0)),
+    };
+    route.graphEffectFrame = frame;
+    for (const fn of handlers) fn.graphEffectFrame = frame;
+    // Recompute rather than patch: slot ORDER inside a block is canonical (the SDK builds outputs from it and
+    // countOutputOnlySlotsBefore reads it), so the frames must land in the same position a flattened handler's
+    // own effects would have.
+    route.blockLayout = this.computeBlockLayout(route);
+  }
+
+  /**
    * Compute the 1:1 block layout for a stateful function.
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
+    // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.
+    const graphFrame = node.hiddenBatchRoute ? node.graphEffectFrame : undefined;
+    const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
+    const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -8927,8 +9077,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Satoshi container (if function has transfers)
-    if (node.transferInfos && node.transferInfos.length > 0) {
+    // Satoshi container (if function has transfers - its own, or a graph handler's frames)
+    if ((node.transferInfos && node.transferInfos.length > 0) || graphTransfers > 0) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -8948,6 +9098,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'transfer', offset: offset++, slotIndex: i });
       }
     }
+    for (let i = node.transferInfos?.length ?? 0; i < graphTransfers; i++) {
+      slots.push({ kind: 'transfer', offset: offset++, slotIndex: i, conditional: true });
+    }
 
     // TC transfers (output-only - one slot per transfer/transferNft operation)
     if (node.tokenContainerAccesses) {
@@ -8965,6 +9118,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (let i = 0; i < node.emitInfos.length; i++) {
         slots.push({ kind: 'event', offset: offset++, slotIndex: i });
       }
+    }
+    for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {
+      slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
     }
 
     // Return event (output-only)

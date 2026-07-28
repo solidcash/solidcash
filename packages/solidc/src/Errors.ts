@@ -1219,12 +1219,14 @@ export class GraphEmissionEffectError extends SolidCashError {
   constructor(node: Node, handlerName: string, effect: string) {
     super(
       node,
-      `Message-bus handler '${handlerName}' makes an external call and also performs ${effect}, which is not `
-      + 'enabled. The handler executes behind OP_INVOKE so its recomputed outgoing edges can be compared '
-      + "against the transcript, but such an effect needs an owner-local slot only the route's own body "
-      + 'declares, so the handler would be flattened into the route and its edges would generate unbound - '
-      + 'the transcript could then state any target, selector or arguments for them. Move the effect to a '
-      + 'handler that makes no external call.',
+      `Batched handler '${handlerName}' performs ${effect}, which the route reserves no output slot for, so it `
+      + 'would settle WITHOUT the effect while the same function called directly enforces it - and the spender chooses '
+      + 'which entry to use. A token-container transfer needs a co-spent container INPUT slot bound to its '
+      + 'category parameter, which the route only reserves when a handler also READS the container: adding '
+      + '`require(this.tokens[<category>].tokenAmount >= <amount>)` makes the route settle the transfer. Handlers '
+      + 'routed through the message bus additionally execute behind OP_INVOKE (that is what keeps their outgoing '
+      + 'edges recomputable against the transcript); the route frames their emit and transfer outputs per '
+      + 'dispatch site (X29), but not a container input.',
     );
   }
 }

@@ -456,7 +456,8 @@ contract GraphRootController(bytes20 initializer) {
   function attest(bytes transcript) {
     require(tx.inputs[this.activeInputIndex].nftCommitment.length == 32);
     require(tx.inputs[this.activeInputIndex].nftCommitment == sha256(transcript));
-    require(transcript.length >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
+    bigint transcriptLength = transcript.length;
+    require(transcriptLength >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
     bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
     require(participantCount >= 1 && participantCount <= 8);
     bigint previousReturnOutput = -1;
@@ -464,44 +465,49 @@ contract GraphRootController(bytes20 initializer) {
     bigint expectedInput = 0;
     bigint cursor = 10;
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-      require(cursor + 6 <= transcript.length);
-      bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
-      bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
+      // X27: split ONE suffix per participant and read every field off it, so a read costs the REMAINING
+      // transcript instead of the whole blob. \`local\` carries the same offset \`cursor\` used to, measured
+      // from the frame start, and every bound is the old \`cursor + n <= transcript.length\` rewritten as
+      // \`local + n <= frame.length\`; frame.length == transcriptLength - cursor makes the two identical.
+      // The suffix split itself is in range because cursor <= transcriptLength holds on entry to every
+      // iteration - 10 <= transcriptLength for the first, and the last bound of the body for the rest.
+      bytes frame = transcript.slice(cursor, transcriptLength);
+      require(frame.length >= 6);
+      bigint participantInput = int(bytes.concat(frame.slice(0, 2), hex"00"));
+      bigint blockSize = int(bytes.concat(frame.slice(2, 4), hex"00"));
+      bigint lbcLength = int(bytes.concat(frame.slice(4, 6), hex"00"));
       require(participantInput == expectedInput && participantInput < tx.inputs.length);
       require(blockSize >= 1 && participantInput + blockSize <= tx.inputs.length);
       expectedInput = participantInput + blockSize;
-      require(lbcLength > 0 && cursor + 8 + lbcLength <= transcript.length);
-      require(tx.inputs[participantInput].lockingBytecode
-        == transcript.slice(cursor + 6, cursor + 6 + lbcLength));
-      bigint batchLength = int(bytes.concat(
-        transcript.slice(cursor + 6 + lbcLength, cursor + 8 + lbcLength), hex"00"));
-      cursor = cursor + 8 + lbcLength;
-      require(batchLength >= 7 && batchLength <= 223 && cursor + batchLength + 2 <= transcript.length);
+      require(lbcLength > 0 && 8 + lbcLength <= frame.length);
+      require(tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength));
+      bigint batchLength = int(bytes.concat(frame.slice(6 + lbcLength, 8 + lbcLength), hex"00"));
+      bigint local = 8 + lbcLength;
+      require(batchLength >= 7 && batchLength <= 223 && local + batchLength + 2 <= frame.length);
       bytes unlocking = tx.inputs[participantInput].unlockingBytecode;
       require(unlocking.slice(0, 5) == hex"0453434231");
       if (batchLength <= 75) {
         require(int(bytes.concat(unlocking.slice(5, 6), hex"00")) == batchLength);
-        require(unlocking.slice(6, 6 + batchLength) == transcript.slice(cursor, cursor + batchLength));
+        require(unlocking.slice(6, 6 + batchLength) == frame.slice(local, local + batchLength));
       } else {
         require(unlocking.slice(5, 6) == hex"4c");
         require(int(bytes.concat(unlocking.slice(6, 7), hex"00")) == batchLength);
-        require(unlocking.slice(7, 7 + batchLength) == transcript.slice(cursor, cursor + batchLength));
+        require(unlocking.slice(7, 7 + batchLength) == frame.slice(local, local + batchLength));
       }
       bigint emissionsLength = int(bytes.concat(
-        transcript.slice(cursor + batchLength, cursor + batchLength + 2), hex"00"));
-      cursor = cursor + batchLength + 2;
-      require(cursor + emissionsLength + 2 <= transcript.length);
+        frame.slice(local + batchLength, local + batchLength + 2), hex"00"));
+      local = local + batchLength + 2;
+      require(local + emissionsLength + 2 <= frame.length);
       bigint callersLength = int(bytes.concat(
-        transcript.slice(cursor + emissionsLength, cursor + emissionsLength + 2), hex"00"));
-      cursor = cursor + emissionsLength + 2;
-      require(cursor + callersLength + 4 <= transcript.length);
+        frame.slice(local + emissionsLength, local + emissionsLength + 2), hex"00"));
+      local = local + emissionsLength + 2;
+      require(local + callersLength + 4 <= frame.length);
       bigint returnOutput = int(bytes.concat(
-        transcript.slice(cursor + callersLength, cursor + callersLength + 2), hex"00"));
+        frame.slice(local + callersLength, local + callersLength + 2), hex"00"));
       bigint resultVectorLength = int(bytes.concat(
-        transcript.slice(cursor + callersLength + 2, cursor + callersLength + 4), hex"00"));
-      cursor = cursor + callersLength + 4;
-      require(resultVectorLength <= 126 && cursor + resultVectorLength + 2 <= transcript.length);
+        frame.slice(local + callersLength + 2, local + callersLength + 4), hex"00"));
+      local = local + callersLength + 4;
+      require(resultVectorLength <= 126 && local + resultVectorLength + 2 <= frame.length);
       if (resultVectorLength == 0) {
         require(returnOutput == 65535);
       } else {
@@ -511,20 +517,21 @@ contract GraphRootController(bytes20 initializer) {
         bytes expectedCommitment;
         if (resultVectorLength <= 75) {
           expectedCommitment = bytes.concat(bytes1(resultVectorLength),
-            transcript.slice(cursor, cursor + resultVectorLength));
+            frame.slice(local, local + resultVectorLength));
         } else {
           expectedCommitment = bytes.concat(hex"4c", bytes1(resultVectorLength),
-            transcript.slice(cursor, cursor + resultVectorLength));
+            frame.slice(local, local + resultVectorLength));
         }
         require(tx.outputs[returnOutput].nftCommitment == expectedCommitment);
       }
       bigint projectionInput = int(bytes.concat(
-        transcript.slice(cursor + resultVectorLength, cursor + resultVectorLength + 2), hex"00"));
-      cursor = cursor + resultVectorLength + 2;
+        frame.slice(local + resultVectorLength, local + resultVectorLength + 2), hex"00"));
+      local = local + resultVectorLength + 2;
       require(projectionInput > previousProjectionInput && projectionInput < tx.inputs.length);
       require(participant == 0 || projectionInput == previousProjectionInput + 1);
       previousProjectionInput = projectionInput;
       require(tx.inputs[projectionInput].lockingBytecode == hex"${verifier}");
+      cursor = cursor + local;
     }
     // The proof slots are consecutive, so the last one names the first: the participant REGION ends
     // exactly where the projection region begins.
@@ -532,18 +539,20 @@ contract GraphRootController(bytes20 initializer) {
     require(this.activeInputIndex == expectedInput + participantCount);
     require(tx.inputs.length == this.activeInputIndex + 2);
     require(tx.outputs.length == tx.inputs.length);
-    require(cursor + 2 <= transcript.length);
+    require(cursor + 2 <= transcriptLength);
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
     bytes frames = ${emptyFrames};
     bigint previousDepth = -1;
     bigint tail = cursor + 2;
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
-      require(tail + 14 <= transcript.length);
-      bigint parent = int(bytes.concat(transcript.slice(tail, tail + 2), hex"00"));
-      bigint depth = int(bytes.concat(transcript.slice(tail + 4, tail + 5), hex"00"));
-      bigint subtreeEnd = int(bytes.concat(transcript.slice(tail + 5, tail + 7), hex"00"));
-      require(int(bytes.concat(transcript.slice(tail + 2, tail + 3), hex"00")) < participantCount);
+      // X27, same rewrite as the participant loop: one suffix split per row, all six reads off the suffix.
+      bytes row = transcript.slice(tail, transcriptLength);
+      require(row.length >= 14);
+      bigint parent = int(bytes.concat(row.slice(0, 2), hex"00"));
+      bigint depth = int(bytes.concat(row.slice(4, 5), hex"00"));
+      bigint subtreeEnd = int(bytes.concat(row.slice(5, 7), hex"00"));
+      require(int(bytes.concat(row.slice(2, 3), hex"00")) < participantCount);
       if (invocation == 0) {
         require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
       } else {
@@ -560,14 +569,14 @@ contract GraphRootController(bytes20 initializer) {
       frames = bytes.concat(frames.slice(0, depth), bytes1(invocation),
         frames.slice(depth + 1, depth + ${MAX_GRAPH_DEPTH + 1}), bytes1(subtreeEnd),
         frames.slice(depth + ${MAX_GRAPH_DEPTH + 2}, ${frameBytes}));
-      bigint argsLength = int(bytes.concat(transcript.slice(tail + 12, tail + 14), hex"00"));
-      require(tail + 16 + argsLength <= transcript.length);
+      bigint argsLength = int(bytes.concat(row.slice(12, 14), hex"00"));
+      require(16 + argsLength <= row.length);
       bigint resultLength = int(bytes.concat(
-        transcript.slice(tail + 14 + argsLength, tail + 16 + argsLength), hex"00"));
+        row.slice(14 + argsLength, 16 + argsLength), hex"00"));
       tail = tail + 16 + argsLength + resultLength;
-      require(tail <= transcript.length);
+      require(tail <= transcriptLength);
     }
-    require(tail == transcript.length);
+    require(tail == transcriptLength);
     require(tx.inputs[this.activeInputIndex].tokenCategory.length >= 32);
     bytes controllerCategory = tx.inputs[this.activeInputIndex].tokenCategory.slice(0, 32);
     for (bigint output = 0; output < tx.outputs.length; output = output + 1) {

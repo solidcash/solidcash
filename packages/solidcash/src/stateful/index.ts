@@ -128,6 +128,7 @@ export {
   assertCompleteLocalBlock,
   participantRegionEnd,
   BALANCED_SLOT_SATOSHIS,
+  BALANCED_EVENT_SLOT_CEILING,
   OUTPUT_ONLY_BLOCK_SLOT_KINDS,
   EVENT_BLOCK_SLOT_KINDS,
   type BalancedAssembly,

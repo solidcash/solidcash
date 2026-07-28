@@ -1271,7 +1271,7 @@ describe('C3 capacity measurement', () => {
     const [, maximum, length, cost] = outcome.match(
       /Maximum operation cost: (\d+) \(density control length: (\d+)\).*following operation: (\d+)/,
     )!;
-    // Measured at this commit: budget 2,352,000 for a 2,940-byte controller input, reported cost 2,353,029.
+    // Measured post-X27: budget 2,308,000 for a 2,885-byte controller input (2,352,000 / 2,940 before X27).
     // Read naively that is "1,029 operations, 0.04% over" - and that reading is WORTHLESS, for exactly the
     // reason section 4.22 records: the density check runs after every operation and aborts on the first
     // excess, so a reported cost is always within one operation of the budget however much work remained.
@@ -1301,9 +1301,12 @@ describe('C3 capacity measurement', () => {
     //   94   P6 Reporter 3,123 1,191,514   2,498,400   0.477
     //   96   P7 Sink    2,905  1,176,051   2,324,000   0.506
     //   98-105 projections 5,880 each, 3,202,905-3,242,314, budget 4,704,000, ratio 0.681-0.689
-    //   106  controller 2,940  2,889,555   2,352,000   1.2286   <- the ONLY input over budget
+    //   106  controller 2,885  2,775,704   2,308,000   1.2026   <- the ONLY input over budget
     //
-    // So C3 does not fit by ONE input at 1.2286x. 18.6% has to come off the controller and nothing else.
+    // The controller row is post-X27; before it the same input measured 2,940 bytes, 2,889,555 cost,
+    // 2,352,000 budget and 1.2286. So C3 does not fit by ONE input, and 16.9% still has to come off the
+    // controller and nothing else. Every other row is byte-identical to the pre-X27 measurement, which is
+    // what confirms X27 touched `attest` and nothing else.
     // The projection input is 5,880 bytes, not the 8,412 this file used to record - that figure was measured
     // before X23 shrank the verifier by 2,532 bytes, and 8,412 - 5,880 is exactly 2,532.
     for (const projection of projections) {
@@ -1324,26 +1327,37 @@ describe('C3 capacity measurement', () => {
     expect(costs.filter((row) => row.ratio > 1).map((row) => row.input))
       .toEqual([built.layout.controllerInput]);
 
-    // WHERE the controller's cost goes. Two terms only: 65.0% is instruction count (18,771 x 100) and 34.7%
-    // is `stackPushedBytes` (1,001,917 bytes pushed for a 1,329-byte transcript). Arithmetic and hashing are
-    // together under 0.2%. `attest` reads its fields with 160 `transcript.slice(a, b)` calls against the WHOLE
-    // blob, and a slice of an L-byte item pushes O(L) no matter how few bytes it extracts, which is what makes
-    // the pushed-bytes term grow with rows x transcript length rather than with transcript length alone.
+    // WHERE the controller's cost goes, post-X27. Two terms only: 76.0% is instruction count (21,102 x 100)
+    // and 23.6% is `stackPushedBytes` (655,521 bytes pushed for a 1,329-byte transcript). Arithmetic and
+    // hashing are together under 0.2%. Before X27 the split was 65.0% / 34.7% on 18,771 instructions and
+    // 1,001,917 pushed bytes: `attest` read its fields with 160 `transcript.slice(a, b)` calls against the
+    // WHOLE blob, and a slice of an L-byte item pushes O(L) no matter how few bytes it extracts.
     expect(controller.instructions * 100 / controller.cost).toBeGreaterThan(0.6);
-    expect(controller.pushedBytes / controller.cost).toBeGreaterThan(0.25);
+    expect(controller.pushedBytes / controller.cost).toBeGreaterThan(0.2);
     expect((controller.arithmetic + controller.hashIterations * 64) / controller.cost).toBeLessThan(0.01);
 
-    // What 18.6% could come off, costed against the measured split. None of these is implemented here.
-    //   - A destructive left-to-right transcript walk in `attest`, so each field is split off a SHRINKING
-    //     remainder instead of re-splitting the whole blob. `attest` issues 14 slices per participant and 6
-    //     per invocation - 160 for C3 - which is what makes the instruction count track 14P + 6N, and each
-    //     slice pushes O(transcript length) whatever it extracts. Halving the pushed-bytes term saves 500,958,
-    //     which is 17.3%: NOT enough alone, 1.3 points short.
-    //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs: 198,400, 6.9%. The constant
-    //     lives in SymbolTableTraversal.ts.
-    //   - X24, the constant-depth stack-write shuttle, against the 65.0% instruction term.
-    // The first two together are 24.2% and would bring the controller to about 0.93x. This is arithmetic on
-    // measured components, not a proven result.
+    // X27 IS NOW IMPLEMENTED, AND ITS PROJECTION WAS WRONG BY 8x. The projection here said a destructive
+    // left-to-right walk would halve the pushed-bytes term and save 500,958, "17.3%". Measured:
+    //
+    //   term            before      after       delta
+    //   pushedBytes     1,001,917   655,521     -346,396   (-34.6%, not the -50% projected)
+    //   instructions    18,771      21,102      +2,331     = +233,100 of cost, at 100 per instruction
+    //   cost            2,889,555   2,775,704   -113,851   (-3.94%)
+    //   density budget  2,352,000   2,308,000   -44,000    (the script is 55 bytes smaller, so is its budget)
+    //   ratio           1.2286      1.2026      -2.1%
+    //
+    // The projection costed ONE term. A suffix split is not free: it replaces a read against the whole blob
+    // with a read against a shorter one, but it ADDS an OP_SPLIT and its offset arithmetic per row, and at
+    // 100 cost units per instruction against 1 per pushed byte those two nearly cancel. 67% of the pushed
+    // saving was spent buying the instructions that produced it. Any future estimate against this cost model
+    // has to price both terms; pricing the pushed-bytes term alone is what produced the 8x error.
+    //
+    // What is left, against the 16.9% that still has to come off:
+    //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs: 198,400, 7.2% of the
+    //     post-X27 cost. The constant lives in SymbolTableTraversal.ts. Costed, not measured - and the
+    //     lesson above applies to it too, since fewer outputs also means fewer instructions, not more.
+    //   - X24, the constant-depth stack-write shuttle, against the now-76.0% instruction term, which X27
+    //     made the dominant term by a wider margin than before.
 
     // Scaling, against C1 and C2 measured with this identical harness at this same commit. C1 is 4/5 with a
     // 1,141-byte transcript and 35 slots; C2 is 4/5 with a 743-byte transcript and 79 slots; C3 is 8/8 with

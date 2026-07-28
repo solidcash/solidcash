@@ -27,8 +27,27 @@ export const EVENT_BLOCK_SLOT_KINDS: ReadonlySet<BlockSlotKind> = new Set<BlockS
   'event', 'returnEvent',
 ]);
 
-/** Satoshi value the balanced layout specifies for an ordinary/event/return-event slot output. */
+/**
+ * Satoshi value of an AUXILIARY (sidecar) slot output - the graph projection proofs and the root controller.
+ *
+ * This one is authenticated, not a convention: both generated sidecar covenants carry
+ * `require(tx.outputs[this.activeInputIndex].value == 1000)` (see `layer3/graph.ts`), so a sidecar slot paying
+ * anything else is refused on chain by the covenant itself.
+ */
 export const BALANCED_SLOT_SATOSHIS = 1000n;
+
+/**
+ * Upper bound on an event / return-event slot output's value (X21).
+ *
+ * The covenant does NOT pin an event slot to a single value; it bounds it. Both the event path and the
+ * return-event path emit `OP_OUTPUTVALUE <1200> OP_LESSTHANOREQUAL OP_VERIFY`, an anti-siphon ceiling that
+ * stops satoshis being parked in an anyone-can-spend log output. 1,200 is also the smallest round value that
+ * clears the relay dust threshold for the largest event a covenant admits (a 128-byte commitment needs 1,068),
+ * which is why the SDK emits event NFTs at 1,200 while return events settle at 800 or 1,000 depending on the
+ * route. This model previously required all three to be exactly `BALANCED_SLOT_SATOSHIS`, which rejected every
+ * one of those legitimate values and matched none of them.
+ */
+export const BALANCED_EVENT_SLOT_CEILING = 1200n;
 
 /** One participant's placement: its compiler-declared local block at a physical input == output base. */
 export interface BalancedBlockPlacement {
@@ -61,8 +80,10 @@ export interface BalancedAssemblyView {
 }
 
 export interface BalancedAssemblyOptions {
-  /** Value every event/return-event and unused ordinary slot output must carry. */
+  /** Exact value every AUXILIARY (sidecar) slot output must carry; the sidecar covenants require it. */
   slotSatoshis?: bigint;
+  /** Upper bound on an event / return-event slot output's value; the emitting covenant enforces it. */
+  eventSlotCeiling?: bigint;
   /** Skip the value check for slots whose output value is protocol-defined elsewhere. */
   ignoreValueAt?: readonly number[];
 }
@@ -180,9 +201,9 @@ export function participantRegionEnd(assembly: BalancedAssembly): number {
  * Rejects: a transaction whose input and output counts disagree with each other or with the layout;
  * participant blocks that are not concatenated from index 0; an incomplete local block descriptor; an
  * output-only slot whose paired funding input is missing (which is what makes the two bases diverge); an
- * event or return-event output that is not the specified dust value; a token output outside every
- * participant block (an event NFT that escaped its emitter's block); and fee/change slots that fall inside
- * a relocatable participant block.
+ * event or return-event output whose value exceeds the covenant's anti-siphon ceiling; an auxiliary slot
+ * output that is not the covenant-required sidecar value; a token output outside every participant block (an
+ * event NFT that escaped its emitter's block); and fee/change slots inside a relocatable participant block.
  */
 export function preflightBalancedBlockAssembly(
   transaction: BalancedAssemblyView,
@@ -190,6 +211,7 @@ export function preflightBalancedBlockAssembly(
   options: BalancedAssemblyOptions = {},
 ): void {
   const slotSatoshis = options.slotSatoshis ?? BALANCED_SLOT_SATOSHIS;
+  const eventSlotCeiling = options.eventSlotCeiling ?? BALANCED_EVENT_SLOT_CEILING;
   const ignoreValueAt = new Set(options.ignoreValueAt ?? []);
   if (!Number.isInteger(assembly.totalSlots) || assembly.totalSlots < 1) {
     fail(`layout declares ${assembly.totalSlots} total slots`);
@@ -251,10 +273,12 @@ export function preflightBalancedBlockAssembly(
       if (!output.token?.nft) {
         fail(`participant ${block.participant} '${slot.kind}' output ${index} carries no authenticated NFT`);
       }
-      if (!ignoreValueAt.has(index) && output.amount !== slotSatoshis) {
+      // X21: an event slot is BOUNDED, not pinned. The emitting covenant checks `value <= 1200`, so the model
+      // checks the same ceiling instead of an equality no route emits.
+      if (!ignoreValueAt.has(index) && (output.amount <= 0n || output.amount > eventSlotCeiling)) {
         fail(
           `participant ${block.participant} '${slot.kind}' output ${index} is ${output.amount} satoshis, `
-          + `the balanced layout specifies ${slotSatoshis}`,
+          + `the emitting covenant bounds an event slot at ${eventSlotCeiling}`,
         );
       }
     }
@@ -267,12 +291,13 @@ export function preflightBalancedBlockAssembly(
     }
   }
   // Each auxiliary slot pairs with an ordinary dust output; the terminal change output absorbs the remainder.
+  // This equality IS covenant-required (both sidecar covenants check their own continuation output).
   for (const auxiliary of assembly.auxiliaryInputs) {
     const output = transaction.outputs[auxiliary];
     if (!ignoreValueAt.has(auxiliary) && output.amount !== slotSatoshis) {
       fail(
         `auxiliary slot ${auxiliary} output is ${output.amount} satoshis, `
-        + `the balanced layout specifies ${slotSatoshis}`,
+        + `the sidecar covenant requires ${slotSatoshis}`,
       );
     }
   }

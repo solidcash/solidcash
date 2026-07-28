@@ -687,13 +687,12 @@ describe('layer3.planCompiledGraph', () => {
     // `debug.bytecode` is the hex-encoded script and is the consensus/deployment size.
     // X23 rewrote both walks to make fewer and shallower stack-variable writes - the dominant BCH-2026
     // operation-cost term - with no check removed. 1,897 before X23.
-    // X24 then unrolled the remaining deep writes, trading emitted bytes for executed instructions. The
-    // controller SHRANK 1,504 -> 1,486: the outliner shares the repeated 3-op runs better than it shared the
-    // 26-byte counted loop. Its evaluated cost fell 893,411 -> 792,035 (-11.3%).
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_486);
-    // 7,025 before X7; the result-cursor exhaustion assertion costs 8 bytes. 7,033 before X23. X24 grew it
-    // 4,501 -> 4,634 (+3.0%) while its evaluated cost fell 1,495,922 -> 1,234,227 (-17.5%). The deployed
-    // participant script is 9,268 bytes, still inside the ordinary 10,000-byte input limit.
+    // Size history, both directions. X7 added the result-cursor exhaustion assertion (+8). X23 cut the
+    // projection verifier 36%. X24 unrolled the deep writes, trading emitted bytes for executed instructions -
+    // it GREW the projection and SHRANK the controller. X27 then suffix-split the transcript in attest,
+    // shrinking the controller again. These pins are measured on the tree carrying BOTH X24 and X27, so they
+    // match neither branch's own figure.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
     expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_634);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),

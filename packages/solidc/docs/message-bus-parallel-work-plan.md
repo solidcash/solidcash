@@ -137,8 +137,8 @@ task-specific report, not in this table.
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
 | C3 | Eight-participant semantic capstone | C | C1,C2 | INTEGRATED | 5/5; saturates the PARTICIPANT bound only (8/24 invocations, depth 4/7) |
-| X25 | Re-measure C3 capacity run-to-completion, post-X23 | — | X23,C3 | TODO | C3's figure is the same abort artifact; true gap unknown |
-| A1 | Independent in-repository hostile review | C | C1,C2,C3 | TODO | Reviewer did not implement reviewed slice |
+| X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | LEASED | round 8; B owns the run-to-completion method |
+| A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | LEASED | round 8; A reviews C1+C3, B reviews C2 - neither reviews its own |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
@@ -165,13 +165,13 @@ task-specific report, not in this table.
 | X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C+A | X15 | INTEGRATED (scoped) | bare spelling admitted; a second key alternative or `msg.sender` key still needs `bindEntryKeyParameters` |
 | **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
-| **SEC-6** | Emission handler with a transfer/emit/token-container is still unbound | — | SEC-5 | **TODO (security)** | pre-existing; 0 binding sites before AND after SEC-5's fix |
+| **SEC-6** | Emission handler with a transfer/emit/token-container is still unbound | C | SEC-5 | **LEASED (security)** | round 8; build the forgery first, then fix or fail closed |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
 | X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
 | X23 | Reduce projection-verifier operation density | B | C1 | INTEGRATED | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
-| X24 | Unroll the constant-depth stack-write shuttle | — | X23 | TODO | Depth is a compile-time constant; ~22N emitted where 3N suffices - ~7x on EVERY variable write |
+| X24 | Unroll the constant-depth stack-write shuttle | C | X23 | LEASED | round 8, after SEC-6; ~7x on EVERY variable write in EVERY contract |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -654,6 +654,28 @@ This is a SEMANTIC gate, not a consensus or policy one. Mock limits remain relax
 
 The one remaining red is `LargeContractSplitting` (task X1). The ten `solidc` reds and the parallel-only
 `solidcash` reds are gone: they were a fixture-outpoint birthday collision, fixed in `72f07b07`.
+
+### 4.2g Round-8 dispatch, base `9bf3e5ea` - the review round
+
+| Worker | Task | Reviews |
+| --- | --- | --- |
+| A | **A1** hostile review | C1 (B's) and C3 (C's) - NOT its own C2 |
+| B | **A1** hostile review + X25 | C2 (A's) - NOT its own C1 |
+| C | **SEC-6**, then X24 | none - security takes priority over review |
+
+Plan section 8 requires the reviewer not be the implementer, so the capstone reviews are split by authorship: A
+built C2, B built C1, C built C3, and no worker reviews its own.
+
+Each review brief lists the specific claims the AUTHOR already scoped, because that is where a reviewer is most
+likely to find something - a claim someone was careful enough to bound is a claim that has a boundary worth
+testing. Both briefs state explicitly that **a clean review is a real result** and that manufacturing a finding
+to justify the round is not wanted.
+
+Worker B is also told that C2 was built BEFORE SEC-5 was fixed and deliberately uses a pointer table, so its
+hostile cases must be re-verified on the post-SEC-5 tree - a capstone that passed while the escape was live is
+exactly the thing to re-check.
+
+Worker C is corrected on its own C3 capacity figure before starting, so it does not carry the artifact forward.
 
 ### 4.2f Round-7 dispatch, base `c7ee8ea9`
 

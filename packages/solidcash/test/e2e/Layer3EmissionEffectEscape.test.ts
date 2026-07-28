@@ -44,11 +44,21 @@ import {
  * on the emit-carrying caller and both still reject on the effect-free one, which is what it should be -
  * msg.sender authenticates WHO called, never WITH WHAT
  *
- * The repair is a REFUSAL, not a restored binding. Keeping the clone behind OP_INVOKE does restore the binding
- * (0 -> 32 sites, measured) but silently drops the effect: the route reserves its event / transfer /
- * token-container slots by walking its OWN body, so the un-flattened form declares none and the honest graph
- * still settled with ZERO event slots and no event output. Giving the subroutine those slots needs a
- * per-call-site output index threaded from the route. Until that exists the shape is refused by name.
+ * SEC-6's repair was a REFUSAL, because the obvious alternative was worse: keeping the clone behind OP_INVOKE
+ * restores the binding but SILENTLY DROPS the effect - the route reserves its event / transfer slots by walking
+ * its OWN body, so the un-flattened form declared none and the honest graph still settled with ZERO event slots
+ * and no event output at all.
+ *
+ * X29 built the repair that refusal stood in for. The route reserves one effect FRAME per dispatch site on the
+ * handler's behalf and pushes the site ordinal as hidden context; the shared subroutine resolves its own event
+ * and transfer output indices against it, and settles them in its OP_INVOKE epilogue. So the emit-carrying row
+ * of the table above becomes:
+ *
+ *   emit-carrying | behind OP_INVOKE | 3 (== effect-free) | SETTLES | REJECTS @0 | REJECTS @0
+ *
+ * and the effect is asserted PRESENT rather than assumed: an honest graph whose event output is replaced by a
+ * plain funding output, or whose transfer output carries the wrong amount, must reject. A dropped effect
+ * settles both unchanged, which is the whole point of keeping those two cases in this file.
  *
  * SEMANTIC evidence only, on the named layer3-bch2026-semantic-relaxed-v1 profile.
  */

@@ -1787,6 +1787,9 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // bytes[k] with a literal index parses as a tuple-index op: a single byte (Solidity bytes1).
     if (node.tuple.type instanceof BytesType) {
+      if (node.tuple.type.bound !== undefined && (node.index < 0 || node.index >= node.tuple.type.bound)) {
+        throw new IndexOutOfBoundsError(node);
+      }
       node.type = new BytesType(1);
       return node;
     }
@@ -2688,16 +2691,24 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitArrayAccess(node: ArrayAccessNode): Node {
     node.array = this.visit(node.array);
     node.index = this.visit(node.index);
+    const rationalIndex = this.solidityImportCompat ? this.evalLiteralRational(node.index) : undefined;
+    const constantIndex = rationalIndex?.denominator === 1n ? rationalIndex.numerator : undefined;
 
-    // A constant negative index (`arr[-1]`) is out of bounds. (Negation is now a folded unary op, not a signed
-    // literal token, so check the folded value here.)
-    if (node.index instanceof IntLiteralNode && node.index.value < 0n) {
+    // Solidity array indices are uint256. Evaluate literal-only rational trees exactly, then reject signed or
+    // oversized integral values for every indexable type before applying any fixed-size bound.
+    if ((node.index instanceof IntLiteralNode && node.index.value < 0n)
+      || (this.solidityImportCompat && constantIndex !== undefined
+        && (constantIndex < 0n || constantIndex >= (1n << 256n)))) {
       throw new IndexOutOfBoundsError(node as any);
     }
 
     // bytes[k] / bytesN[k]: index a single byte (Solidity returns bytes1).
     if (node.array.type instanceof BytesType) {
       expectInt(node as any, node.index.type);
+      if (node.array.type.bound !== undefined && constantIndex !== undefined
+        && constantIndex >= BigInt(node.array.type.bound)) {
+        throw new IndexOutOfBoundsError(node as any);
+      }
       node.type = new BytesType(1);
       return node;
     }
@@ -2707,6 +2718,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     expectInt(node as any, node.index.type);
+    if (node.array.type.bound !== undefined && constantIndex !== undefined
+      && constantIndex >= BigInt(node.array.type.bound)) {
+      throw new IndexOutOfBoundsError(node as any);
+    }
     node.type = node.array.type.elementType;
     return node;
   }

@@ -4855,3 +4855,12 @@ The focused suite is **949/949**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **952/952**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 520, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Constant index-range loop: 4443 flat, NEG-ACCEPTED 520 -> 516 (-4)
+
+- Constant array and bytes indices now reject values that cannot be represented as Solidity `uint256`.
+- Fixed bytes and fixed arrays reject literal and folded constant indices outside their declared bounds.
+- Exact `BigInt` parsing prevents oversized direct indices from losing precision before validation.
+
+The focused suite is **956/956**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+516, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -349,6 +349,31 @@ describe('reserved built-in error names', () => {
   });
 });
 
+describe('constant index range validation', () => {
+  const cc = (body: string): string => compileString(
+    `contract C { function f() public pure { ${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it('rejects literal fixed-bytes indices at or beyond the byte width', () => {
+    expect(() => cc('bytes32 b; bytes1 x = b[64];')).toThrow(/out of bounds/i);
+  });
+
+  it('rejects uint256-overflowing constant indices', () => {
+    const huge = '888888888888888888888888888888888888888888888888888888888888888888888888888888888888';
+    expect(() => cc(`bytes memory b; bytes1 x = b[${huge}];`))
+      .toThrow(/cannot be represented as an unsigned integer/i);
+  });
+
+  it('checks folded constant indices against fixed array bounds', () => {
+    expect(() => cc('bytes[32] memory a; bytes memory x = a[8**90];')).toThrow(/out of bounds/i);
+  });
+
+  it('retains in-range fixed bytes and array indexing', () => {
+    expect(cc('bytes32 b; bytes1 x = b[31]; bytes[2] memory a; bytes memory y = a[1];')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

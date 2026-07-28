@@ -3784,6 +3784,10 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    const exactIndex = BigInt(ctx._index.text.replaceAll('_', ''));
+    if (this.solidityImportCompat && exactIndex >= (1n << 256n)) {
+      throw new ParseError('Index expression cannot be represented as an unsigned integer', Location.fromCtx(ctx));
+    }
     const index = parseInt(ctx._index.text, 10);
     const tupleIndexOp = new TupleIndexOpNode(tuple, index);
     tupleIndexOp.location = Location.fromCtx(ctx);

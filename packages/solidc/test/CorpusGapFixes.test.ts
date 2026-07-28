@@ -8025,6 +8025,36 @@ describe('Solidity address literal validation', () => {
   });
 });
 
+describe('Solidity fixed-bytes literal conversion widths', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects oversized hex-string casts while allowing exact and shorter byte strings', () => {
+    expect(() => cc('contract C { function f() public pure { bytes2(hex"123456"); } }'))
+      .toThrow(/not castable/);
+    expect(cc('contract C { bytes2 a = bytes2(hex"12");'
+      + ' bytes2 b = bytes2(hex"1234"); }')).toBe('C');
+  });
+
+  it('requires non-zero numeric hex literals to have the exact bytesN width', () => {
+    expect(() => cc('contract C { function f() public pure { bytes2(0xFF); } }'))
+      .toThrow(/not castable/);
+    expect(() => cc('contract C { function f() public pure { bytes2(0x10000); } }'))
+      .toThrow(/not castable/);
+    expect(cc('contract C { bytes2 value = bytes2(0x1234); }')).toBe('C');
+  });
+
+  it('rejects non-zero decimal literals and retains zero plus native conversions', () => {
+    expect(() => cc('contract C { function f() public pure { bytes2(1); } }'))
+      .toThrow(/not castable/);
+    expect(cc('contract C { bytes1 a = bytes1(0); bytes2 b = bytes2(0x00000); }')).toBe('C');
+    expect(compileString(
+      'contract C { bytes2 value = bytes2(1); }',
+      { solidityImportCompat: false },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

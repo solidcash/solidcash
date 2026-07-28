@@ -1574,6 +1574,11 @@ export class HexLiteralNode extends LiteralNode<Uint8Array> {
   // Exact Solidity hex-NUMBER value. Odd-nibble literals need this because their native SolidCash byte form
   // zero-extends the final nibble (`0x123` -> bytes 0x1203), while numeric context means integer 0x123.
   numericValue?: bigint;
+  // Number of hexadecimal digits in a numeric `0x...` source spelling (excluding separators). Solidity permits
+  // a non-zero numeric literal to cast to bytesN only when this width is exactly N bytes.
+  sourceHexDigits?: number;
+  // Distinguishes a source `hex"..."` literal from compiler-synthesized byte constants (e.g. a folded hash).
+  isHexStringLiteral = false;
   // Set when this literal is a placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a
   // runtime length): it type-checks as bytes so a NON-primary contract using it does not fail the file, but
   // codegen throws this message if a compiled contract actually reaches it. See visitHexLiteral.

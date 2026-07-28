@@ -5237,3 +5237,14 @@ The focused suite is **1077/1077**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1080/1080**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 371, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity fixed-bytes literal-width loop: 4443 flat, NEG-ACCEPTED 371 -> 367 (-4)
+
+- Solidity-compatible explicit bytesN conversions now reject oversized `hex"..."` literals, non-zero decimal
+  literals, and non-zero numeric hex literals whose source width does not exactly match the target.
+- Zero remains freely convertible and shorter hex-string literals retain right-padding behavior. Source hex strings
+  are distinguished from compiler-folded byte constants, preserving valid hash-to-selector casts; all 27 passing
+  literal bytesN-cast corpus sources still compile.
+
+The focused suite is **1083/1083**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+367, plus 275 multifile and 289 cmdline fixtures excluded.

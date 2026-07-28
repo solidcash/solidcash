@@ -1436,7 +1436,21 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitCast(node: CastNode): Node {
     node.expression = this.visit(node.expression);
-    if (this.solidityImportCompat && node.type instanceof AddressType
+    if (this.strictSolidityValidation && node.sourceCast
+      && node.type instanceof BytesType && node.type.bound !== undefined) {
+      if (node.expression instanceof IntLiteralNode && node.expression.value !== 0n) {
+        throw new CastTypeError(node);
+      }
+      if (node.expression instanceof HexLiteralNode) {
+        const invalidHexString = node.expression.isHexStringLiteral
+          && node.expression.value.length > node.type.bound;
+        const invalidHexNumber = node.expression.numericValue !== undefined
+          && node.expression.numericValue !== 0n
+          && node.expression.sourceHexDigits !== node.type.bound * 2;
+        if (invalidHexString || invalidHexNumber) throw new CastTypeError(node);
+      }
+    }
+    if (this.strictSolidityValidation && node.type instanceof AddressType
       && node.expression instanceof HexLiteralNode
       && node.expression.numericValue !== undefined
       && node.expression.numericValue >= (1n << 160n)) {

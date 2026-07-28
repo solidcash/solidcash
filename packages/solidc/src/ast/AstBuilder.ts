@@ -4587,6 +4587,7 @@ export default class AstBuilder
       throw new ParseError('Hex string must have even number of hex digits', Location.fromCtx(ctx));
     }
     const hexLiteral = new HexLiteralNode(hexToBin(hexContent));
+    hexLiteral.isHexStringLiteral = true;
     hexLiteral.location = Location.fromCtx(ctx);
     return hexLiteral;
   }
@@ -4736,6 +4737,7 @@ export default class AstBuilder
     const hexValue = hexToBin(hexContent);
     const hexLiteral = new HexLiteralNode(hexValue);
     hexLiteral.numericValue = BigInt(`0x${hexContent.replace(/_/g, '')}`);
+    hexLiteral.sourceHexDigits = hexContent.length;
     hexLiteral.location = Location.fromCtx(ctx);
     return hexLiteral;
   }

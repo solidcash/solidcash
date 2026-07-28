@@ -11,7 +11,7 @@ import {
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
-  SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
+  SourceFileNode, TokenContainerMethodStatementNode, TransferStatementNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -279,6 +279,11 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
   'initial-v1-route-requires-public-visibility': 'declare the handler public',
   'result-route-requires-effect-free-handlers':
     'a returning handler cannot also carry an effect; split the return and the effect into two handlers',
+  'result-consuming-handler-requires-effect-free-body':
+    'a handler that consumes a call result cannot also emit an event, transfer satoshis or move a token '
+    + 'container: the route wrapper has to declare that effect\'s block slot, which flattens the handler into '
+    + 'the wrapper and leaves its returning edge with no slot to bind - move the effect into a second handler '
+    + 'that consumes no result, or drop the result and make the call a void tail call',
   'mixed-scalar-and-collection-route-not-enabled':
     'every batched handler must address a collection entry, or none may; split the scalar-only handlers out',
 };
@@ -456,6 +461,16 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       && (graphTailStatement || graphResultStatement
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
+    // X22. A physical effect written directly in the handler body - an event NFT, a satoshi transfer or a token
+    // container operation - reserves a slot in the ROUTE's block layout, and only the flattened form declares
+    // it. InlineStoragePointerCalls therefore inlines such a graph clone into __scb1 instead of keeping it
+    // behind OP_INVOKE (keepsGraphEmissionBinding). The same three node kinds are what that predicate tests, so
+    // this is the exact set that gets flattened.
+    let directPhysicalEffect = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
+        || node instanceof TokenContainerMethodStatementNode) directPhysicalEffect = true;
+    });
     const keyWitnesses: {
       routeInput: string;
       inputIndex: number;
@@ -671,6 +686,14 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       reason = 'direct-versus-batch-introspection-divergence';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
+    // X22. Consuming a call result while carrying one of those effects is the shape that gets flattened WITH a
+    // returning edge in it: the edge is generated with __scb1 as the current function, finds no physical return
+    // slot, and code generation aborted with the internal `Unbound return call in __scb1; graph=undefined` -
+    // no named refusal and no diagnostic-channel entry. Refuse it here by name instead. Not admissible while
+    // flattening is what the effect's block slot requires: the flattened edge has no emission frame to bind to,
+    // which is the same reason the void effect-carrying clones are unsound to flatten (tracked separately).
+    } else if (!reason && graphTailCallEligible && graphResultStatement && directPhysicalEffect) {
+      reason = 'result-consuming-handler-requires-effect-free-body';
     } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (!reason && (footprint.unknown

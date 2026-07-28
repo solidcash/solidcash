@@ -735,8 +735,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
  * Why C1 is a tree with one returning leaf rather than one router fanning out to everything.
  *
  * These four shapes are refused today. They are pinned as the boundary the capstone was designed around, not as
- * desired behavior. Three are named refusals - two carry a remedy in the artifact diagnostic, one is a compiler
- * error naming the handler. The fourth is a GAP: an internal code-generation error with no named refusal.
+ * desired behavior. Three carry a remedy in the artifact diagnostic; the fourth is a compiler error naming the
+ * handler. The third was a GAP when this block was written - an internal code-generation error with no named
+ * refusal - and was closed as board task X22.
  */
 describe('C1 admissibility boundaries the composition was shaped around', () => {
   const boundaryOptions = {
@@ -788,10 +789,12 @@ contract C1VaultEmitting() {
     expect(message).toContain('split the return and the effect into two handlers');
   });
 
-  it('GAP: a handler that CONSUMES a result and carries an effect fails with an internal error', () => {
-    // Unlike the two boundaries above, this shape produces no named refusal and no diagnostic channel entry:
-    // code generation throws its own internal message. Reported, not endorsed.
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+  it('BOUNDARY: a handler that CONSUMES a result and carries an effect is refused by name', () => {
+    // Was the fourth entry in this block and the only GAP: code generation threw its own internal
+    // `Unbound return call in __scb1; graph=undefined` with no named refusal and no diagnostic channel entry.
+    // Closed as board task X22 - route synthesis now names the handler and the reason before code generation.
+    // Pinned tests for the refusal and its controls live in solidc/test/HiddenBatchAbsenceDiagnostic.test.ts.
+    const source = `pragma solidcash >=0.8.0;
 interface IC1Vault { function deposit(bigint amount) returns (bigint); }
 contract C1AccrueEmitting(address vault) {
   bigint collateral;
@@ -802,7 +805,12 @@ contract C1AccrueEmitting(address vault) {
     emit Accrued(shares);
     require(shares >= 0);
   }
-}`, boundaryOptions)).toThrow(/Unbound return call in __scb1/);
+}`;
+    expect(() => compileString(source, boundaryOptions)).not.toThrow();
+    const message = rejectionOf(source);
+    expect(message).toContain("'accrue': result-consuming-handler-requires-effect-free-body");
+    // This is why the event NFT is emitted by the Router and the Accrue participant is effect-free.
+    expect(message).toContain('move the effect into a second handler that consumes no result');
   });
 
   it('BOUNDARY: a handler may not consume a result alongside any second edge', () => {

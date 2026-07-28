@@ -121,3 +121,118 @@ contract X15NoEntry() {
     expect(absenceDiagnostics(source, graph)).toHaveLength(0);
   });
 });
+
+/**
+ * X22 - the same family as X15, on a shape X15's fix did not reach.
+ *
+ * A handler that CONSUMES a call result and also carries a physical effect of its own reached code generation
+ * and aborted there with the internal `Unbound return call in __scb1; graph=undefined`: no named refusal, no
+ * `hiddenBatch.handlers` row and no diagnostic-channel entry. The cause is upstream of code generation - the
+ * effect reserves a slot in the ROUTE's block layout, so InlineStoragePointerCalls flattens the graph clone
+ * into `__scb1` instead of keeping it behind OP_INVOKE, and the returning edge inside the flattened body then
+ * has no physical return slot to bind. Route synthesis now refuses the shape by name.
+ *
+ * Every case below is paired with a control that differs in exactly ONE field - the effect, or whether the
+ * result is consumed - and the control is admitted. That is what makes the refusal a property of the
+ * combination rather than of either half.
+ */
+describe('X22 a result-consuming handler that carries an effect is refused by name', () => {
+  const REASON = 'result-consuming-handler-requires-effect-free-body';
+  const vault = (body: string): string => `pragma solidcash >=0.8.0;
+interface IX22Vault { function deposit(bigint amount) returns (bigint); }
+interface IX22Sink { function ping(bigint amount); }
+contract X22Accrue(address vault, address sink, bytes25 payee) {
+  bigint collateral;
+  event Accrued(bigint shares);
+${body}
+}`;
+
+  const resultAndEmit = vault(`  function accrue(bigint amount) public {
+    bigint shares = IX22Vault(vault).deposit(amount);
+    this.collateral = this.collateral + shares;
+    emit Accrued(shares);
+    require(shares >= 0);
+  }`);
+
+  it('does not throw the internal code-generation sentinel', () => {
+    expect(() => compileString(resultAndEmit, graph)).not.toThrow();
+    expect(() => compileString(resultAndEmit, graph)).not.toThrow(/Unbound return call/);
+  });
+
+  it('names the refused handler and the reason', () => {
+    expect(compileString(resultAndEmit, graph).hiddenBatch).toBeUndefined();
+    expect(absenceDiagnostics(resultAndEmit, graph)[0].message).toContain(`'accrue': ${REASON}`);
+  });
+
+  it('tells the user what to do instead', () => {
+    expect(absenceDiagnostics(resultAndEmit, graph)[0].message)
+      .toContain('move the effect into a second handler that consumes no result');
+  });
+
+  it('CONTROL: the same handler without the emit is admitted', () => {
+    const source = vault(`  function accrue(bigint amount) public {
+    bigint shares = IX22Vault(vault).deposit(amount);
+    this.collateral = this.collateral + shares;
+    require(shares >= 0);
+  }`);
+    expect(compileString(source, graph).hiddenBatch?.handlers
+      .find((handler) => handler.name === 'accrue')?.eligible).toBe(true);
+    expect(absenceDiagnostics(source, graph)).toHaveLength(0);
+  });
+
+  it('CONTROL: the same emit over a VOID edge - no result consumed - is admitted', () => {
+    const source = vault(`  function accrue(bigint amount) public {
+    this.collateral = this.collateral + amount;
+    IX22Sink(sink).ping(amount);
+    emit Accrued(amount);
+    require(true);
+  }`);
+    expect(compileString(source, graph).hiddenBatch?.handlers
+      .find((handler) => handler.name === 'accrue')?.eligible).toBe(true);
+    expect(absenceDiagnostics(source, graph)).toHaveLength(0);
+  });
+
+  it('refuses a satoshi transfer alongside a consumed result, by the same name', () => {
+    const source = vault(`  function accrue(bigint amount) public {
+    bigint shares = IX22Vault(vault).deposit(amount);
+    this.collateral = this.collateral + shares;
+    this.transfer(payee, 1000);
+    require(shares >= 0);
+  }`);
+    expect(() => compileString(source, graph)).not.toThrow();
+    expect(absenceDiagnostics(source, graph)[0].message).toContain(`'accrue': ${REASON}`);
+  });
+
+  /** The rejection must reach the user through `hiddenBatch.handlers` when a sibling still routes. */
+  it('publishes the reason per handler when another handler survives', () => {
+    const source = vault(`  function accrue(bigint amount) public {
+    bigint shares = IX22Vault(vault).deposit(amount);
+    this.collateral = this.collateral + shares;
+    emit Accrued(shares);
+    require(shares >= 0);
+  }
+  function bump(bigint amount) public { this.collateral = this.collateral + amount; require(amount >= 0); }`);
+    const artifact = compileString(source, graph);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'accrue'))
+      .toMatchObject({ eligible: false, rejectionReason: REASON });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bump')?.eligible).toBe(true);
+    expect(absenceDiagnostics(source, graph)).toHaveLength(0);
+  });
+
+  /**
+   * An emit reached through an internal helper is NOT this shape: the clone keeps its OP_INVOKE frame, so the
+   * route never flattens it and the older uniform-event reason is the accurate one. Pinned so the new refusal
+   * is not silently widened onto it.
+   */
+  it('leaves the indirect-emit shape on its existing reason', () => {
+    const source = vault(`  function _log(bigint shares) internal { emit Accrued(shares); }
+  function accrue(bigint amount) public {
+    bigint shares = IX22Vault(vault).deposit(amount);
+    this.collateral = this.collateral + shares;
+    _log(shares);
+    require(shares >= 0);
+  }`);
+    expect(absenceDiagnostics(source, graph)[0].message)
+      .toContain("'accrue': event-route-requires-uniform-events-and-at-most-one-value-transfer");
+  });
+});

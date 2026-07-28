@@ -8942,6 +8942,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     });
     const sites = Math.max(0, ...siteCounts.values());
     if (sites === 0) return;
+    // Fail closed if the route could reach a handler more often than it has dispatch sites. That happens only
+    // under the LOOP parser (`for (row = 0; row < rowCount; ..)`), where one syntactic call site serves every
+    // row: two rows would then share one frame, two emits would verify against ONE output, and equal blobs
+    // would settle with an event missing - a partial silent drop rather than a rejection. Unreachable today
+    // (an emit or a transfer forces `eventMode`/`valueEffectMode`, which unroll the parser to one site per row)
+    // and asserted rather than assumed so a future parser change cannot reintroduce the drop quietly.
+    for (const [name, count] of siteCounts) {
+      if (count >= (route.hiddenBatchMaximumRows ?? count)) continue;
+      throw new GraphEmissionEffectError(
+        contract.functions.find((fn) => fn.name === name) ?? route,
+        name.replace(/^__scb_(graph|resource|handler|array)_/, ''),
+        'an effect on a route with fewer dispatch sites than rows',
+      );
+    }
     // Base 0, and the route's OWN effect slots are shared rather than added to. A route reaches exactly one
     // handler per row, and the unrolled parser gives row `s` the emit/transfer indices [s*width, s*width+width)
     // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one

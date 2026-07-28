@@ -136,7 +136,7 @@ task-specific report, not in this table.
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
-| C3 | Eight-participant semantic capstone | Main | C1,C2 | TODO | Correctness, not deployability |
+| C3 | Eight-participant semantic capstone | C | C1,C2 | LEASED | round 7; expected NOT to fit ordinary capacity - measure, do not treat as failure |
 | A1 | Independent in-repository hostile review | C | C1,C2,C3 | TODO | Reviewer did not implement reviewed slice |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
@@ -163,11 +163,11 @@ task-specific report, not in this table.
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | INTEGRATED | REFUSED with a named reason and a remedy; silence ended |
 | X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C | X15 | INTEGRATED (partial) | direct route converged; bus-route route-synthesis still differs - `compiler.ts:469`, A's lease |
-| **SEC-5** | **Pointer-table caller stops binding its own emission rows** | — | C2 | **TODO (security)** | **LIVE FORGERY**; triggered by merely DECLARING a returning handler |
+| **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **LEASED (security)** | round 7; characterization cells must invert on repair |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
 | X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
-| X23 | Reduce projection-verifier operation density | — | C1 | TODO | The ONLY thing keeping C1 from ordinary capacity, by 0.0095% |
+| X23 | Reduce projection-verifier operation density | B | C1 | LEASED | round 7; proof is C1's own capacity measurement moving under budget |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -521,6 +521,24 @@ This is a SEMANTIC gate, not a consensus or policy one. Mock limits remain relax
 
 The one remaining red is `LargeContractSplitting` (task X1). The ten `solidc` reds and the parallel-only
 `solidcash` reds are gone: they were a fixture-outpoint birthday collision, fixed in `72f07b07`.
+
+### 4.2f Round-7 dispatch, base `c7ee8ea9`
+
+| Worker | Task | Lease |
+| --- | --- | --- |
+| A | **SEC-5** - fix the emission-binding escape it found | `compiler.ts` + `artifact.ts`; also X19's remaining half at `compiler.ts:469` |
+| B | **X23** - reduce projection-verifier density | `packages/solidcash/src/**` |
+| C | **C3** - the eight-participant capstone | none; a capstone should need no source change |
+
+Each brief carries the constraints the OTHER workers measured, so a capstone cannot quietly assume a property
+that does not hold and a fix cannot rediscover a settled fact. C3's brief states in advance that it will NOT fit
+ordinary capacity and that this is expected rather than a failure, so the worker measures the figure instead of
+treating it as a defect - and it warns that SEC-5 is live and unfixed, so C3 must not build a claim that
+silently depends on emission binding holding for a pointer table.
+
+B's brief carries one explicit prohibition: the `require(resultCursor == resultVector.length)` assertion closed
+a LIVE root-result forgery, so it may not be removed to save operations. An optimisation that weakens
+authentication is a rejection, not an optimisation.
 
 ### 4.2e Round-5 dispatch, base `97484fe1`
 

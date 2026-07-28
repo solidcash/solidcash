@@ -1320,6 +1320,15 @@ export class UsingForIncompatibleTargetError extends SolidCashError {
   }
 }
 
+export class UsingForPrivateFunctionError extends SolidCashError {
+  constructor(node: Node, functionName: string) {
+    super(
+      node,
+      `Function '${functionName}' is private and cannot be attached to a type outside its declaring library`,
+    );
+  }
+}
+
 export class GlobalUsingForNonUDVTError extends SolidCashError {
   constructor(node: Node, typeName: string) {
     super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);

@@ -5268,3 +5268,13 @@ The focused suite is **1085/1085**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1086/1086**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 363, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Private attached-library-function scope loop: 4443 flat, NEG-ACCEPTED 363 -> 362 (-1)
+
+- Lifted library-body using-for directives now retain their declaring-library scope.
+- Solidity-compatible directives reject private library functions attached from file or contract scope, while
+  attachment inside the declaring library remains valid. All 17 previously passing using-for fixtures still
+  compile.
+
+The focused suite is **1087/1087**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+362, plus 275 multifile and 289 cmdline fixtures excluded.

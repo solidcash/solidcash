@@ -174,6 +174,7 @@ import {
   UsingForUndefinedFunctionError,
   UsingForInvalidFunctionReferenceError,
   UsingForIncompatibleTargetError,
+  UsingForPrivateFunctionError,
   GlobalUsingForNonUDVTError,
   OperatorOverloadNonUDVTError,
   OperatorOverloadSignatureError,
@@ -8913,12 +8914,19 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (this.compilerOptions.solidityImportCompat && overloads.length !== 1) {
           throw new UsingForInvalidFunctionReferenceError(node, funcRef);
         }
+        const attachedFunction = overloads[0];
+        const declaringLibrary = funcRef.includes('.') ? funcRef.slice(0, funcRef.lastIndexOf('.')) : undefined;
+        if (this.compilerOptions.solidityImportCompat
+          && attachedFunction.modifiers.includes(FunctionModifier.PRIVATE)
+          && node.declaringLibraryName !== declaringLibrary) {
+          throw new UsingForPrivateFunctionError(node, funcRef);
+        }
 
         if (binding.operator) {
           // Operator overload binding - validate and register
-          this.registerOperatorOverload(node, typeKey, binding, overloads[0]);
+          this.registerOperatorOverload(node, typeKey, binding, attachedFunction);
         } else {
-          const firstParameter = overloads[0].parameters
+          const firstParameter = attachedFunction.parameters
             .find((parameter) => !parameter.name.startsWith('__internal__'));
           if (this.compilerOptions.solidityImportCompat && resolvedTargetType && firstParameter
             && !implicitlyCastable(resolvedTargetType, firstParameter.type)) {

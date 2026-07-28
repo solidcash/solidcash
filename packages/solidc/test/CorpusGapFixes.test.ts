@@ -8087,6 +8087,18 @@ describe('Solidity using-for declaration eligibility', () => {
     expect(cc('function id(uint256 x) pure returns (uint256) { return x; }'
       + ' contract C { using {id} for uint16; }')).toBe('C');
   });
+
+  it('only attaches private library functions inside their declaring library', () => {
+    expect(() => cc('library L { function f(uint x) private pure returns (uint) { return x; } }'
+      + ' using {L.f} for uint; contract C {}'))
+      .toThrow(/private.*outside its declaring library/);
+    expect(() => cc('library L { function f(uint x) private pure returns (uint) { return x; } }'
+      + ' contract C { using {L.f} for uint; }'))
+      .toThrow(/private.*outside its declaring library/);
+    expect(cc('library L { using {L.f} for uint;'
+      + ' function f(uint x) private pure returns (uint) { return x; }'
+      + ' function g(uint x) internal pure returns (uint) { return x.f(); } } contract C {}')).toBe('C');
+  });
 });
 
 describe('base-contract-qualified inherited state', () => {

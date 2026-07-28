@@ -1769,6 +1769,9 @@ export interface UsingForBinding {
 }
 
 export class UsingForDirectiveNode extends Node {
+  // Set when a library-body directive is lifted to file scope for semantic registration.
+  declaringLibraryName?: string;
+
   constructor(
     // "SafeMath" (Form 1: whole library) or undefined (Form 2: specific functions)
     public libraryName: string | undefined,

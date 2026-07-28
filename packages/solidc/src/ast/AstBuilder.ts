@@ -771,7 +771,9 @@ export default class AstBuilder
       // library's own functions, which become free functions; lift them to file scope so their member-call
       // bindings register and `address(x).functionCall(d)` inside a library function resolves.
       for (const uCtx of libCtx.usingForDirective_list()) {
-        usingForDirectives.push(this.visit(uCtx) as UsingForDirectiveNode);
+        const directive = this.visit(uCtx) as UsingForDirectiveNode;
+        directive.declaringLibraryName = libName;
+        usingForDirectives.push(directive);
       }
 
       declaredLibraryNames.push(libName);

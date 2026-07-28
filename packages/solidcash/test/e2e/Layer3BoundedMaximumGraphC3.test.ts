@@ -7,7 +7,8 @@ import { compileString } from 'solidc';
 import {
   Contract, MockNetworkProvider, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
 } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -169,17 +170,81 @@ contract C3Sink(bigint brand) {
  * 3.5 nonstandard consensus figure, because the mock feeds one integer to both the standard and nonstandard
  * knobs. Passing under 3 is conservative on that axis; failing under it would be inconclusive.
  */
+const ORDINARY_BUDGET_PER_BYTE = 800;
+
 const createOrdinaryCapacityProvider = (): MockNetworkProvider => new MockNetworkProvider({
   consensusLimits: {
     maximumInputBytes: 10_000,
     maximumStackItemBytes: 10_000,
     maximumTransactionBytes: 1_000_000,
     maximumNftCommitmentBytes: 128,
-    operationCostBudgetPerByte: 800,
+    operationCostBudgetPerByte: ORDINARY_BUDGET_PER_BYTE,
     hashDigestIterationsPerByte: 3,
   },
   policy: { enforceDust: false },
 });
+
+/**
+ * X25. Read the TRUE operation cost of every input of an ALREADY-BUILT transaction, by evaluating those exact
+ * bytes a second time against a relaxed density ceiling so evaluation runs to completion.
+ *
+ * Why this is needed at all: libauth checks the density limit after EVERY operation and aborts on the first
+ * excess, so a reported cost is always within one operation of the budget however much evaluation still had to
+ * do. Reading a near-miss off an aborted evaluation reads the budget back, not the cost.
+ *
+ * The control is exact. Only `operationCostBudgetPerByte` and the hash-iteration allowance move; every other
+ * consensus knob is the ordinary one, and the transaction is not rebuilt, so the same bytes and the same
+ * `densityControlLength` are measured at both ceilings. The ratio is always computed against the ORDINARY
+ * 800/byte budget.
+ */
+const RELAXED_BUDGET_LIMITS = {
+  maximumInputBytes: 10_000,
+  maximumStackItemBytes: 10_000,
+  maximumTransactionBytes: 1_000_000,
+  maximumNftCommitmentBytes: 128,
+  operationCostBudgetPerByte: 800_000,
+  hashDigestIterationsPerByte: 3_000,
+};
+
+interface InputCost {
+  input: number;
+  /** Unlocking bytecode length: what the density budget is computed from. */
+  bytes: number;
+  cost: number;
+  budget: number;
+  ratio: number;
+  instructions: number;
+  hashIterations: number;
+  signatureChecks: number;
+  arithmetic: number;
+  pushedBytes: number;
+}
+
+function measureRunToCompletion(built: BuiltC3): InputCost[] {
+  const transaction = built.builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
+  const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: RELAXED_BUDGET_LIMITS } as never);
+  return transaction.inputs.map((_input, input) => {
+    const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as any;
+    if (state.error !== undefined) {
+      throw new Error(`X25: relaxed-budget evaluation still failed at input ${input}: ${state.error}`);
+    }
+    const metrics = state.metrics;
+    const budget = metrics.densityControlLength * ORDINARY_BUDGET_PER_BYTE;
+    return {
+      input,
+      bytes: metrics.densityControlLength,
+      cost: metrics.operationCost,
+      budget,
+      ratio: metrics.operationCost / budget,
+      instructions: metrics.evaluatedInstructionCount,
+      hashIterations: metrics.hashDigestIterations,
+      signatureChecks: metrics.signatureCheckCount,
+      arithmetic: metrics.arithmeticCost,
+      pushedBytes: metrics.stackPushedBytes,
+    };
+  });
+}
 
 type Provider = ReturnType<typeof createLayer3SemanticTestProvider>;
 
@@ -1194,27 +1259,119 @@ describe('C3 capacity measurement', () => {
     const outcome = preflightOutcome(built);
     const broadcast = await built.provider.sendRawTransaction(built.transaction)
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    // The blocker is the graph projection proof, exactly as it was for C1: input 98 is the FIRST projection,
-    // whose unlocking bytecode is mostly the transcript blob and therefore buys a small density budget for a
-    // long verification loop.
-    expect(outcome).toContain('preflight failed at input 98');
+    // X25 CORRECTION. This test previously pinned the failure at input 98, the FIRST GRAPH PROJECTION, and
+    // read "70 operations, 0.001% over" off it. Both halves were stale: C3 was authored before X23 cut the
+    // projection verifier from 7,033 to 4,501 bytes, and post-X23 the projections all fit. The single input
+    // that still does not is the GRAPH ROOT CONTROLLER at the end of the transaction.
+    const controller = built.layout.controllerInput;
+    expect(controller).toBe(106);
+    expect(outcome).toContain(`preflight failed at input ${controller}`);
     expect(outcome).toContain('exceed the operation cost density limit');
-    expect(broadcast).toContain('error in evaluating input index 98');
+    expect(broadcast).toContain(`error in evaluating input index ${controller}`);
     const [, maximum, length, cost] = outcome.match(
       /Maximum operation cost: (\d+) \(density control length: (\d+)\).*following operation: (\d+)/,
     )!;
-    // Measured at this commit: budget 6,729,600 for an 8,412-byte projection input, overrun to 6,729,670 -
-    // 70 operations, 0.001% over. Two things follow, and both matter for the F phase:
-    //   1. the projection input is 8,412 bytes, UNDER the ordinary 10,000-byte input limit, so input size is
-    //      not the blocker for C3 any more than it was for C1;
-    //   2. C3 misses by LESS than C1 in absolute terms - 70 versus C1's recorded 626 - even though C3 is the
-    //      wider graph. The two are different compositions rather than a controlled pair, so this is an
-    //      observation, not a proven scaling law; the plausible reading is that the density budget is 800 per
-    //      unlocking byte and a wider graph carries a longer transcript, so widening buys budget at least as
-    //      fast as the extra participant frames spend it. Worth a controlled F1 measurement.
+    // Measured at this commit: budget 2,352,000 for a 2,940-byte controller input, reported cost 2,353,029.
+    // Read naively that is "1,029 operations, 0.04% over" - and that reading is WORTHLESS, for exactly the
+    // reason section 4.22 records: the density check runs after every operation and aborts on the first
+    // excess, so a reported cost is always within one operation of the budget however much work remained.
+    // The next test runs the same input to completion and reads the real figure.
     // Bands are asserted rather than the exact figures.
     expect(Number(length)).toBeLessThan(10_000);
     expect(Number(cost) - Number(maximum)).toBeGreaterThan(0);
-    expect(Number(cost) - Number(maximum)).toBeLessThan(Number(maximum) / 10_000);
+    expect(Number(cost) - Number(maximum)).toBeLessThan(Number(maximum) / 1_000);
+  }, 900_000);
+
+  it('MEASURED: X25 - the true run-to-completion cost of every C3 sidecar input', async () => {
+    const built = await buildC3('none', DEFAULT_ORDER, createOrdinaryCapacityProvider);
+    const costs = measureRunToCompletion(built);
+    const at = (input: number): InputCost => costs.find((row) => row.input === input)!;
+    const projections = built.layout.projectionInputs.map(at);
+    const controller = at(built.layout.controllerInput);
+
+    // Measured at this commit, run to completion, ratio against the ORDINARY 800/byte budget:
+    //
+    //   input          bytes   cost        budget      ratio
+    //   0    P0 Router  4,787  1,289,361   3,829,600   0.337
+    //   19   P1 Ledger  3,597  1,362,437   2,877,600   0.474
+    //   85   P2 Broker  3,155  1,206,131   2,524,000   0.478
+    //   87   P3 Escrow  3,126  1,191,226   2,500,800   0.476
+    //   89   P4 Oracle  3,224  1,163,193   2,579,200   0.451
+    //   92   P5 Settler 3,126  1,191,494   2,500,800   0.476
+    //   94   P6 Reporter 3,123 1,191,514   2,498,400   0.477
+    //   96   P7 Sink    2,905  1,176,051   2,324,000   0.506
+    //   98-105 projections 5,880 each, 3,202,905-3,242,314, budget 4,704,000, ratio 0.681-0.689
+    //   106  controller 2,940  2,889,555   2,352,000   1.2286   <- the ONLY input over budget
+    //
+    // So C3 does not fit by ONE input at 1.2286x. 18.6% has to come off the controller and nothing else.
+    // The projection input is 5,880 bytes, not the 8,412 this file used to record - that figure was measured
+    // before X23 shrank the verifier by 2,532 bytes, and 8,412 - 5,880 is exactly 2,532.
+    for (const projection of projections) {
+      expect(projection.bytes).toBe(5_880);
+      expect(projection.ratio).toBeGreaterThan(0.6);
+      expect(projection.ratio).toBeLessThan(0.8);
+    }
+    // The projection covering the RETURNING participant - the Oracle, at participant index 4 - costs exactly
+    // 325 instructions more than the other seven. C1 and C2 show the same 325 surcharge on their own
+    // returning row (17,584 against 17,259), in three independent compositions.
+    expect(projections.map((row) => row.instructions))
+      .toEqual([25_984, 25_984, 25_984, 25_984, 26_309, 25_984, 25_984, 25_984]);
+    for (const input of built.layout.participantInputs) {
+      expect(at(input).ratio).toBeLessThan(0.75);
+    }
+    expect(controller.ratio).toBeGreaterThan(1.1);
+    expect(controller.ratio).toBeLessThan(1.4);
+    expect(costs.filter((row) => row.ratio > 1).map((row) => row.input))
+      .toEqual([built.layout.controllerInput]);
+
+    // WHERE the controller's cost goes. Two terms only: 65.0% is instruction count (18,771 x 100) and 34.7%
+    // is `stackPushedBytes` (1,001,917 bytes pushed for a 1,329-byte transcript). Arithmetic and hashing are
+    // together under 0.2%. `attest` reads its fields with 160 `transcript.slice(a, b)` calls against the WHOLE
+    // blob, and a slice of an L-byte item pushes O(L) no matter how few bytes it extracts, which is what makes
+    // the pushed-bytes term grow with rows x transcript length rather than with transcript length alone.
+    expect(controller.instructions * 100 / controller.cost).toBeGreaterThan(0.6);
+    expect(controller.pushedBytes / controller.cost).toBeGreaterThan(0.25);
+    expect((controller.arithmetic + controller.hashIterations * 64) / controller.cost).toBeLessThan(0.01);
+
+    // What 18.6% could come off, costed against the measured split. None of these is implemented here.
+    //   - A destructive left-to-right transcript walk in `attest`, so each field is split off a SHRINKING
+    //     remainder instead of re-splitting the whole blob. `attest` issues 14 slices per participant and 6
+    //     per invocation - 160 for C3 - which is what makes the instruction count track 14P + 6N, and each
+    //     slice pushes O(transcript length) whatever it extracts. Halving the pushed-bytes term saves 500,958,
+    //     which is 17.3%: NOT enough alone, 1.3 points short.
+    //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs: 198,400, 6.9%. The constant
+    //     lives in SymbolTableTraversal.ts.
+    //   - X24, the constant-depth stack-write shuttle, against the 65.0% instruction term.
+    // The first two together are 24.2% and would bring the controller to about 0.93x. This is arithmetic on
+    // measured components, not a proven result.
+
+    // Scaling, against C1 and C2 measured with this identical harness at this same commit. C1 is 4/5 with a
+    // 1,141-byte transcript and 35 slots; C2 is 4/5 with a 743-byte transcript and 79 slots; C3 is 8/8 with
+    // 1,329 bytes and 108 slots. C1 reproduces section 4.22's table exactly - 0.4556/0.4514/0.4510/0.4567 and
+    // controller 0.7268 - which is what validates the harness.
+    //
+    // C3's authored reading, that "widening buys budget at least as fast as the extra participant frames spend
+    // it", is measured FALSE: from C1 to C3 the budget base grew 3.3% (projection) and 6.8% (controller) while
+    // the cost grew 56.2% and 80.6%.
+    //
+    // What the cost DOES track, from the three builds together:
+    //   1. The projection verifier is a pure function of participant and invocation count. C1 and C2 share
+    //      row counts, differ in composition and differ by 398 transcript bytes, and their projection inputs
+    //      evaluate to a byte-identical 17,259 instructions (17,584 for the returning participant's row in
+    //      both). C3, at 8/8, is 25,984. Transcript LENGTH does not enter.
+    //   2. The controller is that plus a scan of every transaction output, at 32 instructions per output:
+    //      10,035 at 35 slots, 11,443 at 79, 18,771 at 108. The two increments fit exactly - C1 to C2 is
+    //      44 slots and +1,408 instructions, and both C1 to C3 and C2 to C3 leave the same 6,400 for the
+    //      +4 participants and +3 invocations once the output term is removed.
+    // Participant and invocation count move together across these three builds, so they still cannot be
+    // separated from each other. Rows, bytes and slots now can be.
+    //
+    // That prices C3's own structural finding: 66 of its 108 slots are the Ledger's trailing region, held at
+    // BALANCED_TRAILING_CAPACITY = 64 for ONE chunk UTXO. At 32 instructions per output those 62 unused slots
+    // cost the controller 198,400 of its 2,889,555 - 6.9%, against the 18.6% that has to come off.
+    expect(built.plan.participants).toHaveLength(8);
+    expect(built.plan.invocations).toHaveLength(8);
+    expect(built.transcript.bytes.length).toBeGreaterThan(1_100);
+    expect(built.transcript.bytes.length).toBeLessThan(1_500);
   }, 900_000);
 });

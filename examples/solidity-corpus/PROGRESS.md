@@ -5176,3 +5176,13 @@ The focused suite is **1059/1059**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1063/1063**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 404, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity pragma-validation loop: 4443 flat, NEG-ACCEPTED 404 -> 394 (-10)
+
+- Solidity-compatible pragma processing now rejects missing, malformed, unsupported, duplicate, and conflicting
+  experimental feature selections while retaining `ABIEncoderV2`, `SMTChecker`, `solidity`, and test-mode pragmas.
+- Unknown pragma names are rejected instead of being silently ignored. A direct audit of all 361 previously passing
+  corpus sources using experimental or ABI-coder pragmas found no positive regressions.
+
+The focused suite is **1066/1066**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+394, plus 275 multifile and 289 cmdline fixtures excluded.

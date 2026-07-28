@@ -547,8 +547,29 @@ export default class AstBuilder
       }
     }
     let selectedAbiCoder: { version: 'v1' | 'v2'; legacy: boolean } | undefined;
+    const experimentalFeatures = new Set<string>();
     for (const pragma of ctx.pragmaDirective_list()) {
       const text = pragma.getText();
+      if (this.solidityImportCompat && text.startsWith('pragmaexperimental')) {
+        const feature = text.slice('pragmaexperimental'.length, -1);
+        const supported = new Set(['ABIEncoderV2', 'SMTChecker', 'solidity', '__test']);
+        if (!supported.has(feature)) {
+          throw new ParseError(
+            feature.length === 0
+              ? 'Experimental feature name is missing'
+              : `Unsupported experimental feature name '${feature}'`,
+            Location.fromCtx(pragma),
+          );
+        }
+        if (experimentalFeatures.has(feature)) {
+          throw new ParseError(`Duplicate experimental feature name '${feature}'`, Location.fromCtx(pragma));
+        }
+        if ((feature === 'solidity' || feature === '__test')
+          && [...experimentalFeatures].some((seen) => seen === 'solidity' || seen === '__test')) {
+          throw new ParseError('Only one experimental language mode can be selected', Location.fromCtx(pragma));
+        }
+        experimentalFeatures.add(feature);
+      }
       let selection: 'v1' | 'v2' | undefined;
       let legacy = false;
       if (text === 'pragmaexperimentalABIEncoderV2;') {
@@ -1200,9 +1221,17 @@ export default class AstBuilder
       }
     }
 
-    // solidityImportCompat: accept `pragma solidity <any>` and skip the version check (Solidity sources
-    // pin old versions like =0.5.17 that the live compiler can't satisfy).
-    if (this.solidityImportCompat) return;
+    // solidityImportCompat: accept `pragma solidity <any>` and known EVM compiler switches, but retain
+    // Solidity's rejection of misspelled/unknown pragma names.
+    if (this.solidityImportCompat) {
+      if (!ctx.pragmaName()) {
+        const name = ctx.Identifier(0)?.getText();
+        if (name !== 'abicoder' && name !== 'experimental') {
+          throw new ParseError(`Unknown pragma '${name}'`, Location.fromCtx(ctx));
+        }
+      }
+      return;
+    }
 
     // The tolerant grammar alt parses `pragma <ident> ...;` without a pragmaName. Allow the known EVM no-op
     // directives (abicoder / experimental); reject any other bare-identifier pragma as unsupported/typo'd.

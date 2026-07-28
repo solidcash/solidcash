@@ -7854,6 +7854,34 @@ describe('Solidity-only declaration syntax validation', () => {
   });
 });
 
+describe('Solidity pragma validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects missing, malformed, and unsupported experimental feature names', () => {
+    expect(() => cc('pragma experimental; contract C {}'))
+      .toThrow(/Experimental feature name is missing/);
+    expect(() => cc('pragma experimental unknown; contract C {}'))
+      .toThrow(/Unsupported experimental feature name/);
+    expect(() => cc('pragma experimental SMTChecker extra; contract C {}'))
+      .toThrow(/Unsupported experimental feature name/);
+  });
+
+  it('rejects duplicate or conflicting experimental language modes', () => {
+    expect(() => cc('pragma experimental __test; pragma experimental __test; contract C {}'))
+      .toThrow(/Duplicate experimental feature name/);
+    expect(() => cc('pragma experimental __test; pragma experimental solidity; contract C {}'))
+      .toThrow(/Only one experimental language mode/);
+  });
+
+  it('rejects unknown pragmas while retaining known no-op compiler switches', () => {
+    expect(() => cc('pragma thisdoesntexist; contract C {}')).toThrow(/Unknown pragma/);
+    expect(cc('pragma experimental SMTChecker; contract C {}')).toBe('C');
+    expect(cc('pragma experimental __test; contract C {}')).toBe('C');
+    expect(cc('pragma abicoder v2; pragma experimental ABIEncoderV2; contract C {}')).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

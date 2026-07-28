@@ -1019,8 +1019,11 @@ describe('C3 hostile cases', () => {
     expect(attacked.builder.outputs.length - control.builder.outputs.length).toBe(2);
     expect(attacked.layout.totalSlots).toBe(control.layout.totalSlots);
 
+    expect(attacked.layout.controllerInput).toBe(106);
     // The structural block-assembly gate fires first, before a single signature is taken: the injected
-    // block's token outputs sit outside every participant block. This is an SDK refusal, not a covenant one.
+    // block's token outputs sit outside every participant block. This is an SDK refusal, not a covenant one,
+    // so for THIS shape `preflightLayer3Transaction` never reaches the VM and never names an input. The
+    // following test isolates the covenant refusal by removing the SDK gate's objection.
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('carries a token outside every participant block (region ends at 98)');
     // And the covenant refuses it independently, at input 106 - the graph-root controller, whose
@@ -1041,6 +1044,7 @@ describe('C3 hostile cases', () => {
     const attacked = await buildC3('injection-burned');
     expect(attacked.builder.inputs.length - control.builder.inputs.length).toBe(2);
     expect(attacked.builder.outputs.length - control.builder.outputs.length).toBe(2);
+    expect(attacked.layout.controllerInput).toBe(106);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 106');
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
@@ -1064,6 +1068,7 @@ describe('C3 hostile cases', () => {
 
       // Input 98 is the FIRST graph projection proof, which walks the whole participant table and requires
       // each committed row's locking bytecode to be the one actually co-spent at that base.
+      expect(attacked.layout.projectionInputs[0]).toBe(98);
       const outcome = preflightOutcome(attacked);
       expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 98');
       const broadcast = await attacked.provider.sendRawTransaction(attacked.transaction)
@@ -1103,6 +1108,7 @@ describe('C3 hostile cases', () => {
 
     // Input 96 is the impersonated slot's OWN master route: the participant at that base refuses a table
     // whose row for it names somebody else as its owner.
+    expect(attacked.layout.participantInputs[7]).toBe(96);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 96');
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
@@ -1142,6 +1148,7 @@ describe('C3 hostile cases', () => {
 
     // Input 98 is the first graph projection proof: its depth dispatch has no branch for a depth-0 row that
     // is not invocation 0, so the second root has no caller frame to bind and the walk reverts.
+    expect(attacked.layout.projectionInputs[0]).toBe(98);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 98');
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
@@ -1200,9 +1207,11 @@ describe('C3 capacity measurement', () => {
     // 70 operations, 0.001% over. Two things follow, and both matter for the F phase:
     //   1. the projection input is 8,412 bytes, UNDER the ordinary 10,000-byte input limit, so input size is
     //      not the blocker for C3 any more than it was for C1;
-    //   2. C3 misses by LESS than C1 in absolute terms (70 versus C1's 626), because the density budget is
-    //      800 per unlocking byte and a wider graph carries a longer transcript, which buys budget faster
-    //      than the extra participant frames consume it.
+    //   2. C3 misses by LESS than C1 in absolute terms - 70 versus C1's recorded 626 - even though C3 is the
+    //      wider graph. The two are different compositions rather than a controlled pair, so this is an
+    //      observation, not a proven scaling law; the plausible reading is that the density budget is 800 per
+    //      unlocking byte and a wider graph carries a longer transcript, so widening buys budget at least as
+    //      fast as the extra participant frames spend it. Worth a controlled F1 measurement.
     // Bands are asserted rather than the exact figures.
     expect(Number(length)).toBeLessThan(10_000);
     expect(Number(cost) - Number(maximum)).toBeGreaterThan(0);

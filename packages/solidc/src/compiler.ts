@@ -80,7 +80,8 @@ import expandInheritance from './semantic/InheritanceExpansionTransformation.js'
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import {
-  AbstractContractInstantiationError, CircularContractReferenceError, UndefinedReferenceError,
+  AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
+  UndefinedReferenceError,
 } from './Errors.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
@@ -210,6 +211,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   if (mergedCompilerOptions.solidityImportCompat) {
     validateAbstractContractInstantiations(ast);
     validateFunctionNamespaceShadows(ast);
+    validateLibrarySelfExternalCalls(ast);
   }
 
   // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
@@ -607,6 +609,45 @@ function validateFunctionNamespaceShadows(ast: Ast): void {
       }
     };
     walk(contract);
+  }
+}
+
+// Solc validates every library body even when that helper is unreachable from the selected primary contract.
+// Catch `library L { using L for *; ... x.publicMember(); }` before dead-helper pruning removes the body.
+function validateLibrarySelfExternalCalls(ast: Ast): void {
+  const libraryFunctions = new Map(ast.freeFunctions
+    .filter((fn) => fn.isLibraryFunction && fn.name.includes('.'))
+    .map((fn) => [fn.name, fn]));
+  if (libraryFunctions.size === 0) return;
+
+  for (const fn of libraryFunctions.values()) {
+    const libraryName = fn.name.slice(0, fn.name.indexOf('.'));
+    const hasSelfWildcard = ast.usingForDirectives.some((directive) =>
+      directive.declaringLibraryName === libraryName
+      && directive.libraryName === libraryName
+      && directive.isWildcard);
+    if (!hasSelfWildcard) continue;
+    const visited = new WeakSet<Node>();
+    const walk = (node: Node): void => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      if (node instanceof FunctionCallNode && node.identifier.name.includes('.')) {
+        const methodName = node.identifier.name.slice(node.identifier.name.lastIndexOf('.') + 1);
+        const targetName = `${libraryName}.${methodName}`;
+        const target = libraryFunctions.get(targetName);
+        if (target && (target.modifiers.includes(FunctionModifier.PUBLIC)
+          || target.modifiers.includes(FunctionModifier.EXTERNAL))) {
+          throw new LibrarySelfExternalCallError(node, targetName);
+        }
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) walk(item);
+        }
+      }
+    };
+    walk(fn);
   }
 }
 

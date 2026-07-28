@@ -152,6 +152,7 @@ import {
   InvalidModifierCombinationError,
   DelegatecallSelfMutationError,
   InternalCallToExternalError,
+  LibrarySelfExternalCallError,
   NamedArgumentError,
   NonCompileTimeExpressionError,
   TypeDefinitionRedefinitionError,
@@ -6258,6 +6259,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private validateLibrarySelfExternalUsingCall(
+    fullFunctionName: string,
+    overloads: FunctionDefinitionNode[],
+    node: FunctionCallNode | MethodCallNode,
+  ): void {
+    if (!this.compilerOptions.solidityImportCompat || !this.currentFunction?.isLibraryFunction) return;
+    const declaringLibrary = this.currentFunction.name.includes('.')
+      ? this.currentFunction.name.slice(0, this.currentFunction.name.indexOf('.')) : undefined;
+    const targetLibrary = fullFunctionName.includes('.')
+      ? fullFunctionName.slice(0, fullFunctionName.indexOf('.')) : undefined;
+    if (declaringLibrary === targetLibrary && overloads.some((candidate) =>
+      candidate.modifiers.includes(FunctionModifier.PUBLIC)
+      || candidate.modifiers.includes(FunctionModifier.EXTERNAL))) {
+      throw new LibrarySelfExternalCallError(node, fullFunctionName);
+    }
+  }
+
   private isDeclaredErrorCall(callName: string): boolean {
     const [qualifier, errorName] = callName.includes('.') ? callName.split('.', 2) : [undefined, callName];
     return !!(qualifier
@@ -6499,6 +6517,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (match) {
               const funcOverloads = this.functionDefinitions.get(match.fullFunctionName);
               if (funcOverloads && funcOverloads.length > 0) {
+                this.validateLibrarySelfExternalUsingCall(match.fullFunctionName, funcOverloads, node);
                 const funcIdentifier = new IdentifierNode(match.fullFunctionName);
                 funcIdentifier.location = node.identifier.location;
                 const funcCall = new FunctionCallNode(funcIdentifier, [visitedVar, ...node.parameters]);
@@ -9238,6 +9257,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Look up the function
     const overloads = this.functionDefinitions.get(match.fullFunctionName);
     if (!overloads || overloads.length === 0) return undefined;
+    this.validateLibrarySelfExternalUsingCall(match.fullFunctionName, overloads, node);
 
     // Create FunctionCallNode: methodName(obj, ...params) -> FullName(obj, ...params)
     const identifier = new IdentifierNode(match.fullFunctionName);

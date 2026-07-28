@@ -9596,3 +9596,28 @@ describe('function declarations shadow contract namespaces', () => {
     ).contractName).toBe('B');
   });
 });
+
+describe('library self-external calls through using-for', () => {
+  it('rejects a public attached function called from its own library', () => {
+    expect(() => compileString(
+      'library L1 { using L1 for *;'
+        + ' function f() public pure returns (uint r) { return r.g(); }'
+        + ' function g(uint) public pure returns (uint) { return 2; } }'
+        + ' library L2 { using L1 for *;'
+        + ' function f() public pure returns (uint r) { return r.g(); }'
+        + ' function g(uint) public pure returns (uint) { return 2; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/Library cannot call its own function 'L1\.g' externally/);
+  });
+
+  it('accepts an internal self-call and a public attachment called from another library', () => {
+    expect(compileString(
+      'library L1 { using L1 for *;'
+        + ' function f() public pure returns (uint r) { return r.g(); }'
+        + ' function g(uint) internal pure returns (uint) { return 2; } }'
+        + ' library L2 { using L1 for *;'
+        + ' function f() public pure returns (uint r) { return r.g(); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('L2');
+  });
+});

@@ -5361,3 +5361,14 @@ The focused suite is **1099/1099**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1101/1101**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 347, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Library self-external using-for loop: 4443 flat, NEG-ACCEPTED 347 -> 346 (-1)
+
+- A library using itself as a wildcard extension can no longer invoke one of its own public/external entry points
+  through attached-member syntax; Solidity forbids that external self-delegatecall.
+- Source-unit validation runs before unreachable library helpers are pruned, while semantic binding validation
+  covers reachable typed calls. Internal self-calls and public attachments invoked from another library remain
+  valid.
+
+The focused suite is **1103/1103**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+346, plus 275 multifile and 289 cmdline fixtures excluded.

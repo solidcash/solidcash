@@ -6,6 +6,7 @@ import {
   ParameterNode,
   Node,
   FunctionCallNode,
+  MethodCallNode,
   IndirectCallNode,
   BinaryOpNode,
   UnaryOpNode,
@@ -864,6 +865,12 @@ export class InternalCallToExternalError extends SolidCashError {
   constructor(node: FunctionCallNode | FunctionCallStatementNode) {
     const name = node instanceof FunctionCallNode ? node.identifier.name : node.call.identifier.name;
     super(node, `Cannot call external function '${name}' from within another function`);
+  }
+}
+
+export class LibrarySelfExternalCallError extends SolidCashError {
+  constructor(node: FunctionCallNode | MethodCallNode, name: string) {
+    super(node, `Library cannot call its own function '${name}' externally`);
   }
 }
 

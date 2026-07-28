@@ -2,9 +2,9 @@ import {
   ArrayType, BytesType, FunctionType, MappingType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
-  AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionDefinitionNode,
-  FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode, StateAssignNode, TupleAssignmentNode,
-  ReturnNode, TupleIndexOpNode, VariableDefinitionNode, TryCatchNode,
+  AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionCallNode,
+  FunctionDefinitionNode, FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode,
+  StateAssignNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode, TryCatchNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -27,6 +27,7 @@ export default class ValidateDataLocations extends AstTraversal {
   private calldataLocals = new Set<string>();
   private initializedCalldataLocals = new Set<string>();
   private immutableStateNames = new Set<string>();
+  private functionDefinitions = new Map<string, FunctionDefinitionNode[]>();
 
   constructor(private solidityImportCompat = false) {
     super();
@@ -34,6 +35,15 @@ export default class ValidateDataLocations extends AstTraversal {
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.abiCoderVersion === 'v1') this.validateAbiV1Source(node);
+    for (const fn of [
+      ...node.freeFunctions,
+      ...node.contract.functions,
+      ...node.importedContracts.flatMap((contract) => contract.functions),
+    ]) {
+      const definitions = this.functionDefinitions.get(fn.name) ?? [];
+      definitions.push(fn);
+      this.functionDefinitions.set(fn.name, definitions);
+    }
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
     node.contract = this.visit(node.contract) as ContractNode;
@@ -264,6 +274,31 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node, 'Type too large for memory');
     }
     return super.visitAbiDecode(node);
+  }
+
+  visitFunctionCall(node: FunctionCallNode): Node {
+    // An explicit `this.f(memoryValue)` is an external ABI boundary in Solidity: the value is encoded into fresh
+    // calldata. SolidCash lowers that call to a direct subroutine and marks it with fromThisCall, but source-level
+    // location validation must retain the external-call conversion.
+    if (this.solidityImportCompat && !node.fromThisCall) {
+      const candidates = this.functionDefinitions.get(node.identifier.name)
+        ?.filter((candidate) => candidate.parameters.length === node.parameters.length) ?? [];
+      if (candidates.length === 1) {
+        const callee = candidates[0];
+        for (let index = 0; index < callee.parameters.length; index += 1) {
+          const expectedLocation = this.locations(callee.parameters[index].modifier)[0];
+          if (expectedLocation !== Modifier.CALLDATA) continue;
+          const actualLocation = this.sliceSourceLocation(node.parameters[index]);
+          if (actualLocation !== undefined && actualLocation !== Modifier.CALLDATA) {
+            throw new InvalidDataLocationError(
+              node.parameters[index],
+              `cannot pass ${actualLocation} reference to calldata parameter '${callee.parameters[index].name}'`,
+            );
+          }
+        }
+      }
+    }
+    return super.visitFunctionCall(node);
   }
 
   visitSlice(node: SliceNode): Node {

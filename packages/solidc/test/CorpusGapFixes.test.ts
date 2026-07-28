@@ -8961,6 +8961,25 @@ describe('ABI coder v1 type restrictions', () => {
   });
 });
 
+describe('calldata locations on attached library functions', () => {
+  it('rejects a memory receiver passed to a calldata first parameter', () => {
+    expect(() => compileString(
+      'library D { function f(bytes calldata) internal pure {} }'
+        + ' contract C { using D for bytes; function f(bytes memory x) public pure { x.f(); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/cannot pass memory reference to calldata parameter/);
+  });
+
+  it('accepts a calldata receiver and memory-taking attachment', () => {
+    expect(compileString(
+      'library D { function f(bytes calldata) internal pure {}'
+        + ' function g(bytes memory) internal pure {} }'
+        + ' contract C { using D for bytes; function f(bytes calldata x) external pure { x.f(); x.g(); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('SPDX source-unit identifiers', () => {
   it('rejects multiple line or block-comment identifiers', () => {
     const invalid = [

@@ -5351,3 +5351,13 @@ The focused suite is **1098/1098**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1099/1099**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 348, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Calldata attached-function compatibility loop: 4443 flat, NEG-ACCEPTED 348 -> 347 (-1)
+
+- Solidity-compatible qualified/internal calls now reject a memory or storage reference passed to a uniquely
+  resolved calldata parameter, covering attached library functions such as `bytesMemory.f()`.
+- Explicit external self-calls retain Solidity's ABI-boundary conversion from memory to calldata even though
+  SolidCash lowers them to direct subroutines. Calldata receivers and memory-taking attachments remain valid.
+
+The focused suite is **1101/1101**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+347, plus 275 multifile and 289 cmdline fixtures excluded.

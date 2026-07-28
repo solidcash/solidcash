@@ -8,7 +8,8 @@ import {
   Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
-import { randomUtxo } from '../../src/utils.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -27,15 +28,25 @@ import {
  * SEMANTIC evidence only, on the named `layer3-bch2026-semantic-relaxed-v1` profile: BCH-2026 opcodes,
  * introspection and the real 128-byte NFT commitment, relaxed capacity. Not consensus-fit, not policy-fit.
  *
- * One transaction composes four independently compiled participants:
+ * One transaction composes five independently compiled participants:
  *
- *   Router --transferFrom x2--> Token          (caller-authorized ERC-20, msg.sender == Router)
+ *   Router --transferFrom x2--> Token             (caller-authorized ERC-20, msg.sender == Router)
  *      |
- *      +---accrue--> Accrue --deposit--> Vault (Bento/Kashi share accounting, returns a share result)
+ *      +---accrue--> Accrue --deposit--> Vault    (Bento/Kashi share accounting, returns a share result)
+ *      |
+ *      +---notify--> Notifier                     (the event NFT and the satoshi effect)
  *
- * The Router additionally writes scalar state, emits an ordinary event NFT and moves satoshis out of its
- * container; the Vault publishes a return-event NFT; the Accrue post-state is a function of that authenticated
- * result. Every one of those is settled by one 35-slot transaction.
+ * The Router writes scalar state; the Vault publishes a return-event NFT; the Accrue post-state is a function
+ * of that authenticated result; the Notifier emits an ordinary event NFT and moves satoshis out of its
+ * container. Every one of those is settled by one 38-slot transaction.
+ *
+ * SEC-6 RESHAPE. The event and the satoshi effect used to sit on the ROUTER, which is also the participant
+ * making the outgoing calls. That is the shape SEC-6 names: a handler carrying an `emit` or a `transfer` has
+ * physical effects, so its graph clone is flattened out of OP_INVOKE into `__scb1` and its outgoing edges lose
+ * their emission binding - Worker C measured C1Router.settle at 0 binding sites for its three edges, and 4
+ * once the effects were deleted. They now live on a fifth participant, a LEAF the Router calls, which has no
+ * outgoing edge and therefore no emission row to lose. `SEMANTIC: no calling participant carries an
+ * owner-local physical slot` asserts the property structurally so the fixture cannot drift back into it.
  *
  * Scope of the continuation claim: the result-dependent continuation here is a result-dependent STATE
  * TRANSITION, not a result-dependent onward CALL. A handler that consumes a result may not carry a second edge
@@ -62,18 +73,17 @@ const CONTAINER_SATS = 5_000n;
 const ROUTER = `pragma solidcash >=0.8.0;
 interface IC1Token { function transferFrom(bytes20 from, bytes20 to, bigint amount); }
 interface IC1Accrue { function accrue(bigint amount); }
-contract C1Router(address token, address accrue) {
+interface IC1Notifier { function notify(bigint amount); }
+contract C1Router(address token, address accrue, address notifier) {
   bigint settled;
-  event Settled(bigint amount);
   function settle(
-    bytes20 from, bytes20 first, bytes20 second, bigint firstAmount, bigint secondAmount, bytes recipient
+    bytes20 from, bytes20 first, bytes20 second, bigint firstAmount, bigint secondAmount
   ) public {
     IC1Token(token).transferFrom(from, first, firstAmount);
     IC1Token(token).transferFrom(from, second, secondAmount);
     IC1Accrue(accrue).accrue(firstAmount + secondAmount);
+    IC1Notifier(notifier).notify(firstAmount + secondAmount);
     this.settled = this.settled + firstAmount + secondAmount;
-    emit Settled(firstAmount + secondAmount);
-    this.transfer(recipient, firstAmount);
     require(secondAmount > 0);
   }
 }`;
@@ -118,6 +128,28 @@ contract C1Vault() {
     this.base = this.base + shares;
     require(amount > 0);
     return shares;
+  }
+}`;
+
+/**
+ * SEC-6 reshape. The event and the satoshi effect used to live on the Router, which is also the participant
+ * making the outgoing calls - the shape whose graph clone is flattened out of OP_INVOKE, losing the emission
+ * binding on those calls. They live here instead, on a LEAF the Router calls: it makes no outgoing call, so
+ * it has no emission rows to lose.
+ *
+ * The Vault was tried first and is not a legal home. A returning handler may not carry an effect - the
+ * compiler refuses it by name (`result-route-requires-effect-free-handlers`), which is the boundary this file
+ * already records at the bottom. So the effects need a participant that neither calls out nor returns.
+ */
+const NOTIFIER = `pragma solidcash >=0.8.0;
+contract C1Notifier(bytes recipient) {
+  bigint total;
+  event Settled(bigint amount);
+  function notify(bigint amount) public {
+    this.total = this.total + amount;
+    emit Settled(amount);
+    this.transfer(recipient, 10);
+    require(amount > 0);
   }
 }`;
 
@@ -214,6 +246,7 @@ async function buildC1(
   };
 
   // Compile leaf-first: every caller pins its callee's instantiated locking bytecode as a constructor argument.
+  const recipient = Uint8Array.of(0x51);
   const vaultArtifact = compileString(VAULT, options);
   const vaultBase = new Contract(vaultArtifact, [], { provider });
   const vaultSetup = await setupStatefulUtxos(
@@ -233,9 +266,16 @@ async function buildC1(
   const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, {});
   const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
 
+  const notifierArtifact = compileString(NOTIFIER, options);
+  const notifierBase = new Contract(notifierArtifact, [recipient], { provider });
+  const notifierSetup = await setupStatefulUtxos(
+    provider, notifierBase, notifierArtifact.stateLayout!, { total: 0n },
+  );
+  const notifier = notifierBase.withCategory(hexToBin(notifierSetup.categoryId));
+
   const routerArtifact = compileString(ROUTER, options);
   const routerBase = new Contract(
-    routerArtifact, [token.lockingBytecode, accrue.lockingBytecode], { provider },
+    routerArtifact, [token.lockingBytecode, accrue.lockingBytecode, notifier.lockingBytecode], { provider },
   );
   const routerSetup = await setupStatefulUtxos(
     provider, routerBase, routerArtifact.stateLayout!, { settled: 0n },
@@ -245,27 +285,30 @@ async function buildC1(
   const from = hexToBin('31'.repeat(20));
   const first = hexToBin('32'.repeat(20));
   const second = hexToBin('33'.repeat(20));
-  const recipient = Uint8Array.of(0x51);
 
   const plan = layer3.planCompiledGraph([
     { artifact: routerArtifact, lockingBytecode: router.lockingBytecode },
     { artifact: tokenArtifact, lockingBytecode: token.lockingBytecode },
     { artifact: accrueArtifact, lockingBytecode: accrue.lockingBytecode },
     { artifact: vaultArtifact, lockingBytecode: vault.lockingBytecode },
+    { artifact: notifierArtifact, lockingBytecode: notifier.lockingBytecode },
   ], [
     {
       parent: null,
       callee: 0,
       function: 'settle',
-      args: [from, first, second, FIRST_AMOUNT, SECOND_AMOUNT, recipient],
+      args: [from, first, second, FIRST_AMOUNT, SECOND_AMOUNT],
     },
     { parent: 0, callee: 1, function: 'transferFrom', args: [from, first, FIRST_AMOUNT] },
     { parent: 0, callee: 1, function: 'transferFrom', args: [from, second, SECOND_AMOUNT] },
     { parent: 0, callee: 2, function: 'accrue', args: [TOTAL_AMOUNT] },
     { parent: 3, callee: 3, function: 'deposit', args: [TOTAL_AMOUNT] },
+    { parent: 0, callee: 4, function: 'notify', args: [TOTAL_AMOUNT] },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
-  const [routerBaseInput, tokenBaseInput, accrueBaseInput, vaultBaseInput] = layout.participantInputs;
+  const [
+    routerBaseInput, tokenBaseInput, accrueBaseInput, vaultBaseInput, notifierBaseInput,
+  ] = layout.participantInputs;
 
   // The share the Vault publishes, packed exactly as the route emits it, and the transcript that commits to it.
   const sharesResult = scriptToBytecode([bigIntToVmNumber(SHARES)]);
@@ -276,7 +319,7 @@ async function buildC1(
     : layout.returnOutputs;
   const transcript = layer3.finalizeCompiledGraph(
     plan, { 4: binToHex(sharesResult) }, layout.participantInputs, declaredReturnOutputs,
-    ['', '', '', binToHex(sharesResult)], layout.projectionInputs,
+    ['', '', '', binToHex(sharesResult), ''], layout.projectionInputs,
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -352,14 +395,16 @@ async function buildC1(
   await provider.addUtxo(getEntryNftAddress(token, tokenSetup.categoryId, 'allowance'), allowanceEntry);
 
   // ---- Funding ---------------------------------------------------------------------------------------
+  // The physical effects belong to the NOTIFIER after the SEC-6 reshape, so its block owns the satoshi
+  // container and the two output-only slots (transfer, event) that need paired funding inputs.
   const container = randomUtxo({ satoshis: CONTAINER_SATS });
-  await provider.addUtxo(getSatoshiContainerAddress(router, routerSetup.categoryId), container);
-  // The router block reserves 8 transfer slots and 8 event slots; only the first of each is reached.
-  const routerSlotFunding = Array.from({ length: 16 }, () => randomUtxo({ satoshis: 1000n }));
+  await provider.addUtxo(getSatoshiContainerAddress(notifier, notifierSetup.categoryId), container);
+  // The notifier's SCB1 route reserves 8 transfer and 8 event slots; only the first of each is reached.
+  const notifierSlotFunding = Array.from({ length: 16 }, () => randomUtxo({ satoshis: 1000n }));
   const returnFunding = randomUtxo({ satoshis: 1000n });
-  const projectionUtxos = Array.from({ length: 4 }, () => randomUtxo({ satoshis: 1000n }));
+  const projectionUtxos = Array.from({ length: 5 }, () => randomUtxo({ satoshis: 1000n }));
   const fee = randomUtxo({ satoshis: 500_000n });
-  for (const utxo of [...routerSlotFunding, returnFunding, fee]) await provider.addUtxo(p2pkh.address, utxo);
+  for (const utxo of [...notifierSlotFunding, returnFunding, fee]) await provider.addUtxo(p2pkh.address, utxo);
   for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
 
   // ---- Route witnesses -------------------------------------------------------------------------------
@@ -369,6 +414,7 @@ async function buildC1(
   const tokenRoute = routeUnlocker(token, tokenArtifact);
   const accrueRoute = routeUnlocker(accrue, accrueArtifact);
   const vaultRoute = routeUnlocker(vault, vaultArtifact);
+  const notifierRoute = routeUnlocker(notifier, notifierArtifact);
 
   const tokenRouteArgs = [
     ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
@@ -390,7 +436,7 @@ async function buildC1(
 
   // ---- Inputs ----------------------------------------------------------------------------------------
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
-  // Router block: [master, dataNft, satoshiContainer, 8 x transfer, 8 x event]
+  // Router block: [master, dataNft]. No physical slot at all - that is the SEC-6 property.
   tx.addInput(
     routerSetup.masterUtxo,
     routerRoute(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
@@ -399,8 +445,6 @@ async function buildC1(
     routerSetup.dataNftUtxos[0],
     createDataNftUnlocker(router, routerBaseInput, routerSetup.categoryId),
   );
-  tx.addInput(container, createSatoshiContainerUnlocker(router, routerBaseInput, routerSetup.categoryId));
-  routerSlotFunding.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
   // Token block: [master, 4 x entry]. Every entry is authorized by co-spending the token master.
   tx.addInput(tokenSetup.masterUtxo, tokenRoute(...tokenRouteArgs as any));
   journalOrder.forEach((routeSlot) => tx.addInput(entries[routeSlot], createEntryNftUnlocker(
@@ -425,6 +469,18 @@ async function buildC1(
     createDataNftUnlocker(vault, vaultBaseInput, vaultSetup.categoryId),
   );
   tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
+  // Notifier block: [master, dataNft, satoshiContainer, 8 x transfer, 8 x event] - every physical effect
+  // in the graph, and the only participant that carries one.
+  tx.addInput(
+    notifierSetup.masterUtxo,
+    notifierRoute(...layer3.compiledGraphRouteArgs(transcript, 4, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    notifierSetup.dataNftUtxos[0],
+    createDataNftUnlocker(notifier, notifierBaseInput, notifierSetup.categoryId),
+  );
+  tx.addInput(container, createSatoshiContainerUnlocker(notifier, notifierBaseInput, notifierSetup.categoryId));
+  notifierSlotFunding.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
   projectionUtxos.forEach((proof, participant) => tx.addInput(proof, projection.unlock.verify(
     transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
   )));
@@ -436,7 +492,7 @@ async function buildC1(
     bigIntToVmNumber(hostile === 'event-argument' ? TOTAL_AMOUNT + 1n : TOTAL_AMOUNT),
   ]));
   const eventAddress = getEventNftAddress(
-    router, routerSetup.categoryId, routerArtifact.events![0].signature,
+    notifier, notifierSetup.categoryId, notifierArtifact.events![0].signature,
   );
   tx.addOutput({
     to: router.tokenAddress,
@@ -459,26 +515,6 @@ async function buildC1(
       },
     },
   });
-  tx.addOutput({
-    to: getSatoshiContainerAddress(router, routerSetup.categoryId),
-    amount: CONTAINER_SATS - FIRST_AMOUNT,
-  });
-  // Reached transfer slot; the remaining seven stay unused.
-  tx.addOutput({
-    to: recipient,
-    amount: hostile === 'resource' ? FIRST_AMOUNT + 1n : FIRST_AMOUNT,
-  });
-  for (let slot = 4; slot <= 10; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
-  // Reached event slot; the remaining seven stay unused.
-  tx.addOutput({
-    to: hostile === 'event' ? router.tokenAddress : eventAddress,
-    amount: 1000n,
-    token: {
-      category: routerSetup.categoryId, amount: 0n,
-      nft: { capability: 'none', commitment: eventCommitment },
-    },
-  });
-  for (let slot = 12; slot <= 18; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
 
   tx.addOutput({
     to: token.tokenAddress,
@@ -570,6 +606,49 @@ async function buildC1(
     },
   });
 
+  // Notifier block, in published slot order: master, dataNft, satoshiContainer, 8 transfer, 8 event.
+  tx.addOutput({
+    to: notifier.tokenAddress,
+    amount: notifierSetup.masterUtxo.satoshis,
+    token: {
+      category: notifierSetup.categoryId, amount: 0n,
+      nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(notifier, notifierSetup.categoryId),
+    amount: notifierSetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: notifierSetup.categoryId, amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(
+          notifierArtifact.stateLayout!, { total: TOTAL_AMOUNT },
+        )[0],
+      },
+    },
+  });
+  tx.addOutput({
+    to: getSatoshiContainerAddress(notifier, notifierSetup.categoryId),
+    amount: CONTAINER_SATS - FIRST_AMOUNT,
+  });
+  // Reached transfer slot; the remaining seven stay unused.
+  tx.addOutput({
+    to: recipient,
+    amount: hostile === 'resource' ? FIRST_AMOUNT + 1n : FIRST_AMOUNT,
+  });
+  for (let slot = 0; slot < 7; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  // Reached event slot; the remaining seven stay unused.
+  tx.addOutput({
+    to: hostile === 'event' ? notifier.tokenAddress : eventAddress,
+    amount: 1000n,
+    token: {
+      category: notifierSetup.categoryId, amount: 0n,
+      nft: { capability: 'none', commitment: eventCommitment },
+    },
+  });
+  for (let slot = 0; slot < 7; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+
   projectionUtxos.forEach(() => tx.addOutput({ to: p2pkh.address, amount: 1000n }));
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -600,6 +679,11 @@ async function buildC1(
           label: 'vault.elastic/base',
           address: getDataNftAddress(vault, vaultSetup.categoryId),
           layout: vaultArtifact.stateLayout!,
+        },
+        {
+          label: 'notifier.total',
+          address: getDataNftAddress(notifier, notifierSetup.categoryId),
+          layout: notifierArtifact.stateLayout!,
         },
       ],
       balances: {
@@ -635,14 +719,17 @@ describe('C1 DeFi integrated semantic capstone', () => {
     const built = await buildC1();
 
     // The physical layout is a gapless concatenation of the four compiled blocks anchored at input 0.
-    expect(built.layout.participantInputs).toEqual([0, 19, 24, 26]);
-    expect(built.layout.projectionInputs).toEqual([29, 30, 31, 32]);
-    expect(built.layout.controllerInput).toBe(33);
-    expect(built.layout.totalSlots).toBe(35);
+    // Router [master, dataNft] = 2; Token [master, 4 entries] = 5; Accrue [master, dataNft] = 2;
+    // Vault [master, dataNft, returnEvent] = 3; Notifier [master, dataNft, container, 8 transfer,
+    // 8 event] = 19, the same slot reservation the Router used to carry before the SEC-6 reshape.
+    expect(built.layout.participantInputs).toEqual([0, 2, 7, 9, 12]);
+    expect(built.layout.projectionInputs).toEqual([31, 32, 33, 34, 35]);
+    expect(built.layout.controllerInput).toBe(36);
+    expect(built.layout.totalSlots).toBe(38);
     // The Vault is the only returning participant. Which slot of the Vault's block the SDK picks is its own
     // assembly choice, but the choice is NOT covenant-unbound: the transcript commits to it, and declaring a
     // different output of the same block is refused - see the 'return-position' row of the hostile matrix.
-    expect(built.layout.returnOutputs).toEqual([null, null, null, 28]);
+    expect(built.layout.returnOutputs).toEqual([null, null, null, 11, null]);
     // The planner records that the Accrue invocation depends on the Vault's result.
     expect(built.plan.invocations[3].resultDependencies).toEqual([4]);
     expect(built.plan.invocations[4].resultTypes).toEqual(['bigint']);
@@ -652,11 +739,13 @@ describe('C1 DeFi integrated semantic capstone', () => {
 
     // Every transition is read back off the chain, against numbers this test states independently of the
     // builder: 100 - 30 debited and split 10/20, allowance 50 - 30, Bento (12,9) -> (12+30, 9+22),
-    // Kashi collateral 5 + 22 - the SHARE the vault returned, not the amount that was deposited.
+    // Kashi collateral 5 + 22 - the SHARE the vault returned, not the amount that was deposited - and the
+    // notifier's own running total, the fifth participant the SEC-6 reshape added.
     const expectedScalars = [
       buildInitialStateCommitments(built.settled.scalars[0].layout, { settled: 30n })[0],
       buildInitialStateCommitments(built.settled.scalars[1].layout, { collateral: 27n })[0],
       buildInitialStateCommitments(built.settled.scalars[2].layout, { elastic: 42n, base: 31n })[0],
+      buildInitialStateCommitments(built.settled.scalars[3].layout, { total: 30n })[0],
     ];
     for (const [index, scalar] of built.settled.scalars.entries()) {
       const utxos = await built.provider.getUtxos(scalar.address);
@@ -686,20 +775,21 @@ describe('C1 DeFi integrated semantic capstone', () => {
   }, 180_000);
 
   // Each substitution is refused by the covenant that owns the substituted field: caller/allowance by the Token
-  // master route (19), result by the Vault master route (26), the result-dependent continuation by the Accrue
-  // master route (24), resource/event by the Router route (0). The one field the CONTROLLER owns is the
-  // return-event position: the Vault's block is inputs 26..28, so declaring 27 keeps the slot inside the block
-  // and any block-membership range check still passes - it is refused at the controller (33) because the
-  // transcript binds the declared slot to the committed result commitment.
+  // master route (2), the result-dependent continuation by the Accrue master route (7), and result plus the
+  // result by the Vault master route (9), and the three physical effects by the Notifier master route (12) -
+  // the effects moved there with the SEC-6 reshape and their refusing covenant moved with them. The one field
+  // the CONTROLLER owns is the return-event position: the Vault's block is inputs 9..11, so declaring 10 keeps
+  // the slot inside the block and any block-membership range check still passes - it is refused at the
+  // controller (36) because the transcript binds the declared slot to the committed result commitment.
   it.each([
-    { hostile: 'caller' as const, input: 19 },
-    { hostile: 'allowance' as const, input: 19 },
-    { hostile: 'result' as const, input: 26 },
-    { hostile: 'continuation' as const, input: 24 },
-    { hostile: 'resource' as const, input: 0 },
-    { hostile: 'event' as const, input: 0 },
-    { hostile: 'event-argument' as const, input: 0 },
-    { hostile: 'return-position' as const, input: 33 },
+    { hostile: 'caller' as const, input: 2 },
+    { hostile: 'allowance' as const, input: 2 },
+    { hostile: 'result' as const, input: 9 },
+    { hostile: 'continuation' as const, input: 7 },
+    { hostile: 'resource' as const, input: 12 },
+    { hostile: 'event' as const, input: 12 },
+    { hostile: 'event-argument' as const, input: 12 },
+    { hostile: 'return-position' as const, input: 36 },
   ])(
     'HOSTILE: substituting the $hostile field is rejected at input $input',
     async ({ hostile, input }) => {
@@ -721,10 +811,42 @@ describe('C1 DeFi integrated semantic capstone', () => {
     300_000,
   );
 
+  /**
+   * SEC-6 structural guard, so this fixture cannot drift back into the shape the compiler refuses.
+   *
+   * A handler keeps its graph clone behind OP_INVOKE - and with it the emission binding on its outgoing edges -
+   * only while it has no physical effect. `emit`, `transfer` and the token-container methods are exactly the
+   * three effects the compiler counts, and each of them is what makes the route wrapper reserve an owner-local
+   * `event` / `transfer` / `tcTransfer` slot. So the published block layout is an exact, SDK-visible proxy for
+   * the compiler-internal predicate: a participant with an outgoing edge and an owner-local physical slot is
+   * the forgeable shape. This asserts the property over the whole graph, not just over the Router.
+   */
+  it('SEMANTIC: no calling participant carries an owner-local physical slot', async () => {
+    const built = await buildC1();
+    const PHYSICAL = new Set(['event', 'transfer', 'tcTransfer']);
+    const callers = new Set(built.plan.invocations
+      .filter((invocation) => invocation.parent !== null)
+      .map((invocation) => built.plan.invocations[invocation.parent!].callee));
+    // The Router calls three times and the Accrue once, so both are callers; Token and Vault are leaves.
+    expect([...callers].sort((left, right) => left - right)).toEqual([0, 2]);
+    for (const participant of callers) {
+      const slots = built.plan.participants[participant].blockLayout!.slots
+        .filter((slot) => PHYSICAL.has(slot.kind));
+      expect(slots, `participant ${participant} declares physical slots ${JSON.stringify(slots)}`)
+        .toHaveLength(0);
+    }
+    // And the effects really are still in the graph - they moved to the Notifier, they were not deleted.
+    // Its route reserves 8 conditional slots of each kind; only the first of each is reached.
+    const notifierSlots = built.plan.participants[4].blockLayout!.slots
+      .filter((slot) => PHYSICAL.has(slot.kind));
+    expect(notifierSlots.filter((slot) => slot.kind === 'event')).toHaveLength(8);
+    expect(notifierSlots.filter((slot) => slot.kind === 'transfer')).toHaveLength(8);
+  }, 180_000);
+
   it('MEASURED: reports the honest input sizes on the relaxed semantic profile', async () => {
     const built = await buildC1();
-    // Measured at this commit: router 4,843 bytes, token 7,058. Both sit under the ordinary 10,000-byte input
-    // limit, so participant script size is NOT what keeps C1 off ordinary capacity - the next test names what is.
+    // Router 4,843 bytes and token 7,058 before the SEC-6 reshape; both stay well under the ordinary
+    // 10,000-byte input limit after it, and the Router can only have shrunk - it lost two physical effects.
     // The band is asserted rather than the exact figure so compiler work elsewhere does not falsely fail here.
     expect(built.routerInputBytes).toBeGreaterThan(1_000);
     expect(built.routerInputBytes).toBeLessThan(10_000);
@@ -748,9 +870,41 @@ describe('C1 DeFi integrated semantic capstone', () => {
     // a write to a stack variable at depth N costs ~22N instructions, because the compiler moves N items to
     // the altstack and back. Rewriting both covenants to make far fewer, far shallower variable writes -
     // without removing a single check - took input 29 to 2,074,606 (0.46x) and input 33 to 1,600,153 (0.73x).
+    // Those input indices are PRE-SEC-6-RESHAPE: the sidecars are now 31..35 and the controller 36, and the
+    // graph has five participants rather than four. The result is re-measured below rather than carried over.
     const built = await buildC1('none', createOrdinaryCapacityProvider);
     expect(preflightOutcome(built)).toBe('ACCEPTED');
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+
+    // Run every sidecar input to completion on a relaxed budget and report its ratio against the ORDINARY
+    // 800-per-byte budget, so "it fits" is a measured margin and not just an absence of rejection.
+    const transaction = built.builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
+    const vm = createVirtualMachineBch2026ForProvider({
+      consensusLimits: {
+        maximumInputBytes: 10_000,
+        maximumStackItemBytes: 10_000,
+        maximumTransactionBytes: 1_000_000,
+        maximumNftCommitmentBytes: 128,
+        operationCostBudgetPerByte: 800_000,
+        hashDigestIterationsPerByte: 3_000,
+      },
+    } as never);
+    const ratioAt = (input: number): number => {
+      const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as any;
+      expect(state.error, `input ${input} failed on the relaxed budget`).toBeUndefined();
+      return state.metrics.operationCost / (state.metrics.densityControlLength * 800);
+    };
+    // Measured post-reshape at this commit: projections 0.5231/0.5154/0.5151/0.5204/0.5127 and the controller
+    // 0.8057. Pre-reshape the four projections were 0.4556/0.4514/0.4510/0.4567 and the controller 0.7268, so
+    // the fifth participant costs about 7 points on each projection and 8 on the controller and the answer is
+    // still that it FITS. Bands are asserted rather than the exact figures so compiler work elsewhere does not
+    // falsely fail here; what the reshape has to preserve is that NOTHING crosses 1.0.
+    const projectionRatios = built.layout.projectionInputs.map(ratioAt);
+    const controllerRatio = ratioAt(built.layout.controllerInput);
+    for (const ratio of projectionRatios) expect(ratio).toBeLessThan(0.7);
+    expect(controllerRatio).toBeLessThan(1);
+    expect(controllerRatio).toBeGreaterThan(Math.max(...projectionRatios));
   }, 180_000);
 });
 

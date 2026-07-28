@@ -623,6 +623,23 @@ describe('Solidity pure free-function storage mutation', () => {
   });
 });
 
+describe('Solidity free-function literal overload ambiguity', () => {
+  it('rejects an integer literal accepted by multiple bounded overloads', () => {
+    expect(() => compileString(
+      'function g(uint8) {} function g(uint16) {} function t() { g(2); }',
+      { solidityImportCompat: true },
+    )).toThrow(/No unique declaration.*overloaded function 'g'/i);
+  });
+
+  it('retains an explicit cast which uniquely selects an overload', () => {
+    expect(compileString(
+      'function g(uint8) {} function g(uint16) {}'
+      + ' contract C { function t() public { g(uint8(2)); require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

@@ -774,6 +774,12 @@ export default class AstBuilder
       );
       const interfacesByName = new Map(interfaceDefinitions.map((iface) => [iface.name, iface]));
       const freeFunctionNames = new Set(freeFunctions.map((functionDefinition) => functionDefinition.name));
+      const freeFunctionOverloads = new Map<string, FunctionDefinitionNode[]>();
+      for (const functionDefinition of freeFunctions) {
+        const overloads = freeFunctionOverloads.get(functionDefinition.name) ?? [];
+        overloads.push(functionDefinition);
+        freeFunctionOverloads.set(functionDefinition.name, overloads);
+      }
       for (const fn of freeFunctions) {
         const storageParameters = new Set(
           fn.parameters
@@ -797,6 +803,21 @@ export default class AstBuilder
             );
           }
           if (node instanceof FunctionCallNode) {
+            const overloads = freeFunctionOverloads.get(node.identifier.name) ?? [];
+            if (overloads.length > 1 && node.parameters.every((parameter) => parameter instanceof IntLiteralNode)) {
+              const matches = overloads.filter((candidate) =>
+                candidate.parameters.length === node.parameters.length
+                && candidate.parameters.every((parameter, index) =>
+                  parameter.type instanceof IntType
+                  && (node.parameters[index] as IntLiteralNode).value >= parameter.type.minValue
+                  && (node.parameters[index] as IntLiteralNode).value <= parameter.type.maxValue));
+              if (matches.length > 1) {
+                throw new ParseError(
+                  `No unique declaration found for overloaded function '${node.identifier.name}'`,
+                  node.location,
+                );
+              }
+            }
             if (node.callOptions && freeFunctionNames.has(node.identifier.name)) {
               throw new ParseError(
                 `Function call options can only be set on external function calls or contract creations`,

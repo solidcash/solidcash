@@ -4967,3 +4967,12 @@ The focused suite is **987/987**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **989/989**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 494, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Free-function literal-overload loop: 4443 flat, NEG-ACCEPTED 494 -> 493 (-1)
+
+- Literal-only calls to overloaded file/library free functions now reject when multiple bounded integer parameter
+  ranges accept every argument.
+- Explicit casts continue to select a unique overload through normal semantic resolution.
+
+The focused suite is **991/991**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+493, plus 275 multifile and 289 cmdline fixtures excluded.

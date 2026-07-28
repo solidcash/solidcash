@@ -148,6 +148,27 @@ implementable or measurable claim has one owner and prevents process gates from 
 No stale varying-selector investigation remains: its two-element persisted dispatch milestone is committed at
 `d941b139`. Process rows do not block semantic implementation completion, but they continue to block graduation.
 
+## 8.5 Rows promoted to PROVEN by the parallel-work effort
+
+Recorded by the integration owner at plan commit `16979e0e`, with all six packages green (solidc 2,434/0,
+solidcash 3,921/0). Each row was attacked by a worker that did not implement it, every finding was fixed and
+integrated, and the regressions were re-run on the exact commit.
+
+- **G1**, compiler-bounded runtime-sized pointer table. Reviewer found the guard-derived bound escapable in
+  three shapes, one confirmed on the VM at 9 iterations against a proven ceiling of 3. Closed, including a
+  `TupleAssignmentNode` blind spot inherited by a second pass.
+- **S1**, mapping insertion/deletion journal transitions. Reviewer found the cardinality pin suppressed whenever
+  a collection owns more than one entry slot - and a READ creates a slot - so a node for a key never written was
+  accepted and then readable as genuine state by an ordinary `require(m[k] == v)`. Closed.
+- **E1**, nested/transitive heterogeneous result graph. Reviewer found the `possibleTargets` widening and the
+  never-exhausted projection result cursor. Both closed by X7, which proved to be a LIVE root-result forgery: a
+  returning root has no parent and no consumer route, so the projection slice was its only binding.
+- **C2**, heterogeneous A-to-B-to-A capstone. Clean review, 12 added cases all rejecting, re-verified twice
+  after SEC-5 both empirically and structurally.
+
+Everything else this effort produced remains INTEGRATED, CHANGES or TODO. `INTEGRATED` means verified and
+merged, not adversarially reviewed.
+
 ## 9. Historical implementation order
 
 1. Reuse the compiler's existing stateful handler lowering as the transcript handler instead of

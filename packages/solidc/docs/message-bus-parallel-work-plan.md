@@ -122,20 +122,20 @@ task-specific report, not in this table.
 | --- | --- | --- | --- | --- | --- |
 | P0.1 | Reconcile plan tasks with atomic ledger claims | Main | — | PROVEN | Atomic ledger rows and §8 task map |
 | P0.2 | Record relaxed BCH-2026 semantic-test profile | Main | — | PROVEN | Named profile, limits doc and focused runtime tests |
-| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | INTEGRATED | `30d25f27` + corrections `4c131f9b`; three escapes closed, G1-C resolved |
+| G1 | Compiler-bounded runtime-sized pointer table | A | P0.1 | **PROVEN** | reviewed by B (bound escape), fixed by A, regressions green - see 4.29 |
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | INTEGRATED | `4c131f9b`; missing/injected/duplicated/reordered/argument all reject |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | INTEGRATED (scoped) | 4.7 gaps 1-2 closed; gap 3 closed where a bound exists, SCOPED otherwise |
-| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | INTEGRATED | `39d034f2`; fan-in scoped out, stable rejection |
+| E1 | Nested/transitive heterogeneous result graph | B | P0.1 | **PROVEN** | reviewed by C (2 findings), both closed by X7, regressions green - see 4.29 |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (partial) | classes enumerated; item 2 NOT satisfied - two classes do not fail closed |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
-| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | INTEGRATED | forgery escape closed; guard keys off slot contribution |
+| S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | CHANGES (round 9) | B correcting C1-R1 and C1-R4 in its own file |
-| C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
+| C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | **PROVEN** | reviewed by B, clean, re-verified twice post-SEC-5 - see 4.29 |
 | C3 | Eight-participant semantic capstone | C | C1,C2 | CHANGES (round 9) | test fixed by B; A correcting C3-R2, C3-R3 and the blocker attribution |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | INTEGRATED | blocker is the CONTROLLER at 1.2286x, not the projection |
 | X27 | Destructive left-to-right walk in `attest` | B | X25 | LEASED | round 9, after C1 CHANGES and X21 |
@@ -184,6 +184,33 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.29 FOUR ROWS PROMOTED TO PROVEN at `16979e0e`
+
+The verifying run completed green across all six packages: utils 295/0, **solidc 2,434/0**, **solidcash
+3,921/0**, testing 19/0, solidhat 24/0, `lerna success` in 6 packages.
+
+It ran under the 63-process contention recorded in 4.28 and still passed - and that direction matters.
+**Contention manufactures false FAILURES, not false passes.** A timeout under load can turn a good suite red; it
+cannot turn a bad suite green. So the earlier deferral was over-cautious in the correct direction, and this
+result is sound evidence rather than a compromised one.
+
+Promoted, each with the reviewer who did not implement it:
+
+| Row | Reviewer | What the review found | Resolution |
+| --- | --- | --- | --- |
+| **G1** | B | the guard-derived bound was escapable in three shapes, one VM-confirmed | closed by A, plus the inherited `TupleAssignmentNode` blind spot in a second pass |
+| **S1** | A | the cardinality pin was suppressed whenever a collection owned more than one slot, and a read creates a slot | closed by C; a forged node was readable as genuine state |
+| **E1** | C | the `possibleTargets` widening, and the never-exhausted projection result cursor | both closed by X7 - which turned out to be a LIVE root-result forgery, not defence in depth |
+| **C2** | B | nothing; 12 added cases all reject | re-verified twice after SEC-5, empirically and structurally |
+
+Each satisfies section 3.3 in full: a different worker attacked it, every finding was fixed and integrated, and
+regressions are green on the exact commit.
+
+**Still not promotable, and the distinction is load-bearing.** C1 and C3 sit in CHANGES. G2, G3, E2, E3, E4 and
+every X and SEC row have had NO independent hostile review - `INTEGRATED` means the integration owner verified
+and merged it, not that anyone tried to break it. Promoting those would make the headline number mean nothing,
+which is precisely what this board exists to prevent.
 
 ### 4.28 Why PROVEN is still 2, and what is queued for promotion
 

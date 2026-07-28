@@ -3411,6 +3411,42 @@ export default class AstBuilder
     const returnsCtx = ctx.tryReturns();
     if (returnsCtx) {
       returnParameters = returnsCtx.parameter_list().map((p) => this.visit(p) as ParameterNode);
+      if (this.solidityImportCompat && returnParameters.length === 0) {
+        throw new ParseError('Try returns clause requires at least one parameter', Location.fromCtx(returnsCtx));
+      }
+    }
+
+    if (this.solidityImportCompat) {
+      const seen = new Set<string>();
+      for (const clause of catchClauses) {
+        const kind = clause.errorName ?? 'low-level';
+        if (clause.errorName && clause.errorName !== 'Error' && clause.errorName !== 'Panic') {
+          throw new ParseError(
+            `Invalid catch clause name '${clause.errorName}'; expected Error, Panic, or an unnamed catch`,
+            clause.location,
+          );
+        }
+        if (seen.has(kind)) {
+          throw new ParseError(`Try statement already has a ${kind} catch clause`, clause.location);
+        }
+        seen.add(kind);
+
+        const parameters = clause.parameters ?? [];
+        const parameter = parameters[0];
+        const isMemory = parameter?.modifier.includes(Modifier.MEMORY) ?? false;
+        if (kind === 'Error' && (parameters.length !== 1
+          || parameter.type !== PrimitiveType.STRING || !isMemory)) {
+          throw new ParseError('Expected catch Error(string memory ...)', clause.location);
+        }
+        if (kind === 'Panic' && (parameters.length !== 1 || !(parameter.type instanceof IntType)
+          || parameter.type.signed || parameter.type.bits !== 256)) {
+          throw new ParseError('Expected catch Panic(uint256 ...)', clause.location);
+        }
+        if (kind === 'low-level' && clause.parameters && (parameters.length !== 1
+          || !(parameter.type instanceof BytesType) || parameter.type.bound !== undefined || !isMemory)) {
+          throw new ParseError('Expected catch (bytes memory ...) or catch { ... }', clause.location);
+        }
+      }
     }
 
     const node = new TryCatchNode(expression, tryBlock, catchClauses, returnParameters);
@@ -3424,6 +3460,9 @@ export default class AstBuilder
     const parameters = ctx.parameter_list().length > 0
       ? ctx.parameter_list().map((p) => this.visit(p) as ParameterNode)
       : undefined;
+    if (this.solidityImportCompat && !errorName && !parameters && ctx.getText().startsWith('catch(')) {
+      throw new ParseError('Catch parameter list cannot be empty', Location.fromCtx(ctx));
+    }
     const node = new CatchClauseNode(block, errorName, parameters);
     node.location = Location.fromCtx(ctx);
     return node;

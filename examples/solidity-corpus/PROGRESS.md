@@ -5064,3 +5064,13 @@ The focused suite is **1019/1019**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1021/1021**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 471, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Try/catch clause-validation loop: 4443 flat, NEG-ACCEPTED 471 -> 457 (-14)
+
+- Solidity-compatible try/catch now rejects empty `returns ()` and `catch ()` parameter lists, unknown catch
+  names, and duplicate `Error`, `Panic`, or low-level clauses.
+- Built-in catch signatures now require `Error(string memory)`, `Panic(uint256)`, or an unnamed
+  `catch (bytes memory)` clause; the existing bare `catch {}` form remains valid.
+
+The focused suite is **1025/1025**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+457, plus 275 multifile and 289 cmdline fixtures excluded.

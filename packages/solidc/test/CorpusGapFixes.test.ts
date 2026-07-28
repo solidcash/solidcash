@@ -7174,6 +7174,39 @@ describe('try/catch return-path validation', () => {
   });
 });
 
+describe('try/catch clause validation', () => {
+  const cc = (body: string): string => compileString(
+    `contract C { function f() public returns (uint) { ${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it('rejects empty returns and catch parameter lists', () => {
+    expect(() => cc('try this.f() returns () {} catch {}')).toThrow(/requires at least one parameter/);
+    expect(() => cc('try this.f() {} catch () {}')).toThrow(/cannot be empty/);
+  });
+
+  it('rejects unknown and duplicate catch clause kinds', () => {
+    expect(() => cc('try this.f() {} catch Other(uint x) {}')).toThrow(/Invalid catch clause name/);
+    expect(() => cc('try this.f() {} catch Error(string memory x) {}'
+      + ' catch Error(string memory y) {}')).toThrow(/already has a Error catch clause/);
+    expect(() => cc('try this.f() {} catch {} catch (bytes memory data) {}'))
+      .toThrow(/already has a low-level catch clause/);
+  });
+
+  it('validates Error, Panic, and low-level catch signatures', () => {
+    expect(() => cc('try this.f() {} catch Error(uint x) {}')).toThrow(/Error\(string memory/);
+    expect(() => cc('try this.f() {} catch Panic(bytes memory data) {}')).toThrow(/Panic\(uint256/);
+    expect(() => cc('try this.f() {} catch (uint x) {}')).toThrow(/bytes memory/);
+  });
+
+  it('retains each correctly shaped catch clause', () => {
+    expect(cc('try this.f() returns (uint x) { return x; }'
+      + ' catch Error(string memory reason) { return 1; }'
+      + ' catch Panic(uint256 code) { return code; }'
+      + ' catch (bytes memory data) { return data.length; }')).toBe('C');
+  });
+});
+
 describe('abi.encodeWithSelector contextual zero', () => {
   it('implicitly converts literal zero to bytes4', () => {
     expect(compileString('contract C { function f() public pure returns (bytes memory) {'

@@ -122,8 +122,13 @@ contract C1Vault() {
 }`;
 
 /**
- * Exactly one authenticated field is substituted per hostile build; every other byte of the transaction is
- * identical to the `none` control produced by the same function.
+ * Exactly one authenticated field is substituted per hostile build. The control is a SECOND call to the same
+ * builder, and the two are NOT byte-identical: every call draws fresh outpoints and mints fresh token
+ * categories, so two HONEST builds of this fixture already differ in a large fraction of their bytes (Worker A
+ * measured 15,158 of 101,714 hex characters on a fixture built from the same helpers - see
+ * `Layer3ReviewA1.test.ts`, "two honest builds are the same LENGTH but are NOT the same bytes"). What the
+ * matrix below actually asserts is equal SERIALIZED LENGTH, which is evidence about SHAPE only: no input,
+ * output or witness element was added or removed. It is not evidence that only the named field differs.
  */
 type Hostile =
   | 'none'
@@ -140,7 +145,13 @@ type Hostile =
   /** The ordinary event NFT is sent somewhere other than its event covenant. */
   | 'event'
   /** The ordinary event NFT publishes an argument the handler did not emit. */
-  | 'event-argument';
+  | 'event-argument'
+  /**
+   * The transcript declares the Vault's return-event NFT at a different output of the Vault's OWN block, while
+   * the NFT itself and the route witness stay where the honest build put them. C1-R4: this position was
+   * previously described here as covenant-unbound.
+   */
+  | 'return-position';
 
 /**
  * Ordinary BCH-2026 capacity, for the F1-style measurement below. Two deliberate deviations, both stated:
@@ -258,8 +269,13 @@ async function buildC1(
 
   // The share the Vault publishes, packed exactly as the route emits it, and the transcript that commits to it.
   const sharesResult = scriptToBytecode([bigIntToVmNumber(SHARES)]);
+  // C1-R4 attack: declare the Vault's return slot one output earlier - still inside the Vault's own block, so
+  // any block-membership range check still passes. The NFT and the route witness below stay at the honest slot.
+  const declaredReturnOutputs = hostile === 'return-position'
+    ? layout.returnOutputs!.map((slot, participant) => (participant === 3 ? slot! - 1 : slot))
+    : layout.returnOutputs;
   const transcript = layer3.finalizeCompiledGraph(
-    plan, { 4: binToHex(sharesResult) }, layout.participantInputs, layout.returnOutputs,
+    plan, { 4: binToHex(sharesResult) }, layout.participantInputs, declaredReturnOutputs,
     ['', '', '', binToHex(sharesResult)], layout.projectionInputs,
   );
 
@@ -623,8 +639,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
     expect(built.layout.projectionInputs).toEqual([29, 30, 31, 32]);
     expect(built.layout.controllerInput).toBe(33);
     expect(built.layout.totalSlots).toBe(35);
-    // The Vault is the only returning participant. This is the SDK's assembly choice - the return-event
-    // position is covenant-unbound, so this asserts where the SDK put it, not where a covenant requires it.
+    // The Vault is the only returning participant. Which slot of the Vault's block the SDK picks is its own
+    // assembly choice, but the choice is NOT covenant-unbound: the transcript commits to it, and declaring a
+    // different output of the same block is refused - see the 'return-position' row of the hostile matrix.
     expect(built.layout.returnOutputs).toEqual([null, null, null, 28]);
     // The planner records that the Accrue invocation depends on the Vault's result.
     expect(built.plan.invocations[3].resultDependencies).toEqual([4]);
@@ -668,9 +685,12 @@ describe('C1 DeFi integrated semantic capstone', () => {
     expect(await entryValue(built.settled.allowance.address, built.settled.allowance.slot)).toBe(20n);
   }, 180_000);
 
-  // Each substitution is refused by the covenant that owns the substituted field, not by the controller:
-  // caller/allowance by the Token master route (19), result by the Vault master route (26), the
-  // result-dependent continuation by the Accrue master route (24), resource/event by the Router route (0).
+  // Each substitution is refused by the covenant that owns the substituted field: caller/allowance by the Token
+  // master route (19), result by the Vault master route (26), the result-dependent continuation by the Accrue
+  // master route (24), resource/event by the Router route (0). The one field the CONTROLLER owns is the
+  // return-event position: the Vault's block is inputs 26..28, so declaring 27 keeps the slot inside the block
+  // and any block-membership range check still passes - it is refused at the controller (33) because the
+  // transcript binds the declared slot to the committed result commitment.
   it.each([
     { hostile: 'caller' as const, input: 19 },
     { hostile: 'allowance' as const, input: 19 },
@@ -679,6 +699,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
     { hostile: 'resource' as const, input: 0 },
     { hostile: 'event' as const, input: 0 },
     { hostile: 'event-argument' as const, input: 0 },
+    { hostile: 'return-position' as const, input: 33 },
   ])(
     'HOSTILE: substituting the $hostile field is rejected at input $input',
     async ({ hostile, input }) => {
@@ -689,7 +710,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
 
       const attacked = await buildC1(hostile);
       // Every substitution is length-preserving, so an equal serialized size is evidence that the attacked
-      // transaction added or removed no input, output or witness element: only the named field differs.
+      // transaction added or removed no input, output or witness element. It is NOT evidence that only the
+      // named field differs: two honest builds of this fixture already differ in bytes (fresh outpoints and
+      // categories per call), so this pins SHAPE, and the substitution itself is what pins the field.
       expect(attacked.transaction.length).toBe(control.transaction.length);
       const outcome = preflightOutcome(attacked);
       expect(outcome).toContain(`layer3: BCH-2026 preflight failed at input ${input}`);

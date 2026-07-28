@@ -1310,6 +1310,16 @@ export class UsingForInvalidFunctionReferenceError extends SolidCashError {
   }
 }
 
+export class UsingForIncompatibleTargetError extends SolidCashError {
+  constructor(node: Node, functionName: string, targetType: string, parameterType: string) {
+    super(
+      node,
+      `Function '${functionName}' cannot be attached to '${targetType}' because it cannot be implicitly converted `
+      + `to the function's first parameter type '${parameterType}'`,
+    );
+  }
+}
+
 export class GlobalUsingForNonUDVTError extends SolidCashError {
   constructor(node: Node, typeName: string) {
     super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);

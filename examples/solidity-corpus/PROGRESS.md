@@ -5248,3 +5248,23 @@ The focused suite is **1080/1080**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1083/1083**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 367, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity using-for declaration-eligibility loop: 4443 flat, NEG-ACCEPTED 367 -> 364 (-3)
+
+- Solidity-compatible `using L for T` directives now require source-local names to denote declared libraries,
+  while retaining forward library declarations and imported-library references.
+- Library declarations are rejected as using-for target types. Native SolidCash syntax retains its previous
+  behavior, and the complete focused suite remains green.
+
+The focused suite is **1085/1085**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+364, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Attached-function target-compatibility loop: 4443 flat, NEG-ACCEPTED 364 -> 363 (-1)
+
+- Contract-scoped `using {f} for T` directives now validate that `T` is implicitly convertible to `f`'s first
+  parameter, matching the validation already applied to file-scoped directives.
+- Narrowing integer and unrelated struct attachments are rejected, while valid widening attachments compile. All
+  17 previously passing using-for corpus fixtures remain green.
+
+The focused suite is **1086/1086**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+363, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -173,6 +173,7 @@ import {
   UsingForUndefinedLibraryError,
   UsingForUndefinedFunctionError,
   UsingForInvalidFunctionReferenceError,
+  UsingForIncompatibleTargetError,
   GlobalUsingForNonUDVTError,
   OperatorOverloadNonUDVTError,
   OperatorOverloadSignatureError,
@@ -8855,6 +8856,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // type.toString()). e.g. `using ... for int` keys under 'int256' now that `int` resolves to int256.
     // Struct/enum/contract names aren't parseable here, so fall back to the raw name (which matches too).
     let typeKey = node.isWildcard ? '*' : (node.targetTypeName ?? '*');
+    let resolvedTargetType: Type | undefined;
     if (!node.isWildcard && node.targetTypeName) {
       // A library-qualified struct/enum target (`using Counters for Counters.Counter`) keys by the resolved
       // type's string (the struct is registered bare, `Counter`), so a `x.method()` member call on the
@@ -8867,8 +8869,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         // PrimitiveType lookup is case-insensitive, so attempting it first would collapse `Int` to native `int`
         // and incorrectly reject a valid operator binding as non-UDVT.
         ?? this.typeDefMap.get(node.targetTypeName) ?? this.typeDefMap.get(bare);
-      if (resolved) typeKey = resolved.toString();
-      else { try { typeKey = parseTypeStrict(node.targetTypeName).toString(); } catch { /* keep raw name */ } }
+      if (resolved) {
+        resolvedTargetType = resolved;
+        typeKey = resolved.toString();
+      } else {
+        try {
+          resolvedTargetType = parseTypeStrict(node.targetTypeName);
+          typeKey = resolvedTargetType.toString();
+        } catch { /* keep raw name */ }
+      }
     }
 
     if (this.compilerOptions.solidityImportCompat && node.isGlobal && !this.typeDefMap.has(typeKey)) {
@@ -8909,6 +8918,17 @@ export default class SymbolTableTraversal extends AstTraversal {
           // Operator overload binding - validate and register
           this.registerOperatorOverload(node, typeKey, binding, overloads[0]);
         } else {
+          const firstParameter = overloads[0].parameters
+            .find((parameter) => !parameter.name.startsWith('__internal__'));
+          if (this.compilerOptions.solidityImportCompat && resolvedTargetType && firstParameter
+            && !implicitlyCastable(resolvedTargetType, firstParameter.type)) {
+            throw new UsingForIncompatibleTargetError(
+              node,
+              funcRef,
+              node.targetTypeName ?? typeKey,
+              firstParameter.type.toString(),
+            );
+          }
           // Regular method binding
           const methodName = funcRef.includes('.') ? funcRef.split('.').pop()! : funcRef;
           bindings.push({ methodName, fullFunctionName: funcRef });

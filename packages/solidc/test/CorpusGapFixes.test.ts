@@ -8075,6 +8075,18 @@ describe('Solidity using-for declaration eligibility', () => {
       solidityImportCompat: false,
     }).contractName).toBeTruthy();
   });
+
+  it('requires specifically attached functions to accept the target as their first argument', () => {
+    expect(() => cc('function id(uint16 x) pure returns (uint16) { return x; }'
+      + ' contract C { using {id} for uint256; }'))
+      .toThrow(/cannot be attached.*cannot be implicitly converted/);
+    expect(() => cc('struct S { uint8 x; }'
+      + ' function id(uint16 x) pure returns (uint16) { return x; }'
+      + ' contract C { using {id} for S; }'))
+      .toThrow(/cannot be attached.*cannot be implicitly converted/);
+    expect(cc('function id(uint256 x) pure returns (uint256) { return x; }'
+      + ' contract C { using {id} for uint16; }')).toBe('C');
+  });
 });
 
 describe('base-contract-qualified inherited state', () => {

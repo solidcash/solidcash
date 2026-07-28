@@ -4517,6 +4517,12 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    if (this.solidityImportCompat && isImmutable && (ctx.mappingType() || ctx.arrayType())) {
+      throw new ParseError(
+        'Immutable variables cannot have a non-value type',
+        Location.fromCtx(ctx),
+      );
+    }
 
     // A `constant` state var (`uint public constant ONE = 5`) parses as a state variable because the dedicated
     // constantDefinition rule has no visibility slot. It is a compile-time constant, not stored state - route it
@@ -4616,6 +4622,17 @@ export default class AstBuilder
       // address handle with the name so `IERC20 token; token.transferFrom(..)` routes to an external call.
       type = new AddressType(false, typeText);
       contractTypeName = typeText;
+    }
+    if (this.solidityImportCompat && isImmutable
+      && (type instanceof StructType || (type instanceof FunctionType && type.isExternal) || type instanceof MappingType
+        || type instanceof ArrayType || type === PrimitiveType.STRING
+        || (type instanceof BytesType && type.bound === undefined))) {
+      throw new ParseError(
+        type instanceof FunctionType
+          ? 'Immutable variables of external function type are not supported'
+          : 'Immutable variables cannot have a non-value type',
+        Location.fromCtx(ctx),
+      );
     }
     if (this.solidityImportCompat && isTransient
       && (type instanceof StructType || type instanceof MappingType || type instanceof ArrayType

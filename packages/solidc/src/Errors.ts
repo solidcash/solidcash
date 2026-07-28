@@ -843,6 +843,17 @@ export class InvalidModifierCombinationError extends SolidCashError {
   }
 }
 
+export class InvalidImmutableTypeError extends SolidCashError {
+  constructor(node: Node, functionType = false) {
+    super(
+      node,
+      functionType
+        ? 'Immutable variables of external function type are not supported'
+        : 'Immutable variables cannot have a non-value type',
+    );
+  }
+}
+
 export class InvalidCallOptionError extends SolidCashError {
   constructor(node: Node, option: string, target: string) {
     super(node, `Cannot set call option '${option}' on ${target}`);

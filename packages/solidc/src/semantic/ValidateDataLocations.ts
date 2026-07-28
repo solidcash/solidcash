@@ -10,7 +10,8 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import {
-  ImmutableStateVariableAssignmentError, InvalidDataLocationError, InvalidModifierCombinationError,
+  ImmutableStateVariableAssignmentError, InvalidDataLocationError, InvalidImmutableTypeError,
+  InvalidModifierCombinationError,
   UnsupportedAbiV1TypeError,
 } from '../Errors.js';
 
@@ -98,6 +99,27 @@ export default class ValidateDataLocations extends AstTraversal {
     const previousImmutableStateNames = this.immutableStateNames;
     const previousStateTypes = this.stateTypes;
     this.currentContractIsAbstract = node.isAbstract;
+    if (this.solidityImportCompat) {
+      for (const state of node.stateVariables) {
+        const nonValueType = state.type instanceof ArrayType
+          || state.type instanceof MappingType
+          || state.type instanceof StructType
+          || (state.type instanceof FunctionType && state.type.isExternal)
+          || state.type === PrimitiveType.STRING
+          || (state.type instanceof BytesType && state.type.bound === undefined);
+        if (state.immutable && nonValueType) {
+          throw new InvalidImmutableTypeError(
+            state,
+            state.type instanceof FunctionType && state.type.isExternal,
+          );
+        }
+      }
+      for (const collection of node.collections) {
+        if (collection.immutable) {
+          throw new InvalidImmutableTypeError(collection);
+        }
+      }
+    }
     this.immutableStateNames = new Set(node.stateVariables.filter((state) => state.immutable).map((state) => state.name));
     this.stateTypes = new Map([
       ...node.stateVariables.map((state) => [state.name, state.type] as const),

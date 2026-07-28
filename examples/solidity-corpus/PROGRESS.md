@@ -5123,3 +5123,13 @@ The focused suite is **1038/1038**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1044/1044**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 434, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Immutable-type eligibility loop: 4443 flat, NEG-ACCEPTED 434 -> 430 (-4)
+
+- Solidity-compatible immutable declarations now reject arrays and structs, including structs containing
+  mappings, because immutables must have value types.
+- External function pointers are rejected as unsupported immutable values, while Solidity's valid immutable
+  internal function pointers and SolidCash-native immutable collections remain accepted.
+
+The focused suite is **1047/1047**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+430, plus 275 multifile and 289 cmdline fixtures excluded.

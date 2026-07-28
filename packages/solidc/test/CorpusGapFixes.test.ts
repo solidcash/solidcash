@@ -7335,6 +7335,30 @@ describe('try expression and return-clause typing', () => {
   });
 });
 
+describe('immutable declaration eligibility', () => {
+  const compat = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects arrays and structs as non-value immutable types', () => {
+    expect(() => compat('contract C { uint[] immutable values; }'))
+      .toThrow(/immutable variables cannot have a non-value type/i);
+    expect(() => compat('contract C { struct S { int x; } S immutable value; }'))
+      .toThrow(/immutable variables cannot have a non-value type/i);
+    expect(() => compat('contract C { struct S { mapping(uint => address) values; } S immutable value; }'))
+      .toThrow(/immutable variables cannot have a non-value type/i);
+  });
+
+  it('rejects immutable external function pointers', () => {
+    expect(() => compat('contract C { function() external immutable callback; }'))
+      .toThrow(/immutable variables of external function type are not supported/i);
+    expect(compat('contract C { function() internal returns (uint) immutable callback; }')).toBe('C');
+  });
+
+  it('retains SolidCash-native immutable collections', () => {
+    expect(compileString('contract C { uint[] immutable values; }').contractName).toBe('C');
+  });
+});
+
 describe('abi.encodeWithSelector contextual zero', () => {
   it('implicitly converts literal zero to bytes4', () => {
     expect(compileString('contract C { function f() public pure returns (bytes memory) {'

@@ -4444,6 +4444,9 @@ export default class AstBuilder
     let visibilityExplicit = false;
     const visCtx = ctx.stateVariableVisibility();
     if (visCtx) {
+      if (this.solidityImportCompat && visCtx.getText() === 'external') {
+        throw new ParseError('State variables cannot have external visibility', Location.fromCtx(visCtx));
+      }
       visibility = visCtx.getText() as StateVariableVisibility;
       visibilityExplicit = true;
     }
@@ -4457,6 +4460,9 @@ export default class AstBuilder
       if (modChild) { allModTexts.push(modChild.getText()); continue; }
       const visChild = cm.stateVariableVisibility?.();
       if (visChild) {
+        if (this.solidityImportCompat && visChild.getText() === 'external') {
+          throw new ParseError('State variables cannot have external visibility', Location.fromCtx(visChild));
+        }
         visibility = visChild.getText() as StateVariableVisibility;
         visibilityExplicit = true;
       }

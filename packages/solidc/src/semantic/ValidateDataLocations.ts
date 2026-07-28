@@ -461,6 +461,9 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidModifierCombinationError(node,
         `multiple state mutability modifiers specified (${mutability.join(', ')})`);
     }
+    if (node.isLibraryFunction && seen.has(FunctionModifier.PAYABLE)) {
+      throw new InvalidModifierCombinationError(node, 'library functions cannot be payable');
+    }
     // Solidity retains a legacy exception for externally callable functions named `this`, `super`, or `_`
     // (their ABI selectors are unambiguous), but reserves those names for internal/private functions.
     if (['_', 'super', 'this'].includes(node.name)

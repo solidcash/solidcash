@@ -5103,3 +5103,12 @@ The focused suite is **1031/1031**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1035/1035**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 440, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Declaration-capability loop: 4443 flat, NEG-ACCEPTED 440 -> 438 (-2)
+
+- State variables now reject `external` visibility across scalar, mapping, and array declarations while preserving
+  Solidity's public, internal, and private state forms.
+- Library functions now reject `payable` mutability; nonpayable, view, and pure library helpers remain valid.
+
+The focused suite is **1038/1038**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+438, plus 275 multifile and 289 cmdline fixtures excluded.

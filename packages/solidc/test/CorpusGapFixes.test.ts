@@ -3139,6 +3139,26 @@ describe('unchecked block placement', () => {
   });
 });
 
+describe('state and library declaration capabilities', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects external visibility on scalar, mapping, and array state variables', () => {
+    for (const declaration of ['uint external x', 'mapping(uint => uint) external x', 'uint[] external x']) {
+      expect(() => cc(`contract C { ${declaration}; }`)).toThrow(/State variables cannot have external visibility/);
+    }
+  });
+
+  it('retains public, internal, and private state visibility', () => {
+    expect(cc('contract C { uint public x; uint internal y; uint private z; }')).toBe('C');
+  });
+
+  it('rejects payable library functions while retaining nonpayable functions', () => {
+    expect(() => cc('library L { function f() public payable {} } contract C {}'))
+      .toThrow(/library functions cannot be payable/);
+    expect(cc('library L { function f() public pure returns (uint) { return 1; } } contract C {}')).toBe('C');
+  });
+});
+
 describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles fixed-point arithmetic that solc rejects (UnimplementedFeatureError)', () => {

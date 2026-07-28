@@ -1717,6 +1717,19 @@ describe('fallback and receive override validation', () => {
       compat,
     ).contractName).toBe('C');
   });
+
+  it('does not let fallback and receive override one another', () => {
+    expect(() => compileString(
+      'contract A { receive() external payable virtual {} }'
+      + ' contract C is A { fallback() external override {} }',
+      compat,
+    )).toThrow(/override.*nothing|does not override/i);
+    expect(() => compileString(
+      'contract A { fallback() external virtual {} }'
+      + ' contract C is A { receive() external payable override {} }',
+      compat,
+    )).toThrow(/override.*nothing|does not override/i);
+  });
 });
 
 describe('base-constructor argument path validation', () => {

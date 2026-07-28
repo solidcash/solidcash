@@ -660,6 +660,19 @@ function expandContract(
     }
   }
 
+  // fallback and receive occupy distinct override slots. Validate the source declaration against the original
+  // ancestry before flattening: a receive declaration in a base must not make `fallback() override` appear
+  // meaningful (and vice versa) merely because the contract has some inherited special function.
+  for (const [special, key, label] of [
+    [contract.fallbackDef, 'fallbackDef', 'fallback'],
+    [contract.receiveDef, 'receiveDef', 'receive'],
+  ] as const) {
+    if (!special?.modifiers.includes(FunctionModifier.OVERRIDE)) continue;
+    const hasMatchingBase = linearization.some((ancestorName) =>
+      ancestorName !== contract.name && !!contractMap.get(ancestorName)?.[key]);
+    if (!hasMatchingBase) throw new OverrideNothingError(special, label);
+  }
+
   // Resolve the effective concrete origin of each signature as seen through every DIRECT base. Two direct bases
   // exposing distinct origins are ambiguous even when one direct base descends from the other (`C is A, B` with
   // `B` overriding `A.f`). A true diamond which merely carries the same unchanged origin through both branches

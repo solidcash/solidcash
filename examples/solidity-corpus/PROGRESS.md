@@ -5045,3 +5045,12 @@ The focused suite is **1006/1006**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1018/1018**, and the utils suite is **288 passed** with one todo. The full corpus remains
 **4443/4587**, 144 failed, while NEG-ACCEPTED falls to 475, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Special-function override-kind loop: 4443 flat, NEG-ACCEPTED 475 -> 473 (-2)
+
+- Solidity-compatible inheritance now validates `fallback() override` only against ancestral fallback
+  declarations and `receive() override` only against ancestral receive declarations.
+- Valid direct and transitive overrides retain the existing virtuality and mutability checks.
+
+The focused suite is **1019/1019**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+473, plus 275 multifile and 289 cmdline fixtures excluded.

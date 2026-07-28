@@ -535,6 +535,33 @@ describe('Solidity free-function contract context', () => {
   });
 });
 
+describe('Solidity base-constructor argument validation', () => {
+  it('rejects an out-of-range literal even when the base parameter is unused', () => {
+    expect(() => compileString(
+      'contract Base { constructor(uint8) {} } contract Derived is Base(300) {}',
+      { solidityImportCompat: true },
+    )).toThrow(/300.*uint8|uint8.*300/i);
+  });
+
+  it('rejects error and event declarations used as constructor arguments', () => {
+    expect(() => compileString(
+      'error E(uint, bool); contract Base { constructor(uint8) {} } contract D is Base(E) {}',
+      { solidityImportCompat: true },
+    )).toThrow(/E.*declaration.*not a value/i);
+    expect(() => compileString(
+      'contract Base { event E(uint); constructor(uint8) {} } contract D is Base(Base.E) {}',
+      { solidityImportCompat: true },
+    )).toThrow(/Base\.E.*declaration.*not a value/i);
+  });
+
+  it('retains an in-range argument consumed by the base constructor', () => {
+    expect(compileString(
+      'contract Base { uint8 public x; constructor(uint8 v) { x = v; } } contract D is Base(255) {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('D');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

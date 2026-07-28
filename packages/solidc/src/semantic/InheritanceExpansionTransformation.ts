@@ -90,6 +90,8 @@ import {
   UndefinedParentInvocationError,
   DuplicateParentInvocationError,
   InvalidDataLocationError,
+  IntLiteralOutOfRangeError,
+  InvalidBaseConstructorArgumentError,
 } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -198,11 +200,52 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
   const expanded = new Set<string>();
   const interfaceMap = new Map(ast.interfaceDefinitions.map((iface) => [iface.name, iface]));
   if (solidityImportCompat) {
+    const fileErrorNames = new Set(ast.errorDefinitions.map((definition) => definition.name));
+    const fileEventNames = new Set(ast.eventDefinitions.map((definition) => definition.name));
+    const declarationReference = (argument: ExpressionNode, contract: ContractNode): string | undefined => {
+      if (argument instanceof IdentifierNode) {
+        const name = argument.name;
+        if (fileErrorNames.has(name) || fileEventNames.has(name)
+          || contract.errorDefinitions.some((definition) => definition.name === name)
+          || contract.eventDefinitions.some((definition) => definition.name === name)) {
+          return name;
+        }
+      }
+      if (argument instanceof FieldAccessNode && argument.expression instanceof IdentifierNode) {
+        const holder = contractMap.get(argument.expression.name) ?? interfaceMap.get(argument.expression.name);
+        if (holder?.errorDefinitions.some((definition) => definition.name === argument.name)
+          || holder?.eventDefinitions.some((definition) => definition.name === argument.name)) {
+          return `${argument.expression.name}.${argument.name}`;
+        }
+      }
+      return undefined;
+    };
     for (const contract of [ast.contract, ...ast.importedContracts]) {
       const invalid = contract.parentInvocations.find((invocation) =>
         interfaceMap.has(invocation.parentName) && invocation.args.length > 0);
       if (invalid) {
         throw new ParentInvocationArgCountError(contract, invalid.parentName, 0, invalid.args.length);
+      }
+      for (const invocation of contract.parentInvocations) {
+        const parent = contractMap.get(invocation.parentName);
+        if (!parent) continue;
+        const parameters = effectiveConstructorParams(parent);
+        for (let index = 0; index < Math.min(parameters.length, invocation.args.length); index++) {
+          const argument = invocation.args[index];
+          const parameterType = parameters[index].type;
+          const reference = declarationReference(argument, contract);
+          if (reference) throw new InvalidBaseConstructorArgumentError(argument, reference);
+          if (argument instanceof IntLiteralNode && parameterType instanceof IntType
+            && (argument.value < parameterType.minValue || argument.value > parameterType.maxValue)) {
+            throw new IntLiteralOutOfRangeError(
+              argument,
+              argument.value,
+              parameterType.toString(),
+              parameterType.minValue,
+              parameterType.maxValue,
+            );
+          }
+        }
       }
     }
   }

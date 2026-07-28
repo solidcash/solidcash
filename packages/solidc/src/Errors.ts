@@ -1177,6 +1177,12 @@ export class ModifierStyleBaseConstructorError extends SolidCashError {
   }
 }
 
+export class InvalidBaseConstructorArgumentError extends SolidCashError {
+  constructor(node: ExpressionNode, reference: string) {
+    super(node, `Invalid base constructor argument: '${reference}' is a declaration, not a value`);
+  }
+}
+
 export class UndefinedParentInvocationError extends SolidCashError {
   constructor(node: Node, parentName: string) {
     super(node, `Parent invocation references '${parentName}' which is not a parent contract`);

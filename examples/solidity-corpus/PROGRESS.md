@@ -4928,3 +4928,15 @@ The focused suite is **978/978**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **980/980**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 501, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Base-constructor argument validation loop: 4443 flat, NEG-ACCEPTED 501 -> 498 (-3)
+
+- Explicit base-constructor integer literals are now range-checked against bounded integer parameters even when
+  the base constructor does not read the parameter.
+- Event and custom-error declarations are rejected when supplied as base-constructor values, including qualified
+  event references.
+- The validation runs before inheritance flattening, preserving existing diamond and storage-pointer constructor
+  argument behavior.
+
+The focused suite is **983/983**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+498, plus 275 multifile and 289 cmdline fixtures excluded.

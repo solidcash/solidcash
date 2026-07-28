@@ -5074,3 +5074,13 @@ The focused suite is **1021/1021**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1025/1025**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 457, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Bounded-assignment and unsigned-negation loop: 4443 flat, NEG-ACCEPTED 457 -> 445 (-12)
+
+- Bounded integer literal range checks now apply to state writes and later local assignments as well as local
+  declarations, rejecting silent signed/unsigned overflow and underflow at every assignment site.
+- Solidity-compatible unary negation now rejects unsigned bounded integers while retaining signed and fixed-point
+  negation.
+
+The focused suite is **1028/1028**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+445, plus 275 multifile and 289 cmdline fixtures excluded.

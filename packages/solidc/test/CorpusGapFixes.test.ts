@@ -3072,6 +3072,27 @@ describe('base function call eligibility', () => {
   });
 });
 
+describe('bounded integer state assignments and unsigned negation', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects state initializer literals outside the destination range', () => {
+    for (const declaration of ['int8 x = -129', 'int8 x = 128', 'uint8 x = -1', 'uint8 x = 700']) {
+      expect(() => cc(`contract C { ${declaration}; }`)).toThrow(/out of range/);
+    }
+  });
+
+  it('applies the same range check to later local and state assignments', () => {
+    expect(() => cc('contract C { uint8 x; function f() public { x = 256; } }')).toThrow(/out of range/);
+    expect(() => cc('contract C { function f() public pure { uint8 x; x = 256; } }')).toThrow(/out of range/);
+  });
+
+  it('rejects unary negation of unsigned values while retaining signed negation', () => {
+    expect(() => cc('contract C { function f(uint256 x) public pure { -x; } }'))
+      .toThrow(/Unary negation cannot be applied to unsigned type/);
+    expect(cc('contract C { function f(int256 x) public pure returns (int256) { return -x; } }')).toBe('C');
+  });
+});
+
 describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles fixed-point arithmetic that solc rejects (UnimplementedFeatureError)', () => {

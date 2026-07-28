@@ -945,6 +945,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!implicitlyCastable(node.expression.type, node.stateVariable.type)) {
         throw new StateAssignTypeError(node, node.expression.type, node.stateVariable.type);
       }
+      this.checkIntLiteralRange(node, node.expression, node.stateVariable.type);
     }
     return node;
   }
@@ -1095,6 +1096,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceBytesWiden(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
+    this.checkIntLiteralRange(node, node.expression, node.identifier.type!);
     return node;
   }
 
@@ -2439,6 +2441,15 @@ export default class TypeCheckTraversal extends AstTraversal {
           node.type = node.expression.type;
         } else {
           expectInt(node, node.expression.type);
+          if (this.solidityImportCompat && node.expression.type instanceof IntType
+            && !node.expression.type.signed) {
+            throw new TypeError(
+              node,
+              node.expression.type,
+              undefined,
+              `Unary negation cannot be applied to unsigned type '${node.expression.type}'`,
+            );
+          }
           node.type = node.expression.type instanceof IntType ? node.expression.type : PrimitiveType.BIGINT;
         }
         return node;

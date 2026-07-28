@@ -168,8 +168,8 @@ task-specific report, not in this table.
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C+A | X15 | INTEGRATED (scoped) | bare spelling admitted; a second key alternative or `msg.sender` key still needs `bindEntryKeyParameters` |
 | **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
 | **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (fail-closed)** | CONFIRMED live forgery; refused by name, NOT repaired - see 4.30 |
-| **SEC-7** | Token-container spelling does not reach SEC-6's refusal | — | SEC-6 | **TODO (security)** | `this.tokens[c].transfer(..)` stays a MethodCallStatement; edge bound but route reserves no slot |
-| X29 | Thread a per-call-site output index into the subroutine | — | SEC-6 | TODO | the real repair SEC-6 fails closed in place of |
+| **SEC-7** | Token-container spelling does not reach SEC-6's refusal | C | SEC-6 | **LEASED (security)** | round 10; edge stays bound but route reserves no slot |
+| X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | LEASED | round 10; if it lands, C1 and C3 reshape BACK rather than being reduced |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
@@ -186,6 +186,28 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.32 Round-10 dispatch: the tree is RED by design, and that is the sequencing
+
+| Worker | Task | Note |
+| --- | --- | --- |
+| A | C3 reshape + C3-R2/R3 + X22 | notified mid-flight that SEC-6 changes its base |
+| B | C1 reshape + C1-R1/R4 + X21, then X27 | also notified of the 9,268/10,000 headroom X24 consumed |
+| C | **X29** then SEC-7 | build the repair SEC-6 fails closed in place of |
+
+**26 SDK fixtures are red on purpose.** They are the emit-carrying shape measured forgeable. The integration
+owner accepted that rather than holding a live-forgery refusal, and notified both workers already mid-flight on
+those capstones instead of letting them finish against a base about to move under them.
+
+**X29 is the sequencing bet.** C1 and C3 legitimately want an event NFT and a satoshi transfer alongside
+outgoing calls - that is what a DeFi composition looks like. If X29 lands, both capstones reshape BACK to their
+full form rather than being permanently reduced to fit a refusal. If it does not, they are reduced and the board
+says so. Reducing them first and then discovering the repair was buildable would have been the expensive order.
+
+**One constraint passed to Worker B that came from Worker C's own work:** X24 traded operation count for emitted
+bytes and left the deployed projection verifier at **9,268 / 10,000**. B owns that covenant and is adding to it
+in X27, so it was told to measure the deployed size and warned that crossing 10,000 would take C1 from fitting
+ordinary capacity to failing on a SIZE limit - strictly worse than the density failure X23 fixed.
 
 ### 4.30 SEC-6 is a live forgery, refused rather than repaired - and it turns two capstones red
 

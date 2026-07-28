@@ -189,6 +189,58 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.36 Round-11 review of S2, L1, L2: two real findings, and X28's own figure was stale
+
+**L2 FINDING 1 - the derived gate is silenced by one optional field.** `deriveBalancedAssemblyFromInputs` reads
+`inputs[cursor]?.unlocker?.abiFunction?.blockLayout`, but `abiFunction` lives on `ContractUnlocker`, NOT on the
+base `Unlocker` that `TransactionBuilder.addInput` accepts. So an unlocker without it is a legal argument, not a
+type violation. Rebuilding input 0's unlocker as a bare delegating object - transaction bytes asserted
+byte-identical - makes the preflight return `undefined` and `sendPreflightedLayer3Transaction` **broadcast**,
+where the honest control throws. That is the whole protection for that shape, since L2 itself records that the
+BCH-2026 VM ACCEPTS the cloned event NFT. It directly contradicts the module's own comment calling it "a GATE
+rather than a capability the caller may decline to use". The SDK builds bare `Unlocker` objects in ~17 places
+today, none at a participant master - so this is a hostile-builder escape and a real fragility, not a live SDK
+bug.
+
+**L2 FINDING 2 - two documented checks are dead on the wired path.** The derived assembly returns
+`auxiliaryInputs: []`, so both auxiliary checks never run when the gate is reached the way production reaches
+it - including the one the module documents as covenant-required, and which really is present in both sidecars.
+Measured with a projection slot output at 999 satoshis: the declared-layout call throws by name, the wired call
+reports clean. The VM does still reject, but only after `build()` has taken every signature - which is exactly
+the property L2's own test asserts the gate preserves.
+
+**L1 CLEAN.** Its one hostile row without an asserted input index now has one (input 4, the first projection
+slot), and relocation was extended from widths 1 and 2 to a 3-slot prefix, settling with state carried forward
+and the stale-base attack still refused. The reviewer also chased and CLOSED the strongest structural
+hypothesis: a transcript cannot declare a `blockSize` differing from the participant's layout, because
+`__internal__graphBlockSize` is substituted as a compile-time constant rather than passed as a runtime argument.
+The SDK still passes a `blockSize` argument codegen ignores - dead, not unsound.
+
+**S2 FINDING - the guard is one AST level deep.** `touchesCollection` walks `fn.body` only and never descends
+through a call, so moving the collection statement into a second internal callee - the sole difference from
+S2's own fixture - silences the guard and restores `Block layout not available while compiling 'helper'`, the
+exact internal error S2 was built to replace. Holds at two hops, for a bare read, and in message-bus mode.
+
+**S2 UNDETERMINED - the boundary is dialect-dependent.** The same program is refused in `.scash` with and
+without `solidityImportCompat`, and ADMITTED in Solidity syntax, with the state layout confirming the same
+chunk-backed variable and the same collection in one handler. Which side is right is NOT established; no VM
+settlement of the admitted form was run.
+
+**X28 measured and BLOCKED, and its recorded figure was stale.** The -6.9% was computed against the pre-X24/X27
+controller cost of 2,891,475; the absolute saving is unchanged but the denominator fell to 2,129,198, so the
+same cut is now **-9.3% to -9.5%**. Two corrections to C3's own arithmetic: with one chunk the unused slots are
+**63, not 62**, and the per-slot price is a floor rather than an estimate. The per-output term was re-fit
+independently at exactly **32 instructions/output**, holding participant count, invocation count and transcript
+length fixed - matching X25's three-point fit.
+
+**But a smaller global constant is NOT the sound change.** The reservation is all-or-nothing and
+`needsTrailingRegion` fires on seven distinct conditions that all collapse to 64; a blanket smaller value makes
+any handler needing more than K trailing slots unsettleable - fail-closed, but SILENT at compile time, because
+the count is a runtime property. The reviewer's handoff splits it: the loop-driven leg has a compile-time bound
+already (that is why those lowerings unroll) and is the safe shippable half; the chunk leg has no static bound
+and must keep a conservative default. It also priced the real cost of the change honestly - C3's post-Ledger
+indices appear 41 times including six test NAMES.
+
 ### 4.35 SEC-8: X29's own repair introduced a satoshi-container theft
 
 Found by Worker A reviewing X29, which it did not implement. **VM-settled and broadcast-accepted.** This is the

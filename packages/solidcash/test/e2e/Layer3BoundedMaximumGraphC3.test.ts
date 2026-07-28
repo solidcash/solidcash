@@ -1326,9 +1326,9 @@ describe('C3 capacity measurement', () => {
 
     // WHERE the controller's cost goes. Two terms only: 65.0% is instruction count (18,771 x 100) and 34.7%
     // is `stackPushedBytes` (1,001,917 bytes pushed for a 1,329-byte transcript). Arithmetic and hashing are
-    // together under 0.2%. `attest` reads its fields with about 176 `transcript.slice(a, b)` calls against
-    // the WHOLE blob, and a slice of an L-byte item pushes O(L) no matter how few bytes it extracts, which is
-    // what makes the pushed-bytes term grow with rows x transcript length rather than with transcript length.
+    // together under 0.2%. `attest` reads its fields with 160 `transcript.slice(a, b)` calls against the WHOLE
+    // blob, and a slice of an L-byte item pushes O(L) no matter how few bytes it extracts, which is what makes
+    // the pushed-bytes term grow with rows x transcript length rather than with transcript length alone.
     expect(controller.instructions * 100 / controller.cost).toBeGreaterThan(0.6);
     expect(controller.pushedBytes / controller.cost).toBeGreaterThan(0.25);
     expect((controller.arithmetic + controller.hashIterations * 64) / controller.cost).toBeLessThan(0.01);
@@ -1374,5 +1374,4 @@ describe('C3 capacity measurement', () => {
     expect(built.transcript.bytes.length).toBeGreaterThan(1_100);
     expect(built.transcript.bytes.length).toBeLessThan(1_500);
   }, 900_000);
-
 });

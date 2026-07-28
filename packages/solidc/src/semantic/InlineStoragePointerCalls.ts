@@ -157,29 +157,25 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // the same reason, as InlineExternalCallHelpers and InlineReturningStateHelpers. Reachable only when
       // route synthesis ran BEFORE this pass (compiler.ts synthesizeBatchBeforeLowering).
       //
-      // Scoped to the clones the wrapper needs no owner-local block slot for, which is the same line
-      // synthesizeBatchBeforeLowering draws: a transfer / event / token-container operation reserves a slot in
-      // the ROUTE's layout and only the flattened form declares it.
+      // X29 replaced SEC-6's refusal for the `emit` / `transfer` carrying clones: they stay behind OP_INVOKE
+      // too, which is what keeps their edges bound, and their effect is no longer dropped because the ROUTE now
+      // reserves an owner-local frame per dispatch site on their behalf (SymbolTableTraversal
+      // planGraphEffectFrames) and pushes the site ordinal as hidden context, against which the subroutine
+      // resolves its own event/transfer OUTPUT indices (GenerateTargetTraversal emitGraphEffectSlotIndex).
       if (this.keepsGraphEmissionBinding(fn)) continue;
-      // SEC-6. Every OTHER graph emission clone is selected below, and flattening it is what made its edges
-      // unbound: generated with the route as the current function, the external calls take the ordinary-call
-      // path and no emission row is recomputed and compared. Measured on the semantic VM, an argument
-      // substitution AND a selector substitution both settled on an `emit`-carrying handler while the
-      // effect-free control rejected at the caller's own input.
-      //
-      // Keeping this clone behind OP_INVOKE restores the binding but silently drops the effect: the route's
-      // layout reserves event / transfer / token-container slots by walking its OWN body, so the un-flattened
-      // form declares none and the emit produces no output at all (measured: the honest graph still settled,
-      // with zero event slots). Giving the subroutine those slots needs a per-call-site output index threaded
-      // from the route, which is not this repair. Refuse the shape instead of publishing a forgeable route.
+      // SEC-7. A TOKEN-CONTAINER operation is still refused, and for the reason X29 removed for events and
+      // transfers rather than an unexamined one: `this.tokens[c].transfer(..)` needs a co-spent tokenContainer
+      // INPUT slot as well as its tcTransfer outputs, and an input slot is not a per-site output frame - it
+      // shifts every later input index in the block and is co-spent once for the whole route, not once per
+      // dispatch site. Flattening the clone instead is exactly what SEC-6 measured forgeable, so the shape is
+      // refused rather than published with unbound edges.
       //
       // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
       // merely reads msg.sender / msg.value under a controller, and such a clone has no external call for the
       // transcript to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
       if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
         throw new GraphEmissionEffectError(fn, fn.name.replace(/^__scb_(graph|resource)_/, ''),
-          this.hasTokenContainerEffects(fn) ? 'a token-container operation'
-            : this.hasPhysicalEffects(fn) ? 'an emit or transfer' : 'a storage-pointer parameter');
+          this.hasTokenContainerEffects(fn) ? 'a token-container operation' : 'a storage-pointer parameter');
       }
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
@@ -284,12 +280,13 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return node;
   }
 
-  // A graph emission handler clone that must stay behind OP_INVOKE to keep its emission binding: one whose
-  // effects are confined to state and outgoing edges, so the route wrapper reserves no owner-local block slot
-  // on its behalf and nothing is lost by leaving it a subroutine.
+  // A graph emission handler clone that must stay behind OP_INVOKE to keep its emission binding. Since X29 that
+  // includes clones carrying an `emit` or a `transfer`: the route reserves their OUTPUT frames, one per dispatch
+  // site, so leaving them subroutines no longer loses the effect. A token-container operation still needs a
+  // co-spent INPUT slot, which no per-site output frame can express, so it stays excluded (refused above).
   private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
-    return !!fn.graphEmissionHandler && !this.hasPhysicalEffects(fn)
-      && !this.hasTokenContainerEffects(fn) && !this.hasStoragePointerParam(fn);
+    return !!fn.graphEmissionHandler && !this.hasTokenContainerEffects(fn)
+      && !this.hasStoragePointerParam(fn);
   }
 
   // An outgoing external edge, in the pre-semantic shapes this pass sees: `IFoo(a).m()` is a MethodCall until

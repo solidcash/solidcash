@@ -236,6 +236,17 @@ export interface TokenContainerAccessInfo {
   transferNftCount: number;   // number of transferNft() calls for this category
 }
 
+// X29. Owner-local effect frames an SCB1 route reserves on behalf of an effect-carrying graph emission handler
+// it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
+// kind; the site ordinal rides to the shared subroutine as hidden context.
+export interface GraphEffectFrame {
+  sites: number;
+  eventBase: number;
+  eventWidth: number;
+  transferBase: number;
+  transferWidth: number;
+}
+
 export interface CustomModifierInvocation {
   name: string;
   args: ExpressionNode[];
@@ -384,6 +395,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   graphEmissionHandler?: boolean;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
   graphRuntimeEmissionHandler?: boolean;
+  // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
+  // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
+  graphEffectFrame?: GraphEffectFrame;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
@@ -1067,6 +1081,11 @@ export class FunctionCallNode extends ExpressionNode {
   // Set when this call was desugared from `this.f(args)` (an external self-call). On BCH the covenant is the
   // contract itself, so calling an `external` function this way is allowed (the internal-call guard is bypassed).
   fromThisCall?: boolean;
+  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the SCB1 route body.
+  // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
+  // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
+  // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
+  graphEffectSite?: number;
 
   constructor(
     public identifier: IdentifierNode,

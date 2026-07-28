@@ -13,7 +13,8 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
-  createDataNftUnlocker, getDataNftAddress, getEventNftAddress,
+  createDataNftUnlocker, createSatoshiContainerUnlocker,
+  getDataNftAddress, getEventNftAddress, getSatoshiContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
 
 /**
@@ -68,18 +69,24 @@ function uniqueUtxo(seen: Set<string>, defaults?: Parameters<typeof randomUtxo>[
   throw new Error('could not draw a distinct funding outpoint');
 }
 
+const TRANSFER_SATS = 900n;
+
 /**
- * The caller. `emit` is the single measured variable: with it the handler carries a physical effect and its
- * graph clone is flattened; without it the clone stays behind OP_INVOKE. Both spellings reach the same two
- * legs through the same ordinary interface calls, so the dispatch is not a second variable.
+ * The caller. `emit` is the single measured variable of the original SEC-6 control: with it the handler carries
+ * a physical effect. Both spellings reach the same two legs through the same ordinary interface calls, so the
+ * dispatch is not a second variable.
+ *
+ * `transferring` is X29's second, INDEPENDENT variable, and it changes the signature (a recipient parameter), so
+ * it is never combined with an `emitting`-only cell - the two are measured on their own fixtures.
  */
-const hubSource = (emitting: boolean): string => `pragma solidcash >=0.8.0;
+const hubSource = (emitting: boolean, transferring = false): string => `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(uint value); function debit(uint value); }
 contract EscapeEffectHub() {
   uint total;
   event Fired(uint value);
-  function fireAll(address first, address second, uint value) public {
+  function fireAll(address first, address second, uint value${transferring ? ', bytes recipient' : ''}) public {
 ${emitting ? '    emit Fired(value);' : ''}
+${transferring ? `    this.transfer(recipient, ${TRANSFER_SATS});` : ''}
     IEffectLeg(first).credit(value);
     IEffectLeg(second).debit(value);
     require(true);
@@ -124,6 +131,16 @@ interface Cell {
   tamper?: 'none' | 'argument' | 'selector';
   /** Do the legs additionally require `msg.sender == hub`? The binding C1 and C3 both carry. */
   senderChecked?: boolean;
+  /**
+   * Build the reached event slot as a plain funding output instead of the event NFT. The guard negative
+   * control for X29: an honest graph that settles WITHOUT its event output is the silent-drop failure mode,
+   * not a repair. It must reject.
+   */
+  dropEvent?: boolean;
+  /** Does the caller's handler also make a satoshi `transfer`? X29's second, independent variable. */
+  transferring?: boolean;
+  /** Pay the reached transfer slot to a filler instead of the recipient. The transfer's guard control. */
+  dropTransfer?: boolean;
 }
 
 async function createGraphAuthority(provider: SemanticProvider): Promise<any> {
@@ -146,7 +163,7 @@ async function createGraphAuthority(provider: SemanticProvider): Promise<any> {
  */
 async function buildEffectSubstitution(cell: Cell): Promise<{
   builder: TransactionBuilder; transaction: string; provider: SemanticProvider;
-  callerInput: number; emissionSlots: number;
+  callerInput: number; emissionSlots: number; transferSlots: number;
 }> {
   const provider = createLayer3SemanticTestProvider();
   const outpoints = new Set<string>();
@@ -159,7 +176,7 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const hubArtifact = compileString(hubSource(cell.emitting), options);
+  const hubArtifact = compileString(hubSource(cell.emitting, cell.transferring === true), options);
   const legBArtifact = compileString(legBSource(cell.senderChecked === true), options);
   const legCArtifact = compileString(legCSource(cell.senderChecked === true), options);
 
@@ -179,7 +196,10 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
     { artifact: legCArtifact, lockingBytecode: legC.lockingBytecode },
   ];
   // The caller ALWAYS forwards its own `value` to both legs and always names its own two address arguments.
-  const rootArgs = [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE];
+  const recipient = new Contract(p2pkhArtifact, [alicePkh], { provider }).lockingBytecode;
+  const rootArgs = cell.transferring === true
+    ? [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE, recipient]
+    : [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE];
   const substituted = cell.tamper === 'argument' ? CALL_VALUE + 1n : CALL_VALUE;
   const statedSelector = cell.tamper === 'selector' ? 'credit' : 'debit';
   const invocations: layer3.CompiledGraphInvocation[] = [
@@ -224,6 +244,12 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   );
   for (const funding of fillers) await provider.addUtxo(p2pkh.address, funding);
 
+  const CONTAINER_SATS = 5_000n;
+  const container = uniqueUtxo(outpoints, { satoshis: CONTAINER_SATS });
+  if (cell.transferring === true) {
+    await provider.addUtxo(getSatoshiContainerAddress(hub, hubSetup.categoryId), container);
+  }
+
   const routeFor = (contract: Contract, artifact: any): any =>
     (...args: any[]): any => contract.createCompilerRouteUnlocker(
       artifact.hiddenBatch.route, hexToBin(artifact.hiddenBatch.selector),
@@ -242,6 +268,10 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
         hubSetup.dataNftUtxos[0],
         createDataNftUnlocker(hub, layout.participantInputs[0], hubSetup.categoryId),
       );
+    } else if (kind === 'satoshiContainer') {
+      tx.addInput(container, createSatoshiContainerUnlocker(
+        hub, layout.participantInputs[0], hubSetup.categoryId,
+      ));
     } else {
       tx.addInput(fillers[fillerCursor], p2pkh.unlock.spend(alicePub, signature()));
       fillerCursor += 1;
@@ -274,6 +304,7 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   const eventAddress = cell.emitting
     ? getEventNftAddress(hub, hubSetup.categoryId, hubArtifact.events![0].signature) : '';
   let eventCursor = 0;
+  let transferCursor = 0;
   for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
     const kind = hubSlotKind.get(offset);
     if (kind === 'master') {
@@ -288,9 +319,20 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
           category: hubSetup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: hubNext },
         },
       });
+    } else if (kind === 'satoshiContainer') {
+      tx.addOutput({
+        to: getSatoshiContainerAddress(hub, hubSetup.categoryId), amount: CONTAINER_SATS - TRANSFER_SATS,
+      });
+    } else if (kind === 'transfer') {
+      // Exactly one transfer is reached; every further conditional slot is an unreached filler.
+      const reached = transferCursor === 0 && cell.dropTransfer !== true;
+      transferCursor += 1;
+      tx.addOutput(reached
+        ? { to: p2pkh.address, amount: TRANSFER_SATS }
+        : { to: p2pkh.address, amount: 1000n });
     } else if (kind === 'event') {
       // Exactly one `Fired` is reached; every further conditional event slot is an unreached filler pair.
-      const reached = eventCursor === 0;
+      const reached = eventCursor === 0 && cell.dropEvent !== true;
       eventCursor += 1;
       tx.addOutput(reached ? {
         to: eventAddress, amount: 1000n,
@@ -328,6 +370,7 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
     provider,
     callerInput: layout.participantInputs[0],
     emissionSlots: hubLayout.slots.filter((slot: any) => slot.kind === 'event').length,
+    transferSlots: hubLayout.slots.filter((slot: any) => slot.kind === 'transfer').length,
   };
 }
 
@@ -370,13 +413,93 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
   );
 
   /**
-   * SEC-6, closed by refusal. The emit-carrying caller is no longer compiled at all, so the two substitutions
-   * above cannot be assembled against it. Recorded here because the refusal is only justified by what it
-   * replaces: at 9bf3e5ea this exact fixture, built by `buildEffectSubstitution({ emitting: true })`,
-   * SETTLED both substitutions - `preflightLayer3Transaction` returned ACCEPTED and the raw transaction was
-   * accepted by the provider - while the effect-free control rejected at input 0 in both. Reverting the
-   * refusal reproduces that.
+   * X29. The same two substitutions against the EMIT-CARRYING caller, which SEC-6 refused to compile at all and
+   * which at 9bf3e5ea both SETTLED. The clone now stays behind OP_INVOKE like the effect-free one, so the
+   * caller recomputes both of its outgoing edges and rejects at its own input - and it does so while still
+   * PRODUCING the event, which is the half a plain "keep it behind OP_INVOKE" would have dropped.
    */
+  it.each([{ tamper: 'argument' as const }, { tamper: 'selector' as const }])(
+    'rejects a %o substitution when the handler carries an emit', async (cell) => {
+      const built = await buildEffectSubstitution({ ...cell, emitting: true });
+      expect(built.emissionSlots).toBe(8);
+      expect(built.callerInput).toBe(0);
+      expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    }, 600_000,
+  );
+
+  // The honest positive control for the repaired shape. It must settle, and the event slots must actually be
+  // in the route's block - not zero, which is what "kept behind OP_INVOKE, effect dropped" looked like.
+  it('settles the honest graph with the emit-carrying caller', async () => {
+    const built = await buildEffectSubstitution({ emitting: true, tamper: 'none' });
+    expect(built.emissionSlots).toBe(8);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  /**
+   * The guard negative control, and the one that separates X29 from the failure mode SEC-6 already found once.
+   * Everything is the honest graph EXCEPT that the reached event slot carries a plain funding output instead of
+   * the event NFT. A route whose emit was silently dropped settles this unchanged; a route that genuinely
+   * produces the event cannot. It must reject at the caller's own input.
+   */
+  it('rejects the honest emit-carrying graph when its event output is missing', async () => {
+    const built = await buildEffectSubstitution({ emitting: true, tamper: 'none', dropEvent: true });
+    expect(built.emissionSlots).toBe(8);
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  /**
+   * X29's second effect, measured on its own fixture because it changes the handler's signature. A satoshi
+   * `transfer` is the other half of what C1 and C3 want alongside their outgoing calls, and it is strictly
+   * harder than an event: it also co-spends the route's satoshi container, so the subroutine settles the
+   * container identity and conservation too.
+   */
+  it('settles the honest graph with the transfer-carrying caller', async () => {
+    const built = await buildEffectSubstitution({ emitting: false, transferring: true, tamper: 'none' });
+    expect(built.transferSlots).toBe(8);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  // The transfer's guard control: paying the reached slot the wrong amount is the silent-drop signature.
+  it('rejects the honest transfer-carrying graph when its transfer output is wrong', async () => {
+    const built = await buildEffectSubstitution({
+      emitting: false, transferring: true, tamper: 'none', dropTransfer: true,
+    });
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  it.each([{ tamper: 'argument' as const }, { tamper: 'selector' as const }])(
+    'rejects a %o substitution when the handler carries a transfer', async (cell) => {
+      const built = await buildEffectSubstitution({ ...cell, emitting: false, transferring: true });
+      expect(built.callerInput).toBe(0);
+      expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    }, 600_000,
+  );
+
+  // Both effects at once - the shape C1's router and C3's hub actually have.
+  it('settles the honest graph with an emit AND a transfer', async () => {
+    const built = await buildEffectSubstitution({ emitting: true, transferring: true, tamper: 'none' });
+    expect([built.emissionSlots, built.transferSlots]).toEqual([8, 8]);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  it('rejects an argument substitution with both an emit and a transfer', async () => {
+    const built = await buildEffectSubstitution({
+      emitting: true, transferring: true, tamper: 'argument',
+    });
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
   // The binding C1 and C3 both carry, measured as a separate variable: requiring `msg.sender == hub` in every
   // callee does not change the effect-free caller's own recomputation - it still rejects at input 0.
   it('rejects an argument substitution with the callee also checking msg.sender', async () => {
@@ -396,11 +519,22 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 600_000);
 
-  it('refuses an emit-carrying graph emission handler by name', () => {
-    expect(() => compileString(hubSource(true), BUS_OPTIONS))
-      .toThrow(/makes an external call and also performs an emit or transfer, which is not enabled/);
-    expect(() => compileString(hubSource(true), BUS_OPTIONS)).toThrow(/'fireAll'/);
-  }, 30_000);
+  /**
+   * The structural half of the same claim, and the discriminator between the three shapes this file has held.
+   * Effect-free and emit-carrying now both admit the handler and both keep its clone behind OP_INVOKE, so the
+   * emission-row recomputation appears the same number of times; only the emit-carrying one reserves the event
+   * frames. The pre-SEC-6 flattened form scored 0 recomputations for the emit-carrying caller.
+   */
+  it('keeps the emit-carrying route bound AND gives it event slots', () => {
+    const mark = '76827752807c7e'; // verifyGraphEmissionRow's target||len||mode frame construction
+    const marks = (source: string): number =>
+      compileString(source, BUS_OPTIONS).bytecode.split(mark).length - 1;
+    expect(marks(hubSource(false))).toBeGreaterThan(0);
+    expect(marks(hubSource(true))).toBe(marks(hubSource(false)));
+    const emitting = compileString(hubSource(true), BUS_OPTIONS);
+    expect(emitting.hiddenBatch!.route.blockLayout!.slots.map((slot: any) => slot.kind))
+      .toEqual(['master', 'dataNft', ...Array.from({ length: 8 }, () => 'event')]);
+  }, 60_000);
 
   /**
    * The token-container spelling of the same idea does NOT reach the refusal, and the reason is worth pinning:

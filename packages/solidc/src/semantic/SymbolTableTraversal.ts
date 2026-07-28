@@ -194,6 +194,7 @@ import {
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
+import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 // Deployment-oriented density tuning may lower this per artifact after measurement.
@@ -1012,6 +1013,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+
+    // X29. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep their
+    // transcript binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
+    // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
+    // one frame per dispatch site, and record the frame on both. Runs after every function is visited because
+    // it needs each handler's own emit/transfer counts, which are assigned during that function's visit.
+    this.planGraphEffectFrames(node);
 
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
@@ -8831,12 +8839,64 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * X29. Plan the owner-local effect frames the SCB1 route owes its effect-carrying graph emission handlers.
+   *
+   * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
+   * recompute its outgoing edges and compare them against the authenticated transcript. Flattening it makes
+   * `__scb1` the current function at code generation and every edge generates unbound. But a handler carrying
+   * an `emit` or a `transfer` produces OUTPUTS, and outputs are addressed through a block layout that only an
+   * ENTRY POINT has - so the un-flattened handler had nowhere to put them and the effect was silently dropped.
+   *
+   * The route owns the block, so the route reserves the slots. The handler is ONE shared subroutine invoked
+   * once per dispatch site, so a compile-time output index cannot distinguish the sites: each site gets a
+   * consecutive frame `[base + site * width, ... + width)` and the site ordinal rides to the subroutine as
+   * hidden context (GenerateTargetTraversal). Sites that dispatch DIFFERENT handlers share a frame ordinal on
+   * purpose - one row reaches exactly one handler, so their frames are mutually exclusive.
+   */
+  private planGraphEffectFrames(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.hiddenBatchRoute);
+    if (!route?.body || !route.blockLayout) return;
+    const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
+      && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0));
+    if (handlers.length === 0) return;
+    const byName = new Map(handlers.map((fn) => [fn.name, fn]));
+    const siteCounts = new Map<string, number>();
+    walkInvocationAst(route.body, (candidate) => {
+      if (!(candidate instanceof FunctionCallNode)) return;
+      const target = byName.get(candidate.identifier.name);
+      if (!target) return;
+      const ordinal = siteCounts.get(target.name) ?? 0;
+      candidate.graphEffectSite = ordinal;
+      siteCounts.set(target.name, ordinal + 1);
+    });
+    const sites = Math.max(0, ...siteCounts.values());
+    if (sites === 0) return;
+    const frame = {
+      sites,
+      eventBase: route.emitInfos?.length ?? 0,
+      eventWidth: Math.max(0, ...handlers.map((fn) => fn.emitInfos?.length ?? 0)),
+      transferBase: route.transferInfos?.length ?? 0,
+      transferWidth: Math.max(0, ...handlers.map((fn) => fn.transferInfos?.length ?? 0)),
+    };
+    route.graphEffectFrame = frame;
+    for (const fn of handlers) fn.graphEffectFrame = frame;
+    // Recompute rather than patch: slot ORDER inside a block is canonical (the SDK builds outputs from it and
+    // countOutputOnlySlotsBefore reads it), so the frames must land in the same position a flattened handler's
+    // own effects would have.
+    route.blockLayout = this.computeBlockLayout(route);
+  }
+
+  /**
    * Compute the 1:1 block layout for a stateful function.
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
+    // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.
+    const graphFrame = node.hiddenBatchRoute ? node.graphEffectFrame : undefined;
+    const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
+    const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -8927,8 +8987,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Satoshi container (if function has transfers)
-    if (node.transferInfos && node.transferInfos.length > 0) {
+    // Satoshi container (if function has transfers - its own, or a graph handler's frames)
+    if ((node.transferInfos && node.transferInfos.length > 0) || graphTransfers > 0) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -8948,6 +9008,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'transfer', offset: offset++, slotIndex: i });
       }
     }
+    for (let i = 0; i < graphTransfers; i++) {
+      slots.push({
+        kind: 'transfer', offset: offset++, slotIndex: (node.transferInfos?.length ?? 0) + i, conditional: true,
+      });
+    }
 
     // TC transfers (output-only - one slot per transfer/transferNft operation)
     if (node.tokenContainerAccesses) {
@@ -8965,6 +9030,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (let i = 0; i < node.emitInfos.length; i++) {
         slots.push({ kind: 'event', offset: offset++, slotIndex: i });
       }
+    }
+    for (let i = 0; i < graphEvents; i++) {
+      slots.push({
+        kind: 'event', offset: offset++, slotIndex: (node.emitInfos?.length ?? 0) + i, conditional: true,
+      });
     }
 
     // Return event (output-only)

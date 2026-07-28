@@ -5024,3 +5024,13 @@ The focused suite is **1002/1002**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1005/1005**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 486, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Function-pointer value-option loop: 4443 flat, NEG-ACCEPTED 486 -> 484 (-2)
+
+- External function values now retain their declared `pure`, `view`, `payable`, or `nonpayable` mutability in
+  their resolved `FunctionType`, including function references inside inline arrays.
+- Solidity-compatible calls reject `{value: ...}` on nonpayable function pointers while retaining payable pointer
+  calls and gas-only options.
+
+The focused suite is **1006/1006**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+484, plus 275 multifile and 289 cmdline fixtures excluded.

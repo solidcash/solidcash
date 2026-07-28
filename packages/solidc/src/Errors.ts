@@ -843,6 +843,12 @@ export class InvalidModifierCombinationError extends SolidCashError {
   }
 }
 
+export class InvalidCallOptionError extends SolidCashError {
+  constructor(node: Node, option: string, target: string) {
+    super(node, `Cannot set call option '${option}' on ${target}`);
+  }
+}
+
 export class InternalCallToExternalError extends SolidCashError {
   constructor(node: FunctionCallNode | FunctionCallStatementNode) {
     const name = node instanceof FunctionCallNode ? node.identifier.name : node.call.identifier.name;

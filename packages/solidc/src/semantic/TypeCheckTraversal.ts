@@ -109,6 +109,7 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  FunctionModifier,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -156,6 +157,7 @@ import {
   RevertArgumentTypeError,
   PackedArrayUnsupportedTypeError,
   IntLiteralOutOfRangeError,
+  InvalidCallOptionError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -1470,6 +1472,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (!(ft instanceof FunctionType)) {
       throw new TypeError(node, node.callee.type ?? PrimitiveType.VOID, new FunctionType([], []));
     }
+    if (this.strictSolidityValidation && node.callOptions?.value && ft.stateMutability !== 'payable') {
+      throw new InvalidCallOptionError(node, 'value', 'a non-payable function type');
+    }
     node.parameters = this.coerceHexArgs(node.parameters, ft.parameterTypes);
     expectParameters(node, node.parameters.map((p: ExpressionNode) => p.type!), ft.parameterTypes);
     node.type = ft.returnTypes.length === 1 ? ft.returnTypes[0]
@@ -1515,6 +1520,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (!node.fromThisCall && node.identifier.type instanceof FunctionType
       && (!this.functionDefinitions.has(node.identifier.name) || node.lexicalIndirectCall)) {
       const ft = node.identifier.type;
+      if (this.strictSolidityValidation && node.callOptions?.value && ft.stateMutability !== 'payable') {
+        throw new InvalidCallOptionError(node, 'value', 'a non-payable function type');
+      }
       // Both internal and self-external (`this.f`) pointers dispatch via `<functionId> OP_INVOKE`: an external
       // FunctionType value has no (address, selector) representation yet (barred from state + ABI), so the only
       // creatable external pointer is a self-ref carrying a functionId. Foreign IFoo(addr).method is Phase B.
@@ -2886,10 +2894,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     // functions accrue - the pointer signature is the DECLARED one the caller wrote.
     if (node.functionReference) {
       const declaredParams = node.functionReference.parameters.filter((p) => !p.name.startsWith('__internal__'));
+      const stateMutability = node.functionReference.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable'
+        : node.functionReference.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+          : node.functionReference.modifiers.includes(FunctionModifier.VIEW) ? 'view' : 'nonpayable';
       node.type = new FunctionType(
         declaredParams.map((p) => p.type),
         node.functionReference.returnTypes,
         node.isExternalSelfRef,
+        stateMutability,
       );
       return node;
     }

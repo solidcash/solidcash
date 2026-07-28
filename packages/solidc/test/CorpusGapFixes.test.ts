@@ -5739,6 +5739,12 @@ describe('call options on function-pointer identifiers', () => {
     { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 
+  it('rejects value options on a non-payable external-function pointer', () => {
+    expect(() => compileString('contract C { function(uint) external returns (uint) x;'
+      + ' function f() public { x{value: 2}(1); } }',
+    { solidityImportCompat: true, forceStateful: true })).toThrow(/value.*non-payable function type/i);
+  });
+
   it('retains value options while lowering a payable external-function pointer call', () => {
     expect(compileString('contract C { function(uint) external payable returns (uint) x;'
       + ' function f() public { x{value: 2}(1); } }',

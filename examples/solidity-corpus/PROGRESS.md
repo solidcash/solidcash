@@ -4899,3 +4899,12 @@ The focused suite is **969/969**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **972/972**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 507, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Custom-error selector-collision loop: 4443 flat, NEG-ACCEPTED 507 -> 505 (-2)
+
+- Solidity-compatible custom errors now reject distinct signatures sharing one 4-byte EVM selector.
+- Collision tracking covers errors declared across a contract and its library namespace.
+- Distinct selectors and repeated references to the same signature remain valid.
+
+The focused suite is **975/975**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+505, plus 275 multifile and 289 cmdline fixtures excluded.

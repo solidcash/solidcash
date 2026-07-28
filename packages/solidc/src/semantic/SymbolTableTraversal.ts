@@ -142,6 +142,7 @@ import {
   UndefinedEventError,
   ErrorRedefinitionError,
   ReservedErrorSelectorError,
+  ErrorSelectorCollisionError,
   UndefinedErrorError,
   TokenContainerKeyMustBeParameterError,
   TokenContainerTransferInConstructorError,
@@ -323,6 +324,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // intentionally mismatched interface return layout without extending that relaxation to value contexts.
   private discardedMethodCalls: WeakSet<MethodCallNode> = new WeakSet();
   private errorMap: Map<string, ErrorDefinitionNode> = new Map();
+  private errorSelectorMap: Map<string, ErrorDefinitionNode> = new Map();
   private insideBranch: boolean = false;
   private isStatefulContract: boolean = false;
   private compilerOptions: CompilerOptions;
@@ -7879,11 +7881,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (selectorHex === '00000000' || selectorHex === 'ffffffff') {
       throw new ReservedErrorSelectorError(err, selectorHex);
     }
+    const selectorOwner = this.errorSelectorMap.get(selectorHex);
+    if (this.compilerOptions.solidityImportCompat && selectorOwner
+      && selectorOwner.signature !== sig) {
+      throw new ErrorSelectorCollisionError(err, selectorOwner, selectorHex);
+    }
     err.signature = sig;
     if (this.errorMap.has(sig)) {
       throw new ErrorRedefinitionError(err);
     }
     this.errorMap.set(sig, err);
+    this.errorSelectorMap.set(selectorHex, err);
   }
 
   visitRequire(node: RequireNode): Node {

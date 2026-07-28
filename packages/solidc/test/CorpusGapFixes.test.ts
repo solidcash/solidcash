@@ -466,6 +466,28 @@ describe('Solidity custom-error ABI parameter types', () => {
   });
 });
 
+describe('Solidity custom-error selector collisions', () => {
+  const cc = (source: string): string => compileString(source, {
+    solidityImportCompat: true,
+  }).contractName;
+
+  it('rejects colliding signatures declared in one contract', () => {
+    expect(() => cc('contract C { error gsf(); error tgeo(); }'))
+      .toThrow(/same 4-byte selector.*gsf/i);
+  });
+
+  it('rejects a collision between library and contract errors', () => {
+    expect(() => cc(
+      'library L { error gsf(); } contract C { error tgeo();'
+      + ' function f(bool a) public { if (a) revert L.gsf(); else revert tgeo(); } }',
+    )).toThrow(/same 4-byte selector.*gsf/i);
+  });
+
+  it('retains distinct selectors and duplicate references to one signature', () => {
+    expect(cc('library L { error Fine(); } contract C { error Other(uint value); }')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

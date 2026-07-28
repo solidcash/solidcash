@@ -747,6 +747,12 @@ export class ReservedErrorSelectorError extends SolidCashError {
   }
 }
 
+export class ErrorSelectorCollisionError extends RedefinitionError {
+  constructor(node: ErrorDefinitionNode, existing: ErrorDefinitionNode, selectorHex: string) {
+    super(node, `Error '${node.name}' has the same 4-byte selector (0x${selectorHex}) as error '${existing.name}'`);
+  }
+}
+
 export class UndefinedErrorError extends SolidCashError {
   constructor(node: RevertNode | RequireNode) {
     super(node, `Undefined error '${node.errorName}'`);

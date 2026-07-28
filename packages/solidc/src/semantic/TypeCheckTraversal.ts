@@ -1894,7 +1894,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     const getter = (this.functionDefinitions.get(expr.name) ?? []).find((fn) => {
       const params = fn.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type);
-      return implicitlyCastable(new FunctionType(params, fn.returnTypes, true), expected);
+      return implicitlyCastable(new FunctionType(params, fn.returnTypes, true, 'view'), expected);
     });
     if (!getter) return expr;
     const ref = new IdentifierNode(expr.name);

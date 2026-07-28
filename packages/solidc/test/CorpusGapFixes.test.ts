@@ -5752,6 +5752,31 @@ describe('call options on function-pointer identifiers', () => {
   });
 });
 
+describe('Solidity function-type mutability conversions', () => {
+  const declaration = (actual: string, expected: string): string =>
+    `contract C { function h() ${actual === 'nonpayable' ? '' : actual} external {}`
+    + ` function f() external view returns (bytes4) {`
+    + ` function() ${expected === 'nonpayable' ? '' : expected} external g = this.h; return g.selector; } }`;
+
+  it.each([
+    ['nonpayable', 'payable'], ['nonpayable', 'pure'], ['nonpayable', 'view'],
+    ['payable', 'pure'], ['payable', 'view'], ['pure', 'payable'],
+    ['view', 'payable'], ['view', 'pure'],
+  ])('rejects %s -> %s', (actual, expected) => {
+    expect(() => compileString(declaration(actual, expected), {
+      solidityImportCompat: true,
+    })).toThrow();
+  });
+
+  it.each([
+    ['pure', 'view'], ['pure', 'nonpayable'], ['view', 'nonpayable'], ['payable', 'nonpayable'],
+  ])('retains %s -> %s', (actual, expected) => {
+    expect(compileString(declaration(actual, expected), {
+      solidityImportCompat: true,
+    }).contractName).toBe('C');
+  });
+});
+
 describe('empty abi.decode schema', () => {
   it('accepts abi.decode(data, ()) as an empty tuple expression', () => {
     expect(compileString('contract C { function f() public pure { abi.decode("abc", ()); } }',

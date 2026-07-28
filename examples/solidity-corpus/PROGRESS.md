@@ -5034,3 +5034,14 @@ The focused suite is **1005/1005**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1006/1006**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 484, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Function-type mutability-conversion loop: 4443 flat, NEG-ACCEPTED 484 -> 475 (-9)
+
+- Function-type implicit conversions now follow Solidity's directional capability rules: `pure` may become
+  `view` or `nonpayable`, and `view`/`payable` may become `nonpayable`; conversions which gain purity or
+  payability reject.
+- Function references, external contract/interface members, inline arrays, and synthesized public getters now
+  retain their declared mutability so valid conversions and function-valued error arguments remain typed.
+
+The focused suite is **1018/1018**, and the utils suite is **288 passed** with one todo. The full corpus remains
+**4443/4587**, 144 failed, while NEG-ACCEPTED falls to 475, plus 275 multifile and 289 cmdline fixtures excluded.

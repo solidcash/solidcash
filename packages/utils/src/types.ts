@@ -422,11 +422,15 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     return false;
   }
 
-  // Function types: only an exact structural match casts (and never to/from anything else, so a raw
-  // int can't become a function pointer). Compared via toString, which encodes params + returns.
+  // Function types require the same parameter/return/external shape. Mutability conversion is directional:
+  // pure -> view/nonpayable, view -> nonpayable, and payable -> nonpayable lose capabilities and are safe;
+  // the inverse directions would promise behavior the referenced function does not provide.
   if (actual instanceof FunctionType || expected instanceof FunctionType) {
-    return actual instanceof FunctionType && expected instanceof FunctionType
-      && actual.toString() === expected.toString();
+    if (!(actual instanceof FunctionType) || !(expected instanceof FunctionType)
+      || actual.toString() !== expected.toString()) return false;
+    if (actual.stateMutability === expected.stateMutability) return true;
+    if (expected.stateMutability === 'nonpayable') return true;
+    return actual.stateMutability === 'pure' && expected.stateMutability === 'view';
   }
 
   // Token containers can't be implicitly cast

@@ -8612,6 +8612,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           method.parameters.map((parameter) => parameter.type),
           method.returnTypes,
           true,
+          method instanceof InterfaceFunctionNode ? method.stateMutability
+            : method.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable'
+              : method.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+                : method.modifiers.includes(FunctionModifier.VIEW) ? 'view' : 'nonpayable',
         );
         const nominal = new CastNode(nominalType, blob, true);
         nominal.location = node.location;

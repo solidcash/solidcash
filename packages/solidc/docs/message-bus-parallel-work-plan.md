@@ -127,7 +127,7 @@ task-specific report, not in this table.
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | INTEGRATED (scoped) | 4.7 gaps 1-2 closed; gap 3 closed where a bound exists, SCOPED otherwise |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | **PROVEN** | reviewed by C (2 findings), both closed by X7, regressions green - see 4.29 |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | **PROVEN** | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
-| E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (partial) | classes enumerated; item 2 NOT satisfied - two classes do not fail closed |
+| E3 | Explicit delegate-participant classes | B | E1 | **CHANGES** | reviewed by A: BOTH admitted classes escape - see 4.42 |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
@@ -196,6 +196,59 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.42 Round-13: E3's two ADMITTED classes both escape; G2/G3/C3 clean; two recorded figures wrong
+
+**E3 - both admitted classes are reachable by shapes E3 itself refuses, and both settle on the VM.** Worker A
+reviewed it, having not written it.
+
+- **A13-1**: `pinnedInProxyBytecode` is a substring test AND it is the FIRST branch, so it short-circuits the
+  `caller-chosen` refusal below it. A proxy taking its implementation as a constructor argument - so its p2sh32
+  genuinely commits to those bytes - while `delegatecall`ing a caller-supplied `impl` parameter is classified
+  `bytecode-pinned`, the class with the STRONGEST identity claim. A foreign implementation rewrites proxy state
+  5 to 999 and settles. The honest control differs only in where `impl` comes from and is refused at input 0.
+  **The compiler emits SEC-2's warning on the very same source - so the SDK gate contradicts the compiler.**
+- **A13-2**: `caller-authorized` requires only that SOME `sig` parameter exists. A proxy with NO constructor
+  arguments - storing no authority at all - whose `checkSig` is against a caller-supplied pubkey is classified
+  `caller-authorized`; a stranger settles 5 to 999. **Nothing warns**: SEC-2's suppressor matches any
+  `checkSig` anywhere in the body without asking which key it checks.
+
+Both are gate-level - the gate is wired to nothing - so the on-chain effect is SEC-2's known warn-only takeover.
+What is new is that E3's own gate labels these ADMITTED, and in the second shape suppresses the warning too.
+E3 moves to CHANGES.
+
+**E4 - Worker C's round-11 correction confirmed independently, and extended.** A real 25-byte origin IS
+available; the actual failure is that a handler reading `msg.sender` cannot execute. **It is not root-specific:**
+a non-root EMISSION handler fails identically (`OP_SPLIT`, 35-byte operand, input 1), while the same predicate
+at a LEAF settles - the varying field is exactly whether the handler makes an outgoing call. **And it is not
+only `msg.sender`:** `msg.sig` and `msg.data` break at the emission position too. It is fail-closed, not
+silently wrong - all four locking bytecodes present give OP_VERIFY.
+
+**That scopes a ledger PROVEN row.** The row claiming logical `msg.sender`/`msg.sig`/`msg.data` PROVEN for
+admitted graph handlers is scoped to handlers with **no outgoing call** - confirmed by reading the committed
+fixture, which puts all three reads in a participant that makes no calls.
+
+**G2, G3 and C3 clean.** Worker C attacked three occurrence tampers the shipped set does not contain -
+selector-only, call-mode, and reparent - all reject at input 0, and concluded the set's completeness is a
+property of the MECHANISM (a byte-exact prefix partition plus an empty-remainder requirement) rather than of the
+enumeration. G3's scoped fail-closed claim, previously prose with no VM case, now has one. X36 does not weaken
+G2: enforcement is the caller covenant, not the planner.
+
+**Two recorded figures are wrong, both found by review.**
+- **C1's capacity numbers do not reproduce.** Recorded projections 0.5231/0.5154/0.5151/0.5204/0.5127 and
+  controller 0.8057; measured run-to-completion at HEAD: **0.4627/0.4552/0.4548/0.4532/0.4525** and
+  **0.6171**. Attribution is exact: they were written at `14089e2e` and X27's `attest` suffix-split - the
+  controller script itself - landed **55 seconds later in the same branch**. The figures predate the
+  optimisation of the script they measure.
+- **C1's structural-guard justification is false**, though the guard still works as a drift detector. The
+  published `blockLayout` is NOT an exact proxy for the compiler predicate: it is not sufficient (X29 repaired
+  exactly the shape it would reject) and not attributable (a route slot carries no owner). The per-handler
+  projection IS the right signal, and the SDK already uses it elsewhere.
+
+**Two scope corrections to C3's own notes.** Injection is refused by the CONTROLLER ALONE on all three
+placements, so its note crediting "the graph table's exhaustiveness over the whole transaction" describes one
+covenant, not a system property. And re-rooting by the parent field alone leaves every projection proof
+satisfied - only the controller refuses - so the depth-dispatch credit is specific to the depth-0 spelling.
 
 ### 4.41 SIX MORE ROWS PROMOTED TO PROVEN at `f2c53a5d`
 

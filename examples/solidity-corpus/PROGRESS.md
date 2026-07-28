@@ -5133,3 +5133,15 @@ The focused suite is **1044/1044**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1047/1047**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 430, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### User-defined operator declaration loop: 4443 flat, NEG-ACCEPTED 430 -> 418 (-12)
+
+- File-level operator aliases are now validated before helper inlining can erase their declarations: definitions
+  must be global, target a user-defined value type, and reference a pure free function with exact operand arity,
+  operand types, and return type.
+- Conflicting definitions of the same operator and operand type are rejected across and within directives.
+  Solidity's valid repetition of the same function alias remains accepted, as do ordinary library bindings inside
+  interfaces.
+
+The focused suite is **1051/1051**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+418, plus 275 multifile and 289 cmdline fixtures excluded.

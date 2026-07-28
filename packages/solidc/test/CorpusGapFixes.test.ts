@@ -7713,6 +7713,50 @@ describe('UDVT operator overloads on state values', () => {
   });
 });
 
+describe('UDVT operator declaration validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects non-global and interface-scoped operator directives', () => {
+    expect(() => cc('type T is uint; function add(T a, T b) pure returns (T) { return a; }'
+      + ' using { add as + } for T; contract C {}'))
+      .toThrow(/Operators can only be defined in a file-level global/);
+    expect(() => cc('type T is uint; function add(T a, T b) pure returns (T) { return a; }'
+      + ' interface I { using { add as + } for T; } contract C {}'))
+      .toThrow(/file-level global/);
+  });
+
+  it('rejects duplicate operator definitions', () => {
+    expect(() => cc('type T is uint;'
+      + ' function add(T a, T b) pure returns (T) { return a; }'
+      + ' function sub(T a, T b) pure returns (T) { return b; }'
+      + ' using { add as +, sub as + } for T global; contract C {}'))
+      .toThrow(/more than one definition/);
+  });
+
+  it('requires pure functions with exact operand and return types', () => {
+    expect(() => cc('type T is uint; function add(T a) pure returns (T) { return a; }'
+      + ' using { add as + } for T global; contract C {}'))
+      .toThrow(/Wrong parameters/);
+    expect(() => cc('type T is uint; function add(T a, T b) view returns (T) { return a; }'
+      + ' using { add as + } for T global; contract C {}'))
+      .toThrow(/Only pure free functions/);
+    expect(() => cc('type T is uint; function add(T a, T b) pure returns (uint) { return 0; }'
+      + ' using { add as + } for T global; contract C {}'))
+      .toThrow(/Wrong return parameters/);
+  });
+
+  it('retains valid arithmetic and comparison definitions', () => {
+    expect(cc('type T is uint;'
+      + ' function add(T a, T b) pure returns (T) { return a; }'
+      + ' function eq(T a, T b) pure returns (bool) { return true; }'
+      + ' using { add as +, eq as == } for T global;'
+      + ' contract C { function f(T a, T b) public pure returns (bool) { return a + b == a; } }')).toBe('C');
+    expect(cc('type T is uint; function add(T a, T b) pure returns (T) { return a; }'
+      + ' using { add as +, add as + } for T global; contract C {}')).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

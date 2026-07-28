@@ -816,6 +816,77 @@ export default class AstBuilder
         }
       }
 
+      // Validate operator aliases while their source declarations are still intact. Several compatibility
+      // lowerings inline and then remove free helpers/directives before SymbolTableTraversal, so relying only on
+      // its equivalent checks would allow malformed or duplicate Solidity operator definitions to disappear.
+      const valueTypeNames = new Set(typeDefinitions.map((definition) => definition.name));
+      const operatorDefinitions = new Map<string, string>();
+      const comparisonOperators = new Set(['==', '!=', '<', '<=', '>', '>=']);
+      for (const directive of usingForDirectives) {
+        for (const binding of directive.functionBindings ?? []) {
+          const operator = binding.operator;
+          if (!operator) continue;
+          if (!directive.isGlobal) {
+            throw new ParseError(
+              "Operators can only be defined in a file-level global 'using for' directive",
+              directive.location,
+            );
+          }
+          const targetName = directive.targetTypeName;
+          if (!targetName || !valueTypeNames.has(targetName)) {
+            throw new ParseError(
+              'Operators can only be implemented for user-defined value types',
+              directive.location,
+            );
+          }
+          const fn = freeFunctions.find((candidate) => candidate.name === binding.funcName)!;
+          const params = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+          const unary = params.length === 1;
+          const requiredArity = operator === '~' ? 1 : operator === '-' ? undefined : 2;
+          if ((requiredArity !== undefined && params.length !== requiredArity)
+            || (operator === '-' && params.length !== 1 && params.length !== 2)) {
+            throw new ParseError(
+              `Wrong parameters in operator definition '${binding.funcName}'`,
+              directive.location,
+            );
+          }
+          if (!fn.isFreeFunction || !fn.modifiers.includes(FunctionModifier.PURE)) {
+            throw new ParseError(
+              'Only pure free functions can be used to define operators',
+              directive.location,
+            );
+          }
+          if (params.some((parameter) =>
+            !(parameter.type instanceof ValueType) || parameter.type.name !== targetName)) {
+            throw new ParseError(
+              `Wrong parameters in operator definition '${binding.funcName}'`,
+              directive.location,
+            );
+          }
+          const expectedBoolean = comparisonOperators.has(operator);
+          const validReturn = fn.returnTypes.length === 1
+            && (expectedBoolean
+              ? fn.returnTypes[0] === PrimitiveType.BOOL
+              : fn.returnTypes[0] instanceof ValueType && fn.returnTypes[0].name === targetName);
+          if (!validReturn) {
+            throw new ParseError(
+              `Wrong return parameters in operator definition '${binding.funcName}'`,
+              directive.location,
+            );
+          }
+          const key = `${targetName}/${operator}/${unary ? 1 : 2}`;
+          const existingDefinition = operatorDefinitions.get(key);
+          if (existingDefinition && existingDefinition !== binding.funcName) {
+            throw new ParseError(
+              `User-defined operator '${operator}' already has a definition for '${targetName}' `
+              + '(more than one definition is not allowed)',
+              directive.location,
+            );
+          }
+          operatorDefinitions.set(key, binding.funcName);
+        }
+      }
+
       // Preserve source-level mutability diagnostics before operator/free-function inlining can erase the
       // external call. An interface-typed constant receiver (`I constant X = ...; X.viewFn()`) retains its
       // interface tag on the constant's AddressType.
@@ -6222,6 +6293,18 @@ export default class AstBuilder
     const identifiers = ctx.Identifier_list();
     const name = identifiers[0].getText();
     const parentNames = identifiers.slice(1).map((id) => id.getText());
+    const invalidOperatorDirective = this.solidityImportCompat
+      ? ctx.usingForDirective_list().find((directiveContext) => {
+        const directive = this.visit(directiveContext) as UsingForDirectiveNode;
+        return directive.functionBindings?.some((binding) => binding.operator) ?? false;
+      })
+      : undefined;
+    if (invalidOperatorDirective) {
+      throw new ParseError(
+        'Operators can only be defined in a file-level global "using for" directive',
+        Location.fromCtx(invalidOperatorDirective),
+      );
+    }
 
     // Interface-level enum definitions
     const enumDefs = ctx.enumDefinition_list().map((e) => this.visitEnumDefinition(e));

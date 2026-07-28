@@ -8994,7 +8994,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       overloads = new Map();
       this.operatorOverloads.set(typeKey, overloads);
     }
-    if (overloads.has(opKey)) {
+    const existingDefinition = overloads.get(opKey);
+    if (existingDefinition && existingDefinition !== funcName) {
       throw new OperatorOverloadSignatureError(
         node, funcName, `operator '${operator}' already has a definition for '${typeKey}'`,
       );

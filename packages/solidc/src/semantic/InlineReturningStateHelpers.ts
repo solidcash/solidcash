@@ -173,7 +173,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const directive of node.usingForDirectives ?? []) {
       if (!directive.isGlobal || !directive.targetTypeName) continue; // semantic pass validates other directives
       const targetName = directive.targetTypeName;
-      const seen = new Set<string>();
+      const seen = new Map<string, string>();
       for (const binding of directive.functionBindings ?? []) {
         if (!binding.operator) continue;
         const fn = (node.freeFunctions ?? []).find((candidate) => candidate.name === binding.funcName);
@@ -206,12 +206,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           );
         }
         const key = `${binding.operator}/${unary ? 1 : 2}`;
-        if (seen.has(key)) {
+        const existingDefinition = seen.get(key);
+        if (existingDefinition && existingDefinition !== binding.funcName) {
           throw new OperatorOverloadSignatureError(
             directive, binding.funcName, `operator '${binding.operator}' already has a definition`,
           );
         }
-        seen.add(key);
+        seen.set(key, binding.funcName);
       }
     }
   }

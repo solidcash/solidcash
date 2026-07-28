@@ -4882,3 +4882,11 @@ The focused suite is **963/963**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **967/967**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 509, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity enum member-limit loop: 4443 flat, NEG-ACCEPTED 509 -> 508 (-1)
+
+- Solidity-compatible enums now reject declarations with more than 256 members.
+- The exact 256-member boundary remains valid.
+
+The focused suite is **969/969**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+508, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -422,6 +422,24 @@ describe('Solidity UDVT underlying value types', () => {
   });
 });
 
+describe('Solidity enum member limit', () => {
+  const cc = (count: number): string => {
+    const members = Array.from({ length: count }, (_, i) => `M${i}`).join(',');
+    return compileString(
+      `enum E { ${members} } contract C { E value; }`,
+      { solidityImportCompat: true },
+    ).contractName;
+  };
+
+  it('rejects an enum with more than 256 members', () => {
+    expect(() => cc(257)).toThrow(/enum with more than 256 members/i);
+  });
+
+  it('accepts an enum at the 256-member limit', () => {
+    expect(cc(256)).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

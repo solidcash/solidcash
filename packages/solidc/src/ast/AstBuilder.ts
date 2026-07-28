@@ -5862,6 +5862,9 @@ export default class AstBuilder
 
   visitEnumDefinition(ctx: EnumDefinitionContext): EnumDefinitionNode {
     const name = ctx.anyIdentifier().getText();
+    if (this.solidityImportCompat && ctx.enumMember_list().length > 256) {
+      throw new ParseError('Enum with more than 256 members is not allowed', Location.fromCtx(ctx));
+    }
     const members: { name: string; value: bigint }[] = [];
     const memberNames = new Set<string>();
     let nextValue = 0n;

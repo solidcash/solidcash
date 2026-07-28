@@ -126,19 +126,19 @@ task-specific report, not in this table.
 | G2 | Loop occurrence/order preservation and exact exhaustion | A | G1 | INTEGRATED | `4c131f9b`; missing/injected/duplicated/reordered/argument all reject |
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | INTEGRATED (scoped) | 4.7 gaps 1-2 closed; gap 3 closed where a bound exists, SCOPED otherwise |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | **PROVEN** | reviewed by C (2 findings), both closed by X7, regressions green - see 4.29 |
-| E2 | Call options and bounded iterated low-level calls | B | E1 | INTEGRATED (partial) | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
+| E2 | Call options and bounded iterated low-level calls | B | E1 | **PROVEN** | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (partial) | classes enumerated; item 2 NOT satisfied - two classes do not fail closed |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
-| S2 | Mixed scalar/collection/dynamic journals | C | S1 | INTEGRATED (partial) | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
+| S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
-| L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
-| L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
+| L1 | Fully relocatable balanced participant block | C | P0.1 | **PROVEN** | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
+| L2 | SDK funding/change/event-NFT block assembly | C | L1 | **PROVEN** | preflight is a capability, not a wired gate; 2 criteria SDK-only |
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | CHANGES (round 9) | B correcting C1-R1 and C1-R4 in its own file |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | **PROVEN** | reviewed by B, clean, re-verified twice post-SEC-5 - see 4.29 |
 | C3 | Eight-participant semantic capstone | C | C1,C2 | CHANGES (round 9) | test fixed by B; A correcting C3-R2, C3-R3 and the blocker attribution |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | INTEGRATED | blocker is the CONTROLLER at 1.2286x, not the projection |
-| X27 | Destructive left-to-right walk in `attest` | B | X25 | LEASED | round 9, after C1 CHANGES and X21 |
+| X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
@@ -184,7 +184,7 @@ task-specific report, not in this table.
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
 | X22 | Result-consuming handler that also carries an effect | A | C1 | LEASED | round 9; name it or admit it - silence and sentinels both unacceptable |
-| X23 | Reduce projection-verifier operation density | B | C1 | INTEGRATED | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
+| X23 | Reduce projection-verifier operation density | B | C1 | **PROVEN** | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
 | X24 | Unroll the constant-depth stack-write shuttle | C | X23 | INTEGRATED | -17.5% on projections, NOT the ~7x estimated - see 4.30 |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
@@ -196,6 +196,28 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.41 SIX MORE ROWS PROMOTED TO PROVEN at `f2c53a5d`
+
+Rounds 11 and 12 completed the cycle section 3.3 requires: an independent hostile review by a worker that did
+not implement the row, every finding fixed and integrated, and regressions green. Verified at this commit:
+**solidc 2,463 / 0**, **solidcash 4,011 / 0**.
+
+| Row | Reviewer | Review outcome | Resolution |
+| --- | --- | --- | --- |
+| **L1** | B | CLEAN - and it pinned L1's one unindexed hostile row, extended relocation to a third width, and closed the strongest structural hypothesis | nothing to fix |
+| **L2** | B | 2 findings - the gate silenced by a bare `Unlocker`, and two documented checks dead on the wired path | both closed by B in X32 |
+| **S2** | B | 1 finding - the guard walked `fn.body` only | closed by C in X33 |
+| **E2** | C | 1 finding - the option refusal was on the entry point nothing uses | closed by B in X31 |
+| **X23** | C | CLEAN - and C closed the evidence limit X23's own author could not | nothing to fix |
+| **X27** | C | CLEAN at the `frame.length` boundary | nothing to fix |
+
+**Running total: 10 PROVEN.** Every one names a reviewer who did not write it.
+
+**Still not promotable, and the list is the point.** X29, SEC-6 and SEC-7 were reviewed by A and produced SEC-8
+and SEC-9 - both fixed, but the FIXES have had no independent review, so promoting them would restart exactly
+the loop that caught them. C1 and C3 carry unreviewed reshapes. G2, G3, E3, E4 and roughly fifteen X rows have
+never been attacked at all. SEC-10 is open and unmeasured.
 
 ### 4.40 X31/X32: the obvious fix was wrong in both cases, and measurement said so first
 

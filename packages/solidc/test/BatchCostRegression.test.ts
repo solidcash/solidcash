@@ -79,11 +79,16 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       batchBytes: byteLength(batch),
       covenantDeltaBytes: byteLength(batch) - byteLength(direct),
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
+    // X24 moved two of these. A write to a stack variable at depth N is now unrolled into 3N-2 instructions
+    // instead of two counted OP_BEGIN loops, so this route's deep writes cost bytes where they used to cost
+    // ~22N executed instructions each. The route BODY shrank 1565 -> 1554 (the outliner shares the repeated
+    // 3-op runs better than it shared the 26-byte loop) while the whole artifact grew 4773 -> 4814.
+    // `directBytes` is unchanged, which is the control: the direct route has no depth-14 write.
     }).toEqual({
       directBytes: 3157,
-      batchBytes: 4773,
-      covenantDeltaBytes: 1616,
-      routeBodyBytes: 1565,
+      batchBytes: 4814,
+      covenantDeltaBytes: 1657,
+      routeBodyBytes: 1554,
     });
   }, 15_000);
 

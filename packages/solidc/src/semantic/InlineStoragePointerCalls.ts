@@ -42,7 +42,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { AmbiguousInlineOverloadError } from '../Errors.js';
+import { AmbiguousInlineOverloadError, GraphEmissionEffectError } from '../Errors.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -159,9 +159,28 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       //
       // Scoped to the clones the wrapper needs no owner-local block slot for, which is the same line
       // synthesizeBatchBeforeLowering draws: a transfer / event / token-container operation reserves a slot in
-      // the ROUTE's layout and only the flattened form declares it, so those clones keep the established path.
-      // Their edges are therefore still generated unbound - tracked separately, not part of this repair.
+      // the ROUTE's layout and only the flattened form declares it.
       if (this.keepsGraphEmissionBinding(fn)) continue;
+      // SEC-6. Every OTHER graph emission clone is selected below, and flattening it is what made its edges
+      // unbound: generated with the route as the current function, the external calls take the ordinary-call
+      // path and no emission row is recomputed and compared. Measured on the semantic VM, an argument
+      // substitution AND a selector substitution both settled on an `emit`-carrying handler while the
+      // effect-free control rejected at the caller's own input.
+      //
+      // Keeping this clone behind OP_INVOKE restores the binding but silently drops the effect: the route's
+      // layout reserves event / transfer / token-container slots by walking its OWN body, so the un-flattened
+      // form declares none and the emit produces no output at all (measured: the honest graph still settled,
+      // with zero event slots). Giving the subroutine those slots needs a per-call-site output index threaded
+      // from the route, which is not this repair. Refuse the shape instead of publishing a forgeable route.
+      //
+      // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
+      // merely reads msg.sender / msg.value under a controller, and such a clone has no external call for the
+      // transcript to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
+      if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
+        throw new GraphEmissionEffectError(fn, fn.name.replace(/^__scb_(graph|resource)_/, ''),
+          this.hasTokenContainerEffects(fn) ? 'a token-container operation'
+            : this.hasPhysicalEffects(fn) ? 'an emit or transfer' : 'a storage-pointer parameter');
+      }
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -271,6 +290,21 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
     return !!fn.graphEmissionHandler && !this.hasPhysicalEffects(fn)
       && !this.hasTokenContainerEffects(fn) && !this.hasStoragePointerParam(fn);
+  }
+
+  // An outgoing external edge, in the pre-semantic shapes this pass sees: `IFoo(a).m()` is a MethodCall until
+  // LowerExternalCalls runs, and `a.call/staticcall/delegatecall(..)` is either a LowLevelCall or a dotted
+  // FunctionCall. Mirrors the `methodCallCount` test compiler.ts applies at route synthesis.
+  private hasOutgoingCall(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (found) return;
+      if (node instanceof MethodCallNode || node instanceof LowLevelCallNode
+        || node instanceof LowLevelCallStatementNode) found = true;
+      else if (node instanceof FunctionCallNode
+        && /\.(call|staticcall|delegatecall)$/.test(node.identifier?.name ?? '')) found = true;
+    });
+    return found;
   }
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {

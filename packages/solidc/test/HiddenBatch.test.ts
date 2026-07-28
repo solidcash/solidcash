@@ -690,8 +690,18 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(1);
   });
 
-  it('admits a uniform event route with a sparse value-transfer effect', () => {
-    const artifact = compileString(`interface IPeer {
+  /**
+   * SEC-6. This route WAS admitted, with 8 transfer slots, 8 event slots and a satoshi container - and its
+   * outgoing edge was unbound. `start` is a graph emission handler that also emits and transfers, so
+   * InlineStoragePointerCalls flattened its clone into the route wrapper, after which the external call
+   * generated with __scb1 as the current function and no emission row was ever recomputed and compared.
+   * Measured on the semantic VM (packages/solidcash/test/e2e/Layer3EmissionEffectEscape.test.ts) an argument
+   * substitution AND a selector substitution both settled on exactly this shape.
+   *
+   * The route is refused until the un-flattened form can declare those owner-local slots itself. The
+   * effect-carrying handler with NO outgoing call is unaffected - the next cell pins that.
+   */
+  const COMBINED_EFFECTS = `interface IPeer {
       function step(address callback, bytes recipient, bigint amount);
     }
     contract CombinedEffects() {
@@ -709,12 +719,25 @@ describe('Release 4 compiler-hidden local batch', () => {
         emit Seen(amount);
         require(callback.length > 0 && recipient.length > 0);
       }
-    }`, {
-      forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
-    });
+    }`;
+  const BUS = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+    experimentalMessageBusControllerCategory: '22'.repeat(32),
+  };
+
+  it('refuses a uniform event route whose emitting handler also makes an outgoing call', () => {
+    expect(() => compileString(COMBINED_EFFECTS, BUS))
+      .toThrow(/'start' makes an external call and also performs an emit or transfer/);
+  });
+
+  // The same contract WITHOUT the outgoing edge keeps its route, its 8 event slots, its 8 transfer slots and
+  // its satoshi container: the refusal is scoped to the edge that had no binding, not to the effects.
+  it('still admits a uniform event route with a sparse value-transfer effect and no outgoing call', () => {
+    const artifact = compileString(
+      COMBINED_EFFECTS.replace('        IPeer(peer).step(callback, recipient, amount);\n', ''), BUS,
+    );
     expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
       .toEqual([['start', true], ['finish', true]]);
     const slots = artifact.hiddenBatch!.route.blockLayout!.slots;

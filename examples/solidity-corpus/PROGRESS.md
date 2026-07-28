@@ -5005,3 +5005,13 @@ The focused suite is **996/996**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **999/999**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 488, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Internal state-getter call loop: 4443 flat, NEG-ACCEPTED 488 -> 487 (-1)
+
+- Solidity-compatible bare calls to state variables and collections now reject instead of resolving to synthesized
+  public getter functions.
+- Explicit external self-calls such as `this.m(key)` retain the generated getter, and function-pointer state
+  variables remain callable.
+
+The focused suite is **1002/1002**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+487, plus 275 multifile and 289 cmdline fixtures excluded.

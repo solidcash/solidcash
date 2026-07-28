@@ -719,6 +719,31 @@ describe('Solidity contract event shadowing', () => {
   });
 });
 
+describe('Solidity state variables are not internally callable getters', () => {
+  it('rejects bare call syntax on an implicitly visible mapping', () => {
+    expect(() => compileString(
+      'contract C { mapping(uint => uint) m; uint a = m(1000); }',
+      { solidityImportCompat: true },
+    )).toThrow();
+  });
+
+  it('rejects bare call syntax even on an explicitly public mapping', () => {
+    expect(() => compileString(
+      'contract C { mapping(uint => uint) public m;'
+      + ' function f() public view returns (uint) { return m(1000); } }',
+      { solidityImportCompat: true },
+    )).toThrow();
+  });
+
+  it('retains an explicitly external self-call to the public getter', () => {
+    expect(compileString(
+      'contract C { mapping(uint => uint) public m;'
+      + ' function f() public view returns (uint) { return this.m(1000); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

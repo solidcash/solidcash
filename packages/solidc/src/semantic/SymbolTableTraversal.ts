@@ -6624,6 +6624,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isIndirect = !node.fromThisCall && calleeSym?.type instanceof FunctionType
       && (!hasFunctionOverloads || lexicalPointerShadow);
     if (isIndirect && lexicalPointerShadow) node.lexicalIndirectCall = true;
+    // A public state variable's generated getter is external-only in Solidity: `this.m(k)` is callable, while
+    // bare `m(k)` still denotes the storage variable and is not a function. Getter synthesis intentionally keeps
+    // SolidCash's storage lowering machinery intact, so reject the invalid bare spelling before its synthetic
+    // overload can make the state variable appear callable.
+    if (this.compilerOptions.solidityImportCompat && !node.fromThisCall && !isIndirect
+      && (this.stateVariableMap.has(node.identifier.name) || this.collectionMap.has(node.identifier.name))) {
+      throw new UndefinedReferenceError(node.identifier);
+    }
     if (this.compilerOptions.solidityImportCompat && isIndirect && calleeSym?.type instanceof FunctionType) {
       const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
       const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);

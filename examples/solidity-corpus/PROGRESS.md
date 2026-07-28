@@ -4864,3 +4864,12 @@ The focused suite is **952/952**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **956/956**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 516, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity numeric-literal syntax loop: 4443 flat, NEG-ACCEPTED 516 -> 511 (-5)
+
+- Solidity compatibility mode now rejects decimal integer literals with legacy octal-looking leading zeros.
+- Numeric denominations require separating whitespace rather than being lexically attached to the number.
+- The removed Solidity `finney` denomination rejects in compatibility mode while remaining a native BCH unit.
+
+The focused suite is **963/963**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+511, plus 275 multifile and 289 cmdline fixtures excluded.

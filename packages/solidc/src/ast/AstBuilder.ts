@@ -3974,9 +3974,23 @@ export default class AstBuilder
 
   createIntLiteral(ctx: LiteralContext): IntLiteralNode | DecimalLiteralNode {
     const numberCtx = ctx.numberLiteral();
-    const numberString = numberCtx.NumberLiteral().getText();
+    const numberToken = numberCtx.NumberLiteral();
+    const numberString = numberToken.getText();
     // Units split into time (NumberUnit) and BCH value (BchUnit) tokens; both resolve via the NumberUnit map.
-    const numberUnit = (numberCtx.NumberUnit() ?? numberCtx.BchUnit())?.getText();
+    const unitToken = numberCtx.NumberUnit() ?? numberCtx.BchUnit();
+    const numberUnit = unitToken?.getText();
+    if (this.solidityImportCompat) {
+      const digits = numberString.replaceAll('_', '').split(/[eE]/, 1)[0];
+      if (/^0[0-9]/.test(digits)) {
+        throw new ParseError('Octal numbers not allowed', Location.fromCtx(ctx));
+      }
+      if (unitToken && unitToken.symbol.start === numberToken.symbol.stop + 1) {
+        throw new ParseError('Identifier-start is not allowed at end of a number', Location.fromCtx(ctx));
+      }
+      if (numberUnit === 'finney') {
+        throw new ParseError('Expected \';\' but got identifier \'finney\'', Location.fromCtx(ctx));
+      }
+    }
     const parsed = parseNumberString(numberString);
     if (parsed === undefined) {
       // A scientific literal without a decimal point (`500e-3`) is tokenized as NumberLiteral. Solidity keeps
@@ -4005,7 +4019,17 @@ export default class AstBuilder
 
   createDecimalLiteral(ctx: LiteralContext): DecimalLiteralNode | IntLiteralNode {
     const decCtx = ctx.decimalLiteral();
-    let text = decCtx.DecimalLiteral().getText();
+    const decimalToken = decCtx.DecimalLiteral();
+    let text = decimalToken.getText();
+    const decimalUnitToken = decCtx.NumberUnit?.() ?? decCtx.BchUnit?.();
+    if (this.solidityImportCompat && decimalUnitToken) {
+      if (decimalUnitToken.symbol.start === decimalToken.symbol.stop + 1) {
+        throw new ParseError('Identifier-start is not allowed at end of a number', Location.fromCtx(ctx));
+      }
+      if (decimalUnitToken.getText() === 'finney') {
+        throw new ParseError('Expected \';\' but got identifier \'finney\'', Location.fromCtx(ctx));
+      }
+    }
     // Scientific decimal (2.5e3, 1.5e-1): fold the exponent by shifting the point. An integral result with
     // no unit becomes a plain int literal; otherwise the normalized decimal flows into the unit/fixed paths.
     if (/[eE]/.test(text)) {

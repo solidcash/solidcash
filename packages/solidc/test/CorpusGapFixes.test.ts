@@ -374,6 +374,34 @@ describe('constant index range validation', () => {
   });
 });
 
+describe('Solidity numeric literal syntax', () => {
+  const cc = (value: string, compat = true): string => compileString(
+    `contract C { uint x = ${value}; }`,
+    { solidityImportCompat: compat },
+  ).contractName;
+
+  it.each(['01', '098', '0100', '01 gwei'])('rejects legacy octal-looking integer %s', (value) => {
+    expect(() => cc(value)).toThrow(/octal numbers not allowed/i);
+  });
+
+  it('requires whitespace before a denomination', () => {
+    expect(() => cc('1wei')).toThrow(/identifier-start.*end of a number/i);
+    expect(() => cc('1.5gwei')).toThrow(/identifier-start.*end of a number/i);
+    expect(cc('1 wei')).toBe('C');
+  });
+
+  it('rejects the removed Solidity finney denomination but retains the native BCH unit', () => {
+    expect(() => cc('1 finney')).toThrow(/finney/i);
+    expect(cc('1 finney', false)).toBe('C');
+  });
+
+  it('retains zero-prefixed fractions, exponents, and standalone zero', () => {
+    expect(cc('0')).toBe('C');
+    expect(cc('0e2')).toBe('C');
+    expect(cc('0.5 ether')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

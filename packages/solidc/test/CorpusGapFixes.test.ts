@@ -744,6 +744,23 @@ describe('Solidity state variables are not internally callable getters', () => {
   });
 });
 
+describe('Solidity low-level call value options', () => {
+  it.each(['staticcall', 'delegatecall'])('rejects {value: ...} on %s before helper pruning', (method) => {
+    expect(() => compileString(
+      `contract C { function f() pure internal { address(10).${method}{value: 7, gas: 3}(""); } }`,
+      { solidityImportCompat: true },
+    )).toThrow(new RegExp(`value.*${method}`, 'i'));
+  });
+
+  it('retains the inert gas option on staticcall', () => {
+    expect(compileString(
+      'contract C { function f(address a, bytes memory d) public {'
+      + ' a.staticcall{gas: 3}(d); require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

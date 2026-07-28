@@ -5015,3 +5015,12 @@ The focused suite is **999/999**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **1002/1002**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 487, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Low-level call value-option loop: 4443 flat, NEG-ACCEPTED 487 -> 486 (-1)
+
+- `staticcall{value: ...}` and `delegatecall{value: ...}` now reject during AST construction, including inside
+  internal helpers which later become unreachable and are pruned.
+- Gas-only low-level call options remain accepted as the existing BCH no-op compatibility shim.
+
+The focused suite is **1005/1005**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+486, plus 275 multifile and 289 cmdline fixtures excluded.

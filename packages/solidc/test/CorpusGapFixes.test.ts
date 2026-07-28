@@ -39,6 +39,24 @@ describe('constructor visibility compatibility', () => {
   });
 });
 
+describe('abstract contract instantiation eligibility', () => {
+  it('rejects a forward reference instantiated before its abstract declaration', () => {
+    expect(() => compileStringRaw(
+      'contract B { A a; constructor() { a = new A(address(this)); } }'
+      + ' abstract contract A { constructor(address) {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/Cannot instantiate abstract contract 'A'/);
+  });
+
+  it('retains forward deployment of a concrete contract', () => {
+    expect(compileStringRaw(
+      'contract B { A a; constructor() { a = new A(address(this)); } }'
+      + ' contract A { constructor(address) {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('A');
+  });
+});
+
 describe('abstract-contract modifier declaration validation', () => {
   it('rejects an implemented modifier without a placeholder before emitting a declaration artifact', () => {
     expect(() => compileString(

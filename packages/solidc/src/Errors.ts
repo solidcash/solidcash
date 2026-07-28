@@ -1157,6 +1157,12 @@ export class AbstractContractNotCompilableError extends Error {
   }
 }
 
+export class AbstractContractInstantiationError extends SolidCashError {
+  constructor(node: InstantiationNode, contractName: string) {
+    super(node, `Cannot instantiate abstract contract '${contractName}'`);
+  }
+}
+
 export class AbstractFunctionInConcreteContractError extends SolidCashError {
   constructor(public node: Node, funcName: string) {
     super(node, `Function '${funcName}' has no body but contract is not abstract. Either add a body or mark the contract as abstract.`);

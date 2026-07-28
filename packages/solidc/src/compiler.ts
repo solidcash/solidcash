@@ -79,7 +79,7 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
-import { CircularContractReferenceError } from './Errors.js';
+import { AbstractContractInstantiationError, CircularContractReferenceError } from './Errors.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -204,6 +204,8 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
       ast.contract.parameters.push(brandParam);
     }
   }
+
+  if (mergedCompilerOptions.solidityImportCompat) validateAbstractContractInstantiations(ast);
 
   // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
   // inline+substitute parent constructors/modifiers. A parent ctor's `name.toShortStringWithFallback(fb)` becomes
@@ -546,6 +548,28 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   return artifact;
+}
+
+function validateAbstractContractInstantiations(ast: Ast): void {
+  const contracts = [ast.contract, ...ast.importedContracts];
+  const abstractNames = new Set(contracts.filter((contract) => contract.isAbstract).map((contract) => contract.name));
+  if (abstractNames.size === 0) return;
+
+  const visited = new WeakSet<Node>();
+  const walk = (node: Node): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (node instanceof InstantiationNode && abstractNames.has(node.identifier.name)) {
+      throw new AbstractContractInstantiationError(node, node.identifier.name);
+    }
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) walk(item);
+      }
+    }
+  };
+  for (const contract of contracts) walk(contract);
 }
 
 /**

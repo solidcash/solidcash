@@ -5309,3 +5309,14 @@ The focused suite is **1090/1090**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1093/1093**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 355, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Forward abstract-instantiation loop: 4443 flat, NEG-ACCEPTED 355 -> 354 (-1)
+
+- Solidity-compatible source units now reject `new A(...)` whenever `A` is declared abstract, including a forward
+  reference from a contract that appears before the abstract declaration.
+- The check runs before an abstract primary contract returns its ABI-only declaration artifact and inspects only
+  actual instantiation nodes, preserving ordinary abstract type references. All 140 prior abstract-contract
+  positive fixtures remain green.
+
+The focused suite is **1095/1095**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+354, plus 275 multifile and 289 cmdline fixtures excluded.

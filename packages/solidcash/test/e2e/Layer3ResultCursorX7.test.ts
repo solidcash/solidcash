@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
 } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -63,6 +63,66 @@ const fixedUtxo = (slot: number, satoshis: bigint): Utxo => randomUtxo({
 interface CursorOverrides {
   /** Replace the transcript result bytes of one invocation, leaving every physical NFT honest. */
   results?: Readonly<Record<number, string>>;
+  /** Rewrite the finalized transcript before it is committed to and handed to every covenant. */
+  patch?: (transcript: layer3.FinalizedCompiledGraph) => layer3.FinalizedCompiledGraph;
+}
+
+/** Byte offset of one participant's emission payload inside the framed transcript. */
+function emissionsOffset(transcript: layer3.FinalizedCompiledGraph, participant: number): number {
+  const execution = transcript.plan.participants[participant];
+  return transcript.participantOffsets[participant]
+    + 2 + 2 + 2 + execution.lockingBytecode.length / 2 + 2 + execution.batch.blob.length + 2;
+}
+
+/**
+ * Substitute one byte of a caller's emission region, in BOTH the framed transcript and the blob its own
+ * compiled route is handed, and re-commit. This is the exact freedom the projection verifier's emission
+ * comparison exists to remove: the emitted row must be the canonical encoding of the authenticated record.
+ */
+function patchEmissionByte(
+  transcript: layer3.FinalizedCompiledGraph, participant: number, index: number, value: number,
+  alsoRouteBlob = true,
+): layer3.FinalizedCompiledGraph {
+  const bytes = new Uint8Array(transcript.bytes);
+  bytes[emissionsOffset(transcript, participant) + index] = value;
+  const emissionsHex = [...transcript.participantEmissionsHex];
+  if (alsoRouteBlob) {
+    const emissions = new Uint8Array(hexToBin(transcript.participantEmissionsHex[participant]));
+    emissions[index] = value;
+    emissionsHex[participant] = binToHex(emissions);
+  }
+  return Object.freeze({
+    ...transcript,
+    bytes,
+    root: binToHex(sha256.hash(bytes)),
+    participantEmissionsHex: Object.freeze(emissionsHex),
+  }) as layer3.FinalizedCompiledGraph;
+}
+
+/**
+ * Append one unanswered byte to a caller's emission region, in the transcript and in the blob its route is
+ * handed, growing the region's length frame to match. Every canonical row stays byte-identical.
+ */
+function appendEmissionByte(
+  transcript: layer3.FinalizedCompiledGraph, participant: number,
+): layer3.FinalizedCompiledGraph {
+  const offset = emissionsOffset(transcript, participant);
+  const emissions = hexToBin(transcript.participantEmissionsHex[participant]);
+  const bytes = new Uint8Array(transcript.bytes.length + 1);
+  bytes.set(transcript.bytes.subarray(0, offset + emissions.length), 0);
+  bytes[offset + emissions.length] = 0x00;
+  bytes.set(transcript.bytes.subarray(offset + emissions.length), offset + emissions.length + 1);
+  const grown = emissions.length + 1;
+  bytes[offset - 2] = grown & 0xff;
+  bytes[offset - 1] = (grown >>> 8) & 0xff;
+  const emissionsHex = [...transcript.participantEmissionsHex];
+  emissionsHex[participant] = `${transcript.participantEmissionsHex[participant]}00`;
+  return Object.freeze({
+    ...transcript,
+    bytes,
+    root: binToHex(sha256.hash(bytes)),
+    participantEmissionsHex: Object.freeze(emissionsHex),
+  }) as layer3.FinalizedCompiledGraph;
 }
 
 async function buildRootReturningGraph(overrides: CursorOverrides = {}): Promise<{
@@ -114,12 +174,13 @@ async function buildRootReturningGraph(overrides: CursorOverrides = {}): Promise
   // Physical result vectors, and therefore both return-event NFT commitments, stay HONEST in every case.
   const vectorRoot = binToHex(resultRoot);
   const vectorLeaf = binToHex(resultLeaf);
-  const transcript = layer3.finalizeCompiledGraph(
+  const finalized = layer3.finalizeCompiledGraph(
     plan,
     { 0: vectorRoot, 1: vectorLeaf, ...(overrides.results ?? {}) },
     layout.participantInputs, layout.returnOutputs,
     [vectorRoot, vectorLeaf], layout.projectionInputs,
   );
+  const transcript = overrides.patch === undefined ? finalized : overrides.patch(finalized);
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const initFee = fixedUtxo(0xe1, 20_000n);
@@ -245,6 +306,44 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
     // one-byte claim from the honest two-byte one.
     const built = await buildRootReturningGraph({ results: { 0: '01' } });
     expect(failingInput(built.builder)).toBe(INPUT.projectionRoot);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 120_000);
+
+  // X23 rewrote the verifier's emission comparison. It used to parse the row field by field - a length
+  // frame, then a target, a call mode, a selector, an args frame and a result frame, each with its own
+  // cursor advance. It now rebuilds the canonical row from the authenticated record and compares it in one
+  // slice, which is a large part of what makes the walk cheap enough to fit ordinary BCH-2026 capacity.
+  //
+  // MEASURED ORDERING, not a claim about which covenant owns the field: every one of these forgeries is
+  // refused at input 0, the CALLER's own master route, and the projection verifier is never reached. The
+  // route binds the whole emissions region - content and exhaustion, and it binds the transcript's copy,
+  // not only the blob it is handed, so patching one and not the other does not separate them. Since every
+  // participant master input precedes every projection input by construction, the verifier's emission
+  // comparison is structurally a SECOND binding here and cannot be isolated from this fixture. These cases
+  // are therefore system-level evidence that the rewrite opened no hole; they are not evidence about the
+  // rewritten comparison on its own. The same ordering argument appears below for results.
+  //
+  // The row's target lbc is 35 bytes, so the row is: length frame [0,2), target [2,37), call mode 37,
+  // selector [38,42).
+  it.each([
+    { field: 'call mode', index: 37, value: 0x01 },
+    { field: 'emitted target', index: 5, value: 0x00 },
+    { field: 'selector', index: 38, value: 0x00 },
+  ])('rejects an emission row whose $field byte is not the record it answers', async (
+    { index, value },
+  ) => {
+    const built = await buildRootReturningGraph({
+      patch: (transcript) => patchEmissionByte(transcript, 0, index, value),
+    });
+    expect(failingInput(built.builder)).toBe(INPUT.masterRoot);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 120_000);
+
+  it('rejects an emissions region carrying a row no invocation answers', async () => {
+    // Every canonical row stays byte-identical; only one unanswered trailing byte is appended, so this
+    // attacks region exhaustion rather than row content. It too is refused at the caller's master route.
+    const built = await buildRootReturningGraph({ patch: (transcript) => appendEmissionByte(transcript, 0) });
+    expect(failingInput(built.builder)).toBe(INPUT.masterRoot);
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 120_000);
 

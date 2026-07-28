@@ -865,6 +865,9 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
     expect(built.assembly.containerOutput).toBeLessThan(built.layout.participantInputs[0] + routerBlock);
     expect(built.assembly.transferOutput).toBeLessThan(built.layout.participantInputs[0] + routerBlock);
 
+    // HONEST ALL-INPUT EXECUTION: `preflightLayer3Transaction` evaluates every one of the 108 inputs on the
+    // BCH-2026 VM and throws on the first that fails, so a pass here is whole-transaction evidence and not a
+    // spot check. The broadcast then re-evaluates the same bytes through the provider.
     layer3.preflightLayer3Transaction(built.builder);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
 
@@ -902,8 +905,10 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
       expect(blockLayout.blockSize).toBe(built.blockSizes[participant]);
     });
 
-    // The physical bases are the running prefix sum of those block sizes, gapless from input 0. That sum is
-    // the ONLY arithmetic that places a block; nothing is rewritten to record where a block landed.
+    // The physical bases are the running prefix sum of those block sizes, gapless from input 0. That prefix
+    // sum is the only arithmetic that places a block: a block's base reaches it as a transcript-authenticated
+    // witness (`compiledGraphRouteArgs` passes the participant's frame offset and its block size), never as a
+    // constant patched into the compiled script.
     const expectedBases: number[] = [];
     let cursor = 0;
     for (const size of built.blockSizes) { expectedBases.push(cursor); cursor += size; }
@@ -987,6 +992,16 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
     // The same bound is enforced by both covenants, independently of the SDK.
     expect(layer3.generateGraphRootController('51')).toContain('participantCount <= 8');
     expect(layer3.generateGraphProjectionVerifier()).toContain('participantCount <= 8');
+
+    // SCOPE of "bounded maximum". The deployed graph has three independent bounds: 8 participants, 24
+    // invocations and depth 7, each enforced by the SDK planner and by both covenants. C3 saturates the
+    // PARTICIPANT bound only. It reaches 8 of 24 invocations and depth 4 of 7, so nothing in this file is
+    // evidence about the invocation-count or depth ceilings, which are separately bounded elsewhere.
+    expect(built.plan.participants).toHaveLength(8);
+    expect(built.plan.invocations).toHaveLength(8);
+    expect(Math.max(...built.plan.invocations.map((invocation) => invocation.depth))).toBe(4);
+    expect(layer3.generateGraphRootController('51')).toContain('invocationCount <= 24');
+    expect(layer3.generateGraphProjectionVerifier()).toContain('invocationCount <= 24');
   }, 900_000);
 });
 
@@ -1168,7 +1183,7 @@ describe('C3 capacity measurement', () => {
     // operation-cost density; C3 is strictly larger, so a failure here is expected and is a production-fitting
     // result, not a semantic one. What is worth recording is WHERE it fails and by how much, because that is
     // what the F-phase optimization has to move.
-    const built = await buildC3('none', DEFAULT_ORDER, createOrdinaryCapacityProvider as any);
+    const built = await buildC3('none', DEFAULT_ORDER, createOrdinaryCapacityProvider);
     const outcome = preflightOutcome(built);
     const broadcast = await built.provider.sendRawTransaction(built.transaction)
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);

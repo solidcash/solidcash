@@ -311,6 +311,7 @@ export default class AstBuilder
   private stateStructVars: Map<string, StructType> = new Map();
   // All state variable names, so a tuple assignment to state vars `(x, y) = (a, b)` desugars to state assigns.
   private stateVarNames: Set<string> = new Set();
+  private transientStateVarNames: Set<string> = new Set();
   // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
   // Entry-NFT state arrays that are represented as CollectionNode rather than packed/chunked StateVariableNode.
@@ -372,6 +373,7 @@ export default class AstBuilder
   // All local array values. Under Solidity compatibility these are memory/calldata values unless the name is
   // also a compile-time storage alias, and therefore cannot use storage-only push/pop methods.
   private localArrayVarTypes: Map<string, ArrayType> = new Map();
+  private expiredLoopVariableNames = new Set<string>();
   // Local unbounded `bytes` vars, to desugar an element write `d[i] = v` to a slice+concat rebuild. Per-function.
   private localBytesVars: Set<string> = new Set();
 
@@ -1584,6 +1586,7 @@ export default class AstBuilder
     // and one spend = one function execution with no cross-call). They lower to a per-function zero-init local,
     // so drop them from the persisted state here; the injection happens after functions are built (below).
     const transientStateVars = stateVariables.filter((sv) => sv.isTransient);
+    this.transientStateVarNames = new Set(transientStateVars.map((sv) => sv.name));
     stateVariables = stateVariables.filter((sv) => !sv.isTransient);
 
     // Track dense-indexable state array names for routing this.arr[i], this.arr.push/pop, this.arr.delete(i):
@@ -1774,6 +1777,7 @@ export default class AstBuilder
     this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     this.localArrayVarTypes = new Map();
+    this.expiredLoopVariableNames = new Set();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
@@ -1899,6 +1903,7 @@ export default class AstBuilder
     this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     this.localArrayVarTypes = new Map();
+    this.expiredLoopVariableNames = new Set();
     const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring,
@@ -2134,6 +2139,7 @@ export default class AstBuilder
     this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     this.localArrayVarTypes = new Map();
+    this.expiredLoopVariableNames = new Set();
     const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
@@ -2220,6 +2226,7 @@ export default class AstBuilder
     this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     this.localArrayVarTypes = new Map();
+    this.expiredLoopVariableNames = new Set();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
@@ -2593,6 +2600,7 @@ export default class AstBuilder
     ctx: VariableDefinitionContext, type: Type, modifiers: string[], name: string,
     expression: ExpressionNode | undefined,
   ): VariableDefinitionNode {
+    this.expiredLoopVariableNames.delete(name);
     // Track local struct-typed vars so `s.field = v` can desugar to a struct rebuild (visitAssignmentStatement).
     if (type instanceof StructType) this.localStructTypes.set(name, type);
     // Track local struct-array vars (`S[] memory m`) so `m[i].c[j] = v` can desugar (see buildLvalueAssign).
@@ -3266,6 +3274,9 @@ export default class AstBuilder
     expressionCtx: ExpressionContext | null,
     location: Location,
   ): AssignNode {
+    if (this.solidityImportCompat && this.expiredLoopVariableNames.has(identifierText)) {
+      throw new ParseError(`Undeclared identifier '${identifierText}'`, identifierLocation);
+    }
     const identifier = new IdentifierNode(identifierText);
     identifier.location = identifierLocation;
 
@@ -3485,6 +3496,24 @@ export default class AstBuilder
     const initCtx = ctx.forInit() as ForInitContext;
     const condCtx = ctx.forCondition() as ForConditionContext;
     const updateCtx = ctx.forUpdate() as ForUpdateContext;
+    const declaredLoopNames = new Set<string>();
+    if (initCtx.typeName()) declaredLoopNames.add(initCtx.Identifier().getText());
+    for (const slot of initCtx.tupleSlot_list()) {
+      if ((slot.typeName() || slot.arrayType()) && slot.anyIdentifier(0)) {
+        declaredLoopNames.add(slot.anyIdentifier(0)!.getText());
+      }
+    }
+    const hasKnownBinding = (name: string): boolean =>
+      this.localSimpleTypeKeys.has(name)
+      || this.localStructTypes.has(name)
+      || this.localArrayVarTypes.has(name)
+      || this.localBytesVars.has(name)
+      || this.stateVarNames.has(name)
+      || this.transientStateVarNames.has(name)
+      || this.stateArrayVarTypes.has(name)
+      || this.stateMappingValueStruct.has(name);
+    const shadowedOuterLoopNames = new Set([...declaredLoopNames].filter(hasKnownBinding));
+    for (const name of declaredLoopNames) this.expiredLoopVariableNames.delete(name);
 
     // Build init. Three forms: a declaration (`uint i = 0`), a bare assignment reusing an outer variable
     // (`i = 0`), or empty (`for (; ...)`). Only the declaration form introduces a loop variable.
@@ -3531,8 +3560,13 @@ export default class AstBuilder
       updateNode = this.buildForTupleAssign(updateCtx.tupleSlot_list(), updateCtx.expression_list(), Location.fromCtx(updateCtx));
     } else if (updateCtx) {
       if (updateCtx._op) {
+        const updateName = updateCtx.Identifier().getText();
+        const knownUpdateName = declaredLoopNames.has(updateName) || hasKnownBinding(updateName);
+        if (this.solidityImportCompat && !knownUpdateName) {
+          throw new ParseError(`Undeclared identifier '${updateName}'`, Location.fromCtx(updateCtx));
+        }
         updateNode = this.buildCompoundAssign(
-          updateCtx.Identifier().getText(),
+          updateName,
           Location.fromToken(updateCtx.Identifier().symbol),
           updateCtx._op.text,
           updateCtx.expression(0),
@@ -3573,6 +3607,9 @@ export default class AstBuilder
     // Wrap: { init; while (cond) { body; update; } } - init omitted for an empty `for (; ...)`.
     const outerBlock = new BlockNode(initNode ? [initNode, whileNode] : [whileNode]);
     outerBlock.location = Location.fromCtx(ctx);
+    for (const name of declaredLoopNames) {
+      if (!shadowedOuterLoopNames.has(name)) this.expiredLoopVariableNames.add(name);
+    }
     return outerBlock;
   }
 
@@ -4387,6 +4424,9 @@ export default class AstBuilder
   visitIdentifier(ctx: IdentifierContext): IdentifierNode {
     const identifier = new IdentifierNode(ctx.anyIdentifier().getText());
     identifier.location = Location.fromCtx(ctx);
+    if (this.solidityImportCompat && this.expiredLoopVariableNames.has(identifier.name)) {
+      throw new ParseError(`Undeclared identifier '${identifier.name}'`, identifier.location);
+    }
     // Whole-container storage alias (`mapping(...) storage p = m;`): a read of `p` resolves to the aliased
     // container identifier `m`, so `p[k]`, `f(p)`, `return p`, etc. operate on the real mapping. Only bare
     // identifier-to-identifier aliases substitute here; element/field aliases (access is an index/field path)

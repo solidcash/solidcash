@@ -5299,3 +5299,13 @@ The focused suite is **1088/1088**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1090/1090**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 357, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity for-loop lexical-scope loop: 4443 flat, NEG-ACCEPTED 357 -> 355 (-2)
+
+- Solidity-compatible for-initializer declarations now expire after the loop, including tuple-declared counters,
+  while an outer variable shadowed by a loop declaration becomes visible again afterward.
+- The update clause is validated before body declarations enter scope, so a name declared only in the body cannot
+  be used as the counter. Function, state, return, and transient-state counters retain their existing behavior.
+
+The focused suite is **1093/1093**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+355, plus 275 multifile and 289 cmdline fixtures excluded.

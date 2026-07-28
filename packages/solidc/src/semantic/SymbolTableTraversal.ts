@@ -5582,6 +5582,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (sym) {
       // Reference element/field writes are lowered to AssignNode but explicitly marked by AstBuilder.
       this.checkReadOnlyModification(sym, !node.isReferenceDataWrite);
+    } else if (this.compilerOptions.solidityImportCompat) {
+      throw new UndefinedReferenceError(node.identifier);
     }
 
     const savedExpectedFunctionPointerType = this.expectedFunctionPointerType;

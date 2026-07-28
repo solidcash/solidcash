@@ -4944,6 +4944,30 @@ describe('Solidity function visibility version boundary', () => {
   });
 });
 
+describe('Solidity for-loop lexical scoping', () => {
+  const cc = (src: string): string => compileString(src, {
+    solidityImportCompat: true,
+    allowOmittedFunctionVisibility: false,
+  }).contractName;
+
+  it('does not expose an initializer declaration after the loop', () => {
+    expect(() => cc('contract C { function f() public pure {'
+      + ' for (uint x = 0; x < 2; x++) { x = 1; } x = 4; } }'))
+      .toThrow(/Undeclared identifier.*x/i);
+  });
+
+  it('does not expose a body declaration to the update expression', () => {
+    expect(() => cc('contract C { function f() public pure {'
+      + ' for (;; y++) { uint y = 3; } } }'))
+      .toThrow(/Undeclared identifier.*y/i);
+  });
+
+  it('retains initializer scope across condition, body, and update', () => {
+    expect(cc('contract C { function f() public pure {'
+      + ' for (uint x = 0; x < 2; x++) { uint y = x; } } }')).toBe('C');
+  });
+});
+
 describe('nested mapping to a struct value, outer index a number literal (COMP checkpoints)', () => {
   // `mapping(K1 => mapping(K2 => Struct))` read `m[k][0].field`: the trailing `[0]` parses as a tuple index, and
   // the inner `m[k]` previously over-resolved to the innermost struct so indexing it failed. Route the whole chain

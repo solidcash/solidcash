@@ -687,7 +687,8 @@ describe('layer3.planCompiledGraph', () => {
     // `debug.bytecode` is the hex-encoded script and is the consensus/deployment size.
     // X23 rewrote both walks to make fewer and shallower stack-variable writes - the dominant BCH-2026
     // operation-cost term - with no check removed. 1,897 before X23.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_504);
+    // X27 then split ONE suffix per transcript row and read every field off it: 1,504 before X27.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_449);
     // 7,025 before X7; the result-cursor exhaustion assertion costs 8 bytes. 7,033 before X23.
     expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_501);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(

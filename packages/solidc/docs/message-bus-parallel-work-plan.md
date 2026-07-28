@@ -173,8 +173,9 @@ task-specific report, not in this table.
 | X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
 | **SEC-10** | One-armed conditional emit reserves an unsettled slot | — | SEC-9 | **TODO (security)** | same forgery capability as SEC-9; predates X29; NOT VM-measured |
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
-| X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | — | E2 | TODO | `planCompiledGraph`, which every capstone uses, has no check |
-| X32 | L2's derived gate is silenced by a bare `Unlocker` | — | L2 | TODO | `abiFunction` is optional on the base type; preflight returns undefined and broadcasts |
+| X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
+| X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
+| X36 | `planCompiledGraph` does not enforce occurrence bounds | — | X31 | TODO | 3 children can bind one `once` callsite; caught on chain, not at plan time |
 | X33 | S2's `touchesCollection` does not descend through calls | C | S2 | **INTEGRATED** | BFS over the call graph; caught its own fn-pointer over-approximation |
 | X34 | Relax the over-strict `this.`-spelled dynamic+collection refusal | — | X33 | TODO | admitted form PROVEN sound on the VM; bus-mode leg unsettled |
 | X35 | Eligibility oddity: stricter combination admitted, simpler refused | — | X33 | TODO | dyn+collection `eligible: true` while dyn-only is refused |
@@ -195,6 +196,34 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.40 X31/X32: the obvious fix was wrong in both cases, and measurement said so first
+
+**X31.** Porting the existing option refusal to `planCompiledGraph` as written would have been wrong.
+`this.transfer(..)` publishes the SAME direct-mode `transferCount` and the SAME block slots as `{value:}` - but
+the compiler CARRIES a first-party transfer into the SCB1 route while it DROPS the option entirely. The
+discriminator is the handler projection, not the direct layout. Measured before choosing: the blanket rule
+fails **40 tests across 5 files**, refusing five first-party transfers the VM settles today. Both entry points
+now share one narrowed check.
+
+Two further divergences were found and closed in passing: `planCompiledGraph` skipped its delegatecall
+rejection ENTIRELY when `callMode` was supplied rather than inferred, and a function name resolving to two ABI
+entries silently took the first - SolidCash does admit overloads. One is reported and NOT closed (X36):
+`planCompiledGraph` does not enforce occurrence bounds, so three children can bind one `once` callsite. It is
+caught on chain by the caller's emission covenant, not at plan time.
+
+**X32.** The first version claimed every tail slot as auxiliary and **broke C3's `injection-burned` case**,
+replacing its covenant refusal at input 106 with an auxiliary-slot complaint - a right outcome for a wrong
+reason, which is the failure mode this board has been catching all effort. That measurement drove the final
+rule: only the canonical tail is claimed. The gate now separates OUT OF SCOPE (no participant master present -
+ordinary transactions still return `undefined`) from IN SCOPE BUT UNDERIVABLE (refused by name), and both
+Layer-3 send paths refuse when nothing was derivable, since reaching them is the caller's own assertion that
+the transaction is a composition.
+
+**A vacuous hostile case was found and fixed.** Worker B diagnosed, while verifying something else, that an X7
+case patching emission byte 5 to `0x00` is a no-op about one build in 256, because that byte lies inside a
+freshly minted category hash. A hostile case that silently becomes a no-op is worse than a flaky one - its
+255/256 green runs look like evidence they are not. Fixed by the integration owner to flip on collision.
 
 ### 4.39 The S2 "dialect divergence" was a SPELLING divergence, and the admitted side is the correct one
 

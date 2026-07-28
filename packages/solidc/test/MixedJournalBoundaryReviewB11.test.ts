@@ -15,17 +15,22 @@ const plainOptions = { forceStateful: true };
 const solidityBusOptions = { ...busOptions, solidityImportCompat: true };
 
 /**
- * Round-11 independent review of S2 (`MixedJournalBoundaryS2.test.ts`).
+ * Round-11 independent review of S2 (`MixedJournalBoundaryS2.test.ts`), and X33's repair of what it found.
  *
  * S2 replaced two internal compiler errors with named diagnostics at the boundary between the dynamic-storage
- * journal and the collection journal. Its guard, in `LowerCollectionJournalHelpers.visitContract`, is:
+ * journal and the collection journal. Its guard, in `LowerCollectionJournalHelpers.visitContract`, was:
  *
  *     fn.parameters[0]?.name === `__dj_${fn.name}` && touchesCollection(fn)
  *
- * and `touchesCollection` walks `fn.body` ONLY. The rows below attack that scope.
+ * and `touchesCollection` walked `fn.body` ONLY. The rows below attack that scope; every one of them reached
+ * `Block layout not available while compiling 'helper'`, the internal error S2 was built to replace.
+ *
+ * X33 replaced the body-only walk with a reach over the intra-contract call graph, so the rows now assert the
+ * NAMED diagnostic and additionally pin which callee carries the collection access. The over-approximation
+ * controls live in `MixedJournalBoundaryS2.test.ts`.
  */
 
-describe('B/round-11 review of S2: the guard is one AST level deep', () => {
+describe('B/round-11 review of S2 (CLOSED by X33): the guard follows calls', () => {
   const direct = `pragma solidcash >=0.8.0;
 contract PlainMixedBoundary() {
   string note;
@@ -99,50 +104,67 @@ contract IndirectReadBoundary() {
   }, COMPILE_TIMEOUT_MS);
 
   /**
-   * OPEN. `touchesCollection` never descends through a call, so moving the collection statement one internal
-   * call away silences the guard and the pre-S2 internal compiler error returns unchanged. This asserts
-   * today's behaviour so a fix FAILS this row loudly rather than closing it silently.
+   * CLOSED. The internal compiler error must not come back for ANY of these, so each row asserts both the
+   * named diagnostic and the absence of the internal sentinel.
    */
-  it('OPEN: one internal call hop silences the guard and restores the pre-S2 internal error', () => {
+  it('CLOSED: one internal call hop is named, not an internal error', () => {
+    expect(() => compileString(indirect, plainOptions)).toThrow(
+      /Handler 'helper' writes unbounded bytes\/string state and also reaches a collection entry/,
+    );
     expect(() => compileString(indirect, plainOptions))
-      .toThrow(/Block layout not available while compiling 'helper'/);
-    expect(() => compileString(indirect, plainOptions))
-      .not.toThrow(/writes unbounded bytes\/string state/);
+      .not.toThrow(/Block layout not available/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('OPEN: two hops behave identically - the evasion is not depth-limited', () => {
+  it('CLOSED: two hops behave identically - the repair is not depth-limited', () => {
+    // The message names the callee that actually carries the access, not the intermediate hop.
     expect(() => compileString(twoHops, plainOptions))
-      .toThrow(/Block layout not available while compiling 'helper'/);
+      .toThrow(/reached through 'inner'/);
+    expect(() => compileString(twoHops, plainOptions))
+      .not.toThrow(/Block layout not available/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('OPEN: an indirect collection READ evades the guard the same way', () => {
+  it('CLOSED: an indirect collection READ is caught the same way', () => {
     expect(() => compileString(indirectRead, plainOptions))
-      .toThrow(/Block layout not available while compiling 'helper'/);
+      .toThrow(/Handler 'helper' writes unbounded bytes\/string state/);
+    expect(() => compileString(indirectRead, plainOptions))
+      .not.toThrow(/Block layout not available/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('OPEN: the evasion is not a plain-mode artifact - message-bus mode reaches the same error', () => {
+  it('CLOSED: message-bus mode reaches the same diagnostic', () => {
     expect(() => compileString(indirect, busOptions))
-      .toThrow(/Block layout not available while compiling 'helper'/);
+      .toThrow(/Handler 'helper' writes unbounded bytes\/string state/);
+    expect(() => compileString(indirect, busOptions))
+      .not.toThrow(/Block layout not available/);
   }, COMPILE_TIMEOUT_MS);
 });
 
 /**
- * MEASURED, and deliberately NOT called a defect. S2's rejected combination - one handler writing chunk-backed
- * unbounded state AND reaching a collection entry - is refused in `.scash` and ADMITTED when the same program
- * is written in Solidity syntax. `solidityImportCompat` alone does not move the boundary; the dialect does.
+ * SETTLED, and the round-11 label was wrong: the divergence is not between the two DIALECTS, it is between the
+ * two SPELLINGS of the dynamic state write. `this.note = tag` is a `StateAssignNode` from the parser; the bare
+ * `note = tag` is an `AssignNode` over an `IdentifierNode` until symbol resolution, which runs after these
+ * lowerings. `analyseFunctionFootprint` therefore never records `state:note` for the bare form, the hidden-batch
+ * synthesis point sees no dynamic touch, no `__scb_dynamic_<handler>` sibling clone is created, and
+ * `LowerDynamicStateJournalHelpers` never converts anything - so the guard has no `__dj_` parameter to fire on.
  *
- * Which side is right is UNDETERMINED here. The admitted artifact is not byte-identical to either single-leg
- * control, so neither leg was silently dropped at the bytecode level, but no VM settlement of the admitted
- * form was run, so this is not evidence that the admitted lowering is sound - only that the two front ends
- * disagree about whether the shape is supported at all.
+ * That is the SAME gap X19 closed for collections one resource kind over: X19's own comment records that a bare
+ * `m[k] = v` is an ArrayAssign until resolution and that omitting it made one spelling of a write invisible to
+ * every pre-semantic caller. The scalar/dynamic spelling was left behind.
+ *
+ * The four cells below are the evidence. Solidity syntax with `this.note` is REFUSED and `.scash` with the bare
+ * `note` is ADMITTED, which is what rules the front end out as the cause.
+ *
+ * WHICH SIDE IS RIGHT: the admitted form. It settles on the BCH-2026 VM with both legs authenticated - see
+ * `packages/solidcash/test/e2e/S2BareSpellingSettlement.test.ts`. The refusal is the over-strict side, and it
+ * is over-strict only because the `this.` spelling reaches a code path (the dj-converted clone) that genuinely
+ * cannot code-generate, not because the SHAPE is unsupportable.
  */
-describe('B/round-11 review of S2: the boundary is dialect-dependent', () => {
-  const scash = `pragma solidcash >=0.8.0;
+describe('B/round-11 review of S2 (SETTLED): the boundary follows the SPELLING, not the dialect', () => {
+  const scash = (noteWrite: string): string => `pragma solidcash >=0.8.0;
 contract MixedBoundary() {
   string note;
   mapping(address => bigint) balances;
   function set(address who, bigint amount, string tag) public {
-    this.note = tag;
+    ${noteWrite}
     this.balances[who] = this.balances[who] + amount;
     require(amount >= 0);
   }
@@ -158,19 +180,33 @@ contract MixedBoundarySol {
   }
 }`;
 
-  it('MEASURED: the .scash form is refused with and without solidityImportCompat', () => {
-    expect(() => compileString(scash, busOptions))
+  it('the .scash `this.` spelling is refused with and without solidityImportCompat', () => {
+    expect(() => compileString(scash('this.note = tag;'), busOptions))
       .toThrow(/Handler 'set' writes unbounded bytes\/string state/);
-    expect(() => compileString(scash, solidityBusOptions))
+    expect(() => compileString(scash('this.note = tag;'), solidityBusOptions))
       .toThrow(/Handler 'set' writes unbounded bytes\/string state/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('MEASURED: the Solidity form of the same program compiles, carrying both legs', () => {
+  it('the same .scash program with the BARE spelling is ADMITTED - the front end is not the cause', () => {
+    const artifact = compileString(scash('note = tag;'), busOptions);
+    expect(artifact.stateLayout!.variables.find((entry: any) => entry.name === 'note')!.dynamic).toBe(true);
+    expect(artifact.stateLayout!.collections!.map((entry: any) => entry.name)).toContain('balances');
+    // Both legs reach the published route, so this is not one leg being dropped.
+    expect(artifact.hiddenBatch!.route!.dynamicWrites).toEqual(['note']);
+    expect(artifact.hiddenBatch!.route!.entryAccesses!.map((entry: any) => entry.collection))
+      .toContain('balances');
+  }, COMPILE_TIMEOUT_MS);
+
+  it('the Solidity program with the `this.` spelling is REFUSED - the dialect is not the cause', () => {
+    expect(() => compileString(
+      solidity('this.note = tag;\n    balances[who] = balances[who] + amount;'), solidityBusOptions,
+    )).toThrow(/Handler 'set' writes unbounded bytes\/string state/);
+  }, COMPILE_TIMEOUT_MS);
+
+  it('the Solidity bare form compiles, carrying both legs', () => {
     const both = compileString(
       solidity('note = tag;\n    balances[who] = balances[who] + amount;'), solidityBusOptions,
     );
-    // The state layout confirms this is the same combination: a chunk-backed dynamic variable AND a
-    // C2 collection, in one handler.
     expect(both.stateLayout!.variables.find((entry: any) => entry.name === 'note')!.dynamic).toBe(true);
     expect(both.stateLayout!.collections!.map((entry: any) => entry.name)).toContain('balances');
 

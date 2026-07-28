@@ -4846,3 +4846,12 @@ The focused suite is **946/946**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **949/949**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 522, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Reserved built-in error-name loop: 4443 flat, NEG-ACCEPTED 522 -> 520 (-2)
+
+- Solidity compatibility mode now reserves the built-in `Error` and `Panic` error identifiers.
+- File-level and contract-level declarations share the same rejection path, while similarly named user errors
+  remain valid.
+
+The focused suite is **952/952**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+520, plus 275 multifile and 289 cmdline fixtures excluded.

@@ -6650,6 +6650,12 @@ export default class AstBuilder
 
   visitErrorDefinition(ctx: ErrorDefinitionContext): ErrorDefinitionNode {
     const errorName = ctx.anyIdentifier().getText();
+    if (this.solidityImportCompat && (errorName === 'Error' || errorName === 'Panic')) {
+      throw new ParseError(
+        'The built-in errors "Error" and "Panic" cannot be re-defined',
+        Location.fromCtx(ctx),
+      );
+    }
     const parameters = ctx.errorParameter_list().map((paramCtx, i) => ({
       // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
       name: paramCtx.anyIdentifier() ? paramCtx.anyIdentifier()!.getText() : `__unnamed${i}`,

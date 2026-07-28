@@ -333,6 +333,22 @@ describe('event indexed-parameter limits', () => {
   });
 });
 
+describe('reserved built-in error names', () => {
+  const cc = (declaration: string): string => compileString(
+    `${declaration} contract C { function f() public { require(true); } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+
+  it.each(['error Error(uint value);', 'error Panic(bytes2 code);'])(
+    'rejects redeclaration of a built-in error in %s',
+    (declaration) => expect(() => cc(declaration)).toThrow(/built-in errors.*cannot be re-defined/i),
+  );
+
+  it('retains non-reserved user error names', () => {
+    expect(cc('error ErrorCode(uint value); error Panicked(bytes2 code);')).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

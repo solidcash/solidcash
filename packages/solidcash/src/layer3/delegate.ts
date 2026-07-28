@@ -18,13 +18,35 @@ import type { Artifact, AbiFunction } from '@solidcash/utils';
  * covenant check: a caller that splices unlocking bytecode directly never reaches it. The covenant-level
  * authority for an admitted class is listed per class below and is what the VM cases in
  * `test/e2e/Layer3DelegateClassesE3.test.ts` attack.
+ *
+ * ADMISSION IS FAIL-CLOSED ON WHAT THE METADATA CANNOT SAY. Two shapes escaped an earlier revision of this
+ * module (round-13 review A13, `test/e2e/ReviewA13DelegateE3.test.ts`), both settling a foreign implementation
+ * rewriting proxy state on the VM:
+ *
+ *  - A proxy pinning one implementation in its constructor while delegatecalling a caller-supplied `address`
+ *    parameter. Bytecode containment is a SUBSTRING test and says nothing about which expression the target is.
+ *  - A proxy with a `sig` parameter whose `checkSig` runs against a caller-supplied `pubkey` parameter, storing
+ *    no authority at all.
+ *
+ * So `bytecode-pinned` now requires that the proxy function publish NO `address` parameter, and
+ * `caller-authorized` requires that no caller-supplied `pubkey` parameter exists AND the proxy commits a pubkey
+ * of its own. Both refuse shapes that may be honest (an `address` parameter used as a payout recipient; a key
+ * checked against storage the gate cannot type). That cost is deliberate: the missing fact is which expression
+ * feeds the target and which key `checkSig` checks, and only the compiler sees either.
  */
 
 /** How the proxy decides which script may write its state. */
 export type DelegateCodeIdentity =
-  /** `impl` is a source literal or constructor argument, so the proxy's own p2sh32 commits to it. */
+  /**
+   * `impl` is a source literal or constructor argument, so the proxy's own p2sh32 commits to it AND no caller
+   * value can be the target: the proxy function publishes no `address` parameter at all.
+   */
   | 'bytecode-pinned'
-  /** `impl` is a parameter and the proxy function also takes a signature, so an authorized signer selects it. */
+  /**
+   * `impl` is a parameter, the proxy function also takes a signature, and the key that signature is checked
+   * against is one the PROXY commits to (a constructor argument or a state variable) rather than one the caller
+   * hands in - so an authorized signer, not any signer, selects the implementation.
+   */
   | 'caller-authorized';
 
 /** Which master the implementation covenant treats as the proxy. */
@@ -83,6 +105,20 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
       + 'spender selects the code that writes the proxy state',
   }),
   Object.freeze({
+    id: 'pinned-but-caller-selected',
+    reason: 'the proxy bytecode DOES contain the implementation locking bytecode, but the proxy function also '
+      + 'takes an `address` parameter. Published metadata does not say which expression the delegatecall target '
+      + 'evaluates to, so containment proves only that the p2sh32 commits to those bytes somewhere - not that '
+      + 'they are the target. A proxy that pins one implementation in its constructor and delegatecalls a '
+      + 'caller-supplied parameter is `caller-chosen` wearing a pin',
+  }),
+  Object.freeze({
+    id: 'self-authorized',
+    reason: 'the proxy function takes a signature AND either a caller-supplied `pubkey` parameter or no key the '
+      + 'proxy itself commits to, so the signature check can only prove the caller signed for a key the caller '
+      + 'chose - which authorizes nobody',
+  }),
+  Object.freeze({
     id: 'unpinned-p2pkh',
     reason: 'a P2PKH implementation address emits no co-spend pin at all (SECURITY-AUDIT C1)',
   }),
@@ -126,13 +162,21 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
  * A conditional, an iterated and a singular delegate edge publish BYTE-IDENTICAL artifact metadata today:
  * `lowLevelCalls: [{ callMode: 'delegatecall' }]` and one `lowLevelCall` block slot, with no `externalCalls`
  * entry. Typed interface edges already publish `occurrence`/`maximumOccurrences`; low-level edges do not.
- * Until that additive field exists, refusing these two classes has to happen in the compiler, not here. Naming
- * the blind spot is part of the enumeration: a gate that silently admits a class it cannot see is worse than
- * one that says so.
+ * Until that additive field exists, refusing these two classes has to happen in the compiler, not here.
+ *
+ * `bytes-typed-key-material` is the residual of the A13-2 fix. The gate refuses a `pubkey` PARAMETER because a
+ * caller-supplied key makes `checkSig` prove nothing. A key handed in as `bytes` and cast inside the body is
+ * indistinguishable in published metadata from the delegatecall's own calldata parameter, which every admitted
+ * proxy has - so refusing all `bytes` parameters would refuse the admitted classes too. Only the compiler,
+ * which sees which expression `checkSig` checks, can close it.
+ *
+ * Naming the blind spot is part of the enumeration: a gate that silently admits a class it cannot see is worse
+ * than one that says so.
  */
 export const UNDETECTED_BY_THIS_GATE: readonly string[] = Object.freeze([
   'conditional-delegate-edge',
   'iterated-delegate-edge',
+  'bytes-typed-key-material',
 ]);
 
 /** Stable, exact rejection for a delegate participant outside the admitted classes. */
@@ -255,26 +299,60 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
   const addressParameters = proxyFn.inputs.filter((parameter) => parameter.type === 'address');
   // A `sig` parameter is NECESSARY for the caller-authorized class, not sufficient: the artifact cannot show
   // that the signature check dominates the delegatecall. That remains the compiler's `checkSig` emission.
+  // `datasig` is deliberately NOT accepted here: no BCH-2026 case settles a checkDataSig-authorized proxy, and
+  // an admitted class without a settling case is exactly what this module refuses to have.
   const hasSignatureParameter = proxyFn.inputs.some((parameter) => parameter.type === 'sig');
+  // A `pubkey` PARAMETER is key material the CALLER supplies. `checkSig(s, pk)` against it proves only that the
+  // caller signed for a key the caller picked, which is not authority (A13-2).
+  const callerSuppliedKeys = proxyFn.inputs.filter((parameter) => parameter.type === 'pubkey');
+  // Keys the PROXY commits to: a constructor argument lands in its p2sh32, a state variable in its data NFT.
+  const commitsAKey = input.proxy.artifact.constructorInputs.some((parameter) => parameter.type === 'pubkey')
+    || (input.proxy.artifact.stateLayout?.variables ?? []).some((variable) => variable.type === 'pubkey');
 
+  // ORDER MATTERS (A13-1). The caller-selected question is asked FIRST, because bytecode containment cannot
+  // answer it: published metadata never says which expression the delegatecall target evaluates to, so a proxy
+  // that commits one implementation in its constructor AND delegatecalls an `address` parameter contains the
+  // pinned bytes while targeting the caller's. Only a proxy whose function publishes NO `address` parameter has
+  // a target no caller value can reach.
   let codeIdentity: DelegateCodeIdentity;
-  if (pinnedInProxyBytecode) {
+  if (addressParameters.length === 0) {
+    if (!pinnedInProxyBytecode) {
+      throw new DelegateParticipantClassError(
+        "class 'dynamically-resolved-implementation' is not admitted: proxy function "
+        + `'${input.proxy.functionName}' neither commits the implementation locking bytecode in its own bytecode `
+        + 'nor names it as an authorized parameter, so code identity is only as strong as whatever resolves it '
+        + 'at spend time',
+      );
+    }
     codeIdentity = 'bytecode-pinned';
-  } else if (addressParameters.length > 0 && hasSignatureParameter) {
-    codeIdentity = 'caller-authorized';
-  } else if (addressParameters.length > 0) {
+  } else if (!hasSignatureParameter) {
+    const named = addressParameters.map((parameter) => `'${parameter.name}'`).join(', ');
+    throw new DelegateParticipantClassError(pinnedInProxyBytecode
+      ? `class 'pinned-but-caller-selected' is not admitted: proxy function '${input.proxy.functionName}' takes `
+        + `address parameter(s) ${named} and no signature parameter. Its bytecode does contain the `
+        + 'implementation locking bytecode, but published metadata does not say which expression the '
+        + 'delegatecall targets, so the pin proves only that the p2sh32 commits to those bytes somewhere - any '
+        + 'spender may still pass a different address and select the code that writes the proxy state'
+      : `class 'caller-chosen' is not admitted: proxy function '${input.proxy.functionName}' takes the `
+        + 'implementation address as a parameter with no signature parameter, so any spender selects the code '
+        + 'that writes the proxy state');
+  } else if (callerSuppliedKeys.length > 0) {
     throw new DelegateParticipantClassError(
-      `class 'caller-chosen' is not admitted: proxy function '${input.proxy.functionName}' takes the `
-      + 'implementation address as a parameter with no signature parameter, so any spender selects the code '
-      + 'that writes the proxy state',
+      `class 'self-authorized' is not admitted: proxy function '${input.proxy.functionName}' takes both a `
+      + `signature and pubkey parameter(s) ${callerSuppliedKeys.map((k) => `'${k.name}'`).join(', ')}. Published `
+      + 'metadata does not say which key the signature is checked against, so a caller may sign for their own '
+      + 'key and select the code that writes the proxy state. Check the signature against a constructor '
+      + 'argument or state variable instead of a parameter',
+    );
+  } else if (!commitsAKey) {
+    throw new DelegateParticipantClassError(
+      `class 'self-authorized' is not admitted: proxy '${input.proxy.artifact.contractName}' commits no pubkey `
+      + 'at all - no pubkey constructor argument and no pubkey state variable - so there is no authority its '
+      + `signature parameter could be checked against, and '${input.proxy.functionName}' selects the code that `
+      + 'writes the proxy state on any caller\'s signature',
     );
   } else {
-    throw new DelegateParticipantClassError(
-      "class 'dynamically-resolved-implementation' is not admitted: proxy function "
-      + `'${input.proxy.functionName}' neither commits the implementation locking bytecode in its own bytecode `
-      + 'nor names it as an authorized parameter, so code identity is only as strong as whatever resolves it '
-      + 'at spend time',
-    );
+    codeIdentity = 'caller-authorized';
   }
 
   // --- state owner -----------------------------------------------------------------------------------------

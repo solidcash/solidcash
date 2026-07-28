@@ -187,6 +187,35 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.34 State at the end of the parallel-work effort
+
+Measured at this commit, not carried forward: **solidc 2,444 / 0** (59 files), **solidcash 3,951 / 0** (454
+files, 4 skipped). The tree recovered from the deliberate SEC-6 red with the REPAIR integrated rather than the
+capstones reduced.
+
+**Capstones.** All three settle, and two of them now fit ORDINARY BCH-2026 capacity rather than only the relaxed
+semantic profile: C1 (five participants after its SEC-6 reshape) and C3 (eight participants, 108 inputs, zero
+over budget). C2 fits at <=0.82x. That was not the starting position - C1 was 2.07x over on first measurement.
+
+**Security ledger.** Seven findings, all reached through a worker attacking another's work or disclosing a lead
+it could not close: SEC-1 (conditional-edge state forgery), SEC-2 (caller-chosen implementation takeover,
+deliberately warned rather than refused), SEC-3 (iterated-edge silent miscompile), SEC-4 (library sugar pinning
+NOTHING - state rewritten with no delegate co-spent at all), SEC-5 (declared-returning-handler emission escape),
+SEC-6 (effect-carrying emission escape), SEC-7 (spender-selectable token-container drop). Five closed by repair,
+two fail closed by design.
+
+**What is NOT claimed.** Only 4 rows are `PROVEN` - G1, S1, E1, C2 - each with a named reviewer who did not
+implement it. Everything else is `INTEGRATED`, which means the integration owner verified and merged it, NOT
+that anyone tried to break it. Roughly 20 X and SEC rows remain open. No `CONSENSUS_FIT` or `POLICY_FIT` claim
+is made anywhere: the capacity results above are F1-style measurements against ordinary consensus knobs, with
+dust disabled and no standard-policy or live-network evidence.
+
+**Six integration-owner errors are recorded in this plan** rather than quietly fixed: a capacity figure wrong by
+200x, a "fully green" claim covering three of six packages, calling a live exploit defence-in-depth, a
+1,000-satoshi premise propagated into three briefs, a point-in-time suite result recorded as standing fact, and
+a correction that was itself an unverified guess. Each was caught by a worker, which is the strongest single
+piece of evidence that the adversarial structure did its job.
+
 ### 4.33 X29 lands: the repair beats the refusal, and the sequencing bet paid off
 
 The bet recorded in 4.32 was to build the repair BEFORE reducing the capstones. It paid off.

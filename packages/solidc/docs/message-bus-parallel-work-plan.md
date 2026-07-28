@@ -169,9 +169,10 @@ task-specific report, not in this table.
 | **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
 | **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (REPAIRED)** | refusal replaced by X29's real repair - see 4.33 |
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
-| **SEC-8** | **X29's shared reached flag permits satoshi-container theft** | — | X29 | **TODO (security, LIVE)** | VM-settled and broadcast; emit-only handler arms a transfer flag - see 4.35 |
-| X30 | Frame width > 1 is UNREACHABLE, not merely unmeasured | — | X29 | TODO | a mid-chain participant owning two rows rejects at input 2, independent of X29 |
-| **SEC-9** | No event analogue of X29's not-reached guard | — | SEC-8 | **TODO (security)** | `eventWidth` is a group max; a transfer-only handler leaves event slots unverified |
+| **SEC-8** | X29's shared reached flag permitted satoshi-container theft | A | X29 | **INTEGRATED (closed)** | per-handler flag; design credited to C, validated by A |
+| X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
+| **SEC-10** | One-armed conditional emit reserves an unsettled slot | — | SEC-9 | **TODO (security)** | same forgery capability as SEC-9; predates X29; NOT VM-measured |
+| **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | — | E2 | TODO | `planCompiledGraph`, which every capstone uses, has no check |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | — | L2 | TODO | `abiFunction` is optional on the base type; preflight returns undefined and broadcasts |
 | X33 | S2's `touchesCollection` does not descend through calls | — | S2 | TODO | one callee deeper restores the pre-S2 internal error |
@@ -232,17 +233,29 @@ not apply Worker A's ablation** - keying on `transferInfos.length` alone would a
 That is the caveat Worker A raised when offering the ablation as attribution rather than a fix.
 
 It built the principled version instead - a per-handler `graphEffectSettlesTransfers` set only for frame members
-- and **it does not work**. The fix is confirmed present in the built compiler, 26 of 27 escape cases pass, and
-the drain is still ACCEPTED. So the dispatch-site flag write is not the only path to the unguarded container,
-and Worker A's ablation moved more than the single condition it names.
+- and reported that the drain was still ACCEPTED, concluding the dispatch-site flag write was not the only path.
+
+**CORRECTED IN ROUND 12: that conclusion was wrong, and this board recorded it as fact.** Worker A measured the
+cause: **C's fixture co-spent no container at all.** Giving the sibling an `emit` made the transfer-carrying
+handler INELIGIBLE, because the `eventMode` gate drops any eligible handler with zero direct emits - so the
+route reserved no `satoshiContainer` and no transfer slot. C's transaction had no container input, and its
+`drain` only moved a change output. Its ACCEPTED was not evidence about the fix.
+
+So C's decision to report rather than integrate was right, and its design was right - Worker A re-derived the
+same `graphEffectSettlesTransfers` and credits it - but its conclusion was wrong, and Worker A's original
+ablation was sound after all. A negative result needs its own control: C never checked that its fixture still
+reserved the thing being drained.
 
 The attempt is committed on a branch as `it.fails` so the drain stays visible, and the worker said explicitly:
 **do not integrate it as a fix.** It was NOT merged. SEC-8 remains open, and the next step is to measure which
 of `graphTransferFlagActive`, frame membership, or the epilogue's stack condition differs on this shape.
 
-**A second lead from the same construction, unchased: `eventWidth` is a group maximum too, and there is no event
-analogue of the not-reached guard.** A transfer-only handler dispatched at a site leaves `eventWidth` reserved
-event slots with nothing verifying them. Opened as SEC-9.
+**SEC-9, from the same construction, is CLOSED in round 12 and was exploitable.** The eligibility gate does
+require uniform event counts - but it counts **direct `emit` statements before lowering** while the frame
+reservation counts `emitInfos` **after** it, so an emit reached through an internal call is invisible to it.
+Measured: a spender minted a spurious own-category event NFT into a reached site's unverified second slot and it
+was **ACCEPTED**. Now fails closed on divergent member counts, chosen over adding covenant surface for a shape no
+capstone has. Its positive control is **the first VM settlement of an effect frame at width > 1**.
 
 ### 4.36 Round-11 review of S2, L1, L2: two real findings, and X28's own figure was stale
 

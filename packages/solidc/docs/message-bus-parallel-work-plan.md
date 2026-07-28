@@ -137,7 +137,9 @@ task-specific report, not in this table.
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
 | C3 | Eight-participant semantic capstone | C | C1,C2 | INTEGRATED | 5/5; saturates the PARTICIPANT bound only (8/24 invocations, depth 4/7) |
-| X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | LEASED | round 8; B owns the run-to-completion method |
+| X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | INTEGRATED | blocker is the CONTROLLER at 1.2286x, not the projection |
+| X27 | Destructive left-to-right walk in `attest` | — | X25 | TODO | costed at -17.3%; 1.3 points short alone |
+| X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | LEASED | round 8; A reviews C1+C3, B reviews C2 - neither reviews its own |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
@@ -182,6 +184,64 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.25 X25 answers the scaling question, and moves the blocker off the projection entirely
+
+Worker B re-measured C3 run-to-completion on the post-X23 tree. Three recorded facts were wrong.
+
+**The blocker is the CONTROLLER, not the projection.** True ratios against the ordinary 800/byte budget:
+
+| input | role | ratio |
+|---|---|---|
+| 8 participant masters | 2,905-4,787 bytes | 0.337-0.506 |
+| 8 projections | 5,880 bytes | 0.681-0.689 |
+| **106 controller** | 2,940 bytes | **1.2286** |
+
+C3 misses ordinary capacity **by one input**, and 18.6% has to come off the controller and nothing else. The
+aborted reading said "1,029 over, 0.04%" - the artifact again, on a different input from the one the test named.
+
+**The recorded 8,412-byte projection input was pre-X23.** It is 5,880, and 8,412 - 5,880 is exactly the 2,532
+bytes X23 removed - an independent cross-check that X23's saving landed where it claimed.
+
+**Scaling is answered, and C3's own hypothesis is measured false.** The projection verifier is a pure function of
+(participants, invocations): C1 and C2 are both 4/5 with different compositions and transcripts of 1,141 against
+743 bytes, and their projections evaluate to a **byte-identical 17,259 instructions**, with the returning
+participant's row at 17,584 in both, and the +325 returning-row surcharge identical across all three capstones.
+Transcript length does not enter at all. The controller is that plus **exactly 32 instructions per transaction
+output** - a three-point fit at 35, 79 and 108 slots. C3's reading that widening buys budget as fast as it
+spends it is false: budget base grows 3.3% and 6.8% while cost grows 56.2% and 80.6%.
+
+Participant count and invocation count still cannot be separated - they move together in all three builds.
+
+**Two costed levers, neither implemented.** A destructive left-to-right walk in `attest` gives -17.3%, which is
+1.3 points short on its own. Shrinking the Ledger's 64-slot trailing region to what one chunk actually needs
+gives -6.9% - which prices C3's own structural finding about `BALANCED_TRAILING_CAPACITY`. Together -24.2%,
+about 0.93x. That constant is in Worker C's lease, so Worker B correctly reported it as BLOCKED rather than
+reaching for it.
+
+### 4.26 A1 review of C2: CLEAN, and the SEC-5 question answered twice
+
+Worker B reviewed C2, which it did not build, reproduced 11/11 from committed fixtures before touching anything,
+and added 12 cases against fields C2 had not attacked - table over-run and under-run, participant master,
+projection slot, return-event output, master capability, satoshi value, token category, owning locking bytecode.
+**All reject. No defect found in C2.**
+
+The independence claim turned out stronger than its label: the target and selector attacks come from **opposite
+sides** - `target` moves the persisted table and keeps the transcript honest, `selector` moves the transcript and
+keeps the persisted table honest.
+
+**SEC-5 was re-checked two ways**, because C2 was built while that escape was live and deliberately uses a
+pointer table. Empirically all 11 original cases still reject at the same inputs post-fix. Structurally,
+`synthesizeBatchBeforeLowering` is false for C2's hub, so it takes the late path and `InlineStoragePointerCalls`
+never flattened it - SEC-5's bug never applied. And logically the escape could only have made hostile cases
+ACCEPT, while C2's results are rejections.
+
+**C2 fits ordinary BCH-2026 capacity**, every input at or below 0.82x, so its SEMANTIC-only label is conservative
+rather than forced. C2 carried no capacity measurement before; it does now.
+
+Two observations recorded as facts rather than defects: the return-output binding is enforced by the CONTROLLER,
+not by the participant that produces the result; and the projection covenant validates the declared proof region
+as a whole, so moving participant 3's slot rejects at projection 0 rather than at the moved slot.
 
 ### 4.24 SEC-5 closed for effect-free handlers - and the worker's own hypothesis was wrong
 
@@ -241,9 +301,12 @@ remained. Its companion observation - that C3 "misses by less than C1, 70 agains
 therefore compares two artifacts and means nothing. The worker already declined to call it a scaling law and
 asked for an F1 measurement, which was the right instinct on numbers that turned out to be unusable.
 
-Re-run against the post-X23 tree, C3 still does not fit and its suite still passes 11/11 - so X23's 36% density
-reduction was not enough at eight participants. The TRUE gap is unknown and needs the run-to-completion method
-Worker B used. Opened as X25.
+**CORRECTION (X25): the sentence that stood here was wrong twice over.** The integration owner wrote that C3
+"still passes 11/11" after X23. That was measured immediately after C3 merged and then recorded as a durable
+fact - but SEC-5 landed afterwards and moved the failing input from 98 to 106, so the capacity test was RED at
+`9bf3e5ea` while the board asserted it passed. Worker B found it during the review round and fixed the test. A
+point-in-time measurement is not a standing claim; anything asserted about a suite has to be re-checked after
+the next merge that touches its compiler path.
 
 **Two structural findings worth carrying into the F phase.** The projection input is 8,412 bytes, under the
 10,000-byte limit, so input size is not the blocker at eight wide either - density is, again. And

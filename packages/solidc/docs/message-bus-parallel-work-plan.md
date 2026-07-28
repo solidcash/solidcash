@@ -185,6 +185,31 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.28 Why PROVEN is still 2, and what is queued for promotion
+
+A row count taken at round 9: **54 rows - 30 INTEGRATED, 17 TODO, 5 LEASED, 2 CHANGES, 2 PROVEN.** Both PROVEN
+rows are P0.1 and P0.2, which predate this effort. Nine rounds, three capstones and five closed forgeries have
+promoted nothing, and that is deliberate: section 3.3 makes `PROVEN` require an independent hostile review to
+pass AND corrections to land AND regressions to be green.
+
+**Queued for promotion once the tree is verifiably green, with the reviewer named:**
+
+| Row | Reviewed by | Findings | Status of findings |
+| --- | --- | --- | --- |
+| G1 | B (did not implement it) | bound escape, three shapes | fixed by A, integrated |
+| S1 | A (did not implement it) | multi-slot forgery escape | fixed by C, integrated |
+| E1 | C (did not implement it) | `possibleTargets` widening, unexhausted cursor | both closed by X7 |
+| C2 | B (did not implement it) | none - clean review | n/a; re-verified twice post-SEC-5 |
+
+**Not promotable:** C1 and C3 are in CHANGES. G2, G3, E2, E3, E4, S1's siblings and every X row have had no
+independent hostile review at all - INTEGRATED means the integration owner verified and merged it, not that
+someone tried to break it.
+
+**Deferred deliberately at round 9.** The verifying run was attempted while three workers were running their own
+suites: 63 concurrent vitest processes, and the run did not progress past `solidc` in the time allowed. A suite
+measured under that contention is exactly the condition that produced timeout-only failures earlier in this
+effort, and it is not a sound basis for a claim that outlives the session. The promotion waits for a quiet tree.
+
 ### 4.27 A1 review of C1 and C3: no escape found, four real findings, one correcting this plan
 
 Worker A reviewed the two capstones it did not build, added 26 hostile cases - 17 transcript fields neither

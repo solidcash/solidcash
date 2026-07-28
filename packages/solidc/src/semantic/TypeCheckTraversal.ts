@@ -149,6 +149,7 @@ import {
   InvalidAssemblyError,
   NoMatchingOverloadError,
   AmbiguousOverloadError,
+  AmbiguousEventOverloadError,
   InternalCallToExternalError,
   ContractConstructorArgTypeError,
   RevertArgumentCountError,
@@ -332,15 +333,28 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Resolve overloaded events by matching argument types
     if (node.eventCandidates && node.eventCandidates.length > 1) {
-      const match = node.eventCandidates.find((candidate) => (
+      const sourceIndex = (candidateIndex: number, candidate: EventDefinitionNode): number =>
+        node.fieldNames
+          ? node.fieldNames.indexOf(candidate.parameters[candidateIndex].name)
+          : candidateIndex;
+      const matches = node.eventCandidates.filter((candidate) => (
         candidate.parameters.length === node.args.length
         && candidate.parameters.every((param, i) => {
-          const argType = node.args[i].type;
+          const argType = node.args[sourceIndex(i, candidate)]?.type;
           return argType !== undefined && implicitlyCastable(argType, param.type);
         })
       ));
-      if (!match) {
+      if (matches.length === 0) {
         throw new UndefinedEventError(node);
+      }
+      if (matches.length > 1) {
+        throw new AmbiguousEventOverloadError(node);
+      }
+      const match = matches[0];
+      if (node.fieldNames) {
+        node.args = match.parameters.map((parameter) =>
+          node.args[node.fieldNames!.indexOf(parameter.name)]);
+        node.fieldNames = undefined;
       }
       node.eventDefinition = match;
       node.eventCandidates = undefined;

@@ -7164,17 +7164,23 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedEventError(node);
     }
     if (node.fieldNames) {
-      // Named-arg emit `emit E({b: y, a: x})`: pick the event whose params match the names and reorder.
-      const match = candidates.find((ev) => ev.parameters.length === node.fieldNames!.length
+      // Named-arg emit `emit E({b: y, a: x})`: retain every overload whose parameter-name set matches.
+      // TypeCheckTraversal reorders against each candidate and resolves types; selecting the first declaration
+      // here incorrectly accepted two overloads with the same names in a different order.
+      const matches = candidates.filter((ev) => ev.parameters.length === node.fieldNames!.length
         && ev.parameters.every((p) => node.fieldNames!.includes(p.name)));
-      if (!match) {
+      if (matches.length === 0) {
         throw new NamedArgumentError(
           node, `No event '${node.eventName}' matches named arguments {${node.fieldNames.join(', ')}}`,
         );
       }
-      node.args = match.parameters.map((p) => node.args[node.fieldNames!.indexOf(p.name)]);
-      node.eventDefinition = match;
-      node.fieldNames = undefined;
+      if (matches.length === 1) {
+        node.args = matches[0].parameters.map((p) => node.args[node.fieldNames!.indexOf(p.name)]);
+        node.eventDefinition = matches[0];
+        node.fieldNames = undefined;
+      } else {
+        node.eventCandidates = matches;
+      }
     } else if (candidates.length === 1) {
       node.eventDefinition = candidates[0];
     } else {

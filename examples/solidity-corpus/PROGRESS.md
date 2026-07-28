@@ -4985,3 +4985,13 @@ The focused suite is **991/991**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **993/993**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 491, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Named event-overload loop: 4443 flat, NEG-ACCEPTED 491 -> 489 (-2)
+
+- Named emits now retain every overload with the matching parameter-name set instead of selecting the first
+  declaration.
+- Type checking reorders arguments per candidate and rejects when multiple overloads remain implicitly compatible;
+  uniquely named overloads continue to reorder and emit normally.
+
+The focused suite is **996/996**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+489, plus 275 multifile and 289 cmdline fixtures excluded.

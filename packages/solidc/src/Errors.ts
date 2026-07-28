@@ -960,6 +960,12 @@ export class AmbiguousOverloadError extends SolidCashError {
   }
 }
 
+export class AmbiguousEventOverloadError extends SolidCashError {
+  constructor(node: EmitStatementNode) {
+    super(node, `No unique declaration found for overloaded event '${node.eventName}'`);
+  }
+}
+
 export class CircularImportError extends Error {
   constructor(filePath: string) {
     super(`Circular import detected: ${filePath}`);

@@ -667,6 +667,32 @@ describe('Solidity anonymous event selectors', () => {
   });
 });
 
+describe('Solidity named event overload ambiguity', () => {
+  it('rejects overloads sharing a named-argument set in different orders', () => {
+    expect(() => compileString(
+      'contract C { event E(uint u, string s); event E(string s, uint u);'
+      + ' function f() public { emit E({u: 2, s: "abc"}); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/No unique declaration.*overloaded event 'E'/i);
+  });
+
+  it('rejects ambiguity through implicit literal conversions', () => {
+    expect(() => compileString(
+      'contract C { event E(uint u, string s); event E(bytes s, int u);'
+      + ' function f() public { emit E({u: 2, s: "abc"}); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/No unique declaration.*overloaded event 'E'/i);
+  });
+
+  it('retains a uniquely named event overload and reorders its arguments', () => {
+    expect(compileString(
+      'contract C { event E(uint a, bool b); event E(bytes x, string y);'
+      + ' function f() public { emit E({b: true, a: 2}); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

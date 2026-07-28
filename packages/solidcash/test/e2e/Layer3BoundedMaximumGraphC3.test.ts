@@ -1328,20 +1328,42 @@ describe('C3 capacity measurement', () => {
     expect(controller.pushedBytes / controller.cost).toBeGreaterThan(0.25);
     expect((controller.arithmetic + controller.hashIterations * 64) / controller.cost).toBeLessThan(0.01);
 
-    // Scaling, against C1 measured with this identical harness at this same commit. C1 is 4 participants,
-    // 5 invocations, a 1,141-byte transcript: projections 0.4556/0.4514/0.4510/0.4567 and controller 0.7268,
-    // reproducing section 4.22's table exactly. C3 is 8 participants, 8 invocations, 1,329 bytes.
+    // What 18.6% could come off, costed against the measured split. None of these is implemented here.
+    //   - A destructive left-to-right transcript walk in `attest`, so each field is split off a SHRINKING
+    //     remainder instead of re-splitting the whole blob. `attest` issues 14 slices per participant and 6
+    //     per invocation - 160 for C3 - which is what makes the instruction count track 14P + 6N, and each
+    //     slice pushes O(transcript length) whatever it extracts. Halving the pushed-bytes term saves 500,958,
+    //     which is 17.3%: NOT enough alone, 1.3 points short.
+    //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs: 198,400, 6.9%. The constant
+    //     lives in SymbolTableTraversal.ts.
+    //   - X24, the constant-depth stack-write shuttle, against the 65.0% instruction term.
+    // The first two together are 24.2% and would bring the controller to about 0.93x. This is arithmetic on
+    // measured components, not a proven result.
+
+    // Scaling, against C1 and C2 measured with this identical harness at this same commit. C1 is 4/5 with a
+    // 1,141-byte transcript and 35 slots; C2 is 4/5 with a 743-byte transcript and 79 slots; C3 is 8/8 with
+    // 1,329 bytes and 108 slots. C1 reproduces section 4.22's table exactly - 0.4556/0.4514/0.4510/0.4567 and
+    // controller 0.7268 - which is what validates the harness.
     //
-    //   transcript blob   +16.5%      unlocking bytes (the budget base)  +3.3% projection / +6.8% controller
-    //   projection cost   +56.2%      controller cost                    +80.6%
+    // C3's authored reading, that "widening buys budget at least as fast as the extra participant frames spend
+    // it", is measured FALSE: from C1 to C3 the budget base grew 3.3% (projection) and 6.8% (controller) while
+    // the cost grew 56.2% and 80.6%.
     //
-    // C3's authored reading - that "widening buys budget at least as fast as the extra participant frames
-    // spend it" - is therefore measured FALSE: the budget base grew 3-7% while the cost grew 56-81%.
-    // What the cost actually tracks is transcript ROW COUNT, not transcript bytes. The instruction increase
-    // is nearly identical in the two independent scripts for the same +4 participants and +3 invocations:
-    // projection 17,259 -> 25,984 (+8,725) and controller 10,035 -> 18,771 (+8,736), about 1,247 instructions
-    // per added row averaged over the seven. Participant count and invocation count both grew between C1 and
-    // C3, so these two builds CANNOT separate the two axes; what they do separate is rows from bytes.
+    // What the cost DOES track, from the three builds together:
+    //   1. The projection verifier is a pure function of participant and invocation count. C1 and C2 share
+    //      row counts, differ in composition and differ by 398 transcript bytes, and their projection inputs
+    //      evaluate to a byte-identical 17,259 instructions (17,584 for the returning participant's row in
+    //      both). C3, at 8/8, is 25,984. Transcript LENGTH does not enter.
+    //   2. The controller is that plus a scan of every transaction output, at 32 instructions per output:
+    //      10,035 at 35 slots, 11,443 at 79, 18,771 at 108. The two increments fit exactly - C1 to C2 is
+    //      44 slots and +1,408 instructions, and both C1 to C3 and C2 to C3 leave the same 6,400 for the
+    //      +4 participants and +3 invocations once the output term is removed.
+    // Participant and invocation count move together across these three builds, so they still cannot be
+    // separated from each other. Rows, bytes and slots now can be.
+    //
+    // That prices C3's own structural finding: 66 of its 108 slots are the Ledger's trailing region, held at
+    // BALANCED_TRAILING_CAPACITY = 64 for ONE chunk UTXO. At 32 instructions per output those 62 unused slots
+    // cost the controller 198,400 of its 2,889,555 - 6.9%, against the 18.6% that has to come off.
     expect(built.plan.participants).toHaveLength(8);
     expect(built.plan.invocations).toHaveLength(8);
     expect(built.transcript.bytes.length).toBeGreaterThan(1_100);

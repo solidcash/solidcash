@@ -709,25 +709,25 @@ describe('C1 DeFi integrated semantic capstone', () => {
     expect(built.tokenInputBytes).toBeLessThan(10_000);
   }, 180_000);
 
-  it('MEASURED: the same composition under ordinary BCH-2026 capacity does NOT fit yet', async () => {
+  it('MEASURED: the same composition fits ordinary BCH-2026 capacity', async () => {
     // An F1-style capacity measurement, NOT a CONSENSUS_FIT or POLICY_FIT claim: only the consensus capacity
     // knobs the semantic profile relaxes are restored. Relay dust and standard transaction size are untested.
-    // Per the profile doc, a semantic pass with an ordinary-capacity failure is a production-fitting problem,
-    // not a semantic failure - which is exactly what this records.
+    //
+    // X23 history. This measurement previously recorded a failure at input 29 - the first graph projection
+    // proof - reported as an overrun of 626 on a 6,579,200 budget, "0.0095% over". That reading was an
+    // artifact of the VM's abort semantics: the density check runs after every operation, so the cost it
+    // reports is always within one operation of the budget no matter how far the honest evaluation still had
+    // to go. Run to completion on a relaxed budget, the same input needed 13,588,248 - 2.07x the budget, not
+    // 0.0095% over. Every Layer-3 sidecar input was over: 29/30/31/32 at 2.07x/1.85x/1.85x/1.75x and the
+    // controller at input 33 at 2.28x.
+    //
+    // The cost was almost entirely instruction count (95.8% of it), and almost all of that was one lowering:
+    // a write to a stack variable at depth N costs ~22N instructions, because the compiler moves N items to
+    // the altstack and back. Rewriting both covenants to make far fewer, far shallower variable writes -
+    // without removing a single check - took input 29 to 2,074,606 (0.46x) and input 33 to 1,600,153 (0.73x).
     const built = await buildC1('none', createOrdinaryCapacityProvider);
-    const outcome = preflightOutcome(built);
-    const broadcast = await built.provider.sendRawTransaction(built.transaction)
-      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    // The blocker is NOT participant script size: both compiled participant inputs measure under 10,000 bytes
-    // above. It is operation-cost density on input 29, the FIRST graph projection proof, whose unlocking
-    // bytecode is mostly the transcript blob and so buys a small density budget for a long verification loop.
-    // Measured at this commit: budget 6,579,200 for 8,224 density bytes, overrun to 6,579,826.
-    expect(outcome).toContain('preflight failed at input 29');
-    expect(outcome).toContain('exceed the operation cost density limit');
-    expect(broadcast).toContain('error in evaluating input index 29');
-    // Recorded because it is marginal: the honest evaluation overruns the budget by well under 0.1%.
-    const [, maximum, cost] = outcome.match(/Maximum operation cost: (\d+).*following operation: (\d+)/)!;
-    expect(Number(cost) - Number(maximum)).toBeLessThan(Number(maximum) / 1000);
+    expect(preflightOutcome(built)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 180_000);
 });
 

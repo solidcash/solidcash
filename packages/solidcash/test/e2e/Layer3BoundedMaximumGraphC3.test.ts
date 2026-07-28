@@ -266,10 +266,17 @@ type Hostile =
   | 'injection-burned'
   /** The table still names eight, but one participant's block is ordinary funding: its state never moves. */
   | 'omission'
-  /** Two participant rows name one physical owner. */
+  /**
+   * Two participant rows name one physical owner. NOTE (A1, C3-R2): this does not isolate duplication - a row
+   * naming a stranger that duplicates nothing is refused identically. See the case's scope note.
+   */
   | 'duplicate-owner'
+  /** The control for `duplicate-owner`: one row names a stranger, so all eight owners stay DISTINCT. */
+  | 'stranger-owner'
   /** One subtree is presented as a second, independent graph root. */
-  | 'disjoint-root';
+  | 'disjoint-root'
+  /** The same re-rooting one edge deeper, with the caller's now-orphaned emission row stripped as well. */
+  | 'disjoint-root-stripped';
 
 function uniqueUtxo(
   seen: Set<string>, defaults?: Parameters<typeof randomUtxo>[0],
@@ -294,13 +301,15 @@ function uniqueUtxo(
  * blob, so only a covenant can refuse it.
  */
 interface TranscriptFieldOffsets {
-  participants: readonly { lbcStart: number; lbcLength: number }[];
+  participants: readonly {
+    lbcStart: number; lbcLength: number; emissionsLengthStart: number; emissionsLength: number;
+  }[];
   invocations: readonly { parentStart: number; depthStart: number }[];
 }
 
 function transcriptFieldOffsets(bytes: Uint8Array): TranscriptFieldOffsets {
   const u16 = (at: number): number => bytes[at] | (bytes[at + 1] << 8);
-  const participants: { lbcStart: number; lbcLength: number }[] = [];
+  const participants: TranscriptFieldOffsets['participants'][number][] = [];
   const invocations: { parentStart: number; depthStart: number }[] = [];
   const participantCount = bytes[9];
   let cursor = 10;
@@ -308,11 +317,14 @@ function transcriptFieldOffsets(bytes: Uint8Array): TranscriptFieldOffsets {
     cursor += 4; // participant input, block size
     const lbcLength = u16(cursor);
     cursor += 2;
-    participants.push({ lbcStart: cursor, lbcLength });
+    const lbcStart = cursor;
     cursor += lbcLength;
-    for (let frame = 0; frame < 3; frame += 1) { // batch, emissions, callers
-      cursor += 2 + u16(cursor);
-    }
+    cursor += 2 + u16(cursor); // batch frame
+    const emissionsLengthStart = cursor;
+    const emissionsLength = u16(cursor);
+    cursor += 2 + emissionsLength;
+    cursor += 2 + u16(cursor); // callers frame
+    participants.push({ lbcStart, lbcLength, emissionsLengthStart, emissionsLength });
     cursor += 2; // return output
     cursor += 2 + u16(cursor); // result vector
     cursor += 2; // projection input
@@ -337,6 +349,39 @@ function patchTranscript(
   const bytes = Uint8Array.from(transcript.bytes);
   for (const patch of patches) bytes.set(patch.bytes, patch.at);
   return { ...transcript, bytes, root: binToHex(sha256.hash(bytes)) };
+}
+
+/**
+ * Rewrite one participant's emission region to a NEW length: fix the region's own length prefix, shift every
+ * LATER participant's frame offset by the delta, rewrite the copy that participant's route is handed, and
+ * re-derive the root. `compiledGraphRouteArgs` hands each route its own frame offset, so a length-CHANGING
+ * edit that left those alone would make later routes read the wrong frame - a fixture artifact rather than a
+ * covenant result. Needed by `disjoint-root-stripped`, which is the only length-changing transcript edit here.
+ */
+function replaceEmissions(
+  transcript: layer3.FinalizedCompiledGraph, participant: number, replacement: Uint8Array,
+): layer3.FinalizedCompiledGraph {
+  const frame = transcriptFieldOffsets(transcript.bytes).participants[participant];
+  const head = transcript.bytes.subarray(0, frame.emissionsLengthStart);
+  const tail = transcript.bytes.subarray(frame.emissionsLengthStart + 2 + frame.emissionsLength);
+  const bytes = new Uint8Array(head.length + 2 + replacement.length + tail.length);
+  bytes.set(head, 0);
+  bytes[head.length] = replacement.length & 0xff;
+  bytes[head.length + 1] = (replacement.length >>> 8) & 0xff;
+  bytes.set(replacement, head.length + 2);
+  bytes.set(tail, head.length + 2 + replacement.length);
+  const delta = replacement.length - frame.emissionsLength;
+  const emissionsHex = [...transcript.participantEmissionsHex];
+  emissionsHex[participant] = binToHex(replacement);
+  return {
+    ...transcript,
+    bytes,
+    root: binToHex(sha256.hash(bytes)),
+    participantOffsets: Object.freeze(transcript.participantOffsets.map(
+      (offset, index) => (index > participant ? offset + delta : offset),
+    )),
+    participantEmissionsHex: Object.freeze(emissionsHex),
+  } as layer3.FinalizedCompiledGraph;
 }
 
 interface BuiltC3 {
@@ -551,6 +596,15 @@ async function buildC3(
       ),
     }]);
   }
+  if (hostile === 'stranger-owner') {
+    // The control the duplicate-owner case was missing. Participant 7's row now names a well-formed p2sh32
+    // that belongs to NO participant, so the table still names eight distinct owners. Same field, same 35
+    // bytes, same offsets as the duplicate patch - the only thing removed is the duplication itself.
+    const forged = offsets.participants[7];
+    const stranger = hexToBin(`aa20${'5c'.repeat(32)}87`);
+    expect(stranger.length).toBe(forged.lbcLength);
+    transcript = patchTranscript(honestTranscript, [{ at: forged.lbcStart, bytes: stranger }]);
+  }
   if (hostile === 'disjoint-root') {
     // Invocation 4 (Router -> Escrow) is re-presented as a second root: parent 0xffff at depth 0. That splits
     // the eight-participant table into two disjoint trees sharing one controller attestation. Three bytes.
@@ -559,6 +613,17 @@ async function buildC3(
       { at: record.parentStart, bytes: Uint8Array.of(0xff, 0xff) },
       { at: record.depthStart, bytes: Uint8Array.of(0) },
     ]);
+  }
+  if (hostile === 'disjoint-root-stripped') {
+    // The stricter attacker the disjoint-root scope note describes, built one edge deeper so the strip is
+    // exact: invocation 5 (Escrow -> Settler) is re-presented as a second root, AND the Escrow's emission row
+    // answering that edge is removed. The Escrow emits exactly one row, so its whole emissions frame is that
+    // row and the strip needs no row-level parsing. The two trees then share nothing at all.
+    const record = offsets.invocations[5];
+    transcript = replaceEmissions(patchTranscript(honestTranscript, [
+      { at: record.parentStart, bytes: Uint8Array.of(0xff, 0xff) },
+      { at: record.depthStart, bytes: Uint8Array.of(0) },
+    ]), at.get('escrow')!, new Uint8Array(0));
   }
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -1141,7 +1206,7 @@ describe('C3 hostile cases', () => {
       expect(broadcast).toContain('error in evaluating input index 98');
     }, 900_000);
 
-  it('HOSTILE: two table rows naming one owner are refused at input 96', async () => {
+  it('HOSTILE: a table row that names the wrong owner for its base is refused at input 96', async () => {
     const control = await honestControl();
 
     // 35 patched bytes: participant 7's row now names participant 6's locking bytecode. Every other byte of
@@ -1178,7 +1243,31 @@ describe('C3 hostile cases', () => {
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 96');
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
 
-    // The SDK planner refuses the same construction before any transcript exists.
+    // CONTROL (A1 finding C3-R2), reproduced here at eight-participant width. The same field of the same row,
+    // the same 35 bytes, rewritten to a p2sh32 that belongs to NO participant - so every owner in the table
+    // stays DISTINCT and the only thing removed is the duplication. It is refused at the SAME input, by the
+    // same covenant, with the same class of failure. The duplication therefore contributes nothing.
+    const stranger = await buildC3('stranger-owner');
+    const strangerOffsets = transcriptFieldOffsets(stranger.transcript.bytes);
+    const strangerRow = (index: number): string => binToHex(stranger.transcript.bytes.slice(
+      strangerOffsets.participants[index].lbcStart,
+      strangerOffsets.participants[index].lbcStart + strangerOffsets.participants[index].lbcLength,
+    ));
+    expect(new Set(Array.from({ length: 8 }, (_unused, index) => strangerRow(index))).size).toBe(8);
+    expect(patchedByteIndices(stranger).every((index) =>
+      index >= forged.lbcStart && index < forged.lbcStart + forged.lbcLength)).toBe(true);
+    expect(preflightOutcome(stranger)).toContain('layer3: BCH-2026 preflight failed at input 96');
+    await expect(stranger.provider.sendRawTransaction(stranger.transaction)).rejects.toThrow();
+
+    // Neither generated covenant ever compares two participant rows to each other: a pairwise comparison
+    // would have to name two rows in one expression, and neither source does.
+    for (const source of [
+      layer3.generateGraphProjectionVerifier(), layer3.generateGraphRootController('51'),
+    ]) {
+      expect(/participantLbc\d\s*(==|!=)\s*participantLbc\d/.test(source)).toBe(false);
+    }
+
+    // The SDK planner is where uniqueness actually lives: it refuses the construction before any transcript.
     const rows = attacked.plan.participants.map((participant, index) => ({
       artifact: attacked.artifacts[index], lockingBytecode: participant.lockingBytecode,
     }));
@@ -1187,10 +1276,25 @@ describe('C3 hostile cases', () => {
       { parent: null, callee: 0, function: 'run', args: [CALL_VALUE, Uint8Array.of(0x51)] },
     ] as any)).toThrow(/two participant rows name the same physical locking bytecode/);
 
-    // SCOPE. The forgery is on the table, not on the physical side: a stateful participant owns exactly one
-    // minting master UTXO, so the same owner cannot be co-spent twice in one transaction to give a duplicate
-    // row a block of its own. What is proven is that a table naming one owner twice is refused; what is NOT
-    // proven here is any statement about two live masters of one category, which this model does not create.
+    // SCOPE, CORRECTED (A1 finding C3-R2). This case was written as C3's duplicate-owner case and read as
+    // evidence that the covenants enforce OWNER UNIQUENESS. They do not, and this construction never tested
+    // it - the stranger control above is what shows that.
+    //
+    // What is actually proven here is the row-to-base binding: the participant at input 96 refuses a table
+    // whose row for its own base names a locking bytecode other than the one physically co-spent there. The
+    // duplication contributes nothing; naming ANY wrong owner is what fails. That is the same invariant the
+    // omission case above attacks from the other side.
+    //
+    // Owner uniqueness is real but lives ENTIRELY in the SDK: `planCompiledGraph` refuses two rows naming one
+    // locking bytecode, which is the assertion immediately above, and neither generated covenant ever
+    // compares two participant rows. A transcript assembled outside the planner is therefore not refused for
+    // duplication by anything on chain; it is refused only because each duplicated row still has to match the
+    // owner co-spent at its own base.
+    //
+    // Unchanged from the original note: the forgery is on the table, not on the physical side. A stateful
+    // participant owns exactly one minting master UTXO, so the same owner cannot be co-spent twice in one
+    // transaction to give a duplicate row a block of its own, and nothing here is a statement about two live
+    // masters of one category - this model does not create that.
   }, 900_000);
 
   it('HOSTILE: a subtree re-presented as a second graph root is refused at input 98', async () => {
@@ -1227,10 +1331,48 @@ describe('C3 hostile cases', () => {
       { parent: null, callee: 3, function: 'hold', args: [CALL_VALUE] },
     ] as any)).toThrow(/requires exactly one root invocation at index 0/);
 
-    // SCOPE. The patch leaves the Router's emission row for that edge in place, which is what keeps the edit
-    // down to three bytes. A stricter attacker would also drop that row so the two trees share nothing at
-    // all - but dropping an emission row changes the transcript's length and is the omission case above.
+    // SCOPE, CORRECTED (A1 finding C3-R3). This note previously said that a stricter attacker who ALSO drops
+    // the caller's now-orphaned emission row is "the omission case above, because it changes the transcript's
+    // length". That is wrong on both halves. Length is not what makes the omission case: the omission case
+    // replaces a participant's whole block with ordinary funding so its state never moves, and stripping an
+    // emission row does no such thing - every participant still executes its own route and settles its own
+    // post-state. And the refusal is not the same one: it lands at the CALLER's own master route rather than
+    // at a projection proof, so it is a different covenant at a different input. The next case is that build.
   }, 900_000);
+
+  it('HOSTILE: re-rooting an edge AND stripping its caller emission row is refused at the caller, input 87',
+    async () => {
+      const control = await honestControl();
+
+      // Invocation 5 (Escrow -> Settler) re-rooted to parent 0xffff at depth 0, plus the Escrow's single
+      // emission row - the row answering exactly that edge - removed. This is the stricter attacker the
+      // disjoint-root note describes, and it is a DIFFERENT refusal from the three-byte version.
+      const attacked = await buildC3('disjoint-root-stripped');
+
+      // Not the omission case. The transaction keeps every slot, every participant block is still that
+      // participant's own master and data NFT, and all eight blocks settle in the control.
+      expect(attacked.builder.inputs).toHaveLength(control.builder.inputs.length);
+      expect(attacked.builder.outputs).toHaveLength(control.builder.outputs.length);
+      expect(attacked.blockHeadIsOwner).toEqual(Array.from({ length: 8 }, () => true));
+      expect(control.blockHeadIsOwner).toEqual(Array.from({ length: 8 }, () => true));
+
+      // It IS a length-changing transcript edit - which the corrected note says is not what "omission" means.
+      expect(attacked.transcript.bytes.length).toBeLessThan(attacked.honestTranscript.bytes.length);
+      expect(attacked.transcript.participantEmissionsHex[attacked.order.indexOf('escrow')]).toBe('');
+      expect(attacked.honestTranscript
+        .participantEmissionsHex[attacked.order.indexOf('escrow')].length).toBeGreaterThan(0);
+
+      // The refusal names the Escrow's own master route, not a projection proof and not the controller.
+      const escrow = attacked.layout.participantInputs[attacked.order.indexOf('escrow')];
+      expect(escrow).toBe(87);
+      expect(escrow).not.toBe(attacked.layout.projectionInputs[0]);
+      expect(escrow).not.toBe(attacked.layout.controllerInput);
+      const outcome = preflightOutcome(attacked);
+      expect(outcome).toContain(`layer3: BCH-2026 preflight failed at input ${escrow}`);
+      const broadcast = await attacked.provider.sendRawTransaction(attacked.transaction)
+        .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+      expect(broadcast).toContain(`error in evaluating input index ${escrow}`);
+    }, 900_000);
 });
 
 describe('C3 capacity measurement', () => {
@@ -1251,10 +1393,16 @@ describe('C3 capacity measurement', () => {
 
   it('MEASURED: the same composition under ordinary BCH-2026 capacity does NOT fit', async () => {
     // An F1-style capacity measurement, NOT a CONSENSUS_FIT or POLICY_FIT claim: only the consensus capacity
-    // knobs the semantic profile relaxes are restored. C1 already fails its first projection proof on
-    // operation-cost density; C3 is strictly larger, so a failure here is expected and is a production-fitting
-    // result, not a semantic one. What is worth recording is WHERE it fails and by how much, because that is
-    // what the F-phase optimization has to move.
+    // knobs the semantic profile relaxes are restored. C3 is a production-fitting result, not a semantic one.
+    // What is worth recording is WHERE it fails and by how much, because that is what the F-phase
+    // optimization has to move.
+    //
+    // ATTRIBUTION, CORRECTED. This test used to justify itself with "C1 already fails its first PROJECTION
+    // proof on operation-cost density; C3 is strictly larger". Both halves are stale. C1 was brought under
+    // ordinary capacity by X23 and settles there now, and C3's projections are not the blocker either: X25
+    // measured them run-to-completion at 0.681-0.689 of budget, comfortably inside. The single input over
+    // budget is the GRAPH ROOT CONTROLLER, at 1.2286x - see the X25 test below for the full table. Every
+    // F-phase statement that names the projection input as the thing to shrink is reading a pre-X23 figure.
     const built = await buildC3('none', DEFAULT_ORDER, createOrdinaryCapacityProvider);
     const outcome = preflightOutcome(built);
     const broadcast = await built.provider.sendRawTransaction(built.transaction)

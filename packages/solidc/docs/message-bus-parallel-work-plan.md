@@ -167,7 +167,8 @@ task-specific report, not in this table.
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
 | X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
-| X23 | Reduce projection-verifier operation density | B | C1 | LEASED | round 7; proof is C1's own capacity measurement moving under budget |
+| X23 | Reduce projection-verifier operation density | B | C1 | INTEGRATED | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
+| X24 | Unroll the constant-depth stack-write shuttle | — | X23 | TODO | Depth is a compile-time constant; ~22N emitted where 3N suffices - ~7x on EVERY variable write |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |
 | **SEC-2** | Caller-chosen implementation parameter | C | — | **INTEGRATED (warn)** | Deliberately not fail-closed; guarded proxies stay silent |
 | **SEC-3** | Iterated delegate edge collapses N to 1 | C | — | **INTEGRATED** | Fails closed with a named diagnostic, `for` and `while` |
@@ -178,6 +179,55 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.22 X23 CLOSED - and the number in 4.20 was wrong by 200x
+
+**Correction first, because the integration owner recorded the bad number prominently.** Section 4.20 recorded
+C1 as failing ordinary capacity by "0.0095%" and called that the highest-value optimisation target. That figure
+was an artifact of libauth's abort semantics: the density check runs after EVERY operation, so the reported cost
+is always within one operation of the budget no matter how much evaluation remained. Run to completion against a
+relaxed budget, input 29 actually needed **13,588,248 - 2.07x the budget**. And it was never one input: all five
+Layer-3 sidecars were over, at 2.07 / 1.85 / 1.85 / 1.75x, with the controller worst at **2.28x**. The real ask
+was 52-56% off, not 0.0095%.
+
+Anyone reading a near-miss figure off an aborted evaluation is reading the budget back, not the cost. That
+applies to every future capacity measurement on this board.
+
+**Result: C1 now settles under ORDINARY BCH-2026 capacity** - 10,000-byte inputs, 128-byte commitments, 800
+cost/byte - proven by running C1's own measurement, not by argument.
+
+| input | ratio before | ratio after |
+|---|---|---|
+| 29 projection p0 | 2.0653 | **0.4556** |
+| 30 / 31 / 32 | 1.8490 / 1.8475 / 1.7549 | **0.4514 / 0.4510 / 0.4567** |
+| 33 controller | 2.2800 | **0.7268** |
+
+Projection verifier **7,033 -> 4,501 bytes** (-36.0%), controller **1,897 -> 1,504** (-20.7%). Both re-pinned in
+the completion ledger by the integration owner; the worker correctly declined to edit it.
+
+**Root cause, measured with an opcode and IP histogram rather than guessed.** 95.8% of the cost was
+`evaluatedInstructionCount x 100`, and it traced to ONE lowering: a write to a stack variable at depth N costs
+about 22N instructions, via a two-`OP_BEGIN` altstack shuttle. 4,988 items shuttled across 362 writes at mean
+depth 13.8 - roughly 84% of all instructions. Cursor-heavy parser loops are the worst possible shape for it.
+
+**X24, opened, and it is much larger than X23 was.** That depth is a COMPILE-TIME CONSTANT - it is pushed as a
+literal - yet the compiler emits a dynamic ~22N loop where the unrolled `N x (OP_SWAP OP_TOALTSTACK)` then
+`N x OP_FROMALTSTACK` is 3N. That is roughly a 7x cut on every variable write in EVERY contract, not just these
+two covenants. It sits in `GenerateTargetTraversal.ts`, Worker C's lease.
+
+**One guard was strengthened, not just preserved:** `require(callee < participantCount)` now runs locally, where
+the old 8-way chain only reverted at `callee >= 8`, leaving a callee in `[participantCount, 8)` setting a bit
+nothing checked. Not exploitable - the controller enforced it - but now enforced where it is used.
+
+**Evidence limit the worker recorded rather than claimed away.** Its four new hostile cases all refuse at input
+0, the caller's own master route, so the verifier is never reached. Because that route binds the whole emissions
+region including the transcript's copy, the verifier's comparison is structurally a SECOND binding in that
+fixture and cannot be isolated from it. So the four cases are system-level evidence that the rewrite opened no
+hole - they are NOT evidence about the rewritten comparison alone. Three fixture variants were tried to isolate
+it and all failed, and the test says so.
+
+The X7 `resultCursor` assertion is untouched and verbatim, and was never the cost - one comparison outside both
+loops. Region pinning at `expectedParticipantInput = 0` is intact.
 
 ### 4.21 SEC-5: a pointer-table caller stops authenticating its own emission rows
 

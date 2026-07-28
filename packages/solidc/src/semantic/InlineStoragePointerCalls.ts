@@ -150,6 +150,18 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
+      // A graph emission handler executes behind OP_INVOKE precisely so its hidden transcript/caller/result
+      // frame authenticates every reached edge. Flattening one into __scb1 makes __scb1 the current function at
+      // code generation, so its external calls take the ordinary-call path and no emission row is ever
+      // recomputed and compared - the transcript can then state any target and any arguments. Same guard, and
+      // the same reason, as InlineExternalCallHelpers and InlineReturningStateHelpers. Reachable only when
+      // route synthesis ran BEFORE this pass (compiler.ts synthesizeBatchBeforeLowering).
+      //
+      // Scoped to the clones the wrapper needs no owner-local block slot for, which is the same line
+      // synthesizeBatchBeforeLowering draws: a transfer / event / token-container operation reserves a slot in
+      // the ROUTE's layout and only the flattened form declares it, so those clones keep the established path.
+      // Their edges are therefore still generated unbound - tracked separately, not part of this repair.
+      if (this.keepsGraphEmissionBinding(fn)) continue;
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -189,7 +201,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || valueReferenced.has(fn.name)) continue;
+          || this.keepsGraphEmissionBinding(fn) || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         this.walk(fn.body, (candidate) => {
           if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
@@ -251,6 +263,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // which stay dispatchable.
     node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || this.keepDefFns.has(fn.name));
     return node;
+  }
+
+  // A graph emission handler clone that must stay behind OP_INVOKE to keep its emission binding: one whose
+  // effects are confined to state and outgoing edges, so the route wrapper reserves no owner-local block slot
+  // on its behalf and nothing is lost by leaving it a subroutine.
+  private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
+    return !!fn.graphEmissionHandler && !this.hasPhysicalEffects(fn)
+      && !this.hasTokenContainerEffects(fn) && !this.hasStoragePointerParam(fn);
   }
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {

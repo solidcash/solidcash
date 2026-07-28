@@ -569,27 +569,30 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
     }, 30_000);
 
     /**
-     * OPEN: the bare spelling reaches the BATCH route with no SCB1 route at all, where the dotted spelling
-     * gets one. It used to fail there outright, with the internal
-     * `Function '__scb1' writes a resource at entry slot 0 that has no entry descriptor`; the footprint fix
-     * removed that, and the X15 diagnostic now names the absence instead of it being silent. But the two
-     * spellings still disagree.
+     * The batch route now agrees too. It used to fail there outright with the internal `Function '__scb1'
+     * writes a resource at entry slot 0 that has no entry descriptor`; the footprint fix removed that and the
+     * X15 diagnostic named the absence instead, leaving the bare spelling with no SCB1 route at all where the
+     * dotted spelling got one.
      *
-     * Remaining cause: hidden-batch eligibility builds its `directKeys` set by walking
-     * `MappingAccess|MappingAssign|MappingDelete` only (compiler.ts), so a bare write contributes no direct
-     * key and the handler is rejected `collection-helper-route-not-enabled`. That site is in a file leased
-     * elsewhere, so this is pinned rather than fixed. `delete m[k]` already agrees in both spellings.
+     * Cause, now fixed: hidden-batch eligibility built its `directKeys` set by walking
+     * `MappingAccess|MappingAssign|MappingDelete` only (compiler.ts), so a bare write contributed no direct
+     * key and the handler was rejected `collection-helper-route-not-enabled`. The bare forms are collected
+     * too, for the shapes the route reaches through the handler itself. `delete m[k]` already agreed.
+     *
+     * Still open, deliberately: a SECOND key alternative on one collection (`balances[from]` and
+     * `balances[to]` in one handler) is reached through a CLONED handler whose keys bindEntryKeyParameters
+     * rewrites to synthetic entry-key parameters, and that rewrite still matches only the dotted nodes. That
+     * shape keeps its fail-closed no-route outcome; BatchCostRegression pins it.
      */
-    it('OPEN: the bare-spelled mapping write still gets no SCB1 route, but is now diagnosed', () => {
+    it('compiles both spellings of the same mint to a byte-identical SCB1 route', () => {
       const batch = { forceStateful: true, experimentalHiddenBatch: true };
-      expect(compileString(MINT.replace('MintTarget', 'BareMintTarget'), batch).hiddenBatch).toBeDefined();
+      const dotted = compileString(MINT.replace('MintTarget', 'BareMintTarget'), batch);
       const bare = compileString(BARE_MINT, batch);
-      expect(bare.hiddenBatch).toBeUndefined();
-      expect(bare.diagnostics).toContainEqual(expect.objectContaining({
-        severity: 'error',
-        code: 'hidden-batch-route-not-synthesized',
-        message: expect.stringContaining("'mint': collection-helper-route-not-enabled"),
-      }));
+      expect(dotted.hiddenBatch).toBeDefined();
+      expect(bare.hiddenBatch).toBeDefined();
+      expect(bare.diagnostics ?? []).toEqual([]);
+      expect(bare.bytecode).toBe(dotted.bytecode);
+      expect(JSON.stringify(bare.hiddenBatch)).toBe(JSON.stringify(dotted.hiddenBatch));
     }, 30_000);
   });
 

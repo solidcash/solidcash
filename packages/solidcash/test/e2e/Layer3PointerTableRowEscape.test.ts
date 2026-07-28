@@ -17,12 +17,9 @@ import {
 } from '../../src/stateful/covenant-helpers.js';
 
 /**
- * MEASURED ESCAPE: a runtime-sized pointer-table caller stops authenticating its own emission rows as soon as
- * its contract declares ANY returning public handler.
- *
- * This file is a characterization test, not an endorsement. Its rejecting cells assert the binding the model
- * claims; its two accepting cells assert forgeries that currently settle, so that repairing the compiler turns
- * this file red and forces the claim to be restated. Nothing here should be read as intended behaviour.
+ * A runtime-sized pointer-table caller binds its own emission rows regardless of what its contract merely
+ * DECLARES. This file was written as a characterization test of SEC-5, in which two of its cells recorded
+ * forgeries that settled; SEC-5 is fixed and every cell now asserts rejection at the caller's input.
  *
  * Measured, one variable at a time, with an honest control that settles in every configuration:
  *
@@ -30,21 +27,21 @@ import {
  *   ----------------|----------------------------|-------------|------------|-------------
  *   pointer table   | no                         | 1           | REJECTS    | REJECTS
  *   pointer table   | no                         | 2           | REJECTS    | REJECTS
- *   pointer table   | yes                        | 1           | ACCEPTED   | ACCEPTED
- *   pointer table   | yes                        | 2           | ACCEPTED   | ACCEPTED
+ *   pointer table   | yes (pure or state-writing)| 1           | REJECTS    | REJECTS
+ *   pointer table   | yes (pure or state-writing)| 2           | REJECTS    | REJECTS
  *   ordinary calls  | yes                        | 1 and 2     | n/a        | REJECTS
  *
- * The declared handler is never invoked in any cell; declaring it is enough. The caller's row count does not
- * matter, and the ordinary-callsite control shows a plain `IFoo(x).bar()` edge stays bound in exactly the same
- * configuration, so this is specific to the persisted pointer-table dispatch.
+ * The declared handler is never invoked in any cell. The caller's row count does not matter, and the
+ * ordinary-callsite control shows a plain `IFoo(x).bar()` edge stays bound in exactly the same configuration,
+ * which is what makes the pointer-table rows attributable to the persisted dispatch rather than to the route.
  *
- * In the escaping cells the transcript can name a target the persisted table does not hold and an argument the
- * source never forwards, and the transaction settles. A returning handler switches the compiler's SCB1 route
- * from the `for row < rowCount` parser to the unrolled per-row parser (`resultMode` in compiler.ts); that is a
- * plausible starting point for a repair, not a diagnosis - this file measures behaviour, not cause.
- *
- * The graph capstone in Layer3HeterogeneousCycleC2.test.ts is built to stay out of this configuration: its only
- * returning handler belongs to a participant that owns no pointer table.
+ * SEC-5, for the record: a declared returning handler flips route synthesis to the EARLY call site
+ * (`synthesizeBatchBeforeLowering`, `fn.returnTypes.length > 0` in compiler.ts). The graph emission clone
+ * `__scb_graph_fireAll` therefore already existed when InlineStoragePointerCalls ran, and that pass - lacking
+ * the graphEmissionHandler guard its two sibling inliners carry - flattened it into `__scb1` and dropped the
+ * definition. Generated with `__scb1` as the current function, its external calls took the ordinary-call path,
+ * so no emission row was recomputed and compared against `__internal__graphEmissions`. The unrolled per-row
+ * parser (`resultMode`) was the trigger's neighbour, not its cause.
  *
  * SEMANTIC evidence only, on the named layer3-bch2026-semantic-relaxed-v1 profile.
  */
@@ -434,7 +431,8 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
   }, 600_000);
 
   // Control: the same declared returning handler, reached through ordinary interface calls instead of the
-  // persisted table. The emission binding survives, so the escape is not "resultMode breaks all binding".
+  // persisted table. This cell rejected throughout, which is what showed SEC-5 was never "resultMode breaks
+  // all binding" - the same route, the same unrolled parser, a bound edge.
   it.each([{ callback: false }, { callback: true }])(
     'rejects an argument substitution on ordinary calls with a returning handler declared and %o',
     async (cell) => {
@@ -448,28 +446,30 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
   );
 
   /**
-   * THE ESCAPE. These assertions record forgeries that currently settle; they are not a specification. When
-   * the emission binding is repaired for this configuration these tests must go red, and each assertion must
-   * be rewritten to demand rejection at the caller input, exactly like the cells above.
+   * SEC-5's cells, inverted. These four settled before the emission binding was repaired; each now rejects at
+   * the caller's own input - the same input and the same recomputation as the no-returning-handler rows above.
+   * Reverting the InlineStoragePointerCalls guard makes exactly these five assertions fail again.
    */
   it.each([
     { tamper: 'target' as const, callback: false }, { tamper: 'target' as const, callback: true },
     { tamper: 'argument' as const, callback: false }, { tamper: 'argument' as const, callback: true },
-  ])('ACCEPTS a %o substitution when a returning handler is declared', async (cell) => {
+  ])('rejects a %o substitution when a returning handler is declared', async (cell) => {
     const built = await buildArgumentSubstitution({ ...cell, returningHandler: 'pure' });
     expect(built.resultMode).toBe(true);
-    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
-  // The declared handler's own body does not change the measurement either: a state-writing returning handler
-  // escapes exactly like a pure one.
-  it('ACCEPTS a target substitution when the declared returning handler writes state', async () => {
+  // The declared handler's own body never mattered to the measurement: a state-writing returning handler binds
+  // exactly like a pure one, just as it escaped exactly like a pure one before the repair.
+  it('rejects a target substitution when the declared returning handler writes state', async () => {
     const built = await buildArgumentSubstitution({
       returningHandler: 'stateful', callback: false, tamper: 'target',
     });
     expect(built.resultMode).toBe(true);
-    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 });

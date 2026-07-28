@@ -97,6 +97,56 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       .toBe(compileString(ERC20_CALLEE, { forceStateful: true }).bytecode);
   }, 15_000);
 
+  const LEDGER = `pragma solidcash >=0.8.0;
+contract Ledger() {
+  mapping(bytes20 => bigint) balances;
+  function credit(bytes20 k, bigint amount) public {
+    this.balances[k] = this.balances[k] + amount;
+    require(amount > 0);
+  }
+}`;
+
+  /**
+   * X19's other half. The DIRECT route converged above, but the SCB1 route did not: route eligibility built
+   * its per-collection key alternatives from the Mapping* nodes only, so the bare spelling arrived with an
+   * empty directKeys, was rejected 'collection-helper-route-not-enabled', and got no route at all for a write
+   * the direct route compiles. Both spellings must now publish one route, byte for byte.
+   */
+  it('publishes the same SCB1 route for both spellings of a self-reached entry write', () => {
+    const options = { forceStateful: true, experimentalHiddenBatch: true };
+    const dotted = compileString(LEDGER, options);
+    const bare = compileString(LEDGER.replace(/this\.balances\[/g, 'balances['), options);
+    expect(dotted.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['credit', true]]);
+    expect(bare.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['credit', true]]);
+    expect(bare.bytecode).toBe(dotted.bytecode);
+  }, 15_000);
+
+  /**
+   * The boundary that convergence stops at, pinned so moving it is deliberate. A SECOND key alternative on one
+   * collection makes the route reach the entry through a CLONED handler whose keys are rewritten to synthetic
+   * entry-key parameters (bindEntryKeyParameters), and that rewrite still matches only the `this.`-prefixed
+   * nodes - admitting the bare spelling there fails the build outright rather than producing a route. So the
+   * two-alternative bare spelling keeps its established fail-closed outcome: no route.
+   */
+  it('still publishes no SCB1 route for the bare spelling of a two-alternative entry write', () => {
+    const options = { forceStateful: true, experimentalHiddenBatch: true };
+    const move = `pragma solidcash >=0.8.0;
+contract Ledger() {
+  mapping(bytes20 => bigint) balances;
+  function move(bytes20 from, bytes20 to, bigint amount) public {
+    this.balances[from] = this.balances[from] - amount;
+    this.balances[to] = this.balances[to] + amount;
+    require(amount > 0);
+  }
+}`;
+    expect(compileString(move, options).hiddenBatch?.handlers.map((handler) => handler.eligible))
+      .toEqual([true]);
+    expect(compileString(move.replace(/this\.balances\[/g, 'balances['), options).hiddenBatch)
+      .toBeUndefined();
+  }, 15_000);
+
   it('reports an artifact error when library compilation exceeds the BCH script limit', () => {
     const source = `pragma solidcash >=0.8.0;
       contract Oversized() {

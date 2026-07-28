@@ -671,7 +671,10 @@ describe('A1 review: unattacked transcript fields', () => {
     },
     {
       // Invocation frame: which participant an edge reaches. Retargeting invocation 1 from the leaf to the
-      // broker leaves the leaf uncalled, so the verifier's whole-table exhaustion mask is what must catch it.
+      // broker leaves the leaf uncalled. MEASURED ORDERING, not an attribution: the refusal lands on the
+      // CALLER's own proof slot, where the canonical emission row is rebuilt and compared inside the walk.
+      // The verifier's whole-table exhaustion mask (`usedMask == allUsed`) runs only after that loop, so this
+      // case is not evidence about the mask - see the note under this block.
       field: 'invocation callee',
       input: INPUT.projection0,
       rewrite: (transcript) => patchTranscript(transcript, [{
@@ -778,6 +781,14 @@ describe('A1 review: unattacked transcript fields', () => {
     expect(failingInput(attacked)).toBe(input);
     await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
   }, 120_000);
+
+  // EVIDENCE LIMIT, recorded rather than claimed away. Every forgery above is refused, but the projection
+  // verifier's four exhaustion assertions - `usedMask == allUsed`, `batchCursor == ownerBatch.length`,
+  // `emissionCursor == ownerEmissions.length` and `callerCursor == ownerCallers.length` - all run AFTER the
+  // invocation loop. In every shape this fixture can build, a comparison inside that loop rejects first, so
+  // none of these cases isolates an exhaustion assertion. They are system-level evidence that no field is
+  // unbound; they are not evidence about the exhaustion assertions on their own. This is the same structural
+  // caveat X23 recorded for the emission comparison.
 });
 
 /**

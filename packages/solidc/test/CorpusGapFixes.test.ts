@@ -3052,6 +3052,26 @@ describe('super in a constructor (C3-linearized, matching solc)', () => {
   });
 });
 
+describe('base function call eligibility', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects calling an external base function through super', () => {
+    expect(() => cc('contract A { function f() external virtual pure {} }'
+      + ' contract B is A { function f() public override pure { super.f(); } }'))
+      .toThrow(/Cannot call external base function 'super\.f'/);
+  });
+
+  it('rejects calling an unimplemented base function through super or its contract name', () => {
+    const prefix = 'abstract contract I { function a() internal view virtual returns (uint256); }';
+    expect(() => cc(prefix
+      + ' abstract contract C is I { function f() public view returns (uint256) { return super.a(); } }'))
+      .toThrow(/Cannot call unimplemented base function 'super\.a'/);
+    expect(() => cc(prefix
+      + ' abstract contract C is I { function f() public view returns (uint256) { return I.a(); } }'))
+      .toThrow(/Cannot call unimplemented base function 'I\.a'/);
+  });
+});
+
 describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles fixed-point arithmetic that solc rejects (UnimplementedFeatureError)', () => {

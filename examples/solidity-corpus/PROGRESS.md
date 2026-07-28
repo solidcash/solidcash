@@ -5054,3 +5054,13 @@ The focused suite is **1018/1018**, and the utils suite is **288 passed** with o
 
 The focused suite is **1019/1019**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 473, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Base-function call eligibility loop: 4443 flat, NEG-ACCEPTED 473 -> 471 (-2)
+
+- Calls through `super` or an explicit base contract now retain the original declaration's visibility and
+  abstractness during pre-flattening validation, rejecting external and unimplemented base functions.
+- `super` dispatch skips abstract declarations in C3 order when a later concrete implementation exists, preserving
+  valid mixed implemented/unimplemented inheritance hierarchies.
+
+The focused suite is **1021/1021**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+471, plus 275 multifile and 289 cmdline fixtures excluded.

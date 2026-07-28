@@ -856,6 +856,12 @@ export class InternalCallToExternalError extends SolidCashError {
   }
 }
 
+export class InvalidBaseFunctionCallError extends SolidCashError {
+  constructor(node: FunctionCallNode, reason: 'external' | 'unimplemented') {
+    super(node, `Cannot call ${reason} base function '${node.identifier.name}'`);
+  }
+}
+
 export class ReturnTypeMismatchError extends SolidCashError {
   constructor(node: ReturnNode, expected: Type[], actual: Type[]) {
     super(node, `Return type mismatch: expected (${expected.join(', ')}) but found (${actual.join(', ')})`);

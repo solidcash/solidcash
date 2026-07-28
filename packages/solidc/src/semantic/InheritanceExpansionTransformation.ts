@@ -92,6 +92,7 @@ import {
   InvalidDataLocationError,
   IntLiteralOutOfRangeError,
   InvalidBaseConstructorArgumentError,
+  InvalidBaseFunctionCallError,
 } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -388,6 +389,91 @@ function c3Merge(sequences: string[][], contract: ContractNode): string[] {
   return result;
 }
 
+// Validate calls while original base declarations still retain their visibility and abstractness. Flattening
+// preserves implemented overrides as internal helpers, which must not make an external or abstract function
+// callable through `super` / `Base`.
+function validateBaseFunctionCalls(
+  contract: ContractNode,
+  linearization: string[],
+  contractMap: Map<string, ContractNode>,
+): void {
+  const indexOf = new Map(linearization.map((name, index) => [name, index]));
+  const ownFunctions = (name: string): FunctionDefinitionNode[] => {
+    const owner = name === contract.name ? contract : contractMap.get(name);
+    if (!owner) return [];
+    return owner.functions.filter((fn) =>
+      (fn.definingContract ?? fn.inheritedFrom ?? owner.name) === owner.name);
+  };
+  const resolve = (
+    definingContract: string,
+    qualifiedName: string,
+    arity: number,
+  ): FunctionDefinitionNode | undefined => {
+    const dot = qualifiedName.indexOf('.');
+    if (dot < 0) return undefined;
+    const namespace = qualifiedName.slice(0, dot);
+    const target = qualifiedName.slice(dot + 1);
+    if (namespace === 'super') {
+      const start = indexOf.get(definingContract);
+      if (start === undefined) return undefined;
+      let abstractFallback: FunctionDefinitionNode | undefined;
+      for (let index = start + 1; index < linearization.length; index += 1) {
+        const declaration = ownFunctions(linearization[index])
+          .find((fn) => fn.name === target && fn.parameters.length === arity);
+        if (!declaration) continue;
+        // Solidity's super dispatch follows the next implemented function in the C3 order; an abstract
+        // declaration in an intermediate base does not block a concrete implementation behind it.
+        if (!declaration.isAbstract) return declaration;
+        abstractFallback ??= declaration;
+      }
+      return abstractFallback;
+    }
+    if (!indexOf.has(namespace)) return undefined;
+    return ownFunctions(namespace).find((fn) => fn.name === target && fn.parameters.length === arity);
+  };
+
+  const visitBody = (body: BlockNode | undefined): void => {
+    if (body) new BaseFunctionCallValidator(contract.name, resolve).visit(body);
+  };
+  for (const fn of contract.functions.filter((candidate) => !candidate.inheritedFrom)) visitBody(fn.body);
+  for (const special of [contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
+    visitBody(special?.body);
+  }
+  for (const modifier of contract.modifierDefinitions.filter((candidate) => !candidate.inheritedFrom)) {
+    const body = new BlockNode(modifier.statements);
+    body.location = modifier.location;
+    visitBody(body);
+  }
+}
+
+class BaseFunctionCallValidator extends AstTraversal {
+  constructor(
+    private readonly definingContract: string,
+    private readonly resolve: (
+      definingContract: string, qualifiedName: string, arity: number,
+    ) => FunctionDefinitionNode | undefined,
+  ) {
+    super();
+  }
+
+  visitFunctionCall(node: FunctionCallNode): Node {
+    const declaration = this.resolve(this.definingContract, node.identifier.name, node.parameters.length);
+    if (declaration?.visibility === 'external') {
+      throw new InvalidBaseFunctionCallError(node, 'external');
+    }
+    if (declaration?.isAbstract) {
+      throw new InvalidBaseFunctionCallError(node, 'unimplemented');
+    }
+    return super.visitFunctionCall(node);
+  }
+
+  visitBlock(node: BlockNode): Node {
+    node.statements = (node.statements ?? []).map((statement) =>
+      statement instanceof PlaceholderStatementNode ? statement : this.visit(statement) as StatementNode);
+    return node;
+  }
+}
+
 /**
  * Recursively expand a contract's inheritance chain.
  * @param contract The contract to expand
@@ -459,6 +545,7 @@ function expandContract(
   // Invocations naming INDIRECT ancestors (grandparent ctor args) are kept for constructor inlining.
   const linearization = computeLinearization(contract, contractMap, originalImplements);
   stampModifierQualifiers([...new Set([contract.name, ...linearization])]);
+  validateBaseFunctionCalls(contract, linearization, contractMap);
   const ancestorSet = new Set(linearization);
   const bareBaseInvocation = contract.constructorDef?.customModifiers.find(
     (invocation) => ancestorSet.has(invocation.name),

@@ -22,10 +22,11 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * bases would drift apart.
  *
  * The five things the checklist asks for are each asserted on the settled transaction rather than described:
- * funding inputs occupy the unused input-side slots; the paired outputs are the specified 1,000-satoshi
- * ordinary/return-event form; the return-event NFT stays inside its emitter's block; the fee input and the
- * terminal change output sit outside every relocatable block; and `preflightBalancedBlockAssembly` refuses a
- * malformed or unbalanced assembly BEFORE any unlocker is asked for a signature.
+ * funding inputs occupy the unused input-side slots; the paired outputs carry a value inside the band the
+ * emitting covenant authenticates, and the sidecar slots carry the exact value their covenants require; the
+ * return-event NFT stays inside its emitter's block; the fee input and the terminal change output sit outside
+ * every relocatable block; and `preflightBalancedBlockAssembly` refuses a malformed or unbalanced assembly
+ * BEFORE any unlocker is asked for a signature.
  *
  * Each preflight negative is paired with the same transaction submitted to the BCH-2026 VM, so the preflight
  * is shown to reject shapes consensus also rejects, not a private rule of its own.
@@ -70,7 +71,10 @@ type Malformation =
   | 'none'
   | 'missing-slot-funder'      // drop an output-only slot's funding input
   | 'event-outside-block'      // move a return-event NFT out of its emitter's block, to the tail
-  | 'wrong-slot-value'         // event output value other than the specified 1,000 satoshis
+  // X21: three return-event slot values, spanning the band the emitting covenant actually authenticates.
+  | 'slot-value-800'           // the value the direct external-call route emits for a return event
+  | 'slot-value-1200'          // the value the SDK emits for an event NFT
+  | 'slot-value-siphon'        // above the covenant's anti-siphon ceiling
   | 'change-inside-block'      // claim a terminal change output that falls inside a participant block
   | 'event-cloned-to-tail';    // keep the in-block event AND emit a copy outside every block
 
@@ -200,8 +204,11 @@ async function build(malformation: Malformation = 'none'): Promise<Built> {
   tx.addInput(rooted, counted(controller.unlock.attest(transcript.bytes)));
   tx.addInput(feeFunder, counted(p2pkh.unlock.spend(alicePub, signature())));
 
+  const returnEventASatoshis = {
+    'slot-value-800': 800n, 'slot-value-1200': 1200n, 'slot-value-siphon': 5000n,
+  }[malformation as string] ?? 1000n;
   const returnEventA = {
-    to: hexToBin('51'), amount: malformation === 'wrong-slot-value' ? 800n : 1000n,
+    to: hexToBin('51'), amount: returnEventASatoshis,
     token: {
       category: setupA.categoryId, amount: 0n,
       nft: { capability: 'none' as const, commitment: binToHex(aggregate(5n)) },
@@ -275,7 +282,7 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 180_000);
 
-  it('SEMANTIC: slot outputs are the specified 1,000-satoshi form and event NFTs stay inside their block', async () => {
+  it('SEMANTIC: this fixture emits 1,000-satoshi slot outputs and event NFTs stay inside their block', async () => {
     const built = await build();
     const regionEnd = participantRegionEnd(built.assembly);
     expect(regionEnd).toBe(4);
@@ -283,13 +290,15 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
       const slot = block.blockLayout.slots.find((entry) => entry.kind === 'returnEvent')!;
       const index = block.base + slot.offset;
       const output = built.builder.outputs[index];
+      // This build's own choice, inside the covenant's ceiling - NOT a value the covenant pins (see X21 below).
       expect(output.amount).toBe(1000n);
       expect(output.token?.nft?.commitment).toBeTruthy();
       // Inside the emitting participant's own block, not appended after the graph.
       expect(index).toBeGreaterThanOrEqual(block.base);
       expect(index).toBeLessThan(block.base + block.blockLayout.blockSize);
     }
-    // The projection and controller slots pair with ordinary 1,000-satoshi outputs.
+    // The projection and controller slots pair with ordinary 1,000-satoshi outputs. This equality IS pinned:
+    // both sidecar covenants require `tx.outputs[activeInputIndex].value == 1000`.
     for (const auxiliary of built.assembly.auxiliaryInputs) {
       expect(built.builder.outputs[auxiliary].amount).toBe(1000n);
       expect(built.builder.outputs[auxiliary].token).toBeUndefined();
@@ -344,14 +353,39 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 180_000);
 
-  // MEASURED LIMIT, recorded rather than hidden: the 1,000-satoshi slot value is an SDK layout convention, NOT
-  // a covenant invariant. An 800-satoshi return-event output settles on the BCH-2026 VM. The preflight is
-  // therefore a policy gate for this field alone; every other negative in this file is also consensus-rejected.
-  it('FAIL_CLOSED: an off-spec event slot value is a preflight-only rejection - the VM accepts it', async () => {
-    const built = await build('wrong-slot-value');
-    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
-      .toThrow(/'returnEvent' output 1 is 800 satoshis, the balanced layout specifies 1000/);
+  /**
+   * X21 - what an event slot's value is actually bound to.
+   *
+   * This file previously required every event/return-event slot output to be exactly
+   * `BALANCED_SLOT_SATOSHIS` (1,000) and recorded the rejection of an 800-satoshi return event as a
+   * "preflight-only" policy gate. That equality was the wrong number: it matched no value the SDK emits.
+   * The direct external-call route emits return events at 800, `.emitReturn()` in a balanced block at 1,000,
+   * and event NFTs at 1,200; the emitting covenant pins none of them, it emits
+   * `OP_OUTPUTVALUE <1200> OP_LESSTHANOREQUAL OP_VERIFY`, an anti-siphon CEILING.
+   *
+   * The three rows below measure that ceiling rather than assert it: both values inside the band settle on the
+   * BCH-2026 VM and now preflight clean, and the one above it is refused by the VM as well as by the preflight.
+   * The 1,000-satoshi equality survives where it is authenticated - the sidecar slots, asserted above.
+   */
+  it.each([
+    { label: 'the direct-route return-event value', malformation: 'slot-value-800' as const, satoshis: 800n },
+    { label: 'the event-NFT value', malformation: 'slot-value-1200' as const, satoshis: 1200n },
+  ])('SEMANTIC: $label settles and preflights clean at $satoshis satoshis', async ({
+    malformation, satoshis,
+  }) => {
+    const built = await build(malformation);
+    expect(built.builder.outputs[1].amount).toBe(satoshis);
+    preflightBalancedBlockAssembly(built.builder, built.assembly);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 180_000);
+
+  it('FAIL_CLOSED: an event slot value above the covenant ceiling is rejected by preflight AND the VM', async () => {
+    const built = await build('slot-value-siphon');
+    expect(built.builder.outputs[1].amount).toBe(5000n);
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/'returnEvent' output 1 is 5000 satoshis, the emitting covenant bounds an event slot at 1200/);
+    // Unlike the old off-spec-value row, this one is NOT preflight-only: consensus rejects it too.
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 180_000);
 
   it('FAIL_CLOSED: a terminal change output inside a participant block is rejected by preflight', async () => {

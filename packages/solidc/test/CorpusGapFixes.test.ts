@@ -7995,6 +7995,36 @@ describe('external function type reference locations', () => {
   });
 });
 
+describe('Solidity address literal validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('validates checksums on 40-digit address-like literals', () => {
+    expect(() => cc('contract C { address value = 0xFA0bFc97E48458494Ccd857e1A85DC91F7F0046E; }'))
+      .toThrow(/invalid checksum/);
+    expect(() => cc('contract C { address value = 0xfa0bfc97e48458494ccd857e1a85dc91f7f0046e; }'))
+      .toThrow(/invalid checksum/);
+    expect(cc('contract C { address value = 0xfA0bFc97E48458494Ccd857e1A85DC91F7F0046E; }')).toBe('C');
+  });
+
+  it('rejects address-like near-length spellings and oversized address casts', () => {
+    expect(() => cc('contract C { address value = 0xA0bFc97E48458494Ccd857e1A85DC91F7F0046E; }'))
+      .toThrow(/exactly 40 hex digits/);
+    expect(() => cc('contract C { address value = 0xFA0bFc97E48458494Ccd857e1A85DC91F7F0046E0; }'))
+      .toThrow(/exactly 40 hex digits/);
+    expect(() => cc('contract C { function f() public pure {'
+      + ' address(0x11223345567aaaaaaaaaaaaaaaaaaaaaaaaaaaaa0112233445566778899001122); } }'))
+      .toThrow(/not castable/);
+  });
+
+  it('retains ordinary numeric hex literals and native address-like spellings', () => {
+    expect(cc('contract C { uint value = 0x1234;'
+      + ' address numeric = 0x1234567890123456789012345678901234567890; }')).toBe('C');
+    expect(compileString('contract C { address value ='
+      + ' 0xFA0bFc97E48458494Ccd857e1A85DC91F7F0046E; }').contractName).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

@@ -5227,3 +5227,13 @@ The focused suite is **1074/1074**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1077/1077**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 376, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity address-literal validation loop: 4443 flat, NEG-ACCEPTED 376 -> 371 (-5)
+
+- Solidity-compatible 40-digit address-like literals now require a valid EIP-55 checksum, and mixed-case
+  address-like spellings with 39 or 41 digits are rejected with a length diagnostic.
+- Explicit hex-literal conversions to `address` now enforce the uint160 bound. Ordinary numeric hex literals and
+  native SolidCash address spellings remain accepted; all 57 passing address-like corpus sources still compile.
+
+The focused suite is **1080/1080**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+371, plus 275 multifile and 289 cmdline fixtures excluded.

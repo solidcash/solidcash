@@ -1,5 +1,6 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
@@ -4699,6 +4700,28 @@ export default class AstBuilder
   createHexLiteral(ctx: LiteralContext): HexLiteralNode {
     const hexString = ctx.HexLiteral().getText();
     const hexContent = hexString.substring(2).replaceAll('_', '');
+    if (this.solidityImportCompat && !hexString.includes('_')) {
+      const hasHexLetter = /[a-fA-F]/.test(hexContent);
+      const hasMixedCase = /[a-f]/.test(hexContent) && /[A-F]/.test(hexContent);
+      if ((hexContent.length === 39 || hexContent.length === 41) && hasMixedCase) {
+        throw new ParseError(
+          `Address-like literal must contain exactly 40 hex digits, not ${hexContent.length}`,
+          Location.fromCtx(ctx),
+        );
+      }
+      if (hexContent.length === 40 && hasHexLetter) {
+        const lower = hexContent.toLowerCase();
+        const checksumHash = binToHex(keccak_256(new TextEncoder().encode(lower)));
+        const checksummed = [...lower].map((char, index) =>
+          /[a-f]/.test(char) && parseInt(checksumHash[index], 16) >= 8 ? char.toUpperCase() : char).join('');
+        if (hexContent !== checksummed) {
+          throw new ParseError(
+            `Address-like literal has an invalid checksum; expected 0x${checksummed}`,
+            Location.fromCtx(ctx),
+          );
+        }
+      }
+    }
     if (hexContent.length % 2 !== 0) {
       const loc = Location.fromCtx(ctx);
       const line = loc.start ? ` at line ${loc.start.line}` : '';

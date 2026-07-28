@@ -5340,3 +5340,14 @@ The focused suite is **1097/1097**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1098/1098**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 352, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### ABI coder v1 explicit-operation loop: 4443 flat, NEG-ACCEPTED 352 -> 348 (-4)
+
+- The existing ABI coder v1 type restrictions now also apply to explicit `abi.encode*` and `abi.decode`
+  operations after expression types are resolved.
+- Nested arrays and structs now reject under v1 in both directions, while scalar/dynamic scalar arrays and all
+  v2 shapes retain their existing behavior. The four newly aligned fixtures cover nested-array and struct
+  encoding and decoding.
+
+The focused suite is **1099/1099**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+348, plus 275 multifile and 289 cmdline fixtures excluded.

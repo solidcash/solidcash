@@ -159,6 +159,7 @@ import {
   PackedArrayUnsupportedTypeError,
   IntLiteralOutOfRangeError,
   InvalidCallOptionError,
+  UnsupportedAbiV1TypeError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -170,6 +171,7 @@ import { getStackEffect } from '../asmStackEffects.js';
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
+  private abiCoderV1 = false;
 
   // The `solidityImportCompat`-named literal coercions (hex->int/address, string->bytesN, bytes widen, negate)
   // are now plain SolidCash defaults - they only fire on source/target pairings that are a native type error, so
@@ -182,6 +184,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.abiCoderV1 = node.abiCoderVersion === 'v1';
     node.constantDefinitions.forEach((cd) => this.visitConstantDefinition(cd));
 
     // Build function definitions map from free functions
@@ -2654,6 +2657,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiEncode(node: AbiEncodeNode): Node {
     node.parameters = this.visitList(node.parameters);
+    this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
     node.type = new BytesType();
     return node;
   }
@@ -2699,6 +2703,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TypeError(node, node.selector.type, new BytesType(4));
     }
     node.parameters = this.visitList(node.parameters);
+    this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
     node.type = new BytesType();
     return node;
   }
@@ -2709,6 +2714,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TypeError(node, node.signature.type, PrimitiveType.STRING);
     }
     node.parameters = this.visitList(node.parameters);
+    this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
     node.type = new BytesType();
     return node;
   }
@@ -2726,6 +2732,10 @@ export default class TypeCheckTraversal extends AstTraversal {
         }
       });
     }
+    this.validateAbiV1Types(
+      node,
+      node.resolvedParamTypes ?? node.parameters.map((parameter) => parameter.type),
+    );
     node.type = new BytesType();
     return node;
   }
@@ -2754,6 +2764,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiDecode(node: AbiDecodeNode): Node {
     node.data = this.visit(node.data);
+    this.validateAbiV1Types(node, node.schema);
     // A single-type decode yields that type directly (Solidity `abi.decode(d, (T))` returns T); 2+ -> tuple.
     node.type = node.schema.length === 1 ? node.schema[0] : new TupleType(node.schema);
     return node;
@@ -2761,11 +2772,31 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiDecodeAt(node: AbiDecodeAtNode): Node {
     node.data = this.visit(node.data);
+    this.validateAbiV1Types(node, node.schema);
     if (node.index < 0 || node.index >= node.schema.length) {
       throw new AbiDecodeIndexError(node);
     }
     node.type = node.schema[node.index];
     return node;
+  }
+
+  private validateAbiV1Types(owner: Node, types: Array<Type | undefined>): void {
+    if (!this.strictSolidityValidation || !this.abiCoderV1) return;
+    const unsupported = types.find((type): type is Type =>
+      type !== undefined && this.isUnsupportedAbiV1Type(type));
+    if (unsupported) throw new UnsupportedAbiV1TypeError(owner, unsupported.toString());
+  }
+
+  private isUnsupportedAbiV1Type(type: Type): boolean {
+    if (type instanceof StructType || type instanceof MappingType) return true;
+    if (!(type instanceof ArrayType)) return false;
+    const element = type.elementType;
+    return element instanceof ArrayType
+      || element instanceof StructType
+      || element instanceof MappingType
+      || (element instanceof BytesType && element.bound === undefined)
+      || element === PrimitiveType.STRING
+      || this.isUnsupportedAbiV1Type(element);
   }
 
   visitArray(node: ArrayNode): Node {

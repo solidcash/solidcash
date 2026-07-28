@@ -8940,6 +8940,25 @@ describe('ABI coder v1 type restrictions', () => {
       { solidityImportCompat: true },
     ).contractName).toBe('C');
   });
+
+  it('applies the same nested-type restrictions to explicit ABI encoding and decoding', () => {
+    const invalid = [
+      'pragma abicoder v1; contract C { function f() public pure {'
+        + ' abi.encode([new uint[](5), new uint[](7)]); } }',
+      'pragma abicoder v1; contract C { function f() public pure {'
+        + ' abi.decode("1234", (uint[][3])); } }',
+    ];
+    for (const source of invalid) {
+      expect(() => compileString(source, { solidityImportCompat: true }))
+        .toThrow(/only supported in ABI coder v2/);
+    }
+
+    expect(compileString(
+      'pragma abicoder v2; contract C { function f() public pure {'
+        + ' abi.encode([new uint[](5), new uint[](7)]); abi.decode("1234", (uint[][3])); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
 });
 
 describe('SPDX source-unit identifiers', () => {

@@ -1551,6 +1551,12 @@ export class DecimalLiteralNode extends LiteralNode<string> {
 }
 
 export class StringLiteralNode extends LiteralNode<string> {
+  // Exact byte spelling of a Solidity-compatible ordinary string literal. `\xNN` escapes are raw bytes, so this
+  // can differ from UTF-8 encoding `value` (e.g. "\xff"). Type checking uses it for bytes destinations and to
+  // reject malformed UTF-8 only when the destination is actually string.
+  solidityBytes?: Uint8Array;
+  solidityInvalidUtf8 = false;
+
   constructor(
     public value: string,
     public quote: string,

@@ -7882,6 +7882,37 @@ describe('Solidity pragma validation', () => {
   });
 });
 
+describe('Solidity string literal UTF-8 validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('requires the unicode prefix for non-ASCII source characters', () => {
+    expect(() => cc('contract C { string value = "😃"; }'))
+      .toThrow(/use a unicode-prefixed string literal/);
+    expect(cc('contract C { string value = unicode"😃"; }')).toBe('C');
+    expect(compileString('contract C { string value = "😃"; }').contractName).toBe('C');
+  });
+
+  it('rejects malformed UTF-8 formed by hexadecimal byte escapes', () => {
+    expect(() => cc(String.raw`contract C { string value = "\xa0\x00"; }`))
+      .toThrow(/can not be assigned|invalid UTF-8 sequence/);
+    expect(() => cc(String.raw`contract C { function f() public pure returns (string memory) {
+      return "\xc1";
+    } }`)).toThrow(/Return type mismatch|not castable|invalid UTF-8 sequence/);
+  });
+
+  it('accepts valid UTF-8 byte escapes and ordinary ASCII escapes', () => {
+    expect(cc(String.raw`contract C { string value = "\xc2\xa0\n"; }`)).toBe('C');
+    const escaped = compileString(String.raw`contract C {
+      function f() public pure returns (bytes memory) { return "\xc2\xa0"; }
+    }`, { solidityImportCompat: true });
+    const hex = compileString(`contract C {
+      function f() public pure returns (bytes memory) { return hex"c2a0"; }
+    }`, { solidityImportCompat: true });
+    expect(escaped.bytecode).toBe(hex.bytecode);
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

@@ -4471,15 +4471,28 @@ export default class AstBuilder
     // Handle multi-part string literals ("foo" "bar" -> "foobar")
     const stringTokens = 'StringLiteral_list' in ctx ? ctx.StringLiteral_list() : [ctx.StringLiteral()];
     const parts: string[] = [];
+    const solidityByteParts: Uint8Array[] = [];
     let quote = '"';
     for (const token of stringTokens) {
       const rawString = token.getText();
       quote = rawString.substring(0, 1);
       const inner = rawString.substring(1, rawString.length - 1);
+      if (this.solidityImportCompat) {
+        solidityByteParts.push(this.solidityStringLiteralBytes(inner, location));
+      }
       parts.push(this.processEscapes(inner, location));
     }
     const stringValue = parts.join('');
     const stringLiteral = new StringLiteralNode(stringValue, quote);
+    if (this.solidityImportCompat) {
+      stringLiteral.solidityBytes = Uint8Array.from(solidityByteParts.flatMap((bytes) => [...bytes]));
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(stringLiteral.solidityBytes);
+      } catch {
+        stringLiteral.solidityInvalidUtf8 = true;
+        stringLiteral.type = new BytesType(stringLiteral.solidityBytes.length);
+      }
+    }
     stringLiteral.location = location;
     return stringLiteral;
   }
@@ -4491,7 +4504,11 @@ export default class AstBuilder
       const rawText = token.getText();
       // rawText is like: unicode"..." or unicode'...'
       quoteChar = rawText.charAt(7); // char after "unicode"
-      return this.processEscapes(rawText.substring(8, rawText.length - 1), location);
+      const inner = rawText.substring(8, rawText.length - 1);
+      if (this.solidityImportCompat && inner.includes('\ufffd')) {
+        throw new ParseError('String literal contains an invalid UTF-8 sequence', location);
+      }
+      return this.processEscapes(inner, location);
     }).join('');
     const stringLiteral = new StringLiteralNode(stringValue, quoteChar);
     stringLiteral.location = location;
@@ -4525,6 +4542,45 @@ export default class AstBuilder
     const hexLiteral = new HexLiteralNode(hexToBin(hexContent));
     hexLiteral.location = Location.fromCtx(ctx);
     return hexLiteral;
+  }
+
+  private solidityStringLiteralBytes(raw: string, location: Location): Uint8Array {
+    if ([...raw].some((char) => char.codePointAt(0)! > 0x7f)) {
+      throw new ParseError(
+        'Invalid character in string; use a unicode-prefixed string literal for Unicode text',
+        location,
+      );
+    }
+    const bytes: number[] = [];
+    const simpleEscapes: Record<string, number> = {
+      n: 0x0a, r: 0x0d, t: 0x09, '\\': 0x5c, '\'': 0x27, '"': 0x22,
+    };
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] !== '\\') {
+        bytes.push(raw.charCodeAt(i));
+        continue;
+      }
+      const next = raw[i + 1];
+      if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 2, i + 4))) {
+        bytes.push(parseInt(raw.slice(i + 2, i + 4), 16));
+        i += 3;
+      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))) {
+        bytes.push(...new TextEncoder().encode(String.fromCodePoint(parseInt(raw.slice(i + 2, i + 6), 16))));
+        i += 5;
+      } else if (next === '\n') {
+        i++;
+      } else if (next === '\r') {
+        i += raw[i + 2] === '\n' ? 2 : 1;
+      } else if (next in simpleEscapes) {
+        bytes.push(simpleEscapes[next]);
+        i++;
+      } else {
+        // processEscapes provides the existing, more specific diagnostic for malformed/unknown escapes.
+        this.processEscapes(raw, location);
+        throw new ParseError('Invalid string escape sequence', location);
+      }
+    }
+    return Uint8Array.from(bytes);
   }
 
   private processEscapes(raw: string, location?: Location): string {

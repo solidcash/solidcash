@@ -7835,7 +7835,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitStringLiteral(node: StringLiteralNode): Node {
-    this.emit(encodeString(node.value), { location: node.location, positionHint: PositionHint.START });
+    this.emit(node.solidityBytes ?? encodeString(node.value), {
+      location: node.location,
+      positionHint: PositionHint.START,
+    });
     this.pushToStack('(value)');
     return node;
   }

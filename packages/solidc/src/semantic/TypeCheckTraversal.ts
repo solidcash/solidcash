@@ -1436,6 +1436,10 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitCast(node: CastNode): Node {
     node.expression = this.visit(node.expression);
+    if (this.solidityImportCompat && node.type === PrimitiveType.STRING
+      && node.expression instanceof StringLiteralNode && node.expression.solidityInvalidUtf8) {
+      throw new CastTypeError(node);
+    }
 
     // For payable() cast, determine the correct target type based on source type
     let validPayableLiteral = false;
@@ -2057,7 +2061,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (!this.solidityImportCompat || !(expected instanceof BytesType) || expected.bound === undefined) return expr;
     // String literal -> bytesN: right-pad the UTF-8 bytes to the target width.
     if (expr instanceof StringLiteralNode) {
-      const bytes = encodeString(expr.value);
+      const bytes = expr.solidityBytes ?? encodeString(expr.value);
       if (bytes.length <= expected.bound) {
         const padded = new Uint8Array(expected.bound);
         padded.set(bytes);

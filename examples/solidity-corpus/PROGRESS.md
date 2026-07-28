@@ -5186,3 +5186,14 @@ The focused suite is **1063/1063**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1066/1066**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 394, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity string-encoding loop: 4443 flat, NEG-ACCEPTED 394 -> 389 (-5)
+
+- Solidity-compatible ordinary string literals now require the `unicode` prefix for non-ASCII source text and
+  retain their exact byte payload for `\xNN` escapes.
+- Malformed UTF-8 byte spellings remain valid when assigned to `bytes`, but are rejected in `string` contexts.
+  Native SolidCash strings keep accepting direct Unicode text, and escaped bytes now emit identically to the
+  equivalent hex-string literal.
+
+The focused suite is **1069/1069**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+389, plus 275 multifile and 289 cmdline fixtures excluded.

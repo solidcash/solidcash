@@ -5197,3 +5197,13 @@ The focused suite is **1066/1066**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1069/1069**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 389, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity source-metadata syntax loop: 4443 flat, NEG-ACCEPTED 389 -> 385 (-4)
+
+- Solidity-compatible source processing now rejects non-ASCII SPDX license identifiers while preserving ordinary
+  SPDX expressions and native SolidCash's comment handling.
+- Inline assembly now rejects duplicate `memory-safe` options with and without an explicit `evmasm` dialect.
+  Warning-only unknown option lists remain accepted, matching Solidity.
+
+The focused suite is **1071/1071**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+385, plus 275 multifile and 289 cmdline fixtures excluded.

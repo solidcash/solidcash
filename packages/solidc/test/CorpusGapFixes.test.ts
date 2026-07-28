@@ -7913,6 +7913,31 @@ describe('Solidity string literal UTF-8 validation', () => {
   });
 });
 
+describe('Solidity source metadata syntax validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects non-ASCII SPDX license identifiers in compatibility mode', () => {
+    expect(() => cc('// SPDX-License-Identifier: GPL-3.0 ⡉\ncontract C {}'))
+      .toThrow(/Invalid SPDX license identifier/);
+    expect(() => cc('// SPDX-License-Identifier: ⡉\ncontract C {}'))
+      .toThrow(/Invalid SPDX license identifier/);
+    expect(cc('// SPDX-License-Identifier: GPL-3.0 OR MIT\ncontract C {}')).toBe('C');
+    expect(compileString('// SPDX-License-Identifier: GPL-3.0 ⡉\ncontract C {}').contractName).toBe('C');
+  });
+
+  it('rejects duplicate memory-safe assembly options while retaining warning-only unknown options', () => {
+    expect(() => cc('contract C { function f() public pure {'
+      + ' assembly ("memory-safe", "memory-safe") {} } }'))
+      .toThrow(/marked memory-safe multiple times/);
+    expect(() => cc('contract C { function f() public pure {'
+      + ' assembly "evmasm" ("memory-safe", "memory-safe") {} } }'))
+      .toThrow(/marked memory-safe multiple times/);
+    expect(cc('contract C { function f() public pure { assembly ("a", "b", "a") {} } }')).toBe('C');
+    expect(cc('contract C { function f() public pure { assembly "evmasm" ("memory-safe") {} } }')).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

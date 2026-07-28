@@ -1096,7 +1096,7 @@ export function parseCode(
   syntaxErrorListener.throwFirstError();
 
   // AST building
-  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays).build() as Ast;
+  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, code).build() as Ast;
 
   return ast;
 }

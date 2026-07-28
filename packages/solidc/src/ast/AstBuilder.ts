@@ -423,7 +423,12 @@ export default class AstBuilder
   // rerouted to a baked constant (see visitStateVariableDeclaration).
   private inLibraryDecl = false;
 
-  constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
+  constructor(
+    private tree: ParseTree,
+    private solidityImportCompat = false,
+    private chunkedArrays = true,
+    private sourceCode = '',
+  ) {
     super();
   }
 
@@ -486,6 +491,11 @@ export default class AstBuilder
   visitSourceFile(ctx: SourceFileContext): SourceFileNode {
     if (this.solidityImportCompat) this.validateFunctionTypeModifiers(ctx);
     if (this.solidityImportCompat) {
+      for (const match of this.sourceCode.matchAll(/^\s*\/\/\s*SPDX-License-Identifier:\s*(.*)$/gmi)) {
+        if (/[^\x20-\x7e]/.test(match[1])) {
+          throw new ParseError('Invalid SPDX license identifier', Location.fromCtx(ctx));
+        }
+      }
       const declared = new Map<string, string>();
       const register = (name: string, kind: string, locationCtx: ParserRuleContext): void => {
         const previous = declared.get(name);
@@ -3522,8 +3532,15 @@ export default class AstBuilder
   visitAssemblyStatement(ctx: AssemblyStatementContext): AssemblyStatementNode {
     if (this.solidityImportCompat && /^assembly["']/.test(ctx.getText())) {
       const dialect = ctx.StringLiteral_list()[0].getText().slice(1, -1);
-      if (dialect !== 'evmasm' && dialect !== 'memory-safe') {
+      if (dialect !== 'evmasm') {
         throw new ParseError(`Only "evmasm" assembly is supported, not "${dialect}"`, Location.fromCtx(ctx));
+      }
+    }
+    if (this.solidityImportCompat) {
+      const optionList = ctx.getText().match(/\((.*)\)\{/s)?.[1] ?? '';
+      const memorySafeCount = [...optionList.matchAll(/["']memory-safe["']/g)].length;
+      if (memorySafeCount > 1) {
+        throw new ParseError('Inline assembly marked memory-safe multiple times', Location.fromCtx(ctx));
       }
     }
     const block = buildYulBlock(ctx.yulBlock());

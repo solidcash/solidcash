@@ -5166,3 +5166,13 @@ The focused suite is **1055/1055**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1059/1059**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 411, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Solidity declaration-syntax validation loop: 4443 flat, NEG-ACCEPTED 411 -> 404 (-7)
+
+- Solidity-compatible declarations now reject local `constant` variables, explicit state-variable data locations,
+  payable-address mapping keys, and trailing commas in enums and named arguments.
+- Unsupported assembly dialect declarations are rejected without confusing warning-only assembly option lists for
+  dialects. Native SolidCash declaration extensions and valid Solidity spellings remain accepted.
+
+The focused suite is **1063/1063**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+404, plus 275 multifile and 289 cmdline fixtures excluded.

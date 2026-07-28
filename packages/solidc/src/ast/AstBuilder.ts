@@ -2325,6 +2325,12 @@ export default class AstBuilder
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
     const name = ctx.anyIdentifier().getText();
+    if (this.solidityImportCompat && modifiers.includes('constant')) {
+      throw new ParseError(
+        'The "constant" keyword is not allowed on local variables',
+        Location.fromCtx(ctx),
+      );
+    }
     if (this.solidityImportCompat && modifiers.includes('transient')) {
       throw new ParseError(
         'Transient data location is only valid on state variables',
@@ -3485,6 +3491,12 @@ export default class AstBuilder
   }
 
   visitAssemblyStatement(ctx: AssemblyStatementContext): AssemblyStatementNode {
+    if (this.solidityImportCompat && /^assembly["']/.test(ctx.getText())) {
+      const dialect = ctx.StringLiteral_list()[0].getText().slice(1, -1);
+      if (dialect !== 'evmasm' && dialect !== 'memory-safe') {
+        throw new ParseError(`Only "evmasm" assembly is supported, not "${dialect}"`, Location.fromCtx(ctx));
+      }
+    }
     const block = buildYulBlock(ctx.yulBlock());
     if (this.solidityImportCompat) {
       const reserved = findReservedYulIdentifier(block);
@@ -3820,6 +3832,9 @@ export default class AstBuilder
       const name = identifiers.length > 1
         ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
         : identifiers[0].getText();
+      if (this.solidityImportCompat && /,\}\)$/.test(ctx.getText())) {
+        throw new ParseError('Unexpected trailing comma in named arguments', Location.fromCtx(ctx));
+      }
       const directUdvt = identifiers.length === 1 ? this.typeDefMap.get(name) : undefined;
       const qualifiedUdvt = identifiers.length === 2
         ? this.typeDefMap.get(identifiers[0].getText()) : undefined;
@@ -4636,9 +4651,13 @@ export default class AstBuilder
       return node;
     };
     const isTransient = allModTexts.includes('transient');
-    if (this.solidityImportCompat && allModTexts.includes('storage')) {
+    const explicitStateLocation = allModTexts.find((modifier) =>
+      modifier === 'storage' || modifier === 'memory' || modifier === 'calldata');
+    if (this.solidityImportCompat && explicitStateLocation) {
       throw new ParseError(
-        'State variables are implicitly storage and cannot specify the storage data location',
+        explicitStateLocation === 'storage'
+          ? 'State variables are implicitly storage and cannot specify the storage data location'
+          : `State variables cannot specify the '${explicitStateLocation}' data location`,
         Location.fromCtx(ctx),
       );
     }
@@ -5953,6 +5972,12 @@ export default class AstBuilder
   }
 
   private buildMappingType(ctx: MappingTypeContext): MappingType {
+    if (this.solidityImportCompat && /^mapping\(addresspayable=>/.test(ctx.getText())) {
+      throw new ParseError(
+        'Mapping key type must be "address", not "address payable"',
+        Location.fromCtx(ctx),
+      );
+    }
     // Resolve (not just parseType) so a user enum / value-type key resolves; an unknown name (a contract type)
     // defaults to an address handle, matching function params. parseType alone left these undefined -> crash.
     const keyText = ctx.typeName(0).getText();
@@ -6252,6 +6277,9 @@ export default class AstBuilder
 
   visitEnumDefinition(ctx: EnumDefinitionContext): EnumDefinitionNode {
     const name = ctx.anyIdentifier().getText();
+    if (this.solidityImportCompat && /,\}$/.test(ctx.getText())) {
+      throw new ParseError('Expected enum member after trailing comma', Location.fromCtx(ctx));
+    }
     if (this.solidityImportCompat && ctx.enumMember_list().length > 256) {
       throw new ParseError('Enum with more than 256 members is not allowed', Location.fromCtx(ctx));
     }
@@ -6735,6 +6763,9 @@ export default class AstBuilder
 
   // Named-arg method call: obj.f({a: x, b: y}). Args are reordered against the callee's params in semantic analysis.
   visitMethodCallNamed(ctx: MethodCallNamedContext): ExpressionNode {
+    if (this.solidityImportCompat && /,\}\)$/.test(ctx.getText())) {
+      throw new ParseError('Unexpected trailing comma in named arguments', Location.fromCtx(ctx));
+    }
     const object = this.visit(ctx.expression());
     const methodName = ctx.Identifier().getText();
     const namedArgs = ctx.namedArg_list();

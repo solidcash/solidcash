@@ -7819,6 +7819,41 @@ describe('user-defined value type construction validation', () => {
   });
 });
 
+describe('Solidity-only declaration syntax validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('rejects constant local variables and state data locations', () => {
+    expect(() => cc('contract C { uint[] memory values; }'))
+      .toThrow(/State variables cannot specify the 'memory' data location/);
+    expect(() => cc('contract C { function f() public pure { uint constant x = 1; } }'))
+      .toThrow(/constant.*not allowed on local variables/i);
+  });
+
+  it('rejects trailing commas in enums and named arguments', () => {
+    expect(() => cc('contract C { enum E { A, } }'))
+      .toThrow(/Expected enum member after trailing comma/);
+    expect(() => cc('contract C { function f(uint x) public pure {}'
+      + ' function g() public pure { f({x: 1, }); } }'))
+      .toThrow(/Unexpected trailing comma in named arguments/);
+  });
+
+  it('rejects unsupported assembly dialects and payable mapping keys', () => {
+    expect(() => cc('contract C { function f() public pure { assembly "other" {} } }'))
+      .toThrow(/Only "evmasm" assembly is supported/);
+    expect(() => cc('contract C { mapping(address payable => uint) values; }'))
+      .toThrow(/Mapping key type must be "address"/);
+  });
+
+  it('retains native extensions and valid Solidity spellings', () => {
+    expect(compileString('contract C { uint[] memory values; enum E { A, }'
+      + ' function f() public pure { uint constant x = 1; } }').contractName).toBe('C');
+    expect(cc('contract C { mapping(address => uint) values; enum E { A }'
+      + ' function f(uint x) public pure {} function g() public pure { f({x: 1}); } }')).toBe('C');
+    expect(cc('contract C { function f() public pure { assembly ("a", "b") {} } }')).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

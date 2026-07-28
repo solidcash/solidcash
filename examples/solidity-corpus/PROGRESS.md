@@ -5145,3 +5145,13 @@ The focused suite is **1047/1047**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1051/1051**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 418, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Using-for attachment-shape loop: 4443 flat, NEG-ACCEPTED 418 -> 413 (-5)
+
+- Solidity-compatible file-level `using for` directives now require an explicit target type, and bindings that
+  attach specific functions require an explicit target at contract scope as well.
+- Specific free-function attachments are validated before pruning and must provide at least one receiver
+  parameter. Native SolidCash wildcard bindings and valid contract-level whole-library wildcards remain accepted.
+
+The focused suite is **1055/1055**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+413, plus 275 multifile and 289 cmdline fixtures excluded.

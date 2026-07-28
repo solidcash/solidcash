@@ -7757,6 +7757,39 @@ describe('UDVT operator declaration validation', () => {
   });
 });
 
+describe('using-for attachment declaration validation', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('requires explicit file-level and specific-function target types', () => {
+    expect(() => cc('library L {} using L for *; contract C {}'))
+      .toThrow(/type has to be specified explicitly at file level/i);
+    expect(() => cc('function id(uint x) pure returns (uint) { return x; }'
+      + ' using { id } for *; contract C {}'))
+      .toThrow(/type has to be specified explicitly when attaching specific functions/i);
+    expect(() => cc('function id(uint x) pure returns (uint) { return x; }'
+      + ' contract C { using { id } for *; }'))
+      .toThrow(/type has to be specified explicitly when attaching specific functions/i);
+  });
+
+  it('requires an attached free function to have a receiver parameter', () => {
+    expect(() => cc('function one() pure returns (uint) { return 1; }'
+      + ' using { one } for uint; contract C {}'))
+      .toThrow(/does not have any parameters/);
+  });
+
+  it('retains explicitly typed attachments and contract-level library wildcards', () => {
+    expect(cc('function id(uint x) pure returns (uint) { return x; }'
+      + ' library L { function f(uint x) internal pure returns (uint) { return x; } }'
+      + ' using { id } for uint; contract C { using L for *; }')).toBe('C');
+  });
+
+  it('preserves native specific-function wildcards', () => {
+    expect(compileString('function id(uint x) pure returns (uint) { return x; }'
+      + ' using { id } for *; contract C {}').contractName).toBe('C');
+  });
+});
+
 describe('base-contract-qualified inherited state', () => {
   it('resolves a direct base qualifier to the inherited scalar state slot', () => {
     expect(compileString('contract Base { uint a; constructor(uint x) { a = x; } }'

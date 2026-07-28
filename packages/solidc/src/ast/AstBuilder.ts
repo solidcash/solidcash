@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -619,9 +619,10 @@ export default class AstBuilder
       (c) => this.visitConstantDefinition(c),
     );
 
-    const usingForDirectives = ctx.usingForDirective_list().map(
+    const fileUsingForDirectives = ctx.usingForDirective_list().map(
       (u) => this.visit(u) as UsingForDirectiveNode,
     );
+    const usingForDirectives = [...fileUsingForDirectives];
 
     const errorDefinitions = ctx.errorDefinition_list().map(
       (e) => this.visitErrorDefinition(e),
@@ -810,6 +811,38 @@ export default class AstBuilder
           if (functionCounts.get(binding.funcName) !== 1) {
             throw new ParseError(
               `Identifier '${binding.funcName}' in 'using for' directive is not a function name or not unique`,
+              directive.location,
+            );
+          }
+        }
+      }
+      for (const directive of fileUsingForDirectives) {
+        if (directive.isWildcard) {
+          throw new ParseError(
+            "The type has to be specified explicitly at file level (cannot use '*')",
+            directive.location,
+          );
+        }
+      }
+
+      // A specifically attached function must accept the directive target as its first argument. Validate this
+      // before unused free helpers and their directives can be pruned from the compatibility pipeline.
+      for (const directive of usingForDirectives) {
+        if (!directive.functionBindings || directive.isWildcard || !directive.targetTypeName) continue;
+        const targetType = this.resolveType(directive.targetTypeName);
+        for (const binding of directive.functionBindings) {
+          const fn = freeFunctions.find((candidate) => candidate.name === binding.funcName)!;
+          const firstParameter = fn.parameters.find((parameter) => !parameter.name.startsWith('__internal__'));
+          if (!firstParameter) {
+            throw new ParseError(
+              `The function '${binding.funcName}' does not have any parameters and cannot be attached to a type`,
+              directive.location,
+            );
+          }
+          if (!binding.operator && targetType && !implicitlyCastable(targetType, firstParameter.type)) {
+            throw new ParseError(
+              `The function '${binding.funcName}' cannot be attached to '${directive.targetTypeName}' `
+              + `because it cannot be implicitly converted to '${firstParameter.type}'`,
               directive.location,
             );
           }
@@ -6277,6 +6310,12 @@ export default class AstBuilder
     if (this.solidityImportCompat && isGlobal
       && (!targetTypeName || !this.typeDefMap.has(targetTypeName))) {
       throw new ParseError('Can only use "global" with user-defined value types', Location.fromCtx(ctx));
+    }
+    if (this.solidityImportCompat && isWildcard) {
+      throw new ParseError(
+        'The type has to be specified explicitly when attaching specific functions',
+        Location.fromCtx(ctx),
+      );
     }
     const node = new UsingForDirectiveNode(undefined, bindings, targetTypeName, isWildcard, isGlobal);
     node.location = Location.fromCtx(ctx);

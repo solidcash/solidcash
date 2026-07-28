@@ -640,6 +640,33 @@ describe('Solidity free-function literal overload ambiguity', () => {
   });
 });
 
+describe('Solidity anonymous event selectors', () => {
+  it('rejects a namespaced anonymous library event selector in functions and initializers', () => {
+    expect(() => compileString(
+      'library L { event E() anonymous; }'
+      + ' contract C { function f() public pure returns (bytes32) { return L.E.selector; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/Anonymous event 'L\.E'.*does not have a selector/i);
+    expect(() => compileString(
+      'library L { event E() anonymous; } contract C { bytes32 x = L.E.selector; }',
+      { solidityImportCompat: true },
+    )).toThrow(/Anonymous event 'L\.E'.*does not have a selector/i);
+    expect(() => compileString(
+      'contract C { event E() anonymous;'
+      + ' function f() public pure returns (bytes32) { return E.selector; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/Anonymous event 'E'.*does not have a selector/i);
+  });
+
+  it('retains selectors for ordinary events', () => {
+    expect(compileString(
+      'library L { event E(); }'
+      + ' contract C { function f() public pure returns (bytes32) { return L.E.selector; } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
 describe('Solidity pragma range compatibility', () => {
   const ok = (range: string): string => compileString(
     `pragma solidity ${range}; contract C { function f() public { require(true); } }`,

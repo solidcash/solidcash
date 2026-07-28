@@ -117,6 +117,7 @@ export class SourceFileNode extends Node {
   // register under bare names (same-name events in different libraries collide), so `L.E.selector` folds from
   // this parse-time record instead.
   libraryEventSignatures: Map<string, string[]> = new Map();
+  libraryAnonymousEvents: Set<string> = new Set();
   libraryErrorSignatures: Map<string, string[]> = new Map();
   libraryErrorDefinitions: Set<ErrorDefinitionNode> = new Set();
   // Library modifiers are namespaced (`L.onlyOwner`) and expanded on the corresponding lowered free/library

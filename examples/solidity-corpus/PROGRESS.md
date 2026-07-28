@@ -4976,3 +4976,12 @@ The focused suite is **989/989**. The full corpus remains **4443/4587**, 144 fai
 
 The focused suite is **991/991**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 493, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Anonymous-event selector loop: 4443 flat, NEG-ACCEPTED 493 -> 491 (-2)
+
+- Anonymous events now reject `.selector` because they do not emit a signature topic.
+- Library anonymity is preserved through source metadata and import merging, covering function bodies and state or
+  constant initializer folds; ordinary event selectors remain valid.
+
+The focused suite is **993/993**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+491, plus 275 multifile and 289 cmdline fixtures excluded.

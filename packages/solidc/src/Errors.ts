@@ -753,6 +753,12 @@ export class ErrorSelectorCollisionError extends RedefinitionError {
   }
 }
 
+export class AnonymousEventSelectorError extends SolidCashError {
+  constructor(node: Node, eventName: string) {
+    super(node, `Anonymous event '${eventName}' does not have a selector`);
+  }
+}
+
 export class InvalidErrorUsageError extends SolidCashError {
   constructor(node: FunctionCallNode, errorName: string) {
     super(

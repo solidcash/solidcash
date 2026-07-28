@@ -606,6 +606,7 @@ export default class AstBuilder
     const declaredLibraryNames: string[] = [];
     const libraryFunctionSignatures: Map<string, string[]> = new Map();
     const libraryEventSignatures: Map<string, string[]> = new Map();
+    const libraryAnonymousEvents: Set<string> = new Set();
     const libraryErrorSignatures: Map<string, string[]> = new Map();
     const libraryErrorDefinitions: Set<ErrorDefinitionNode> = new Set();
     const libraryModifierDefinitions: ModifierDefinitionNode[] = [];
@@ -632,6 +633,7 @@ export default class AstBuilder
       for (const evCtx of libCtx.eventDefinition_list()) {
         const ev = this.visitEventDefinition(evCtx);
         libraryEventSignatures.set(`${libName}.${ev.name}`, ev.parameters.map((pm) => pm.type.toString()));
+        if (ev.isAnonymous) libraryAnonymousEvents.add(`${libName}.${ev.name}`);
         allLibEventDefs.push(ev);
       }
 
@@ -886,6 +888,7 @@ export default class AstBuilder
       node.declaredLibraryNames = declaredLibraryNames;
       node.libraryFunctionSignatures = libraryFunctionSignatures;
       node.libraryEventSignatures = libraryEventSignatures;
+      node.libraryAnonymousEvents = libraryAnonymousEvents;
       node.libraryErrorSignatures = libraryErrorSignatures;
       node.libraryErrorDefinitions = libraryErrorDefinitions;
       node.libraryModifierDefinitions = libraryModifierDefinitions;
@@ -969,6 +972,7 @@ export default class AstBuilder
     sourceFileNode.declaredLibraryNames = declaredLibraryNames;
     sourceFileNode.libraryFunctionSignatures = libraryFunctionSignatures;
     sourceFileNode.libraryEventSignatures = libraryEventSignatures;
+    sourceFileNode.libraryAnonymousEvents = libraryAnonymousEvents;
     sourceFileNode.libraryErrorSignatures = libraryErrorSignatures;
     sourceFileNode.libraryErrorDefinitions = libraryErrorDefinitions;
     sourceFileNode.libraryModifierDefinitions = libraryModifierDefinitions;

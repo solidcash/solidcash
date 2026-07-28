@@ -99,6 +99,7 @@ export class ImportResolver {
     source.libraryFunctionSignatures.forEach((v, k) => target.libraryFunctionSignatures.set(k, v));
     target.libraryModifierDefinitions.push(...source.libraryModifierDefinitions);
     source.libraryEventSignatures.forEach((v, k) => target.libraryEventSignatures.set(k, v));
+    source.libraryAnonymousEvents.forEach((name) => target.libraryAnonymousEvents.add(name));
     switch (importNode.kind) {
       case 'wildcard':
         // Import everything: contract, constants, enums, structs, types,

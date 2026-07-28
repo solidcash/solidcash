@@ -143,6 +143,7 @@ import {
   ErrorRedefinitionError,
   ReservedErrorSelectorError,
   ErrorSelectorCollisionError,
+  AnonymousEventSelectorError,
   InvalidErrorUsageError,
   UndefinedErrorError,
   TokenContainerKeyMustBeParameterError,
@@ -298,6 +299,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private knownLibraryNames: Set<string> = new Set();
   private libraryFunctionSignatures: Map<string, string[]> = new Map();
   private libraryEventSignatures: Map<string, string[]> = new Map();
+  private libraryAnonymousEvents: Set<string> = new Set();
   private libraryErrorSignatures: Map<string, string[]> = new Map();
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
@@ -575,6 +577,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.knownLibraryNames = new Set(node.declaredLibraryNames);
     this.libraryFunctionSignatures = node.libraryFunctionSignatures;
     this.libraryEventSignatures = node.libraryEventSignatures;
+    this.libraryAnonymousEvents = node.libraryAnonymousEvents;
     this.libraryErrorSignatures = node.libraryErrorSignatures;
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
@@ -1331,6 +1334,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const event = this.currentContract?.eventDefinitions.find((definition) => definition.name === name)
         ?? [...this.eventMap.values()].find((definition) => definition.name === name);
       if (event) {
+        if (event.isAnonymous) throw new AnonymousEventSelectorError(expr, event.name);
         const signature = computeEventSignature(event.name, event.parameters.map((p) => p.type.toString()));
         return literal(computeEventSelector(signature), 32);
       }
@@ -1360,6 +1364,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       const event = holder?.eventDefinitions.find((definition) => definition.name === name);
       if (event) {
+        if (event.isAnonymous) throw new AnonymousEventSelectorError(expr, `${qualifier}.${event.name}`);
         const signature = computeEventSignature(event.name, event.parameters.map((p) => p.type.toString()));
         return literal(computeEventSelector(signature), 32);
       }
@@ -8363,11 +8368,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.expression instanceof FieldAccessNode && node.expression.expression instanceof IdentifierNode) {
         const q = node.expression.expression.name;
         const evName = node.expression.name;
+        if (this.libraryAnonymousEvents.has(`${q}.${evName}`)) {
+          throw new AnonymousEventSelectorError(node, `${q}.${evName}`);
+        }
         const fromLib = eventSelectorLit(evName, this.libraryEventSignatures.get(`${q}.${evName}`));
         if (fromLib) return fromLib;
         const holder = this.contractMap.get(q) ?? this.interfaceMap.get(q);
         const ev = holder?.eventDefinitions?.find((e) => e.name === evName);
         if (ev) {
+          if (ev.isAnonymous) throw new AnonymousEventSelectorError(node, `${q}.${evName}`);
           const fromHolder = eventSelectorLit(evName, ev.parameters.map((p) => p.type.toString()));
           if (fromHolder) return fromHolder;
         }
@@ -8380,6 +8389,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const ev = this.currentContract?.eventDefinitions?.find((e) => e.name === bareName)
           ?? [...this.eventMap.values()].find((e) => e.name === bareName);
         if (ev) {
+          if (ev.isAnonymous) throw new AnonymousEventSelectorError(node, ev.name);
           const fromEvent = eventSelectorLit(ev.name, ev.parameters.map((p) => p.type.toString()));
           if (fromEvent) return fromEvent;
         }

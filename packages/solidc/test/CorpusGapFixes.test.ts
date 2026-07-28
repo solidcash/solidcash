@@ -7302,6 +7302,30 @@ describe('public getters implementing abstract functions', () => {
   });
 });
 
+describe('public getter interface override lists', () => {
+  const prefix = 'interface A { function foo() external returns (uint); }'
+    + ' interface B { function foo() external returns (uint); }';
+
+  it('requires every parallel interface provider in an explicit override list', () => {
+    expect(() => compileString(prefix
+      + ' contract C is A, B { uint public override(A) foo; }',
+    { solidityImportCompat: true })).toThrow(/must specify bases.*A.*B|must specify bases.*B.*A/);
+  });
+
+  it('accepts a complete parallel interface override list', () => {
+    expect(compileString(prefix
+      + ' contract C is A, B { uint public override(A, B) foo; }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('lets a derived interface provider dominate its ancestor', () => {
+    expect(compileString('interface A { function foo() external returns (uint); }'
+      + ' interface B is A { function foo() external returns (uint); }'
+      + ' contract C is B { uint public override(B) foo; }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
 describe('bare inherited dynamic-array mutations', () => {
   it('classifies push and pop as state-array operations after inheritance expansion', () => {
     expect(compileString('contract A { uint[] public values; }'

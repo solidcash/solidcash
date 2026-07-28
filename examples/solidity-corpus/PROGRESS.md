@@ -5392,3 +5392,13 @@ The focused suite is **1104/1104**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1106/1106**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 341, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Public-getter interface override-list loop: 4443 flat, NEG-ACCEPTED 341 -> 340 (-1)
+
+- Public state getters that implement the same signature from parallel interfaces must now name every effective
+  interface provider in their explicit override list.
+- Provider discovery follows both contract and interface ancestry before inheritance flattening. A derived
+  interface still dominates its ancestor, and complete `override(A, B)` declarations retain existing behavior.
+
+The focused suite is **1109/1109**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+340, plus 275 multifile and 289 cmdline fixtures excluded.

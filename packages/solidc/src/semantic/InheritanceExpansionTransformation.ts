@@ -201,6 +201,66 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
   const expanded = new Set<string>();
   const interfaceMap = new Map(ast.interfaceDefinitions.map((iface) => [iface.name, iface]));
   if (solidityImportCompat) {
+    // Public-getter override validation below normally runs while concrete parents are flattened. A contract
+    // whose bases are all interfaces takes the no-parent fast path, however, so an incomplete
+    // `override(IA)` could previously omit a parallel `IB` provider. Resolve the effective interface providers
+    // directly from the original source hierarchy before any contract's `implements` list is mutated.
+    const interfaceAncestors = (contract: ContractNode): Set<string> => {
+      const result = new Set<string>();
+      const pending = [...contract.implements];
+      const seenContracts = new Set<string>();
+      while (pending.length > 0) {
+        const name = pending.pop()!;
+        const parentContract = contractMap.get(name);
+        if (parentContract) {
+          if (seenContracts.has(name)) continue;
+          seenContracts.add(name);
+          pending.push(...(originalImplements.get(name) ?? parentContract.implements));
+          continue;
+        }
+        const iface = interfaceMap.get(name);
+        if (!iface || result.has(name)) continue;
+        result.add(name);
+        pending.push(...iface.parents);
+      }
+      return result;
+    };
+    const isInterfaceAncestor = (ancestor: string, descendant: string): boolean => {
+      const pending = [...(interfaceMap.get(descendant)?.parents ?? [])];
+      const seen = new Set<string>();
+      while (pending.length > 0) {
+        const name = pending.pop()!;
+        if (name === ancestor) return true;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        pending.push(...(interfaceMap.get(name)?.parents ?? []));
+      }
+      return false;
+    };
+
+    for (const contract of [ast.contract, ...ast.importedContracts]) {
+      const ancestors = interfaceAncestors(contract);
+      for (const declaration of [...contract.stateVariables, ...contract.collections].filter(
+        (candidate) => candidate.inheritedFrom === undefined && candidate.isOverride,
+      )) {
+        const shape = publicGetterShape(declaration);
+        if (!shape) continue;
+        const providers = [...ancestors].filter((name) =>
+          interfaceMap.get(name)?.functions.some((fn) =>
+            fn.name === declaration.name
+            && fn.parameters.map((parameter) => parameter.type.toString()).join(',') === shape.parameters.join(',')
+            && fn.returnTypes.length === 1
+            && fn.returnTypes[0].toString() === shape.returnType))
+          .filter((provider, _index, all) => !all.some((other) =>
+            other !== provider && isInterfaceAncestor(provider, other)));
+        if (providers.length > 1
+          && providers.some((provider) => !declaration.overrideBases.includes(provider))) {
+          throw new MissingOverrideBasesError(declaration, declaration.name, providers);
+        }
+      }
+    }
+  }
+  if (solidityImportCompat) {
     const fileErrorNames = new Set(ast.errorDefinitions.map((definition) => definition.name));
     const fileEventNames = new Set(ast.eventDefinitions.map((definition) => definition.name));
     const declarationReference = (argument: ExpressionNode, contract: ContractNode): string | undefined => {

@@ -136,7 +136,8 @@ task-specific report, not in this table.
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | INTEGRATED | 6/6 checklist + a 7th hostile case; measured NOT to fit ordinary capacity |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
-| C3 | Eight-participant semantic capstone | C | C1,C2 | LEASED | round 7; expected NOT to fit ordinary capacity - measure, do not treat as failure |
+| C3 | Eight-participant semantic capstone | C | C1,C2 | INTEGRATED | 5/5; saturates the PARTICIPANT bound only (8/24 invocations, depth 4/7) |
+| X25 | Re-measure C3 capacity run-to-completion, post-X23 | — | X23,C3 | TODO | C3's figure is the same abort artifact; true gap unknown |
 | A1 | Independent in-repository hostile review | C | C1,C2,C3 | TODO | Reviewer did not implement reviewed slice |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
@@ -179,6 +180,41 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.23 C3 lands, and its capacity figure inherits the artifact X23 exposed
+
+C3 settles: eight independently compiled types, eight blocks, **108 balanced slots**, one transaction, all eight
+post-states read back off chain. Five hostile cases - injection, injection-with-burned-NFTs, omission,
+duplicate-owner, disjoint-root - each pinned to an input index, each with an honest control that is preflighted
+AND settled first. The two transcript patches are verified intra-build by byte index (3 bytes for disjoint-root;
+all inside row 7's 35-byte frame for duplicate-owner), and the worker notes cross-build byte comparison is
+meaningless here because every build mints fresh categories.
+
+**Scoped honestly by the worker: C3 saturates the PARTICIPANT bound only** - 8 of 8 participants, but 8 of 24
+invocations and depth 4 of 7. It is not evidence about the other two ceilings.
+
+**Its capacity figure is not usable, and the reason is section 4.22.** C3 was built on `c7ee8ea9`, before X23
+landed, and reports missing ordinary capacity by "70 operations, 0.00104%" at input 98. That is the same
+abort-semantics artifact: a reported cost is always within one operation of the budget however much evaluation
+remained. Its companion observation - that C3 "misses by less than C1, 70 against 626, despite being wider" -
+therefore compares two artifacts and means nothing. The worker already declined to call it a scaling law and
+asked for an F1 measurement, which was the right instinct on numbers that turned out to be unusable.
+
+Re-run against the post-X23 tree, C3 still does not fit and its suite still passes 11/11 - so X23's 36% density
+reduction was not enough at eight participants. The TRUE gap is unknown and needs the run-to-completion method
+Worker B used. Opened as X25.
+
+**Two structural findings worth carrying into the F phase.** The projection input is 8,412 bytes, under the
+10,000-byte limit, so input size is not the blocker at eight wide either - density is, again. And
+`BALANCED_TRAILING_CAPACITY = 64` dominates the layout: one dynamic-storage participant contributes 66 of the 98
+participant slots for a SINGLE chunk UTXO, and a second such participant would cost another 64.
+
+**A gate-precedence issue the worker disclosed:** for the token-preserving injection,
+`preflightLayer3Transaction` never reaches the VM - the structural block-assembly gate refuses first and names
+an OUTPUT, not an input. The worker added a burned-NFT variant specifically so the covenant refusal could be
+pinned to an input, rather than quietly reporting an output index as if it were one.
+
+C3 also deliberately uses no pointer table anywhere, so **no C3 claim depends on SEC-5**, which is still live.
 
 ### 4.22 X23 CLOSED - and the number in 4.20 was wrong by 200x
 

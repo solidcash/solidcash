@@ -6270,7 +6270,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X29. This dispatch site reached a handler that settles the satoshi container itself, so the route's
     // epilogue must NOT also preserve it. Written through emitReplace so a site inside a dispatch branch keeps
     // the frame depth-balanced, the same way a conditional emit's pre-allocated blob slot is written.
-    if (this.graphTransferFlagActive && (targetFunc.graphEffectFrame?.transferWidth ?? 0) > 0
+    //
+    // SEC-8. The test is the reached handler's OWN settlement, not `graphEffectFrame.transferWidth`. That frame
+    // is one object shared by every framed handler, so its width is the group maximum: keying on it let a
+    // dispatch of an emit-only sibling claim the container was settled while its subroutine settled nothing,
+    // and the epilogue's preservation was then skipped, leaving the co-spent container with no identity check
+    // and no value check at all.
+    if (this.graphTransferFlagActive && targetFunc.graphEffectSettlesTransfers === true
       && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
       this.emit(Op.OP_1, locationData);
       this.pushToStack('(graph_transfer_reached_new)');

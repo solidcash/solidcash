@@ -134,11 +134,11 @@ task-specific report, not in this table.
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | INTEGRATED (scoped) | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | INTEGRATED (partial) | preflight is a capability, not a wired gate; 2 criteria SDK-only |
-| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | **CHANGES** | claims verify; fixture comment over-claims byte-identity (C1-R1) and under-claims binding (C1-R4) |
+| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | CHANGES (round 9) | B correcting C1-R1 and C1-R4 in its own file |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | INTEGRATED | 5/5 in one 79-input transaction; found SEC-5 |
-| C3 | Eight-participant semantic capstone | C | C1,C2 | **CHANGES** | test was RED when marked INTEGRATED (fixed by B); two scope notes wrong (C3-R2, C3-R3) |
+| C3 | Eight-participant semantic capstone | C | C1,C2 | CHANGES (round 9) | test fixed by B; A correcting C3-R2, C3-R3 and the blocker attribution |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | INTEGRATED | blocker is the CONTROLLER at 1.2286x, not the projection |
-| X27 | Destructive left-to-right walk in `attest` | — | X25 | TODO | costed at -17.3%; 1.3 points short alone |
+| X27 | Destructive left-to-right walk in `attest` | B | X25 | LEASED | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
 | F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
@@ -170,8 +170,8 @@ task-specific report, not in this table.
 | **SEC-6** | Emission handler with a transfer/emit/token-container is still unbound | C | SEC-5 | **LEASED (security)** | round 8; build the forgery first, then fix or fail closed |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
-| X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
-| X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
+| X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
+| X22 | Result-consuming handler that also carries an effect | A | C1 | LEASED | round 9; name it or admit it - silence and sentinels both unacceptable |
 | X23 | Reduce projection-verifier operation density | B | C1 | INTEGRATED | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
 | X24 | Unroll the constant-depth stack-write shuttle | C | X23 | LEASED | round 8, after SEC-6; ~7x on EVERY variable write in EVERY contract |
 | **SEC-1** | Conditional delegate edge forges proxy state | C | — | **INTEGRATED** | Not-taken paths frozen, not forbidden; repositioned attack also pinned |

@@ -1015,11 +1015,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
 
-    // X29. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep their
-    // transcript binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
+    // X29 / SEC-7. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep
+    // their transcript binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
     // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
-    // one frame per dispatch site, and record the frame on both. Runs after every function is visited because
-    // it needs each handler's own emit/transfer counts, which are assigned during that function's visit.
+    // one frame per dispatch site; refuse the effects no frame can express. Both run after every function is
+    // visited, because both need per-handler metadata assigned during that function's own visit.
     this.refuseUnframedGraphEffects(node);
     this.planGraphEffectFrames(node);
 

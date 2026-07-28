@@ -539,6 +539,33 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
   }, 60_000);
 
   /**
+   * The frame WIDTH, which is the part of X29 the VM cases above exercise only at width 1. A handler carrying
+   * two or three events owns two or three consecutive slots per dispatch site, and the subroutine multiplies
+   * its site ordinal by that width at runtime. Compile-level only, and stated as such: it pins that the
+   * reservation scales and the edges stay bound, not that a width-3 graph settles.
+   */
+  it('scales the reserved frames with the handler emit width', () => {
+    const wide = (emits: number): string => `pragma solidcash >=0.8.0;
+interface IEffectLeg { function credit(uint value); }
+contract WideEffectHub() {
+  uint total;
+  event Fired(uint value);
+  function fireAll(address first, uint value) public {
+${Array.from({ length: emits }, () => '    emit Fired(value);').join('\n')}
+    IEffectLeg(first).credit(value);
+    require(true);
+  }
+}`;
+    const mark = '76827752807c7e';
+    for (const [emits, expected] of [[1, 8], [2, 16], [3, 24]] as const) {
+      const artifact = compileString(wide(emits), BUS_OPTIONS);
+      expect(artifact.hiddenBatch!.route.blockLayout!.slots
+        .filter((slot: any) => slot.kind === 'event')).toHaveLength(expected);
+      expect((artifact.debug!.bytecode as string).split(mark).length - 1).toBeGreaterThan(0);
+    }
+  }, 60_000);
+
+  /**
    * SEC-7, and it turned out NOT to be a message-bus property at all.
    *
    * SEC-6 pinned `this.tokens[c].transfer(..)` as bound-but-slotless and left it open. Probing it named the

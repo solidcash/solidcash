@@ -12,6 +12,7 @@ import {
   FunctionDefinitionNode,
   FunctionModifier,
   IdentifierNode,
+  IndirectCallNode,
   LiteralNode,
   MappingAccessNode,
   MappingAssignNode,
@@ -126,14 +127,26 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // internal compiler error rather than a diagnostic - 'Block layout not available while compiling ...' and
     // a parameter-arity mismatch on '__scb_resource_...'. The two journals do not yet share one exit, so
     // reject the combination with a stable message.
+    //
+    // The access does not have to be written in the handler. A state-touching callee is inlined into its
+    // caller, and this pass's own call-site rewrite puts the entry read and the write-back in the CALLER, so
+    // a collection reached through an intra-contract call lands in the same OP_INVOKE body. A body-only walk
+    // therefore missed every indirect shape and let the internal error return unchanged; the reach is
+    // computed over the intra-contract call graph instead. A function-pointer callsite names no target, so
+    // `callGraphReach` over-approximates it to every address-taken contract function rather than admitting it.
     for (const fn of node.functions) {
-      if (!fn.body || fn.parameters[0]?.name !== `__dj_${fn.name}` || !touchesCollection(fn)) continue;
-      throw new Error(
-        `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
-        + 'collection entry. The dynamic-storage journal and the collection journal do not share one exit, '
-        + 'so this handler cannot flush both; split the unbounded write and the collection access into '
-        + 'separate handlers',
-      );
+      if (!fn.body || fn.parameters[0]?.name !== `__dj_${fn.name}`) continue;
+      const reach = this.callGraphReach(fn, node, touchesCollection);
+      if (reach.via) {
+        throw new Error(
+          `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
+          + 'collection entry. The dynamic-storage journal and the collection journal do not share one exit, '
+          + 'so this handler cannot flush both; split the unbounded write and the collection access into '
+          + 'separate handlers'
+          + (reach.via === fn.name ? '' : ` (the collection entry is reached through '${
+            sourceHandlerName(reach.via)}')`),
+        );
+      }
     }
     for (const fn of node.functions) {
       if (!fn.body || fn.returnTypes.length !== 0
@@ -713,6 +726,87 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
     };
     walk(root);
+  }
+
+  /**
+   * Does `root` reach a collection entry, directly or through an intra-contract call?
+   *
+   * Returns the name of the first function whose own body touches a collection. Calls that resolve to no
+   * contract function and to no local binding are builtins, casts, free functions and external-contract
+   * calls; none of them can touch THIS contract's collections, so they are ignored.
+   *
+   * A call through a name bound inside the function - or an `IndirectCallNode` - is a function-pointer
+   * dispatch whose target is not named at the callsite. Rejecting those outright fails closed on shapes that
+   * compile today: a local or parameter pointer assigned a known handler is analysable, and two such contracts
+   * were measured compiling before this reach existed. The target set is over-approximated instead, to every
+   * contract function whose NAME is taken somewhere in the contract without being called - the only way a
+   * pointer to an intra-contract function can be produced. A foreign pointer cannot reach these collections.
+   */
+  private callGraphReach(
+    root: FunctionDefinitionNode,
+    contract: ContractNode,
+    touchesCollection: (fn: FunctionDefinitionNode) => boolean,
+  ): { via?: string } {
+    const functions = contract.functions;
+    const byKey = new Map<string, FunctionDefinitionNode>();
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of functions) {
+      byKey.set(`${fn.name}/${fn.parameters.length}`, fn);
+      const overloads = byName.get(fn.name);
+      if (overloads) overloads.push(fn);
+      else byName.set(fn.name, [fn]);
+    }
+    // Inline state-variable initializers are lowered into the constructor, so its body must be scanned too.
+    const addressTaken = this.addressTakenFunctions(
+      [...functions.map((fn) => fn.body), contract.constructorDef?.body], byName,
+    );
+    const seen = new Set<FunctionDefinitionNode>();
+    const queue: FunctionDefinitionNode[] = [root];
+    while (queue.length > 0) {
+      const fn = queue.shift()!;
+      if (seen.has(fn) || !fn.body) continue;
+      seen.add(fn);
+      if (touchesCollection(fn)) return { via: fn.name };
+      const bound = new Set(fn.parameters.map((parameter) => parameter.name));
+      this.walk(fn.body, (child) => {
+        if (child instanceof VariableDefinitionNode) bound.add(child.name);
+      });
+      this.walk(fn.body, (child) => {
+        if (child instanceof IndirectCallNode) {
+          queue.push(...addressTaken);
+          return;
+        }
+        if (!(child instanceof FunctionCallNode)) return;
+        const name = child.identifier.name;
+        const exact = byKey.get(`${name}/${child.parameters.length}`);
+        if (exact) queue.push(exact);
+        else if (byName.has(name)) queue.push(...byName.get(name)!);
+        else if (bound.has(name)) queue.push(...addressTaken);
+      });
+    }
+    return {};
+  }
+
+  /** Contract functions whose name appears somewhere other than as a callsite's own callee identifier. */
+  private addressTakenFunctions(
+    bodies: Array<BlockNode | undefined>,
+    byName: Map<string, FunctionDefinitionNode[]>,
+  ): FunctionDefinitionNode[] {
+    const callees = new Set<Node>();
+    const referenced = new Set<string>();
+    for (const body of bodies) {
+      this.walk(body, (child) => {
+        if (child instanceof FunctionCallNode) callees.add(child.identifier);
+      });
+    }
+    for (const body of bodies) {
+      this.walk(body, (child) => {
+        if (child instanceof IdentifierNode && !callees.has(child) && byName.has(child.name)) {
+          referenced.add(child.name);
+        }
+      });
+    }
+    return [...referenced].flatMap((name) => byName.get(name) ?? []);
   }
 
   private walk(value: unknown, visit: (node: Node) => void, seen = new Set<object>()): void {

@@ -143,6 +143,179 @@ describe('S2 dynamic-plus-collection journal boundary', () => {
   }, COMPILE_TIMEOUT_MS);
 });
 
+/**
+ * X33 - the guard was one AST level deep, found by Worker B reviewing S2.
+ *
+ * `touchesCollection` walked `fn.body` only. A state-touching callee is inlined into its caller and the
+ * collection journal's own call-site rewrite puts the entry read and the write-back in the CALLER, so a
+ * collection reached through an intra-contract call lands in the same OP_INVOKE body as a directly written
+ * one. Moving the collection statement one hop restored `Block layout not available while compiling 'helper'`
+ * - the exact internal error S2 replaced. The reach is now computed over the call graph.
+ *
+ * The rejection rows live in `MixedJournalBoundaryReviewB11.test.ts` (B's fixtures, unchanged). This block
+ * pins the OTHER half: the shapes the widened reach must NOT swallow. The precedent is the footprint change
+ * that published `collection:<local>:*` for local array writes and moved five corpus files; the same class of
+ * over-approximation here would reject every dj-converted helper that merely calls something.
+ */
+describe('X33 collection reach over the call graph does not over-approximate', () => {
+  const admitted = (label: string, source: string): void => {
+    it(`admits ${label}`, () => {
+      expect(compileString(source, plainOptions).bytecode.length).toBeGreaterThan(0);
+    }, COMPILE_TIMEOUT_MS);
+  };
+
+  // The CALLER touching a collection is not the rejected shape: only what the dj-converted helper can reach.
+  admitted('a collection write in the caller of an unbounded-write helper', `pragma solidcash >=0.8.0;
+    contract CallerTouches() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(address who, bigint amount, string t) public {
+        this.helper(t);
+        this.balances[who] = this.balances[who] + amount;
+        require(true);
+      }
+      function helper(string t) internal { this.note = t; }
+    }`);
+
+  admitted('a callee that writes plain scalar state', `pragma solidcash >=0.8.0;
+    contract CalleeScalarOnly() {
+      string note;
+      bigint moves;
+      mapping(address => bigint) balances;
+      function set(bigint amount, string t) public { this.helper(amount, t); require(true); }
+      function helper(bigint amount, string t) internal { this.note = t; this.bump(amount); }
+      function bump(bigint amount) internal { this.moves = this.moves + amount; }
+      function touch(address who) public { this.balances[who] = 1; require(true); }
+    }`);
+
+  admitted('a pure callee', `pragma solidcash >=0.8.0;
+    contract CalleePure() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(bigint amount, string t) public { this.helper(amount, t); require(true); }
+      function helper(bigint amount, string t) internal { this.note = t; require(this.dbl(amount) >= 0); }
+      function dbl(bigint a) internal pure returns (bigint) { return a * 2; }
+      function touch(address who) public { this.balances[who] = 1; require(true); }
+    }`);
+
+  // The locally-bound filter matters here: a LOCAL array element write is not a collection entry.
+  admitted('a callee that writes a local array element', `pragma solidcash >=0.8.0;
+    contract CalleeLocalArray() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(bigint amount, string t) public { this.helper(amount, t); require(true); }
+      function helper(bigint amount, string t) internal { this.note = t; this.arr(amount); }
+      function arr(bigint amount) internal {
+        bigint[] memory xs = new bigint[](2);
+        xs[0] = amount;
+        require(xs[0] >= 0);
+      }
+      function touch(address who) public { this.balances[who] = 1; require(true); }
+    }`);
+
+  it('rejects through a PUBLIC callee too - visibility does not change where the access lands', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+    contract CalleePublic() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(address who, bigint amount, string t) public { this.helper(who, amount, t); require(true); }
+      function helper(address who, bigint amount, string t) internal { this.note = t; this.pub(who, amount); }
+      function pub(address who, bigint amount) public {
+        this.balances[who] = this.balances[who] + amount;
+        require(true);
+      }
+    }`, plainOptions)).toThrow(/reached through 'pub'/);
+  }, COMPILE_TIMEOUT_MS);
+
+  // Function-pointer callsites name no target. The first repair rejected them outright, which fails closed on
+  // shapes that COMPILE at the S2 baseline - both of the two below were measured compiling before the reach
+  // existed, and the 7,343-file solc corpus moved ZERO files either way, so it could not have caught this.
+  // The target set is over-approximated to the address-taken functions instead.
+  admitted('a local function pointer whose target is collection-free', `pragma solidcash >=0.8.0;
+    contract CalleeFnPtr() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(bigint amount, string t) public { this.helper(amount, t); require(true); }
+      function helper(bigint amount, string t) internal {
+        this.note = t;
+        function(bigint) internal pure returns (bigint) f = dbl;
+        require(f(amount) >= 0);
+      }
+      function dbl(bigint a) internal pure returns (bigint) { return a * 2; }
+      function touch(address who) public { this.balances[who] = 1; require(true); }
+    }`);
+
+  admitted('a PARAMETER function pointer whose target is collection-free', `pragma solidcash >=0.8.0;
+    contract ParamFnPtr() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(bigint amount, string t) public { this.helper(dbl, amount, t); require(true); }
+      function helper(function(bigint) internal pure returns (bigint) cb, bigint amount, string t) internal {
+        this.note = t;
+        require(cb(amount) >= 0);
+      }
+      function dbl(bigint a) internal pure returns (bigint) { return a * 2; }
+      function touch(address who) public { this.balances[who] = 1; require(true); }
+    }`);
+
+  it('rejects a local function pointer whose address-taken target reaches a collection', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+    contract PtrToCollection() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(address who, bigint amount, string t) public {
+        this.helper(who, amount, t);
+        require(true);
+      }
+      function helper(address who, bigint amount, string t) internal {
+        this.note = t;
+        function(address, bigint) internal cb = credit;
+        cb(who, amount);
+      }
+      function credit(address who, bigint amount) internal {
+        this.balances[who] = this.balances[who] + amount;
+      }
+    }`, plainOptions)).toThrow(/Handler 'helper' writes unbounded bytes\/string state/);
+  }, COMPILE_TIMEOUT_MS);
+
+  it('rejects a PARAMETER function pointer whose address-taken target reaches a collection', () => {
+    // The parameter form cannot be alias-eliminated to a named callsite, so this row exercises the
+    // over-approximation itself rather than an earlier pass having already resolved the target.
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+    contract ParamPtrToCollection() {
+      string note;
+      mapping(address => bigint) balances;
+      function set(address who, bigint amount, string t) public {
+        this.helper(credit, who, amount, t);
+        require(true);
+      }
+      function helper(function(address, bigint) internal cb, address who, bigint amount, string t) internal {
+        this.note = t;
+        cb(who, amount);
+      }
+      function credit(address who, bigint amount) internal {
+        this.balances[who] = this.balances[who] + amount;
+      }
+    }`, plainOptions)).toThrow(/Handler 'helper' writes unbounded bytes\/string state/);
+  }, COMPILE_TIMEOUT_MS);
+
+  it('names the callee that carries the access, not the intermediate hop', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+    contract Diamond() {
+      string note;
+      bigint moves;
+      mapping(address => bigint) balances;
+      function set(address who, bigint amount, string t) public { this.helper(who, amount, t); require(true); }
+      function helper(address who, bigint amount, string t) internal {
+        this.note = t; this.b(amount); this.a(who, amount);
+      }
+      function a(address who, bigint amount) internal { this.c(who, amount); }
+      function b(bigint amount) internal { this.moves = this.moves + amount; }
+      function c(address who, bigint amount) internal { this.balances[who] = this.balances[who] + amount; }
+    }`, plainOptions)).toThrow(/reached through 'c'/);
+  }, COMPILE_TIMEOUT_MS);
+});
+
 describe('S2 collection-journal early-return boundary', () => {
   const mixed = (body: string): string => `pragma solidcash >=0.8.0;
     contract EarlyReturnBoundary() {

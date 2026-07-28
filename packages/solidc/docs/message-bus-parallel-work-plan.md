@@ -163,8 +163,10 @@ task-specific report, not in this table.
 | X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **DECIDED: do not gate** | See 4.19; the model, not the sends, is what is wrong |
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | INTEGRATED | REFUSED with a named reason and a remedy; silence ended |
 | X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
-| X19 | `m[k]` and `this.m[k]` diverge on the bus route | C | X15 | INTEGRATED (partial) | direct route converged; bus-route route-synthesis still differs - `compiler.ts:469`, A's lease |
-| **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **LEASED (security)** | round 7; characterization cells must invert on repair |
+| X19 | `m[k]` and `this.m[k]` diverge on the bus route | C+A | X15 | INTEGRATED (scoped) | bare spelling admitted; a second key alternative or `msg.sender` key still needs `bindEntryKeyParameters` |
+| **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
+| **SEC-6** | Emission handler with a transfer/emit/token-container is still unbound | — | SEC-5 | **TODO (security)** | pre-existing; 0 binding sites before AND after SEC-5's fix |
+| X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | — | X17 | TODO | One number is wrong; the board currently asserts both |
 | X22 | Result-consuming handler that also carries an effect | — | C1 | TODO | Internal `Unbound return call in __scb1`; X15's family, beyond X15's reach |
@@ -180,6 +182,45 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.24 SEC-5 closed for effect-free handlers - and the worker's own hypothesis was wrong
+
+Worker A's starting hypothesis, which it had correctly labelled a starting point rather than a diagnosis, was
+that `resultMode`'s unrolled parser was the cause. **It was wrong**, and five instrumented measurements settled
+it rather than argument:
+
+`synthesizeBatchBeforeLowering` carries `|| fn.returnTypes.length > 0`, so merely DECLARING a returning handler
+flips route synthesis from the late site to the early one. The emission-handler clone therefore already exists
+when `InlineStoragePointerCalls` runs - and that pass **flattens it into the route wrapper**. Flattened, the
+external calls are generated with `__scb1` as the current function, which is not a `graphEmissionHandler`, so
+`visitExternalFunctionCall` takes the ordinary-call path and no emission row is ever recomputed or compared.
+
+The decisive detail: `InlineExternalCallHelpers` and `InlineReturningStateHelpers` both already carry exactly
+this guard, with exactly this rationale in their comments. `InlineStoragePointerCalls` did not. The bug was a
+missing instance of a guard the codebase had already written twice.
+
+All five characterization cells now reject at **input 0**, asserted explicitly rather than by a bare throw, with
+the guard negative control run twice - once against an unscoped fix, once against the final one.
+
+**The scoping is measured, not assumed.** The first unscoped version turned an existing route's 8 transfer slots
+into 0, because a transfer/event/token-container operation reserves an owner-local slot that only the flattened
+form declares. The guard excludes those - the same line `synthesizeBatchBeforeLowering`'s own comment draws.
+
+**SEC-6, opened rather than folded in.** A graph emission handler that ALSO performs a transfer, emit or
+token-container operation is **still flattened and still generates unbound edges**. Measured at codegen level:
+emission-binding sites are 0 both at baseline and after the fix, while the effect-free shape goes 0 -> 16. It is
+pre-existing and unchanged, and the worker refused to let SEC-5's claim cover it.
+
+**Corpus discipline, now fully established.** The 867-file general corpus reports 0 changed - and the worker
+states it has **zero discriminating power** here and explains why: none of those files compiles with a message
+bus controller, so `graphEmissionHandler` is never set and the guard can never fire. The number that means
+something is a purpose-built 14-case bus-mode corpus, where SEC-5 changed 3 of 14, all effect-free
+graph-emission shapes.
+
+**X26, reported and BLOCKED:** a bare `m[k]` READ contributes nothing to `analyseFunctionFootprint`, because
+`ArrayAccessNode` carries `array`/`index` rather than `name`/`keys`. A handler whose only collection access is a
+bare read never enters the collection-eligibility branch. Whether that is sound or merely fail-open is
+UNDETERMINED, and the worker said so instead of guessing.
 
 ### 4.23 C3 lands, and its capacity figure inherits the artifact X23 exposed
 

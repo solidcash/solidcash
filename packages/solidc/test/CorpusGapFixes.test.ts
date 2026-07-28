@@ -9056,6 +9056,19 @@ describe('non-type declarations in type positions', () => {
       { solidityImportCompat: true },
     ).contractName).toBe('C');
   });
+
+  it('rejects a genuinely unknown type nested in a struct and retains forward contract types', () => {
+    expect(() => compileString(
+      'library L { struct Nested { Non y; }'
+        + ' function f(function(Nested memory) external) external pure {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/Unknown contract or interface type 'Non'/);
+
+    expect(compileString(
+      'contract C { struct S { Later value; } function f(S memory) internal pure {} } contract Later {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('Later');
+  });
 });
 
 describe('Unicode directional markers in comments and strings', () => {

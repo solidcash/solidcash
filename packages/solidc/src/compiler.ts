@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, TupleType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionCallNode, FunctionDefinitionNode, FunctionModifier,
@@ -81,7 +81,7 @@ import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
-  UndefinedReferenceError,
+  UndefinedReferenceError, UnknownContractTypeError,
 } from './Errors.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
@@ -212,6 +212,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     validateAbstractContractInstantiations(ast);
     validateFunctionNamespaceShadows(ast);
     validateLibrarySelfExternalCalls(ast);
+    validateKnownUserTypes(ast);
   }
 
   // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
@@ -649,6 +650,84 @@ function validateLibrarySelfExternalCalls(ast: Ast): void {
     };
     walk(fn);
   }
+}
+
+// Parser-time named AddressType values are deliberately permissive so forward and imported contract/interface/
+// aggregate types can resolve later. Once imports are merged, any placeholder whose name still has no declaration
+// is a genuine unknown user type (including one nested inside a struct or function type).
+function validateKnownUserTypes(ast: Ast): void {
+  const contracts = [ast.contract, ...ast.importedContracts];
+  const knownNames = new Set<string>([
+    ...contracts.map((contract) => contract.name),
+    ...ast.interfaceDefinitions.map((iface) => iface.name),
+    ...ast.structDefinitions.map((definition) => definition.name),
+    ...ast.enumDefinitions.map((definition) => definition.name),
+    ...ast.typeDefinitions.map((definition) => definition.name),
+    ...contracts.flatMap((contract) => contract.structDefinitions.map((definition) => definition.name)),
+    ...contracts.flatMap((contract) => contract.enumDefinitions.map((definition) => definition.name)),
+    ...contracts.flatMap((contract) => contract.typeDefinitions.map((definition) => definition.name)),
+    ...ast.interfaceDefinitions.flatMap((iface) => iface.structDefinitions.map((definition) => definition.name)),
+    ...ast.interfaceDefinitions.flatMap((iface) => iface.enumDefinitions.map((definition) => definition.name)),
+    ...ast.interfaceDefinitions.flatMap((iface) => iface.typeDefinitions.map((definition) => definition.name)),
+  ]);
+  const typeSeen = new WeakSet<object>();
+  const validateType = (type: Type, owner: Node): void => {
+    if (typeof type !== 'object' || type === null || typeSeen.has(type as object)) return;
+    typeSeen.add(type as object);
+    if (type instanceof AddressType && type.interfaceName) {
+      const bare = type.interfaceName.slice(type.interfaceName.lastIndexOf('.') + 1);
+      if (!knownNames.has(type.interfaceName) && !knownNames.has(bare)) {
+        throw new UnknownContractTypeError(owner, type.interfaceName);
+      }
+      return;
+    }
+    if (type instanceof ArrayType) validateType(type.elementType, owner);
+    else if (type instanceof MappingType) {
+      validateType(type.keyType, owner);
+      validateType(type.valueType, owner);
+    } else if (type instanceof StructType) {
+      for (const field of type.fields) validateType(field.type, owner);
+    } else if (type instanceof FunctionType) {
+      for (const parameter of type.parameterTypes) validateType(parameter, owner);
+      for (const result of type.returnTypes) validateType(result, owner);
+    } else if (type instanceof TupleType) {
+      for (const element of type.elements) validateType(element, owner);
+    } else if (type instanceof ValueType) {
+      validateType(type.underlyingType, owner);
+    }
+  };
+
+  const visited = new WeakSet<Node>();
+  const walk = (node: Node): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) walk(value);
+      else if (value instanceof ArrayType || value instanceof AddressType || value instanceof MappingType
+        || value instanceof StructType || value instanceof FunctionType || value instanceof TupleType
+        || value instanceof ValueType) {
+        validateType(value, node);
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof Node) walk(item);
+          else if (item instanceof ArrayType || item instanceof AddressType || item instanceof MappingType
+            || item instanceof StructType || item instanceof FunctionType || item instanceof TupleType
+            || item instanceof ValueType) {
+            validateType(item, node);
+          } else if (item && typeof item === 'object' && 'type' in item) {
+            const fieldType = (item as { type?: Type }).type;
+            if (fieldType instanceof ArrayType || fieldType instanceof AddressType
+              || fieldType instanceof MappingType || fieldType instanceof StructType
+              || fieldType instanceof FunctionType || fieldType instanceof TupleType
+              || fieldType instanceof ValueType) {
+              validateType(fieldType, node);
+            }
+          }
+        }
+      }
+    }
+  };
+  walk(ast);
 }
 
 /**

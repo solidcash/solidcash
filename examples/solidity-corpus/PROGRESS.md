@@ -5372,3 +5372,13 @@ The focused suite is **1101/1101**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1103/1103**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 346, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Unknown nested user-type loop: 4443 flat, NEG-ACCEPTED 346 -> 343 (-3)
+
+- After import and forward-reference resolution, Solidity-compatible source units now reject residual named type
+  placeholders which have no contract, interface, struct, enum, or UDVT declaration.
+- The audit recursively covers arrays, mappings, tuples, function signatures, and plain struct-field records.
+  Declared forward contract types and imported/qualified aggregate types remain valid.
+
+The focused suite is **1104/1104**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+343, plus 275 multifile and 289 cmdline fixtures excluded.

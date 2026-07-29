@@ -315,6 +315,72 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
         .toBe(false);
     });
   });
+
+  /**
+   * X46. SEC-17 read the key's BINDING and stopped there: `this.pkh` is a state variable, and a state variable
+   * is not caller-chosen, so the commitment was credited however that variable came to hold its value. Scalar
+   * state is read after write - measured on the BCH-2026 VM, `this.pkh = a; require(this.pkh == a)` settles for
+   * an arbitrary `a` while the same require without the write rejects at input 0 - so writing the key hash from
+   * a caller parameter one statement earlier makes the commitment compare `pk` against bytes the caller just
+   * supplied. That is not a theoretical gap: `packages/solidcash/test/e2e/X46CommitmentWriter.test.ts` drains an
+   * alice-owned contract to bob through exactly this shape, and this diagnostic was silent on it.
+   *
+   * Only writes BEFORE the commitment count. The key-ROTATION idiom (commit, authenticate, then store the new
+   * hash) writes after, and must stay silent or the fix trades one false positive for another.
+   */
+  describe('X46: the commitment reads the WRITER of what the key is bound to', () => {
+    const sd = (decls: string, guard: string): string => 'contract C(pubkey admin, bytes20 adminPkh) {'
+      + ` ${decls} int n; function kill(sig s, pubkey pk, address to, bytes20 otherPkh) external {`
+      + ` ${guard} selfdestruct(to); } }`;
+
+    it('WARNS when the committed state variable is written from a caller parameter first', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = otherPkh; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS when the write is hash160 of the caller key itself', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = hash160(pk); require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS when the tainted read reaches the commitment through a local alias', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = otherPkh; bytes20 z = this.pkh; require(hash160(pk) == z); require(checkSig(s, pk));')))
+        .toBe(true);
+    });
+
+    it('WARNS when the write sits in an if-arm that may run', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'if (n > 0) { this.pkh = otherPkh; } require(hash160(pk) == this.pkh); require(checkSig(s, pk));')))
+        .toBe(true);
+    });
+
+    it('WARNS for a mapping entry written from a caller parameter and then committed against', () => {
+      expect(warns(sd('mapping(int => bytes20) admins;',
+        'this.admins[1] = otherPkh; require(hash160(pk) == this.admins[1]); require(checkSig(s, pk));')))
+        .toBe(true);
+    });
+
+    // Controls. Each has a state write and the same commitment; they differ only in WHEN the write happens or
+    // in whether its value is caller-chosen, so a silence is attributable to the writer and not to "any state
+    // write in the body silences/fires this".
+    it('stays silent for the key-ROTATION idiom, which writes AFTER the commitment', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'require(hash160(pk) == this.pkh); require(checkSig(s, pk)); this.pkh = otherPkh;'))).toBe(false);
+    });
+
+    it('stays silent when the preceding write takes its value from a constructor argument', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = adminPkh; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent when the preceding write is to an unrelated state variable', () => {
+      expect(warns(sd('bytes20 pkh; bytes20 spare;',
+        'this.spare = otherPkh; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+      expect(warns(sd('bytes20 pkh;',
+        'this.n = this.n + 1; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+  });
 });
 
 describe('SBE-26: a constructor declaring its own params can pass them to a parent invocation', () => {

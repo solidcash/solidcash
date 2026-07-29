@@ -149,6 +149,11 @@ export class ContractNode extends Node implements Named {
   // spent only alongside its owning consumer's master - it rides that one master's serialization (zero marginal
   // contention). See docs/library-contracts.md (3b contention).
   isBrandedLibrary: boolean = false;
+  // X12. Set for a SPLIT FACET (compileStringSplit): every entry point is a `delegate` function and the artifact
+  // is published `delegateOnly`, so the SDK never co-spends or materializes the facet's OWN data NFTs. Its
+  // output-only block slots are therefore one position lower per data NFT than the layout offset says. A plain
+  // contract that merely HAS `delegate` functions is not delegate-only and keeps its data-NFT positions.
+  isSplitFacet: boolean = false;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).

@@ -5979,6 +5979,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
+      /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
+      returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
       compilerRouteSelector?: Uint8Array;
     },
@@ -6078,6 +6080,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
       returnEmitOutputIndex = slot.offset;
+      // X12. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
+      // Verification is gated `!functionHasDelegatecall`), which resolves it implementation-relative. When that
+      // implementation ALSO emits, its event slot takes the position this forwarder reserved for the return
+      // event and the return event moves one later - the two disagree and the implementation rejects at its own
+      // input. Without an `emit` the two offsets coincide, which is why the plain returning delegate settles.
+      for (const ci of (overrides?.returnProbeOnly ? [] : (overrides?.calls ?? [])) as Array<{
+        type?: string; contract?: StatefulContract; functionName?: string;
+      }>) {
+        if (ci?.type !== 'stateful' || !ci.contract) continue;
+        const implFn = (ci.contract.inner.artifact.abi as readonly AbiFunction[])
+          .find((f) => f.name === ci.functionName);
+        const implSlots = implFn?.blockLayout?.slots ?? [];
+        if (!implSlots.some((s) => s.kind === 'event') || !implSlots.some((s) => s.kind === 'returnEvent')) continue;
+        throw new Error(
+          `.emitReturn() on '${functionName}' delegates to '${ci.functionName}', which both emits an event and `
+          + 'returns a value. The implementation covenant places its event NFT at the output index this '
+          + 'forwarder reserved for the return event, so the two disagree and the implementation rejects. '
+          + 'Call it without .emitReturn() (the delegated emit settles), or read the value with .staticCall().',
+        );
+      }
     }
     if (abiFunction?.usesMsgSender) {
       let msgSenderCategory = overrides?.msgSenderCategory;
@@ -6288,6 +6310,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const predecessor = list.predecessorOf(slot);
               entryNfts.push({ ...entryBase, utxo: { ...predecessor.utxo, unlocker: wUnlocker } });
             } else {
+              // X11. A delegated sorted INSERT mints one new entry node, so the transaction's own-category
+              // mutable (0x01) NFT count rises by one. A proxy that CONSERVES that count
+              // (emitOwnCategoryMutableNftConservation, added for C1 full-state authority) therefore rejects it
+              // at its own input, while the implementation covenant accepts the same transaction. The checked-in
+              // default upgrades proxy predates that conservation and admits it, which is why the delegated
+              // insert settles there. Not refused here: whether it settles is a property of the proxy's
+              // bytecode, not of this call.
               const plan = list.planInsert(slot);
               entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
               // P5b: for a chunkable-value INSERT the covenant chunk-pin adds OP_OUTPUTTOKENCOMMITMENT calls in the
@@ -8697,10 +8726,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (!existingCallSlot && !delegateEventSlots.some((s) => s.kind === 'lowLevelCall')) {
           delegateEventSlots.push({ kind: 'lowLevelCall', offset: callOffset });
         }
+        // X12. A `delegateOnly` implementation never co-spends or materializes its OWN data NFTs (see
+        // bRequiredNftIndices above), so nothing occupies those positions and its covenant resolves an
+        // output-only slot as `OP_INPUTINDEX + (layoutOffset - dataNftSlotsBelow)`. Drop the same slots here or
+        // the reservation and the check land one index apart per data NFT. A non-delegateOnly implementation
+        // keeps its data-NFT positions, so its offsets are used verbatim.
+        const implIsDelegateOnly = g.externalContract.inner.artifact.delegateOnly === true;
+        const implDataNftSlots = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind === 'dataNft');
         for (const s of extra) {
+          const below = implIsDelegateOnly
+            ? implDataNftSlots.filter((d) => d.offset < s.offset).length : 0;
           delegateEventSlots.push({
             kind: s.kind,
-            offset: callOffset + s.offset,
+            offset: callOffset + s.offset - below,
             ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }),
           });
         }
@@ -9431,9 +9469,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)
+    // X11. Read the ROUTED accesses, not the forwarder's. A delegatecall'd impl's mapping write is verified by
+    // the IMPLEMENTATION covenant, so the proxy entry point (`__fallback`) publishes no entryAccesses of its own;
+    // keyed on `abiFunction` a proxy with no data NFTs, no emits and no transfers looked like it had nothing to
+    // derive, derivation was skipped outright, and the entry output kept its INPUT commitment - the delegated
+    // write silently did nothing and the impl covenant rejected it at its own input.
     const hasNothingToDerive = requiredNftIndices.length === 0
-      && (abiFunction?.entryAccesses?.length ?? 0) === 0
-      && (abiFunction?.entryLoopWrites?.length ?? 0) === 0
+      && (entryAccesses?.length ?? 0) === 0
+      && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0
@@ -9570,7 +9613,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
     }
     // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
-    const builder = await this._createBuilder(functionName, args, { emitReturn: true, calls });
+    const builder = await this._createBuilder(
+      functionName, args, { emitReturn: true, returnProbeOnly: true, calls },
+    );
     const blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined
       ?? this._deriveReturnBlob(builder, slot.offset);
     if (!blob) {

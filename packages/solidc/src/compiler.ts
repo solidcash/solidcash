@@ -2469,6 +2469,7 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
     const noop = new FunctionDefinitionNode('__split_noop', [], body); noop.location = contract.location;
     noop.modifiers = [FunctionModifier.PUBLIC, FunctionModifier.DELEGATE]; contract.functions.push(noop);
   }
+  contract.isSplitFacet = true;
   const artifact = compileResolvedAst(ast, code, options, true);
   artifact.delegateOnly = true;
   return artifact;

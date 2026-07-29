@@ -191,7 +191,8 @@ task-specific report, not in this table.
 | X34 | Relax the over-strict `this.`-spelled dynamic+collection refusal | — | X33 | TODO | admitted form PROVEN sound on the VM; bus-mode leg unsettled |
 | X35 | Eligibility oddity: stricter combination admitted, simpler refused | — | X33 | TODO | dyn+collection `eligible: true` while dyn-only is refused |
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED, striding now PROVEN** | reviewed by R1: striding holds both directions; opened SEC-15 on its reserved slots |
-| **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **LEASED (security)** | `frameShadowed` drops the whole SEC-10 not-taken binding; repair must be PER-SLOT - see 4.49 |
+| **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **INTEGRATED** | per-slot ordinal binding; a SECOND forgeable entry point found repairing it - see 4.54 |
+| X44 | Two reached event-settling sites collapse to one ordinal | — | SEC-15 | **DEFERRED (fail-closed)** | refuses today; becomes a FALSE refusal if X41's independent limit is ever lifted |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | — | SEC-6 | **TODO (diagnostic)** | no artifact produced either way, so not a security gap |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
@@ -210,6 +211,53 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.54 SEC-15 repaired per-slot, and a SECOND forgeable entry point was found doing it
+
+Merged at `3b035dd8`. The route now carries the reached dispatch site's ordinal (`GRAPH_EVENT_SITE`, initialised
+to **-1**, an ordinal no slot has). Every reserved ordinal **outside** `[site*width, site*width+width)` must
+carry an empty commitment; the window itself is left to the handler, where `emitNotTakenEventSlotBinding` runs
+**unshadowed**, so a handler whose own emit is conditional still pins its slot. The ordinal is keyed on the
+reached handler's **own** `emitInfos.length`, not the shared frame's group-maximum width - which is SEC-8's
+lesson applied without being told.
+
+**S5 found a second forgeable entry point while repairing the first.** The route reaches its ordinals two ways,
+and only one was known: besides the per-emit `OP_ELSE` where a flattened sibling emits, there is
+`emitGraphFrameEventSlotBinding` standalone, where the invoked handler is the route's **only** emitter. There
+`emitEventCovenantVerification` never runs at all - measured forgeable, and it would have survived a fix aimed
+only at the reported path.
+
+**The guard controls are what make the refusals attributable.** The same own-category NFT at the same unreached
+slot with an **EMPTY** commitment is still ACCEPTED, before and after, at width 1 and width 2. SEC-11's pin
+admits any own-category immutable NFT at an `event` offset and cannot separate those two rows, so the guard rows
+credit the new refusals to the commitment binding rather than to the pre-existing pin. Ten hostile rows moved
+from ACCEPTED to REJECTS at input 0; five honest controls settle unchanged, including width-2 and the
+no-site-reached sentinel.
+
+**Cost is real and the gate is narrow, both measured.** ~22-24 bytes per reserved ordinal that gains a binding:
+**+215** and **+195** on the R1 hub shapes, **+369** on a uniform width-2 frame, **+174** on a C3-shaped router.
+And **+0** on everything else, including **both capstones' effect carriers** - C1Notifier and C3Sink are leaves
+that make no outgoing call, so they own no frame. That is measured per contract, not argued from the gate
+condition. Larger than the +39 precedent because the reservation is 8 or 16 slots wide and the binding is
+unrolled per slot; a loop form would be O(1) but cannot consult the per-slot route blobs the flattened-sibling
+case needs.
+
+**Item 9 states the corpus check is weak here and says why.** solidc's 2,463 tests contain **no VM test of an
+unreached frame slot** - they confirm the gate is narrow via the +0 deltas but could not detect a wrong binding.
+The discriminating evidence is the five honest VM controls (which fail immediately under a route-wide binding,
+i.e. R1's ablation) and the two empty-commitment guards (which fail under an over-broad "no tokens at unreached
+slots" rule). The fix is bracketed on both sides.
+
+**A residual that is fail-closed and tied to a measured limit.** Two reached event-settling sites collapse to one
+ordinal - the scalar's last write wins, so the earlier site's settled window is bound empty and the transaction
+is **refused**. Nothing observable changes today, because R1's RESULT 3 measured that two reached sites never
+settle anyway for an independent reason. If that limit is ever lifted this becomes a false refusal needing a
+per-slot mask. Recorded here so the dependency is not rediscovered.
+
+**An integration-owner error, caught by the worker.** S5's brief stated the `ed32349c` baseline as solidcash
+**4,113/0**. That was R1's standalone figure; the true baseline at that commit was **4,162** (4,102 + 12 + 19 +
+11 + 18, four merges deep). S5 flagged the discrepancy and **declined to reconcile it**, noting its diff touches
+three files and cannot move static counts. Correct on both points - the error was mine, in the brief.
 
 ### 4.53 X37 published, and its own caveat found a live false positive in SEC-12 (SEC-17)
 

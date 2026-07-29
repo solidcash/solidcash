@@ -501,6 +501,42 @@ describe('R1 envelope: the build-time gate', () => {
   });
 
   /**
+   * THE PLACEHOLDER IS NOT A C1 ARTIFACT, AND ONE OF ITS TWO SPELLINGS IS INVISIBLE TO DUST.
+   *
+   * X49 found a 10-satoshi output to a bare `OP_1` script in C1 and the same output in C3, and opened X60
+   * against those two fixtures. Reading the corpus rather than the two named files shows the placeholder is
+   * the house style: eighteen e2e fixtures build an output to a bare `OP_1` script, and they use TWO values.
+   *
+   *   - 10 satoshis (C1, C3) is BELOW the 474-satoshi threshold, so dust catches it. This is what the node
+   *     refused, and it is the only reason the placeholder was ever noticed.
+   *   - 1,000 satoshis (`Layer3HeterogeneousCycleC2.test.ts:537`, `Layer3ResultGraph.test.ts:499`) is ABOVE
+   *     it. Dust does not catch it, the node never reached it - both returned `missing-inputs` - and the only
+   *     rule in this envelope that refuses it is `standard-output-template`, whose evidence label is
+   *     `UNMEASURED_CONSERVATIVE`.
+   *
+   * So the rule with the weakest evidence behind it is the rule that decides whether C2 and the E1 result
+   * graph are in the envelope. That is a decision for the board, and it is stated here as one rather than
+   * settled by the default this file happens to ship.
+   */
+  it('MEASURED: both placeholder values, and which rules catch each', () => {
+    const belowDust = { lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 10n };
+    const aboveDust = { lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000n };
+    expect(dustThresholdFor(belowDust)).toBe(474);
+    expect(Number(aboveDust.valueSatoshis)).toBeGreaterThan(dustThresholdFor(aboveDust));
+
+    const check = (output: typeof belowDust): string[] => {
+      const tx = synthetic(2);
+      tx.outputs.push(output);
+      return assessProductionEnvelope('placeholder', tx as never, [], { bytesOnly: true })
+        .refusals.map((row) => row.rule).sort();
+    };
+    expect(check(belowDust)).toEqual(['output-dust', 'standard-output-template']);
+    expect(check(aboveDust)).toEqual(['standard-output-template']);
+    console.log('[R1] OP_1 placeholder at 10 sat is refused by output-dust and standard-output-template; '
+      + 'at 1,000 sat ONLY standard-output-template refuses it');
+  });
+
+  /**
    * THE STRUCTURAL FINDING, and the reason the gate cannot be added to the existing preflight and left there.
    *
    * `preflightLayer3Transaction` evaluates every input on `createVirtualMachineBch2026ForProvider(provider)`.

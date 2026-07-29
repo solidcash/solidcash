@@ -9,8 +9,10 @@ import {
 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
-import { setupStatefulUtxos } from '../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  acceptedByNode, createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+} from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
@@ -135,7 +137,12 @@ const CALL_VALUE = 4n;
 /** A locking bytecode no participant owns; used to substitute a persisted table target. */
 const FOREIGN_TARGET = `aa20${'44'.repeat(32)}87`;
 
-type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
+/**
+ * X59. Widened from `createLayer3SemanticTestProvider`'s mock-only return type to the union
+ * `createTestProvider` returns, so `buildCycleGraph` can build this shape against a real BCHN regtest node
+ * instead of only against `MockNetworkProvider`. The mock remains the default; nothing else moves.
+ */
+type SemanticProvider = ReturnType<typeof createTestProvider>;
 
 /**
  * Ordinary BCH-2026 capacity, and a relaxed density ceiling for reading a true cost. Both are the ones C1 and
@@ -856,6 +863,10 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     expect(controller.ratio).toBeLessThan(0.95);
     // Both consensus claims stated separately, as C1 and C3 state theirs: C2 clears the relay ceiling too.
     expect(built.transaction.length / 2).toBeLessThan(100_000);
+    // X60. Relay dust, the policy rule that turned out to refuse C1 on a real node while every harness
+    // reading called it relayable. C2 carries no compiled satoshi effect and so never had the defect; the
+    // check is here because "no dust" was an untested assumption in all four capstones, not a measured one.
+    expect(formatDustOutputs(dustOutputs(transaction))).toBe('no dust outputs');
     expect(projections.map((row) => row.instructions)).toEqual([15_008, 15_008, 15_008, 15_008]);
     // X24 cut these 14.3% AND removed the +325 returning-row surcharge that used to distinguish the last
     // entry. That surcharge was measured identically across C1, C2 and C3 and recorded as a property of
@@ -1149,4 +1160,42 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     expectRejectionAtInput(built, built.participantInputs[1]);
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
+});
+
+/**
+ * X59. THE SAME A -> B -> A CYCLE, BUILT AGAINST A REAL BCHN NODE.
+ *
+ * Round 17 offered C2's mock-built bytes to BCHN and got `missing-inputs`. That is not acceptance and it is
+ * not a script verdict: the node stopped at input lookup, because those outpoints exist on no chain. The only
+ * way to make the node execute these covenants is to build against the node, which the widened `createProvider`
+ * parameter above now allows.
+ *
+ * NOTHING IS RELAXED. `RegtestNetworkProvider` carries no `consensusLimits`, so both the SDK's probe VM and
+ * BCHN itself apply the real BCH-2026 rules and the real standard relay policy. C2 is 53,249 bytes, inside the
+ * 100,000-byte ceiling, so unlike C3 it can actually be relayed.
+ *
+ * Requires the docker regtest stack; see the root CLAUDE.md.
+ */
+describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C2 on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes the four-participant cycle, accepts it and mines it', async () => {
+    const built = await buildCycleGraph('none', createTestProvider);
+    const transaction = built.builder.buildLibauthTransaction();
+    const dust = dustOutputs(transaction);
+    expect(formatDustOutputs(dust)).toBe('no dust outputs');
+
+    const accepted = await acceptedByNode(built.provider as never, transaction, built.transaction);
+    console.log(`X59 C2 accepted by BCHN: ${accepted.txid} at height ${accepted.blockHeight}, `
+      + `${accepted.serializedBytes} B, ${accepted.inputCount} inputs`);
+    expect(accepted.serializedBytes).toBeLessThan(100_000);
+    expect(accepted.blockHeight).toBeGreaterThan(0);
+  }, 900_000);
+
+  /**
+   * THE CONTROL, on the same chain in the same run: a substituted dispatch target is refused BY THE NODE. An
+   * acceptance is only evidence that the covenants ran if a transaction they should refuse is also refused.
+   */
+  it('CONSENSUS: BCHN refuses a substituted dispatch target', async () => {
+    const built = await buildCycleGraph('target', createTestProvider);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 900_000);
 });

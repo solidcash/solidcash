@@ -9,9 +9,11 @@ import {
 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
-import { setupStatefulUtxos } from '../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+} from './layer3-semantic-profile.js';
+import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
@@ -81,9 +83,18 @@ const SEED_WEIGHT = 7n;
 /** Oracle.score(v) = v + 1. */
 const SCORE = CALL_VALUE + 1n;
 const CONTAINER_SATS = 5_000n;
-/** Where the Sink's compiled satoshi effect pays. A CONSTRUCTOR argument, so `absorb` keeps one parameter. */
-const RECIPIENT = Uint8Array.of(0x51);
-const TRANSFER_SATS = 10n;
+/**
+ * Where the Sink's compiled satoshi effect pays. A CONSTRUCTOR argument, so `absorb` keeps one parameter.
+ *
+ * X60. A real P2PKH script paying 1,000 satoshis, not the one-byte `OP_1` placeholder paying 10 that stood
+ * here. BCHN's relay dust rule is `3 * (serialized output bytes + 148)`, so the old pair was 10 satoshis
+ * against a 474-satoshi threshold and a real node refuses the transaction `64: dust`. C3 never showed it: at
+ * 100,650 bytes the node refuses `64: tx-size` first, and the whole mock stack has dust off by default
+ * (`MockNetworkProvider` defaults `enforceDust: false`), so nothing measured here ever reached the rule.
+ * A real recipient RAISES the threshold to `3 * (34 + 148)` = 546, so the amount had to move with it.
+ */
+const RECIPIENT = hexToBin(`76a914${binToHex(bobPkh)}88ac`);
+const TRANSFER_SATS = 1_000n;
 
 /**
  * P0. The graph root: three outgoing calls and a scalar write.
@@ -288,7 +299,13 @@ function measureRunToCompletion(built: BuiltC3): InputCost[] {
   });
 }
 
-type Provider = ReturnType<typeof createLayer3SemanticTestProvider>;
+/**
+ * X59. Widened to the union `createTestProvider` returns. C3 cannot actually be RELAYED - at 100,676 bytes
+ * it is over the 100,000-byte standard ceiling, which round 17 proved is policy rather than consensus - so
+ * this widening buys C3 nothing today. It is here so the four capstone builders take the same parameter and
+ * a future C3 that fits can be put on the node without another edit.
+ */
+type Provider = ReturnType<typeof createTestProvider>;
 
 /** The eight participant labels, in the physical order the default assembly concatenates them. */
 const DEFAULT_ORDER = [
@@ -1502,6 +1519,12 @@ describe('C3 capacity measurement', () => {
       + `(${serialized - 100_000} over the 100,000-byte standard relay ceiling)`);
     expect(serialized).toBeGreaterThan(100_000);
     expect(serialized).toBeLessThan(101_000);
+
+    // X60. C3 carried the SAME 10-satoshi placeholder output C1 did, and never showed it: a real node refuses
+    // this transaction `64: tx-size` before it ever reaches the dust rule, so the size overrun masked a second,
+    // independent reason it could not be relayed. Fixing only the visible one would have left C3 unrelayable
+    // even at a legal size. Asserted on the bytes, where no provider policy setting can mask it.
+    expect(formatDustOutputs(dustOutputs(built.builder.buildLibauthTransaction()))).toBe('no dust outputs');
   }, 900_000);
 
   it('MEASURED: X25 - the true run-to-completion cost of every C3 sidecar input', async () => {

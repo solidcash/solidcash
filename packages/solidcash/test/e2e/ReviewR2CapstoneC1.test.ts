@@ -12,7 +12,7 @@ import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, createSatoshiContainerUnlocker,
@@ -48,6 +48,8 @@ const VAULT_ELASTIC = 12n;
 const VAULT_BASE = 9n;
 const ACCRUE_COLLATERAL = 5n;
 const CONTAINER_SATS = 5_000n;
+/** X60: the compiled satoshi effect, above BCHN's 546-satoshi P2PKH dust bar. See Layer3DefiCapstoneC1. */
+const TRANSFER_SATS = 1_000n;
 
 const ROUTER = `pragma solidcash >=0.8.0;
 interface IC1Token { function transferFrom(bytes20 from, bytes20 to, bigint amount); }
@@ -111,7 +113,7 @@ contract C1Notifier(bytes recipient) {
   function notify(bigint amount) public {
     this.total = this.total + amount;
     emit Settled(amount);
-    this.transfer(recipient, 10);
+    this.transfer(recipient, ${TRANSFER_SATS});
     require(amount > 0);
   }
 }`;
@@ -186,7 +188,8 @@ async function buildC1(
     experimentalMessageBusControllerCategory: controllerCategory,
   };
 
-  const recipient = Uint8Array.of(0x51);
+  // X60: a REAL P2PKH recipient, not a one-byte OP_1 placeholder that made this output relay dust.
+  const recipient = hexToBin(`76a914${binToHex(bobPkh)}88ac`);
   const vaultArtifact = compileString(VAULT, options);
   const vaultBase = new Contract(vaultArtifact, [], { provider });
   const vaultSetup = await setupStatefulUtxos(
@@ -514,9 +517,9 @@ async function buildC1(
   });
   tx.addOutput({
     to: getSatoshiContainerAddress(notifier, notifierSetup.categoryId),
-    amount: CONTAINER_SATS - FIRST_AMOUNT,
+    amount: CONTAINER_SATS - TRANSFER_SATS,
   });
-  tx.addOutput({ to: recipient, amount: FIRST_AMOUNT });
+  tx.addOutput({ to: recipient, amount: TRANSFER_SATS });
   for (let slot = 0; slot < 7; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({
     to: eventAddress,

@@ -7,8 +7,10 @@ import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../s
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import type { Utxo } from '../../src/interfaces.js';
-import { setupStatefulUtxos } from '../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  acceptedByNode, createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+} from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -110,8 +112,16 @@ interface GraphOverrides {
   patch?: (transcript: layer3.FinalizedCompiledGraph) => layer3.FinalizedCompiledGraph;
 }
 
+/**
+ * X59. The builder used to hard-code `createLayer3SemanticTestProvider`, which is a MOCK. Widening this to the
+ * union `createTestProvider` returns is what lets the SAME builder produce the SAME shape against a real BCHN
+ * regtest node, so the node executes these covenants rather than being handed bytes whose outpoints exist on
+ * no chain. The builder itself stays file-local: nothing about this makes it a copyable fixture.
+ */
+type GraphProvider = ReturnType<typeof createTestProvider>;
+
 interface BuiltGraph {
-  provider: ReturnType<typeof createLayer3SemanticTestProvider>;
+  provider: GraphProvider;
   builder: TransactionBuilder;
   transaction: string;
   transcript: layer3.FinalizedCompiledGraph;
@@ -120,9 +130,12 @@ interface BuiltGraph {
   projectionInputs: readonly number[];
 }
 
-async function buildGraph(overrides: GraphOverrides = {}): Promise<BuiltGraph> {
+async function buildGraph(
+  overrides: GraphOverrides = {},
+  createProvider: () => GraphProvider = createLayer3SemanticTestProvider,
+): Promise<BuiltGraph> {
   const injection = overrides.injection ?? 'none';
-  const provider = createLayer3SemanticTestProvider();
+  const provider = createProvider();
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
   const controller = new Contract(
     compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [alicePkh], { provider },
@@ -280,6 +293,9 @@ describe('A13 review of C3: injection', () => {
     expect(built.controllerInput).toBe(6);
     expect([...built.projectionInputs]).toEqual([3, 4, 5]);
     expect(refusingInputs(built.builder)).toEqual([]);
+    // X60. Relay dust, asserted on the built bytes. Dust is off across the mock stack by default, so every
+    // capstone's "inside the relay ceiling" reading was silent about a rule that refused C1 on a real node.
+    expect(formatDustOutputs(dustOutputs(built.builder.buildLibauthTransaction()))).toBe('no dust outputs');
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 180_000);
 
@@ -386,4 +402,63 @@ describe('A13 review of C3: what the participant routes bind', () => {
     expect(built.transcript.participantInputs).toEqual([0, 1, 2]);
     expect(built.transcript.bytes.length).toBe(built.honestTranscript.bytes.length);
   }, 180_000);
+});
+
+/**
+ * X59. THE SAME THREE-PARTICIPANT GRAPH, BUILT AGAINST A REAL BCHN NODE.
+ *
+ * Round 17 offered mock-built capstone bytes to BCHN and got `missing-inputs` for every one of them: the node
+ * stopped before executing a single script, so nothing about these covenants had ever been checked by anything
+ * but libauth. This block closes that for A13 by building the graph against regtest, so every outpoint it
+ * spends is a UTXO the node actually holds and the node has to run the scripts to decide.
+ *
+ * NOTHING IS RELAXED HERE. `RegtestNetworkProvider` carries no `consensusLimits`, so the SDK's probe VM is
+ * libauth's ordinary BCH-2026 instruction set, and the node applies real consensus plus real standard relay
+ * policy - the size ceiling, the dust rule and the SigChecks limits included.
+ *
+ * Requires the docker regtest stack; see the root CLAUDE.md.
+ */
+describe.runIf(process.env.TESTS_USE_REGTEST)('X59: A13 on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes the three-participant graph, accepts it and mines it', async () => {
+    const built = await buildGraph({}, createTestProvider);
+    // The shape is the one this file asserts against everywhere else - built by the same builder, not a copy.
+    expect(built.controllerInput).toBe(6);
+    expect([...built.projectionInputs]).toEqual([3, 4, 5]);
+
+    const transaction = built.builder.buildLibauthTransaction();
+    // Relay dust, applied to the bytes rather than to a VM knob. X60 found C1 carrying a 10-satoshi output
+    // that no harness reading could see; this shape carries none, and now says so.
+    const dust = dustOutputs(transaction);
+    expect(formatDustOutputs(dust)).toBe('no dust outputs');
+
+    const accepted = await acceptedByNode(built.provider as never, transaction, built.transaction);
+    console.log(`X59 A13 accepted by BCHN: ${accepted.txid} at height ${accepted.blockHeight}, `
+      + `${accepted.serializedBytes} B, ${accepted.inputCount} inputs`);
+    expect(accepted.inputCount).toBe(8);
+    expect(accepted.outputCount).toBe(8);
+    // A node that accepts and mines a transaction has executed every input script. This is the reading
+    // `missing-inputs` could never give: the covenants ran, under real consensus, on a real chain.
+    expect(accepted.blockHeight).toBeGreaterThan(0);
+  }, 900_000);
+
+  /**
+   * THE CONTROL. Without it, "the node accepted it" is not evidence that the node was checking anything: an
+   * acceptance only means something if a transaction this graph's covenants should refuse is refused BY THE
+   * NODE, on the same chain, in the same run. The re-rooted transcript is A13-7a's forgery, which every
+   * projection proof and the controller refuse.
+   */
+  it('CONSENSUS: BCHN refuses the re-rooted transcript the covenants refuse', async () => {
+    const built = await buildGraph({
+      patch: (transcript) => {
+        const record = invocationOffsets(transcript.bytes)[2];
+        return patchTranscript(transcript, [
+          { at: record.parentStart, bytes: Uint8Array.of(0xff, 0xff) },
+          { at: record.depthStart, bytes: Uint8Array.of(0) },
+        ]);
+      },
+    }, createTestProvider);
+    // A13-7a's own reading, reproduced against the node's chain: three projection proofs and the controller.
+    expect(refusingInputs(built.builder)).toEqual([3, 4, 5, 6]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 900_000);
 });

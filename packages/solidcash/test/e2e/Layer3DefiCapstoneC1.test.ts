@@ -10,9 +10,11 @@ import {
 import type { FunctionArgument } from '../../src/Argument.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
-import { setupStatefulUtxos } from '../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  acceptedByNode, createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+} from './layer3-semantic-profile.js';
+import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, createSatoshiContainerUnlocker,
@@ -84,6 +86,22 @@ const VAULT_ELASTIC = 12n;
 const VAULT_BASE = 9n;
 const ACCRUE_COLLATERAL = 5n;
 const CONTAINER_SATS = 5_000n;
+/**
+ * The compiled satoshi effect, and why it is not 10.
+ *
+ * X60. This fixture used to pay 10 satoshis to a one-byte `OP_1` placeholder script. BCHN's relay dust rule is
+ * `3 * (serialized output bytes + 148)` at the default 1,000 sat/kB dust relay fee, so that output was worth 10
+ * against a 474-satoshi threshold and a real node refuses the whole transaction `64: dust` - measured, before
+ * it looks up a single input. Every harness measurement missed it because dust is off across the whole mock
+ * stack (`MockNetworkProvider` defaults `enforceDust: false`), so the transaction that was called "inside the
+ * relay ceiling" was in fact unrelayable for an unrelated reason.
+ *
+ * The recipient is now a real P2PKH script, which RAISES the threshold to `3 * (34 + 148)` = 546, so the amount
+ * has to move too: a real address alone does not fix a dust output, it makes the bar higher. 1,000 satoshis
+ * clears 546 with margin and keeps the container change (`CONTAINER_SATS - TRANSFER_SATS` = 4,000) clear of the
+ * 576-satoshi threshold its own p2sh32 output carries.
+ */
+const TRANSFER_SATS = 1_000n;
 
 const ROUTER = `pragma solidcash >=0.8.0;
 interface IC1Token { function transferFrom(bytes20 from, bytes20 to, bigint amount); }
@@ -164,7 +182,7 @@ contract C1Notifier(bytes recipient) {
   function notify(bigint amount) public {
     this.total = this.total + amount;
     emit Settled(amount);
-    this.transfer(recipient, 10);
+    this.transfer(recipient, ${TRANSFER_SATS});
     require(amount > 0);
   }
 }`;
@@ -220,8 +238,14 @@ const createOrdinaryCapacityProvider = (): MockNetworkProvider => new MockNetwor
   policy: { enforceDust: false },
 });
 
+/**
+ * X59. The union `createTestProvider` returns, so `buildC1` can build this composition against a real BCHN
+ * regtest node rather than only against `MockNetworkProvider`. The mock is still the default.
+ */
+type CapstoneProvider = ReturnType<typeof createTestProvider>;
+
 interface BuiltC1 {
-  provider: ReturnType<typeof createLayer3SemanticTestProvider>;
+  provider: CapstoneProvider;
   transaction: string;
   builder: TransactionBuilder;
   layout: layer3.CompiledGraphPhysicalLayout;
@@ -241,7 +265,7 @@ interface BuiltC1 {
 
 async function buildC1(
   hostile: Hostile = 'none',
-  createProvider: () => MockNetworkProvider = createLayer3SemanticTestProvider,
+  createProvider: () => CapstoneProvider = createLayer3SemanticTestProvider,
 ): Promise<BuiltC1> {
   const provider = createProvider();
   const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
@@ -262,7 +286,8 @@ async function buildC1(
   };
 
   // Compile leaf-first: every caller pins its callee's instantiated locking bytecode as a constructor argument.
-  const recipient = Uint8Array.of(0x51);
+  // A REAL P2PKH recipient (Bob, who is not the fee payer), not a placeholder: see TRANSFER_SATS above.
+  const recipient = hexToBin(`76a914${binToHex(bobPkh)}88ac`);
   const vaultArtifact = compileString(VAULT, options);
   const vaultBase = new Contract(vaultArtifact, [], { provider });
   const vaultSetup = await setupStatefulUtxos(
@@ -646,12 +671,12 @@ async function buildC1(
   });
   tx.addOutput({
     to: getSatoshiContainerAddress(notifier, notifierSetup.categoryId),
-    amount: CONTAINER_SATS - FIRST_AMOUNT,
+    amount: CONTAINER_SATS - TRANSFER_SATS,
   });
   // Reached transfer slot; the remaining seven stay unused.
   tx.addOutput({
     to: recipient,
-    amount: hostile === 'resource' ? FIRST_AMOUNT + 1n : FIRST_AMOUNT,
+    amount: hostile === 'resource' ? TRANSFER_SATS + 1n : TRANSFER_SATS,
   });
   for (let slot = 0; slot < 7; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   // Reached event slot; the remaining seven stay unused.
@@ -963,6 +988,12 @@ describe('C1 DeFi integrated semantic capstone', () => {
     // C3 clears the consensus one and not the relay ceiling, so the two claims are recorded separately.
     expect(built.transaction.length / 2).toBeLessThan(100_000);
 
+    // X60. RELAY DUST, the third policy rule, and the one that actually refused this shape on a real node.
+    // Size and density were both measured here for rounds while a 10-satoshi output made the whole
+    // transaction unrelayable, because dust is off across the mock stack by default and no reading could
+    // reach it. This applies BCHN's rule to the built bytes, where no provider setting can mask it.
+    expect(formatDustOutputs(dustOutputs(transaction))).toBe('no dust outputs');
+
     // KNOB LIVENESS. "It fits under ordinary capacity" is only evidence if the budget knob can refuse these
     // exact bytes. Same transaction, same source outputs, budget divided by four: the worst input must now fail
     // on density. Without this control an aborted evaluation reading the budget back would look like a pass.
@@ -1075,4 +1106,51 @@ contract C1RouterDirect(address vault, address accrue) {
   }
 }`, boundaryOptions)).toThrow(/requires call\/staticcall edges and at most one returning call/);
   });
+});
+
+/**
+ * X59 + X60. THE SAME FIVE-PARTICIPANT DEFI COMPOSITION, BUILT AGAINST A REAL BCHN NODE.
+ *
+ * Round 17 offered C1's mock-built bytes to BCHN. The verdict was `64: dust` - not `missing-inputs` like the
+ * other capstones, because BCHN checks output dust BEFORE it looks up inputs, so this one reached a real rule
+ * and failed it. The cause was a fixture placeholder paying 10 satoshis to a one-byte script (X60, see
+ * TRANSFER_SATS at the top of this file). No harness reading could see it: dust is off across the whole mock
+ * stack by default.
+ *
+ * With the placeholder gone the transaction is built against the node itself, so every outpoint it spends is a
+ * UTXO the node holds and the node must execute all five participants' covenants, the five projection proofs
+ * and the graph controller to decide. Nothing is relaxed: `RegtestNetworkProvider` carries no
+ * `consensusLimits`, so the probe VM is libauth's ordinary BCH-2026 instruction set and BCHN applies real
+ * consensus plus real standard relay policy.
+ *
+ * Requires the docker regtest stack; see the root CLAUDE.md.
+ */
+describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C1 on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes the whole DeFi composition, accepts it and mines it', async () => {
+    const built = await buildC1('none', createTestProvider);
+    expect(built.layout.participantInputs).toEqual([0, 2, 7, 9, 12]);
+    expect(built.layout.controllerInput).toBe(36);
+
+    const transaction = built.builder.buildLibauthTransaction();
+    // X60's standing check, on the bytes: the rule that refused this exact shape on a real node.
+    const dust = dustOutputs(transaction);
+    expect(formatDustOutputs(dust)).toBe('no dust outputs');
+
+    const accepted = await acceptedByNode(built.provider as never, transaction, built.transaction);
+    console.log(`X59 C1 accepted by BCHN: ${accepted.txid} at height ${accepted.blockHeight}, `
+      + `${accepted.serializedBytes} B, ${accepted.inputCount} inputs`);
+    expect(accepted.inputCount).toBe(38);
+    expect(accepted.outputCount).toBe(38);
+    expect(accepted.serializedBytes).toBeLessThan(100_000);
+    expect(accepted.blockHeight).toBeGreaterThan(0);
+  }, 900_000);
+
+  /**
+   * THE CONTROL. A forged ERC-20 caller witness, on the same chain in the same run, refused by the node. An
+   * acceptance means the covenants ran only if something they should refuse is refused.
+   */
+  it('CONSENSUS: BCHN refuses the forged graph caller', async () => {
+    const built = await buildC1('caller', createTestProvider);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 900_000);
 });

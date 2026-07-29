@@ -646,6 +646,10 @@ describe('R2 review: C3 reshape and ordinary-capacity claim', () => {
     ));
     const worst = costs.reduce((left, right) => (right.ratio > left.ratio ? right : left));
     console.log(`R2-C3-B worst input ${worst.input} at ${worst.ratio.toFixed(4)}x`);
+    // SCOPE of "ordinary capacity", measured rather than asserted: this is a CONSENSUS-knob result. The
+    // serialized size is recorded here because the standard relay ceiling is 100,000 bytes and this profile
+    // deliberately sets `maximumTransactionBytes` to the 1,000,000 consensus figure.
+    console.log(`R2-C3-B serialized transaction size: ${built.transaction.length / 2} bytes`);
     expect(costs.filter((row) => row.ratio > 1).map((row) => row.input)).toEqual([]);
     expect(worst.input).toBe(built.layout.controllerInput);
 

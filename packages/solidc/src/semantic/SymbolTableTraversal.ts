@@ -9482,20 +9482,29 @@ export function keyIsCallerChosen(
  * condition only `&&` is descended: an `||` branch need not hold.
  *
  * The committed side is resolved by keyIsCallerChosen itself, so `hash160(pk) == otherCallerParam` commits
- * nothing and still warns. Termination: a `commit:` marker rides the seen set, so `hash160(pk) == pk` resolves
- * the right-hand `pk` as caller-chosen (no commitment) rather than recurring.
+ * nothing and still warns. Termination: an `inflight:` marker rides the seen set, so `hash160(pk) == pk`
+ * resolves the right-hand `pk` as caller-chosen (no commitment) rather than recurring.
+ *
+ * The decision is MEMOIZED per name. Without that, a key mentioning the same committed parameter twice
+ * (`checkMultiSig(ss, [pk, pk])`) got a commitment on the first visit and hit the in-flight marker on the
+ * second, so one key resolved two ways and the idiom warned anyway - measured before the memo was added.
  */
 function parameterIsCommitted(
   name: string, fn: FunctionDefinitionNode, seen: Set<Node | string>,
 ): boolean {
-  if (seen.has(`commit:${name}`)) return false;
-  seen.add(`commit:${name}`);
+  if (seen.has(`committed:${name}`)) return true;
+  if (seen.has(`free:${name}`)) return false;
+  if (seen.has(`inflight:${name}`)) return false; // a self-referential commitment pins nothing; do not memoize
+  seen.add(`inflight:${name}`);
   // A fresh Node set: reusing `seen`'s nodes would make an already-visited committed side look non-caller-chosen.
-  // The `commit:` markers must ride along, or a self-referential commitment recurses forever.
-  const markers = [...seen].filter((s): s is string => typeof s === 'string' && s.startsWith('commit:'));
-  return unconditionalStatements(fn.body).some(
+  // The in-flight markers must ride along, or a self-referential commitment recurses forever.
+  const markers = [...seen].filter((s): s is string => typeof s === 'string' && s.startsWith('inflight:'));
+  const committed = unconditionalStatements(fn.body).some(
     (s) => s instanceof RequireNode && commitmentCommitsKey(s.expression, name, fn, markers),
   );
+  seen.delete(`inflight:${name}`);
+  seen.add(committed ? `committed:${name}` : `free:${name}`);
+  return committed;
 }
 
 /** Statements that run on every path through this body: the top level, with `unchecked` blocks inlined. */

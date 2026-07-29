@@ -304,6 +304,16 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
       expect(warns(sd('bytes20 pkh;',
         'require(hash160(pk) == hash160(pk)); require(checkSig(s, pk));'))).toBe(true);
     });
+
+    // The commitment decision is memoized per name. Before that, the cycle marker set on the first visit made
+    // the SECOND occurrence of the same committed key resolve the other way, so one key expression answered
+    // twice and the idiom warned regardless - measured on the first version of this fix.
+    it('resolves a committed key the same way each time it appears in one key expression', () => {
+      expect(warns('contract C(pubkey admin) { bytes20 pkh; int n;'
+        + ' function kill(sig[2] ss, pubkey pk, address to) external {'
+        + ' require(hash160(pk) == this.pkh); require(checkMultiSig(ss, [pk, pk])); selfdestruct(to); } }'))
+        .toBe(false);
+    });
   });
 });
 

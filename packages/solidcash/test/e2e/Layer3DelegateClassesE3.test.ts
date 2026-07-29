@@ -1088,13 +1088,15 @@ contract E3Hash160Proxy(bytes20 pkh) {
      * ROUND 16 RE-MEASURED over a wider set (Delegatecall, LibraryDelegate, UpgradesDeployProxy,
      * FallbackReceive): 27 calls over 21 distinct pairs, refused 27 of 27 (100%). The conclusion is unchanged -
      * nothing that settles today would survive wiring - but the breakdown moved, and one entry is a finding
-     * rather than a shape: 13 of the 27 are 'unpublished-target-provenance', because the SDK's built-in
-     * `defaultProxyArtifact.ts` is a CHECKED-IN pre-X37 artifact whose delegatecall row is
-     * `{callMode:'delegatecall'}` with no `target`. Compiling its own `DEFAULT_PROXY_SOURCE` with the current
-     * compiler publishes `{kind:'constructorArg', name:'implementation'}`, so the fix is additive metadata on
-     * that file - not touched here, since its header warns that a regenerate must reapply a manual bytecode
-     * adjustment. The rest: 4 'dynamically-resolved-implementation', 4 not-selector-dispatched,
-     * 3 'emitting-delegate', 2 'self-authorized', 1 'collection-writing-delegate'.
+     * rather than a shape: 13 of the 27 were 'unpublished-target-provenance', because the SDK's built-in
+     * `defaultProxyArtifact.ts` was a CHECKED-IN pre-X37 artifact whose delegatecall row was
+     * `{callMode:'delegatecall'}` with no `target`. The rest: 4 'dynamically-resolved-implementation', 4
+     * not-selector-dispatched, 3 'emitting-delegate', 2 'self-authorized', 1 'collection-writing-delegate'.
+     *
+     * X50 CLOSED THAT ONE. The file is regenerated from its own `DEFAULT_PROXY_SOURCE` and now publishes
+     * `{kind:'constructorArg', name:'implementation'}`, so those 13 no longer refuse for an absent field. The
+     * conclusion above is unchanged - the gate is still not wired, and the shipped proxy still needs its real
+     * constructor argument to classify, which `X50DefaultProxyRegenerated.test.ts` supplies and measures.
      *
      * The 'self-authorized' one is not a synthetic trap: the canonical `PinnedProxy` fixture in the SDK's own
      * `Delegatecall.test.ts` is the A13-2 shape verbatim, which is what this case pins.
@@ -1109,14 +1111,15 @@ contract E3Hash160Proxy(bytes20 pkh) {
       const fixtureArtifact = compileString(`pragma solidcash >=0.8.0;\n${match![0]}`);
       expect(classify(fixtureArtifact, [])).toThrow(/class 'self-authorized' is not admitted/);
 
-      // The built-in proxy the SDK ships is a pre-X37 artifact, which is what 13 of the 27 refusals above are.
-      // Pinned here so the finding is a measured fact rather than a comment: its source compiles to a target
-      // provenance, and the shipped artifact carries none.
+      // X50. The built-in proxy the SDK ships was the pre-X37 artifact behind 13 of the 27 refusals above. It
+      // is regenerated: the shipped row and a fresh compile of its own source now agree, which is what stops
+      // those 13 refusing for an absent field. Kept as an assertion so the fix cannot silently regress.
       const shipped = defaultProxyArtifact.abi.find((entry) => entry.name === '__forward')!;
-      expect(shipped.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+      const published = [{ callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } }];
+      expect(shipped.lowLevelCalls).toEqual(published);
       expect(compileString(DEFAULT_PROXY_SOURCE, { forceStateful: true })
         .abi.find((entry) => entry.name === '__forward')!.lowLevelCalls)
-        .toEqual([{ callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } }]);
+        .toEqual(published);
     });
   });
 

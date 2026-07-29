@@ -61,6 +61,35 @@ export const RUN_TO_COMPLETION_LIMITS = {
   hashDigestIterationsPerByte: 3_000,
 } as const;
 
+/**
+ * The real ordinary BCH-2026 consensus profile: nothing relaxed. Used to check ACCEPTANCE rather than to read
+ * a cost, so that "inside capacity" does not have to rest on a relaxed-budget reading.
+ *
+ * CONSERVATIVE IN ONE RESPECT, and deliberately so. `createVirtualMachineBch2026ForProvider` always builds a
+ * standard instruction set, so hashing is priced at the standard 192 per iteration even here, where the
+ * consensus allowance of 3.5 iterations per byte applies. A shape accepted under this profile is therefore
+ * accepted under real consensus too; the reverse does not follow. The true consensus cost is reported
+ * separately as `consensusCost`, which repricing at 64 makes exact.
+ */
+export const ORDINARY_CONSENSUS_LIMITS = {
+  maximumInputBytes: BCH_2026_CONSENSUS.maximumBytecodeLength,
+  maximumStackItemBytes: BCH_2026_CONSENSUS.maximumStackItemLength,
+  maximumTransactionBytes: BCH_2026_CONSENSUS.maximumTransactionLengthBytes,
+  maximumNftCommitmentBytes: BCH_2026_CONSENSUS.maximumTokenCommitmentLength,
+  operationCostBudgetPerByte: BCH_2026_CONSENSUS.operationCostBudgetPerByte,
+  hashDigestIterationsPerByte: BCH_2026_CONSENSUS.hashDigestIterationsPerByte,
+} as const;
+
+/**
+ * The real standard/relay profile. Identical except for the hash-iteration allowance, which standard policy
+ * sets seven times tighter. The transaction-size ceiling is a whole-transaction rule rather than a per-input
+ * one, so it is assessed separately in `assessEnvelope` and is not expressible here.
+ */
+export const ORDINARY_STANDARD_LIMITS = {
+  ...ORDINARY_CONSENSUS_LIMITS,
+  hashDigestIterationsPerByte: BCH_2026_STANDARD.hashDigestIterationsPerByte,
+} as const;
+
 export interface InputMeasurement {
   input: number;
   /** Unlocking bytecode length: the byte figure both density budgets are computed from. */
@@ -109,6 +138,9 @@ export interface EnvelopeMeasurement {
   worstUnlockingInput: InputMeasurement;
   /** Every limit this shape is measured against, ordered by utilization: the first one binds. */
   binding: BindingLimit[];
+  /** Inputs refused with NOTHING relaxed, at the real consensus and the real standard profile. */
+  refusedAtConsensus: { input: number; error: string }[];
+  refusedAtStandard: { input: number; error: string }[];
 }
 
 export interface BindingLimit {
@@ -169,6 +201,28 @@ export function measureInputs(
       arithmetic: metrics.arithmeticCost,
     };
   });
+}
+
+/**
+ * Evaluate every input at a profile with NOTHING relaxed, and report which inputs are refused. This is the
+ * direct question - are these exact bytes accepted at the real limits - and it needs no relaxed reading. It
+ * is also the correct place to see the standard/consensus split: the same bytes can pass one and fail the
+ * other, because the hash-iteration allowance differs by 7x between them.
+ */
+export function refusedInputsAt(
+  transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
+  sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
+  limits: typeof ORDINARY_CONSENSUS_LIMITS | typeof ORDINARY_STANDARD_LIMITS,
+): { input: number; error: string }[] {
+  const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: limits } as never);
+  const refused: { input: number; error: string }[] = [];
+  transaction.inputs.forEach((_input, input) => {
+    const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as never as {
+      error?: string; stack?: Uint8Array[];
+    };
+    if (state.error !== undefined) refused.push({ input, error: state.error });
+  });
+  return refused;
 }
 
 const worstBy = (
@@ -306,6 +360,8 @@ export function assessEnvelope(
     worstHashInput,
     worstUnlockingInput,
     binding,
+    refusedAtConsensus: refusedInputsAt(transaction as never, sourceOutputs, ORDINARY_CONSENSUS_LIMITS),
+    refusedAtStandard: refusedInputsAt(transaction as never, sourceOutputs, ORDINARY_STANDARD_LIMITS),
   };
 }
 
@@ -346,6 +402,8 @@ export function formatEnvelope(envelope: EnvelopeMeasurement): string {
     `stdSize=${(envelope.standardSizeRatio * 100).toFixed(1)}%`,
     `worstCost=input ${envelope.worstCostInput.input} @ ${envelope.worstCostInput.standardCostRatio.toFixed(4)}x`,
     `worstHash=input ${envelope.worstHashInput.input} @ ${envelope.worstHashInput.standardHashRatio.toFixed(4)}x`,
+    `refusedAtConsensus=${envelope.refusedAtConsensus.length}`,
+    `refusedAtStandard=${envelope.refusedAtStandard.length}`,
     `binds=${first.limit} (${first.regime}) ${first.ratio.toFixed(4)}x at ${first.where}`,
   ].join(' | ');
 }

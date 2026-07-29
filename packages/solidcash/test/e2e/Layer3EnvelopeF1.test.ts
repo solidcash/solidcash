@@ -170,6 +170,11 @@ describe('F1 envelope: the 2/4/8 participant sweep', () => {
       // This sweep stays well under the relay ceiling; recorded so the contrast with the capstones, which do
       // not, is a measured one rather than an asserted one. N=8 already reaches 10.7% of it on binding alone.
       expect(envelope.standardSizeRatio).toBeLessThan(0.2);
+      // ACCEPTANCE with NOTHING relaxed, in both regimes. This is what makes the reading above more than a
+      // relaxed-budget artifact: these exact bytes are accepted at the real 800/byte budget, at the real 3.5
+      // consensus hash allowance AND at the real 0.5 standard one.
+      expect(envelope.refusedAtConsensus).toEqual([]);
+      expect(envelope.refusedAtStandard).toEqual([]);
     }
 
     // THE KNOB-LIVENESS CONTROL. "Inside capacity at 800/byte" is only evidence if the knob can refuse these

@@ -163,8 +163,11 @@ export function fitUpperEnvelope(points: EnvelopePoint[], safetyMargin = 0): Env
   const maximumY = Math.max(...points.map((point) => point.y));
   const maximumDriver = Math.max(...points.map((point) => point.x));
   const candidates: { intercept: number; slope: number }[] = [{ intercept: maximumY, slope: 0 }];
-  for (const point of points) {
-    if (point.x > 0) candidates.push({ intercept: 0, slope: Math.max(...points.map((p) => p.y / p.x)) });
+  // The ray through the origin at the steepest rate any point demands. Only defined when every point that
+  // needs covering has a positive driver: a point at x = 0 with y > 0 cannot be covered by a ray at all.
+  const rates = points.filter((point) => point.x > 0).map((point) => point.y / point.x);
+  if (rates.length === points.length && rates.length > 0) {
+    candidates.push({ intercept: 0, slope: Math.max(...rates) });
   }
   for (const left of points) {
     for (const right of points) {

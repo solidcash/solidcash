@@ -652,9 +652,9 @@ describe('R2 review: C1 reshape, single-build one-variable mutations', () => {
     expect(preflightOutcome(built)).toBe('ACCEPTED');
     const containerOutput = NOTIFIER_BASE + 2;
     const spare = TRANSFER_SLOT_0 + 1;
-    expect(built.builder.outputs[containerOutput].amount).toBe(CONTAINER_SATS - FIRST_AMOUNT);
+    expect(built.builder.outputs[containerOutput].amount).toBe(CONTAINER_SATS - TRANSFER_SATS);
     built.builder.outputs[containerOutput] = {
-      ...built.builder.outputs[containerOutput], amount: CONTAINER_SATS - FIRST_AMOUNT - 1000n,
+      ...built.builder.outputs[containerOutput], amount: CONTAINER_SATS - TRANSFER_SATS - 1000n,
     } as never;
     built.builder.outputs[spare] = { to: hexToBin('51'), amount: 2000n } as never;
     const outcome = preflightOutcome(built);

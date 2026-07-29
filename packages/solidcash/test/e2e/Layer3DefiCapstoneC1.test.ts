@@ -1129,9 +1129,9 @@ contract C1RouterDirect(address vault, address accrue) {
  * For a token UTXO it always builds a genesis whose category is the funding input's txid
  * (`category: hexToBin(fundingInput.txid)` in `RegtestNetworkProvider.ts`), then writes that category back
  * onto the caller's object. So the four entry NFTs this fixture seeds under the Token's category arrive under
- * FOUR DIFFERENT categories, and the covenant that requires an entry to carry its owner's category refuses -
- * correctly. Measured on the regtest build: master `0f895885...`, entries `2dc3b3e2...`, `35984a96...`,
- * `346870fb...`, `2e25f95c...`.
+ * FOUR DIFFERENT categories - one fresh genesis each - and the covenant that requires an entry to carry its
+ * owner's category refuses, correctly. The categories are fresh per run, so the test below asserts that they
+ * DISAGREE rather than pinning values that cannot reproduce.
  *
  * WHY THE FIXTURE CANNOT ROUTE AROUND IT. `addTokenUtxosDynamic` can mint many outputs under one new category
  * and `setupStatefulUtxos` already exposes it as `extraOutputs`, but C1's allowance entry is keyed on the

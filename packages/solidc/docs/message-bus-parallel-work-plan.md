@@ -157,7 +157,9 @@ task-specific report, not in this table.
 | X48 | One knob cannot express two hash regimes | B4 | F1 | **INTEGRATED** | splitting the field alone was COSMETIC - the regime selector was hardcoded; nothing moves, 9.3x margin - see 4.65 |
 | X57 | `createVirtualMachineBch2026ForProvider` silently drops the observer | — | X48 | **TODO (live-network)** | early return when `consensusLimits` is undefined; Electrum/regtest have none, so derivation observers are discarded |
 | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | — | X48 | **TODO** | the regime split is not yet end-to-end into the mem-cash verifier |
-| X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | — | F1 | **TODO** | libauth-with-real-constants is not a node; this is the only gap left for the claim |
+| X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | B1 | F1 | **INTEGRATED (scoped)** | CONSENSUS_FIT holds for the sweep N=2/4/8 ONLY - accepted AND mined; policy-vs-consensus settled - see 4.66 |
+| X59 | Thread `createProvider` into the four capstone fixtures | — | X49 | **TODO** | only obstacle to node-executing A13/C2/C1; builders take the param but are file-local and unexported |
+| X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient - refused as DUST | — | X49 | **TODO** | invisible to every harness measurement: `enforceDust: false` + `dustRelayFeePerKb: 0n` |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
 | F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
@@ -225,6 +227,72 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.66 X49: the first `CONSENSUS_FIT` this board can assert, and policy-vs-consensus is SETTLED
+
+Merged at `c80142d7`. Node: **BCHN v29.0.0**, regtest, May 2026 upgrade active, Fulcrum in sync. This is the
+first evidence in this effort that did not come from libauth.
+
+**Policy versus consensus is now settled at the rule level, not argued.** One fully valid, wallet-signed
+**101,513-byte** transaction on a real coin:
+
+- through the **mempool** -> refused **`64: tx-size`** (code 64 = `REJECT_NONSTANDARD`);
+- **the same bytes** in a hand-assembled block via `submitblock` -> **ACCEPTED**, confirmed at height 8444, and
+  Fulcrum independently logged "verified ok".
+
+**The 100,000-byte ceiling is POLICY, not consensus.** That is exactly F1's C3 prediction, and it is now proven
+by a node rather than inferred from a constant.
+
+**The enabling calibration was measured first**, which is what makes replaying mock-built bytes meaningful at
+all: BCHN applies the standard **size** policy *before* input lookup, byte-exact - **100,000 B reaches
+`missing-inputs`, 100,001 B is refused `64: tx-size`** - matching libauth's `maximumStandardTransactionSize`
+exactly. So bytes whose outpoints exist on no chain still receive a truthful *size* verdict.
+
+| shape | bytes | inputs | node verdict |
+| --- | --- | --- | --- |
+| sweep N=2 | 2,429 | 3 | **ACCEPTED + MINED** |
+| sweep N=4 | 4,977 | 5 | **ACCEPTED + MINED** |
+| sweep N=8 | 10,661 | 9 | **ACCEPTED + MINED** |
+| A13 | 23,845 | 8 | `missing-inputs` |
+| C2 | 53,249 | 79 | `missing-inputs` |
+| C1 | 63,315 | 38 | **`64: dust`** |
+| C3 | 100,650 | 108 | **`64: tx-size`** |
+
+**`CONSENSUS_FIT` is supported for the participant-binding sweep at N=2, 4 and 8 - and for nothing else.** Those
+three ran under `TESTS_USE_REGTEST` where the provider really broadcasts and mines, so the inputs **exist**: the
+node executed the real Layer-3 binding covenants, accepted them and mined all three. For A13, C2, C1 and C3,
+**`missing-inputs` means the node stopped before executing anything**, so their script validity remains
+libauth-only. B1 drew that line itself rather than letting three green rows carry four more.
+
+**A finding no libauth measurement could have produced: C1 is refused for DUST, not size.** C1 output 15 is
+**10 satoshis to a 1-byte `OP_1` script**, against a node threshold of 474 - short by 464. It is invisible in
+every harness measurement because `layer3-semantic-profile.ts:23` sets `enforceDust: false` and
+`MockNetworkProvider.ts:96` then sets `dustRelayFeePerKb: 0n`. **C3 carries the same dust output** (82) and is
+merely refused for size first. So **C1 and C3 are each unrelayable, and C1 for a reason entirely unrelated to
+capacity** - which no amount of density measurement would ever have surfaced.
+
+**Guards against overclaiming, enumerated rather than assumed.** B1 measured which policy rules this node
+actually enforces - `tx-size`, `dust`, `oversize-op-return`, `scriptsig-not-pushonly` - and which it does **not**
+(scriptPubKey templates, multi-`OP_RETURN`), cross-checked against a throwaway node with `-acceptnonstdtxn=0`.
+Hence **`POLICY_FIT` is not supported for anything**; the solid policy results here are the two *negative* ones.
+Separately confirmed: a **6,035-byte scriptSig is accepted**, so the legacy 1,650-byte standard limit is gone in
+v29 with May 2026 active, matching libauth's 10,000.
+
+**Independent cross-validation.** B1 measured C3 at **100,650** B - and C1 63,315, C2 53,249, A13 23,845 -
+**before** the coordinator's relay of B4's identical figures arrived. Two workers, two methods, same numbers.
+F1's 100,354 is confirmed stale; the overrun is **650 B**.
+
+**BLOCKED, with the obstacle named: the capstones cannot run natively on regtest.** They call
+`createLayer3SemanticTestProvider()`, which is mock-only; their builders *do* take a `createProvider` parameter
+but are file-local and unexported, and B1 held no source lease. Opened as **X59** - threading that parameter is
+the only remaining obstacle to node-executing A13, C2 and C1.
+
+**Partial evidence kept rather than discarded**: a graph-controller run on regtest went ~75 minutes without
+finishing and was stopped, but the node had already executed graph-controller covenants and refused **27 hostile
+transactions with genuine script-verify failures** (21 `OP_EQUALVERIFY`, 5 `OP_VERIFY`, 1 `OP_NUMEQUALVERIFY`).
+
+**X60 opened**: the `OP_1` placeholder recipient must become a real address, or C1 and C3 stay unrelayable
+regardless of any size work.
 
 ### 4.65 X48: splitting the knob would have been COSMETIC, and "by luck" is now "by 9.3x of margin"
 

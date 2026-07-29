@@ -1,5 +1,5 @@
 import {
-  encodeTransaction,
+  encodeTransaction, encodeTransactionInput, encodeTransactionOutput,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
@@ -98,6 +98,11 @@ export interface EnvelopeMeasurement {
   /** Largest output locking bytecode, against the 2026 standard 201-byte allowance. */
   maximumLockingBytes: number;
   lockingBytesRatio: number;
+  /** Serialized bytes contributed by each input and each output, so a size overrun can be costed exactly. */
+  inputSerializedBytes: number[];
+  outputSerializedBytes: number[];
+  /** Bytes the standard relay ceiling is exceeded by; zero or negative when the shape is inside it. */
+  standardSizeOverrun: number;
   inputs: InputMeasurement[];
   worstCostInput: InputMeasurement;
   worstHashInput: InputMeasurement;
@@ -287,6 +292,9 @@ export function assessEnvelope(
     inputCount: transaction.inputs.length,
     outputCount: transaction.outputs.length,
     serializedBytes,
+    inputSerializedBytes: transaction.inputs.map((input) => encodeTransactionInput(input).length),
+    outputSerializedBytes: transaction.outputs.map((output) => encodeTransactionOutput(output).length),
+    standardSizeOverrun: serializedBytes - BCH_2026_STANDARD.maximumTransactionSize,
     standardSizeRatio: serializedBytes / BCH_2026_STANDARD.maximumTransactionSize,
     consensusSizeRatio: serializedBytes / BCH_2026_CONSENSUS.maximumTransactionLengthBytes,
     totalSignatureChecks,
@@ -302,9 +310,18 @@ export function assessEnvelope(
 }
 
 /**
+ * The budget at which an input MUST be refused: half the density it was measured to actually need. A fixed
+ * fraction of the ordinary 800 is not good enough as a control - a shape measured at 0.22x survives a
+ * four-fold cut and the control then proves nothing - so the control budget is derived from the reading.
+ */
+export function knobControlBudgetFor(row: InputMeasurement): number {
+  return Math.max(1, Math.floor(row.standardCost / row.densityBytes / 2));
+}
+
+/**
  * THE KNOB-LIVENESS CONTROL. "Inside capacity at 800/byte" is only evidence if the budget knob can refuse
- * these exact bytes. Same transaction, same source outputs, a quarter of the ordinary budget: the named input
- * must now fail on density. Returns the error so a caller can assert what kind of refusal it is.
+ * these exact bytes. Same transaction, same source outputs, a budget the input provably cannot meet: it must
+ * now fail on density. Without this, an accepted reading may only mean the evaluation never ran.
  */
 export function densityKnobControl(
   transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],

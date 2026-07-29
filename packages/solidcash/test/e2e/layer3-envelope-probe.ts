@@ -3,7 +3,9 @@ import { afterAll, expect } from 'vitest';
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
-import { assessEnvelope, densityKnobControl, formatEnvelope } from './layer3-envelope-f1.js';
+import {
+  assessEnvelope, densityKnobControl, formatEnvelope, knobControlBudgetFor,
+} from './layer3-envelope-f1.js';
 
 /**
  * OPT-IN F1 PROBE. Records the transactions the existing capstone tests actually build, and measures them
@@ -41,14 +43,15 @@ if (OUT !== undefined) {
     try {
       const testName = expect.getState().currentTestName ?? 'unknown';
       const existing = captures.get(testName);
-      if (existing === undefined) {
-        // FIRST build of each test is the honest one: every capstone builds the honest composition at the top
-        // and only then mutates it for an attack case. Later builds are counted but not measured.
+      // KEEP THE WIDEST BUILD, not the first. A capstone builds many transactions per test - every
+      // `setupStatefulUtxos` seed is one - and the seeds come FIRST. The composed graph is the widest by a
+      // wide margin (108 inputs against 2), so input count identifies it without reading any fixture.
+      if (existing === undefined || transaction.inputs.length > existing.transaction.inputs.length) {
         captures.set(testName, {
           testName,
           transaction,
           sourceOutputs: generateLibauthSourceOutputs(this.inputs),
-          builds: 1,
+          builds: (existing?.builds ?? 0) + 1,
         });
       } else {
         existing.builds += 1;
@@ -65,11 +68,15 @@ if (OUT !== undefined) {
       try {
         const envelope = assessEnvelope(capture.testName, capture.transaction as never, capture.sourceOutputs);
         const worst = envelope.worstCostInput.input;
-        const control = densityKnobControl(capture.transaction as never, capture.sourceOutputs, worst);
+        const controlBudget = knobControlBudgetFor(envelope.worstCostInput);
+        const control = densityKnobControl(
+          capture.transaction as never, capture.sourceOutputs, worst, controlBudget,
+        );
         record = {
           ...envelope,
           builds: capture.builds,
           knobControlInput: worst,
+          knobControlBudget: controlBudget,
           knobControlError: control ?? null,
           knobControlBites: control !== undefined && /density|operation cost/i.test(control),
           txid: binToHex(encodeTransaction(capture.transaction as never)).slice(0, 32),

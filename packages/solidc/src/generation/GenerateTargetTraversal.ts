@@ -18181,7 +18181,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // unreached ordinal was ACCEPTED and read back beside the genuine ones. Bind per SLOT instead - every
     // ordinal outside the reached site's window - which keeps the exemption the honest transaction needs
     // (measured: a route-wide reinstatement rejects the handler's own genuine output at input 0).
-    const frameShadowed = node.hiddenBatchRoute === true && (node.graphEffectFrame?.eventWidth ?? 0) > 0;
+    //
+    // The per-slot form needs the reached site's ordinal on the stack. If it is ever absent - a route compiled
+    // on a path that did not allocate it - fall back to the unshadowed SEC-10 binding rather than skipping:
+    // that over-refuses (it is the measured ablation) but never leaves a slot unbound, and never throws.
+    const frameShadowed = node.hiddenBatchRoute === true && (node.graphEffectFrame?.eventWidth ?? 0) > 0
+      && this.stack.includes(GRAPH_EVENT_SITE);
 
     for (const pendingEmit of this.pendingEmits) {
       const { emitIndex, stackName, eventDef } = pendingEmit;
@@ -18452,10 +18457,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * emitting handler is invoked behind OP_INVOKE instead, the route has no pending emits at all, that function
    * never runs, and all `sites * eventWidth` reserved outputs are unbound. Same defect, same repair: everything
    * outside the reached site's window must carry an empty commitment.
+   *
+   * The GRAPH_EVENT_SITE guard mirrors the one on GRAPH_TRANSFER_REACHED and is redundant with the caller's
+   * `graphEventSiteActive`. It is there so a future path that loses the ordinal degrades to the baseline rather
+   * than throwing mid-codegen; `frameShadowed` tests the same thing and falls the OTHER way, back to the full
+   * unshadowed binding, so losing it can only leave a route unbound when it also has no pending emit of its own.
    */
   private emitGraphFrameEventSlotBinding(node: FunctionDefinitionNode): void {
     const frame = node.graphEffectFrame;
-    if (!frame || frame.eventWidth === 0) return;
+    if (!frame || frame.eventWidth === 0 || !this.stack.includes(GRAPH_EVENT_SITE)) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const covered = new Set(this.pendingEmits.map((pendingEmit) => pendingEmit.emitIndex));
     for (let ordinal = 0; ordinal < frame.sites * frame.eventWidth; ordinal += 1) {

@@ -779,7 +779,7 @@ ${uniform ? '    this.chirp(credited);' : ''}
   }
 }`;
 
-type Sec9Mode = 'honest' | 'dropSecond' | 'forgeSecond';
+type Sec9Mode = 'honest' | 'dropSecond' | 'forgeSecond' | 'forgeUnreached' | 'emptyUnreached';
 
 async function buildSec9EventBatch(mode: Sec9Mode): Promise<{
   builder: TransactionBuilder; transaction: string; provider: SemanticProvider;
@@ -925,14 +925,27 @@ async function buildSec9EventBatch(mode: Sec9Mode): Promise<{
       });
     } else if (kind === 'event') {
       // Slots 0 and 1 are the REACHED site's two frame slots - `emit Fired(credited)` then the internal
-      // `chirp`'s `emit Fired(credited + 7)`. Slot 1 is THE variable. Every further slot belongs to an
-      // unreached site and stays a plain funding output in all three modes.
+      // `chirp`'s `emit Fired(credited + 7)`. Slot 1 is THE variable for the SEC-9 rows. Slot 6 belongs to
+      // dispatch site 3, which no row reaches: it is the SEC-15 variable, and stays a plain funding output
+      // everywhere else.
       const index = eventCursor;
       eventCursor += 1;
+      const settledSecond = mode !== 'dropSecond' && mode !== 'forgeSecond';
       if (index === 0) tx.addOutput(eventNft(CALL_VALUE));
-      else if (index === 1 && mode === 'honest') tx.addOutput(eventNft(CALL_VALUE + 7n));
+      else if (index === 1 && settledSecond) tx.addOutput(eventNft(CALL_VALUE + 7n));
       else if (index === 1 && mode === 'forgeSecond') tx.addOutput(eventNft(999_999n));
-      else tx.addOutput({ to: p2pkh.address, amount: 1000n });
+      else if (index === 6 && mode === 'forgeUnreached') tx.addOutput(eventNft(999_999n));
+      else if (index === 6 && mode === 'emptyUnreached') {
+        tx.addOutput({
+          to: eventAddress,
+          amount: 1000n,
+          token: {
+            category: hubSetup.categoryId,
+            amount: 0n,
+            nft: { capability: 'none' as const, commitment: '' },
+          },
+        });
+      } else tx.addOutput({ to: p2pkh.address, amount: 1000n });
     } else {
       tx.addOutput({ to: p2pkh.address, amount: 1000n });
     }
@@ -1140,6 +1153,32 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  /**
+   * SEC-15 at frame width TWO, which is the only shape that exercises the ordinal-window form of the binding
+   * (`site * width <= ordinal < site * width + width`) rather than the width-1 equality. Slot 6 belongs to
+   * dispatch site 3, which no row reaches, and the honest batch leaves it a plain funder. Measured ACCEPTED
+   * before the repair - a forged log in a slot no handler settles - and refused at the route's own input now.
+   */
+  it('SEC-15: rejects a forged event NFT in an UNREACHED width-2 frame slot', async () => {
+    const built = await buildSec9EventBatch('forgeUnreached');
+    expect(built.eventSlots).toBe(16);
+    expect(built.callerInput).toBe(0);
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  }, 600_000);
+
+  /**
+   * SEC-15 guard control at width two. Same output class in the same unreached slot - own-category, 'none'
+   * capability, event covenant address, same value - carrying an EMPTY commitment. It must still settle, so
+   * the refusal above belongs to the commitment binding rather than to SEC-11's offset pin, which admits any
+   * own-category immutable NFT at an `event` offset and cannot separate these two rows.
+   */
+  it('SEC-15 guard: an EMPTY-commitment NFT in that same unreached width-2 slot settles', async () => {
+    const built = await buildSec9EventBatch('emptyUnreached');
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 600_000);
 
   /**

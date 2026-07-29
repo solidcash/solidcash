@@ -10,6 +10,28 @@ invocation protocol. Its uppercase requirements are requirements the candidate w
 not claims that the format is selected. The immediate journal and narrow batching implementation is
 specified in `compiler-hidden-batch-v1.md`.
 
+### This is NOT the spec of the transcript the SDK ships
+
+The Layer-3 graph transcript that exists in this repository is encoded by
+`packages/solidcash/src/layer3/graph.ts` (`finalizeCompiledGraph`), and it is a DIFFERENT format from the
+candidate below. Nothing in section 3 describes its bytes. The divergences are structural, not cosmetic:
+
+| | candidate (this document) | shipped `L3GRAPH1` transcript |
+| --- | --- | --- |
+| magic | `SCBT` + `version:u8` + `flags:u8` | `L3GRAPH1\0`, 9 bytes, no version or flags byte |
+| carrier | dedicated P2SH32 carrier at input 0, blob in its unlocking bytecode | controller NFT commitment over the transcript root |
+| integrity | `hash256(transcript)` in a trailing `SCBH` `OP_RETURN` output | single `sha256(transcript)` as the controller root |
+| row kinds | participant, resource, invocation, effect, event | participant and invocation only |
+| ID widths | `u32` invocation/effect/event IDs, `u16` participant/resource | `u16` parent, `u8` callee/localRow/depth |
+| depth ceiling | 16 (section 11) | `MAX_GRAPH_DEPTH = 7` |
+
+Reading a byte offset off section 3 and expecting it to land in the shipped blob therefore does not work,
+in either direction. The shipped invocation row is `parent:u16, callee:u8, localRow:u8, depth:u8,
+subtreeEnd:u16, selector:bytes4, callOptions:u8, args, result` - so its call-options byte is at row offset
+11, where this document's own candidate row has the high byte of `subtreeEnd:u32`. The authority for the
+shipped layout is `graph.ts` and the offsets asserted in `Layer3ReviewA1.test.ts`; this document is the
+authority for nothing that is deployed.
+
 Consensus target: `BCH_2026_05`. Transcript mode MUST NOT be constructed or relayed under an earlier
 VM target. It depends on the 2026 standard unlocking-bytecode limit of 10,000 bytes and 128-byte
 token commitments. `BCH_2025_05` retains a 1,650-byte standard unlocking limit and is not a supported
@@ -372,7 +394,7 @@ parentInvocationId:u32   // 0xffffffff only for root
 subtreeEnd:u32           // exclusive invocation index
 targetParticipant:u16
 selector:bytes4
-callMode:u8              // 0 call, 1 staticcall
+callOptions:u8           // bit 0 = read-only (staticcall) mode; bits 1-7 reserved for source-level options
 valueDelta:i64           // little-endian two's-complement satoshi change for this logical call
 callsiteId:u32
 occurrence:u32
@@ -398,6 +420,12 @@ value as logical `msg.value`; it is available before handler execution, and sett
 it equals the invocation's consumed effect rows. It is a checked transaction witness, not a
 fixed-point calculation. A `staticcall` has zero `valueDelta`; its target MUST be compiler-proven
 read-only and may not emit mutable descendants.
+
+`callOptions` was written here as a two-valued `callMode:u8` until the shipped `L3GRAPH1` transcript made
+its counterpart a bitfield, and the candidate is aligned to that shape rather than left narrower than the
+thing it would supersede. Bit 0 is the compiler-proven read-only mode and is the ONLY defined bit; the
+root row's copy MUST be zero. Bits 1-7 are reserved for source-level call options and none is admitted, so
+under section 3.1's "flag fields MUST contain only defined bits" a row carrying any of them is rejected.
 
 ### 3.6 Effect row
 
@@ -618,7 +646,8 @@ result-dependency order by construction.
 A result cannot be used to choose an ancestor, rewrite an earlier row, or create a child outside its
 parent's subtree. If deriving a row requires a future result, derivation rejects the graph.
 
-For `callMode == staticcall`, the target controller MUST snapshot its dirty bitmap/effect cursor on
+When bit 0 of `callOptions` is set - the read-only (`staticcall`) mode - the target controller MUST
+snapshot its dirty bitmap/effect cursor on
 entry and verify on return that no resource became dirty, `valueDelta == 0`, no mutable effect was
 consumed, and every descendant handler is compiler-marked and runtime-verified static. Compiler
 metadata alone is not the enforcer.
@@ -931,16 +960,17 @@ version or malformed/incomplete metadata.
 
 ## 11. BCH 2026 cost model and protocol limits
 
-The governing standardness/VM constants for `BCH_2026_05` are:
+The governing VM constants for `BCH_2026_05` are below. Values read from `ConsensusBch2026` /
+`ConsensusBch2025` in `@bitauth/libauth@3.1.0-next.8`, which is what this repository pins and what
+`packages/solidcash/test/e2e/layer3-envelope-f1.ts` re-reads rather than restates.
 
 ```text
 densityControlLength D              = 41 + own unlockingBytecode length
 maximumOperationCost                = 800 * D
 operationCost                       = 100 * evaluated instructions
                                       + 26,000 * signature checks
-                                      + 192 * hash digest iterations
+                                      + (hash-iteration cost, see below) * hash digest iterations
                                       + arithmetic cost + stack-pushed bytes
-maximumHashDigestIterations         = floor(0.5 * D)
 maximum standard unlocking bytecode = 10,000 bytes
 maximum standard transaction size   = 100,000 bytes
 maximum stack item                  = 10,000 bytes
@@ -950,8 +980,23 @@ maximum token commitment            = 128 bytes
 maximum aggregate nulldata          = 223 bytes
 ```
 
-Instructions therefore cost roughly eight bytes of the evaluating input's own unlocking-bytecode
-budget. `OP_BEGIN`/`OP_UNTIL` reduce emitted bytecode but do not reduce per-iteration operation cost.
+HASHING IS PRICED AND BUDGETED DIFFERENTLY IN THE TWO REGIMES, and in opposite directions. Neither
+figure may be substituted for the other, and a single "iterations per byte" knob cannot express both:
+
+```text
+                                      standard (relay)   consensus (mined)
+hash digest iteration cost            192                64
+maximumHashDigestIterations           floor(0.5 * D)     floor(3.5 * D)
+```
+
+So the same script has a HIGHER operation cost when relayed than when mined, while the iteration
+ALLOWANCE is 7x tighter under relay policy. Earlier revisions of this section listed only the 192 and the
+0.5 without naming the regime, which reads as though one pair governed both.
+
+An evaluated instruction costs 100 against a budget of 800 per byte, so EIGHT instructions consume one
+byte of the evaluating input's own unlocking-bytecode budget - an instruction is worth an eighth of a
+byte, not the "roughly eight bytes" this paragraph used to claim.
+`OP_BEGIN`/`OP_UNTIL` reduce emitted bytecode but do not reduce per-iteration operation cost.
 `OP_SPLIT` charges for pushed bytes, so repeatedly splitting the full transcript is forbidden by the
 streaming rule in section 4.
 

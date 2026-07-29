@@ -111,13 +111,30 @@ contract X15NoEntry() {
   /**
    * A partially rejected route already published its reasons through `hiddenBatch.handlers`; the new
    * diagnostic must not duplicate them, or every mixed contract would carry a false "no route" claim.
+   *
+   * The rejected handler here is the scalar one on a collection-keyed route. It used to be an `external`
+   * handler, which X73 admits: `external` and `public` differ only in internal callability, and an admitted
+   * external handler is dispatched through an internal clone. This case is about the diagnostic channel, not
+   * about which handlers a route admits, so it is stated with a refusal that outlives that change.
    */
   it('does not fire when only some handlers are rejected', () => {
     const source = caller(`  function bump(int amount) public { total = total + amount; require(amount >= 0); }
-  function peek(int amount) external { require(amount >= 0); }`);
+  function credit(address who, int amount) public { balances[who] = balances[who] + amount; require(amount >= 0); }`);
     const artifact = compileString(source, graph);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'peek'))
-      .toMatchObject({ eligible: false, rejectionReason: 'initial-v1-route-requires-public-visibility' });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bump'))
+      .toMatchObject({ eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled' });
+    expect(absenceDiagnostics(source, graph)).toHaveLength(0);
+  });
+
+  /** X73's admission, stated where the old refusal was: an external handler is a route handler. */
+  it('admits an external handler alongside a public one', () => {
+    const source = caller(`  function bump(int amount) public { total = total + amount; require(amount >= 0); }
+  function nudge(int amount) external { total = total - amount; require(amount >= 0); }`);
+    expect(compileString(source, graph).hiddenBatch?.handlers)
+      .toEqual([
+        expect.objectContaining({ name: 'bump', eligible: true }),
+        expect.objectContaining({ name: 'nudge', eligible: true }),
+      ]);
     expect(absenceDiagnostics(source, graph)).toHaveLength(0);
   });
 });

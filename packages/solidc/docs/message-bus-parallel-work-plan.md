@@ -132,7 +132,7 @@ task-specific report, not in this table.
 | **SEC-16** | Same over-broad suppressor in `warnUnauthenticatedSelfdestruct` | S6 | SEC-12 | **INTEGRATED** | helper MOVED not copied, 66/66 lines verified identical; 3/8 mismatches -> 0/8 - see 4.56 |
 | X37 | Publish delegate target/key provenance in the artifact | S3 | E3 | **INTEGRATED** | both `bytes`-cast escapes resolve to `parameter`; 327/327 artifacts SHA-256 identical minus the 2 new keys - see 4.53 |
 | **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **INTEGRATED** | 14/36 -> 0/36 across 7 spellings at both sites; 8 negative controls unflipped - see 4.56 |
-| X46 | Commitment check reads the key's binding, not the writer of its target | — | SEC-17 | **TODO** | a fn assigning `this.pkh` FROM a caller param before comparing is credited anyway |
+| X46 | Commitment check reads the key's binding, not the writer of its target | A3 | SEC-17 | **INTEGRATED** | LIVE THEFT: bob takes 51,515 sats, broadcast-accepted; key-rotation idiom preserved - see 4.61 |
 | X43 | Make the E3 gate read X37's provenance instead of the published type | A1 | X37 | **INTEGRATED** | both escapes refused; admission proven a LIVE hole (5 -> 999); 3 unnamed closures - see 4.59 |
 | X50 | SDK's shipped `defaultProxyArtifact.ts` is a pre-X37 artifact | — | X43 | **TODO** | 13 of 27 gate calls refuse `unpublished-target-provenance`; remedy additive, but regen needs a manual bytecode fix |
 | X51 | Publish the `hash160(key) == committed` commitment as an artifact field | — | X43,SEC-17 | **TODO** | would close X43's `hash160-committed-key` false negative without type-reconstruction |
@@ -150,7 +150,7 @@ task-specific report, not in this table.
 | X39 | C3 serializes to 100,354 B - 354 over the 100,000 B standard relay ceiling | A5 | X25 | **INTEGRATED** | asserted as a band; consensus fit and relay policy stated as separate claims |
 | X40 | Stop citing the C1/C3 reshapes as what closes SEC-6 | A5 | R2-F3 | **INTEGRATED** | verified two ways independently, not taken from the reviewer |
 | X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
-| X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
+| X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | A3 | — | **NO_CHANGE (measured)** | there IS no loop leg: 129 reservations, 9,164 computations, ZERO loop-term firings; alternative narrowing fails silently |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
 | F1 | Ordinary-limit consensus and policy measurements | A6 | — | **INTEGRATED** | envelope measured; a DIFFERENT limit binds first per shape; CONSENSUS_FIT supported but not asserted - see 4.58 |
 | X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | — | F1 | **TODO (ledger accuracy)** | real C3 at N=8 is 0.9217x, 2.54x higher and 9.4x the bytes |
@@ -194,12 +194,13 @@ task-specific report, not in this table.
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
 | X36 | `planCompiledGraph` does not enforce occurrence bounds | S4 | X31 | **INTEGRATED** | one shared assertion on both entry points; bound taken from published capacity, NOT `bindConsumerCallsites` - see 4.50 |
 | X33 | S2's `touchesCollection` does not descend through calls | C | S2 | **INTEGRATED** | BFS over the call graph; caught its own fn-pointer over-approximation |
-| X34 | Relax the over-strict `this.`-spelled dynamic+collection refusal | — | X33 | TODO | admitted form PROVEN sound on the VM; bus-mode leg unsettled |
-| X35 | Eligibility oddity: stricter combination admitted, simpler refused | — | X33 | TODO | dyn+collection `eligible: true` while dyn-only is refused |
+| X34 | Relax the over-strict `this.`-spelled dynamic+collection refusal | A3 | — | **NO_CHANGE (measured)** | recorded premise misattributed; with the guard off every refused leg emits NO artifact |
+| X35 | Eligibility oddity: stricter combination admitted, simpler refused | A3 | — | **NO_CHANGE (measured)** | correct conservative proxy; real key is per-row `conditional` entry slots, fix site `compiler.ts` |
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED, striding now PROVEN** | reviewed by R1: striding holds both directions; opened SEC-15 on its reserved slots |
 | **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **INTEGRATED** | per-slot ordinal binding; a SECOND forgeable entry point found repairing it - see 4.54 |
 | X44 | Two reached event-settling sites collapse to one ordinal | — | SEC-15 | **DEFERRED (fail-closed)** | refuses today; becomes a FALSE refusal if X41's independent limit is ever lifted |
 | X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
+| X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | — | — | **TODO (test quality)** | 13,352 ms then 3,931 ms on consecutive unchanged runs against a 15,000 ms budget |
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | — | X38 | **TODO** | recorded 0.4607-0.4677 / 0.8170; measured 0.3916-0.3957 / 0.6491 |
 | X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | — | X38 | **TODO** | outside A5's lease; also records controller base 2,129,198 vs measured 2,131,662 |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
@@ -220,6 +221,67 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.61 X46 is a LIVE THEFT closed; X28/X34/X35 stay refused, and one of MY premises was wrong
+
+Merged at `270c7835`. Three of four rows came back **NO_CHANGE with a measurement**, which is the outcome the
+brief explicitly permitted and the more useful half of this packet.
+
+**X46 - a caller-chosen key reaches the committed state, and bob takes the money.** SEC-17 credits a key
+committed by `require(hash160(pk) == this.pkh)`. It read the **binding** and not the **writer**, so
+`this.pkh = otherPkh;` immediately before the commitment silences the diagnostic. A3 reproduced that at baseline,
+then proved it is a real hole rather than a diagnostic nit: two contracts identical but for that one assignment,
+both deployed with `pkh = alicePkh` and 50,000 satoshis. **Bob - not alice - calls `kill` with his own key and
+his own destination, and takes 51,515 satoshis**, broadcast-accepted. Without the write, the covenant **rejects
+at input 0**.
+
+The enabling fact was itself measured: scalar state is **read-after-write within one transaction** on the
+BCH-2026 VM - `this.pkh = a; require(this.pkh == a)` settles for arbitrary `a`, while the same require without
+the write rejects. **A3's first probe of this was order-dependent and wrong, and it said so**, re-running with
+two fresh deployments; the packet rests on the corrected one.
+
+**The four silent controls all contain a state write**, so the silence is credited to *when* and *from what* -
+not to "any state write present". They include the **key-rotation idiom** (write *after* the commitment), which
+a cruder fix would have broken. Blast radius is bounded by construction: the two delegatecall sites cannot reach
+this shape at all (a delegatecall function writing its own state is a hard `DelegatecallSelfMutationError`), and
+all three consumers feed `console.log` blocks, so **no emitted byte can change**.
+
+**X28: the loop leg does not exist, and my brief said it did.** I told A3 to split a compile-time-bounded loop
+leg from an unbounded chunk leg, carrying the round-11 handoff's framing forward. A3 measured instead:
+`needsTrailingRegion` is gated on `__scb1`, and five of its seven terms are assigned only inside
+`GenerateTargetTraversal` while `computeBlockLayout` runs strictly earlier - so they are **`undefined` at every
+evaluation**. Instrumented across both suites: **18 reservations / 2,283 layout computations** in the compiler
+and **111 / 6,881** in the SDK, **every one through the chunk term, zero loop-term firings anywhere**. The
+bounded half I asked it to size does not exist; the whole 64 is the unbounded chunk leg.
+
+**And the obvious alternative narrowing is unsound, also measured.** "Reserve only when a dispatched handler
+touches a dynamic variable" would be decided by a scan seeing `StateAccessNode`/`StateAssignNode` only, but the
+bare `note = t` spelling is still an `AssignNode` - X19's gap, in this same function. **4 of the 18** reservations
+report no dynamic-touching function while the contract writes one, and the narrowing fails **silently**: the SDK
+enforces `trailingCapacity` only when the layout declares one, otherwise it appends the chunk run past the block
+and misaligns every later participant.
+
+**X34: the recorded premise was misattributed.** "Removing the guard makes the `this.`-spelled program compile
+byte-identical to the bare form" is true of the plain path - but it is a property of the **baseline**, not
+evidence about removal: with one handler and no route there is no clone, nothing carries a `__dj_` parameter, and
+the guard never fires. Both spellings compile to the same fingerprint **with the guard on**. With the guard
+disabled in a *copy* of the compiler, every refused leg produces **no artifact at all** - the exact internal error
+the guard was built to replace. There is nothing to settle.
+
+**X35: the predicate is a correct conservative proxy, and the real key is named.** Relaxing it does not remove
+the entry NFT from a scalar row's block - measured, the slot list is identical either way. It only stops
+requiring that something in that row constrains the entry's post-state, which is the SEC-9/SEC-15 class. It
+should key on whether the route's entry slots are pinned on **every row** (per-row `conditional`), not on whether
+this handler carries key witnesses; both halves are pinned in a test so a later relaxation must move the flag
+too. Fix site is `compiler.ts`, outside the lease.
+
+**A process finding the board should act on.** A3's first pin file added ~14s of bus compilation and tipped
+`BatchCostRegression` and `HiddenBatch` past their explicit budgets - 4 failures, all timeouts, no assertions -
+reproduced and confirmed against the same load without it. It cut the file to 7.5s. Separately it measured the
+ERC-20 footprint row at **13,352 ms then 3,931 ms on consecutive unchanged runs against a 15,000 ms budget**.
+That budget has **no margin** under concurrent load, independent of anything added this round. Opened as X54.
+
+Counts: solidc **2,536/0** (2,524 + 12), solidcash **4,169/0** on its own baseline (+2 VM).
 
 ### 4.60 The accuracy repairs land, and the 50s test timeout is retired on measured grounds
 

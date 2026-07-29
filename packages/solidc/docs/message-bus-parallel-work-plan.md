@@ -209,6 +209,31 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.52 Composed-tree verification at `71b9f8ee`: five merges, zero interaction
+
+Every worker measures on its own worktree against `690c868c`, so five green packets do not by themselves say the
+five compose. Measured on the integration tree after all five merges:
+
+**solidc 2,474 / 0** (60 files) and **solidcash 4,162 / 0** (471 files, 4 skipped files, 24 skipped + 9 todo).
+
+Both predictions close exactly and independently: solidc 2,463 + 11 (SEC-12) = **2,474**; solidcash
+4,102 + 12 (SEC-13) + 19 (R2) + 11 (R1) + 18 (X36) = **4,162**. No test was lost, none double-counted, and no
+pair of merges interacts - which was not guaranteed, since X36 changed planner admission while R1 and R2 added
+fixtures that plan graphs through it.
+
+**A cross-worker hazard was caught by a worker, not by the board.** S4 noticed that S5 is working the effect-frame
+path from a baseline that already contains X36, and that `Layer3EmissionEffectEscape`'s three `selector` tamper
+cells **bind 2 rows to a handler publishing 2 callsites** - exactly at capacity, and exactly the VM evidence
+X36's capacity rule was chosen to preserve. If SEC-15's per-slot repair changes the callsite structure of
+`hubSource`/`sec8HubSource`, a plan-time capacity refusal would present as "the fix broke something" when it is
+really an over-count. Relayed to S5 with the instruction to re-measure rather than assume. No textual conflict
+exists; X36 modified neither file.
+
+**A tooling correction worth keeping.** `pgrep -f vitest` matches **globally across all worktrees**, so wait
+loops written that way block on other agents' suites - two of S4's timed out at 10 minutes for that reason. Read
+the run's own log summary instead. It cost only wall-clock here, but a wait loop that "completes" when a sibling
+worker's suite ends is a false signal, not a slow one.
+
 ### 4.51 SEC-12 closed at both sites, and the corpus check was correctly refused as corroboration
 
 Merged at `dbb15944`. Both suppressions were **reproduced verbatim on the baseline before any edit**: at `:5095`

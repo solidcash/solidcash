@@ -1330,12 +1330,24 @@ describe('C3 hostile cases', () => {
     expect(preflightOutcome(stranger)).toContain('layer3: BCH-2026 preflight failed at input 79');
     await expect(stranger.provider.sendRawTransaction(stranger.transaction)).rejects.toThrow();
 
-    // Neither generated covenant ever compares two participant rows to each other: a pairwise comparison
-    // would have to name two rows in one expression, and neither source does.
+    // Neither generated covenant ever compares two participant rows to each other. This guard went VACUOUS
+    // once: it hunted `participantLbcN == participantLbcM`, and X65 replaced the 8-way dispatch with an
+    // input-index table, so those identifiers stopped existing and the regex could never match again. It is
+    // now expressed against the property rather than the spelling - no comparison may carry a participant
+    // locking bytecode on both sides - plus an assertion that the old identifiers really are gone.
     for (const source of [
       layer3.generateGraphProjectionVerifier(), layer3.generateGraphRootController('51'),
     ]) {
-      expect(/participantLbc\d\s*(==|!=)\s*participantLbc\d/.test(source)).toBe(false);
+      const pairwise = source.split('\n')
+        .flatMap((line) => line.split(/&&|\|\|/))
+        .filter((clause) => /[=!]=/.test(clause))
+        .filter((clause) => {
+          const [left, right] = clause.split(/[=!]=/);
+          return right !== undefined
+            && /lockingBytecode|participantLbc/.test(left) && /lockingBytecode|participantLbc/.test(right);
+        });
+      expect(pairwise, `pairwise participant comparison in:\n${pairwise.join('\n')}`).toEqual([]);
+      expect(/participantLbc\d/.test(source)).toBe(false);
     }
 
     // The SDK planner is where uniqueness actually lives: it refuses the construction before any transcript.
@@ -1527,7 +1539,7 @@ describe('C3 capacity measurement', () => {
     console.log(`C3 serialized transaction size: ${serialized} bytes `
       + `(${100_000 - serialized} under the 100,000-byte standard relay ceiling)`);
     expect(serialized).toBeLessThan(100_000);
-    expect(serialized).toBeGreaterThan(99_000);
+    expect(serialized).toBeGreaterThan(95_000);
 
     // X60, AND F4 IS WHAT MAKES IT MATTER. C3 carried the same 10-satoshi placeholder output C1 did, and no
     // measurement here ever reached it: a real node refused this transaction `64: tx-size` first, so the size
@@ -1599,7 +1611,7 @@ describe('C3 capacity measurement', () => {
     // over the 100,000-byte standard relay ceiling, against the 1,000,000-byte consensus figure this profile
     // sets. C1, at 63,315 bytes, clears both (X39).
     for (const projection of projections) {
-      expect(projection.bytes).toBe(5_917);
+      expect(projection.bytes).toBe(5_473);
       expect(projection.ratio).toBeGreaterThan(0.5);
       expect(projection.ratio).toBeLessThan(0.7);
     }
@@ -1616,7 +1628,7 @@ describe('C3 capacity measurement', () => {
     // invocations, +1.3%. ALL EIGHT ROWS STILL COST THE SAME, so the surcharge finding above is unaffected -
     // which is the property that mattered, not the absolute figure.
     expect(projections.map((row) => row.instructions))
-      .toEqual([23_499, 23_499, 23_499, 23_499, 23_499, 23_499, 23_499, 23_499]);
+      .toEqual([18_656, 18_656, 18_656, 18_656, 18_656, 18_656, 18_656, 18_656]);
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);

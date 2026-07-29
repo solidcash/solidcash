@@ -1041,8 +1041,25 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     const controllerSource = layer3.generateGraphRootController('51');
     for (const source of [projectionSource, controllerSource]) {
       expect(source).toContain('lockingBytecode');
-      // A pairwise comparison would have to name two participant rows in one expression; neither does.
-      expect(/participantLbc\d\s*(==|!=)\s*participantLbc\d/.test(source)).toBe(false);
+      // THIS GUARD WENT VACUOUS ONCE AND IS NOW WRITTEN SO IT CANNOT AGAIN. It used to hunt
+      // `participantLbcN == participantLbcM`, but X65 replaced the 8-way dispatch with an input-index table
+      // and those identifiers stopped existing - so the regex could never match, and a pairwise comparison
+      // reintroduced in any other spelling would have passed it silently.
+      //
+      // The property is expressed directly instead: no comparison anywhere in either covenant may have a
+      // participant locking bytecode on BOTH sides. That holds whatever the rows are named.
+      const comparisons = source.split('\n')
+        .flatMap((line) => line.split(/&&|\|\|/))
+        .filter((clause) => /[=!]=/.test(clause));
+      const pairwise = comparisons.filter((clause) => {
+        const [left, right] = clause.split(/[=!]=/);
+        return right !== undefined
+          && /lockingBytecode|participantLbc/.test(left) && /lockingBytecode|participantLbc/.test(right);
+      });
+      expect(pairwise, `pairwise participant comparison in:\n${pairwise.join('\n')}`).toEqual([]);
+      // And the old identifiers really are gone, so a future reader cannot mistake the regex above for the
+      // one that used to run here.
+      expect(/participantLbc\d/.test(source)).toBe(false);
     }
     const built = await buildA1();
     expect(new Set(built.participantLbc).size).toBe(4);

@@ -711,7 +711,7 @@ describe('layer3.planCompiledGraph', () => {
     // The controller row is unchanged, and that is a control rather than a coincidence: F4 edited
     // `generateGraphProjectionVerifier` only, so exactly one covenant's figure may move.
     expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_542);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_098);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

@@ -223,6 +223,30 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.63 Round-16 verification: all six packages green, 7,063 tests, zero flakes
+
+`yarn test` at `bbd87f71`, exit **0**, all six workspaces reached:
+
+| package | tests |
+| --- | --- |
+| `@solidcash/utils` | 295 / 0 |
+| `solidc` | **2,536 / 0** |
+| `solidcash` | **4,189 / 0** |
+| `@solidcash/testing` | 19 / 0 |
+| `@solidcash/solidhat` | 24 / 0 |
+
+**7,063 passing.** Both arithmetics close exactly: solidc 2,524 + 12 (X46) = 2,536; solidcash 4,167 + 3 (F1) +
+9 (X43) + 2 (X46) + 8 (X5/X3) = 4,189. A5's eight added assertions are net zero new tests, as it reported.
+
+**Zero flakes in this run**, against four consecutive full runs earlier at this HEAD that each failed a different
+file. That is the 50s -> 120s timeout change and X45's precondition fix working together, and it is the first
+full run of this effort with no failure to attribute.
+
+**Correction to the board's own progress note.** An earlier update in this section said all six round-16 agents
+had landed. **Five had**; A2 (X11, X12, SEC-14) was still running, and remains so - five commits deep, including
+a retraction of one of its own refusals. The verification above therefore covers five of six workers, and A2's
+merge will need its own.
+
 ### 4.62 X5 binds the call-options byte - the first covenant ever to read it; X3's wall is NAMED
 
 Merged at `d2f11a2c`, after a hand-resolved conflict (below). Transcript byte 11 is now a documented

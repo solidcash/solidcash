@@ -129,8 +129,10 @@ NFTs and any collection entry nodes, and it is what stops an un-touched proxy da
 second one being minted - on a path where the forwarder skips its own state covenant.
 
 The consequence is a boundary, not a bug: a `delegate` function that **inserts a new key** into a C2 mapping is
-refused by the proxy. An insert mints one new entry node, so the mutable count rises by one. **Updating an
-existing key settles**, because an update rewrites a node rather than minting one.
+refused by the proxy. An insert mints one new entry node, so the mutable count rises by one. An **update** of an
+existing key rewrites a node instead of minting one, so it leaves the count alone and settles - measured on an
+equivalent conserving proxy in `packages/solidcash/test/e2e/DelegateSortedC2Write.test.ts`, which also pins the
+insert refusal to the proxy's input rather than the delegate's.
 
 The proxy is layout-independent - it never reads its own state fields, which is the whole reason one bytecode
 serves any implementation - so it cannot compute the implementation's collection entry address and cannot admit

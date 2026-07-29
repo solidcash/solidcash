@@ -161,8 +161,8 @@ task-specific report, not in this table.
 | X67 | `packages/testing/src/config.ts` does not expose the split hash fields | — | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | C2 | X48 | **INTEGRATED** | NOT cosmetic: a dust-enforcing mock read an allowance 20,000,000x smaller than declared |
 | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | — | X48 | **TODO** | the regime split is not yet end-to-end into the mem-cash verifier |
 | X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | B1 | F1 | **INTEGRATED (scoped)** | CONSENSUS_FIT holds for the sweep N=2/4/8 ONLY - accepted AND mined; policy-vs-consensus settled - see 4.66 |
-| X59 | Thread `createProvider` into the four capstone fixtures | — | X49 | **TODO** | only obstacle to node-executing A13/C2/C1; builders take the param but are file-local and unexported |
-| X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient - refused as DUST | — | X49 | **TODO** | invisible to every harness measurement: `enforceDust: false` + `dustRelayFeePerKb: 0n` |
+| X59 | Thread `createProvider` into the four capstone fixtures | C1 | X49 | **INTEGRATED** | **A13, C2 and C3 MINED on BCHN v29** with hostile controls refused on the same chain - see 4.78 |
+| X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient | C1 | X49 | **INTEGRATED (premise corrected)** | `enforceDust: false` was NEVER the cause - the mock defaults it false; a real address alone does not fix dust |
 | F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
 | F3 | MistSwap/EA and proving-corpus fit report | C6 | F1,F2 | **INTEGRATED** | **THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS**: all 12 bus-reachable app contracts admit READ-ONLY; 80% of refusals are route-scope - see 4.77 |
 | X73 | `initial-v1-route-requires-public-visibility` refuses 172 of 455 (38%) | — | F3 | **TODO (biggest incidental wall)** | Solidity marks entry points `external`; the v1 route admits `public` |
@@ -173,7 +173,8 @@ task-specific report, not in this table.
 | X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | — | F4 | **TODO (sized)** | ~760 B of the verifier, ~6,080 C3 bytes; table-lookup form needs a 2-byte offset whose soundness rests on the stack-item bound |
 | X66 | F2's basis and F1's header are stale-but-passing after F4 | — | F4 | **TODO** | both work off RECORDED figures; all four graph rows overstate by 129 x N and F2's C3 verdict is no longer live |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
-| X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **DECIDED - measure on the node** | user's call: probe a 1,000-sat bare `OP_1` against BCHN and let the result decide; relayed to the agent already holding the stack |
+| X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
+| X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | — | X59 | **TODO (blocks C1 on a node)** | four entry NFTs seeded under one category arrive under four; must mint into the requested category or throw |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
@@ -240,6 +241,69 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.78 THREE CAPSTONES EXECUTE ON A REAL NODE, and the template rule does not exist
+
+Merged at `eb7ca398`. The round's capstone, and it closes the decision the board escalated.
+
+**X64: the rule was wrong, and measuring it was the right call.** R1's `standard-output-template` was the only
+`UNMEASURED_CONSERVATIVE` rule in the envelope, and it alone kept C2 and the E1 result graph out. Measured on
+BCHN v29 **and reproduced row-for-row on a throwaway container with explicit `-acceptnonstdtxn=0`**: a bare
+`OP_1` at 1,000 sat reaches `missing-inputs`; an arbitrary `OP_2 OP_3 OP_ADD OP_5 OP_EQUAL` reaches
+`missing-inputs`; a 300-byte OP_RETURN is refused `64: oversize-op-return`; a non-push scriptSig is refused
+`64: scriptsig-not-pushonly`.
+
+**The load-bearing control is the dust row.** The *same one-byte script* at 10 satoshis is refused **`64: dust`**
+- which proves the per-output loop demonstrably runs **pre-lookup**, reaches that output, and **declines to
+refuse it on template grounds**. Without that row, `missing-inputs` would prove nothing. And the strongest form
+was done anyway: a real 1,000-satoshi bare `OP_1` output **funded, accepted, mined, then SPENT with an empty
+unlocking script** on the strict node.
+
+**C1 removed the rule rather than relabelling it** - "an envelope refusing what the node accepts is wrong, not
+conservative". **C2 and the E1 result graph are IN, and no rule in the envelope is `UNMEASURED_CONSERVATIVE` any
+more.** X64 is closed; the user's instruction to measure rather than choose between two guesses is what produced
+that.
+
+**X59: three shapes genuinely execute on a real node.** Mined on BCHN v29 regtest, each with a hostile control
+refused by the node **on the same chain in the same run**:
+
+| shape | txid | height | bytes | in/out |
+| --- | --- | --- | --- | --- |
+| A13 | `85a78285c463c5b1...` | 1401 | 23,458 | 8/8 |
+| C2 | `de22608f5f088c1f...` | 1304 | 52,733 | 79/79 |
+| **C3** | `5eb1fdb123cdcd44...` | 1090 | **99,670** | 108/108 |
+
+`RegtestNetworkProvider` carries no `consensusLimits`, so **nothing was relaxed**. The node executed every input
+script under real BCH-2026 consensus and real relay policy, accepted and mined it. **C3 - the eight-participant,
+108-input maximum graph - is mined on a real node.** Four rounds ago it was 2.07x over a budget that had been
+misread by 200x.
+
+**X60's premise needed correcting, and C1 corrected it rather than implementing it.** `enforceDust: false` was
+**never** the cause: `MockNetworkProvider` **defaults** it false for every instance in the repo, so deleting the
+profile line changes nothing - and setting it `true` also flips `standard: true` in the verifier, applying the
+exact capacity limits the profile exists to relax. C1 kept the line, documented both facts, and added
+`dustOutputs()`, which applies BCHN's `3 * (bytes + 148)` rule **to the built bytes, where no provider setting
+can mask it**. All four capstones assert it empty.
+
+**And a real address alone does not fix a dust output** - it raises the threshold from 474 to 546, so the amount
+had to move with it, 10 -> 1,000 satoshis.
+
+**C1 the capstone is BLOCKED, and the blocker is not C1.** X60 moved it past every pre-lookup rule, so the node
+now **executes** it and refuses `mandatory-script-verify-flag-failed (OP_EQUALVERIFY)` at inputs 2-6. Cause:
+**`RegtestNetworkProvider.addUtxo` ignores `utxo.token.category` and silently mints a fresh genesis**, so four
+entry NFTs seeded under the Token's category arrive under **four different ones**. The fixture cannot route
+around it - the allowance entry is keyed on the Router's category-pinned bytecode and the Router pins the
+Token's, so neither genesis can precede the other. The named fix is outside C1's lease: `addUtxo` must mint into
+the requested category, **or at minimum throw instead of substituting**. Opened as **X74**, and C1's test is a
+pinned FINDING that fails the moment it is fixed.
+
+**A process finding that names a mistake the integration owner made this round.** A full e2e run against a
+**stale compiler `dist`** produced 4 failures; `yarn build` took them to 19/19. The board hit exactly this two
+rounds running - it is now a standing rule: **anything merging compiler commits must rebuild before believing a
+suite result.**
+
+Sizes at HEAD, measured: A13 23,458 / C2 52,733 / C1 62,722 / **C3 99,670**, 330 under the relay ceiling. A13 and
+C2 match F4 exactly; C1 and C3 are +52 for X60's real recipient script and larger transfer value.
 
 ### 4.77 F3: THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS
 

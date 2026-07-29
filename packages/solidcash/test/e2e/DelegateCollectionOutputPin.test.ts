@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeTransaction, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import {
@@ -131,11 +131,10 @@ describe('X11 follow-on: collection output-count pin inside a delegate', () => {
     const { signer, provider } = await fundedSigner();
     const { handle, entryAddress } = await deployBehindRelaxedProxy(signer);
     await handle.forward('register', [5n]).send();
+    // The same reader the live forgery was visible through returns exactly the one genuine value.
+    expect((await handle.proxy.getEntries('users')).map((entry: any) => entry.value)).toEqual([5n]);
     // HEAD plus exactly one node: nothing extra was minted by the honest path either.
-    const list = SortedList.fromUtxos(await provider.getUtxos(entryAddress));
-    expect(list.all.length).toBe(2);
-    const node = list.all.find((entry: any) => entry.value.length > 0)!;
-    expect(vmNumberToBigInt(node.value, { requireMinimalEncoding: false })).toBe(5n);
+    expect(SortedList.fromUtxos(await provider.getUtxos(entryAddress)).all.length).toBe(2);
   }, 300_000);
 
   /**

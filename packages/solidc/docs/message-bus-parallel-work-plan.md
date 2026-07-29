@@ -154,7 +154,9 @@ task-specific report, not in this table.
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
 | F1 | Ordinary-limit consensus and policy measurements | A6 | — | **INTEGRATED** | envelope measured; a DIFFERENT limit binds first per shape; CONSENSUS_FIT supported but not asserted - see 4.58 |
 | X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | — | F1 | **TODO (ledger accuracy)** | real C3 at N=8 is 0.9217x, 2.54x higher and 9.4x the bytes |
-| X48 | One knob cannot express two hash regimes | — | F1 | **BLOCKED** | `createVirtualMachine.ts:29-30` writes one value into standard AND nonstandard; 6x the real standard 0.5; does not bite by luck |
+| X48 | One knob cannot express two hash regimes | B4 | F1 | **INTEGRATED** | splitting the field alone was COSMETIC - the regime selector was hardcoded; nothing moves, 9.3x margin - see 4.65 |
+| X57 | `createVirtualMachineBch2026ForProvider` silently drops the observer | — | X48 | **TODO (live-network)** | early return when `consensusLimits` is undefined; Electrum/regtest have none, so derivation observers are discarded |
+| X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | — | X48 | **TODO** | the regime split is not yet end-to-end into the mem-cash verifier |
 | X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | — | F1 | **TODO** | libauth-with-real-constants is not a node; this is the only gap left for the claim |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
@@ -223,6 +225,56 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.65 X48: splitting the knob would have been COSMETIC, and "by luck" is now "by 9.3x of margin"
+
+Merged at `d6ef4581`.
+
+**The sharpest finding is that the named fix was not the fix.** F1 reported that `createVirtualMachine.ts` writes
+one `hashDigestIterationsPerByte` into both regime fields. Splitting the field would have changed **nothing**,
+because `createInstructionSetBch2026(true, ...)` was **hardcoded** and libauth selects the budget as
+`standard ? Standard : Nonstandard` - so the nonstandard write was **dead code, and only the standard slot was
+ever read**. The regime *selector* is what makes the split live. B4 found that by reading the consumer rather
+than trusting the reported symptom.
+
+**The answer to the question the row existed to ask: nothing moves.** All seven shapes bind on the **same limit
+at the same ratio** as F1's baseline, with zero refusals at both real regimes. The figures that did move -
+A13 23,734 -> 23,845 B, C2 53,101 -> 53,249, C1 63,130 -> 63,315, **C3 100,354 -> 100,650** - are serialized and
+script **bytes**, which no VM knob can reach; they moved with the **base commit**, not with X48. Attributing
+those correctly is the difference between a measurement and a coincidence.
+
+**And it is quantified rather than asserted.** Worst hash usage anywhere is **0.1078x of the real standard
+allowance**, set in all seven shapes by the same input: the **126-byte P2PKH fee funder**, 9 iterations against
+an 83-iteration allowance. The multi-kilobyte Layer-3 covenant inputs reach 177 iterations and still top out at
+**0.0487x** - their density budget grows with their script faster than their hashing does. The old 3-per-byte
+knob could only have masked a failure for a shape between **1.0x and 6.0x**, and the envelope sits **9.3x below**
+the bottom of that window. F1's "does not bite by luck" is now **"does not bite, measured, with 9.3x of margin"**.
+
+**Two controls better than what they replace.** The hash control is now a **2x2**: tightening one knob below the
+measured iterations must refuse in **its own regime and not in the other**, which is what proves the refusal came
+from the knob under test rather than its twin - plus a guard that the shape hashes at all, so it cannot pass
+vacuously. And consensus operation cost is now **read from the nonstandard instruction set** instead of only
+derived by repricing at 64: **measured == derived on all 250 inputs, 0 mismatches**, so F1's arithmetic reprice
+is VM-confirmed rather than assumed.
+
+**Zero fixtures changed expectation**, and the `src/` change is byte-inert for all 11 existing single-value
+profiles.
+
+**Two caveats stated in the harness rather than hidden**: libauth's nonstandard instruction set also drops the
+per-input SigChecks ceiling and leaves CLTV/CSV as no-ops, so it is *more permissive than real consensus* on
+those two points. SigChecks is therefore still computed and ranked separately - it is what binds N=2 - and
+`refusedAtStandard` remains the stronger acceptance reading.
+
+**Relayed to B1, which is on regtest now:** the corrected knobs change nothing about what a broadcast should
+show, so if C3 is refused, **hashing is not the cause** - 100,650 B against the 100,000 B ceiling is, and that is
+a mempool policy refusal rather than a script failure.
+
+**A pre-existing bug found by reading, reported not touched, and opened as X57:**
+`createVirtualMachineBch2026ForProvider` **returns early when `provider.consensusLimits` is undefined and
+silently drops the `observer`**. Providers other than the mock - Electrum and regtest included - have no
+`consensusLimits`, so **opcode observers used for state derivation are discarded on live networks**. Relayed to
+B1 as the first thing to check if regtest derivation misbehaves. Also flagged: `MockNetworkProvider.ts:89` writes
+only the nonstandard field into the mem-cash verifier, so the split is not yet end-to-end there (X58).
 
 ### 4.64 TWO more live forgeries (X11, SEC-14), and A2 retracted its own first fix
 

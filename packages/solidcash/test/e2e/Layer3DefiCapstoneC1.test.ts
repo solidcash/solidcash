@@ -12,7 +12,7 @@ import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {
-  createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+  acceptedByNode, createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
 } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -1109,89 +1109,80 @@ contract C1RouterDirect(address vault, address accrue) {
 });
 
 /**
- * X59 + X60. C1 BUILT AGAINST A REAL BCHN NODE: how far it gets, and exactly what stops it.
+ * X59 + X60 + X74. C1 BUILT AGAINST A REAL BCHN NODE, AND WHAT IT TOOK TO GET THERE.
  *
  * ROUND 17 offered C1's mock-built bytes to BCHN and got `64: dust` - the only capstone whose verdict was a
  * real rule rather than `missing-inputs`, because BCHN checks output dust BEFORE it looks up inputs. X60 found
- * the cause (a 10-satoshi output to a one-byte placeholder script) and fixed it at the top of this file.
+ * the cause (a 10-satoshi output to a one-byte placeholder script) and fixed it at the top of this file, which
+ * moved C1 past every pre-lookup policy rule and got its scripts EXECUTED.
  *
- * WHAT THAT BOUGHT, MEASURED. C1 now clears every pre-lookup policy rule and BCHN proceeds to EXECUTE the
- * transaction's scripts. That is strictly more than round 17 reached and strictly less than acceptance.
+ * ROUND 18 then got `mandatory-script-verify-flag-failed (OP_EQUALVERIFY)` at inputs 2-6 - the token master
+ * route and its four entry NFTs - and localized it to a TEST PROVIDER defect, not a covenant or fixture one:
+ * `RegtestNetworkProvider.addUtxo` ignored `utxo.token.category` and silently minted a fresh genesis per call
+ * (`category: hexToBin(fundingInput.txid)`), so four entry NFTs seeded under the Token's category arrived
+ * under FOUR DIFFERENT categories and the covenant that requires an entry to carry its owner's category
+ * refused, correctly. The fixture could not route around it: C1's allowance entry is keyed on the ROUTER's
+ * category-pinned locking bytecode and the Router pins the TOKEN's as a constructor argument, so neither
+ * genesis can precede the other and the allowance entry cannot be minted in the Token's genesis transaction.
  *
- * WHAT STOPS IT, AND IT IS NOT C1. The node refuses with
- * `mandatory-script-verify-flag-failed (Script failed an OP_EQUALVERIFY operation)`, and evaluating each input
- * locally against the same bytes localizes it to the Token block: input 2 (the token master route) and inputs
- * 3-6 (its four entry NFTs), all on `OP_VERIFY`. The reason is visible in the source outputs and is a TEST
- * PROVIDER defect, not a covenant or a fixture one:
+ * X74 FIXED THE PROVIDER, not the fixture and not the covenants. Every genesis it creates now retains that
+ * category's minting NFT at its own address, and `addUtxo` co-spends it to mint into the REQUESTED category;
+ * a request it cannot satisfy throws by name instead of substituting. The four entries now arrive under the
+ * Token's own category, which is what the block below asserts before it asserts anything about the node.
  *
- *   RegtestNetworkProvider.addUtxo IGNORES `utxo.token.category` AND SILENTLY MINTS A FRESH ONE.
- *
- * For a token UTXO it always builds a genesis whose category is the funding input's txid
- * (`category: hexToBin(fundingInput.txid)` in `RegtestNetworkProvider.ts`), then writes that category back
- * onto the caller's object. So the four entry NFTs this fixture seeds under the Token's category arrive under
- * FOUR DIFFERENT categories - one fresh genesis each - and the covenant that requires an entry to carry its
- * owner's category refuses, correctly. The categories are fresh per run, so the test below asserts that they
- * DISAGREE rather than pinning values that cannot reproduce.
- *
- * WHY THE FIXTURE CANNOT ROUTE AROUND IT. `addTokenUtxosDynamic` can mint many outputs under one new category
- * and `setupStatefulUtxos` already exposes it as `extraOutputs`, but C1's allowance entry is keyed on the
- * ROUTER's category-pinned locking bytecode, and the Router pins the TOKEN's category-pinned locking bytecode
- * as a constructor argument. Neither genesis can precede the other, so the allowance entry cannot be minted in
- * the Token's genesis transaction. Seeding it afterwards is exactly what needs the provider to mint into an
- * EXISTING category, which is the missing capability.
- *
- * THE NAMED CHANGE, out of this worker's lease (`src/`): `RegtestNetworkProvider.addUtxo` must mint into the
- * requested `utxo.token.category` when one is given - retaining a minting-capability UTXO from
- * `addTokenUtxosDynamic` and co-spending it - or, at the very least, THROW instead of silently substituting a
- * different category. The silent substitution is the reason this failure surfaced as an opaque node-side
- * script error rather than as a seeding error.
+ * NOTHING IS RELAXED HERE. `RegtestNetworkProvider` carries no `consensusLimits`, so the SDK's probe VM is
+ * libauth's ordinary BCH-2026 instruction set, and the node applies real consensus plus real standard relay
+ * policy - the size ceiling, the dust rule and the SigChecks limits included. The relaxed capacity profile the
+ * SEMANTIC tests above use is a different provider and does not reach this block.
  *
  * Requires the docker regtest stack; see the root CLAUDE.md.
  */
 describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C1 on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes the five-participant DeFi composition, accepts it and mines it', async () => {
+    const built = await buildC1('none', createTestProvider);
+    // The shape is the one this file asserts against everywhere else - built by the same builder, not a copy.
+    expect(built.layout.participantInputs).toEqual([0, 2, 7, 9, 12]);
+
+    const transaction = built.builder.buildLibauthTransaction();
+    // X60 HOLDS ON A LIVE BUILD: no dust output survives, which is what moved C1 past the pre-lookup rules.
+    expect(formatDustOutputs(dustOutputs(transaction))).toBe('no dust outputs');
+    expect(built.transaction.length / 2).toBeLessThan(100_000);
+
+    // X74 HOLDS ON A LIVE BUILD, read off the source outputs the node is about to spend: the Token master and
+    // its four entry NFTs share ONE category. This is the direct inverse of the round-18 blocker, and the
+    // categories are minted per run, so it is asserted as agreement rather than pinned to a value.
+    const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
+    const categoryAt = (input: number): string => binToHex(sourceOutputs[input].token!.category);
+    const tokenCategory = categoryAt(2);
+    expect(tokenCategory).toMatch(/^[0-9a-f]{64}$/);
+    expect([3, 4, 5, 6].map(categoryAt)).toEqual([tokenCategory, tokenCategory, tokenCategory, tokenCategory]);
+
+    // Every input evaluates locally against the same bytes the node will see. Round 18 measured [2, 3, 4, 5, 6]
+    // here; a correctly seeded build refuses nothing.
+    const vm = createVirtualMachineBch2026ForProvider(built.provider as never);
+    const refusing = transaction.inputs
+      .map((_input, index) => ({ index, state: vm.evaluate({ inputIndex: index, sourceOutputs, transaction }) }))
+      .filter((row) => (row.state as any).error !== undefined)
+      .map((row) => row.index);
+    expect(refusing).toEqual([]);
+
+    const accepted = await acceptedByNode(built.provider as never, transaction, built.transaction);
+    console.log(`X74 C1 accepted by BCHN: ${accepted.txid} at height ${accepted.blockHeight}, `
+      + `${accepted.serializedBytes} B, ${accepted.inputCount} inputs`);
+    expect(accepted.inputCount).toBe(38);
+    expect(accepted.outputCount).toBe(38);
+    // A node that accepts and mines a transaction has executed every input script. This is the reading neither
+    // `64: dust` nor `missing-inputs` could ever give: the covenants ran, under real consensus, on a real
+    // chain. It is NOT a claim about the relaxed semantic profile the tests above measure.
+    expect(accepted.blockHeight).toBeGreaterThan(0);
+  }, 900_000);
+
   /**
-   * A PINNED BLOCKER, not a passing capability claim. This asserts the defect above as it is measured today,
-   * so the moment `RegtestNetworkProvider.addUtxo` learns to mint into an existing category this test FAILS
-   * and forces the acceptance assertions below it to be turned on. Nothing here asserts that C1 is accepted by
-   * a node, because it is not.
-   */
-  it('FINDING: the node executes C1 and refuses it, because the provider mis-seeds the entry categories',
-    async () => {
-      const built = await buildC1('none', createTestProvider);
-      expect(built.layout.participantInputs).toEqual([0, 2, 7, 9, 12]);
-
-      const transaction = built.builder.buildLibauthTransaction();
-      // X60 HOLDS ON A LIVE BUILD: no dust output survives, which is what moved C1 past the pre-lookup rules.
-      expect(formatDustOutputs(dustOutputs(transaction))).toBe('no dust outputs');
-      expect(built.transaction.length / 2).toBeLessThan(100_000);
-
-      // THE DEFECT, read off the source outputs the node would spend: the Token master and its four entry
-      // NFTs must share one category and do not. On MockNetworkProvider all five agree.
-      const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
-      const categoryAt = (input: number): string => binToHex(sourceOutputs[input].token!.category);
-      const tokenCategory = categoryAt(2);
-      const entryCategories = [3, 4, 5, 6].map(categoryAt);
-      expect(entryCategories.every((category) => category === tokenCategory)).toBe(false);
-      console.log(`X59 C1 mis-seeded categories: master ${tokenCategory.slice(0, 16)}, `
-        + `entries ${entryCategories.map((category) => category.slice(0, 16)).join(' ')}`);
-
-      // And the consequence, localized: the Token block refuses, and only the Token block.
-      const vm = createVirtualMachineBch2026ForProvider(built.provider as never);
-      const refusing = transaction.inputs
-        .map((_input, index) => ({ index, state: vm.evaluate({ inputIndex: index, sourceOutputs, transaction }) }))
-        .filter((row) => (row.state as any).error !== undefined)
-        .map((row) => row.index);
-      expect(refusing).toEqual([2, 3, 4, 5, 6]);
-
-      // The node's own verdict on the same bytes: it EXECUTED them. Not `64: dust`, which is where round 17
-      // stopped, and not `missing-inputs`, which is where every other mock-built capstone stopped.
-      await expect(built.provider.sendRawTransaction(built.transaction))
-        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
-    }, 900_000);
-
-  /**
-   * The hostile control, which passes today and is worth keeping: a forged ERC-20 caller witness is refused by
-   * the node on the same chain in the same run.
+   * THE CONTROL. Without it, "the node accepted it" is not evidence that the node was checking anything: an
+   * acceptance only means something if a transaction this composition's covenants should refuse is refused BY
+   * THE NODE, on the same chain, in the same run. This is the forged ERC-20 caller witness - the same hostile
+   * build the SEMANTIC block above refuses at input 2 - and it is seeded through the same fixed provider, so
+   * its refusal is now about the forgery rather than about mis-seeded categories.
    */
   it('CONSENSUS: BCHN refuses the forged graph caller', async () => {
     const built = await buildC1('caller', createTestProvider);

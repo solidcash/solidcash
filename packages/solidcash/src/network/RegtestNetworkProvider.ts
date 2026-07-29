@@ -220,7 +220,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const token = utxo.token!;
     if (!token.nft) {
       throw new Error(
-        `RegtestNetworkProvider.addUtxo cannot serve a fungible-only output in the existing category `
+        'RegtestNetworkProvider.addUtxo cannot serve a fungible-only output in the existing category '
         + `${category}: CashTokens fixes fungible supply at genesis. Seed it in the genesis transaction `
         + '(addTokenUtxosDynamic) instead.',
       );

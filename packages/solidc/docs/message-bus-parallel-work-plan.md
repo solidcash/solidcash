@@ -174,7 +174,7 @@ task-specific report, not in this table.
 | X66 | F2's basis and F1's header are stale-but-passing after F4 | — | F4 | **TODO** | both work off RECORDED figures; all four graph rows overstate by 129 x N and F2's C3 verdict is no longer live |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
-| X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED** | **ALL FOUR capstones now MINED in one run**; throws by name on three paths - see 4.80 |
+| X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED (cross-run throw MERGED, not verified)** | **ALL FOUR capstones MINED in one run**; `c38d96c1` is lint-clean but NOT node-verified - see 4.81 |
 | X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **LEASED** | NOT X22's shape: a void internal helper is inlined into the SCB1 wrapper and the relocated edge lands where no return-event slot exists |
 | X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | — | X71 | **TODO** | `UndefinedReferenceError ... __scb_arg_0_0 at Line 28`/`42` on a 13-LINE contract; thrown in SEMANTIC analysis of the merged AST |
 | X77 | `view` functions reported `writesState: true` by the dynamic-array analysis | — | X71 | **TODO** | `getAmountsOut`/`getAmountsIn` are `view` in source; a false positive here refuses legitimate handlers |
@@ -274,6 +274,24 @@ call sites in one file require.
 
 D3 also declined to rebuild mid-run, naming the phantom-failure trap explicitly. Correct: that trap cost a
 round-18 worker four phantom failures and cost the integration owner a false alarm two rounds running.
+
+**EVIDENCE SCOPE, and the integration owner merged ahead of it.** `c38d96c1` - the cross-run throw - is merged at
+`dc9cf1f7` but is **lint-clean and NOT node-verified**. D3 offered to hold it and let the board take only the
+three proven commits; the merge had already happened when that caveat arrived. Recording rather than quietly
+carrying it:
+
+- **Node-verified**: `044997c3`, `f75ff24c`, `bcc5dc84` - four capstones mined, X74 green on three consecutive
+  runs.
+- **NOT node-verified**: `c38d96c1`. Its path requires *a real category from a previous run on the same chain*,
+  which **the mock suite cannot reach at all** - `MockNetworkProvider` is a different class - so a green mocklet
+  run is not evidence about it in either direction.
+
+So this row is **MERGED, not INTEGRATED**, on the same rule that held SEC-13 for one notification cycle in round
+15: an unfinished verification is not a verification. It is promoted when D3 runs the X74 file against BCHN.
+
+The risk is bounded and worth stating: the change only **adds a throw** on a path that previously substituted
+silently, so a wrong throw is a loud regtest failure rather than a silent acceptance - but "bounded" is an
+argument, and the row stays unpromoted until it is a measurement.
 
 ### 4.80 ALL FOUR CAPSTONES MINED, in one run, on a real node
 

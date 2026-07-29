@@ -170,15 +170,19 @@ task-specific report, not in this table.
 | X80 | F3's 455 is a ~2.2x undercount of gate reach | D2 | F3 | **MEASURED** | 419 firings, 226 on contracts that DO get a route and are invisible to the route-absent channel |
 | X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | D4 | F3,F2 | **INTEGRATED** | 44/45 under -> **0/45 under**; one defect was an IMPOSSIBILITY (intercept below the redeem it pushes) - see 4.83 |
 | X78 | The estimator still names DENSITY as the binder on all 45 | — | X70 | **TODO** | coefficient tightness differs 601% vs 10%, so bounds cannot rank limits; `bindingUnresolved` now carries the true binder 45/45 |
-| X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | — | F3 | **TODO (diagnostic)** | the reported line is not a position in the user's file |
-| X72 | 20 refusals published with NO `rejectionReason` | — | F3 | **TODO (diagnostic)** | all on the compiler-synthesized `__updateBlockOracle` |
+| X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
+| X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | — | X71 | **TODO** | `MerkleTree.sol` lands here once the ParseError is past |
+| X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **TODO** | likely a missing `compileFile` fallback for FAIL rows; reconcile before quoting those numbers |
+| X72 | 20 refusals published with NO `rejectionReason` | D6 | F3 | **INTEGRATED** | an ORDERING defect: the oracle pass appends an entry point after route synthesis names reasons; 16 -> 0 |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
-| X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | — | F4 | **TODO (sized)** | ~760 B of the verifier, ~6,080 C3 bytes; table-lookup form needs a 2-byte offset whose soundness rests on the stack-item bound |
+| X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | D5 | F4 | **INTEGRATED** | **-444 B/projection**, 3.4x F4's sizing, by REJECTING the form F4 sized; C3 now 3,882 B under - see 4.84 |
+| X81 | DECISION: take the axiom-free verifier variant at +19 B/projection? | — | X65 | **TODO (decision)** | one fewer bound to reason about for 152 B on C3, which now has 3,882 B of headroom |
+| X82 | The F4-era comment tables already did not reproduce at `1591e87f` | — | X65 | **TODO** | C3 controller 2,131,662 recorded vs 2,131,942 measured; Sink 4,951 B vs 4,979 B |
 | X66 | F2's basis and F1's header are stale-but-passing after F4 | D4 | F4 | **INTEGRATED** | re-measured not adjusted; consequence re-derived - every costed C3 fix was sized against an overrun that does not exist |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
 | X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED (cross-run throw MERGED, not verified)** | **ALL FOUR capstones MINED in one run**; `c38d96c1` is lint-clean but NOT node-verified - see 4.81 |
-| X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **LEASED** | NOT X22's shape: a void internal helper is inlined into the SCB1 wrapper and the relocated edge lands where no return-event slot exists |
+| X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **INTEGRATED** | NOT X22's shape; all 7 corpus files now name the real edge at a position INSIDE the user's file, 7/7 |
 | X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | — | X71 | **TODO** | `UndefinedReferenceError ... __scb_arg_0_0 at Line 28`/`42` on a 13-LINE contract; thrown in SEMANTIC analysis of the merged AST |
 | X77 | `view` functions reported `writesState: true` by the dynamic-array analysis | — | X71 | **TODO** | `getAmountsOut`/`getAmountsIn` are `view` in source; a false positive here refuses legitimate handlers |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
@@ -247,6 +251,101 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.84 X65 beat F4's sizing 3.4x by REJECTING the form F4 sized
+
+Merged at `825f720f`; re-pins and the guard rewrite at `3bbc87fd`.
+
+**-444 B per projection** (4,542 -> **4,098**), against F4's sized ~95 B/slot. D5 got there by **not building what
+F4 proposed**: it measured **nine** forms and found F4's flagged byte-offset table lands at 4,522/4,385/4,374 and
+its framed walk at 4,418 - **all worse than the shipped chains would have been worth optimising for**.
+
+**The winning form needs no offset arithmetic at all**, which dissolves the soundness concern F4 declined to
+land blind. It appends the participant loop's own raw 2-byte `participantInput` field at constant stride and
+rebuilds the framed entry from `tx.inputs[idx].lockingBytecode` - a binding the loop **already requires**.
+
+| shape | N | before | after | delta | = N x 444 |
+| --- | --- | --- | --- | --- | --- |
+| A13 | 3 | 23,458 | **22,126** | -1,332 | 3x |
+| C2 | 4 | 52,733 | **50,957** | -1,776 | 4x |
+| C1 | 5 | 62,722 | **60,502** | -2,220 | 5x |
+| **C3** | 8 | 99,670 | **96,118** | -3,552 | 8x |
+
+**C3 goes from 330 to 3,882 bytes under the relay ceiling**, and **A13 is node-verified at BOTH ends** - BCHN
+mined 23,458 B at height 3441 and 22,126 B at height 3553.
+
+**Soundness established rather than deferred, and fail-closed by measurement.** `bytes2` is exact at 0/200/9,999/
+32,767 and **aborts** at 32,768 and 65,535 - it cannot truncate; an out-of-range table read **aborts**, including
+at the 0xff no-caller sentinel where the chains hit a `revert`. So **this form can only ever REFUSE where the
+chains accepted, never the reverse.** Check counts identical: `require(` 51 -> 51, `&&` 13 -> 13, `||` 2 -> 2.
+The removed arms compared against an *unassigned empty local* - deleting them is a tightening had one been
+reachable, not a loosening.
+
+**It wins density too, so there was no trade to weigh**: instructions fall 19-21% and **no ratio rose anywhere**.
+C2's binding density and C3's worst input reproduce **to the operation**, and the controller is byte-identical -
+the scope control proving a change to one covenant moved one covenant's figures.
+
+**An offer left open as X81**: the axiom-free variant measures 4,117, so **the single bound is priced at 19 B per
+projection** and can be taken by swapping one line. With 3,882 bytes of C3 headroom, trading 152 bytes for one
+fewer thing to reason about looks right - but it is D5's measured judgement that landed the bounded form, so it
+is recorded as a decision rather than overridden.
+
+**A guard had gone VACUOUS and D5 caught it.** `Layer3ReviewA1` and the C3 fixture hunted
+`participantLbcN == participantLbcM` - and X65 deleted those identifiers, so the regex could never match again
+while still passing. **A pairwise comparison reintroduced in any other spelling would have sailed through.**
+Rewritten to assert the property rather than the spelling: no comparison in either covenant may carry a
+participant locking bytecode on both sides, plus an explicit assertion that the old identifiers are gone.
+
+D5 also found the F4-era comment tables **already did not reproduce** at the base commit (C3 controller cost
+2,131,662 recorded against 2,131,942 measured, Sink 4,951 B against 4,979 B) - pre-existing drift its own
+before-run established. Opened as **X82**.
+
+### 4.85 X72 and X75 land; X71 is written, measured, and HELD for the lease
+
+Merged at `29b05d1d`.
+
+**X72's cause is an ordering one.** Route synthesis names reasons only for entry points **as of the moment it
+runs**, and `SynthesizeBlockOracle` appends `__updateBlockOracle` *after* the early call - so both fields stay
+`undefined` and the artifact publishes `eligible:false` with the key omitted. The fix reuses the name the
+**absence** channel already resolves for exactly this condition, so both channels now say the same thing.
+Corpus: **210 contracts, 103 routed, 16 unnamed before -> 0 after**, all 16 the oracle updater, per-corpus
+**2/7/7** matching the census exactly.
+
+**Its discriminating power is stated in both directions** - a leaked default would show the two late-ordering
+contracts flipping to refused (0 observed), a missed shape would leave a surviving non-oracle unnamed row (0
+observed). And D6 flagged that this is **not** a refusal, so X42's no-artifact property does not apply; what
+replaces it is that the artifact is byte-identical but for one added key, on **423/423** corpus contracts.
+
+**X75 is not X22's shape.** The returning call and the effect sit in a **void internal helper**; the effect makes
+it ineligible for its own `OP_INVOKE` subroutine, so it is inlined into the SCB1 wrapper and the relocated edge
+lands where the layout has **no slot** (measured: 0 slots, call index -1). Route synthesis never sees it, which
+is why the gate belongs at the generator. All **7** corpus files now name the real edge at a position **inside
+the user's file, verified line by line 7/7**.
+
+**X71 is written, fully measured, and deliberately NOT landed** - its three hunks are in `compiler.ts`, which D1
+still holds. Handover patch verified `git apply --check` clean.
+
+**Option (e) works, and D6 reported the qualified truth.** Emitting the **parenthesised** tuple form is not a
+language change - grammar untouched, no user program newly valid, and `AstBuilder` builds the same node either
+way, with **no codegen consumer of the flag anywhere in the repo** (grepped). Router02 now **compiles** under
+`+hiddenBatch`: route present, 25 handlers, 7 eligible. But under **`+controller`, F3's actual configuration, it
+still fails** - now with a pre-existing *named* refusal instead of a ParseError at a synthetic position. **So
+Router02 does not join the bus-reachable set**, and **all 7 admitted handlers are `view`/`pure`, so F3's
+read-only headline stands.**
+
+**423/423 corpus contracts byte-identical**, and the fallback is exercised: 3 solc-sample files still fail to
+parse the generated route and now report the position as compiler-generated rather than bare.
+
+**Two new findings.** `MerkleTree.sol` gets past the ParseError and lands on `Block slot not found:
+keccakSideCar[0]` - **X42's family again, on a slot kind X42 did not cover** (**X83**). And a census discrepancy:
+`F3_CENSUS_BUS_FAILURES` lists no ParseError for solidity-by-example, but `MerkleTree.sol` produces one under the
+census's own options - likely a missing `compileFile` fallback for FAIL rows, **to reconcile before those numbers
+are quoted again** (**X84**).
+
+**A process note worth keeping.** D6's first full run reported 5 failures, **every one a 30s timeout and none an
+assertion**, caused by running alongside two corpus probes - two of them its own. It moved the compiles into
+budgeted `beforeAll` hooks, the mechanism `vitest.config.ts` itself names, so the cases are **load-invariant**
+rather than merely re-run until green.
 
 ### 4.82 The gates are STACKED, the count was a 2.2x undercount, and the estimator was unsound at N=1
 

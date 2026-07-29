@@ -175,6 +175,9 @@ task-specific report, not in this table.
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
 | X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | — | X59 | **TODO (blocks C1 on a node)** | four entry NFTs seeded under one category arrive under four; must mint into the requested category or throw |
+| X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **LEASED** | NOT X22's shape: a void internal helper is inlined into the SCB1 wrapper and the relocated edge lands where no return-event slot exists |
+| X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | — | X71 | **TODO** | `UndefinedReferenceError ... __scb_arg_0_0 at Line 28`/`42` on a 13-LINE contract; thrown in SEMANTIC analysis of the merged AST |
+| X77 | `view` functions reported `writesState: true` by the dynamic-array analysis | — | X71 | **TODO** | `getAmountsOut`/`getAmountsIn` are `view` in source; a false positive here refuses legitimate handlers |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |

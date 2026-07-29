@@ -193,6 +193,48 @@ contract X73Mixed() {
   });
 
   /**
+   * NEVER SHRINK. The route's uniformity rules choose ONE shape for the whole admitted set, so a newly
+   * eligible handler can demote handlers that were already admitted. Measured on a real ERC-20: admitting the
+   * event-emitting, value-returning `approve` makes the route both result-shaped and event-shaped, and that
+   * combination refuses EVERY handler - so the contract went from a route carrying `balanceOf` to no route at
+   * all. Admitting `external` must never cost a contract handlers it already had, so the public-only route is
+   * kept and the external handler is refused by name.
+   *
+   * The control below is the same source with `approve` declared `public`. There the poisoning is not X73's to
+   * avoid - both handlers are public candidates, there is no narrower set, and the route is lost at HEAD
+   * exactly as it was before. That is what makes the preserved case a property of this guard rather than of
+   * some change to the uniformity rules themselves, which are untouched.
+   */
+  it('keeps the public-only route when an external handler would cost the contract its handlers', () => {
+    const erc20 = (visibility: string): string => `pragma solidcash >=0.8.0;
+contract X73Shrink() {
+  event Approval(address owner, bigint amount);
+  mapping(address => bigint) balances;
+  mapping(address => bigint) allowances;
+  function balanceOf(address who) public returns (bigint) { require(true); return this.balances[who]; }
+  function approve(address spender, bigint amount) ${visibility} returns (bool) {
+    this.allowances[spender] = amount;
+    emit Approval(spender, amount);
+    require(true);
+    return true;
+  }
+}`;
+    expect(compileString(erc20('external'), BATCH).hiddenBatch?.handlers).toEqual([
+      expect.objectContaining({ name: 'balanceOf', eligible: true }),
+      expect.objectContaining({
+        name: 'approve', eligible: false, rejectionReason: 'external-handler-would-shrink-the-route',
+      }),
+    ]);
+
+    // CONTROL: the same handler as `public`. Nothing about the uniformity rules changed, so this contract has
+    // no route - which is exactly what it had before X73, and what the external spelling would have inherited.
+    const asPublic = compileString(erc20('public'), BATCH);
+    expect(asPublic.hiddenBatch).toBeUndefined();
+    expect((asPublic.diagnostics ?? []).map((entry) => entry.message).join(' '))
+      .toContain("'balanceOf': result-route-requires-effect-free-handlers");
+  });
+
+  /**
    * NEGATIVE CONTROL. The refusal that remains is the one the route genuinely cannot lift: a name that is not
    * an entry point at all. Nothing here is credited to the visibility gate having been removed wholesale.
    */
@@ -244,5 +286,31 @@ contract X73Balances() {
     // The entry the route authenticates is named by the collection, exactly as the public spelling names it.
     expect(artifact.abi[0].entryAccesses)
       .toEqual([expect.objectContaining({ collection: 'balances', keyParams: ['who'] })]);
+  });
+
+  /**
+   * The resource-shaped route - two key alternatives over one collection - is the ERC-20 `transfer` shape, and
+   * `transfer` is `external` in every real token. It reaches the route through the resource clone the route
+   * already builds, so the external spelling compiles to the SAME BYTES as the public one: the visibility
+   * keyword costs a participant nothing here.
+   */
+  it('admits the external ERC-20 transfer shape at no byte cost over the public spelling', () => {
+    const transfer = (visibility: string): string => `pragma solidcash >=0.8.0;
+contract X73Token() {
+  mapping(address => bigint) balances;
+  function transfer(address from, address to, bigint amount) ${visibility} {
+    require(this.balances[from] >= amount);
+    this.balances[from] = this.balances[from] - amount;
+    this.balances[to] = this.balances[to] + amount;
+    require(amount >= 0);
+  }
+}`;
+    const asPublic = compileString(transfer('public'), graph);
+    const asExternal = compileString(transfer('external'), graph);
+    expect(asExternal.hiddenBatch?.handlers)
+      .toEqual([expect.objectContaining({ name: 'transfer', eligible: true })]);
+    expect(asExternal.bytecode).toBe(asPublic.bytecode);
+    // A state-changing handler, not a read-only one: this is a route that can move balances.
+    expect(asExternal.abi.find((entry) => entry.name === 'transfer')?.writesState).toBe(true);
   });
 });

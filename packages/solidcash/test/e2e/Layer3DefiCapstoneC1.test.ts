@@ -935,8 +935,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
     // costs about 7 points on each projection and 8 on the controller". Both halves are wrong. The figures were
     // taken on a reshape branch before X24 (unroll the deep stack write) and X27 (suffix-split the transcript
     // in `attest`) were composed on one tree and were never re-run; against the same 0.7268 the measured 0.6182
-    // is 10.9 points LOWER, not 8 higher. Round 15 landed five further source changes on top, so a
-    // point-in-time capacity figure is not a standing claim: the run prints its own table above the assertions.
+    // is 10.9 points LOWER, not 8 higher. Fifteen further commits touching a `src/` directory landed between
+    // the last independent re-measurement (690c868c) and this commit, so a point-in-time capacity figure is
+    // never a standing claim; the run prints its own table above the assertions for exactly that reason.
     // Bands are asserted rather than exact figures so compiler work elsewhere does not falsely fail here; what
     // the reshape has to preserve is that NOTHING crosses 1.0.
     const projectionRatios = built.layout.projectionInputs.map(ratioAt);

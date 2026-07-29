@@ -10,6 +10,7 @@ import {
   getDataNftAddress, createDataNftUnlocker,
 } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
 import { alicePkh, alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
@@ -1080,11 +1081,20 @@ contract E3Hash160Proxy(bytes20 pkh) {
     });
 
     /**
-     * WHY THE GATE IS STILL NOT WIRED, measured rather than asserted. Instrumenting `withDelegatecall` to
-     * classify every pair it receives and running the three SDK suites that use it produced 11 calls over 6
-     * distinct proxy/implementation pairs, and the gate refused 11 of 11 (100%): 5 'dynamically-resolved-
-     * implementation', 4 'not selector-dispatched', 1 'collection-writing-delegate', 1 'self-authorized'.
-     * Nothing that settles today would survive wiring, so it stays an opt-in planner check.
+     * WHY THE GATE IS STILL NOT WIRED, measured rather than asserted. Round 14 instrumented `withDelegatecall`
+     * to classify every pair it receives, ran the three SDK suites that use it, and got 11 calls over 6 pairs,
+     * refused 11 of 11.
+     *
+     * ROUND 16 RE-MEASURED over a wider set (Delegatecall, LibraryDelegate, UpgradesDeployProxy,
+     * FallbackReceive): 27 calls over 21 distinct pairs, refused 27 of 27 (100%). The conclusion is unchanged -
+     * nothing that settles today would survive wiring - but the breakdown moved, and one entry is a finding
+     * rather than a shape: 13 of the 27 are 'unpublished-target-provenance', because the SDK's built-in
+     * `defaultProxyArtifact.ts` is a CHECKED-IN pre-X37 artifact whose delegatecall row is
+     * `{callMode:'delegatecall'}` with no `target`. Compiling its own `DEFAULT_PROXY_SOURCE` with the current
+     * compiler publishes `{kind:'constructorArg', name:'implementation'}`, so the fix is additive metadata on
+     * that file - not touched here, since its header warns that a regenerate must reapply a manual bytecode
+     * adjustment. The rest: 4 'dynamically-resolved-implementation', 4 not-selector-dispatched,
+     * 3 'emitting-delegate', 2 'self-authorized', 1 'collection-writing-delegate'.
      *
      * The 'self-authorized' one is not a synthetic trap: the canonical `PinnedProxy` fixture in the SDK's own
      * `Delegatecall.test.ts` is the A13-2 shape verbatim, which is what this case pins.
@@ -1098,6 +1108,15 @@ contract E3Hash160Proxy(bytes20 pkh) {
 
       const fixtureArtifact = compileString(`pragma solidcash >=0.8.0;\n${match![0]}`);
       expect(classify(fixtureArtifact, [])).toThrow(/class 'self-authorized' is not admitted/);
+
+      // The built-in proxy the SDK ships is a pre-X37 artifact, which is what 13 of the 27 refusals above are.
+      // Pinned here so the finding is a measured fact rather than a comment: its source compiles to a target
+      // provenance, and the shipped artifact carries none.
+      const shipped = defaultProxyArtifact.abi.find((entry) => entry.name === '__forward')!;
+      expect(shipped.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+      expect(compileString(DEFAULT_PROXY_SOURCE, { forceStateful: true })
+        .abi.find((entry) => entry.name === '__forward')!.lowLevelCalls)
+        .toEqual([{ callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } }]);
     });
   });
 

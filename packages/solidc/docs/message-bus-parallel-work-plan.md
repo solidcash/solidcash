@@ -164,7 +164,11 @@ task-specific report, not in this table.
 | X59 | Thread `createProvider` into the four capstone fixtures | — | X49 | **TODO** | only obstacle to node-executing A13/C2/C1; builders take the param but are file-local and unexported |
 | X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient - refused as DUST | — | X49 | **TODO** | invisible to every harness measurement: `enforceDust: false` + `dustRelayFeePerKb: 0n` |
 | F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
-| F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
+| F3 | MistSwap/EA and proving-corpus fit report | C6 | F1,F2 | **INTEGRATED** | **THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS**: all 12 bus-reachable app contracts admit READ-ONLY; 80% of refusals are route-scope - see 4.77 |
+| X73 | `initial-v1-route-requires-public-visibility` refuses 172 of 455 (38%) | — | F3 | **TODO (biggest incidental wall)** | Solidity marks entry points `external`; the v1 route admits `public` |
+| X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | — | F3,F2 | **TODO** | F2's blind spot 5 at ONE participant; the projection covenant is larger than any contract it proves |
+| X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | — | F3 | **TODO (diagnostic)** | the reported line is not a position in the user's file |
+| X72 | 20 refusals published with NO `rejectionReason` | — | F3 | **TODO (diagnostic)** | all on the compiler-synthesized `__updateBlockOracle` |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
 | X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | — | F4 | **TODO (sized)** | ~760 B of the verifier, ~6,080 C3 bytes; table-lookup form needs a 2-byte offset whose soundness rests on the stack-item bound |
 | X66 | F2's basis and F1's header are stale-but-passing after F4 | — | F4 | **TODO** | both work off RECORDED figures; all four graph rows overstate by 129 x N and F2's C3 verdict is no longer live |
@@ -236,6 +240,57 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.77 F3: THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS
+
+Merged at `756682d0`. This row reframes the four rounds of capacity work that preceded it, and the board should
+say so plainly rather than filing it as one more measurement.
+
+**The headline, measured: all 12 bus-reachable application contracts admit a READ-ONLY surface and nothing
+else.** 134 state-changing handlers are refused. A real ERC-20 offers the graph `balanceOf` and `allowance`; a
+constant-product AMM offers `balanceOf`. **The capacity envelope never gets to bind on `swap` or `transfer`,
+because those never reach the route at all.**
+
+Census: **712 contracts / 586 files** across four corpora; 635 compile, 504 in bus mode, **367 reach the bus**.
+Of the 44 MistSwap and EACC contracts, **12** do.
+
+**80% of refusals are route-scope gates, not capacity.** 364 of 455, and the single largest is
+`initial-v1-route-requires-public-visibility` at **172 (38%)** - because **Solidity marks entry points
+`external` while the v1 route admits `public`.** That is an incidental wall, and it is the biggest one in the
+corpus by a factor of three.
+
+**Where capacity does bind, it binds early and hard - and needed no estimator to show it.** Eight of the twelve
+have redeem scripts at **86% to 439% of the 10,000-byte per-input limit before a single argument byte**:
+`UniswapV2Factory` 439%, `MarketplaceV1` 323%, `EACCToken` 182%.
+
+**A real finding against F2's conservatism claim, and it is F2's own documented blind spot at a magnitude nobody
+had seen.** Across 45 measured transactions, **all 45 bind on unlocking bytecode length, and F2 under-predicts
+that limit 45 out of 45** (-0.5% to -9.8%, mean **-7.0%**) while predicting density would bind on every one.
+F2 recorded this as blind spot 5 at six participants and 1.8%; here it is **one participant at 7%**. The
+mechanism is stated: the generated projection covenant is **~4,780 B, larger than any of the 45 contracts it
+proves**. F2 remains conservative on serialized bytes (+15.7% to +24.2%, 45/45), density (+56.9% to +153.2%,
+45/45) and SigChecks (exact, 45/45). Opened as **X70**.
+
+**Two compiler defects found in passing**: a bus-mode-only `ParseError` on `UniswapV2Router02` whose **reported
+line moves by 51 when an unrelated option changes**, so it is not a position in the user's file (**X71**); and
+**20 refusals published with no `rejectionReason`**, all on the compiler-synthesized `__updateBlockOracle`
+(**X72**).
+
+**Walls classified, with the honest half stated.** **Real**: the 10,000-byte per-input script limit (stops 8 of
+12 at N=1 and binds all 45 measured), the 100,000-byte relay ceiling (317/367 at N=8), operation-cost density.
+**Incidental**: the five route-scope gates (364/455), the `LowLevelCallShapeError` shape gate (26 bus-mode
+failures), `Unbound return call in __scbN` (5, an unnamed internal abort), the Router02 `ParseError`, and the
+unnamed-refusal hole.
+
+**And "real" is explicitly not "unmovable", per the standing correction on this board.** Subroutine extraction,
+`outline.ts` span sharing, and the splitting and `library` paths all target script size, and **none is applied by
+the census**. Whether they close `MarketplaceV1`'s ~70% gap is **unmeasured, and C6 claims neither direction** -
+which is the right posture, and the opposite of calling an EVM pattern fundamental.
+
+**What it does not prove, stated in full**: this is not a fit claim; **no application contract was measured** -
+none has a one-slot block and the harness cannot seed sidecar slots generically - so their landings are estimates
+only; no heterogeneous graph was measured or estimated; no two real contracts were composed; the solc figure is a
+**1-in-12 systematic sample**; and the read/write split is an **upper bound on usefulness**, not a floor.
 
 ### 4.76 X26 is a SILENT under-reservation; X20's entry half is not a modelling gap; X10 BLOCKED
 

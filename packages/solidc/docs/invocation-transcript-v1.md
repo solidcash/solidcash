@@ -971,14 +971,22 @@ operationCost                       = 100 * evaluated instructions
                                       + 26,000 * signature checks
                                       + (hash-iteration cost, see below) * hash digest iterations
                                       + arithmetic cost + stack-pushed bytes
-maximum standard unlocking bytecode = 10,000 bytes
-maximum standard transaction size   = 100,000 bytes
+maximum standard unlocking bytecode = 10,000 bytes   (POLICY, and it coincides with consensus in v29)
+maximum standard transaction size   = 100,000 bytes  (POLICY, not consensus - see below)
 maximum stack item                  = 10,000 bytes
 maximum combined stack depth        = 1,000 items
 maximum control-stack depth         = 100
 maximum token commitment            = 128 bytes
 maximum aggregate nulldata          = 223 bytes
 ```
+
+TWO OF THOSE ARE POLICY AND NOT CONSENSUS, and the block above reads as one list of VM constants, which
+they are not. The 100,000-byte transaction size is **policy**: X49 got the same 101,513 bytes refused
+`64: tx-size` through the mempool and then **accepted in a hand-assembled block** on BCHN v29.0.0 (citation,
+X49; the consensus ceiling is 1,000,000 bytes). The 10,000-byte unlocking limit is also policy, and in v29
+it coincides with the consensus limit - the legacy 1,650-byte standard limit is gone, measured by X49
+accepting a 6,035-byte scriptSig on the node. A design that treats either as inviolable is over-constraining
+itself; a design that treats either as movable has no relay path.
 
 HASHING IS PRICED AND BUDGETED DIFFERENTLY IN THE TWO REGIMES, and in opposite directions. Neither
 figure may be substituted for the other, and a single "iterations per byte" knob cannot express both:

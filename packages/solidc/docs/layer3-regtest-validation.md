@@ -6,6 +6,14 @@ The spikes run on `MockNetworkProvider`, whose `sendRawTransaction` is the real 
 outputs, which are consensus-legal but flagged by the audit handoff (section 5) as possibly non-standard.
 This validates them against a real BCHN node.
 
+**This page is task 5's snapshot and has been overtaken. It is not the current state of node evidence.**
+Since it was written, three `L3GRAPH1` capstones have been executed, accepted and **mined** by BCHN v29.0.0
+on regtest with the May 2026 upgrade active, each with a hostile control refused on the same chain in the
+same run and with nothing relaxed: A13 at 23,458 bytes over 8 inputs, C2 at 52,733 over 79, and C3 at 99,670
+over 108 (citation, X59/X60 as recorded in the completion ledger; not re-measured on this page). C1 is **not**
+node-verified - it executes and fails at inputs 2-6 on a provider defect, not on the capstone. The ledger is
+the authority on all of that; this page is the authority for the three task-5 results below and nothing more.
+
 ## Environment
 
 `docker-compose.regtest.yml`: BCHN v29.0.0 (regtest, default policy incl. `acceptnonstdtxn=1`) + Fulcrum
@@ -24,9 +32,17 @@ This validates them against a real BCHN node.
    participants) run with `TESTS_USE_REGTEST=true` builds and broadcasts through the real node -
    `sendRawTransaction` resolves (the node accepted it into the mempool). ~9 s.
 
-3. The LARGEST transcript transaction is accepted. `Layer3CompactBindingSpike` POSITIVE binds N=2, 4, and
-   8 participants; the N=8 transaction is ~26 KB with eight large unlockings. Run with
+3. The largest transcript transaction *of this spike* is accepted. `Layer3CompactBindingSpike` POSITIVE binds
+   N=2, 4, and 8 participants; the N=8 transaction is ~26 KB with eight large unlockings. Run with
    `TESTS_USE_REGTEST=true` all three broadcast and are accepted by the real node. ~28 s.
+
+   **"The largest" meant largest-so-far and does not any more. Three different fixtures are called N=8 on
+   this board and they differ by an order of magnitude**, which is the confusion the ledger's X47 correction
+   was issued about. Read a participant count with the fixture that produced it, never alone:
+   `Layer3CompactBindingSpike` here at ~26 KB; the synthetic binding-only sweep at **10,661 bytes**
+   (re-measured at `1591e87f` by `Layer3ProductionEnvelopeR1.test.ts`, one `__layer3_bind` handler with no
+   state transition, no transcript, no controller and no projection verifier); and C3, the real
+   eight-participant graph, at **99,670 bytes** over 108 inputs (citation, X59/X60) - 9.35x the sweep.
 
 Reproduce 2 and 3:
 

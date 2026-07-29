@@ -4,6 +4,15 @@ Author: Claude. Date: 2026-07-24. Baseline: `codex/state-bus-research` @ `1a3245
 this pass. Purpose: answer "is the journal/bus spec fully implemented?" against the three spec
 documents, and record what was finished in this pass versus what is deferred by design.
 
+> **STALE ON TIER 2 as of `1591e87f`. Read the completion ledger, not this page, for bus status.**
+> This page describes tier 2 (the general multi-participant graph) as "un-started research" whose design
+> candidate is "still unmeasured and unfrozen". That was true on 2026-07-24 and is not true now. A different
+> design from the one this page assesses - `L3GRAPH1`, encoded by `packages/solidcash/src/layer3/graph.ts`,
+> not the `invocation-transcript-v1.md` candidate - is implemented, measured, and has had three capstones
+> executed, accepted and **mined** by BCHN v29.0.0 (citation, X59/X60 as recorded in the completion ledger).
+> The tier-1 assessment below and the reasoning about *why* the bus was not a one-pass item are left intact:
+> they are the record of a decision, and the specific figures in them are corrected where measurable.
+
 ## Verdict
 
 **Not fully implemented - and it is not supposed to be.** The spec has two tiers:
@@ -115,6 +124,16 @@ measured, or independently verified:
    of budget) - random-access or pairwise-uniqueness shapes measured 1.7-20x over budget.
 4. **Contract size.** The parameter-authorized two-row ERC-20 route already compiles to 9,775 bytes
    (225 under the 10,000 limit); a general graph covenant is far larger and hits the deploy wall.
+
+   **This prediction was wrong, and the correction is measured.** The general graph covenants that shipped
+   are *smaller* than the ERC-20 route this point was worried about, not far larger: measured at `1591e87f`,
+   the graph projection verifier compiles to **4,542 bytes** and the graph root controller to **1,493 bytes**
+   with a 35-byte p2sh32 target (1,459 with a 1-byte placeholder). Both are well inside the 10,000-byte
+   per-input limit and neither hits a deploy wall. The 9,775-byte ERC-20 figure is left as recorded and is
+   **not** re-measured here; cross-function outlining has landed since and moves it, so do not carry it
+   forward without re-measuring. What the point got right is that per-input script size is the binding limit
+   for real application contracts - F3 later measured it stopping eight of the twelve bus-reachable
+   application contracts at a single participant.
 
 Concrete path if the project wants to pursue tier 2: (a) implement a format/cost spike for the
 candidate's corrected transaction-binding and streaming-validation invariants; (b) measure realistic

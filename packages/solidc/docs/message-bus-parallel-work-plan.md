@@ -139,7 +139,10 @@ task-specific report, not in this table.
 | C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | CHANGES (round 9) | B correcting C1-R1 and C1-R4 in its own file |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | **PROVEN** | reviewed by B, clean, re-verified twice post-SEC-5 - see 4.29 |
 | C3 | Eight-participant semantic capstone | C | C1,C2 | CHANGES (round 9) | test fixed by B; A correcting C3-R2, C3-R3 and the blocker attribution |
-| X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | INTEGRATED | blocker is the CONTROLLER at 1.2286x, not the projection |
+| X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | **SUPERSEDED - table stale in all 10 rows** | controller measured **0.9217x**, over-budget set EMPTY; see 4.48 |
+| X38 | Correct the stale capacity comments in the C1 and C3 fixtures | — | X25 | **TODO** | 3rd occurrence; C1's is wrong in SIGN, C3's in all 10 rows, one quantity stated twice (24,067 vs 25,984) |
+| X39 | C3 serializes to 100,354 B - 354 over the 100,000 B standard relay ceiling | — | X25 | **TODO** | ordinary-capacity fit and relayability are now measurably different claims; blocks any POLICY_FIT for C3 |
+| X40 | Stop citing the C1/C3 reshapes as what closes SEC-6 | — | R2-F3 | **TODO** | flattened-caller shape is UNREACHABLE at HEAD; reshapes redundant with a compiler invariant, not load-bearing |
 | X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
@@ -201,6 +204,79 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.48 R2's review of the C1/C3 reshapes: PASS on soundness, and the reshapes may be REDUNDANT
+
+Merged at `5987f99b`, test-only (1,635 lines, two new review fixtures, no source file touched). **No escape found in
+either reshape.** Zero soundness defects, six findings, all with measured numbers.
+
+**Method worth adopting.** Both capstones rebuild the entire transaction per hostile row and assert equal
+serialized *length*, which they honestly scope as evidence about shape. R2 instead mutated **one field of one
+already-built honest transaction** and re-preflighted the same bytes - same outpoints, categories, witnesses.
+Because `preflightLayer3Transaction` reports the *first* failing input, "refused at N" then also asserts that
+inputs 0..N-1 accepted. Under that stricter construction C1's hostile matrix reproduced its indices **exactly**
+(2 / 7 / 9 / 12 / 12 / 12), and the restored build re-accepts in every case.
+
+**R2-F3 is the finding with consequences: the reshapes' stated premise is obsolete for BOTH capstones.** C1's
+header says the effects were moved because a calling handler's clone "is flattened out of OP_INVOKE into
+`__scb1`"; C3's says that shape is "measured FORGEABLE and refused by name (SEC-6)". Neither holds at
+`690c868c`. For any function with `graphEmissionHandler && hasOutgoingCall`, `InlineStoragePointerCalls` now
+either keeps it behind OP_INVOKE or throws - **the flattened-caller shape is unreachable**. The reshapes are
+therefore redundant with a compiler invariant rather than load-bearing. They are not wrong and they buy wider
+capstones, but the board should stop citing them as the thing that closes SEC-6: the refusal does.
+
+**R2-F2 settles the structural-guard question on the actual subject.** Round 13 showed C1's guard premise false on
+a synthetic sibling; R2 showed it false on **C1's own pre-reshape Router**, compiled at this commit: route
+synthesized, `settle` eligible, 3 binding sites, and **16 owner-local physical slots**. The guard survives as a
+drift detector; its justification does not.
+
+**C3's ordinary-capacity claim REPRODUCES, and was measured the right way.** Run to completion over all 108
+inputs, worst input the controller at **0.9217x**, over-budget set **empty** - plus a **knob-liveness control**:
+the same bytes at 200/byte fail on density, so "ACCEPTED at 800/byte" is not vacuous. That control is what this
+board lacked when it once read a 2.07x overrun as 0.0095%.
+
+**A new bounded fact, measured for the first time: the C3 transaction serializes to 100,354 bytes - 354 over the
+100,000-byte standard relay ceiling.** The fixture correctly said standard size was untested; this turns that
+into a number. "Fits ordinary BCH-2026 capacity" and "relayable under standard policy" are now known to be
+different claims for C3, and no POLICY_FIT may be asserted for it.
+
+**R2-F5: C3's X25 capacity table is stale in all ten rows.** It is introduced as "RE-MEASURED after the SEC-6
+reshape, run to completion", and **not one row reproduces** - most consequentially the controller, recorded
+1.2310x and "the ONLY input over budget", measured **0.9217x** with an empty over-budget set. The test's own
+assertions already contradicted its comment (`expect(projection.bytes).toBe(6_009)` against a stated 5,876;
+`expect(costs.filter(r => r.ratio > 1)).toEqual([])` against "the ONLY input over budget"), and the file states
+both **24,067** and **25,984** for one quantity. Downstream arithmetic inherits it: "18.8% has to come off" when
+it fits with 7.8% headroom. Same mechanism as C1's stale block - measured on the reshape branch before X24 and
+X27 were composed on one tree, then never re-run. **Third occurrence of this failure mode on this board.**
+
+**R2-F1 extends it: C1's stale comment is wrong in SIGN, not just in value.** It concludes the fifth participant
+"costs about 7 points on each projection and 8 on the controller"; against the pre-reshape controller it cites
+itself (0.7268), the measured post-reshape controller is **10.9 points LOWER**.
+
+**R2-F6: the reshape opened a hostile-set gap nobody filled.** C3's hostile union is injection / injection-burned
+/ omission / duplicate-owner / stranger-owner / disjoint-root / disjoint-root-stripped. **None attacks the event
+NFT, the satoshi transfer, the container or the return commitment** - precisely the effects the reshape moved onto
+the Sink. C1 moved its three effect rows to input 12; C3 added none. R2 supplied three, all refused at input 79.
+
+**One accepted case correctly judged NOT a defect.** An arbitrary fee-funded payment at an unreached reserved
+transfer slot was ACCEPTED (R2-C1-B). An unreached reserved slot is an ordinary output and the honest fixture
+itself parks p2pkh funding there; the companion case paying the same slot **out of the satoshi container**
+(4990 -> 3990) is refused at input 12. Reporting the accept together with the discriminating control is the
+correct handling, not a finding.
+
+**Two positive verifications worth keeping.** The seven unreached reserved event slots the reshape created are
+bound: `emitEventCovenantVerification`'s SEC-10 `OP_ELSE` requires an EMPTY commitment on the not-taken path
+(`GenerateTargetTraversal.ts:18316-18339`) and `readEventsFromChain` filters `commitment.length > 0`
+(`StateReader.ts:327`) - covenant and reader exactly aligned, so no forged log is readable through a reserved
+slot. And `msg.sender` on the ERC-20 leg binds to the **authenticated graph caller**, not merely to a co-spent
+entry: R2 built a world where the substituted spender genuinely holds the allowance and it is still refused at 2.
+
+**Scope R2 declined to claim.** C3 exercises 8/8 participants but only 8/24 invocations and depth 4/7; its
+`toContain('invocationCount <= 24')` is a source-text check, not an enforcement proof, and the depth string is
+absent from the file entirely. R2 verified all three bounds are written in both generated covenants and read the
+depth-7 frame arithmetic as in range, but built no VM case for depth 8 or 25 invocations. Mock provider only.
+
+Regression on the direct route: **6,584 passed / 0 failed** - baseline 6,565 plus R2's 19 new tests, exactly.
 
 ### 4.47 SEC-13 confirmed on all three paths; closed on two, and the third should NOT be closed separately
 

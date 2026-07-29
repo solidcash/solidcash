@@ -58,6 +58,8 @@ import { readEventsFromChain } from '../../src/stateful/StateReader.js';
  *   UNREACHED ordinal 3, SINGLE-ROW shape  ACCEPTED                   REJECTS @ input 0
  *   UNREACHED ordinal 3, invoked handler   ACCEPTED                   REJECTS @ input 0
  *     is the route's ONLY emitter
+ *   UNREACHED ordinal 5, NO dispatch site  ACCEPTED                   REJECTS @ input 0
+ *     reached at all (both rows flattened)
  *   GUARD: that same NFT, that same        ACCEPTED                   ACCEPTED
  *     unreached slot, EMPTY commitment
  *
@@ -686,6 +688,33 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
     const built = await buildStrideCase({ mode: 'noteTwice', effectOrdinals: [], emitting: false });
     expect(built.hubRows).toEqual(['note', 'note']);
     expect(await reject(built)).toEqual('ACCEPTED');
+  }, 900_000);
+
+  /**
+   * SEC-15's SENTINEL path, which no other row reaches. Both rows select the FLATTENED `note`, so no dispatch
+   * site is reached at all and the route's ordinal stays -1 - an ordinal no slot has, which binds every
+   * reserved event output. The route's own two blobs are active and settle ordinals 0 and 1 through the
+   * unchanged IF arm; 2..7 are bound empty. The honest batch must still settle, and a forged log in one of
+   * those six must not (ACCEPTED before the repair).
+   */
+  it('no dispatch site reached: the flattened rows settle and the rest of the frame is still bound', async () => {
+    const honest = await buildStrideCase({ mode: 'noteTwice', effectOrdinals: [0, 1], emitting: true });
+    expect(honest.hubRows).toEqual(['note', 'note']);
+    const honestVerdict = await reject(honest);
+    console.log('R1 noteTwice, emitting, no site reached:', honestVerdict);
+    expect(honestVerdict).toEqual('ACCEPTED');
+    const logs = await readEventsFromChain(
+      honest.provider as any, honest.eventAddress, honest.hubCategory, honest.eventDef,
+    );
+    console.log('R1 noteTwice logs:', show(logs.map((e: any) => e.args ?? e)));
+    expect(logs).toHaveLength(2);
+
+    const forged = await buildStrideCase({
+      mode: 'noteTwice', effectOrdinals: [0, 1], emitting: true, forgedEventOrdinal: 5,
+    });
+    const verdict = await reject(forged);
+    console.log('R1 noteTwice, forged at ordinal 5 with NO site reached:', verdict);
+    expect(verdict).toContain('input index 0');
   }, 900_000);
 
   /**

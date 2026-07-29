@@ -446,15 +446,22 @@ describe('R1 envelope: the build-time gate', () => {
   });
 
   /**
-   * C3's OVERRUN, PRICED AGAINST THE RULE. The C3 figure is a citation - 100,650 serialized bytes at
-   * `ffef8568`, measured independently by three workers - and what is measured here is the CONSEQUENCE: the
-   * gate refuses at that size, by exactly 650 bytes, and admits at the largest size that would not.
+   * THE RULE'S BOUNDARY, PRICED BY THE BYTE. This exercises `relay-transaction-size` at a size 650 bytes over
+   * the ceiling and at the largest size that is not, so the boundary is bracketed on both sides rather than
+   * asserted on one.
    *
-   * The consequence is re-derived rather than assumed for the reason this board has already been burned by:
-   * F1 costed a fix against 100,354 and the fix stopped working when the figure moved to 100,650.
+   * THE 100,650 BELOW IS A HISTORICAL SIZE, NOT C3's. C3 measured 100,650 at `ffef8568`, but F4 then cut 129
+   * bytes from the projection verifier - one covenant instantiated once per participant, so C3 paid 8x - and
+   * **C3 is now 99,670 bytes, INSIDE the ceiling by 330**, mined on BCHN v29 at height 1090. The figure is kept
+   * here only because it is a convenient over-the-line size for a rule test; it makes no claim about C3.
+   *
+   * This is the third time a recorded figure's CONSEQUENCE outlived the figure on this board - F1 costed a C3
+   * fix against 100,354 that stopped working at 100,650, and this comment asserted C3 was over the envelope for
+   * two rounds after it no longer was. Re-derive consequences, not just numbers.
    */
-  it('MEASURED: the gate prices C3-scale overrun by the byte, and admits the size just below', () => {
-    const c3SerializedBytesAtBasis = 100_650; // CITATION: measured at `ffef8568`, not re-measured here.
+  it('MEASURED: the relay rule prices an over-ceiling transaction by the byte, and admits the size just below', () => {
+    const overCeilingBytes = 100_650; // A historical C3 size, used here purely as an over-the-line probe.
+    const c3SerializedBytesAtBasis = overCeilingBytes;
     const over = c3SerializedBytesAtBasis - BCH_2026_STANDARD.maximumTransactionSize;
     expect(over).toBe(650);
     const shaped = syntheticOfExactSize(c3SerializedBytesAtBasis);

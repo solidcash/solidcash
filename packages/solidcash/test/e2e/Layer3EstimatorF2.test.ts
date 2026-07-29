@@ -885,9 +885,19 @@ interface CorpusMeasurement {
   subject: CensusRow;
   envelope: EnvelopeMeasurement;
   classification: ReturnType<typeof classifyInputs>;
+  transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>;
+  sourceOutputs: ReturnType<typeof generateLibauthSourceOutputs>;
 }
 
-/** Build one census row into a real one-participant graph and measure it against every real limit. */
+/**
+ * Build one census row into a real one-participant graph and measure it against every real limit.
+ *
+ * IT ASSERTS NOTHING ABOUT THE RESULT, deliberately. The caller wraps this in a try/catch, because a corpus
+ * contract whose handler cannot execute with placeholder arguments is a legitimate skip; if the acceptance
+ * and knob-liveness checks lived in here, a control that stopped biting would be swallowed into that same
+ * skip list and the row would keep passing while proving nothing. They are made by the caller, outside the
+ * catch, on what this returns.
+ */
 async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasurement> {
   const provider = createLayer3SemanticTestProvider();
   const projectionArtifact = compileString(layer3.generateGraphProjectionVerifier());
@@ -988,23 +998,34 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
   const transaction = tx.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(tx.inputs as never);
   // RULE 1. Every cost read RUN TO COMPLETION on a relaxed density ceiling with every other consensus knob
-  // real, then acceptance re-checked with NOTHING relaxed at both real profiles.
+  // real. `assessEnvelope` throws rather than reporting a budget back if any input aborts, which is what
+  // makes the skip list above a list of contracts that cannot execute rather than of costs never measured.
   const envelope = assessEnvelope(`${subject.contractName} x1`, transaction as never, sourceOutputs);
+  const redeemBytes = transaction.inputs.map((input) => redeemScriptLength(input.unlockingBytecode));
+  return {
+    subject, envelope, classification: classifyInputs(envelope, redeemBytes), transaction, sourceOutputs,
+  };
+}
+
+/**
+ * The two rules, asserted OUTSIDE the caller's catch: acceptance with nothing relaxed at both real profiles,
+ * and a density knob that refuses these exact bytes at a budget derived from this input's own reading.
+ */
+function assertMeasurementDiscipline(measurement: CorpusMeasurement): void {
+  const { subject, envelope, transaction, sourceOutputs } = measurement;
   expect(envelope.refusedAtConsensus, `${subject.contractName} refused at the real consensus profile`)
     .toEqual([]);
   expect(envelope.refusedAtStandard, `${subject.contractName} refused at the real standard profile`)
     .toEqual([]);
-  // RULE 2. Knob liveness on THIS transaction's worst-cost input, at a budget derived from its own reading.
   const budget = knobControlBudgetFor(envelope.worstCostInput);
   const control = densityKnobControl(
     transaction as never, sourceOutputs, envelope.worstCostInput.input, budget,
   );
-  expect(budget).toBeLessThan(BCH_2026_CONSENSUS.operationCostBudgetPerByte);
-  expect(control, `the operation-cost knob does not bite at ${budget}/byte`).toBeDefined();
+  expect(budget, `${subject.contractName} control budget is not below the ordinary one`)
+    .toBeLessThan(BCH_2026_CONSENSUS.operationCostBudgetPerByte);
+  expect(control, `${subject.contractName}: the operation-cost knob does not bite at ${budget}/byte`)
+    .toBeDefined();
   expect(String(control)).toMatch(/density|operation cost/i);
-
-  const redeemBytes = transaction.inputs.map((input) => redeemScriptLength(input.unlockingBytecode));
-  return { subject, envelope, classification: classifyInputs(envelope, redeemBytes) };
 }
 
 /** Per-input-class measurement, so an aggregate that happens to be dominated by one class cannot hide a miss. */
@@ -1066,6 +1087,7 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     }
     const rows: Row[] = [];
     const skipped: string[] = [];
+    let controlled = 0;
     for (const subject of candidates) {
       let measurement: CorpusMeasurement;
       try {
@@ -1074,6 +1096,8 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
         skipped.push(`${subject.corpus}/${subject.contractName}: ${(error as Error).message.split('\n')[0]}`);
         continue;
       }
+      assertMeasurementDiscipline(measurement);
+      controlled += 1;
       const spec = replicaSpec(subject, 1);
       const prediction = estimate(spec, calibration);
       const { envelope } = measurement;
@@ -1110,8 +1134,11 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       });
     }
     for (const failure of skipped) console.log(`[F2/X70] candidate skipped - ${failure}`);
-    console.log(`[F2/X70] measured ${rows.length} of ${candidates.length} one-slot candidates`);
+    console.log(`[F2/X70] measured ${rows.length} of ${candidates.length} one-slot candidates, `
+      + 'all run to completion, refused by nothing at either real profile, and with a density knob that '
+      + `bites on the same bytes: ${controlled}/${rows.length}`);
     expect(rows.length, 'no candidate could be built and measured').toBeGreaterThan(0);
+    expect(controlled).toBe(rows.length);
 
     // THE CORRECTED CALIBRATION TABLE. Both directions, both models, on the limit that actually binds.
     const errorOf = (predicted: number, measured: number): number => predicted / measured - 1;

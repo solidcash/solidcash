@@ -221,8 +221,14 @@ export interface AbiFunction {
    * Absent means no signature check was proven, whether because the body has none or because the artifact
    * predates this field. Both readings are "unguarded"; absent is never a proof of authority. Read it with
    * `signatureGuardKeyProvenance`.
+   *
+   * `keyCommitment` (X51) answers the question `key` alone cannot: a `parameter` key that an unconditional
+   * top-level `require(hash160(key) == <x>)` pins is only as choosable as `<x>` is, so P2PKH-shaped authority
+   * publishes `{key: {parameter, pk}, keyCommitment: {constructorArg, pkh}}` and an unpinned parameter key
+   * publishes no `keyCommitment` at all. Read it with `signatureGuardKeyCommitment`; absent reads back as
+   * `unknown`, never as "unconstrained".
    */
-  signatureGuard?: { key: ValueProvenance };
+  signatureGuard?: { key: ValueProvenance; keyCommitment?: ValueProvenance };
   unsafeTier?: number;
   splitCountParam?: string;
   mergeCountParam?: string;
@@ -865,6 +871,24 @@ export function lowLevelCallTargetProvenance(
  */
 export function signatureGuardKeyProvenance(fn: Pick<AbiFunction, 'signatureGuard'>): ReadValueProvenance {
   return fn.signatureGuard?.key ?? UNKNOWN_PROVENANCE;
+}
+
+/**
+ * Read what a function's signature-guard KEY is pinned to (X51).
+ *
+ * `signatureGuardKeyProvenance` says where the checked key came from. A `parameter` key is not the same as an
+ * uncontrolled one: `require(hash160(pk) == <x>); require(checkSig(s, pk))` lets the caller supply only the one
+ * key whose hash the contract already fixed, so the authority in force is `<x>`'s, not `pk`'s. This returns
+ * `<x>`'s provenance when the compiler proved such a pin over EVERY signature check in the body, folded to the
+ * weakest, and `unknown` otherwise.
+ *
+ * `unknown` covers three different situations on purpose - no pin was proven, no signature check exists, or the
+ * artifact predates the field - because a consumer must treat all three identically: nothing is proven here.
+ * Pair it with an explicit allow-list of admitted kinds, so `unknown` and any kind a later compiler adds fall
+ * closed rather than being admitted by omission.
+ */
+export function signatureGuardKeyCommitment(fn: Pick<AbiFunction, 'signatureGuard'>): ReadValueProvenance {
+  return fn.signatureGuard?.keyCommitment ?? UNKNOWN_PROVENANCE;
 }
 
 /**

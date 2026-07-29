@@ -16,6 +16,7 @@ import {
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
+import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -418,20 +419,46 @@ const lowLevelCallTargets = (
 };
 
 /**
- * The weakest key any signature check in this body can be satisfied against, or undefined when the body has
+ * X51. The signature guard as the artifact publishes it: the weakest key any check in this body can be
+ * satisfied against, plus what that key is PINNED to when the compiler proved a pin. Undefined when the body has
  * no signature check at all. A check whose key argument is absent resolves to `computed`, not to nothing.
+ *
+ * WHY THE SECOND FIELD EXISTS. `key` alone reads the standard BCH authorization idiom as unguarded:
+ * `require(hash160(pk) == pkh); require(checkSig(s, pk))` publishes `{parameter, pk}`, because what makes it
+ * authority is a separate require the key provenance does not describe. A consumer cannot reconstruct that from
+ * types - a `bytes20` constructor argument beside a `pubkey` parameter is exactly the type reasoning X37 exists
+ * to remove - so the compiler publishes the fact instead. `parameterCommitmentSource` is the same walk SEC-17's
+ * diagnostic decides on, X46's writer strengthening included: a commitment against state this body already
+ * overwrote from a caller parameter is not a commitment and yields nothing here either.
+ *
+ * THE FOLD IS THE WEAKEST, like `key`. Every check contributes a bound on the authority a spender must defeat:
+ * what its key is pinned to when it is pinned, and its own key provenance when it is not. `keyCommitment` is the
+ * weakest of those, so ONE unpinned parameter key anywhere in the body drags the published answer down to
+ * `parameter` and no consumer allow-list admits it. The field appears only when at least one check IS pinned;
+ * a body with no pin publishes no `keyCommitment`, which reads back as `unknown`. Understating the authority in
+ * force is a refusal, never an admission - the same discipline `key` is folded under.
  */
-const signatureGuardKey = (
+const signatureGuardOf = (
   fn: FunctionDefinitionNode, contract: ContractNode | undefined, index: ProvenanceIndex,
-): ValueProvenance | undefined => {
-  let weakest: ValueProvenance | undefined;
+): { key: ValueProvenance; keyCommitment?: ValueProvenance } | undefined => {
+  let weakestKey: ValueProvenance | undefined;
+  let weakestBound: ValueProvenance | undefined;
+  let anyPinned = false;
   for (const check of index.signatureChecks) {
-    const resolved = provenanceOf(
+    const key = provenanceOf(
       check.parameters[SIGNATURE_CHECK_KEY_ARGUMENT[check.identifier.name]], fn, contract, index,
     );
-    weakest = weakest ? weakerProvenance(weakest, resolved) : resolved;
+    // Only a parameter can be pinned: every other kind is already something the caller does not hand in.
+    const pinned = key.kind === 'parameter' && key.name !== undefined
+      ? parameterCommitmentSource(key.name, fn)
+      : undefined;
+    if (pinned) anyPinned = true;
+    const bound = pinned ? provenanceOf(pinned, fn, contract, index) : key;
+    weakestKey = weakestKey ? weakerProvenance(weakestKey, key) : key;
+    weakestBound = weakestBound ? weakerProvenance(weakestBound, bound) : bound;
   }
-  return weakest;
+  if (!weakestKey) return undefined;
+  return { key: weakestKey, ...(anyPinned && weakestBound && { keyCommitment: weakestBound }) };
 };
 
 /** Build the common metadata fields for an ABI function entry. */
@@ -537,7 +564,7 @@ function buildFunctionAbiMetadata(
   // low-level call and no signature check resolves nothing and publishes nothing.
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
-  const guardKey = signatureGuardKey(func, contract, provenance);
+  const signatureGuard = signatureGuardOf(func, contract, provenance);
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -656,7 +683,7 @@ function buildFunctionAbiMetadata(
     ...(func.usesMsgSender && { usesMsgSender: true }),
     // Absent means no signature check was proven - a body with none, or an artifact predating the field.
     // Both read as "unguarded"; absent is never a proof of authority.
-    ...(guardKey && { signatureGuard: { key: guardKey } }),
+    ...(signatureGuard && { signatureGuard }),
     ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),

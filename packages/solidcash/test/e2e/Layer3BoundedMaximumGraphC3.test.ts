@@ -1437,12 +1437,12 @@ describe('C3 capacity measurement', () => {
     // bytes and the Sink gained them") that cannot be re-measured on a tree carrying only the post-reshape
     // fixture; it is dropped rather than carried forward.
     //
-    // Every compiled participant route sits under the ordinary 10,000-byte input limit, so participant script
-    // size is not a capacity constraint for C3 in either sense - neither for operation-cost density (the next
-    // test measures that, and C3 fits) nor for the serialized size that puts it over the relay ceiling, which
-    // is dominated by the eight projection proofs rather than by any one route. Bands are asserted rather than
-    // exact figures so compiler work elsewhere does not falsely fail here; the run prints the figures so a
-    // reader compares against a measurement rather than a citation.
+    // Every compiled participant route sits under the ordinary 10,000-byte input limit, so no single route is
+    // a capacity constraint. Nor are the routes what puts C3 over the relay ceiling: measured on one common
+    // scale (`densityControlLength`, which the next test tabulates), the eight participant inputs total 27,637
+    // bytes against 48,072 for the eight projection proofs at 6,009 each, out of a 100,354-byte transaction.
+    // Bands are asserted rather than exact figures so compiler work elsewhere does not falsely fail here; the
+    // run prints the figures so a reader compares against a measurement rather than a citation.
     console.log(`C3 route input sizes (${DEFAULT_ORDER.join(', ')}): ${built.routeInputBytes.join(', ')}; `
       + `transcript ${built.transcript.bytes.length} bytes`);
     expect(built.routeInputBytes).toHaveLength(8);
@@ -1537,9 +1537,9 @@ describe('C3 capacity measurement', () => {
     //
     // WHAT THIS CORRECTS. The table that stood here was introduced as "RE-MEASURED after the SEC-6 reshape, run
     // to completion" and NOT ONE of its ten rows reproduces. It recorded the controller at 1.2310x and called
-    // it "the ONLY input over budget", which the assertion three lines below it - an empty over-budget set -
-    // already contradicted; it recorded projections at 5,876 bytes and 0.681-0.689 while the assertion beside
-    // it pinned 6,009 bytes; and it gave both 24,067 and 25,984 instructions for the SAME quantity, the
+    // it "the ONLY input over budget", which this same test's own assertion of an EMPTY over-budget set
+    // already contradicted; it recorded projections at 5,876 bytes and 0.681-0.689 while the assertion a few
+    // lines under it pinned 6,009 bytes; and it gave both 24,067 and 25,984 instructions for one quantity, the
     // per-projection instruction count. The figures were taken on a reshape branch before X24 and X27 were
     // composed on one tree, then carried forward rather than re-run. Every consequence drawn from them is
     // corrected in place below. The run now prints its own table above these assertions so the next reader
@@ -1571,8 +1571,8 @@ describe('C3 capacity measurement', () => {
     }
     // The controller is the worst input and it FITS: measured 0.9217 at this commit, 7.8% of headroom. Asserted
     // as a band under 1.0 rather than an exact ratio, so a future density change fails loudly instead of
-    // drifting. The 1.2310x this comment used to report was never reproducible on a tree carrying both X24 and
-    // X27, which is why the empty-set assertion below already contradicted it.
+    // drifting. The 1.2310x this comment used to report does not reproduce at this commit, which carries both
+    // X24 and X27; that is why the empty-set assertion below already contradicted it.
     expect(controller.ratio).toBeLessThan(1.0);
     expect(controller.ratio).toBeGreaterThan(0.8);
     // EMPTY: every one of C3's 108 inputs is inside ordinary BCH-2026 operation-cost density. This is the
@@ -1616,7 +1616,11 @@ describe('C3 capacity measurement', () => {
     //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs. The constant lives in
     //     SymbolTableTraversal.ts. See the caveat on the per-output constant below before costing this.
     //
-    // Scaling, against C1 and C2 measured with this identical harness AT THIS COMMIT:
+    // Scaling, against C1 and C2 run to completion on the same relaxed-budget harness AT THIS COMMIT. C1's row
+    // is printed by its own capacity test; C2's projection count is asserted in its file, and its controller
+    // figures were read by instrumenting that test (its own recorded block is stale in the same way as this
+    // one - it states projections 5,294 B at 0.4607-0.4677 and controller 2,354 B / 1,538,567 / 0.8170, and
+    // measures 5,427 B at 0.3916-0.3957 and 2,309 B / 1,198,938 / 0.6491 - but repairing C2 is not this task).
     //
     //   build  P/N   transcript  slots  projection instr  controller instr  controller ratio
     //   C1     5/6   1,314 B      38    17,441 x5          9,561            0.6182
@@ -1628,9 +1632,10 @@ describe('C3 capacity measurement', () => {
     //      14,798 and 24,067 respectively - so the per-row cost does not depend on the row.
     //   2. The stronger claim that the projection verifier is a pure function of participant and invocation
     //      count with transcript LENGTH not entering rested on C1 and C2 sharing row counts (both 4/5) while
-    //      differing by 398 transcript bytes. The SEC-6 reshape made C1 5/6, so no two of these three builds
-    //      share row counts any more and that control is GONE. The claim is not re-asserted here; re-earning it
-    //      needs two builds at equal P/N and different transcript length.
+    //      differing by 398 transcript bytes - C1 carried 1,141 before the SEC-6 reshape. The reshape made C1
+    //      5/6, so no two of these three builds share row counts any more and that control is GONE. The claim
+    //      is not re-asserted here; re-earning it needs two builds at equal P/N and different transcript
+    //      length.
     //   3. The controller model "projection cost plus 32 instructions per transaction output" CANNOT be
     //      confirmed or refuted from these three builds: P, N and slots all differ across them, so a linear
     //      model in P, N, slots and a constant has four unknowns against three measurements and ANY per-output

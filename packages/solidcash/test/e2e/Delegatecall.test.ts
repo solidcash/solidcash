@@ -257,7 +257,7 @@ describe('Delegatecall', () => {
       const fallbackAbi = proxyArtifact.abi.find((f) => f.name === '__fallback')!;
       expect(fallbackAbi).toBeDefined();
       expect(fallbackAbi.isFallback).toBe(true);
-      expect(fallbackAbi.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+      expect(fallbackAbi.lowLevelCalls).toEqual([{ callMode: 'delegatecall', target: { kind: 'literal' } }]);
     });
 
     it('proxy fallback should have no user-visible inputs', () => {

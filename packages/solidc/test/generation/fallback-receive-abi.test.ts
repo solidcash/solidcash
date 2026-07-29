@@ -32,7 +32,7 @@ describe('Fallback/Receive ABI metadata', () => {
       expect(fallback).toBeDefined();
       expect(fallback!.isFallback).toBe(true);
       expect(fallback!.lowLevelCalls).toBeDefined();
-      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'delegatecall', target: { kind: 'literal' } }]);
     });
 
     it('should include ALL data NFT indices for delegatecall fallback', () => {
@@ -150,7 +150,7 @@ describe('Fallback/Receive ABI metadata', () => {
     it('should include call mode in lowLevelCalls', () => {
       const artifact = compileString(source);
       const fallback = artifact.abi.find((f) => f.name === '__fallback');
-      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'call' }]);
+      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'call', target: { kind: 'literal' } }]);
     });
   });
 });

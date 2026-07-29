@@ -20,6 +20,12 @@ export const fixtures: Fixture[] = [
       'abi': [
         {
           'name': 'spend',
+          'signatureGuard': {
+            'key': {
+              'kind': 'parameter',
+              'name': 'pk',
+            },
+          },
           'selector': '9efe324b',
           'inputs': [
             {
@@ -78,6 +84,12 @@ export const fixtures: Fixture[] = [
       'abi': [
         {
           'name': 'hello',
+          'signatureGuard': {
+            'key': {
+              'kind': 'parameter',
+              'name': 'pk',
+            },
+          },
           'selector': '4a6ec480',
           'inputs': [
             {
@@ -206,6 +218,12 @@ export const fixtures: Fixture[] = [
       'abi': [
         {
           'name': 'transfer',
+          'signatureGuard': {
+            'key': {
+              'kind': 'constructorArg',
+              'name': 'recipient',
+            },
+          },
           'selector': '3486e360',
           'inputs': [
             {
@@ -216,6 +234,12 @@ export const fixtures: Fixture[] = [
         },
         {
           'name': 'timeout',
+          'signatureGuard': {
+            'key': {
+              'kind': 'constructorArg',
+              'name': 'sender',
+            },
+          },
           'selector': '2203057b',
           'inputs': [
             {
@@ -388,6 +412,12 @@ export const fixtures: Fixture[] = [
       'abi': [
         {
           'name': 'spend',
+          'signatureGuard': {
+            'key': {
+              'kind': 'constructorArg',
+              'name': 'pk1',
+            },
+          },
           'selector': 'ee615eaf',
           'inputs': [
             {
@@ -478,6 +508,12 @@ export const fixtures: Fixture[] = [
       'abi': [
         {
           'name': 'hello',
+          'signatureGuard': {
+            'key': {
+              'kind': 'parameter',
+              'name': 'pk',
+            },
+          },
           'selector': '4a6ec480',
           'inputs': [
             {
@@ -544,6 +580,12 @@ export const fixtures: Fixture[] = [
       'abi': [
         {
           'name': 'spend',
+          'signatureGuard': {
+            'key': {
+              'kind': 'constructorArg',
+              'name': 'oraclePk',
+            },
+          },
           'selector': '5872af0e',
           'inputs': [
             {
@@ -874,6 +916,12 @@ export const fixtures: Fixture[] = [
         },
         {
           'name': 'reclaim',
+          'signatureGuard': {
+            'key': {
+              'kind': 'parameter',
+              'name': 'pk',
+            },
+          },
           'selector': '2f7ef34c',
           'inputs': [
             {

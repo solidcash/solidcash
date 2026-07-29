@@ -213,7 +213,7 @@ describe('C1/piece-5: a delegatecall must be reached at most once per path', () 
           impl.delegatecall(input); require(input.length > 0); } }`);
     expect(straight.bytecode).not.toContain(NOT_TAKEN_SIG);
     expect(straight.abi.find((fn) => fn.name === 'up')!.lowLevelCalls)
-      .toEqual([{ callMode: 'delegatecall' }]);
+      .toEqual([{ callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'impl' } }]);
   });
 });
 

@@ -2,6 +2,7 @@ import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
   EnumType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
+  ValueProvenance, ValueProvenanceKind,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -10,6 +11,8 @@ import {
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
   BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode, TupleAssignmentNode,
+  ArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
+  LowLevelCallStatementNode, StateAccessNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -258,6 +261,179 @@ function computeWritesState(func: FunctionDefinitionNode): boolean {
   return false;
 }
 
+// ----------------------------------------------------------------------------------------------------------
+// X37. Value provenance: where a covenant-critical value came from, rather than what type it was spelled as.
+// ----------------------------------------------------------------------------------------------------------
+
+/**
+ * How much a spender controls each provenance, weakest first.
+ *
+ * A value the caller passes is weakest. `computed` sits next because "the compiler could not say" is never
+ * evidence of authority. The order exists so several binding sites, several key-set members, or several
+ * signature guards can be folded into ONE published answer that always keeps the weakest: the published
+ * field can then only ever understate the authority in force, which is a refusal, never an admission.
+ */
+const PROVENANCE_STRENGTH: Record<ValueProvenanceKind, number> = {
+  parameter: 0, computed: 1, stateVar: 2, constructorArg: 3, literal: 4,
+};
+
+const COMPUTED_PROVENANCE: ValueProvenance = { kind: 'computed' };
+
+const weakerProvenance = (left: ValueProvenance, right: ValueProvenance): ValueProvenance =>
+  (PROVENANCE_STRENGTH[right.kind] < PROVENANCE_STRENGTH[left.kind] ? right : left);
+
+// Links that leave the function body and reach whole other functions or contracts, where a same-named local
+// would answer a different question. The same escape list the result-consumer walk below uses.
+const PROVENANCE_WALK_SKIP = new Set([
+  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'collection',
+]);
+
+/** Which argument of each signature builtin is the KEY the signature is checked against. */
+const SIGNATURE_CHECK_KEY_ARGUMENT: Record<string, number> = {
+  checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
+};
+
+/**
+ * Everything the provenance answers need from one function body, collected in ONE walk.
+ *
+ * `bindings` holds every expression that can bind a local name - the declaration initializer AND every later
+ * assignment. Collecting the assignments is what makes the fold sound: resolving only the declaration would
+ * let `address t = impl; t = address(target); t.delegatecall(input);` publish the constructor argument while
+ * the call reaches the caller's bytes. Block scoping is deliberately ignored, so two same-named locals in
+ * sibling blocks fold to the weaker of the two. `bound` also holds names bound by a form with no nameable
+ * expression (a tuple destructure), which must resolve to `computed` rather than escape to the outer scopes.
+ *
+ * Building the index up front is what keeps this affordable: resolving each alias with its own walk turned
+ * artifact generation into a per-identifier re-traversal of the whole body.
+ */
+interface ProvenanceIndex {
+  bindings: Map<string, ExpressionNode[]>;
+  bound: Set<string>;
+  calls: (LowLevelCallNode | LowLevelCallStatementNode)[];
+  signatureChecks: FunctionCallNode[];
+}
+
+const bindName = (index: ProvenanceIndex, name: string, expression?: ExpressionNode): void => {
+  index.bound.add(name);
+  if (!expression) return;
+  const existing = index.bindings.get(name);
+  if (existing) existing.push(expression);
+  else index.bindings.set(name, [expression]);
+};
+
+const indexBody = (fn: FunctionDefinitionNode): ProvenanceIndex => {
+  const index: ProvenanceIndex = {
+    bindings: new Map(), bound: new Set(), calls: [], signatureChecks: [],
+  };
+  const seen = new Set<object>();
+  const walk = (value: unknown): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof VariableDefinitionNode) bindName(index, value.name, value.expression);
+    else if (value instanceof AssignNode) bindName(index, value.identifier.name, value.expression);
+    else if (value instanceof TupleAssignmentNode) {
+      for (const element of value.elements) if (!element.skip && element.name) bindName(index, element.name);
+    } else if (value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+      index.calls.push(value);
+    } else if (value instanceof FunctionCallNode
+      && SIGNATURE_CHECK_KEY_ARGUMENT[value.identifier.name] !== undefined) {
+      index.signatureChecks.push(value);
+    }
+    // eslint-disable-next-line no-restricted-syntax, guard-for-in
+    for (const key in value) {
+      if (PROVENANCE_WALK_SKIP.has(key)) continue;
+      const child = (value as unknown as Record<string, unknown>)[key];
+      if (child instanceof Node) walk(child);
+      else if (Array.isArray(child)) for (const item of child) walk(item);
+    }
+  };
+  walk(fn.body);
+  return index;
+};
+
+/**
+ * Resolve an expression to where its value came from.
+ *
+ * Casts are stripped and local aliases are followed, so a `bytes` parameter re-spelled as an address -
+ * `address t = address(target); t.delegatecall(input);` - resolves to `parameter`. That is the whole point:
+ * the published TYPE of a delegatecall target says nothing about who chose it, and refusing `bytes`
+ * parameters is not available because every admitted class carries a `bytes` calldata parameter.
+ *
+ * A function parameter answers `parameter` before its bindings are consulted: reassigning a parameter only
+ * narrows it on the paths that run the assignment, so the caller's value survives on the others.
+ */
+const provenanceOf = (
+  expression: ExpressionNode | undefined, fn: FunctionDefinitionNode, contract: ContractNode | undefined,
+  index: ProvenanceIndex, resolving: Set<string> = new Set(),
+): ValueProvenance => {
+  if (!expression) return COMPUTED_PROVENANCE;
+  if (expression instanceof CastNode) return provenanceOf(expression.expression, fn, contract, index, resolving);
+  if (expression instanceof LiteralNode) return { kind: 'literal' };
+  if (expression instanceof StateAccessNode) return { kind: 'stateVar', name: expression.name };
+  // A key set (`checkMultiSig(sigs, [a, b])`) is only as strong as its weakest member.
+  if (expression instanceof ArrayNode) {
+    return expression.elements.length === 0 ? COMPUTED_PROVENANCE
+      : expression.elements
+        .map((element) => provenanceOf(element, fn, contract, index, resolving))
+        .reduce(weakerProvenance);
+  }
+  if (!(expression instanceof IdentifierNode)) return COMPUTED_PROVENANCE;
+  const { name } = expression;
+  if (fn.parameters.some((parameter) => parameter.name === name)) return { kind: 'parameter', name };
+  if (resolving.has(name)) return COMPUTED_PROVENANCE; // an alias cycle - refuse rather than pick an arm
+  if (index.bound.has(name)) {
+    const bindings = index.bindings.get(name);
+    if (!bindings) return COMPUTED_PROVENANCE;
+    resolving.add(name);
+    const resolved = bindings
+      .map((binding) => provenanceOf(binding, fn, contract, index, resolving))
+      .reduce(weakerProvenance);
+    resolving.delete(name);
+    return resolved;
+  }
+  if (contract?.parameters.some((parameter) => parameter.name === name)) return { kind: 'constructorArg', name };
+  if (contract?.stateVariables.some((variable) => variable.name === name)) return { kind: 'stateVar', name };
+  if (contract?.constantDefinitions.some((constant) => constant.name === name)) return { kind: 'literal' };
+  return COMPUTED_PROVENANCE;
+};
+
+/**
+ * Per-callIndex target provenance for this function's low-level calls.
+ *
+ * The call nodes carry the same `callIndex` the symbol-table pre-scan used to build `func.lowLevelCalls`, so
+ * the rows line up by that index rather than by re-deriving the pre-scan's walk order here.
+ */
+const lowLevelCallTargets = (
+  fn: FunctionDefinitionNode, contract: ContractNode | undefined, index: ProvenanceIndex,
+): (ValueProvenance | undefined)[] => {
+  const targets: (ValueProvenance | undefined)[] = [];
+  for (const call of index.calls) {
+    const resolved = provenanceOf(call.targetExpression, fn, contract, index);
+    const existing = targets[call.callIndex];
+    // Two nodes claiming one index means this walk and the pre-scan disagree; publish the weakest of them.
+    targets[call.callIndex] = existing ? weakerProvenance(existing, resolved) : resolved;
+  }
+  return targets;
+};
+
+/**
+ * The weakest key any signature check in this body can be satisfied against, or undefined when the body has
+ * no signature check at all. A check whose key argument is absent resolves to `computed`, not to nothing.
+ */
+const signatureGuardKey = (
+  fn: FunctionDefinitionNode, contract: ContractNode | undefined, index: ProvenanceIndex,
+): ValueProvenance | undefined => {
+  let weakest: ValueProvenance | undefined;
+  for (const check of index.signatureChecks) {
+    const resolved = provenanceOf(
+      check.parameters[SIGNATURE_CHECK_KEY_ARGUMENT[check.identifier.name]], fn, contract, index,
+    );
+    weakest = weakest ? weakerProvenance(weakest, resolved) : resolved;
+  }
+  return weakest;
+};
+
 /** Build the common metadata fields for an ABI function entry. */
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
@@ -357,6 +533,11 @@ function buildFunctionAbiMetadata(
       || left.producerCallsiteId - right.producerCallsiteId);
   };
   const consumers = resultConsumers();
+  // X37. Both walks are paid for only by a function that has the construct they describe: a body with no
+  // low-level call and no signature check resolves nothing and publishes nothing.
+  const provenance = indexBody(func);
+  const callTargets = lowLevelCallTargets(func, contract, provenance);
+  const guardKey = signatureGuardKey(func, contract, provenance);
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -473,6 +654,9 @@ function buildFunctionAbiMetadata(
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
+    // Absent means no signature check was proven - a body with none, or an artifact predating the field.
+    // Both read as "unguarded"; absent is never a proof of authority.
+    ...(guardKey && { signatureGuard: { key: guardKey } }),
     ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
@@ -489,7 +673,12 @@ function buildFunctionAbiMetadata(
     ...(func.ecrecoverLoopReads && { ecrecoverLoopReads: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
-      lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
+      lowLevelCalls: func.lowLevelCalls.map((lc, index) => ({
+        callMode: lc.callMode,
+        // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
+        // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.
+        target: callTargets[index] ?? COMPUTED_PROVENANCE,
+      })),
     }),
     ...(func.libraryDelegateCalls && func.libraryDelegateCalls.length > 0 && {
       libraryDelegateCalls: func.libraryDelegateCalls.map((ld) => ({

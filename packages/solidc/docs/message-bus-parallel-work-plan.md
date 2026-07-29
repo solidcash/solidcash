@@ -175,7 +175,7 @@ task-specific report, not in this table.
 | X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
 | **SEC-10** | One-armed conditional emit reserves an unsettled slot | C | SEC-9 | **INTEGRATED** | reframed: the class was never slot-specific - see 4.45 |
 | **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | C | SEC-9 | **INTEGRATED** | closed by the same own-category immutable pin |
-| **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | S2 | SEC-11 | **MERGED, solidcash UNVERIFIED** | all 3 paths admitted the forgery; A rejects at input 0, B/C at input 2 - see 4.47 |
+| **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | S2 | SEC-11 | **INTEGRATED** | all 3 paths admitted the forgery; A rejects at input 0, B/C at input 2 - see 4.47 |
 | **SEC-14** | Zero-parameter event: taken and not-taken rows are byte-identical | — | SEC-13 | **TODO (security, not demonstrated exploitable)** | positional pin cannot separate them; only `readEventsFromChain` failing to decode prevents it |
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
@@ -248,11 +248,19 @@ address, `none` capability, empty commitment. **No positional pin can separate t
 marker in the emit blob could. It is not exploitable today solely because `readEventsFromChain` decodes neither
 row as a log. That is a reader accident, not a covenant property, and it should not be recorded as a defence.
 
-**Status is MERGED, not INTEGRATED.** solidc is verified at **2,463/0 across 60 files, exactly baseline**.
-solidcash is **not** verified: S2's full run and a 15-file blast-radius subset were both still in flight with 0
-failures when it reported, on a box carrying 93 vitest processes at load 47 from six sibling worktrees. S2
-declined to claim 4,114/0 rather than round up an unfinished run, which is the correct call and the reason this
-row does not read INTEGRATED yet.
+**Regression, both suites complete: zero regressions.** solidc **2,463/0 across 60 files, exactly baseline**.
+solidcash **4,113 passed / 1 failed**, and the arithmetic closes exactly: baseline 4,102 + 12 new fixture rows =
+4,114 = 4,113 + 1. Targeted blast-radius subset 15 files / 250 tests, 0 failures.
+
+**The single failure was established as contention, not reasoned away as contention.** It is
+`RepeatedExternalBatchCorpus.test.ts` failing on `Test timed out in 50000ms` - a timeout, not an assertion - in a
+file containing **zero** `delegate`/`selfdestruct` occurrences, which the changed gate therefore cannot reach.
+The run carried 5,810s of test time in 1,565s wall under load 40-50 from six sibling worktrees. **Re-run in
+isolation: 4/4 in 68.8s.** That is the isolation re-run the house rule requires, not a verbal appeal to load.
+
+Worth recording as method: S2 reported once with this suite still in flight and **declined to claim 4,114/0**,
+then reported again when it finished. The board marked the row MERGED rather than INTEGRATED in between. An
+unfinished run is not a green run, and the gap cost one notification cycle rather than a false entry.
 
 ### 4.46 Round-15 dispatch: six workers, disjoint leases, two of them reviewers
 

@@ -198,6 +198,35 @@ describe('X51: the artifact publishes the key commitment SEC-17 credits', () => 
     expect(guard!.keyCommitment).toEqual({ kind: 'parameter', name: 'pk2' });
   });
 
+  /**
+   * WHERE IN THE PIPELINE THIS IS READ, measured rather than assumed. SEC-17 decides during semantic analysis;
+   * the artifact is built after code generation, and three passes rewrite function bodies in between - modifier
+   * expansion, the synthetic locktime guard (which PREPENDS a top-level require), and the early-return
+   * transformation (which nests statements into if-else). Any of them could have moved the commitment out of the
+   * top-level statement list the walk reads, and the failure mode would have been silent: no field, no warning,
+   * a gate refusal that looks like an honest one. Each shape below carries the same idiom and must publish it.
+   */
+  it('publishes the commitment through modifier expansion, the locktime guard and early returns', () => {
+    const shapes: Record<string, string> = {
+      plain: 'contract C(bytes20 pkh) { int n; function f(pubkey pk, sig s) external {'
+        + ' require(hash160(pk) == pkh); require(checkSig(s, pk)); this.n = this.n + 1; } }',
+      earlyReturn: 'contract C(bytes20 pkh) { int n; function f(pubkey pk, sig s, bool q) external {'
+        + ' require(hash160(pk) == pkh); require(checkSig(s, pk)); if (q) { return; } this.n = this.n + 1; } }',
+      locktimeGuard: 'contract C(bytes20 pkh) { int n; function f(pubkey pk, sig s) external {'
+        + ' require(hash160(pk) == pkh); require(checkSig(s, pk)); require(tx.locktime > 0);'
+        + ' this.n = this.n + 1; } }',
+      modifier: 'contract C(bytes20 pkh) { int n;'
+        + ' modifier onlyAdmin(pubkey pk, sig s) { require(hash160(pk) == pkh); require(checkSig(s, pk)); _; }'
+        + ' function f(pubkey pk, sig s) external onlyAdmin(pk, s) { this.n = this.n + 1; } }',
+      uncheckedBlock: 'contract C(bytes20 pkh) { int n; function f(pubkey pk, sig s) external {'
+        + ' unchecked { require(hash160(pk) == pkh); require(checkSig(s, pk)); } this.n = this.n + 1; } }',
+    };
+    for (const [name, source] of Object.entries(shapes)) {
+      expect(guardOf(source, 'f'), name)
+        .toEqual({ key: PK_KEY, keyCommitment: { kind: 'constructorArg', name: 'pkh' } });
+    }
+  });
+
   it('publishes no signatureGuard at all for a body with no signature check', () => {
     const source = `pragma solidcash >=0.8.0;
       contract NoGuard(address impl) { bigint counter;

@@ -1363,7 +1363,14 @@ function synthesizeHiddenBatchRoute(
       ? 'require(rowArgs.length == 0);'
       : declarations.length === 1
       ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
-      : `${declarations.join(', ')} = abi.decode(rowArgs, (${schema}));`;
+      // X71. PARENTHESISED, because the unparenthesised multi-declaration `T a, U b = ..` is
+      // `typeName Identifier (',' typeName Identifier)+` in the grammar and admits no array type, so a handler
+      // with an array parameter made this generator emit source the compiler's own parser rejects - reported at
+      // a line number in THIS generated text, which is not a position in anything the user wrote. The
+      // parenthesised form's `tupleSlot` already accepts `arrayType`, and AstBuilder builds the same
+      // TupleAssignmentNode either way (only the print-only `parenthesised` flag differs), so no emitted byte
+      // changes and no user program becomes newly valid.
+      : `(${declarations.join(', ')}) = abi.decode(rowArgs, (${schema}));`;
     // Canonicalize the measured two-row, one-shared/one-varying resource shape before the collection journal
     // sees the callsite. A varying key which aliases the shared key or an earlier row is passed as that earlier
     // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
@@ -1601,7 +1608,21 @@ function synthesizeHiddenBatchRoute(
         ${returnStatement}
       }
     }`;
-  const routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
+  // X71. `source` is generated immediately above, so a parse failure here carries a Line/Column in THAT text.
+  // Reported bare, it reads as a position in the user's file and is not one: it even moves by tens of lines
+  // when an unrelated compile option changes the generated preamble. Say what the position is instead of
+  // handing back a number the user cannot act on.
+  let routeAst: Ast;
+  try {
+    routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
+  } catch (error) {
+    throw new Error(
+      `The hidden-batch route generated for '${contract.name}' does not parse - ${(error as Error).message}. `
+      + 'That Line and Column are a position in COMPILER-GENERATED source, not in your file; they shift when '
+      + 'an unrelated compile option changes the generated preamble. This is a compiler defect, and no edit to '
+      + 'the contract can name that position.',
+    );
+  }
   const route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
   route.hiddenBatchRoute = true;
   route.graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
@@ -2289,7 +2310,13 @@ function compileResolvedAst(
           };
         })(),
         eligible: fn.hiddenBatchEligible === true,
-        ...(fn.hiddenBatchRejectionReason && { rejectionReason: fn.hiddenBatchRejectionReason }),
+        // X72. A published refusal must carry a reason. Route synthesis names one for every entry point that
+        // exists when it runs, but it can run BEFORE a later pass appends one (SynthesizeBlockOracle's
+        // `__updateBlockOracle`), and those reached the artifact as `eligible: false` with the key absent.
+        // Resolve the same way the ABSENCE channel already does (`hiddenBatchAbsenceMessage`'s `reasonOf`).
+        ...(fn.hiddenBatchEligible !== true && {
+          rejectionReason: fn.hiddenBatchRejectionReason ?? 'not-examined-by-route-synthesis',
+        }),
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
       })),
     };

@@ -152,12 +152,26 @@ describe('X72 a refused hidden-batch handler names its reason', () => {
    * The same name the absence channel already uses for the same condition, so a user who reads one and then
    * the other is told the same thing. This is what makes the fix a diagnostic change and not a new category.
    */
-  it('uses the name the absence channel already gives this condition', () => {
+  it('uses the same name on the handlers channel that the absence channel gives this condition', () => {
+    // X73 MOVED THIS FIXTURE'S CHANNEL, AND THAT IS THE POINT. `stamp()` is `external`, and this case was
+    // written when an external entry point was refused outright - so no route existed and the reason arrived
+    // on the ABSENCE channel. X73 admits external handlers through an internal clone, so a route now exists
+    // and the same condition surfaces on the HANDLERS channel instead.
+    //
+    // The subject is unchanged: `__updateBlockOracle` is appended by `SynthesizeBlockOracle` AFTER route
+    // synthesis has named its reasons, so it is never examined. Asserting it here is strictly stronger than
+    // the original - it shows the two channels agree on the name rather than only that one of them has it.
     const artifact = artifactOf(noRoute);
-    expect(artifact.hiddenBatch).toBeUndefined();
-    const diagnostics = (artifact.diagnostics ?? [])
-      .filter((entry) => entry.code === 'hidden-batch-route-not-synthesized');
-    expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0].message).toContain(`'__updateBlockOracle': ${REASON}`);
+    expect(artifact.hiddenBatch).toBeDefined();
+
+    const oracle = artifact.hiddenBatch!.handlers!.find((entry) => entry.name === '__updateBlockOracle')!;
+    expect(oracle.eligible).toBe(false);
+    expect(oracle.rejectionReason).toBe(REASON);
+
+    // The admitted handler is the one X73 newly lets through, and it carries no reason because it was not
+    // refused. Without this row the assertion above could pass on a route that admitted nothing at all.
+    const stamp = artifact.hiddenBatch!.handlers!.find((entry) => entry.name === 'stamp')!;
+    expect(stamp.eligible).toBe(true);
+    expect(stamp.rejectionReason).toBeUndefined();
   });
 });

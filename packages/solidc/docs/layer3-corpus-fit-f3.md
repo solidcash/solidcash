@@ -382,6 +382,13 @@ machinery pointed at it, that machinery is named.
    mined at **99,670 bytes**, 0.9967x of the ceiling (citation, X59/X60 at `1591e87f`, not re-measured here).
    The ceiling is still where the corpus meets it at N=8; what changed is that the largest fixture ever built
    now sits just inside rather than just outside, which is a 330-byte margin and not headroom.
+
+   **This one is POLICY, not consensus, and it is the only entry in this section that is.** X49 got the same
+   101,513 bytes refused `64: tx-size` through the mempool and then accepted in a hand-assembled block; the
+   consensus transaction ceiling is 1,000,000 bytes (citation, X49). It is listed here as a real limit
+   because it is real for anything that has to be *relayed*, which is what an SDK builds - but unlike the
+   per-input limit above it, it is a property of node policy rather than of BCH-2026, and a direct
+   relationship with a miner moves it. Do not cite it as a consensus bound.
 3. **Operation-cost density.** Predicted to bind for the majority of contracts at N=1..4, though section 5
    shows that prediction is wrong for the 45 shapes that were actually built.
 

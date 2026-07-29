@@ -25,8 +25,11 @@ import {
 /**
  * C1 - the DeFi integrated semantic capstone.
  *
- * SEMANTIC evidence only, on the named `layer3-bch2026-semantic-relaxed-v1` profile: BCH-2026 opcodes,
- * introspection and the real 128-byte NFT commitment, relaxed capacity. Not consensus-fit, not policy-fit.
+ * SEMANTIC evidence, on the named `layer3-bch2026-semantic-relaxed-v1` profile: BCH-2026 opcodes,
+ * introspection and the real 128-byte NFT commitment, relaxed capacity. The semantic tests are not a
+ * consensus-fit or policy-fit claim; the last test measures capacity separately and C1 clears both gates it
+ * checks - every input inside ordinary operation-cost density, worst 0.6182, and 63,130 serialized bytes
+ * against the 100,000-byte relay ceiling. Relay dust remains untested.
  *
  * One transaction composes five independently compiled participants:
  *
@@ -896,7 +899,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
     // 800-per-byte budget, so "it fits" is a measured margin and not just an absence of rejection.
     const transaction = built.builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
-    const ORDINARY_LIMITS = {
+    const RELAXED_BUDGET_LIMITS = {
       maximumInputBytes: 10_000,
       maximumStackItemBytes: 10_000,
       maximumTransactionBytes: 1_000_000,
@@ -904,7 +907,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
       operationCostBudgetPerByte: 800_000,
       hashDigestIterationsPerByte: 3_000,
     };
-    const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: ORDINARY_LIMITS } as never);
+    const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: RELAXED_BUDGET_LIMITS } as never);
     const measured: string[] = [];
     const ratioAt = (input: number): number => {
       const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as any;
@@ -958,7 +961,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
     // exact bytes. Same transaction, same source outputs, budget divided by four: the worst input must now fail
     // on density. Without this control an aborted evaluation reading the budget back would look like a pass.
     const tightened = createVirtualMachineBch2026ForProvider({
-      consensusLimits: { ...ORDINARY_LIMITS, operationCostBudgetPerByte: 200 },
+      consensusLimits: { ...RELAXED_BUDGET_LIMITS, operationCostBudgetPerByte: 200 },
     } as never);
     const tight = tightened.evaluate({
       inputIndex: built.layout.controllerInput, sourceOutputs, transaction,

@@ -1492,16 +1492,22 @@ describe('C3 capacity measurement', () => {
     // operation of the budget - and the next test still reads the real figure run-to-completion. Keeping a
     // regex that requires an error message would now assert the failure this composition no longer has.
     //
-    // THE POLICY GAP, as a number. Asserted as a band around the measured 100,650 so that shrinking C3 under
-    // the relay ceiling, or growing it further past, both fail here and force this comment to be re-read.
-    // The 100,354 this line used to name was measured before X5, which added 37 bytes to each of the eight
-    // projection scripts: +296, and the overrun grew from 354 bytes to 650. The band still holds, which is
-    // exactly why a band cannot be trusted to keep the comment beside it honest.
+    // THE POLICY GAP IS CLOSED. This band did its job: it was written around the measured 100,650 precisely so
+    // that shrinking C3 under the relay ceiling would FAIL here and force this comment to be re-read, and that
+    // is what happened. F4 cut 129 bytes from the projection verifier, which is ONE covenant instantiated once
+    // per participant, so C3 paid 8x: 100,650 -> 99,618, inside the 100,000-byte standard relay ceiling by 382
+    // bytes with all 108 slots intact.
+    //
+    // The history is worth keeping, because it is the reason this file distrusts its own recorded figures.
+    // 100,354 was measured before X5 added 37 bytes to each of the eight projection scripts (+296, overrun
+    // 354 -> 650); F1 then costed a fix - remove the two cheapest slot pairs, free 388, land at 99,966 - whose
+    // ARITHMETIC STOPPED WORKING when the figure moved (100,650 - 388 = 100,262, still over). F4 cleared it
+    // without removing any slot, so those options remain as headroom rather than as the plan.
     const serialized = built.transaction.length / 2;
     console.log(`C3 serialized transaction size: ${serialized} bytes `
-      + `(${serialized - 100_000} over the 100,000-byte standard relay ceiling)`);
-    expect(serialized).toBeGreaterThan(100_000);
-    expect(serialized).toBeLessThan(101_000);
+      + `(${100_000 - serialized} under the 100,000-byte standard relay ceiling)`);
+    expect(serialized).toBeLessThan(100_000);
+    expect(serialized).toBeGreaterThan(99_000);
   }, 900_000);
 
   it('MEASURED: X25 - the true run-to-completion cost of every C3 sidecar input', async () => {
@@ -1565,9 +1571,9 @@ describe('C3 capacity measurement', () => {
     // over the 100,000-byte standard relay ceiling, against the 1,000,000-byte consensus figure this profile
     // sets. C1, at 63,315 bytes, clears both (X39).
     for (const projection of projections) {
-      expect(projection.bytes).toBe(6_046);
-      expect(projection.ratio).toBeGreaterThan(0.6);
-      expect(projection.ratio).toBeLessThan(0.8);
+      expect(projection.bytes).toBe(5_917);
+      expect(projection.ratio).toBeGreaterThan(0.5);
+      expect(projection.ratio).toBeLessThan(0.7);
     }
     // The +325 RETURNING-ROW SURCHARGE IS GONE, and that is a finding rather than a re-pin. It was recorded as
     // exactly 325 instructions on three independent compositions and treated as a stable property of the row
@@ -1582,7 +1588,7 @@ describe('C3 capacity measurement', () => {
     // invocations, +1.3%. ALL EIGHT ROWS STILL COST THE SAME, so the surcharge finding above is unaffected -
     // which is the property that mattered, not the absolute figure.
     expect(projections.map((row) => row.instructions))
-      .toEqual([24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382]);
+      .toEqual([23_499, 23_499, 23_499, 23_499, 23_499, 23_499, 23_499, 23_499]);
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);

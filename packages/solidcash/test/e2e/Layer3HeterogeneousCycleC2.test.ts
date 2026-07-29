@@ -856,7 +856,7 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     expect(controller.ratio).toBeLessThan(0.95);
     // Both consensus claims stated separately, as C1 and C3 state theirs: C2 clears the relay ceiling too.
     expect(built.transaction.length / 2).toBeLessThan(100_000);
-    expect(projections.map((row) => row.instructions)).toEqual([15_008, 15_008, 15_008, 15_008]);
+    expect(projections.map((row) => row.instructions)).toEqual([14_470, 14_470, 14_470, 14_470]);
     // X24 cut these 14.3% AND removed the +325 returning-row surcharge that used to distinguish the last
     // entry. That surcharge was measured identically across C1, C2 and C3 and recorded as a property of
     // authenticating a result; it was an artifact of the counted-loop lowering. All four rows now cost the

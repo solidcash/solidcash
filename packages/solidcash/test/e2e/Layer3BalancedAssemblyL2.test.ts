@@ -339,18 +339,17 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 180_000);
 
-  // MEASURED LIMIT, recorded rather than hidden: "event NFTs remain inside the emitting participant's block"
-  // is an SDK assembly property, NOT a covenant invariant. The participant's minting master is co-spent, so a
-  // SECOND NFT of its category can be minted in the tail and the BCH-2026 VM accepts it. The in-block slot is
-  // authenticated; a category-indexing observer that trusts any NFT of that category is not. The preflight
-  // rejects the shape on the honest SDK path; a hostile assembler can still build it.
-  it('FAIL_CLOSED: an event NFT cloned outside every block is preflight-only - the VM accepts the clone', async () => {
+  // This WAS a measured limit: "event NFTs remain inside the emitting participant's block" was an SDK assembly
+  // property and not a covenant invariant, so a second NFT of the participant's category minted in the tail was
+  // accepted by the BCH-2026 VM. `emitOwnCategoryImmutableNftOutputPin` makes it a covenant invariant: an
+  // own-category zero-FT immutable NFT may only sit at an event offset or the witnessed return-event index.
+  it('an event NFT cloned outside every block is now refused by the VM, not only the preflight', async () => {
     const built = await build('event-cloned-to-tail');
-    // The in-block slot is honest here, so only the region rule can catch the copy in the tail.
+    // The in-block slot is honest here, so the clone in the tail is the only difference.
     expect(built.builder.outputs[1].token?.nft?.commitment).toBeTruthy();
     expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
       .toThrow(/output 7 carries a token outside every participant block \(region ends at 4\)/);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 180_000);
 
   /**

@@ -128,15 +128,19 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
     expect(outcome).toContain('error in evaluating input index 0');
   }, 300_000);
 
-  // The measurement: no bus, no route, no frame. One-armed emit, branch not taken, slot forgeable.
-  it.fails('rejects the forged commitment when the branch is NOT taken', async () => {
+  /**
+   * The measurement: no bus, no route, no frame. One-armed emit, branch not taken. This WAS forgeable and is
+   * now refused - `emitEventCovenantVerification` binds the reserved slot's commitment to EMPTY on the path
+   * that does not reach the emit, which is what both honest not-taken shapes produce.
+   */
+  it('rejects the forged commitment when the branch is NOT taken', async () => {
     const { outcome } = await forge(4n);
     expect(outcome).toContain('error in evaluating input index 0');
   }, 300_000);
 
-  it('the forged NFT reads back as a genuine event off the bus too', async () => {
+  it('the forged NFT no longer reads back as a genuine event off the bus either', async () => {
     const { outcome, events } = await forge(4n);
-    expect(outcome).toBe('ACCEPTED');
-    expect(events.map((e: any) => e.values.value)).toEqual([999_999n]);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(events).toEqual([]);
   }, 300_000);
 });

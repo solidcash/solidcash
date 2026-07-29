@@ -9527,19 +9527,48 @@ function parameterIsCommitted(
   // A fresh Node set: reusing `seen`'s nodes would make an already-visited committed side look non-caller-chosen.
   // The in-flight markers must ride along, or a self-referential commitment recurses forever.
   const markers = [...seen].filter((s): s is string => typeof s === 'string' && s.startsWith('inflight:'));
-  const overwritten = new Set<string>();
-  let committed = false;
-  for (const statement of unconditionalStatements(fn.body)) {
-    if (statement instanceof RequireNode
-      && commitmentCommitsKey(statement.expression, name, fn, markers, overwritten)) {
-      committed = true;
-      break;
-    }
-    collectCallerWrittenState(statement, fn, markers, overwritten);
-  }
+  const committed = commitmentSourceForParameter(name, fn, markers) !== undefined;
   seen.delete(`inflight:${name}`);
   seen.add(committed ? `committed:${name}` : `free:${name}`);
   return committed;
+}
+
+/**
+ * The ordered statement walk both the SEC-17 decision and X51's published fact are read from - ONE rule, so the
+ * artifact can never credit a commitment the diagnostic does not, or the reverse. Returns the expression the
+ * first unconditional top-level require pins `name` to, or undefined when nothing pins it.
+ *
+ * `overwritten` accumulates X46's caller-written state as the walk advances, which is why the walk is a loop and
+ * not a filter: a require is judged against exactly the writes that precede IT.
+ */
+function commitmentSourceForParameter(
+  name: string, fn: FunctionDefinitionNode, markers: string[],
+): ExpressionNode | undefined {
+  const overwritten = new Set<string>();
+  for (const statement of unconditionalStatements(fn.body)) {
+    if (statement instanceof RequireNode) {
+      const source = commitmentCommitsKey(statement.expression, name, fn, markers, overwritten);
+      if (source !== undefined) return source;
+    }
+    collectCallerWrittenState(statement, fn, markers, overwritten);
+  }
+  return undefined;
+}
+
+/**
+ * X51. What an unconditional top-level `require(hash160(<name>) == <x>)` pins the parameter `<name>` to, for the
+ * artifact to publish - or undefined when nothing pins it.
+ *
+ * This is the SAME walk `parameterIsCommitted` decides on, entered the way a top-level call enters it: a fresh
+ * marker set holding only this name's in-flight marker, so `require(hash160(pk) == pk)` resolves its right-hand
+ * side as caller-chosen and pins nothing, exactly as the diagnostic sees it. The memo `parameterIsCommitted`
+ * keeps is deliberately not shared: it stores a decision, not a witness, and a memo hit would have no expression
+ * to return.
+ */
+export function parameterCommitmentSource(
+  name: string, fn: FunctionDefinitionNode,
+): ExpressionNode | undefined {
+  return commitmentSourceForParameter(name, fn, [`inflight:${name}`]);
 }
 
 /**
@@ -9613,28 +9642,31 @@ function unconditionalStatements(body: BlockNode | undefined): StatementNode[] {
 }
 
 /**
- * Does this require condition pin `name` to a value the caller cannot choose? Descends `&&`, not `||`.
- * `overwritten` carries X46's already-written state names; a side that reads one of them was chosen by the
+ * Which value does this require condition pin `name` to, or undefined when it pins nothing? Descends `&&`, not
+ * `||`. `overwritten` carries X46's already-written state names; a side that reads one of them was chosen by the
  * caller a statement earlier, however unchooseable the declaration of that variable looks.
+ *
+ * The committed SIDE is returned rather than a boolean so X51 can publish where that value came from. Every
+ * decision below is unchanged: an undefined result is the old `false` and any expression is the old `true`.
  */
 function commitmentCommitsKey(
   expr: ExpressionNode | undefined, name: string, fn: FunctionDefinitionNode, markers: string[],
   overwritten: ReadonlySet<string>,
-): boolean {
+): ExpressionNode | undefined {
   let cur: ExpressionNode | undefined = expr;
   while (cur instanceof CastNode) cur = cur.expression;
-  if (!(cur instanceof BinaryOpNode)) return false;
+  if (!(cur instanceof BinaryOpNode)) return undefined;
   if (cur.operator === BinaryOperator.AND) {
     return commitmentCommitsKey(cur.left, name, fn, markers, overwritten)
-      || commitmentCommitsKey(cur.right, name, fn, markers, overwritten);
+      ?? commitmentCommitsKey(cur.right, name, fn, markers, overwritten);
   }
-  if (cur.operator !== BinaryOperator.EQ) return false;
+  if (cur.operator !== BinaryOperator.EQ) return undefined;
   for (const [hashSide, committedSide] of [[cur.left, cur.right], [cur.right, cur.left]] as const) {
     if (!isHashOf(hashSide, name, fn)) continue;
     if (readsOverwrittenState(committedSide, fn, overwritten)) continue;
-    if (!keyIsCallerChosen(committedSide, fn, new Set<Node | string>(markers))) return true;
+    if (!keyIsCallerChosen(committedSide, fn, new Set<Node | string>(markers))) return committedSide;
   }
-  return false;
+  return undefined;
 }
 
 /** `hash160(name)` modulo casts on either the call or its argument, following `pubkey k = pk` aliases. */

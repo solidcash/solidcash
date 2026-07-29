@@ -1,0 +1,366 @@
+import { describe, expect, it } from 'vitest';
+import { compileString } from 'solidc';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { Artifact, buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
+import {
+  Contract, SignatureTemplate, StatefulTransactionBuilder, layer3, getDataNftAddress, createDataNftUnlocker,
+} from '../../src/index.js';
+import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { addressToLockScript } from '../../src/utils.js';
+import { Utxo } from '../../src/interfaces.js';
+import {
+  alicePkh, alicePriv, alicePub, bobPriv, bobPub,
+} from '../fixture/vars.js';
+import { getTxOutputs } from '../test-util.js';
+import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+
+/**
+ * X51 - the SDK delegate gate reads the PUBLISHED key commitment.
+ *
+ * Round 16 refused honest P2PKH-shaped authority. `require(hash160(pk) == adminPkh); require(checkSig(s, pk));`
+ * publishes `signatureGuard.key = {parameter, pk}`, because the caller does hand the key in, and the separate
+ * require that turns it into authority was in no artifact field. X43 named that a false negative
+ * (`hash160-committed-key`) and refused to reconstruct it from parameter types - a `bytes20` constructor
+ * argument beside a `pubkey` parameter is exactly the type reasoning X37 exists to remove.
+ *
+ * X51 publishes `signatureGuard.keyCommitment` and this gate consumes it. This file carries the whole change:
+ *
+ *  - the VM triple, so the admission rests on settlement rather than on a metadata read: the honest holder
+ *    settles, a stranger is refused at a NAMED input index, and the same proxy with the one commitment line
+ *    removed lets that same stranger through, which is what makes the refusal attributable to the pin;
+ *  - the refusal-to-admission FLIP, asserted rather than dropped: the exact shape round 16 refused is admitted,
+ *    and the same artifact with the new key deleted - which is byte-for-byte a pre-X51 artifact - is refused
+ *    again by name;
+ *  - the hostile shapes that must stay refused, including X46's vacuous commitment.
+ *
+ * SEMANTIC evidence only, on createLayer3SemanticTestProvider (BCH-2026 opcode, introspection and 128-byte
+ * commitment behaviour, relaxed capacity).
+ */
+
+// ---------------------------------------------------------------------------
+// Sources
+// ---------------------------------------------------------------------------
+
+/** Implementation: two functions, so its unlocking script leads with a selector the proxy can pin. */
+const IMPL = `pragma solidcash >=0.8.0;
+contract X51Impl() {
+    bigint counter;
+    function increment() delegate { this.counter = this.counter + 1; }
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}`;
+
+/**
+ * THE HONEST SHAPE. The caller supplies the key, and may supply only the one key whose hash the proxy's own
+ * p2sh32 already commits to. Every source below differs from this one by a single line, so a difference in
+ * outcome is attributable to that line.
+ */
+const PROXY_COMMITTED = `pragma solidcash >=0.8.0;
+contract X51CommittedProxy(bytes20 adminPkh) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(hash160(pk) == adminPkh);
+        require(checkSig(s, pk));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/** THE GUARD NEGATIVE CONTROL: identical but for the commitment line. Round 14's A13-2 shape. */
+const PROXY_UNCOMMITTED = PROXY_COMMITTED
+  .replace('X51CommittedProxy(bytes20 adminPkh)', 'X51OpenProxy(bytes20 adminPkh)')
+  .replace('        require(hash160(pk) == adminPkh);\n', '');
+
+/** The commitment sits in an if-arm, so the other arm leaves `pk` free. SEC-17's conditional control. */
+const PROXY_CONDITIONAL_COMMITMENT = `pragma solidcash >=0.8.0;
+contract X51CondProxy(bytes20 adminPkh) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        if (input.length > 1) { require(hash160(pk) == adminPkh); }
+        require(checkSig(s, pk));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/** The key is pinned to ANOTHER caller parameter, which pins nothing. */
+const PROXY_COMMITTED_TO_PARAMETER = `pragma solidcash >=0.8.0;
+contract X51DecoyProxy(bytes20 adminPkh) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s, bytes20 otherPkh) external {
+        require(hash160(pk) == otherPkh);
+        require(checkSig(s, pk));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/**
+ * X46's LIVE SHAPE. The commitment target is written from a caller parameter one statement earlier, and scalar
+ * state is read after write, so the require compares `pk` against bytes the caller just supplied. Settled as a
+ * real theft in `X46CommitmentWriter.test.ts`; here it must publish no commitment and stay refused.
+ */
+const PROXY_OVERWRITTEN_COMMITMENT = `pragma solidcash >=0.8.0;
+contract X51OverwriteProxy() {
+    bigint counter;
+    bytes20 pkh;
+    function up(bytes input, address impl, pubkey pk, sig s, bytes20 newPkh) external {
+        this.pkh = newPkh;
+        require(hash160(pk) == this.pkh);
+        require(checkSig(s, pk));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
+
+interface Deployed {
+  contract: Contract;
+  categoryId: string;
+  master: Utxo;
+  dataNfts: Utxo[];
+}
+
+async function deploy(
+  provider: SemanticProvider, artifact: Artifact, args: unknown[], state: Record<string, unknown>,
+): Promise<Deployed> {
+  const contract = new Contract(artifact, args as never[], { provider });
+  const commitments = buildInitialStateCommitments(artifact.stateLayout!, state);
+  const { categoryId, utxos } = await (provider as any).addTokenUtxosDynamic((category: string) => [
+    {
+      address: contract.tokenAddress, satoshis: 10_000n,
+      token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+    },
+    ...commitments.map((commitment) => ({
+      address: getDataNftAddress(contract, category), satoshis: 10_000n,
+      token: { amount: 0n, nft: { capability: 'mutable' as const, commitment } },
+    })),
+  ]);
+  return { contract, categoryId, master: utxos[0], dataNfts: utxos.slice(1) };
+}
+
+function delegateGroup(
+  artifact: Artifact, deployed: Deployed, fn: string, args: unknown[], masterInputIndex: number,
+): ExternalCallUtxoGroup {
+  return {
+    categoryId: deployed.categoryId,
+    stateLayout: artifact.stateLayout!,
+    masterUtxo: { ...deployed.master, unlocker: (deployed.contract.unlock as any)[fn](...args) },
+    dataNftUtxos: deployed.dataNfts.map((nft) => ({
+      ...nft, unlocker: createDataNftUnlocker(deployed.contract, masterInputIndex, deployed.categoryId),
+    })),
+    requiredDataNftIndices: deployed.dataNfts.map((_nft, index) => index),
+    functionName: fn,
+    functionArgs: args,
+    externalContract: null,
+  } as unknown as ExternalCallUtxoGroup;
+}
+
+const selectorOf = (artifact: Artifact, name: string): Uint8Array =>
+  hexToBin(artifact.abi.find((entry) => entry.name === name)!.selector!);
+
+const stateOf = (tx: any, category: string, layout: any): Record<string, bigint> => {
+  const output = getTxOutputs(tx).find(
+    (candidate: any) => candidate.token?.category === category && candidate.token?.nft?.capability === 'mutable',
+  );
+  return parsePushdataCommitment(output!.token!.nft!.commitment, layout, 0) as Record<string, bigint>;
+};
+
+const outcome = async (send: Promise<unknown>): Promise<string> =>
+  send.then(() => 'ACCEPTED').catch((error: Error) => error.message);
+
+/** The input index a rejected transaction failed at, so a hostile case pins WHICH covenant refused it. */
+const failingInput = (message: string): number | null => {
+  const match = /error in evaluating input index (\d+)/.exec(message);
+  return match ? Number(match[1]) : null;
+};
+
+const implArtifact = compileString(IMPL);
+const committedProxyArtifact = compileString(PROXY_COMMITTED);
+const openProxyArtifact = compileString(PROXY_UNCOMMITTED);
+const conditionalProxyArtifact = compileString(PROXY_CONDITIONAL_COMMITMENT);
+const decoyProxyArtifact = compileString(PROXY_COMMITTED_TO_PARAMETER);
+const overwriteProxyArtifact = compileString(PROXY_OVERWRITTEN_COMMITMENT);
+
+/** Run the gate for one proxy artifact against the honest implementation. */
+const classify = (
+  proxyArtifact: Artifact, constructorArgs: unknown[],
+): (() => { id: string }) => {
+  const provider = createLayer3SemanticTestProvider();
+  const implementation = new Contract(implArtifact, [], { provider });
+  const proxy = new Contract(proxyArtifact, constructorArgs as never[], { provider });
+  return () => layer3.classifyDelegateParticipant({
+    proxy: { artifact: proxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
+    implementation: {
+      artifact: implArtifact,
+      functionName: 'increment',
+      lockingBytecode: binToHex(addressToLockScript(implementation.address)),
+    },
+  });
+};
+
+describe('X51: a committed caller-supplied key is admitted, read from the artifact', () => {
+  // =========================================================================
+  // The VM triple
+  // =========================================================================
+  describe('settlement', () => {
+    async function build(options: {
+      artifact: Artifact;
+      constructorArgs: unknown[];
+      signer: 'admin' | 'stranger';
+    }): Promise<{ send: Promise<any>; proxyCategory: string }> {
+      const provider = createLayer3SemanticTestProvider();
+      const implementation = await deploy(provider, implArtifact, [], { counter: 0n });
+      const proxy = await deploy(provider, options.artifact, options.constructorArgs, { counter: 5n });
+      const stranger = options.signer === 'stranger';
+      const send = new StatefulTransactionBuilder({
+        provider,
+        stateLayout: options.artifact.stateLayout!,
+        categoryId: proxy.categoryId,
+        masterUtxo: {
+          ...proxy.master,
+          unlocker: (proxy.contract.unlock as any).up(
+            selectorOf(implArtifact, 'increment'),
+            addressToLockScript(implementation.contract.address),
+            stranger ? bobPub : alicePub,
+            new SignatureTemplate(stranger ? bobPriv : alicePriv),
+            2n,
+          ),
+        },
+        dataNftUtxos: proxy.dataNfts.map((nft) => ({
+          ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
+        })),
+        externalCallUtxoGroups: [delegateGroup(implArtifact, implementation, 'increment', [0n], 2)],
+      }).setState('counter', 6n).send();
+      return { send, proxyCategory: proxy.categoryId };
+    }
+
+    /** HONEST POSITIVE CONTROL. The holder of the committed key spends, and the delegate writes proxy state. */
+    it('settles for the holder of the key the proxy commits to', async () => {
+      const { send, proxyCategory } = await build({
+        artifact: committedProxyArtifact, constructorArgs: [alicePkh], signer: 'admin',
+      });
+      expect(stateOf(await send, proxyCategory, committedProxyArtifact.stateLayout!).counter).toBe(6n);
+    }, 120_000);
+
+    /**
+     * HOSTILE. A stranger supplies HIS OWN key and a valid signature over it, which is precisely what the
+     * `signatureGuard.key` provenance alone cannot rule out. The commitment does, and the refusal is pinned to
+     * the proxy master input rather than reported as "it threw".
+     */
+    it('refuses a stranger who supplies his own key, at the proxy master input', async () => {
+      const message = await outcome((await build({
+        artifact: committedProxyArtifact, constructorArgs: [alicePkh], signer: 'stranger',
+      })).send);
+      expect(message).toContain('mandatory-script-verify-flag-failed');
+      expect(failingInput(message)).toBe(0);
+    }, 120_000);
+
+    /**
+     * GUARD NEGATIVE CONTROL. The same proxy with the commitment line deleted - same parameters, same
+     * delegatecall, same co-spend - lets that same stranger through. So the refusal above is attributable to the
+     * commitment and not to the delegate machinery, the signing key, or the fixture.
+     */
+    it('lets the same stranger through once the commitment line is removed', async () => {
+      const { send, proxyCategory } = await build({
+        artifact: openProxyArtifact, constructorArgs: [alicePkh], signer: 'stranger',
+      });
+      expect(stateOf(await send, proxyCategory, openProxyArtifact.stateLayout!).counter).toBe(6n);
+    }, 120_000);
+  });
+
+  // =========================================================================
+  // The published fact
+  // =========================================================================
+  describe('the artifact publishes the commitment', () => {
+    it('publishes the constructor argument the caller-supplied key is pinned to', () => {
+      expect(committedProxyArtifact.abi.find((entry) => entry.name === 'up')!.signatureGuard).toEqual({
+        key: { kind: 'parameter', name: 'pk' },
+        keyCommitment: { kind: 'constructorArg', name: 'adminPkh' },
+      });
+    });
+
+    it('publishes the key alone when nothing pins it', () => {
+      expect(openProxyArtifact.abi.find((entry) => entry.name === 'up')!.signatureGuard)
+        .toEqual({ key: { kind: 'parameter', name: 'pk' } });
+    });
+
+    it('publishes no commitment for a conditional pin, a pin to a parameter, or an overwritten target', () => {
+      for (const artifact of [conditionalProxyArtifact, decoyProxyArtifact, overwriteProxyArtifact]) {
+        expect(artifact.abi.find((entry) => entry.name === 'up')!.signatureGuard)
+          .toEqual({ key: { kind: 'parameter', name: 'pk' } });
+      }
+    });
+  });
+
+  // =========================================================================
+  // The gate: the refusal-to-admission flip
+  // =========================================================================
+  describe('the gate consumes it', () => {
+    /**
+     * THE FLIP, asserted rather than dropped. Round 16 refused this exact shape as `self-authorized` and named
+     * the false negative `hash160-committed-key`. It is now admitted, and the class it is admitted as is the
+     * one whose covenant authority the VM triple above settles.
+     */
+    it('ADMITS the shape round 16 refused as a named false negative', () => {
+      expect(classify(committedProxyArtifact, [alicePkh])().id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+    });
+
+    /**
+     * THE OTHER HALF OF THE FLIP, and the additive-field contract. Deleting exactly the new key from this
+     * artifact reproduces a pre-X51 artifact byte-for-byte, and the gate refuses it again - by a name that says
+     * what is missing. An absent field is never read as "unconstrained": it falls closed through the same
+     * allow-list `unknown` fails.
+     */
+    it('refuses the same artifact once the new key is deleted, which is a pre-X51 artifact', () => {
+      const stripped = JSON.parse(JSON.stringify(committedProxyArtifact)) as Artifact;
+      const fn = stripped.abi.find((entry) => entry.name === 'up')! as {
+        signatureGuard: { key: unknown; keyCommitment?: unknown };
+      };
+      delete fn.signatureGuard.keyCommitment;
+      expect(fn.signatureGuard).toEqual({ key: { kind: 'parameter', name: 'pk' } });
+      expect(classify(stripped, [alicePkh]))
+        .toThrow(/class 'unpublished-key-commitment' is not admitted.*never the claim that the key is pinned/s);
+    });
+
+    it('still refuses a key nothing pins, as self-authorized', () => {
+      expect(classify(openProxyArtifact, [alicePkh]))
+        .toThrow(/class 'unpublished-key-commitment' is not admitted/);
+    });
+
+    /**
+     * THE HOSTILE SHAPES. Each publishes a `hash160` require in its source and none publishes a commitment, so
+     * the gate refuses all three. X46's is the one that matters most: it is a settled live theft, not a
+     * conservative refusal, and a rule that credited "a hash160 somewhere" would admit it.
+     */
+    it('refuses a conditional pin, a pin to another caller parameter, and X46\'s overwritten target', () => {
+      for (const artifact of [conditionalProxyArtifact, decoyProxyArtifact]) {
+        expect(classify(artifact, [alicePkh])).toThrow(/is not admitted/);
+      }
+      expect(classify(overwriteProxyArtifact, [])).toThrow(/is not admitted/);
+    });
+  });
+
+  // =========================================================================
+  // The enumeration
+  // =========================================================================
+  describe('the enumeration records the closure', () => {
+    it('drops `hash160-committed-key` and names the residual it leaves', () => {
+      const ids = layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id);
+      expect(ids).not.toContain('hash160-committed-key');
+      expect(ids).toContain('unpublished-key-commitment');
+    });
+
+    /** X51 changes nothing about the classes this gate cannot SEE; those are occurrence and the decoy target. */
+    it('leaves the undetected list unchanged', () => {
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toEqual([
+        'conditional-delegate-edge', 'iterated-delegate-edge', 'decoy-committed-target',
+      ]);
+    });
+  });
+});

@@ -11965,6 +11965,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       throw new Error('Graph emission call lacks an authenticated selector');
     }
     const evaluatedTargetExpression = parametersAreCallArguments && slot.sourceCallNode !== undefined;
+    let evaluatedSelectorExpression = false;
     if (evaluatedTargetExpression) {
       this.visit(slot.sourceCallNode!.addressExpression);
     } else if (slot.addressParam) {
@@ -12036,6 +12037,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(this.getStackIndex(slot.runtimeSelector.name))), locationData);
         this.emit(Op.OP_PICK, locationData);
       } else {
+        // X2. An EXPRESSION selector - `bytes4(__fnsel_t[i])` from a rolled pointer-table loop, the
+        // received-value table's cast, a ternary - already models its own tracked push. Rename it instead
+        // of pushing again, exactly as the evaluated target expression above does. Pushing a second entry
+        // left one phantom tracked slot after the CAT's popFromStack(2), so every later name lookup in the
+        // handler read one item too deep and the graph emission row split the wrong stack value.
+        evaluatedSelectorExpression = true;
         this.visit(slot.runtimeSelector);
       }
     } else {
@@ -12043,7 +12050,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // The raw branch already models both OP_SPLIT results above (and moves the
     // argument tail to the alt stack). Other branches push only the selector.
-    if (!rawCall) this.pushToStack('(__graph_selector)');
+    if (!rawCall) {
+      if (evaluatedSelectorExpression) this.stack[0] = '(__graph_selector)';
+      else this.pushToStack('(__graph_selector)');
+    }
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(__graph_target_selector)');

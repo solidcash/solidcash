@@ -37,9 +37,13 @@ import {
  *
  * RE-MEASURED AT `ffef8568`, and the capstone rows have MOVED - by construction, not by drift. X5 edited
  * `generateGraphProjectionVerifier` alone, adding 37 bytes to every projection script, so each capstone grew
- * by 37 times its participant count: C2 53,101 -> 53,249 (+148), C1 63,130 -> 63,315 (+185), C3 100,354 ->
- * 100,650 (+296). Every worst-density ratio above reproduces to the operation, because the worst input of each
- * capstone is a controller or a participant and never a projection; what moves with the size is C3's relay
+ * by 37 times its participant count: A13 23,734 -> 23,845 (+111), C2 53,101 -> 53,249 (+148), C1 63,130 ->
+ * 63,315 (+185), C3 100,354 -> 100,650 (+296). A13 is the one shape whose BINDING limit is a projection, so
+ * it is also the one whose binding ratio moves: worst script 5,094 -> 5,131 B, 0.5094x -> 0.5131x, still the
+ * per-input script limit.
+ *
+ * Every worst-DENSITY ratio in the table reproduces to the operation, because the worst-cost input of each
+ * capstone is a controller or a participant and never a projection. What moves with the size is C3's relay
  * ratio, 1.0035x -> 1.0065x. The 2/4/8 synthetic sweep is untouched and reproduces exactly, 10,661 B and
  * 0.3630x at N=8. The table above is kept as the `4ac40b82` reading it is labelled as; these are HEAD's.
  *

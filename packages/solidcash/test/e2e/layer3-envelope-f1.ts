@@ -242,7 +242,7 @@ export function refusedInputsAt(
   transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
   sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
   standard: boolean,
-  limits: { operationCostBudgetPerByte: number } = ORDINARY_LIMITS,
+  limits: typeof ORDINARY_LIMITS = ORDINARY_LIMITS,
 ): { input: number; error: string }[] {
   const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: limits } as never, undefined, { standard });
   const refused: { input: number; error: string }[] = [];
@@ -267,7 +267,7 @@ export function hashAllowancesFor(
   transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
   sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
   input: number,
-  limits: { hashDigestIterationsPerByte: number },
+  limits: typeof ORDINARY_LIMITS,
 ): { standard: number; nonstandard: number; densityBytes: number } {
   const read = (standard: boolean): Record<string, number> => {
     const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: limits } as never, undefined, { standard });

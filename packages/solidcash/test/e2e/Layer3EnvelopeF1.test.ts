@@ -261,9 +261,11 @@ describe('F1 envelope: the 2/4/8 participant sweep', () => {
     // density; the other regime must not, which is what proves the refusal came from the knob under test.
     for (const { n, envelope, built } of envelopes) {
       const row = envelope.worstHashInput;
+      // A shape that hashes nothing would make this control vacuous, so that is checked rather than assumed.
+      expect(row.hashIterations, `nothing to tighten against at N=${n}`).toBeGreaterThan(0);
       const tooTight = (row.hashIterations - 1) / row.densityBytes;
       for (const knob of ['standard', 'nonstandard'] as const) {
-        const tighten = { [knob]: tooTight };
+        const tighten = knob === 'standard' ? { standard: tooTight } : { nonstandard: tooTight };
         const ownRegime = knob === 'standard';
         const bites = hashKnobControl(
           built.transaction as never, built.sourceOutputs, row.input, tighten, ownRegime,

@@ -42,6 +42,17 @@ export interface PlannedGraphInvocation {
   function: string;
   selectorHex: string;
   callMode: 'call' | 'staticcall';
+  /**
+   * X5: the committed call-options byte of this row's parent edge - one field, one encoder, one covenant bound.
+   *
+   * Bit 0 is the read-only (`staticcall`) mode. Bits 1-7 are the call options a source-level callsite can carry
+   * (`{value: ..}` and token-container operations); none is an admitted graph edge, so the only values the
+   * covenants accept are 0 and 1, and a transaction-origin row - which answers no callsite and therefore has no
+   * edge - must be exactly 0. The bits are DERIVED from the same measurement `assertNoUnboundCallOptions`
+   * refuses on, not hardcoded: if that refusal is ever relaxed, an option-bearing row carries its option into
+   * the transcript and the projection verifier rejects it, rather than the option silently disappearing.
+   */
+  callOptions: number;
   argsHex: string;
   resultTypes: readonly string[];
   /**
@@ -236,6 +247,35 @@ const uint = (value: number, width: 1 | 2): Uint8Array => {
 };
 const framed = (bytes: Uint8Array): Uint8Array => concat(uint(bytes.length, 2), bytes);
 
+/** Bit 0 of the call-options byte: the compiler-proven read-only (`staticcall`) mode. */
+const CALL_OPTION_READ_ONLY = 1;
+/** Bits 1-7: source-level call options. None is an admitted graph edge; see `assertNoUnboundCallOptions`. */
+const CALL_OPTION_VALUE = 2;
+const CALL_OPTION_TOKEN_CONTAINER = 4;
+const CALL_OPTION_BLOCK_SLOT = 8;
+
+/**
+ * The single encoder of a row's committed call-options byte, used by BOTH framings that carry it: the caller's
+ * emission row and the global invocation row. They are compared against each other by the projection verifier,
+ * so a second copy of this ternary is a place for the two to drift - the shape X31 removed for `abi.find`.
+ *
+ * `callMode` stays the field the rest of the planner reasons about; this asserts the byte agrees with it, so a
+ * hand-constructed `CompiledGraphPlan` handed straight to `finalizeCompiledGraph` cannot desynchronize the two.
+ */
+const callOptionsByte = (invocation: PlannedGraphInvocation): number => {
+  const options = invocation.callOptions;
+  if (!Number.isInteger(options) || options < 0 || options > 0xff) {
+    throw new Error(`layer3: invocation ${invocation.index} has no canonical call-options byte`);
+  }
+  const readOnly = invocation.callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0;
+  if ((options & CALL_OPTION_READ_ONLY) !== readOnly) {
+    throw new Error(
+      `layer3: invocation ${invocation.index} call-options byte disagrees with its '${invocation.callMode}' mode`,
+    );
+  }
+  return options;
+};
+
 /**
  * Freeze a planned graph into one unambiguous execution transcript.
  *
@@ -311,7 +351,7 @@ export function finalizeCompiledGraph(
     const args = hexToBin(invocation.argsHex);
     const result = hexToBin(resultHex[invocation.index]);
     emissionParts[invocation.caller].push(
-      framed(target), uint(invocation.callMode === 'staticcall' ? 1 : 0, 1),
+      framed(target), uint(callOptionsByte(invocation), 1),
       hexToBin(invocation.selectorHex), framed(args), framed(result),
     );
   }
@@ -371,7 +411,7 @@ export function finalizeCompiledGraph(
       uint(invocation.depth, 1),
       uint(invocation.subtreeEnd, 2),
       hexToBin(invocation.selectorHex),
-      uint(invocation.callMode === 'staticcall' ? 1 : 0, 1),
+      uint(callOptionsByte(invocation), 1),
       framed(args),
       framed(result),
     );
@@ -713,7 +753,12 @@ contract GraphProjectionVerifier() {
       bigint callee = int(bytes.concat(transcript.slice(tail + 2, tail + 3), hex"00"));
       bigint depth = int(bytes.concat(transcript.slice(tail + 4, tail + 5), hex"00"));
       require(callee < participantCount);
-      require(int(bytes.concat(transcript.slice(tail + 11, tail + 12), hex"00")) <= 1);
+      // X5: the row's call-options byte. Bit 0 is the read-only mode; bits 1-7 are call options, none of which
+      // is an admitted graph edge - so the byte bounded here IS the on-chain statement of that policy, not an
+      // incidental range check. Read once and reused below, which is also one slice cheaper than the two reads
+      // the root bound would otherwise need.
+      bigint callOptions = int(bytes.concat(transcript.slice(tail + 11, tail + 12), hex"00"));
+      require(callOptions <= 1);
       bigint argsLength = int(bytes.concat(transcript.slice(tail + 12, tail + 14), hex"00"));
       require(tail + 16 + argsLength <= transcript.length);
       bigint resultLength = int(bytes.concat(
@@ -722,7 +767,12 @@ contract GraphProjectionVerifier() {
       // Frame index 0 is the permanent no-caller sentinel, so a depth-0 row reads no caller at all.
       bigint caller = int(bytes.concat(activeCallees.slice(depth, depth + 1), hex"00"));
       if (invocation == 0) {
+        // X5: the transaction-origin row answers no callsite, so it has no parent edge and therefore no call
+        // options at all. Every other row's byte is re-derived by its CALLER's compiled route and compared in
+        // the emission-row equality below; the root has no caller, so without this bound its call-options byte
+        // was a committed field no covenant ever read - forgeable in the transcript at zero cost.
         require(int(bytes.concat(transcript.slice(tail, tail + 2), hex"00")) == 65535 && depth == 0);
+        require(callOptions == 0);
       } else {
         require(depth >= 1 && depth <= ${MAX_GRAPH_DEPTH});
       }
@@ -940,6 +990,40 @@ function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: n
   assertPlannedOccurrenceCount(callsites[last], surplus);
 }
 
+/**
+ * X3: refuse a handler asked to consume more than one producer result - result fan-in.
+ *
+ * This is a capability gap, not a policy: no compiler-emitted artifact can execute such a row. The wall has a
+ * measured shape, and none of it is in the SDK.
+ *
+ *   1. `SymbolTableTraversal` refuses to LOWER a graph-emission handler holding more than one call slot when
+ *      any of them returns, so the artifact never exists. That predicate is broader than fan-in: one returning
+ *      call plus one void call is refused by the same clause.
+ *   2. `GenerateTargetTraversal.verifyGraphEmissionRow` cannot compose a returning row. The void arm builds a
+ *      row and leaves it for the dispatch site to concatenate; the returning arm instead SPLITS the caller's
+ *      whole emission vector at its own prefix and then requires the remainder to be exactly one framed
+ *      result, so a returning row consumes the entire vector and nothing can follow it.
+ *   3. The multi-slot dispatch site builds the vector by concatenating every row and comparing once, which
+ *      cannot interleave the per-row result decodes a second returning slot would need.
+ *
+ * Everything downstream of the artifact already handles fan-in: `resultDependencies` is a list, the dependency
+ * resolver takes any acyclic table, `finalizeCompiledGraph` frames one emission row per child, and the
+ * projection verifier walks a caller's rows with a cursor rather than a single equality. Closing this needs
+ * (2) rewritten to the cursor form `consumeGraphRuntimeEmissionRow` already uses for loop rows - split one row
+ * off the front, decode its result, keep the remainder - and (3) rewritten to interleave those decodes; then
+ * (1) can be narrowed. Both files are compiler-side.
+ *
+ * Refusing here converts that into a named plan-time diagnostic. A fan-in plan is otherwise accepted, and its
+ * unexecutable transaction fails as an unnamed script error at the consumer's own master input.
+ */
+function assertSingleConsumedResult(parent: number, producers: readonly number[]): void {
+  if (producers.length <= 1) return;
+  throw new Error(
+    `layer3: invocation ${parent} consumes results from invocations ${producers.join(', ')}; a graph handler `
+    + 'binds at most one producer result, so result fan-in is not an admitted graph shape',
+  );
+}
+
 /** Block slots that carry a call option or an unconditioned value movement. */
 const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
   'satoshiContainer', 'transfer', 'tokenContainer', 'tcTransfer',
@@ -964,23 +1048,27 @@ export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFu
 }
 
 /**
- * Reject a graph invocation whose function carries an effect the executed SCB1 route does not.
+ * Measure the call options one graph invocation's function carries that the executed SCB1 route does not.
  *
  * `IFoo(addr).m{value: v}()` publishes `transferCount` and `satoshiContainer`/`transfer` slots on the DIRECT
  * block layout, while the SCB1 route layout, the handler projection and the transcript row stay byte identical
- * to the option-free form. Executing such a function as a graph row therefore drops the option silently: no
- * covenant byte enforces it and no transcript field commits it.
+ * to the option-free form. Executing such a function as a graph row therefore drops the option silently unless
+ * something commits it - which is what the row's call-options byte is for.
  *
  * A first-party `this.transfer(..)` publishes the SAME direct-mode fields yet is carried into the route, which
  * is why the direct block layout alone cannot tell a bound effect from a dropped one and why this compares the
- * two projections instead of refusing every value-moving function. The measured discriminator is the SCB1
+ * two projections instead of flagging every value-moving function. The measured discriminator is the SCB1
  * handler: an option contributes nothing to `handler.transfers`, a first-party transfer contributes one entry
  * and eight route `transfer` slots. Dropped token-container operations are already refused at compile time;
  * the container arm here is the SDK-side backstop for the same class.
+ *
+ * X5: this is ONE measurement with two consumers - `assertNoUnboundCallOptions`, which turns it into the single
+ * named refusal, and `planCompiledGraph`, which encodes it into the committed row. Splitting the measurement
+ * would let the refusal and the committed byte disagree about the same artifact.
  */
-export function assertNoUnboundCallOptions(
-  lockingBytecode: string, artifact: Artifact, fn: AbiFunction, name: string,
-): void {
+export function measureUnboundCallOptions(
+  artifact: Artifact, fn: AbiFunction, name: string,
+): { optionBits: number; detail?: string } {
   const handler = artifact.hiddenBatch?.handlers.find((candidate) => candidate.name === name);
   const routeKinds = new Set((artifact.hiddenBatch?.route.blockLayout?.slots ?? [])
     .map((slot) => slot.kind as string));
@@ -992,10 +1080,26 @@ export function assertNoUnboundCallOptions(
   const droppedKinds = [...new Set((fn.blockLayout?.slots ?? [])
     .filter((slot) => OPTION_SLOT_KINDS.has(slot.kind) && !routeKinds.has(slot.kind))
     .map((slot) => slot.kind))];
+  const optionBits = (unboundValue > 0 ? CALL_OPTION_VALUE : 0)
+    | (unboundContainer > 0 ? CALL_OPTION_TOKEN_CONTAINER : 0)
+    | (droppedKinds.length > 0 ? CALL_OPTION_BLOCK_SLOT : 0);
   let detail: string | undefined;
   if (unboundValue > 0) detail = `${unboundValue} value option(s)/transfer(s)`;
   else if (unboundContainer > 0) detail = `${unboundContainer} token-container operation(s)`;
   else if (droppedKinds.length > 0) detail = `block slots ${droppedKinds.join(', ')}`;
+  return { optionBits, ...(detail !== undefined && { detail }) };
+}
+
+/**
+ * The single named refusal for a graph row whose function carries an unbound call option.
+ *
+ * X31: one exported function, reached from both public planning entry points, so the same artifact produces a
+ * byte-identical string whichever one the caller used.
+ */
+export function assertNoUnboundCallOptions(
+  lockingBytecode: string, artifact: Artifact, fn: AbiFunction, name: string,
+): void {
+  const { detail } = measureUnboundCallOptions(artifact, fn, name);
   if (detail === undefined) return;
   throw new Error(
     `layer3: function '${name}' of participant ${lockingBytecode.slice(0, 12)} declares `
@@ -1079,7 +1183,7 @@ export function planCompiledGraph(
   // the other public planning entry point and every committed capstone fixture uses it - an option-bearing
   // graph used to settle through it with the option silently dropped. Ordered after the structural walk so a
   // malformed graph still reports its structural defect first.
-  invocations.forEach((invocation, index) => {
+  const optionBits = invocations.map((invocation, index) => {
     if (invocation.callMode !== undefined
       && invocation.callMode !== 'call' && invocation.callMode !== 'staticcall') {
       throw new Error(
@@ -1101,6 +1205,10 @@ export function planCompiledGraph(
     assertNoUnboundCallOptions(
       participant.lockingBytecode, participant.artifact, abiFunction, invocation.function,
     );
+    // X5: the refusal above precedes this, so an accepted plan always measures zero option bits. Deriving them
+    // anyway - from that same measurement - is what makes the committed byte a real field: relax the refusal and
+    // the option travels into the transcript, where the projection verifier rejects it, instead of vanishing.
+    return measureUnboundCallOptions(participant.artifact, abiFunction, invocation.function).optionBits;
   });
 
   const executions = participants.map((participant, owner) => {
@@ -1130,7 +1238,17 @@ export function planCompiledGraph(
     const result = execution.batch.results.find((candidate) => candidate.row === localRow);
     const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
     let callMode: 'call' | 'staticcall' = invocation.callMode ?? 'call';
-    if (invocation.parent !== null) {
+    if (invocation.parent === null) {
+      // X5: the transaction-origin row answers no callsite, so there is no published mode for a caller-supplied
+      // one to agree with, and the committed byte the covenant now bounds must be exactly 0. Coercing it to
+      // `call` instead would silently discard what the caller asked for - the shape this row is about.
+      if (invocation.callMode !== undefined && invocation.callMode !== 'call') {
+        throw new Error(
+          `layer3: root invocation ${index} declares call mode '${invocation.callMode}', but the transaction `
+          + 'origin answers no callsite and carries no call options',
+        );
+      }
+    } else {
       const parentInvocation = invocations[invocation.parent];
       const parentArtifact = participants[parentInvocation.callee].artifact;
       const parentFunction = resolveGraphAbiFunction(parentArtifact, parentInvocation.function);
@@ -1159,6 +1277,23 @@ export function planCompiledGraph(
           throw new Error(`layer3: staticcall target '${invocation.function}' is not compiler-proven read-only`);
         }
       }
+      // X5: the remaining half of the round-15 divergence. Refusing only `delegatecall` left the two ordinary
+      // modes free to disagree: a caller-supplied `call` on a callsite the compiler published as `staticcall`
+      // was committed as `call`, which also skipped the read-only proof above. The compiled caller route
+      // rebuilds this byte from its own slot and rejects the mismatch, so the transaction never settled - but it
+      // failed as an unnamed script error at the caller's input rather than as a planning refusal.
+      //
+      // A name-matched candidate set is the only place a published mode exists to compare against. When it is
+      // empty the callsite resolves its method at runtime - a raw `__raw__` edge, a function pointer, a selector
+      // table - and its `functionName` is a placeholder, so there is nothing to disagree with here; that shape
+      // stays bound by the caller's own emission-row equality on the VM.
+      if (invocation.callMode !== undefined && candidates.length > 0
+        && !modes.includes(invocation.callMode)) {
+        throw new Error(
+          `layer3: invocation ${index} declares call mode '${invocation.callMode}', but its compiler-authored `
+          + `callsite declares '${modes.join("'/'")}'`,
+        );
+      }
     }
     return Object.freeze({
       index,
@@ -1171,6 +1306,7 @@ export function planCompiledGraph(
       function: row.function,
       selectorHex: row.selectorHex,
       callMode,
+      callOptions: (callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0) | optionBits[index],
       argsHex: row.argsHex,
       resultTypes: Object.freeze([...(result?.types ?? [])]),
     });
@@ -1218,6 +1354,7 @@ export function planCompiledGraph(
       }
       resultDependencies[parent].push(child);
     });
+    assertSingleConsumedResult(parent, resultDependencies[parent]);
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
   const planned = plannedBase.map((invocation, index) => Object.freeze({

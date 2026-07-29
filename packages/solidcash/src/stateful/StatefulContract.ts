@@ -9158,20 +9158,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
     let effectiveBlockLayout = abiFunction?.blockLayout;
     // X56. Relocate - never duplicate - the forwarder's returnEvent slot when the impl resolves its own return
-    // event elsewhere in this block. Unconditional on the send mode: two slots at one offset would have the
-    // funder loop position the same index twice, and a plain send has to keep the event where it already is.
-    if (effectiveBlockLayout && delegateReturnEventOffset !== undefined) {
+    // event at a DIFFERENT index in this block. Unconditional on the send mode: two slots at one offset would
+    // have the funder loop position the same index twice, and a plain send has to keep the event where it is.
+    // A returning implementation with no event resolves to the offset the forwarder already published, so this
+    // is a no-op there and the layout object is left exactly as it was.
+    const returnSlotMoved = delegateReturnEventOffset !== undefined
+      && effectiveBlockLayout?.slots.some((s) => s.kind === 'returnEvent' && s.offset !== delegateReturnEventOffset);
+    if (effectiveBlockLayout && returnSlotMoved) {
       effectiveBlockLayout = {
         ...effectiveBlockLayout,
         slots: effectiveBlockLayout.slots.map((s) => (s.kind === 'returnEvent'
           ? { ...s, offset: delegateReturnEventOffset! } : s)),
       };
     }
-    if (effectiveBlockLayout && (delegateEventSlots.length > 0 || delegateReturnEventOffset !== undefined)) {
+    if (effectiveBlockLayout && (delegateEventSlots.length > 0 || returnSlotMoved)) {
       const maxOff = Math.max(
         effectiveBlockLayout.blockSize - 1,
         ...delegateEventSlots.map((s) => s.offset),
-        ...(delegateReturnEventOffset !== undefined ? [delegateReturnEventOffset] : []),
+        ...(returnSlotMoved ? [delegateReturnEventOffset!] : []),
       );
       effectiveBlockLayout = { blockSize: maxOff + 1, slots: [...effectiveBlockLayout.slots, ...delegateEventSlots] };
     }

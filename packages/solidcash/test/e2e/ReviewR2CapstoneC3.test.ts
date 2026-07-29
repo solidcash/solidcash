@@ -11,7 +11,7 @@ import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
@@ -39,8 +39,9 @@ const CALL_VALUE = 6n;
 const SEED_WEIGHT = 7n;
 const SCORE = CALL_VALUE + 1n;
 const CONTAINER_SATS = 5_000n;
-const RECIPIENT = Uint8Array.of(0x51);
-const TRANSFER_SATS = 10n;
+/** X60: a REAL P2PKH recipient above BCHN's 546-satoshi dust bar. See Layer3BoundedMaximumGraphC3. */
+const RECIPIENT = hexToBin(`76a914${binToHex(bobPkh)}88ac`);
+const TRANSFER_SATS = 1_000n;
 const ORDINARY_BUDGET_PER_BYTE = 800;
 
 const ROUTER = `pragma solidcash >=0.8.0;

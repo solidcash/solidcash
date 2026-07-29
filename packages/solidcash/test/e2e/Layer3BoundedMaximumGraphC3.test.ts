@@ -9,9 +9,11 @@ import {
 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
-import { setupStatefulUtxos } from '../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  acceptedByNode, createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+} from './layer3-semantic-profile.js';
+import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
@@ -81,9 +83,21 @@ const SEED_WEIGHT = 7n;
 /** Oracle.score(v) = v + 1. */
 const SCORE = CALL_VALUE + 1n;
 const CONTAINER_SATS = 5_000n;
-/** Where the Sink's compiled satoshi effect pays. A CONSTRUCTOR argument, so `absorb` keeps one parameter. */
-const RECIPIENT = Uint8Array.of(0x51);
-const TRANSFER_SATS = 10n;
+/**
+ * Where the Sink's compiled satoshi effect pays. A CONSTRUCTOR argument, so `absorb` keeps one parameter.
+ *
+ * X60. A real P2PKH script paying 1,000 satoshis, not the one-byte `OP_1` placeholder paying 10 that stood
+ * here. BCHN's relay dust rule is `3 * (serialized output bytes + 148)`, so the old pair was 10 satoshis
+ * against a 474-satoshi threshold and a real node refuses the transaction `64: dust`. C3 never showed it: at
+ * 100,650 bytes the node refused `64: tx-size` first, and the whole mock stack has dust off by default
+ * (`MockNetworkProvider` defaults `enforceDust: false`), so nothing measured here ever reached the rule.
+ * A real recipient RAISES the threshold to `3 * (34 + 148)` = 546, so the amount had to move with it.
+ *
+ * F4 is what turns this from a latent defect into a live one: with C3 now under the relay ceiling the size
+ * rule no longer refuses first, so the dust rule is the next one the node reaches.
+ */
+const RECIPIENT = hexToBin(`76a914${binToHex(bobPkh)}88ac`);
+const TRANSFER_SATS = 1_000n;
 
 /**
  * P0. The graph root: three outgoing calls and a scalar write.
@@ -288,7 +302,13 @@ function measureRunToCompletion(built: BuiltC3): InputCost[] {
   });
 }
 
-type Provider = ReturnType<typeof createLayer3SemanticTestProvider>;
+/**
+ * X59. Widened from `createLayer3SemanticTestProvider`'s mock-only return type to the union
+ * `createTestProvider` returns, so `buildC3` can build this shape against a real BCHN regtest node. Until F4
+ * this bought C3 nothing - it was over the 100,000-byte relay ceiling and the node refused it `64: tx-size`
+ * without executing anything. F4 put it under, so the node block at the bottom of this file is now reachable.
+ */
+type Provider = ReturnType<typeof createTestProvider>;
 
 /** The eight participant labels, in the physical order the default assembly concatenates them. */
 const DEFAULT_ORDER = [
@@ -1508,6 +1528,14 @@ describe('C3 capacity measurement', () => {
       + `(${100_000 - serialized} under the 100,000-byte standard relay ceiling)`);
     expect(serialized).toBeLessThan(100_000);
     expect(serialized).toBeGreaterThan(99_000);
+
+    // X60, AND F4 IS WHAT MAKES IT MATTER. C3 carried the same 10-satoshi placeholder output C1 did, and no
+    // measurement here ever reached it: a real node refused this transaction `64: tx-size` first, so the size
+    // overrun MASKED a second, independent reason it could not be relayed. F4 removed the mask. Had only the
+    // visible reason been fixed, C3 would have arrived at a legal size and still been unrelayable, and the
+    // masking rule would have been gone to say so. Asserted on the bytes, where no provider setting can mask
+    // it, because the mock stack has dust off by default.
+    expect(formatDustOutputs(dustOutputs(built.builder.buildLibauthTransaction()))).toBe('no dust outputs');
   }, 900_000);
 
   it('MEASURED: X25 - the true run-to-completion cost of every C3 sidecar input', async () => {
@@ -1682,5 +1710,46 @@ describe('C3 capacity measurement', () => {
     expect(built.plan.invocations).toHaveLength(8);
     expect(built.transcript.bytes.length).toBeGreaterThan(1_100);
     expect(built.transcript.bytes.length).toBeLessThan(1_500);
+  }, 900_000);
+});
+
+/**
+ * X59. THE EIGHT-PARTICIPANT GRAPH, BUILT AGAINST A REAL BCHN NODE.
+ *
+ * Round 17 offered C3's mock-built bytes to BCHN and got `64: tx-size`: at 100,650 bytes it was over the
+ * 100,000-byte standard ceiling, so the node refused it on POLICY without executing a single script. (That the
+ * ceiling is policy rather than consensus was settled separately, by getting oversized bytes refused through
+ * the mempool and then accepted inside a submitted block.) F4 cut 129 bytes from the projection verifier -
+ * one covenant instantiated once per participant, so C3 paid 8x - and put it under.
+ *
+ * That is what makes this block reachable: with the size refusal gone, and X60's dust output gone with it, the
+ * node has to look up the inputs and execute all eight participants, eight projection proofs and the
+ * controller. Nothing is relaxed: `RegtestNetworkProvider` carries no `consensusLimits`.
+ *
+ * Requires the docker regtest stack; see the root CLAUDE.md.
+ */
+describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C3 on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes the eight-participant graph, accepts it and mines it', async () => {
+    const built = await buildC3('none', DEFAULT_ORDER, createTestProvider);
+    expect(built.layout.controllerInput).toBe(106);
+
+    const transaction = built.builder.buildLibauthTransaction();
+    expect(formatDustOutputs(dustOutputs(transaction))).toBe('no dust outputs');
+
+    const accepted = await acceptedByNode(built.provider as never, transaction, built.transaction);
+    console.log(`X59 C3 accepted by BCHN: ${accepted.txid} at height ${accepted.blockHeight}, `
+      + `${accepted.serializedBytes} B, ${accepted.inputCount} inputs`);
+    // The size the node accepted, which is the figure the whole F4 argument turns on - read from the accepted
+    // transaction rather than cited.
+    expect(accepted.serializedBytes).toBeLessThan(100_000);
+    expect(accepted.inputCount).toBe(108);
+    expect(accepted.outputCount).toBe(108);
+    expect(accepted.blockHeight).toBeGreaterThan(0);
+  }, 900_000);
+
+  /** The control: a transaction the covenants should refuse, refused by the node, same chain, same run. */
+  it('CONSENSUS: BCHN refuses the disjoint-root transcript', async () => {
+    const built = await buildC3('disjoint-root', DEFAULT_ORDER, createTestProvider);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 900_000);
 });

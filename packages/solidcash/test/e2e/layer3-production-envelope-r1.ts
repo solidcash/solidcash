@@ -130,17 +130,38 @@ export const PRODUCTION_ENVELOPE_RULES: readonly EnvelopeRule[] = Object.freeze(
     evidence: 'LIBAUTH_PINNED',
     reason: 'Standard output locking bytecode is capped at 201 bytes.',
   },
-  {
-    id: 'standard-output-template',
-    regime: 'policy',
-    scope: 'output',
-    cost: 'bytes',
-    evidence: 'UNMEASURED_CONSERVATIVE',
-    reason: 'A mainnet BCHN refuses an output whose scriptPubKey matches no standard template. X49 measured '
-      + 'that the REGTEST node does NOT enforce this, and did not measure a mainnet node, so the rule is '
-      + 'included on the conservative side rather than on evidence. It costs the envelope nothing: every '
-      + 'output the balanced layout produces is p2pkh, p2sh20, p2sh32 or OP_RETURN.',
-  },
+  /*
+   * `standard-output-template` STOOD HERE AND IS GONE, because X64 measured it and it does not exist.
+   *
+   * It was the one rule of twelve labelled UNMEASURED_CONSERVATIVE, and it was not idle: eighteen e2e
+   * fixtures build an output to a bare `OP_1` script, and at the 1,000-satoshi spelling (C2, the E1 result
+   * graph) dust does not apply, so this rule alone decided whether those shapes were in the envelope.
+   *
+   * MEASURED against `mainnet/bitcoin-cash-node:v29.0.0`, both on the shared regtest node and on a throwaway
+   * container started with an explicit `-acceptnonstdtxn=0`, with identical results (the full table and its
+   * controls are in `Layer3OutputTemplateX64.test.ts`):
+   *
+   *   bare OP_1 at 1,000 satoshis                   missing-inputs   <- reached the loop, not refused
+   *   bare OP_1 at 10 satoshis                      64: dust         <- SAME script, refused on value only
+   *   `OP_2 OP_3 OP_ADD OP_5 OP_EQUAL` at 1,000     missing-inputs
+   *   OP_RETURN carrying 300 bytes                  64: oversize-op-return
+   *   non-push-only scriptSig                       64: scriptsig-not-pushonly
+   *
+   * The dust row is what makes the others readable: it is the same one-byte script at a lower value, so the
+   * per-output policy loop demonstrably runs before input lookup and demonstrably reaches this script. It
+   * looked and declined to refuse. And the form that owes nothing to that argument: a real 1,000-satoshi bare
+   * `OP_1` output was funded through the node, accepted and mined, then redeemed with an empty unlocking
+   * script and the spend accepted, on the `-acceptnonstdtxn=0` node.
+   *
+   * WHAT THIS DOES AND DOES NOT SAY ABOUT MAINNET. No mainnet node was queried. What was measured is the code
+   * path a mainnet node takes: `-acceptnonstdtxn=0` forces `fRequireStandard`, which is the only chain-derived
+   * input to whether `IsStandardTx` runs at all, and the output templates it applies are not parameterized by
+   * chain. A mainnet difference would have to come from a policy option set differently, not from this rule.
+   *
+   * The rule is removed rather than relabelled: an envelope that refuses what the node accepts is not
+   * conservative, it is wrong, and it would have kept two working shapes out. `standardOutputTemplate` below
+   * is kept as a CLASSIFIER - it still names what an output is - but nothing refuses on it.
+   */
   {
     id: 'operation-cost-density',
     regime: 'consensus',
@@ -408,10 +429,6 @@ export function assessProductionEnvelope(
     if (locking > BCH_2026_STANDARD.maximumLockingBytecodeLength) {
       refuse(refusals, 'standard-locking-bytes', `output ${index}`, locking,
         BCH_2026_STANDARD.maximumLockingBytecodeLength, 'locking bytecode over the standard ceiling');
-    }
-    if (standardOutputTemplate(output.lockingBytecode) === undefined) {
-      refuse(refusals, 'standard-output-template', `output ${index}`, 1, 0,
-        'locking bytecode matches no standard template (p2pkh, p2sh20, p2sh32 or OP_RETURN)');
     }
     if (isOpReturnOutput(output as LibauthOutput)) return;
     const threshold = dustThresholdFor(output as LibauthOutput);

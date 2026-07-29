@@ -298,7 +298,11 @@ describe('Layer-3 runtime-sized pointer table (SEMANTIC)', () => {
       targets: {},
       occurrence: () => POINTER_TABLE_BOUND + 1,
       dynamicCall: () => ({ participant: root, function: 'inc' }),
-    })).toThrow(/lacks a valid loop occurrence proof/);
+      // X36: the ceiling leg is now the shared `occurrenceCountViolation` message, which names the bound and
+      // where the compiler proved it, rather than reporting the count as an invalid proof.
+    })).toThrow(
+      'layer3: callsite 0 was planned with 4 occurrences, above the 3 proven by a dominating require guard',
+    );
   });
 
   // One artifact, one published ceiling, three different runtime row counts.

@@ -425,7 +425,11 @@ contract GuardedSizedTable() {
       targets: {},
       occurrence: () => EXACT_TABLE_ROWS + 1,
       dynamicCall: () => ({ participant: root, function: 'inc' }),
-    })).toThrow(/lacks a valid loop occurrence proof/);
+      // X36 routed the ceiling leg through `occurrenceCountViolation` too, so the over-count now reports the
+      // same string this file already asserts of that helper directly, above.
+    })).toThrow(
+      'layer3: callsite 0 was planned with 3 occurrences, above the 2 proven by a compile-time trip count',
+    );
   });
 
   /**

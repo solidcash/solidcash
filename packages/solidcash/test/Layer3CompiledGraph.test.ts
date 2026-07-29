@@ -380,7 +380,10 @@ describe('layer3.planCompiledGraph', () => {
       args: [new Uint8Array([0x53]), false],
       targets: { IPeer: [leafParticipant, leafParticipant, leafParticipant] },
       occurrence: () => 3,
-    })).toThrow(/lacks a valid loop occurrence proof/);
+      // X36: the ceiling leg now names the bound and its provenance instead of reporting the count as an
+      // invalid proof. The coarser wording was this entry point's own copy of a bound `planCompiledGraph`
+      // also enforces, which is exactly the drift both are now routed away from.
+    })).toThrow('layer3: callsite 0 was planned with 3 occurrences, above the 2 proven by a compile-time trip count');
 
     const recursive = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function again(address peer); }

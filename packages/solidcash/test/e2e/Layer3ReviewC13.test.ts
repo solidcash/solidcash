@@ -25,9 +25,11 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  *    - in prose, with no VM case - that "the caller covenant still emits exactly the rows the source executes,
  *    so an inflated count is rejected on-chain". That is the claim the scope rests on and it was untested.
  *
- * 2. X36 vs G2. `planCompiledGraph` does not enforce occurrence bounds, so N children can bind one `once`
+ * 2. X36 vs G2. `planCompiledGraph` did not enforce occurrence bounds, so N children could bind one `once`
  *    callsite. G2's own hostile evidence is built through that same entry point, so the question is whether
  *    G2's exhaustion guarantee survives it. It does - the enforcement is the caller covenant, not the planner.
+ *    CLOSED SINCE: the entry point now applies the published bound too, so the over-count is refused at plan
+ *    time and the covenant refusal this file measured is shadowed rather than removed.
  *
  * 3. CALLEE MULTIPLICITY. Every G2 occurrence case reaches a DISTINCT participant (its fixture co-spends
  *    `[...new Set(reached)]`), so "exact occurrence exhaustion" is only ever demonstrated on the caller's row
@@ -332,9 +334,14 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
   );
 
   /**
-   * X36 against G2. `planCompiledGraph` enforces no occurrence bound, so it accepts two and three children on
-   * a callsite the artifact publishes as `once` with `maximumOccurrences: 1`. The plan succeeds; the caller
-   * covenant refuses it at input 0. G2's guarantee is the covenant's, not the planner's, and it survives.
+   * X36 against G2. This review measured `planCompiledGraph` accepting two and three children on a callsite
+   * the artifact publishes as `once` with `maximumOccurrences: 1`, and recorded that the caller covenant
+   * refused all of them at input 0 - so G2's guarantee was the covenant's, not the planner's.
+   *
+   * CLOSED. `planCompiledGraph` now applies the same bound `deriveCompiledGraphPlan` does, so the over-count
+   * is named before a transaction exists. The covenant rejection this review demonstrated has not moved; it is
+   * shadowed by an earlier guard that names the fault precisely instead of failing as a row-partition
+   * mismatch. The one-child row is unchanged and still carries the honest VM control.
    */
   it.each([
     { children: 1, settles: true },
@@ -350,7 +357,7 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
     const call = artifact.abi.find((fn) => fn.name === 'fire')!.externalCalls![0];
     expect(call.occurrence).toBe('once');
     expect(call.maximumOccurrences).toBe(1);
-    const built = await buildTwoParty({
+    const build = (): Promise<any> => buildTwoParty({
       callerSource: ONCE_CALLER,
       persistedN: 0n,
       plannedRows: children,
@@ -358,16 +365,16 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
       entryPoint: 'plan',
       callerScalar: { n: 1n },
     });
-    // X36 itself: the planner produced the over-count without complaint.
-    expect(built.plan.invocations).toHaveLength(children + 1);
-    const outcome = preflight(built);
-    if (expectSettle) {
-      expect(outcome).toBe('ACCEPTED');
-      await expect(settles(built)).resolves.toBe(true);
+    if (!expectSettle) {
+      await expect(build()).rejects.toThrow(
+        `layer3: callsite 0 is a once callsite reached at most once, but ${children} occurrences were planned`,
+      );
       return;
     }
-    expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 0');
-    await expect(settles(built)).resolves.toBe(false);
+    const built = await build();
+    expect(built.plan.invocations).toHaveLength(children + 1);
+    expect(preflight(built)).toBe('ACCEPTED');
+    await expect(settles(built)).resolves.toBe(true);
   }, 300_000);
 
   /**

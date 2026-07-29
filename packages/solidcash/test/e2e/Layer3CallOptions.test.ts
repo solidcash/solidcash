@@ -558,8 +558,9 @@ contract E2RawValueCaller() {
       expect((planRaw(staticArtifact, targetArtifact) as any).invocations[1].callMode).toBe('staticcall');
     });
 
-    // Attacks the MODE field. planCompiledGraph only reaches its delegatecall rejection when the mode is
-    // absent, so an artifact declaring a delegate mode on a raw callsite must be rejected by the worklist.
+    // Attacks the MODE field. The worklist refuses the artifact where it first reads the published mode;
+    // `planCompiledGraph` now reads that mode too, whether or not the caller supplied one, so neither entry
+    // point admits a delegate edge (its own case is in `Layer3OccurrenceBoundX36`).
     it('rejects a raw callsite declaring a delegatecall mode', () => {
       expect(() => planRaw(callerArtifact, targetArtifact, (call) => { call.callMode = 'delegatecall'; }))
         .toThrow(/declares call mode 'delegatecall', which is not a participant-graph edge/);

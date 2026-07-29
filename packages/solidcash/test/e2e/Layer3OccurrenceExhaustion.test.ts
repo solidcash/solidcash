@@ -375,24 +375,22 @@ describe('Layer-3 occurrence ordering and exact exhaustion (SEMANTIC)', () => {
     expectCallerRejection(built, VECTOR_EXHAUSTED);
   }, 180_000);
 
-  // INJECTED. Attacks exhaustion from above. The structural assertions below prove the first three rows are
-  // byte-identical to the honest sequence and the fourth is pure surplus, so no per-row comparison can fail:
-  // the rejection can only come from the wrapper's empty-remainder requirement on the leftover.
-  it('rejects a transcript with an occurrence the source never reaches', async () => {
-    const built = await buildOccurrenceGraph(POINTER_TABLE_BOUND, 'injected');
-    const rows = decodeEmissionRows(built.transcript.participantEmissionsHex[0]);
-    expect(rows).toHaveLength(POINTER_TABLE_BOUND + 1);
-    for (let occurrence = 0; occurrence < POINTER_TABLE_BOUND; occurrence += 1) {
-      expect(rows[occurrence].targetHex)
-        .toBe(built.transcript.plan.participants[occurrence + 1].lockingBytecode);
-    }
-    expect(rows[POINTER_TABLE_BOUND]).toEqual(rows[0]);
-    expectCallerRejection(built, ROW_MISMATCH);
+  // INJECTED, at the full table. A fourth row is one more than the source's own `require(handlers.length <= 3)`
+  // proves reachable, so X36 refuses it before a transcript exists - the same bound `deriveCompiledGraphPlan`
+  // has always applied to this artifact, now applied to the rows this entry point is handed. The covenant
+  // rejection this case used to demonstrate is preserved by the one below, whose surplus row stays inside the
+  // published ceiling and therefore still reaches the VM.
+  it('refuses an occurrence the source never reaches, ahead of the covenant that also rejects it', async () => {
+    await expect(buildOccurrenceGraph(POINTER_TABLE_BOUND, 'injected')).rejects.toThrow(
+      'layer3: callsite 0 was planned with 4 occurrences, above the 3 proven by a dominating require guard',
+    );
   }, 180_000);
 
-  // The decisive form of the same attack. With one persisted entry the caller reaches exactly ONE occurrence,
-  // and row 0 is the same row the passing single-occurrence control emits, so there is no second row for a
-  // per-row comparison to fail on. The surplus row is the only difference from an accepted transaction.
+  // The decisive form of the same attack, and now the one that carries its VM evidence. With one persisted
+  // entry the caller reaches exactly ONE occurrence, and row 0 is the same row the passing single-occurrence
+  // control emits, so there is no second row for a per-row comparison to fail on. The surplus row is the only
+  // difference from an accepted transaction, and two rows are within the published ceiling of three, so the
+  // planner admits the plan and the caller's own covenant is what refuses it.
   it('rejects a surplus row when only one occurrence is reachable', async () => {
     const built = await buildOccurrenceGraph(1, 'injected');
     const rows = decodeEmissionRows(built.transcript.participantEmissionsHex[0]);
@@ -448,7 +446,12 @@ describe('Layer-3 occurrence ordering and exact exhaustion (SEMANTIC)', () => {
       targets: {},
       occurrence: () => POINTER_TABLE_BOUND + 1,
       dynamicCall: () => ({ participant: root, function: 'inc' }),
-    })).toThrow('layer3: callsite 0 lacks a valid loop occurrence proof');
+      // X36 made the ceiling leg the shared `occurrenceCountViolation` message, so it now names the bound and
+      // where the compiler proved it. Stable in the sense that mattered: it is one string for one fault, and
+      // it is the same string the other planning entry point reports for the same over-count.
+    })).toThrow(
+      'layer3: callsite 0 was planned with 4 occurrences, above the 3 proven by a dominating require guard',
+    );
   });
 
   /**
@@ -491,7 +494,9 @@ contract PlainTarget() {
       targets: { IFoo: { artifact: calleeArtifact, lockingBytecode: '52' } },
     };
     expect(() => layer3.deriveCompiledGraphPlan({ ...base, occurrence: () => 4 }))
-      .toThrow('layer3: callsite 0 lacks a valid loop occurrence proof');
+      .toThrow(
+        'layer3: callsite 0 was planned with 4 occurrences, above the 3 proven by a dominating require guard',
+      );
     expect(layer3.deriveCompiledGraphPlan({ ...base, occurrence: () => 3 }).invocations).toHaveLength(4);
   });
 

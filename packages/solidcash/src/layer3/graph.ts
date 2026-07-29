@@ -1,3 +1,4 @@
+import { occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
@@ -874,6 +875,71 @@ function bindConsumerCallsites(
   });
 }
 
+/**
+ * X36: the one named refusal for a planned reached-row count, shared by both public planning entry points.
+ *
+ * A callsite's admitted row count is a property of the ARTIFACT, so it must not depend on which planner
+ * reached it. `deriveCompiledGraphPlan` calls this with the count its derivation probe supplied for one
+ * callsite; `planCompiledGraph` calls it with the count the caller-supplied rows force onto one callsite.
+ * Keeping the message in `occurrenceCountViolation` means neither entry point can drift into its own wording
+ * or its own legs.
+ */
+export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: number): void {
+  const violation = occurrenceCountViolation(call, count);
+  if (violation !== undefined) throw new Error(`layer3: ${violation}`);
+}
+
+/**
+ * Rows one compiler-authored callsite can answer.
+ *
+ * The legs mirror `occurrenceCountViolation` exactly, so a count within the capacity can never be a violation
+ * and a count above it always is. A collapsed repeated-call callsite names its rows outright. A non-loop
+ * callsite is reached at most once whether or not the compiler spent bytes saying so. Only a loop can leave
+ * its ceiling unproven, and an unproven ceiling admits any count up to the global invocation bound.
+ */
+const callsiteRowCapacity = (call: ExternalCallAbi): number => {
+  if (call.batchInvocations !== undefined) return call.batchInvocations.length;
+  const bound = occurrenceBoundOf(call);
+  if (bound.kind !== 'loop') return 1;
+  return bound.maximum ?? Number.POSITIVE_INFINITY;
+};
+
+/**
+ * Refuse a caller-supplied row set one handler cannot have emitted, using the same bound as the other entry
+ * point and naming the callsite the surplus would have to answer.
+ *
+ * This is deliberately computed from the handler's TOTAL published capacity rather than from
+ * `bindConsumerCallsites`' per-row attribution. That attribution is an acknowledged guess - it binds by name
+ * and takes the first matching candidate, so two callsites of one name collapse onto the first - and refusing
+ * on a guess produces false rejections rather than a tightening. Filling the callsites in source order is
+ * guess-free: with every earlier callsite at its published ceiling, the last one is the only place a further
+ * row could come from, so the surplus is reported against it.
+ *
+ * Deliberately NOT touched: a loop callsite legitimately answers many rows, and a collapsed repeated-call
+ * callsite legitimately answers `batchInvocations.length` of them. Both stay many-to-one; the bound, not the
+ * arity, is what separates them from rows a `once` callsite cannot have emitted.
+ */
+function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: number): void {
+  if (callsites.length === 0 || rows === 0) return;
+  const capacities = callsites.map(callsiteRowCapacity);
+  const total = capacities.reduce((sum, capacity) => sum + capacity, 0);
+  if (rows <= total) return;
+  const last = capacities.length - 1;
+  const surplus = capacities[last] + (rows - total);
+  const batched = callsites[last].batchInvocations;
+  // A collapsed repeated-call callsite is `once` yet answers every row it NAMES, so the occurrence wording
+  // would read "reached at most once" against a callsite that legitimately emits several. It publishes its own
+  // exact count instead. `deriveCompiledGraphPlan` cannot reach this leg: it expands that callsite to exactly
+  // `batchInvocations.length` rows by construction.
+  if (batched !== undefined) {
+    throw new Error(
+      `layer3: callsite ${callsites[last].callsiteId ?? '?'} collapses ${batched.length} repeated calls, `
+      + `but ${surplus} rows were planned`,
+    );
+  }
+  assertPlannedOccurrenceCount(callsites[last], surplus);
+}
+
 /** Block slots that carry a call option or an unconditioned value movement. */
 const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
   'satoshiContainer', 'transfer', 'tokenContainer', 'tcTransfer',
@@ -1023,7 +1089,15 @@ export function planCompiledGraph(
     }
     const participant = participants[invocation.callee];
     const abiFunction = resolveGraphAbiFunction(participant.artifact, invocation.function);
-    if (abiFunction === undefined) return;
+    // An absent ABI entry is refused rather than skipped, matching `deriveCompiledGraphPlan`'s `functionAbi`.
+    // Skipping it silently disabled the call-option check for the one artifact shape that can hide the
+    // evidence: the direct-mode `transferCount`/`blockLayout` an option publishes live on this entry, so a row
+    // whose handler exists but whose ABI entry does not had nothing left to compare against.
+    if (abiFunction === undefined) {
+      throw new Error(
+        `layer3: participant ${invocation.callee} declares no ABI function '${invocation.function}'`,
+      );
+    }
     assertNoUnboundCallOptions(
       participant.lockingBytecode, participant.artifact, abiFunction, invocation.function,
     );
@@ -1059,23 +1133,27 @@ export function planCompiledGraph(
     if (invocation.parent !== null) {
       const parentInvocation = invocations[invocation.parent];
       const parentArtifact = participants[parentInvocation.callee].artifact;
-      const parentFunction = parentArtifact.abi.find((candidate) =>
-        candidate.name === parentInvocation.function);
+      const parentFunction = resolveGraphAbiFunction(parentArtifact, parentInvocation.function);
+      const candidates = parentFunction?.externalCalls?.filter((call) =>
+        call.functionName === invocation.function) ?? [];
+      const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
+      // The compiler-authored mode is read whether or not the caller supplied one. Reading it only on the
+      // INFERENCE path meant an explicit `callMode: 'call'` executed a delegate edge as an ordinary call,
+      // unseen by either check - exactly the coercion `edgeCallMode` refuses on the other entry point, where
+      // no supplied mode exists to shadow it.
+      if (modes.includes('delegatecall')) {
+        throw new Error('layer3: delegatecall is not a participant-graph call mode');
+      }
       if (invocation.callMode === undefined) {
-        const candidates = parentFunction?.externalCalls?.filter((call) =>
-          call.functionName === invocation.function) ?? [];
-        const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
         if (modes.length > 1) {
           throw new Error(`layer3: call mode for invocation ${index} is ambiguous`);
-        }
-        if (modes[0] === 'delegatecall') {
-          throw new Error('layer3: delegatecall is not a participant-graph call mode');
         }
         callMode = modes[0] === 'staticcall' ? 'staticcall' : 'call';
       }
       if (callMode === 'staticcall') {
-        const calleeFunction = participants[invocation.callee].artifact.abi.find((candidate) =>
-          candidate.name === invocation.function);
+        const calleeFunction = resolveGraphAbiFunction(
+          participants[invocation.callee].artifact, invocation.function,
+        );
         if (!calleeFunction || calleeFunction.writesState
           || (calleeFunction.emits?.length ?? 0) > 0) {
           throw new Error(`layer3: staticcall target '${invocation.function}' is not compiler-proven read-only`);
@@ -1107,8 +1185,13 @@ export function planCompiledGraph(
     const children = childrenOf[parent];
     if (children.length === 0) continue;
     const parentInvocation = invocations[parent];
-    const parentFunction = participants[parentInvocation.callee].artifact.abi.find((candidate) =>
-      candidate.name === parentInvocation.function);
+    const parentFunction = resolveGraphAbiFunction(
+      participants[parentInvocation.callee].artifact, parentInvocation.function,
+    );
+    // X36: the occurrence bound `deriveCompiledGraphPlan` applies during expansion, applied here to the rows
+    // this entry point is handed instead. Ordered before the binding so a row count the handler cannot have
+    // emitted is named as such rather than surfacing as a result-schema or covenant partition mismatch.
+    assertHandlerRowCapacity(parentFunction?.externalCalls ?? [], children.length);
     const bindings = bindConsumerCallsites(
       parent, parentFunction?.externalCalls ?? [],
       children.map((child) => invocations[child].function),

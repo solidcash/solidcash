@@ -134,7 +134,8 @@ task-specific report, not in this table.
 | **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **INTEGRATED** | 14/36 -> 0/36 across 7 spellings at both sites; 8 negative controls unflipped - see 4.56 |
 | X46 | Commitment check reads the key's binding, not the writer of its target | A3 | SEC-17 | **INTEGRATED** | LIVE THEFT: bob takes 51,515 sats, broadcast-accepted; key-rotation idiom preserved - see 4.61 |
 | X43 | Make the E3 gate read X37's provenance instead of the published type | A1 | X37 | **INTEGRATED** | both escapes refused; admission proven a LIVE hole (5 -> 999); 3 unnamed closures - see 4.59 |
-| X50 | SDK's shipped `defaultProxyArtifact.ts` is stale in TWO ways | — | X43,X11 | **TODO** | pre-X37 (no `target`) AND carries the relaxed conservation form, 159 B vs 173 fresh; regenerating breaks the INSERT test |
+| X50 | SDK's shipped `defaultProxyArtifact.ts` is stale in TWO ways | B2 | X43,X11 | **INTEGRATED** | a THIRD defect found: the manual edit hit `bytecode` only, so `debug.bytecode` and `fingerprint` disagreed - see 4.69 |
+| X61 | `upgrades.deployProxy` + a delegate that INSERTS a mapping key no longer works | — | X50 | **ACCEPTED REGRESSION** | strict conservation cannot admit the node without permitting net proxy-category NFT creation; documented in `docs/upgrades.md` |
 | X51 | Publish the `hash160(key) == committed` commitment as an artifact field | — | X43,SEC-17 | **TODO** | would close X43's `hash160-committed-key` false negative without type-reconstruction |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
@@ -227,6 +228,54 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.69 X50: a THIRD defect in the shipped proxy, and a user capability deliberately removed
+
+Merged at `1e43fc6c`.
+
+**The manual adjustment the header warned about was applied to ONE of three fields, and that is a third defect
+neither round-16 worker reported.** The relaxation lived in the **`bytecode` (ASM) field only**: `debug.bytecode`
+carried the **unedited strict compile** (158 B, `OP_0 OP_NUMEQUALVERIFY`) while `bytecode` was the relaxed 159 B.
+`Contract.ts:193` loads `artifact.bytecode`, so **the chain saw one script and `.debug()` showed another**, and
+the `fingerprint` described **neither**. The file's own three fields disagreed with each other.
+
+B2 **dropped** the adjustment rather than reapplying it, and measured why. 159 -> **173 B**, exactly two hunks:
+**+15 B** of value and token-amount preservation for the data NFT at `OP_INPUTINDEX+1`, and **-1 B** at the tail
+where `OP_0 OP_LESSTHANOREQUAL OP_VERIFY` becomes `OP_0 OP_NUMEQUALVERIFY`.
+
+**The relaxation bought more than the INSERT, and the A/B proves it.** One own-category **mutable** NFT appended
+at the proxy's own data-NFT covenant address, beside an honest delegated `increment()`, is refused at **input 0**
+by the regenerated proxy - and **ACCEPTED, and lands**, against a proxy identical in every byte **except the
+four-token tail**, leaving two mutable NFTs where the grafted layout names one. So `out >= in` buys **net
+creation of proxy-category mutable NFTs generally**, not just collection nodes. The proxy is layout-independent
+and cannot compute the collection entry address, so it **cannot** admit the one node while refusing the other
+output. The INSERT is therefore genuinely unsupported through a strict proxy, and the test now asserts that
+refusal with its reason rather than being deleted.
+
+**Defect 1 is verified fixed with a guard negative**: the gate returns `bytecode-pinned` on the real grafted
+proxy, and **stripping `target` back off still throws `unpublished-target-provenance`** - so the admission is
+credited to the published field and not to the bytecode change that landed in the same commit.
+
+**Five expectation changes, each named with its reason**, including one that exists purely for correct
+attribution: `DelegateCollectionOutputPin` moved to a **non-conserving** proxy, because the shipped proxy now
+refuses one input **earlier** and X11's pin would otherwise be credited for the conservation's refusal. Its
+hostile row still refuses at **input 2**, keeping the pin as the credited mechanism.
+
+**A real user capability is removed, deliberately, and documented.** `upgrades.deployProxy` combined with a
+delegate that **inserts** a mapping key no longer works. That is a genuine regression in shipped behaviour,
+accepted because the alternative is a proxy that permits net creation of its own mutable NFTs. Recorded in
+`docs/upgrades.md` rather than left for a user to discover.
+
+**What B2 declined to claim**, unprompted and all correct: it did **not** re-run round 16's 27-call
+instrumentation, so "13 of 27 -> 0" is **inferred, not measured**; it makes no claim the E3 gate is wired,
+because it is not; and it is **not a demonstrated wrong state read** - after the relaxed proxy accepted the
+forged NFT, `getState()` still returned 6, because this provider returns UTXOs in insertion order, so the
+exposure is **provider-dependent ordering** of identically shaped data NFTs. It also noted that **X11's pin now
+has no settling instance on a conserving proxy**; its remaining population is proxies already deployed from the
+stale artifact plus hand-written non-conserving forwarders.
+
+Regression across all six packages: **7,088 passing**. One flake in `CorpusGapFixes` at 38.9 s under load,
+green in isolation and in a second full run, in a file no compiler source change touched.
 
 ### 4.68 F2: conservative on 28/28 in-sample, and it says where it is NOT
 

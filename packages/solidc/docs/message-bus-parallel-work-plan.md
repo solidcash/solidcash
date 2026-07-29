@@ -130,7 +130,9 @@ task-specific report, not in this table.
 | E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (type-shape only) | A13 escapes closed against the PUBLISHED TYPE, not the semantic class - see 4.44 |
 | **SEC-12** | `hasSignatureGuard` suppresses SEC-2 and C1 at two sites | S1 | E3 | **INTEGRATED** | key operand now resolved; guard credited only for a key the caller cannot choose - see 4.51 |
 | **SEC-16** | Same over-broad suppressor in `warnUnauthenticatedSelfdestruct` | S6 | SEC-12 | **LEASED (security)** | `EnsureFinalRequireTraversal.ts:206-207` returns early on any `checkSig`; measured, `keyIsCallerChosen` reusable |
-| X37 | Publish delegate target/key provenance in the artifact | — | E3 | TODO | `lowLevelCalls` stripped to `callMode`; AST already carries `dataParamIndex` |
+| X37 | Publish delegate target/key provenance in the artifact | S3 | E3 | **INTEGRATED** | both `bytes`-cast escapes resolve to `parameter`; 327/327 artifacts SHA-256 identical minus the 2 new keys - see 4.53 |
+| **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **LEASED (security)** | standard BCH admin idiom indistinguishable from the real hole; measured on the merged tree |
+| X43 | Make the E3 gate read X37's provenance instead of the published type | — | X37 | **TODO** | X37 publishes but does not consume; E3 still classifies on type alone |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
@@ -208,6 +210,57 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.53 X37 published, and its own caveat found a live false positive in SEC-12 (SEC-17)
+
+Merged at `656baa96`; solidc re-verified at **2,494/0** (2,474 + 20), the auto-merge in `SecurityAudit.test.ts`
+resolving correctly with both S1's and S3's cases present.
+
+The artifact now publishes `target` provenance on low-level calls and `signatureGuard.key` provenance on ABI
+functions, additive and optional. **Both `bytes`-cast escapes now resolve to `parameter`**, which is the point:
+`address t = address(target)` over a `bytes` param, and `checkSig(s, pubkey(k))` over a `bytes` param, are what
+made E3's gate blind.
+
+**The strongest compatibility evidence this board has produced.** All **327/327** compiling corpus artifacts are
+**SHA-256 identical to baseline after deleting exactly the two new keys** (`updatedAt` normalized). That
+discriminates any reordered, altered or dropped existing field - far stronger than "the suite is green". Bytecode
+moved on **0/327**. Size cost +0.754% total with **210/327 files at +0 bytes**; ~44-68 B per row, worst case
++6.128% on a 1,077-B artifact. Compile cost 0.056%-0.152%, by in-process attribution.
+
+**Two method notes worth keeping.** S3 **discarded** a cross-worktree A/B for compile cost after it produced
++17%, -27% and +240% on successive runs - box wall-clock variance is +-100% under this round's load, so any
+timing A/B across worktrees is noise. And its first implementation had a real cost problem, a full body re-walk
+per identifier, replaced by one per-function index walk **before** commit rather than reported as a caveat.
+
+**Hostile case (e) attacked S3's own resolver and found a false safe**: `address t = impl; t = address(target)`
+declares honest then reassigns, so a declaration-only resolver publishes `constructorArg` while the call reaches
+the caller's bytes. Independently the same escape SEC-12 found one reassignment deeper. Two workers, two files,
+same class - alias resolution must read every binding, and that now holds in both places.
+
+**X37 does NOT close E3, and S3 said so first.** The SDK gate is a different lease and still classifies on the
+published type; both A13 escapes still classify as admitted until the gate reads these fields. The field is
+published, not consumed.
+
+**SEC-17, found by following S3's own caveat.** Item 12(ii) warned that `signatureGuard` describes the key's
+provenance and not the whole authority story - P2PKH publishes `{parameter, pk}` because its authority is the
+separate `hash160(pk) == pkh` require. SEC-12 decides whether to warn using exactly that analysis, so the board
+measured it on the merged tree:
+
+| key | committed by | authorization warning |
+| --- | --- | --- |
+| state variable | - | **silent** (correct) |
+| **parameter, `require(hash160(pk) == pkh)` against a state var** | a sibling require | **WARNS (wrong)** |
+| parameter, nothing | - | **WARNS** (correct - the real SEC-2 hole) |
+
+The middle row is the **standard BCH admin-upgrade idiom** and is currently indistinguishable from the genuine
+hole. `hash160(pk) == pkh` against committed state makes `pk` effectively not caller-chosen.
+
+Severity is low and the reason it still matters is not: this is a warning, not a refusal, so nothing breaks - but
+a diagnostic that fires on the most standard authorization idiom in BCH trains people to ignore it, which is
+precisely how the genuine SEC-2 instances it exists to catch would be missed. **Fourth fix this round whose first
+version was too broad, and the first of the four to reach a merge** - the earlier three were caught by their own
+authors before landing. Folded into S6, which already holds that helper and would otherwise have replicated the
+defect into `warnUnauthenticatedSelfdestruct`.
 
 ### 4.52 Composed-tree verification at `71b9f8ee`: five merges, zero interaction
 

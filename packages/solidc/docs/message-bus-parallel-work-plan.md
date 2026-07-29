@@ -193,6 +193,7 @@ task-specific report, not in this table.
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED, striding now PROVEN** | reviewed by R1: striding holds both directions; opened SEC-15 on its reserved slots |
 | **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **INTEGRATED** | per-slot ordinal binding; a SECOND forgeable entry point found repairing it - see 4.54 |
 | X44 | Two reached event-settling sites collapse to one ordinal | — | SEC-15 | **DEFERRED (fail-closed)** | refuses today; becomes a FALSE refusal if X41's independent limit is ever lifted |
+| X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | — | — | **TODO (test quality)** | error text states its own remedy (re-sign); pre-existing, unrelated to round 15 |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | — | SEC-6 | **TODO (diagnostic)** | no artifact produced either way, so not a security gap |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
@@ -211,6 +212,26 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.55 Composed verification after SEC-15: 4,167, and the one failure was a self-diagnosing flake
+
+`solidcash 4,166 passed / 1 failed` on the integration tree, which is **4,167 total = 4,162 + 5**, exactly S5's
+predicted count. This composition had been tested by nobody: S5's baseline `ed32349c` predates both SEC-12 and
+X37, so SEC-12 + X37 + SEC-15 first met here.
+
+The failure was `EcrecoverRecovery > STATEFUL: ... ecrecoverPubKey + increments state`, and its error text names
+its own cause and remedy: *"no ladder split fits both side-cars' op-budget for this signature (a rare
+high-Hamming-weight scalar makes the GLV ladder too long for a 2-covenant split). Re-sign to obtain a different
+signature."* Signature-dependent, on a path no round-15 change touches - SEC-12 and X37 each measured **0**
+bytecode changes, and SEC-15 is gated on `hiddenBatchRoute && eventWidth > 0`.
+
+**Confirmed by isolation anyway, not by that argument: 17/17 green.** The reasoning above is what makes the
+result plausible; the isolation re-run is what makes it evidence, and the two are not interchangeable. Same
+discipline as SEC-13's contention timeout.
+
+**Opened as X45**, because this is a genuine test-quality defect rather than noise: the fixture signs with a
+random nonce and has a known, documented failure rate whose remedy the error message itself states. A test that
+knows how to fix itself should do so, rather than failing a full suite run at some low rate forever.
 
 ### 4.54 SEC-15 repaired per-slot, and a SECOND forgeable entry point was found doing it
 

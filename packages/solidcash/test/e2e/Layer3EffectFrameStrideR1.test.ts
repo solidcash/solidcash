@@ -571,9 +571,11 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
 
   /**
    * The X29 frames reserve `sites x width` event outputs but only the REACHED site settles one. On a route
-   * that owns an effect frame, `emitEventCovenantVerification` skips its SEC-10 not-taken binding
-   * (`frameShadowed`), and `emitOwnCategoryImmutableNftOutputPin` admits an own-category immutable NFT at ANY
-   * `event` block-layout offset. So this asks directly whether an UNREACHED frame slot can carry a forged log.
+   * that owns an effect frame, `emitEventCovenantVerification` used to skip its SEC-10 not-taken binding for
+   * the whole route (`frameShadowed`), and `emitOwnCategoryImmutableNftOutputPin` admits an own-category
+   * immutable NFT at ANY `event` block-layout offset. So this asks directly whether an UNREACHED frame slot can
+   * carry a forged log. It could; SEC-15's per-slot binding is what refuses it now, and the honest control at
+   * the top of the test is what shows the repair did not take the reached site's own output with it.
    */
   it('an unreached frame event slot refuses a forged own-category event NFT', async () => {
     const honest = await buildStrideCase({ mode: 'noteThenFire', effectOrdinals: [1], emitting: true });

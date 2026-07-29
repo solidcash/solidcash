@@ -17,9 +17,15 @@ export interface ConsensusLimits {
    * profiles that set only this keep their previous behaviour exactly.
    */
   hashDigestIterationsPerByte: number;
-  /** Standard (relay policy) hash-iteration allowance. Real BCH-2026 value: 0.5. */
+  /**
+   * Standard (relay policy) hash-iteration allowance. Real BCH-2026 value: 0.5.
+   *
+   * Both regime fields reach the VM. `createVirtualMachineBch2026ForProvider` takes any number, but
+   * MockNetworkProvider forwards them to mem-cash, which rejects non-integers - so the real 0.5 and 3.5 are
+   * usable for VM probes and envelope reads, and throw if set on that provider.
+   */
   hashDigestIterationsPerByteStandard?: number;
-  /** Nonstandard (consensus) hash-iteration allowance. Real BCH-2026 value: 3.5. */
+  /** Nonstandard (consensus) hash-iteration allowance. Real BCH-2026 value: 3.5. See the note above. */
   hashDigestIterationsPerByteNonstandard?: number;
 }
 

@@ -157,7 +157,8 @@ task-specific report, not in this table.
 | F1 | Ordinary-limit consensus and policy measurements | A6 | — | **INTEGRATED** | envelope measured; a DIFFERENT limit binds first per shape; CONSENSUS_FIT supported but not asserted - see 4.58 |
 | X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | B6 | F1 | **CONFIRMED - ledger edit pending** | verified by diffing both generators; two harnesses agree; wording supplied |
 | X48 | One knob cannot express two hash regimes | B4 | F1 | **INTEGRATED** | splitting the field alone was COSMETIC - the regime selector was hardcoded; nothing moves, 9.3x margin - see 4.65 |
-| X57 | `createVirtualMachineBch2026ForProvider` silently drops the observer | — | X48 | **TODO (live-network)** | early return when `consensusLimits` is undefined; Electrum/regtest have none, so derivation observers are discarded |
+| X57 | `createVirtualMachineBch2026ForProvider` silently drops the observer | C2 | X48 | **INTEGRATED (premise corrected)** | a LATENT trap, not an active failure - the caller gate masks it; found a live diagnostic-destroying bug - see 4.75 |
+| X67 | `packages/testing/src/config.ts` does not expose the split hash fields | — | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | C2 | X48 | **INTEGRATED** | NOT cosmetic: a dust-enforcing mock read an allowance 20,000,000x smaller than declared |
 | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | — | X48 | **TODO** | the regime split is not yet end-to-end into the mem-cash verifier |
 | X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | B1 | F1 | **INTEGRATED (scoped)** | CONSENSUS_FIT holds for the sweep N=2/4/8 ONLY - accepted AND mined; policy-vs-consensus settled - see 4.66 |
 | X59 | Thread `createProvider` into the four capstone fixtures | — | X49 | **TODO** | only obstacle to node-executing A13/C2/C1; builders take the param but are file-local and unexported |
@@ -173,9 +174,10 @@ task-specific report, not in this table.
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | B5 | — | **INTEGRATED** | NOT about rolled loops: an expression selector was double-counted on the tracked stack; old hostiles were VACUOUS - see 4.71 |
-| X63 | The `while` spelling escapes G1's PUBLISHED occurrence ceiling | — | X2 | **TODO** | `maximumOccurrences: undefined`, planner accepts 4; NOT a settlement gap, the covenant refuses at input 0 |
+| X63 | The `while` spelling escapes G1's PUBLISHED occurrence ceiling | C4 | X2 | **INTEGRATED** | publishes rather than expands, because expanding would have DELETED X2's evidence; +0 bytes on 9 shapes |
+| X68 | A `for` body that writes its own counter has no stability check | — | X63 | **TODO** | the same hole X63 closes for `while`; tightening changes a currently-admitted shape |
 | X3 | Result fan-in: one handler consuming two producer results | A4 | — | **BLOCKED (wall named, fails closed)** | transcript machinery ACCEPTS fan-in; only caller-side lowering cannot - one bounded compiler change - see 4.62 |
-| X56 | `.emitReturn()` on a delegated call that also emits | — | X12 | **TODO** | event NFT takes the index the forwarder reserved for the return event; refused at build time |
+| X56 | `.emitReturn()` on a delegated call that also emits | C4 | X12 | **INTEGRATED** | the compiler was already right; the SDK had the return channel and event inverted; +0 bytes - see 4.74 |
 | X55 | `invocation-transcript-v1.md` still names byte 11 `callMode:u8` | B6 | X5 | **INTEGRATED (premise was wrong)** | the doc does not name byte 11 at all - it specs a DIFFERENT unimplemented format; labelled as such |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
 | X5 | Bind call options as a committed transcript row field | A4 | X31 | **INTEGRATED** | byte 11 now committed; the projection verifier is the FIRST covenant ever to read it - see 4.62 |
@@ -183,7 +185,7 @@ task-specific report, not in this table.
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
-| X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
+| X10 | Grow the trailing chunk region past one output beside an entry mint | C5 | X8 | **BLOCKED (pin REFINED)** | the region DOES grow in general; it fails only beside a C2 mint, where the NEW node commitment is written TWICE |
 | X11 | Delegate C2 sorted writes have no settling instance | A2 | — | **INTEGRATED** | premise stale; chasing it found a LIVE forgery - reader returned `[5n, 99n]` - see 4.64 |
 | X12 | `emit`-funder delegate class does not settle | A2 | — | **INTEGRATED** | cause was split-facet data-NFT offsets, not a graft position; -6 bytes |
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
@@ -217,8 +219,9 @@ task-specific report, not in this table.
 | X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | B6 | X38 | **INTEGRATED** | full table delivered and applied to this document; 2,131,662 base confirmed |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | B5 | SEC-6 | **INTEGRATED** | the two crashes are at DIFFERENT sites, so the gate sits ahead of both; +0 bytes |
-| X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
-| X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
+| X26 | A bare `m[k]` READ contributes nothing to the function footprint | C5 | X19 | **INTEGRATED** | SILENT under-reservation: blockSize 2 while the covenant addresses slot +2, so the next block lands on it - see 4.76 |
+| X20 | Widen the assembly model to describe entry/aux inputs | C5 | — | **AUX HALF INTEGRATED; entry half refused** | keyed a POSITION off a WIDTH; one padding slot re-opened the fail-open. Entry half is not a modelling gap |
+| X69 | The direct route declares no trailing region at all | — | X20 | **TODO** | 680 + 381 rejections need `computeBlockLayout` AND `StatefulTransactionBuilder`, not an assembly-model change |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
 | X22 | Result-consuming handler that also carries an effect | A | C1 | LEASED | round 9; name it or admit it - silence and sentinels both unacceptable |
 | X23 | Reduce projection-verifier operation density | B | C1 | **PROVEN** | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
@@ -233,6 +236,178 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.76 X26 is a SILENT under-reservation; X20's entry half is not a modelling gap; X10 BLOCKED
+
+Merged at `584f3025`. Three rows, three different verdicts, each measured.
+
+**X26 - a bare `m[k]` read publishes a SHORT layout, which is worse than none.** `analyseFunctionFootprint`
+recovers a collection from `name`/`keys`, but `ArrayAccessNode` carries `array`/`index`, so the bare read matched
+nothing - **exactly the class round 16 predicted**, a bare spelling a node-kind scan cannot see. X19 closed the
+write half; the read half was still open.
+
+The cost, measured: a handler whose only collection access is a bare read publishes `blockSize = 2`, slots
+`[master@0, dataNft@1]`, **while the same route's covenant addresses block-relative slot `+2`** with ten
+introspection opcodes. **Blocks are concatenated, so the next participant's block is placed at `base + 2` - the
+exact slot the route reads and writes.** The dotted spelling of the same program declares `blockSize = 3`.
+
+**The evidence-inheritance argument is elegant and sound.** After the fix, the bare and dotted spellings compile
+to a **byte-identical bus route and identical route ABI** - so every existing settling test of the dotted
+spelling is VM evidence for the fixed bare one. That is how a repair with no new VM case earns its settlement
+evidence, the same license X63 used this round.
+
+**Item 10 is the strongest refusal-of-corroboration on this board yet.** 500 corpus files, **0 status changes, 0
+bytecode changes, 0 `invocationAnalysis` changes - and C5 measured that this has ZERO discriminating power rather
+than assuming it.** The reason is precise: `analyseContractInvocations` runs at `compiler.ts:2003`, **after**
+`SymbolTableTraversal` at 1880, so the published footprint is post-resolution where a bare `m[k]` is **already** a
+`MappingAccessNode` and was never wrong. The changed call sites are the **pre-resolution** ones, all hidden-batch
+synthesis, and **no corpus file compiles with `experimentalHiddenBatch`**.
+
+**X20 - the auxiliary half was keying a POSITION off a WIDTH.** `deriveBalancedAssemblyFromInputs` claimed the
+sidecar region only when `cursor + participants + 1 === totalSlots - 1`, and both auxiliary checks iterate that
+list - so an empty one runs **neither**, including the 1,000-satoshi sidecar rule that exists to refuse *before
+signing*. **One ordinary padding slot after the controller re-opened the fail-open while every index the model
+would have claimed stayed exactly where it was.** Fixed by claiming wherever it fits (`<=` for `===`); slots
+beyond the region stay unclaimed, so an injected extra participant block still lands outside and the controller's
+own input-count rule remains what names it.
+
+Hostile: padded tail plus a 999-satoshi sidecar previously **passed the gate and got signed**, with the VM
+refusing only afterwards; now refused at **zero signature requests**. Just outside: a padded tail with **honest**
+values is still **ACCEPTED**, so this is not a blanket refusal of wide tails.
+
+**The 44.5% figure was re-measured rather than repeated**: 2,324 settled sends, **1,061 of 2,157 describable
+rejections = 49.2%**, and C5 states plainly that it is **not** directly comparable, because X32 moved 167 sends
+from *skipped* to *refused*. Categories named; **0 satoshi-value mismatches**, since X21 closed round 14's.
+
+**Item 10 again, and again refused**: 0 of 2,157 sends change verdict - "near-zero discriminating power, so I am
+not counting it" - because on the direct route the changed branch is **unreachable in 54 of 54** derivations. The
+discriminating measurement is the layer-3 path: **189 derivations, 186 identical, 3 non-canonical, and all three
+are C3 hostile shapes**.
+
+**The entry half is NOT a modelling gap, and C5 refused to force it.** The two dominant rejection categories
+(680 `unbalanced transaction`, 381 `token outside every participant block`) cannot be described by relaxing
+`balancedBlocks.ts`: a C2 insert mints a **new node output with no paired input**, and chunk NFTs land past
+`regionEnd`, because the **direct route declares no trailing region at all** - `needsTrailingRegion` is
+`__scb1`-gated. Describing them needs the direct route to declare and fund a trailing region at X28's measured
+price, touching `computeBlockLayout` **and** `StatefulTransactionBuilder`. **"Relaxing the model to accept these
+shapes would admit unsound ones and I did not do it."** Opened as **X69**.
+
+**X10 - BLOCKED, and it REFINES the recorded pin rather than repeating it.** X8 pinned the region at one output.
+C5 measured that the region **does** grow past one output in general - a read-only collection and a
+no-collection shape both build **two** chunks at 200 bytes. It fails **only when a C2 entry mint shares the
+region**, and the failure is **worse than "does not grow"**: at 121 bytes the single seeded placeholder is
+**never derived at all**, and the transaction carries the **NEW node commitment twice**, at outputs 3 and 5, with
+a bare `00` between them. So the SDK half is **not** a "seed N instead of 1" change - the new node's placement
+cycles with the chunk count.
+
+The bound is structural in two places, both outside C5's lease: `StatefulContract.ts:9228-9234` seeds exactly one
+chunk candidate, and `GenerateTargetTraversal.ts:5158-5186` carries the PICK depth. **C5 explicitly did not
+re-verify X8's `+1` vs `+6` claim**, could not separate the causes from outside the file, and reported that half
+**as X8's measurement rather than its own**.
+
+Counts: solidc **2,572/0**, solidcash **4,263/0**.
+
+### 4.75 X57's premise was wrong, X58 was not cosmetic, and a diagnostic was destroying itself
+
+Merged at `d14a49ef`.
+
+**X57 was a latent trap, not an active failure - and C2 established that on a live node rather than reasoning
+about it.** The row said observers used for state derivation are discarded on live networks. They are not: all
+three call sites first check `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, **the same
+condition the factory used**, so a limits-less provider never requests an observer at all and derivation falls
+through to full `vm.debug()`. **The mask is the caller gate, not another VM.** Census over deploy + two state
+writes + one read on **live BCHN regtest**: 9 VM builds, **0 with an observer**, derived state **correct**;
+against the mock, 9 builds, 8 with observer, also correct. The premise that only `MockNetworkProvider` publishes
+limits is confirmed.
+
+**A second defect found in the same install loop, and this one is live today.** **47 of 256 opcodes have no
+`operations` entry**, so wrapping them called `undefined(state)` and produced `TypeError: operation is not a
+function` instead of the VM's own `Called an unknown opcode.` Because `_logCovenantFailureTrace` observes **all
+256 and swallows exceptions**, an unknown opcode **silently destroyed the diagnostic it exists to produce**. It
+reproduces on the mock path. Fixed by routing through `instructionSet.undefined`, which still reports.
+
+**C2 rejected a broader fix it had already validated.** It verified the crypto instances are `===`-identical and
+the consensus default matches, then declined "always build via `createInstructionSetBch2026`" anyway: routing
+every live VM evaluation through a differently-constructed instruction set is a worse trade than one guard
+clause. The early return is kept exactly where it drops nothing.
+
+**X58 was NOT cosmetic, contrary to the framing it inherited.** mem-cash builds its primary VM with
+`standard = policy.enforceDust`, so a dust-enforcing mock read a standard allowance **nobody set**. Measured on a
+1-byte unlocking script: `enforceDust: false` accepts 200 `OP_HASH256`; `enforceDust: true` **rejects at 11** with
+`Maximum hash digest iterations: 21` - which is 42 x **0.5**, libauth's real standard value. **The enforced
+allowance was 20,000,000x smaller than declared.**
+
+**A hard constraint found and respected rather than worked around**: mem-cash validates every override as a
+**positive safe integer**, so the real 0.5 and 3.5 **throw** on this provider. C2 did **not** add rounding or
+silent skipping - naming it as exactly the "different silent path" the brief forbade - and pinned the constraint
+as a test instead.
+
+**Corpus discriminating power: zero, verified by grep rather than assumed.** No e2e test passes an observer with
+a limits-less provider and none uses `enforceDust: true`, so the suite is a regression guard here and not
+evidence. The evidence is 10 discriminating tests plus a live regtest control that fails reverted and passes
+fixed. **Byte delta: none** - both changes are SDK-only.
+
+**Two open items C2 named rather than left**: the three callers still gate the observer out on live networks, so
+the fix removes a trap rather than changing behaviour today (`StatefulContract.ts` /
+`StatefulTransactionBuilder.ts`, outside its lease); and `packages/testing/src/config.ts` does not expose the
+split fields, so a `solidcash.config.ts` cannot set them - the split is end-to-end for `MockNetworkProvider` but
+not for the harness config surface. Opened as **X67**.
+
+**Operational intel relayed to C1**, which is on the node now: on regtest the funding address **accumulates UTXOs
+across runs**, so `getUtxos().find(u => !u.token)` can return a non-zero vout and fail deploy with
+`Funding UTXO must be at vout 0`. Filter on `u.vout === 0`. It cost C2 two of its first three runs and looks
+nothing like a covenant fault.
+
+### 4.74 X63 refused to expand, because expanding would have DELETED X2's evidence
+
+Merged at `eb19dbf4`.
+
+**The judgment that matters.** `ExpandBoundedPointerTableLoop` matched only the desugared `for`, so a
+hand-written `while` published `maximumOccurrences: undefined`. The obvious fix is to route `while` into the
+expansion. C4 **refused**, because the `while` spelling is the **only** source form that reaches codegen with a
+rolled pointer table - i.e. the only producer of the expression-selector callsite **round 17's X2 repaired** -
+and expanding it would have **deleted X2's evidence and the premise of its 14-test suite**. So `visitBlock` now
+**records the ceiling and returns the statement untouched**. Seeing that across rounds is the whole value of a
+worker reading the board rather than only its own row.
+
+**+0 bytes on all 9 graph-mode shapes, sha256-identical.** The sharpest datum: the ordinary interface loop is
+**byte-identical between the two spellings** (`6ad331eec0f792f9`, 3,061 B) - the same covenant published `3`
+under `for` and **nothing** under `while`. Everything else routes through the shared `provenTripCount`, so
+`while` can never publish on weaker evidence than `for`.
+
+**Three guard controls, one per leg of the proof** - no dominating guard, the counter rewound inside the body,
+the bound mutated by the same function - each publishing `undefined`, so the ceiling is credited to the
+guard/step/mutation analysis and not to "the pass now sees `while`". C4 noted the rewind case **would have
+published 3 without the new check**, making it discriminating rather than decorative. And a **structural guard**
+asserts the two spellings still compile to *different* bytecode - the assertion that fails if this repair ever
+silently becomes an expansion.
+
+**X56: the compiler was already right.** X12's split-facet subtraction is correct for **both** slots; the **SDK**
+had the return channel at output 3 and the event at 4, inverted, rejected at input 2 by the event's
+locking-bytecode `OP_EQUALVERIFY`. The repair is entirely SDK-side, so **+0 bytes on every contract shape**.
+
+**The gate was measured, exactly as the brief warned.** C4's first version relocated whenever the implementation
+had a `returnEvent`, which rebuilt the layout object even for a returning delegate with **no** event - where the
+offset does not move - **silently dropping `trailingBase`/`trailingCapacity`**. Tightened to fire only when the
+offset actually differs, with the untouched shape now asserted rather than assumed.
+
+**The hostile is discriminated, which is the part that makes it evidence.** A third own-category immutable NFT
+appended beside the pair is rejected at **input 2** - attacking SEC-13's pin, whose admitted positions X56 moved -
+and the *same test* appends a **plain untokened output of identical size and value** which is **ACCEPTED**.
+Without that row the rejection could have been a value, fee or count fault.
+
+**Item 12 is the most honest scoping note of the round.** X63 has **no new VM case of its own and cannot have
+one**, since it changes zero emitted bytes; its settlement evidence is **inherited from X2**, and the
+byte-identity measurement is what licenses that inheritance. X56 is proven on **one** shape; the generalisation
+to implementations with entries is "a structural argument with no instance". The widened `returnEvent` admission
+moves a shape **from documented-broken to untested, not to proven**. And the green full suite does **not**
+establish X56's soundness, because a green suite cannot see a covenant that settles for the wrong reason.
+
+**Pre-existing hole named, not fixed:** a `for` body that also writes its own counter is admitted with no
+stability check - the same hole X63 closes for `while`. Tightening it would change a currently-admitted shape.
+Opened as **X68**.
+
+Full `yarn test` exit **0**: solidcash **4,267/0**, solidc **2,575/0**.
 
 ### 4.73 F4: C3 IS UNDER THE RELAY CEILING, and the lever was 82 verifier bytes
 

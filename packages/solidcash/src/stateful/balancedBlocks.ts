@@ -218,16 +218,27 @@ export function deriveBalancedAssemblyFromInputs(
   if (cursor > totalSlots - 1) {
     fail(`the participant region covers all ${totalSlots} slots, leaving no fee input or change output`);
   }
-  // The canonical composed tail is one projection proof per participant, then the graph-root controller, then
-  // the fee/change slot. Reporting no auxiliary slots at all silently disabled both auxiliary checks, one of
-  // which the sidecar covenants require. A tail of any other width is NOT that region - an injected extra
-  // participant block lands there too - so it is left unclaimed rather than mislabelled as sidecars; the
-  // controller's exhaustive `tx.inputs.length == activeInputIndex + 2` rule is what refuses that shape.
+  // The composed tail is one projection proof per participant, then the graph-root controller, then the
+  // fee/change slot. Reporting no auxiliary slots at all silently disabled both auxiliary checks, one of which
+  // the sidecar covenants require.
+  //
+  // X20: the sidecar region's POSITION is fixed by the participant region, not by the tail's total width. The
+  // projection covenant requires `projectionInput > previousProjectionInput && projectionInput < controllerInput`
+  // with `participantInput == expectedParticipantInput` accumulated across the table, and the root controller
+  // requires `previousProjectionInput + 1 - participantCount == expectedInput` - so one proof per participant
+  // begins exactly where the participant region ends, and the controller sits immediately after them. Claiming
+  // the region only when the tail was EXACTLY canonical therefore keyed a POSITION off a WIDTH: appending one
+  // ordinary padding slot anywhere after the controller restored the pre-L2 fail-open, dropping both auxiliary
+  // checks while every claimed index stayed exactly where it had been. Claim the region wherever it fits.
+  //
+  // Slots BEYOND it are still left unclaimed rather than mislabelled as sidecars - an injected extra participant
+  // block lands there too - and the controller's exhaustive `tx.inputs.length == activeInputIndex + 2` rule is
+  // what names that shape.
   const sidecars = blocks.length + 1;
-  const canonicalTail = cursor + sidecars === totalSlots - 1;
+  const auxiliaryRegionFits = cursor + sidecars <= totalSlots - 1;
   return {
     blocks,
-    auxiliaryInputs: canonicalTail
+    auxiliaryInputs: auxiliaryRegionFits
       ? Array.from({ length: sidecars }, (_unused, index) => cursor + index)
       : [],
     feeInput: totalSlots - 1,

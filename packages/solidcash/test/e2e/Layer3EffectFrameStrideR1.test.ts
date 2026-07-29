@@ -41,26 +41,39 @@ import { readEventsFromChain } from '../../src/stateful/StateReader.js';
  * and the effect is asserted PRESENT, not merely bound: a two-row batch whose row-1 transfer slot carries a
  * plain funder instead of the recipient payment REJECTS @ input 0.
  *
- * RESULT 2 - A LIVE FORGED LOG in X29's own reserved slots. The frame reserves 8 event outputs and only the
- * REACHED site settles one. `emitEventCovenantVerification` skips its SEC-10 not-taken binding whenever the
- * route owns an effect frame (`frameShadowed`), and `emitOwnCategoryImmutableNftOutputPin` admits an
- * own-category immutable NFT at ANY `event` block-layout offset - so the unreached frame slots are bound by
- * nothing. One variable from the honest transaction:
+ * RESULT 2 - A LIVE FORGED LOG in X29's own reserved slots, now REPAIRED (SEC-15). The frame reserves 8 event
+ * outputs and only the REACHED site settles one. `emitEventCovenantVerification` skipped its SEC-10 not-taken
+ * binding whenever the route owned an effect frame (`frameShadowed`), and `emitOwnCategoryImmutableNftOutputPin`
+ * admits an own-category immutable NFT at ANY `event` block-layout offset - so the unreached frame slots were
+ * bound by nothing. One variable from the honest transaction, BEFORE -> AFTER the repair:
  *
- *   forged own-category event NFT at ...   verdict
- *   settled ordinal 0 (flattened row 0)    REJECTS @ input 0
- *   settled ordinal 1 (reached site)       REJECTS @ input 0
- *   UNREACHED ordinals 2, 5, 7             ACCEPTED, and readEventsFromChain returns Fired(999999)
- *                                          beside the two genuine logs
- *   UNREACHED transfer ordinal 4           REJECTS @ input 0  (SEC-11's pin still holds there)
+ *   forged own-category event NFT at ...   before                     after
+ *   settled ordinal 0 (flattened row 0)    REJECTS @ input 0          REJECTS @ input 0
+ *   settled ordinal 1 (reached site)       REJECTS @ input 0          REJECTS @ input 0
+ *   UNREACHED ordinals 2, 5, 7             ACCEPTED, and readEvents-  REJECTS @ input 0
+ *                                          FromChain returns
+ *                                          Fired(999999) beside the
+ *                                          two genuine logs
+ *   UNREACHED transfer ordinal 4           REJECTS @ input 0          REJECTS @ input 0 (SEC-11's pin)
+ *   UNREACHED ordinal 3, SINGLE-ROW shape  ACCEPTED                   REJECTS @ input 0
+ *   UNREACHED ordinal 3, invoked handler   ACCEPTED                   REJECTS @ input 0
+ *     is the route's ONLY emitter
+ *   GUARD: that same NFT, that same        ACCEPTED                   ACCEPTED
+ *     unreached slot, EMPTY commitment
  *
- * Also ACCEPTED in the SINGLE-ROW shape every committed X29 fixture uses (forged at ordinal 3), so this needs
- * none of the multi-row scaffolding above.
+ * The honest transaction settles in both columns of every row. The GUARD row is what credits the repair rather
+ * than SEC-11's offset pin: the pin admits any own-category immutable NFT at an `event` offset, so it cannot
+ * separate those two rows and only a commitment binding can.
  *
  * ATTRIBUTION, measured by ablation rather than argued: with `frameShadowed` forced to `false` the HONEST
  * transaction rejects @ input 0 too - the route's not-taken binding requires an empty commitment and the
  * reached site's genuine event NFT carries a non-empty one. The exemption is therefore load-bearing, and a
  * repair has to be per-slot (bind the ordinals this dispatch site does not own) rather than a route-wide skip.
+ *
+ * SEC-15 is that per-slot repair: the route carries the reached dispatch site's ORDINAL (GRAPH_EVENT_SITE, -1
+ * when no site was reached) and binds every reserved event ordinal outside that site's window to an empty
+ * commitment - inside the per-emit `OP_ELSE` where the route has a pending emit of its own, and standalone
+ * (emitGraphFrameEventSlotBinding) where it has none, which is the last row's shape.
  *
  * RESULT 3 - a limit that is NOT X29's. Two rows that BOTH dispatch a handler with an OUTGOING EDGE never
  * settle, whatever the handler carries:
@@ -107,10 +120,15 @@ type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
  *
  * The route's eligibility gate requires UNIFORM event counts across the batch
  * (`event-route-requires-uniform-events-and-at-most-one-value-transfer`), so `note` must emit exactly as
- * often as `fireAll`. Transfers are not required to be uniform, which is what lets `transferOnly` measure the
- * transfer frame with an effect-free row 0.
+ * often as `fireAll` to occupy a row. Transfers are not required to be uniform, which is what lets
+ * `transferOnly` measure the transfer frame with an effect-free row 0.
+ *
+ * `noteEmits: false` is measured, not assumed, to compile and settle: the uniformity assertion in
+ * SymbolTableTraversal ranges over graph emission HANDLERS, and a flattened `note` is not one. It leaves the
+ * invoked handler as the route's only emitter and is only used with `mode: 'single'`, where no row dispatches
+ * `note` at all - so it changes no handler's published callsite count and no row binding.
  */
-const hubSource = (emitting: boolean, transferring = true): string => `pragma solidcash >=0.8.0;
+const hubSource = (emitting: boolean, transferring = true, noteEmits = true): string => `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(uint value); }
 contract StrideHub() {
   uint total;
@@ -122,7 +140,7 @@ ${transferring ? `    this.transfer(recipient, ${TRANSFER_SATS});` : ''}
     require(true);
   }
   function note(uint credited) public {
-${emitting ? '    emit Fired(credited);' : ''}
+${emitting && noteEmits ? '    emit Fired(credited);' : ''}
     this.total = this.total + credited;
     require(credited > 0);
   }
@@ -192,6 +210,19 @@ interface Cell {
   forgedEventOrdinal?: number;
   /** The same forged NFT, at an unreached TRANSFER frame ordinal - the offset class SEC-11's pin refuses. */
   forgedTransferOrdinal?: number;
+  /**
+   * GUARD CONTROL for SEC-15. Mint the forged NFT with an EMPTY commitment instead of a forged log body.
+   * Byte-for-byte the same output class - same address, same category, same 'none' capability, same value -
+   * differing only in the one field the repair rules on. It must stay ACCEPTED, which is what separates
+   * "the not-taken commitment binding refused this" from "something refuses any token at an unreached slot".
+   */
+  forgedEventCommitmentEmpty?: boolean;
+  /**
+   * Does the FLATTENED sibling `note` carry the `emit`? Off leaves the invoked handler as the only emitter, so
+   * the route has no pending emit of its own and `emitEventCovenantVerification` never runs on it at all -
+   * the same reserved slots, reached by a different code path.
+   */
+  noteEmits?: boolean;
 }
 
 async function buildStrideCase(cell: Cell): Promise<{
@@ -210,7 +241,9 @@ async function buildStrideCase(cell: Cell): Promise<{
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const hubArtifact = compileString(hubSource(cell.emitting, cell.transferring !== false), options);
+  const hubArtifact = compileString(
+    hubSource(cell.emitting, cell.transferring !== false, cell.noteEmits !== false), options,
+  );
   const kickArtifact = compileString(kickSource(cell.mode), options);
   const legArtifact = compileString(legSource, options);
 
@@ -414,9 +447,10 @@ async function buildStrideCase(cell: Cell): Promise<{
     } else if (kind === 'event') {
       // In `noteThenFire`, row 0 dispatches `note`, which is flattened into the route and settles its own
       // event at the route's own slot 0. `fireAll`'s event is the measured one, at `effectOrdinals`.
+      const noteFires = cell.noteEmits !== false;
       const reached = cell.effectOrdinals.includes(eventCursor)
-        || (cell.mode === 'noteThenFire' && eventCursor === 0)
-        || (cell.mode === 'fireThenNote' && eventCursor === 1);
+        || (noteFires && cell.mode === 'noteThenFire' && eventCursor === 0)
+        || (noteFires && cell.mode === 'fireThenNote' && eventCursor === 1);
       const forged = cell.forgedEventOrdinal === eventCursor;
       eventCursor += 1;
       tx.addOutput(reached || forged ? {
@@ -425,7 +459,9 @@ async function buildStrideCase(cell: Cell): Promise<{
           category: hubSetup.categoryId, amount: 0n,
           nft: {
             capability: 'none',
-            commitment: forged ? binToHex(packed(999_999n)) : eventCommitment,
+            commitment: forged
+              ? (cell.forgedEventCommitmentEmpty ? '' : binToHex(packed(999_999n)))
+              : eventCommitment,
           },
         },
       } : { to: p2pkh.address, amount: 1000n });
@@ -537,13 +573,14 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
    * (`frameShadowed`), and `emitOwnCategoryImmutableNftOutputPin` admits an own-category immutable NFT at ANY
    * `event` block-layout offset. So this asks directly whether an UNREACHED frame slot can carry a forged log.
    */
-  it('an unreached frame event slot accepts a forged own-category event NFT', async () => {
+  it('an unreached frame event slot refuses a forged own-category event NFT', async () => {
     const honest = await buildStrideCase({ mode: 'noteThenFire', effectOrdinals: [1], emitting: true });
     await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeDefined();
     const honestLogs = await readEventsFromChain(
       honest.provider as any, honest.eventAddress, honest.hubCategory, honest.eventDef,
     );
     console.log('R1 honest logs:', show(honestLogs.map((e: any) => e.args ?? e)));
+    expect(show(honestLogs)).not.toContain('999999');
 
     // The SETTLED slots are bound: forging over the reached site, or over the flattened row-0 site, rejects.
     for (const ordinal of [0, 1]) {
@@ -551,25 +588,72 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
         mode: 'noteThenFire', effectOrdinals: [1], emitting: true, forgedEventOrdinal: ordinal,
       });
       console.log(`R1 forged at SETTLED ordinal ${ordinal}:`, await reject(bound));
-      expect(await reject(bound)).not.toEqual('ACCEPTED');
+      expect(await reject(bound)).toContain('input index 0');
     }
 
     // One variable from the honest case: an UNREACHED frame slot carries the same forged NFT instead of a
-    // plain funder.
+    // plain funder. ACCEPTED before SEC-15, and `readEventsFromChain` returned Fired(999999) beside the two
+    // genuine logs; the per-slot not-taken binding now refuses it at the route's own input.
     for (const ordinal of [2, 5, 7]) {
       const forged = await buildStrideCase({
         mode: 'noteThenFire', effectOrdinals: [1], emitting: true, forgedEventOrdinal: ordinal,
       });
       const verdict = await reject(forged);
       console.log(`R1 forged at UNREACHED frame ordinal ${ordinal}:`, verdict);
-      // DEFECT PIN, not a desired behaviour. Flip to `not.toEqual('ACCEPTED')` when the slot is bound.
-      expect(verdict).toEqual('ACCEPTED');
-      const logs = await readEventsFromChain(
-        forged.provider as any, forged.eventAddress, forged.hubCategory, forged.eventDef,
-      );
-      console.log(`R1 logs after forging ordinal ${ordinal}:`, show(logs.map((e: any) => e.args ?? e)));
-      expect(show(logs)).toContain('999999');
+      expect(verdict).toContain('input index 0');
     }
+  }, 900_000);
+
+  /**
+   * SEC-15 GUARD CONTROL. The repair is a rule about the COMMITMENT of an unreached reserved slot, not a ban on
+   * tokens there, and the credit for the rejections above belongs to it rather than to SEC-11's offset pin -
+   * which cannot discriminate, because an `event` offset is exactly what it admits. One field changes: the
+   * forged own-category immutable NFT keeps its address, category, 'none' capability and value, and carries an
+   * EMPTY commitment. It must settle, and it must read back as nothing.
+   */
+  it('the same NFT at the same unreached slot with an EMPTY commitment still settles', async () => {
+    const guard = await buildStrideCase({
+      mode: 'noteThenFire', effectOrdinals: [1], emitting: true,
+      forgedEventOrdinal: 5, forgedEventCommitmentEmpty: true,
+    });
+    const verdict = await reject(guard);
+    console.log('R1 GUARD empty-commitment NFT at unreached ordinal 5:', verdict);
+    expect(verdict).toEqual('ACCEPTED');
+    const logs = await readEventsFromChain(
+      guard.provider as any, guard.eventAddress, guard.hubCategory, guard.eventDef,
+    );
+    console.log('R1 GUARD logs:', show(logs.map((e: any) => e.args ?? e)));
+    expect(show(logs)).not.toContain('999999');
+  }, 900_000);
+
+  /**
+   * The same reserved slots reached by a DIFFERENT code path. With the flattened sibling silent, the invoked
+   * handler is the route's only emitter, the route has no pending emit of its own, and
+   * `emitEventCovenantVerification` never runs on it - so the per-emit not-taken binding has nothing to hang
+   * off. Measured ACCEPTED before SEC-15's standalone frame binding; the honest control settles either way.
+   */
+  it('an unreached frame slot is bound when the INVOKED handler is the only emitter', async () => {
+    const honest = await buildStrideCase({
+      mode: 'single', effectOrdinals: [0], emitting: true, noteEmits: false,
+    });
+    await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeDefined();
+    const forged = await buildStrideCase({
+      mode: 'single', effectOrdinals: [0], emitting: true, noteEmits: false, forgedEventOrdinal: 3,
+    });
+    const verdict = await reject(forged);
+    console.log('R1 handler-only emitter, forged at UNREACHED ordinal 3:', verdict);
+    expect(verdict).toContain('input index 0');
+    const guard = await buildStrideCase({
+      mode: 'single',
+      effectOrdinals: [0],
+      emitting: true,
+      noteEmits: false,
+      forgedEventOrdinal: 3,
+      forgedEventCommitmentEmpty: true,
+    });
+    const guardVerdict = await reject(guard);
+    console.log('R1 handler-only emitter, GUARD empty commitment at ordinal 3:', guardVerdict);
+    expect(guardVerdict).toEqual('ACCEPTED');
   }, 900_000);
 
   // SEC-11's own-category immutable pin allows an `event` offset but not a `transfer` offset. Confirm it
@@ -583,21 +667,19 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
   }, 900_000);
 
   // The SINGLE-row shape every committed X29 fixture uses has the same seven unreached frame slots.
-  it('the committed single-row shape has the same unreached frame slots', async () => {
+  it('the committed single-row shape has the same unreached frame slots bound', async () => {
     const honest = await buildStrideCase({ mode: 'single', effectOrdinals: [0], emitting: true });
     await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeDefined();
+    const honestLogs = await readEventsFromChain(
+      honest.provider as any, honest.eventAddress, honest.hubCategory, honest.eventDef,
+    );
+    expect(show(honestLogs)).not.toContain('999999');
     const forged = await buildStrideCase({
       mode: 'single', effectOrdinals: [0], emitting: true, forgedEventOrdinal: 3,
     });
     const verdict = await reject(forged);
     console.log('R1 single-row, forged event NFT at UNREACHED frame ordinal 3:', verdict);
-    // DEFECT PIN, not a desired behaviour. Flip to `not.toEqual('ACCEPTED')` when the slot is bound.
-    expect(verdict).toEqual('ACCEPTED');
-    const logs = await readEventsFromChain(
-      forged.provider as any, forged.eventAddress, forged.hubCategory, forged.eventDef,
-    );
-    console.log('R1 single-row logs after forging:', show(logs.map((e: any) => e.args ?? e)));
-    expect(show(logs)).toContain('999999');
+    expect(verdict).toContain('input index 0');
   }, 900_000);
 
   it('isolation: TWO rows reaching the effect-FREE handler settle', async () => {

@@ -24,6 +24,12 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 // ROUND 15 (Worker S1, SEC-12): the compiler's `hasSignatureGuard` suppressor is fixed, so A13-2a2 is inverted
 // in place too - the self-authorizing shape now warns by name. A13-2b is NOT touched: the compiler emits a
 // diagnostic, not a covenant, so the stranger still settles 5 -> 999 and that is what the warning is about.
+//
+// ROUND 16 (X43): round 14's two fixes keyed off PARAMETER TYPES, and A13's own escapes came straight back by
+// re-spelling the caller's value as a `bytes` parameter. The gate now reads X37's published provenance instead.
+// The two assertions above are untouched by that - both shapes are still refused, now for the semantic reason -
+// and the A13-3 block below adds the VM evidence that the round-14 admission of the `bytes`-typed target was a
+// LIVE hole: the same 5 -> 999 takeover, through a proxy the round-14 gate called `bytecode-pinned`.
 
 const IMPL_SCALAR = `pragma solidcash >=0.8.0;
 contract E3Impl() {
@@ -87,6 +93,32 @@ contract E3SelfAuthProxy() {
         require(input.length > 0);
     }
 }`;
+
+/**
+ * A13-3 (round 16). The A13-1 takeover re-spelled: the caller's implementation arrives as `bytes` and is cast,
+ * so the function publishes NO `address` parameter and round 14's type gate called this `bytecode-pinned`. The
+ * constructor argument is a real, live implementation, exactly as in A13-1.
+ */
+const PROXY_BYTES_TARGET = `pragma solidcash >=0.8.0;
+contract E3BytesTargetProxy(address impl) {
+    bigint counter;
+    function up(bytes input, bytes target) external {
+        require(target.length == 35);
+        address t = address(target);
+        t.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/**
+ * A13-3 GUARD CONTROL. Byte-identical published parameter types to `PROXY_BYTES_TARGET` - `bytes`, `bytes` -
+ * and the same 35-byte require on `target`. One expression apart: the delegatecall reaches the CONSTRUCTOR
+ * ARGUMENT. If this shape did not settle, or were refused by the gate, the A13-3 refusal would be credited to
+ * the extra `bytes` parameter rather than to which expression the call targets.
+ */
+const PROXY_BYTES_UNUSED = PROXY_BYTES_TARGET
+  .replace('E3BytesTargetProxy', 'E3BytesUnusedProxy')
+  .replace('        address t = address(target);\n        t.delegatecall(input);', '        impl.delegatecall(input);');
 
 type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
 
@@ -170,6 +202,8 @@ const pinnedProxyArtifact = compileString(PROXY_BYTECODE_PINNED);
 const trapProxyArtifact = compileString(PROXY_PINNED_BUT_CALLER_CHOSEN);
 const authorizedProxyArtifact = compileString(PROXY_CALLER_AUTHORIZED);
 const selfAuthProxyArtifact = compileString(PROXY_SELF_AUTHORIZED);
+const bytesTargetProxyArtifact = compileString(PROXY_BYTES_TARGET);
+const bytesUnusedProxyArtifact = compileString(PROXY_BYTES_UNUSED);
 
 describe('A13 review of E3: bytecode-pinned detection', () => {
   it('A13-1a: FIXED - the gate refuses the caller-chosen proxy by name, pin or no pin', () => {
@@ -184,7 +218,7 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
     expect(() => layer3.classifyDelegateParticipant({
       proxy: { artifact: trapProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
-    })).toThrow(/class 'pinned-but-caller-selected' is not admitted.*address parameter\(s\) 'impl'/s);
+    })).toThrow(/class 'pinned-but-caller-selected' is not admitted.*delegatecalls caller-supplied parameter 'impl'/s);
 
     // CONTROL, one field apart: the same proxy pair with no `address` parameter is still admitted.
     const honest = new Contract(pinnedProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
@@ -262,7 +296,7 @@ describe('A13 review of E3: caller-authorized authority', () => {
     expect(() => layer3.classifyDelegateParticipant({
       proxy: { artifact: selfAuthProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
-    })).toThrow(/class 'self-authorized' is not admitted.*pubkey parameter\(s\) 'pk'/s);
+    })).toThrow(/class 'self-authorized' is not admitted.*checked against caller-supplied parameter 'pk'/s);
 
     // CONTROL, one field apart: the same shape whose key is a CONSTRUCTOR argument is still admitted.
     const honest = new Contract(authorizedProxyArtifact, [alicePub] as never[], { provider });
@@ -340,6 +374,103 @@ describe('A13 review of E3: caller-authorized authority', () => {
     expect(message).toContain('mandatory-script-verify-flag-failed');
     expect(failingInput(message)).toBe(0);
   }, 240_000);
+});
+
+describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
+  it('A13-3a: the gate refuses it, on the published target provenance rather than the parameter type', () => {
+    const provider = createLayer3SemanticTestProvider();
+    const implementation = new Contract(implArtifact, [], { provider });
+    const implementationLbc = binToHex(addressToLockScript(implementation.address));
+    const proxy = new Contract(bytesTargetProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
+    // The type gate saw nothing to refuse: no `address` parameter at all, and the pin really is in the bytecode.
+    expect(bytesTargetProxyArtifact.abi.find((entry) => entry.name === 'up')!.inputs
+      .filter((entry) => !entry.name.startsWith('__internal__')).map((entry) => entry.type))
+      .toEqual(['bytes', 'bytes']);
+    expect(proxy.bytecode.toLowerCase()).toContain(implementationLbc.toLowerCase());
+    expect(() => layer3.classifyDelegateParticipant({
+      proxy: { artifact: bytesTargetProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
+      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+    })).toThrow(/class 'pinned-but-caller-selected' is not admitted.*caller-supplied parameter 'target'/s);
+
+    // GUARD CONTROL, same published types, same containment, one expression apart: still admitted.
+    const honest = new Contract(bytesUnusedProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
+    expect(layer3.classifyDelegateParticipant({
+      proxy: { artifact: bytesUnusedProxyArtifact, functionName: 'up', bytecode: honest.bytecode },
+      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+    }).id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+  });
+
+  it('A13-3b: and the VM settles a FOREIGN implementation rewriting that proxy state', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const honest = await deploy(provider, implArtifact, [], { counter: 0n });
+    const foreign = await deploy(provider, foreignArtifact, [], { counter: 0n });
+    // p2sh32 committed to the HONEST implementation; the caller hands the FOREIGN one in as `bytes`.
+    const proxy = await deploy(
+      provider, bytesTargetProxyArtifact, [addressToLockScript(honest.contract.address)], { counter: 5n },
+    );
+    const tx = await new StatefulTransactionBuilder({
+      provider,
+      stateLayout: bytesTargetProxyArtifact.stateLayout!,
+      categoryId: proxy.categoryId,
+      masterUtxo: {
+        ...proxy.master,
+        unlocker: (proxy.contract.unlock as any).up(
+          selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), 2n,
+        ),
+      },
+      dataNftUtxos: proxy.dataNfts.map((nft) => ({
+        ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
+      })),
+      externalCallUtxoGroups: [delegateGroup(foreignArtifact, foreign, 'increment', [0n], 2)],
+    }).setState('counter', 999n).send();
+    expect(stateOf(tx, proxy.categoryId, bytesTargetProxyArtifact.stateLayout!).counter).toBe(999n);
+  }, 240_000);
+
+  it('A13-3c: GUARD CONTROL - the same-typed honest proxy settles, and refuses the substitution at input 0',
+    async () => {
+      const provider = createLayer3SemanticTestProvider();
+      const honestImpl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const honestLbc = addressToLockScript(honestImpl.contract.address);
+      const proxy = await deploy(provider, bytesUnusedProxyArtifact, [honestLbc], { counter: 5n });
+      const tx = await new StatefulTransactionBuilder({
+        provider,
+        stateLayout: bytesUnusedProxyArtifact.stateLayout!,
+        categoryId: proxy.categoryId,
+        masterUtxo: {
+          ...proxy.master,
+          unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), honestLbc, 2n),
+        },
+        dataNftUtxos: proxy.dataNfts.map((nft) => ({
+          ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
+        })),
+        externalCallUtxoGroups: [delegateGroup(implArtifact, honestImpl, 'increment', [0n], 2)],
+      }).setState('counter', 6n).send();
+      expect(stateOf(tx, proxy.categoryId, bytesUnusedProxyArtifact.stateLayout!).counter).toBe(6n);
+
+      const hostileProvider = createLayer3SemanticTestProvider();
+      const pinned = await deploy(hostileProvider, implArtifact, [], { counter: 0n });
+      const foreign = await deploy(hostileProvider, foreignArtifact, [], { counter: 0n });
+      const hostileProxy = await deploy(
+        hostileProvider, bytesUnusedProxyArtifact, [addressToLockScript(pinned.contract.address)], { counter: 5n },
+      );
+      const message = await outcome(new StatefulTransactionBuilder({
+        provider: hostileProvider,
+        stateLayout: bytesUnusedProxyArtifact.stateLayout!,
+        categoryId: hostileProxy.categoryId,
+        masterUtxo: {
+          ...hostileProxy.master,
+          unlocker: (hostileProxy.contract.unlock as any).up(
+            selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), 2n,
+          ),
+        },
+        dataNftUtxos: hostileProxy.dataNfts.map((nft) => ({
+          ...nft, unlocker: createDataNftUnlocker(hostileProxy.contract, 0, hostileProxy.categoryId),
+        })),
+        externalCallUtxoGroups: [delegateGroup(foreignArtifact, foreign, 'increment', [0n], 2)],
+      }).setState('counter', 999n).send());
+      expect(message).toContain('mandatory-script-verify-flag-failed');
+      expect(failingInput(message)).toBe(0);
+    }, 240_000);
 });
 
 describe('A13 review of E3: is the gate wired to anything?', () => {

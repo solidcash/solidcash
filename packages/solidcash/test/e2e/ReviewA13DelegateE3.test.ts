@@ -19,9 +19,11 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 // ROUND 14 (Worker B): both escapes are CLOSED in `src/layer3/delegate.ts`. The two gate assertions below are
 // inverted in place - A13-1a and A13-2a now demand a NAMED refusal - and every other case in this file is
 // untouched, including the two VM cases that settle 5 -> 999 (they are why the refusals must exist) and the
-// two honest controls that are still refused by the covenant at input 0. A13-2a2 also stands: the compiler's
-// `hasSignatureGuard` suppressor is still over-broad and is reported to the compiler lease holder, not patched
-// here.
+// two honest controls that are still refused by the covenant at input 0.
+//
+// ROUND 15 (Worker S1, SEC-12): the compiler's `hasSignatureGuard` suppressor is fixed, so A13-2a2 is inverted
+// in place too - the self-authorizing shape now warns by name. A13-2b is NOT touched: the compiler emits a
+// diagnostic, not a covenant, so the stranger still settles 5 -> 999 and that is what the warning is about.
 
 const IMPL_SCALAR = `pragma solidcash >=0.8.0;
 contract E3Impl() {
@@ -270,15 +272,20 @@ describe('A13 review of E3: caller-authorized authority', () => {
     }).id).toBe('caller-authorized/adjacent-proxy-block/scalar');
   });
 
-  it('A13-2a2: and NOTHING warns - a bare checkSig anywhere in the body suppresses SEC-2', () => {
-    // `hasSignatureGuard` matches any checkSig/checkMultiSig/checkDataSig node in the body, without asking
-    // which key it is checked against. The only message left is the generic low-level-call notice.
+  it('A13-2a2: FIXED - the compiler now asks WHICH key the checkSig checks, and warns', () => {
+    // ROUND 15 (SEC-12). `hasSignatureGuard` matched any checkSig/checkMultiSig/checkDataSig node in the body
+    // without asking which key it was checked against, so this shape compiled with only the generic low-level
+    // -call notice. It now names the parameter, exactly as the caller-chosen shape does.
     const messages = compilerWarnings(PROXY_SELF_AUTHORIZED);
-    expect(messages.join('\n')).not.toMatch(/unguarded caller-supplied parameter/);
-    expect(messages.filter((message) => !message.includes('Low-level .delegatecall() used'))).toEqual([]);
+    expect(messages.join('\n')).toMatch(/issues delegatecall against 'impl', an unguarded caller-supplied parameter/);
     // The control DOES warn, and differs only in where the checked key comes from.
     expect(compilerWarnings(PROXY_PINNED_BUT_CALLER_CHOSEN).join('\n'))
       .toMatch(/unguarded caller-supplied parameter/);
+    // GUARD CONTROL, one token apart from PROXY_SELF_AUTHORIZED: the same shape whose key is a CONSTRUCTOR
+    // argument is still silent, so the new warning is credited to the key's source and not to the `sig`
+    // parameter, the `address` parameter, or the delegatecall itself - PROXY_CALLER_AUTHORIZED has all three.
+    expect(compilerWarnings(PROXY_CALLER_AUTHORIZED)
+      .filter((message) => !message.includes('Low-level .delegatecall() used'))).toEqual([]);
   });
 
   it('A13-2b: and a STRANGER selects a foreign implementation, which settles', async () => {

@@ -2280,8 +2280,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // nothing about identity when that address is an unguarded function parameter - an unrelated spender then
     // co-spends an implementation they wrote and rewrites this contract's state. Warn precisely: fire only when
     // the target resolves to a parameter of this entry point AND nothing in the body constrains it (no signature
-    // guard, and no require() mentioning it). A parameter pinned by `require(impl == this.implementation)` is the
-    // legitimate upgradeable-proxy shape and must keep compiling, which is why this warns rather than rejects.
+    // guard against a key the caller does not choose - SEC-12 - and no require() mentioning it). A parameter
+    // pinned by `require(impl == this.implementation)` is the legitimate upgradeable-proxy shape and must keep
+    // compiling, which is why this warns rather than rejects.
     const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node);
     if (callerSuppliedImpl) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
@@ -2290,22 +2291,26 @@ export default class SymbolTableTraversal extends AstTraversal {
         + 'unguarded caller-supplied parameter. The co-spend covenant pins the delegate to the address the CALLER '
         + 'chose, so it proves nothing about identity: ANY spender can co-spend an implementation they wrote and '
         + 'rewrite this contract\'s state (SECURITY-AUDIT C1). Take the implementation as a constructor argument, '
-        + `or constrain '${callerSuppliedImpl}' with a signature check or a require() against stored state. `
-        + 'See packages/solidc/docs/delegatecall-security.md.',
+        + `or constrain '${callerSuppliedImpl}' with a require() against stored state or a signature check whose `
+        + 'KEY is a constructor argument or state variable (a checkSig against a caller-supplied pubkey '
+        + 'authorizes nobody). See packages/solidc/docs/delegatecall-security.md.',
       );
     }
 
     // C1: a delegatecall against a P2PKH-placeholder impl is NOT pinned (pinsDelegateCoSpend is false), so the
     // proxy cannot force the delegate to be co-spent - ANY spender then co-spends the state NFT and rewrites
     // proxy state arbitrarily. Warn unless the function is pinned (a covenant impl, where the co-spend is forced
-    // - see piece 3) or already signature-gated. Library-call sugar is excluded (its own layout/brand guards).
-    if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend && !this.hasSignatureGuard(node.body)) {
+    // - see piece 3) or gated by a signature against a key the caller does not choose (SEC-12: a checkSig against
+    // a caller-supplied pubkey silenced this). Library-call sugar is excluded (its own layout/brand guards).
+    if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend
+      && !this.hasAuthorizingSignatureGuard(node)) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against a non-covenant (P2PKH) impl, so the `
         + 'delegate co-spend cannot be pinned and ANY spender can rewrite proxy state arbitrarily (SECURITY-AUDIT '
         + 'C1). Use the delegate contract\'s real (covenant) address so the co-spend is forced, or gate this '
-        + 'function with a signature check. See packages/solidc/docs/delegatecall-security.md.',
+        + 'function with a signature check whose KEY is a constructor argument or state variable. '
+        + 'See packages/solidc/docs/delegatecall-security.md.',
       );
     }
 
@@ -4983,20 +4988,100 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
-  private hasSignatureGuard(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
-    if (!node || seen.has(node)) return false;
+  /**
+   * SEC-12: which KEY does a signature check authorize? `checkSig(s, pk)` proves only that whoever supplied
+   * `pk` also supplied a matching `s`. When the same caller chooses `pk` the check is self-authorizing and
+   * authorizes nobody - measured: a proxy taking `(address impl, pubkey pk, sig s)` compiled with no C1
+   * diagnostic and a stranger settled 5 -> 999. So a signature check counts as an access guard only when its
+   * key is one the caller cannot choose. Key operand: arg 1 of checkSig / checkMultiSig, arg 2 of checkDataSig
+   * (a missing operand contributes no guard - fail closed).
+   */
+  private static readonly SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
+    checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
+  };
+
+  private collectSignatureGuardKeys(
+    node: Node | undefined, out: ExpressionNode[], seen: Set<Node> = new Set(),
+  ): void {
+    if (!node || seen.has(node)) return;
     seen.add(node);
-    if (node instanceof FunctionCallNode
-      && (node.identifier.name === 'checkSig' || node.identifier.name === 'checkMultiSig'
-        || node.identifier.name === 'checkDataSig')) {
-      return true;
+    if (node instanceof FunctionCallNode) {
+      const keyArg = SymbolTableTraversal.SIGNATURE_GUARD_KEY_ARG[node.identifier.name];
+      if (keyArg !== undefined) {
+        const key = node.parameters[keyArg];
+        if (key) out.push(key);
+      }
     }
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { if (this.hasSignatureGuard(v, seen)) return true; } else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node && this.hasSignatureGuard(e, seen)) return true;
+      if (v instanceof Node) { this.collectSignatureGuardKeys(v, out, seen); } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) this.collectSignatureGuardKeys(e, out, seen);
+      }
+    }
+  }
+
+  /**
+   * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
+   * only the declaration (findLocalInit) lets `pubkey k = owner; k = pk;` launder a caller-supplied key past the
+   * check - the declaration says `owner` but the checkSig sees `pk`. A tuple rebinding contributes its whole
+   * right-hand side, which over-approximates rather than missing.
+   */
+  private localBindings(
+    node: Node | undefined, name: string, out: ExpressionNode[] = [], seen: Set<Node> = new Set(),
+  ): ExpressionNode[] {
+    if (!node || seen.has(node)) return out;
+    seen.add(node);
+    if (node instanceof VariableDefinitionNode && node.name === name && node.expression) out.push(node.expression);
+    if (node instanceof AssignNode && node.identifier.name === name) out.push(node.expression);
+    if (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === name)) {
+      for (const e of node.tupleExpressions ?? [node.tuple]) out.push(e);
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { this.localBindings(v, name, out, seen); } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) this.localBindings(e, name, out, seen);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Does this key resolve to a parameter of `fn` - i.e. does the CALLER choose it? Strip `CastNode`s and follow
+   * `pubkey k = owner` local aliases, as delegatecallTargetsUnguardedParameter resolves its target. A
+   * constructor input (the contract's own p2sh32 commits to it), a state variable, a literal and an
+   * unresolvable symbol (a contract `const`, an inherited name) are NOT caller-chosen. A computed key
+   * (`pubkey(k)`, `hash160(pk)`, a helper call) is caller-chosen when any operand feeding it reaches a
+   * parameter. An array index only SELECTS among a container's elements, so the CONTAINER decides the bytes -
+   * `this.owners[i]` is stored key material even though the caller picks `i`.
+   */
+  private keyIsCallerChosen(
+    expr: Node | undefined, fn: FunctionDefinitionNode, seen: Set<Node | string> = new Set(),
+  ): boolean {
+    let cur = expr;
+    while (cur instanceof CastNode) cur = cur.expression;
+    if (cur instanceof ArrayAccessNode) return this.keyIsCallerChosen(cur.array, fn, seen);
+    if (!cur || seen.has(cur)) return false;
+    seen.add(cur);
+    if (cur instanceof StateAccessNode || cur instanceof MappingAccessNode) return false;
+    if (cur instanceof LiteralNode) return false;
+    if (cur instanceof IdentifierNode) {
+      const { name } = cur;
+      if (fn.parameters.some((parameter) => parameter.name === name)) return true;
+      if (seen.has(`id:${name}`)) return false;
+      seen.add(`id:${name}`);
+      return this.localBindings(fn.body, name).some((binding) => this.keyIsCallerChosen(binding, fn, seen));
+    }
+    for (const v of Object.values(cur)) {
+      if (v instanceof Node) { if (this.keyIsCallerChosen(v, fn, seen)) return true; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.keyIsCallerChosen(e, fn, seen)) return true;
       }
     }
     return false;
+  }
+
+  /** Does this function carry a signature check against a key the caller does not choose? */
+  private hasAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
+    const keys: ExpressionNode[] = [];
+    this.collectSignatureGuardKeys(fn.body, keys);
+    return keys.some((key) => !this.keyIsCallerChosen(key, fn));
   }
 
   /**
@@ -5092,7 +5177,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!(target instanceof IdentifierNode)) return undefined;
     const name = target.name;
     if (!node.parameters.some((parameter) => parameter.name === name)) return undefined;
-    if (this.hasSignatureGuard(node.body)) return undefined;
+    if (this.hasAuthorizingSignatureGuard(node)) return undefined;
     if (this.requireMentionsIdentifier(node.body, name)) return undefined;
     return name;
   }

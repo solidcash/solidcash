@@ -115,14 +115,49 @@ function up(bytes input, address impl) external {   // pinsDelegateCoSpend == tr
 The address must be bound to something the caller does not control. Any one of these is sufficient:
 
 - a **constructor argument** — the proxy's own p2sh32 commits to it (the `bytecode-pinned` class);
-- a **signature guard** in the same function — only an authorized signer may choose it (the `caller-authorized`
-  class, and the repo's `PINNED_PROXY` fixture);
+- a **signature guard whose KEY the caller cannot choose** - a constructor argument or a state variable, so only
+  an authorized signer may pick `impl` (the `caller-authorized` class);
 - a **`require()` against stored state** — `require(impl == this.implementation);`, the ordinary upgradeable
   proxy.
 
 A parameter with none of the three emits a `SECURITY-AUDIT C1` warning naming the parameter. It warns rather
 than rejecting **because the third shape is legitimate and common**, and a hard rejection would have to model
 every way a `require()` can constrain an address.
+
+**A signature guard is only as good as its key (finding SEC-12).** `checkSig(s, pk)` proves that whoever
+supplied `pk` also supplied a matching `s` - nothing more. If the *same caller* supplies both, the check
+authorizes nobody and the proxy is wide open:
+
+```solidity
+contract SelfAuthProxy() {                                        // no constructor arguments: no stored key
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(checkSig(s, pk));                                 // pk is the CALLER's, so this proves nothing
+        impl.delegatecall(input);                                 // MEASURED: a stranger settles 5 -> 999
+        require(input.length > 0);
+    }
+}
+```
+
+Until round 15 the compiler credited *any* `checkSig`/`checkMultiSig`/`checkDataSig` in the body as a guard
+without asking which key it checked, so this shape compiled with no C1 diagnostic at all - and so did a P2PKH
+`impl` once such a check was added beside it. The compiler now reads the key operand (arg 1 of `checkSig` /
+`checkMultiSig`, arg 2 of `checkDataSig`), resolves it through casts and local aliases, and credits a guard only
+when it lands on a **constructor input, a state variable, or a literal**. A parameter of the same entry point is
+not a guard, and neither is a computed key any of whose operands reaches one (`pubkey(k)`, `hash160(pk)`).
+
+Two resolution details, each because the obvious version had a hole:
+
+- An alias is read through **every** binding it has, not just its declaration. `pubkey k = owner; k = pk;`
+  declares the constructor key and then rebinds the caller's - reading the declaration alone credited a guard
+  the `checkSig` never had.
+- An array index only *selects* among a container's elements, so the CONTAINER decides the bytes:
+  `checkSig(s, this.owners[i])` stays a guard even though the caller picks `i`. Without this the multi-owner
+  proxy would start warning.
+
+> The `PINNED_PROXY` fixture in `packages/solidcash/test/e2e/Delegatecall.test.ts` is written in exactly the
+> unsafe shape above. It is **not** an example of a safe key - it exists to exercise the identity and
+> forwarded-selector pins of rule 3, which are independent of who is authorized, and it now emits the C1 warning.
 
 **D. The delegatecall must be reached at most once per path.** The state-covenant skip is a *per-function*
 property (`!functionHasDelegatecall`), while the co-spend pin is emitted at the *callsite*. Those two disagree
@@ -240,6 +275,11 @@ ran. A `brandLibrary: true` library adds the converse pin (the library refuses a
 - **C (`impl` not caller-chosen)** — *warned*, not rejected. A delegatecall whose target resolves (through local
   aliases) to a parameter of the same entry point, with no signature guard and no `require()` naming it, emits a
   `SECURITY-AUDIT C1` warning identifying the parameter. Rejecting would break `require(impl == storedImpl)`.
+  **SEC-12:** "signature guard" means a check whose *key* is a constructor input, a state variable or a literal.
+  A `checkSig` against a key the same caller supplies suppresses nothing - measured: the self-authorizing proxy
+  above compiled silently on `690c868c`, and so did a P2PKH `impl` with such a check beside it. Both now warn.
+  This is a diagnostic only: no bytecode changed (0 differences over 2,070 compiled repo sources), so the
+  measured `5 -> 999` takeover still settles - the warning is what tells you it can.
 - **D (reached at most once per path)** — enforced. A delegatecall inside a **loop** is a hard compile error; a
   delegatecall inside a **branch/switch/try arm** compiles and carries an extra epilogue covenant freezing the
   proxy's own data NFTs on every path that did not reach the edge. VM-proven both ways in
@@ -256,8 +296,9 @@ ran. A `brandLibrary: true` library adds the converse pin (the library refuses a
 
 - Make `impl` the delegate contract's real category-pinned covenant address (not a hardcoded P2PKH), so the
   co-spend + selector pins are emitted (a P2PKH `impl` disables them and keeps the C1 warning).
-- Do **not** take `impl` as an unguarded parameter. Use a constructor argument, a signature guard, or a
-  `require()` against stored state (rule C).
+- Do **not** take `impl` as an unguarded parameter. Use a constructor argument, a `require()` against stored
+  state, or a signature guard **whose key is a constructor argument or state variable** (rule C). A `checkSig`
+  against a `pubkey` parameter is not a guard: the caller supplies the key and the signature both (SEC-12).
 - Keep the delegatecall on a straight line, or accept that a branch's not-taken path can only preserve state.
   Never put it in a loop (rule D).
 - Keep the delegatecall function pure-forwarding: **no `this.x = ...`** in it (the delegate owns all writes).

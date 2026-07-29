@@ -247,11 +247,32 @@ function kill() { require(true); selfdestruct(this.beneficiary); }
 
 If the destination is caller-supplied, gate the function with real authorization (e.g.
 `require(checkSig(s, admin))`). The compiler emits a **warning** when it sees the dangerous shape - a
-`selfdestruct(addr)` whose `addr` references a function parameter, in a function with no `checkSig` /
-`checkDataSig` / `checkMultiSig` - so the trap is hard to ship by accident. It is a warning, not an error
-(the author may authenticate by some other means), and it does not fire for the two safe forms above. A
-signature check is used as the proxy for "authenticated" because on BCH it is the only primitive that
-authenticates a *party* (covenant/introspection conditions authenticate transaction *shape*).
+`selfdestruct(addr)` whose `addr` references a function parameter, in a function with no *authorizing*
+signature check - so the trap is hard to ship by accident. It is a warning, not an error (the author may
+authenticate by some other means), and it does not fire for the two safe forms above. A signature check is used
+as the proxy for "authenticated" because on BCH it is the only primitive that authenticates a *party*
+(covenant/introspection conditions authenticate transaction *shape*).
+
+#### The check must authorize a key the caller cannot choose
+
+"Authorizing" is about the **key**, not about the presence of a `checkSig`. `checkSig(s, pk)` proves only that
+whoever supplied `pk` also supplied a matching `s`, so when the caller supplies both it authorizes nobody:
+
+```solidity
+// STILL WARNS. `pk` is the caller's own parameter - anyone signs with their own key and takes the balance.
+function drain(sig s, pubkey pk, address to) external { require(checkSig(s, pk)); selfdestruct(to); }
+
+// Silent. `admin` is a constructor argument, committed to by this contract's p2sh32 address.
+function drain(sig s, pubkey pk, address to) external { require(checkSig(s, admin)); selfdestruct(to); }
+```
+
+A constructor argument, a state variable, a literal and a contract `const` are all keys the caller cannot
+choose, and each credits a genuine guard. A caller-supplied key does not, and neither does a key computed from
+one (`pubkey(raw)`, or an alias later rebound to a parameter). An array **index** is the exception: it only
+*selects* among stored keys, so `checkSig(s, this.owners[i])` is a genuine guard even though the caller picks
+`i` - the container decides the bytes. The key operand is argument 1 of `checkSig` / `checkMultiSig` and
+argument 2 of `checkDataSig`; this is the same rule the delegatecall diagnostics apply (see
+[delegatecall-security.md](./delegatecall-security.md)).
 
 ### The require() guard is structural, not semantic
 
@@ -319,9 +340,10 @@ The destination and value are fully pinned (address + single output + fee floor)
 selfdestruct is value-safe (see "Security considerations"). Remaining items:
 
 - **Compiler-enforce permissionless safety (partly done).** A compile-time **warning** now fires on a no-auth
-  selfdestruct whose destination is a caller-controlled argument (see "Security considerations"). Escalating it
-  to an opt-in hard error, and tightening the "authenticated" heuristic beyond "contains a signature check",
-  remain.
+  selfdestruct whose destination is a caller-controlled argument (see "Security considerations"). The
+  "authenticated" heuristic reads the checked key rather than merely counting signature checks, so a
+  self-authorizing `checkSig(s, pk)` no longer silences it. Escalating the warning to an opt-in hard error
+  remains.
 - **Configurable fee cap.** The 2000-sat cap is a fixed constant; let the author raise it for large destroys.
 - **Batched destruction.** Support contracts above the single-transaction UTXO limit by applying the pins only
   on the final transaction of a batched destroy.

@@ -25,8 +25,11 @@ import {
 /**
  * C1 - the DeFi integrated semantic capstone.
  *
- * SEMANTIC evidence only, on the named `layer3-bch2026-semantic-relaxed-v1` profile: BCH-2026 opcodes,
- * introspection and the real 128-byte NFT commitment, relaxed capacity. Not consensus-fit, not policy-fit.
+ * SEMANTIC evidence, on the named `layer3-bch2026-semantic-relaxed-v1` profile: BCH-2026 opcodes,
+ * introspection and the real 128-byte NFT commitment, relaxed capacity. The semantic tests are not a
+ * consensus-fit or policy-fit claim; the last test measures capacity separately and C1 clears both gates it
+ * checks - every input inside ordinary operation-cost density, worst 0.6182, and 63,130 serialized bytes
+ * against the 100,000-byte relay ceiling. Relay dust remains untested.
  *
  * One transaction composes five independently compiled participants:
  *
@@ -40,13 +43,25 @@ import {
  * of that authenticated result; the Notifier emits an ordinary event NFT and moves satoshis out of its
  * container. Every one of those is settled by one 38-slot transaction.
  *
- * SEC-6 RESHAPE. The event and the satoshi effect used to sit on the ROUTER, which is also the participant
- * making the outgoing calls. That is the shape SEC-6 names: a handler carrying an `emit` or a `transfer` has
- * physical effects, so its graph clone is flattened out of OP_INVOKE into `__scb1` and its outgoing edges lose
- * their emission binding - Worker C measured C1Router.settle at 0 binding sites for its three edges, and 4
- * once the effects were deleted. They now live on a fifth participant, a LEAF the Router calls, which has no
- * outgoing edge and therefore no emission row to lose. `SEMANTIC: no calling participant carries an
- * owner-local physical slot` asserts the property structurally so the fixture cannot drift back into it.
+ * SEC-6 RESHAPE, AND WHAT ACTUALLY CLOSES SEC-6. The event and the satoshi effect used to sit on the ROUTER,
+ * which is also the participant making the outgoing calls, and they now live on a fifth participant - a LEAF
+ * the Router calls. This header used to justify that move by citing the shape SEC-6 names: a handler carrying
+ * an `emit` or a `transfer` has physical effects, so its graph clone is "flattened out of OP_INVOKE into
+ * `__scb1`" and its outgoing edges lose their emission binding.
+ *
+ * That shape is UNREACHABLE at this commit, so the reshape is not what closes SEC-6. What closes it is a
+ * compiler invariant: in `InlineStoragePointerCalls`, a function with `graphEmissionHandler` and an outgoing
+ * call either satisfies `keepsGraphEmissionBinding` - `!hasPhysicalEffects(fn) || hasOutgoingCall(fn)`, which
+ * an effect-carrying caller satisfies through its second disjunct - and stays behind OP_INVOKE, or it fails
+ * that predicate only via a token-container effect or a storage-pointer parameter, and is then thrown out by
+ * name as `GraphEmissionEffectError`. Kept bound, or refused; never flattened. Measured, not inferred: the
+ * PRE-reshape C1 and C3 Routers both compile at this commit with a synthesized route, an eligible handler and
+ * non-zero emission binding sites (3 and 2) - `R2-C1-I` in ReviewR2CapstoneC1.test.ts.
+ *
+ * So the reshape is REDUNDANT with the refusal rather than load-bearing. It is kept because C1's structural
+ * guard - `SEMANTIC: no calling participant carries an owner-local physical slot` - is a cheap standing check
+ * that the fixture has not drifted into a shape whose binding depends on that invariant holding; it is not
+ * itself the evidence that unbound edges are impossible.
  *
  * Scope of the continuation claim: the result-dependent continuation here is a result-dependent STATE
  * TRANSITION, not a result-dependent onward CALL. A handler that consumes a result may not carry a second edge
@@ -133,9 +148,10 @@ contract C1Vault() {
 
 /**
  * SEC-6 reshape. The event and the satoshi effect used to live on the Router, which is also the participant
- * making the outgoing calls - the shape whose graph clone is flattened out of OP_INVOKE, losing the emission
- * binding on those calls. They live here instead, on a LEAF the Router calls: it makes no outgoing call, so
- * it has no emission rows to lose.
+ * making the outgoing calls - the shape SEC-6 named. They live here instead, on a LEAF the Router calls, which
+ * makes no outgoing call and so has no emission rows at all. At this commit that move is a fixture choice
+ * rather than a requirement: an effect-carrying caller keeps its clone behind OP_INVOKE and its edges bound
+ * (see the header), so the pre-reshape shape compiles bound too.
  *
  * The Vault was tried first and is not a legal home. A returning handler may not carry an effect - the
  * compiler refuses it by name (`result-route-requires-effect-free-handlers`), which is the boundary this file
@@ -812,14 +828,16 @@ describe('C1 DeFi integrated semantic capstone', () => {
   );
 
   /**
-   * SEC-6 structural guard, so this fixture cannot drift back into the shape the compiler refuses.
+   * SEC-6 SHAPE GUARD - a check that this fixture stays in the shape it was measured in, NOT the thing that
+   * makes unbound edges impossible. The compiler invariant does that (see the header): an effect-carrying
+   * caller is kept behind OP_INVOKE by `keepsGraphEmissionBinding`, not flattened, and the only exit is a
+   * named refusal for a token-container effect or a storage-pointer parameter.
    *
-   * A handler keeps its graph clone behind OP_INVOKE - and with it the emission binding on its outgoing edges -
-   * only while it has no physical effect. `emit`, `transfer` and the token-container methods are exactly the
-   * three effects the compiler counts, and each of them is what makes the route wrapper reserve an owner-local
-   * `event` / `transfer` / `tcTransfer` slot. So the published block layout is an exact, SDK-visible proxy for
-   * the compiler-internal predicate: a participant with an outgoing edge and an owner-local physical slot is
-   * the forgeable shape. This asserts the property over the whole graph, not just over the Router.
+   * What this asserts is still worth asserting. `emit`, `transfer` and the token-container methods are the
+   * three effects the compiler counts, and each makes the route wrapper reserve an owner-local `event` /
+   * `transfer` / `tcTransfer` slot, so the published block layout is an SDK-visible proxy for the internal
+   * predicate. Holding it over the whole graph keeps every capacity and index figure in this file attributable
+   * to the composition that produced them, and would catch a silent drift back to the pre-reshape layout.
    */
   it('SEMANTIC: no calling participant carries an owner-local physical slot', async () => {
     const built = await buildC1();
@@ -856,7 +874,8 @@ describe('C1 DeFi integrated semantic capstone', () => {
 
   it('MEASURED: the same composition fits ordinary BCH-2026 capacity', async () => {
     // An F1-style capacity measurement, NOT a CONSENSUS_FIT or POLICY_FIT claim: only the consensus capacity
-    // knobs the semantic profile relaxes are restored. Relay dust and standard transaction size are untested.
+    // knobs the semantic profile relaxes are restored. Relay dust is untested. Standard transaction SIZE is
+    // measured at the end of this test and is a separate claim from the operation-cost one.
     //
     // X23 history. This measurement previously recorded a failure at input 29 - the first graph projection
     // proof - reported as an overrun of 626 on a 6,579,200 budget, "0.0095% over". That reading was an
@@ -880,31 +899,75 @@ describe('C1 DeFi integrated semantic capstone', () => {
     // 800-per-byte budget, so "it fits" is a measured margin and not just an absence of rejection.
     const transaction = built.builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
-    const vm = createVirtualMachineBch2026ForProvider({
-      consensusLimits: {
-        maximumInputBytes: 10_000,
-        maximumStackItemBytes: 10_000,
-        maximumTransactionBytes: 1_000_000,
-        maximumNftCommitmentBytes: 128,
-        operationCostBudgetPerByte: 800_000,
-        hashDigestIterationsPerByte: 3_000,
-      },
-    } as never);
+    const RELAXED_BUDGET_LIMITS = {
+      maximumInputBytes: 10_000,
+      maximumStackItemBytes: 10_000,
+      maximumTransactionBytes: 1_000_000,
+      maximumNftCommitmentBytes: 128,
+      operationCostBudgetPerByte: 800_000,
+      hashDigestIterationsPerByte: 3_000,
+    };
+    const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: RELAXED_BUDGET_LIMITS } as never);
+    const measured: string[] = [];
     const ratioAt = (input: number): number => {
       const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as any;
       expect(state.error, `input ${input} failed on the relaxed budget`).toBeUndefined();
-      return state.metrics.operationCost / (state.metrics.densityControlLength * 800);
+      const metrics = state.metrics;
+      const ratio = metrics.operationCost / (metrics.densityControlLength * 800);
+      measured.push(`${input}:${metrics.densityControlLength}b:${metrics.operationCost}`
+        + `:${metrics.evaluatedInstructionCount}i:${ratio.toFixed(4)}`);
+      return ratio;
     };
-    // Measured post-reshape at this commit: projections 0.5231/0.5154/0.5151/0.5204/0.5127 and the controller
-    // 0.8057. Pre-reshape the four projections were 0.4556/0.4514/0.4510/0.4567 and the controller 0.7268, so
-    // the fifth participant costs about 7 points on each projection and 8 on the controller and the answer is
-    // still that it FITS. Bands are asserted rather than the exact figures so compiler work elsewhere does not
-    // falsely fail here; what the reshape has to preserve is that NOTHING crosses 1.0.
+    // RE-MEASURED at this commit, run to completion, ratio against the ORDINARY 800/byte budget:
+    //
+    //   input             bytes   cost        instructions   ratio
+    //   0   P0 Router     3,777     647,144     5,645        0.2142
+    //   2   P1 Token      7,492   1,174,602     9,129        0.1960
+    //   7   P2 Accrue     3,134     566,383     5,083        0.2259
+    //   9   P3 Vault      3,415     755,279     6,920        0.2765
+    //   12  P4 Notifier   4,857     835,595     7,505        0.2150
+    //   31-35 projections 5,998 each, 2,171,302-2,220,260, 17,441 each, ratio 0.4525-0.4627
+    //   36  controller    2,880   1,424,386     9,561        0.6182   <- the worst input, and it FITS
+    //
+    // Serialized transaction: 63,130 bytes, inside the 100,000-byte standard relay ceiling as well as the
+    // 1,000,000-byte consensus one. Layout: participants [0,2,7,9,12], projections [31..35], controller 36,
+    // 38 slots, 1,314-byte transcript.
+    //
+    // WHAT THIS CORRECTS. The block that stood here recorded projections ~0.5231/0.5154/0.5151/0.5204/0.5127
+    // and controller 0.8057, and inferred from a pre-reshape controller of 0.7268 that "the fifth participant
+    // costs about 7 points on each projection and 8 on the controller". Both halves are wrong. The figures were
+    // taken on a reshape branch before X24 (unroll the deep stack write) and X27 (suffix-split the transcript
+    // in `attest`) were composed on one tree and were never re-run; against the same 0.7268 the measured 0.6182
+    // is 10.9 points LOWER, not 8 higher. Fifteen further commits touching a `src/` directory landed between
+    // the last independent re-measurement (690c868c) and this commit, so a point-in-time capacity figure is
+    // never a standing claim; the run prints its own table above the assertions for exactly that reason.
+    // Bands are asserted rather than exact figures so compiler work elsewhere does not falsely fail here; what
+    // the reshape has to preserve is that NOTHING crosses 1.0.
     const projectionRatios = built.layout.projectionInputs.map(ratioAt);
     const controllerRatio = ratioAt(built.layout.controllerInput);
+    const participantRatios = built.layout.participantInputs.map(ratioAt);
+    console.log(`C1 capacity, run to completion (input:bytes:cost:instructions:ratio): ${measured.join(' ')}`);
+    console.log(`C1 serialized transaction size: ${built.transaction.length / 2} bytes; `
+      + `transcript ${built.transcript.bytes.length} bytes; ${built.layout.totalSlots} slots`);
+    for (const ratio of participantRatios) expect(ratio).toBeLessThan(0.7);
     for (const ratio of projectionRatios) expect(ratio).toBeLessThan(0.7);
     expect(controllerRatio).toBeLessThan(1);
     expect(controllerRatio).toBeGreaterThan(Math.max(...projectionRatios));
+    // The serialized size is a POLICY question and separate from the consensus-knob one above. C1 clears both;
+    // C3 clears the consensus one and not the relay ceiling, so the two claims are recorded separately.
+    expect(built.transaction.length / 2).toBeLessThan(100_000);
+
+    // KNOB LIVENESS. "It fits under ordinary capacity" is only evidence if the budget knob can refuse these
+    // exact bytes. Same transaction, same source outputs, budget divided by four: the worst input must now fail
+    // on density. Without this control an aborted evaluation reading the budget back would look like a pass.
+    const tightened = createVirtualMachineBch2026ForProvider({
+      consensusLimits: { ...RELAXED_BUDGET_LIMITS, operationCostBudgetPerByte: 200 },
+    } as never);
+    const tight = tightened.evaluate({
+      inputIndex: built.layout.controllerInput, sourceOutputs, transaction,
+    }) as any;
+    expect(tight.error, 'the operation-cost knob does not bite at 200/byte').toBeDefined();
+    expect(String(tight.error)).toMatch(/density|operation cost/i);
   }, 180_000);
 });
 

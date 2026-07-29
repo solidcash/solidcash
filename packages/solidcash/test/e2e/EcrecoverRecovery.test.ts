@@ -77,9 +77,10 @@ const dummySc = (v: number): { txid: string; vout: number; satoshis: bigint; tok
 // one round on the STATEFUL test alone.
 //
 // This applies the remedy the error text itself prescribes: re-sign with a fresh message until the split probe
-// accepts. The probe is the real thing, not a proxy - it builds both side-car covenants and evaluates them - and its
-// verdict is salt-independent (see probeEcrecoverSplit), so a signature it accepts under SHARED_LIBRARY_SALT also
-// splits for the BRANDED pair a stateful contract co-spends.
+// accepts. The probe builds both side-car covenants and evaluates them on the VM in an isolated two-input
+// transaction, and it settles on the split with the widest budget margin rather than the first that fits. Per its
+// own documentation the verdict is salt-independent, so a signature it accepts under SHARED_LIBRARY_SALT also
+// splits for the BRANDED pair a stateful contract co-spends - that part is cited, not measured here.
 //
 // BOUNDED, so the fixture still fails loudly rather than spinning. At 1.33% the chance of 24 consecutive width-0
 // draws is about 1e-45, so exhausting the budget means the split search is broken for ALL signatures - a real

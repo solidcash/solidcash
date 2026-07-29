@@ -315,11 +315,19 @@ PREDICTED serialized<=10199B | worstScript<=4441B | worstDensity<=0.5758x
 
 ### 5.1 What 45 measurements found about the estimator
 
+All four limits F1 found binding, predicted against measured, over the 45:
+
 | limit | conservative | under-predicts | error range | mean |
 | --- | --- | --- | --- | --- |
-| serialized bytes | 45/45 | 0/45 | +15.7% to +24.2% | - |
+| serialized bytes (vs the 100,000 B relay ceiling) | 45/45 | 0/45 | +15.7% to +24.2% | - |
 | worst density ratio | 45/45 | 0/45 | +56.9% to +153.2% | - |
-| **worst unlocking bytes** | **0/45** | **45/45** | **-0.5% to -9.8%** | **-7.0%** (median -7.1%) |
+| worst per-input SigChecks ratio | 45/45 | 0/45 | exact, 0.2500x predicted and measured | 0.0% |
+| **worst unlocking bytes (vs the 10,000 B per-input limit)** | **0/45** | **45/45** | **-0.5% to -9.8%** | **-7.0%** (median -7.1%) |
+
+SigChecks is exact rather than merely conservative because every shape here does what every calibration
+shape does: one check, on a 126-byte P2PKH fee input, whose allowance is `floor((126 + 60) / 43) = 4`. It is
+the one limit no real contract in this corpus comes near, and it is reported so that the fourth limit is not
+silently dropped from a report about four limits.
 
 **F2 under-predicts the per-input script limit on every single real corpus contract measured, and that is
 the limit which actually binds: all 45 measured transactions bind on unlocking bytecode length.** The

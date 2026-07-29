@@ -539,6 +539,9 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
       ['serialized bytes', prediction.serializedBytes, envelope.serializedBytes],
       ['worst unlocking bytes', prediction.worstUnlockingBytes, envelope.worstUnlockingInput.unlockingBytes],
       ['worst density ratio', prediction.worstDensityRatio, envelope.worstCostInput.standardCostRatio],
+      // The fourth limit F1 found binding, reported explicitly rather than left to rank below the others.
+      ['worst SigChecks ratio', prediction.worstSigCheckRatio,
+        Math.max(...envelope.inputs.map((row) => row.signatureCheckRatio))],
     ];
     for (const [limit, predicted, measured] of comparison) {
       const error = predicted / measured - 1;

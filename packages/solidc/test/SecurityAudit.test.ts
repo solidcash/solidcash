@@ -90,9 +90,29 @@ describe('C1: delegatecall without access control warns', () => {
     expect(countC1Warnings(src)).toBe(1);
   });
 
-  it('does not warn when the delegatecall function is gated by checkSig', () => {
+  /**
+   * SEC-12. `checkSig(s, pk)` proves only that whoever supplied `pk` also supplied a matching `s`. When the same
+   * caller supplies both, the check authorizes NOBODY, so it cannot suppress this warning - measured: this exact
+   * shape compiled silently on 690c868c. The three cases below differ from each other in ONE token (the key), so
+   * a pass here is attributable to the key's SOURCE and not to the presence of a signature check.
+   */
+  it('still warns when the checkSig key is a parameter the same caller supplies', () => {
     const src = `contract Proxy { bigint counter;
       function up(bytes input, pubkey pk, sig s) external { require(checkSig(s, pk)); address m = ${proxyImpl};
+        m.delegatecall(input); require(input.length > 0); } }`;
+    expect(countC1Warnings(src)).toBe(1);
+  });
+
+  it('does not warn when the checkSig key is a constructor argument', () => {
+    const src = `contract Proxy(pubkey owner) { bigint counter;
+      function up(bytes input, pubkey pk, sig s) external { require(checkSig(s, owner)); address m = ${proxyImpl};
+        m.delegatecall(input); require(input.length > 0); } }`;
+    expect(countC1Warnings(src)).toBe(0);
+  });
+
+  it('does not warn when the checkSig key is a state variable', () => {
+    const src = `contract Proxy { bigint counter; pubkey owner;
+      function up(bytes input, pubkey pk, sig s) external { require(checkSig(s, this.owner)); address m = ${proxyImpl};
         m.delegatecall(input); require(input.length > 0); } }`;
     expect(countC1Warnings(src)).toBe(0);
   });
@@ -137,9 +157,10 @@ describe('C1/piece-6: an unguarded caller-supplied implementation address warns'
   });
 
   /**
-   * The three shapes that must keep compiling silently. A constructor argument is committed by the contract's
-   * own p2sh32; checkSig is the repo's PINNED_PROXY fixture; a require() against stored state is the ordinary
-   * upgradeable-proxy shape, and is why this warns rather than rejecting.
+   * The shapes that must keep compiling silently. A constructor argument is committed by the contract's own
+   * p2sh32; a checkSig against a key the CALLER cannot choose really does restrict who may pick `impl`; a
+   * require() against stored state is the ordinary upgradeable-proxy shape, and is why this warns rather than
+   * rejecting. SEC-12: a checkSig against a key from the SAME caller is not on this list - see below.
    */
   it('stays silent for a constructor-argument implementation', () => {
     expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
@@ -148,11 +169,91 @@ describe('C1/piece-6: an unguarded caller-supplied implementation address warns'
           impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
   });
 
-  it('stays silent for a parameter gated by checkSig', () => {
+  it('stays silent for a parameter gated by checkSig against a constructor-argument key', () => {
     expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
-      contract Authorized() { bigint counter;
+      contract Authorized(pubkey owner) { bigint counter;
+        function up(bytes input, address impl, sig s) external {
+          require(checkSig(s, owner)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+  });
+
+  it('stays silent for a parameter gated by checkSig against a state-variable key', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract StateAuthorized() { bigint counter; pubkey owner;
+        function up(bytes input, address impl, sig s) external {
+          require(checkSig(s, this.owner)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+  });
+
+  /**
+   * SEC-12. The same shape one token apart: the key is now a parameter of the SAME entry point, so the caller
+   * supplies both `pk` and `s` and the check authorizes nobody. MEASURED on 690c868c: this compiled with no C1
+   * diagnostic and a stranger settled 5 -> 999 against the proxy (ReviewA13DelegateE3 A13-2b). The
+   * GUARD control is the pair above: the warning is credited to where the KEY comes from, not to the delegatecall
+   * target being a parameter (all three share that) nor to the absence of a signature check (all three have one).
+   */
+  it('SEC-12: warns when the checkSig key is a parameter of the same entry point', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract SelfAuthorized() { bigint counter;
         function up(bytes input, address impl, pubkey pk, sig s) external {
-          require(checkSig(s, pk)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+          require(checkSig(s, pk)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
+  it('SEC-12: warns through a local alias of a caller-supplied key', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract AliasAuthorized() { bigint counter;
+        function up(bytes input, address impl, pubkey pk, sig s) external {
+          pubkey k = pk; require(checkSig(s, k)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
+  it('SEC-12: warns through a cast of caller-supplied key material', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract CastAuthorized(pubkey owner) { bigint counter;
+        function up(bytes input, address impl, bytes k, sig s) external {
+          require(checkSig(s, pubkey(k))); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
+  it('SEC-12: reads the KEY operand of checkDataSig (arg 2), not its caller-supplied message', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract DataSigAuthorized(pubkey owner) { bigint counter;
+        function up(bytes input, address impl, datasig s, bytes m) external {
+          require(checkDataSig(s, m, owner)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract DataSigSelfAuthorized() { bigint counter;
+        function up(bytes input, address impl, datasig s, bytes m, pubkey pk) external {
+          require(checkDataSig(s, m, pk)); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
+  it('SEC-12: checkMultiSig keys are read the same way', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract MultiAuthorized(pubkey a, pubkey b) { bigint counter;
+        function up(bytes input, address impl, sig s1, sig s2) external {
+          require(checkMultiSig([s1, s2], [a, b])); impl.delegatecall(input); require(input.length > 0); } }`))
+      .toBe(0);
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract MultiSelfAuthorized() { bigint counter;
+        function up(bytes input, address impl, pubkey a, pubkey b, sig s1, sig s2) external {
+          require(checkMultiSig([s1, s2], [a, b])); impl.delegatecall(input); require(input.length > 0); } }`))
+      .toBe(1);
+  });
+
+  /**
+   * An array index only SELECTS among stored candidates - the caller picks WHICH committed key, not the key
+   * bytes - so the container decides and this stays a real guard. Without this carve-out the fix would start
+   * firing on the ordinary multi-owner proxy.
+   */
+  it('SEC-12: an index into constructor-argument keys is still a guard', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract IndexedAuthorized(pubkey a, pubkey b) { bigint counter;
+        function up(bytes input, address impl, int i, sig s) external {
+          pubkey[2] keys = [a, b]; require(checkSig(s, keys[i]));
+          impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
+  });
+
+  it('SEC-12: one real guard beside a self-authorizing check is still a guard', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract MixedAuthorized(pubkey owner) { bigint counter;
+        function up(bytes input, address impl, pubkey pk, sig s1, sig s2) external {
+          require(checkSig(s1, pk)); require(checkSig(s2, owner));
+          impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
   });
 
   it('stays silent for a parameter constrained by a require against stored state', () => {

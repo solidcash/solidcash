@@ -9,18 +9,22 @@ import type { MeasuredShape } from './layer3-estimator-f2.js';
  * invocations at depth six, whose composition resembles no calibration shape.
  *
  * It is also the shape most likely to break the estimator, which is why it was chosen. Nineteen inputs
- * carrying 68,904 serialized bytes is 3,626 bytes per input; C1 carries 1,666 and C3 932. Its participants
+ * carrying 68,130 serialized bytes is 3,586 bytes per input; C1 carries 1,650 and C3 923. Its participants
  * are large and its sidecar count is small - five, against C3's ninety - so it inverts the byte distribution
  * every calibration graph has. If the estimator only works because every calibration graph is sidecar-heavy,
  * this is where that shows.
  *
- * MEASURED AT `ffef8568`, from `Layer3ResultGraph.test.ts`, test "measures the honest graph against ordinary
- * BCH-2026 capacity without a relaxed profile", observed through `layer3-estimator-probe.ts`. Six
- * participants, seven invocations, 19 inputs, 68,904 bytes, worst script 6,458, worst density 0.6368 at the
- * controller, and it binds on standard relay size at 0.6890x. Zero inputs refused at either real profile;
- * the density knob control bites on the same bytes.
+ * RE-MEASURED AT `1591e87f` (X66), from `Layer3ResultGraph.test.ts`, test "measures the honest graph against
+ * ordinary BCH-2026 capacity without a relaxed profile", observed through `layer3-estimator-probe.ts`. Six
+ * participants, seven invocations, 19 inputs, 68,130 bytes, worst script 6,329, worst density 0.6368 at the
+ * controller, and it binds on standard relay size at 0.6813x. Zero inputs refused at either real profile; the
+ * density knob control bites on the same bytes.
+ *
+ * WHAT MOVED FROM THE `ffef8568` READING, and it is exactly F4's cut with no residue: 68,904 -> 68,130 is
+ * -774 = 6 x 129, and the projection is 6,458 -> 6,329 = -129. Nothing else changed - the six participant
+ * scripts, the controller and every cost reproduce to the byte and to the operation.
  */
-export const F2_HELD_OUT_COMMIT = 'ffef8568';
+export const F2_HELD_OUT_COMMIT = '1591e87f';
 
 export const F2_HELD_OUT: MeasuredShape[] =
 [
@@ -51,7 +55,7 @@ export const F2_HELD_OUT: MeasuredShape[] =
     },
     'inputCount': 19,
     'outputCount': 19,
-    'serializedBytes': 68904,
+    'serializedBytes': 68130,
     'maximumOutputSerializedBytes': 78,
     'totalOutputSerializedBytes': 1071,
     'masters': [
@@ -95,10 +99,12 @@ export const F2_HELD_OUT: MeasuredShape[] =
     },
     'projections': {
       'count': 6,
-      'unlockingBytes': 6458,
-      'maximumStandardCost': 2720153,
+      'redeemBytes': 4542,
+      'unlockingBytes': 6329,
+      'maximumStandardCost': 2370577,
     },
     'controller': {
+      'redeemBytes': 1514,
       'unlockingBytes': 3303,
       'standardCost': 1703622,
     },
@@ -107,11 +113,11 @@ export const F2_HELD_OUT: MeasuredShape[] =
       'standardCost': 29091,
       'signatureChecks': 1,
     },
-    'worstUnlockingBytes': 6458,
-    'worstDensityRatio': 0.6368204246,
+    'worstUnlockingBytes': 6329,
+    'worstDensityRatio': 0.6368204246411483,
     'worstSigCheckRatio': 0.25,
     'bindingLimit': 'standard transaction size',
-    'bindingRatio': 0.68904,
+    'bindingRatio': 0.6813,
     'refusedAtConsensus': 0,
     'refusedAtStandard': 0,
     'knobControlBites': true,

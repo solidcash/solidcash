@@ -21,26 +21,28 @@ import {
  * NOTHING HERE IS A `CONSENSUS_FIT` OR `POLICY_FIT` CLAIM. A measurement is a point-in-time reading of one
  * shape at one commit. Promotion is the board's to make, and needs the full shape, not one sweep.
  *
- * MEASURED ENVELOPE AT `5e03daee`, X48 re-measurement with the two hash regimes split and each evaluated by
- * the instruction set that implements it. Every figure below was read run-to-completion through this harness,
- * and every shape was ALSO re-evaluated with nothing relaxed - zero inputs refused, at the real consensus
- * allowance AND the real standard one - with knob-liveness controls that bite on the same bytes. The three
- * sweep rows are asserted by this file; the four capstone rows come from `layer3-envelope-probe.ts` observing
- * each capstone's own builder, and are recorded rather than asserted.
+ * MEASURED ENVELOPE, THE SWEEP ROWS AT `5e03daee` (X48, the two hash regimes split and each evaluated by the
+ * instruction set that implements it) AND THE FOUR CAPSTONE ROWS RE-MEASURED AT `1591e87f` (X66). Every figure
+ * below was read run-to-completion through this harness, and every shape was ALSO re-evaluated with nothing
+ * relaxed - zero inputs refused, at the real consensus allowance AND the real standard one - with
+ * knob-liveness controls that bite on the same bytes. The three sweep rows are asserted by this file; the four
+ * capstone rows come from `layer3-estimator-probe.ts` observing each capstone's own builder, and are recorded
+ * rather than asserted.
  *
  *   shape          part  inputs  serialized   relay%   worst density        binds first          worst hash
  *   N=2             2       3       2,429B     2.4%   0.2177x @ input 2    SigChecks  0.2500x   0.1078x std
  *   N=4             4       5       4,977B     5.0%   0.2570x @ input 1    op-cost    0.2570x   0.1078x std
  *   N=8             8       9      10,661B    10.7%   0.3630x @ input 1    op-cost    0.3630x   0.1078x std
- *   A13 graph       3       8      23,845B    23.8%   0.4067x @ input 6    script B   0.5131x   0.1078x std
- *   C2 cycle        4      79      53,249B    53.2%   0.6491x @ input 77   op-cost    0.6491x   0.1078x std
- *   C1 DeFi         5      38      63,315B    63.3%   0.6182x @ input 36   script B   0.7451x   0.1078x std
- *   C3 max graph    8     108     100,650B   100.7%   0.9217x @ input 106  RELAY SIZE 1.0065x   0.1078x std
+ *   A13 graph       3       8      23,458B    23.5%   0.4067x @ input 6    script B   0.5002x   0.1078x std
+ *   C2 cycle        4      79      52,733B    52.7%   0.6491x @ input 77   op-cost    0.6491x   0.1078x std
+ *   C1 DeFi         5      38      62,722B    62.7%   0.6183x @ input 36   script B   0.7451x   0.1078x std
+ *   C3 max graph    8     108      99,670B    99.7%   0.9218x @ input 106  RELAY SIZE 0.9967x   0.1078x std
  *
  * THE BINDING LIMIT IS NOT THE SAME ONE TWICE, and it is not always density. C1 and A13 bind on the
  * 10,000-byte per-input script limit, C2 and the sweep on operation-cost density, N=2 on per-input SigChecks,
- * C3 on the 100,000-byte standard relay ceiling. Only C3 is over anything, and what it is over is a POLICY
- * limit: it is inside every consensus limit measured.
+ * C3 on the 100,000-byte standard relay ceiling. NOTHING IN THIS TABLE IS OVER ANY LIMIT ANY MORE. That is
+ * the X66 change and it is a change of verdict, not of digits: C3 was 650 bytes over the relay ceiling and is
+ * now 330 bytes under it, at 0.9967x, with all 108 slots intact.
  *
  * THE CORRECTED HASH REGIME MOVES NOTHING, and that is now measured rather than assumed. Every shape binds on
  * the same limit it bound on at `4ac40b82`, at the same ratio.
@@ -52,25 +54,32 @@ import {
  * A shape could only be masked by the other fixtures' 3-per-byte knob if it landed between 1.0x and 6.0x of the
  * standard allowance; the envelope is 9.3x below the bottom of that window.
  *
- * THE SIZES THAT DID MOVE ARE ATTRIBUTABLE TO ONE EDIT, not to knobs and not to drift. X5 touched
- * `generateGraphProjectionVerifier` alone, adding 37 bytes to every projection script, so each capstone grew by
- * 37 times its participant count: A13 23,734 -> 23,845 (+111), C2 53,101 -> 53,249 (+148), C1 63,130 -> 63,315
- * (+185), C3 100,354 -> 100,650 (+296). These are properties of the BUILT TRANSACTION, which no VM knob can
- * reach. A13 is the one shape whose BINDING limit is a projection, so it is the only one whose binding ratio
- * moves: worst script 5,094 -> 5,131 B, 0.5094x -> 0.5131x, still the per-input script limit.
+ * THE SIZES MOVED TWICE, AND BOTH MOVES ARE ATTRIBUTABLE TO ONE COVENANT. The projection verifier is ONE
+ * generated covenant instantiated once per PARTICIPANT, and each proof slot's unlocking script pushes the
+ * whole redeem script, so one verifier byte is worth N transaction bytes. X5 added 37 (A13 23,734 -> 23,845,
+ * C2 53,101 -> 53,249, C1 63,130 -> 63,315, C3 100,354 -> 100,650, each exactly 37 x N). F4 then removed 129
+ * (A13 -> 23,458, C2 -> 52,733, C1 -> 62,722, C3 -> 99,670). A13 and C2 moved by exactly 129 x N; C1 and C3
+ * moved by 129 x N less 52, which is one participant's compiled script growing 28 bytes in each plus 24 bytes
+ * of output set in each. These are properties of the BUILT TRANSACTION, which no VM knob can reach.
  *
- * Every worst-DENSITY ratio in the table reproduces to the operation, because the worst-cost input of each
- * capstone is a controller or a participant and never a projection. What moves with the size is C3's relay
- * ratio, 1.0035x -> 1.0065x. The 2/4/8 synthetic sweep is untouched and reproduces exactly, 10,661 B and
- * 0.3630x at N=8. The table above is kept as the `4ac40b82` reading it is labelled as; these are HEAD's.
+ * Every worst-DENSITY ratio reproduces, because the worst-cost input of each capstone is a controller or a
+ * participant and never a projection: C2 to ten decimals and A13 to ten, C1 and C3 to four, the difference
+ * being the one master whose script grew. The 2/4/8 synthetic sweep is untouched and reproduces exactly,
+ * 10,661 B and 0.3630x at N=8.
  *
- * C3's overrun is therefore 650 bytes, 0.65%, not 354 - AND THAT OVERTURNS A CONCLUSION rather than merely
- * restating a figure. The two cheapest slot pairs are 177 and 211 bytes, so removing two frees 388, which
- * against the pre-X5 100,354 landed under the ceiling and NO LONGER DOES (100,650 - 388 = 100,262). Removing
- * four frees 810 and lands at 99,840. The fixture's own note that 62 of its 108 slots are an unused Ledger
- * trailing region prices the larger fix at 13,048 bytes, landing at 87,602 (87.6%). This is why a dated table
- * still needs its consequences re-derived, not just its numbers refreshed. Which slots are removable is a
- * design question, not a measurement one.
+ * C3 IS NOW UNDER THE STANDARD RELAY CEILING, BY 330 BYTES - AND THAT OVERTURNS A CONCLUSION rather than
+ * merely restating a figure. THREE TIMES OVER, which is the reason this paragraph is kept rather than
+ * deleted. F1 costed a C3 fix against the pre-X5 100,354 - remove the two cheapest slot pairs, free 388, land
+ * at 99,966 - and X5 made that arithmetic wrong (100,650 - 388 = 100,262). This note then costed the four-pair
+ * fix at 99,840 and the 62-slot Ledger reclaim at 87,602. F4 cleared the overrun with NO slot removed at all,
+ * so every one of those options is headroom rather than a plan, and the reclaim now lands at 86,622. A dated
+ * table needs its consequences re-derived, not just its numbers refreshed.
+ *
+ * WHERE THE RE-DERIVATION STILL HAS TO LAND, reported rather than done here because the file is not this
+ * row's: `Layer3ProductionEnvelopeR1.test.ts` asserts "C3 is the one shape in the basis that is actually
+ * over" as the positive control of its screen test. No shape in the basis is over anything now, so that
+ * control has no subject and the row's author has to choose one - a synthetic over-limit descriptor is the
+ * obvious candidate, but which one is a design decision, not a re-pin.
  *
  * Every figure above was derived from a build, never copied from a recorded table. Where a fixture's own
  * comment records a different number, the difference is reported rather than reconciled here: the fixtures'

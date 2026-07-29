@@ -60,16 +60,32 @@ import {
  *   5. PROJECTION UNLOCKING BYTES ARE NOT A FUNCTION OF PARTICIPANTS AND INVOCATIONS. The projection
  *      verifier is one generated covenant, so its redeem script is fixed and its unlocking bytes are the
  *      transcript it carries - and the transcript carries RESULT PAYLOADS, which the descriptor does not
- *      count. E1 has thirteen rows and a 6,458-byte projection; C3 has sixteen rows and 6,005. The envelope
- *      over rows therefore under-predicted E1 by 1.8%. C2's fixture comment that the projection is "a pure
- *      function of participant and invocation count" is about its INSTRUCTION COUNT, and does not transfer
- *      to its bytes.
- *   6. CONTROLLER DENSITY IS NOT A FUNCTION OF SLOT COUNT ALONE. Slot count is the documented driver of its
- *      output scan, and it is the driver used here, but E1's controller reaches 0.6368x on nineteen slots
- *      where the envelope fitted on A13/C1/C2/C3 predicts less - under by 9.6%. The four calibration graphs
- *      move slots and rows too nearly together to separate the two terms, which is exactly the situation
- *      limitation 1 describes, so no second driver is fitted rather than fitting one through points that do
- *      not separate it.
+ *      count. E1 carries 1,787 blob bytes over thirteen rows where C1 carries 1,323 over eleven, so the blob
+ *      rate is not bounded by the calibration and E1 is still under-predicted, now by 3.5%. What HAS been
+ *      fixed is the part that was arithmetic rather than payload: the 4,542-byte redeem script is carried as
+ *      a constant instead of fitted. C2's fixture comment that the projection is "a pure function of
+ *      participant and invocation count" is about its INSTRUCTION COUNT, and does not transfer to its bytes.
+ *   6. CONTROLLER DENSITY IS NOT A FUNCTION OF SLOT COUNT. FIXED, by re-driving it on rows. F2 drove it on
+ *      slots and missed E1 by 9.6%; the quantity is not even monotone in slots (E1 reaches 0.6368x on
+ *      nineteen where C1 reaches 0.6182x on thirty-eight), and it IS ordered by rows, which is also the
+ *      mechanism - the controller's unlocking bytecode is the transcript. Re-driven, E1 is predicted 0.8049x
+ *      against 0.6368x measured.
+ *
+ * AND THREE X70 FOUND, on forty-five real corpus contracts built as one-participant graphs. All three are
+ * fixed; the last one only halfway, and the half that is not fixed is stated rather than papered over:
+ *
+ *   7. AN UPPER ENVELOPE BOUNDS NOTHING BELOW ITS SMALLEST CALIBRATION POINT, and F2 flagged only the upper
+ *      end. Fixed by `applyEnvelope`, which returns the measurement at the smallest calibrated driver, and by
+ *      `check`, which now reports both ends.
+ *   8. A FITTED LINE CAN PREDICT A P2SH INPUT SHORTER THAN THE SCRIPT IT REDEEMS. F2's projection coefficient
+ *      had an intercept of 4,095 for a 4,542-byte covenant. Fixed structurally - the covenant redeem is a
+ *      descriptor constant and only the argument blob is fitted - and backstopped arithmetically.
+ *   9. RANKING UPPER BOUNDS OF DIFFERENT TIGHTNESS DOES NOT RANK LIMITS. The master-density coefficient
+ *      over-predicts its own calibration points by up to 284% and the corpus by up to 601%, because nothing
+ *      in the descriptor separates contract bodies; the script-byte coefficient over-predicts by at most 10%.
+ *      So 0.5758x is named ahead of 0.5002x on a population that measures 0.2177x and 0.4651x. NOT FIXED - it
+ *      needs per-contract cost measurements, not another fit - and `bindingUnresolved` now reports the set
+ *      the ranking cannot separate, which contained the true binder on all forty-five.
  */
 
 /** A shape as a user can describe it at plan time. No built transaction is required to fill this in. */
@@ -97,6 +113,15 @@ export interface GraphShapeSpec {
    * is the one descriptor field whose conservative direction is DOWN.
    */
   signedInputUnlockingBytes?: number;
+  /**
+   * Compiled redeem-script bytes of the generated projection verifier and root controller, when the caller
+   * has them. Both are one compile away - `new Contract(compileString(layer3.generateGraphProjectionVerifier()),
+   * []).bytecode.length / 2` - so they are inside the stated input boundary: a compile, no UTXO, no builder,
+   * no VM. Defaulted from the calibration when absent, which is a STALE default the moment either covenant
+   * moves, so a caller measuring a commit other than the calibration's should pass them.
+   */
+  projectionRedeemBytes?: number;
+  controllerRedeemBytes?: number;
 }
 
 export interface LimitPrediction {
@@ -118,6 +143,19 @@ export interface Estimate {
   worstSigCheckRatio: number;
   /** Every limit, ordered by predicted utilization: the first is the one predicted to bind. */
   limits: LimitPrediction[];
+  /**
+   * Limits that CANNOT BE RULED OUT as the real binder, the leader included. Ranking upper bounds is only
+   * sound when they are equally tight, and here they are not: the master-density coefficient over-predicts
+   * its own calibration points by up to 284% while the script-byte coefficient over-predicts by at most 10%,
+   * so the larger of the two numbers is not the closer of the two limits. A limit stays in this set when its
+   * predicted ratio is at or above the leader's ratio DIVIDED BY the leader's own demonstrated in-sample
+   * slack, i.e. when it could still exceed the leader's true value.
+   *
+   * This does not fix the ranking - a set is not an answer - but it stops the ranking from being read as one.
+   * Resolving it needs a density coefficient with a driver that separates contract bodies, which is a
+   * measurement the census does not carry, not a fit that has not been tried.
+   */
+  bindingUnresolved: string[];
   verdict: 'FITS' | 'OVER';
   /** Non-empty when the shape sits outside the range the coefficients were calibrated on. */
   outOfRange: string[];
@@ -131,6 +169,10 @@ export interface ClassPrediction {
   unlockingBytes: number;
   operationCost: number;
   densityRatio: number;
+  /** Largest over-prediction the byte coefficient behind `unlockingBytes` showed on the calibration set. */
+  bytesSlack: number;
+  /** Largest over-prediction the density coefficient behind `densityRatio` showed on the calibration set. */
+  densitySlack: number;
 }
 
 export type InputClass = 'master' | 'sidecar' | 'projection' | 'controller' | 'fee';
@@ -144,6 +186,14 @@ export interface Envelope {
   slope: number;
   /** Largest driver value the envelope was calibrated on; beyond it the line is an extrapolation. */
   maximumDriver: number;
+  /**
+   * SMALLEST driver value the envelope was calibrated on. Below it the line is an extrapolation TOO, and that
+   * is the direction F2 shipped blind to: `check` flagged only the upper end, and `applyEnvelope` evaluated
+   * the line wherever it was asked. See `applyEnvelope` for what is done about it and why that is sound.
+   */
+  minimumDriver: number;
+  /** Largest MEASURED value at `minimumDriver`. The bound `applyEnvelope` returns below the range. */
+  minimumValue: number;
   /** Per-point over-prediction as a fraction of the measured value, on the calibration set. */
   overPrediction: number[];
 }
@@ -197,15 +247,81 @@ export function fitUpperEnvelope(points: EnvelopePoint[], safetyMargin = 0): Env
   if (best === undefined) throw new Error('F2: no dominating linear envelope exists for these points');
   const intercept = best.intercept * (1 + safetyMargin);
   const slope = best.slope * (1 + safetyMargin);
+  const minimumDriver = Math.min(...points.map((point) => point.x));
+  const atMinimum = points.filter((point) => point.x === minimumDriver).map((point) => point.y);
   return {
     intercept,
     slope,
     maximumDriver,
+    minimumDriver,
+    minimumValue: Math.max(...atMinimum) * (1 + safetyMargin),
     overPrediction: points.map((point) => (intercept + slope * point.x) / point.y - 1),
   };
 }
 
-const applyEnvelope = (envelope: Envelope, driver: number): number => envelope.intercept + envelope.slope * driver;
+/**
+ * Evaluate an envelope. BELOW THE CALIBRATED RANGE IT RETURNS THE MEASURED VALUE AT THE SMALLEST CALIBRATED
+ * DRIVER RATHER THAN THE FITTED LINE. This is the X70 fix, and the reasoning is the whole of its warrant.
+ *
+ * "Upper envelope" is a statement about the calibration points and nothing else: the line lies on or above
+ * every one of them. Between them it can dip below the true curve (F2 measured that at -0.31% on an
+ * interpolated density), and OUTSIDE them it carries no relation to the curve at all. F2 flagged the upper
+ * end and evaluated the line wherever it was asked, so a driver BELOW the calibrated range was extrapolated
+ * silently - and the linear program that fits these lines actively pushes them into that error, because it
+ * minimises total predicted value over points that all sit at the high end, which buys a small intercept with
+ * a large slope. F3 then built forty-five one-participant graphs, whose driver is 2 against a calibrated
+ * minimum of 6, and the projection term extrapolated to 4,441 bytes for an input whose redeem script ALONE is
+ * 4,542. All forty-five were under-predicted on the limit that actually bound them.
+ *
+ * WHY THE MEASURED POINT AND NOT THE LINE AT THAT POINT. Every driver here is a count or a size and every
+ * quantity modelled against it is monotone non-decreasing in it: more participants, more invocations, more
+ * slots, more sidecars never make a script shorter or a cost smaller. So for `d < dmin`, `y(d) <= y(dmin)`,
+ * and `y(dmin)` is not estimated - it is a MEASUREMENT, the calibration point itself. Substituting the line's
+ * value at `dmin` would be sound too, since the line dominates that point, but it is strictly looser for no
+ * gain: on the master-density coefficient the line reads 0.5758 at its minimum where the measurement reads
+ * 0.1598, and that 3.6x of unnecessary slack is enough to make the estimator name the WRONG binding limit.
+ *
+ * WHAT THIS BOUND RESTS ON, stated as plainly as the rest: monotonicity in the driver, and the calibration
+ * set covering the smallest driver honestly. It is the same standing assumption every coefficient here makes
+ * (`fitUpperEnvelope` refuses a negative slope for exactly this reason), applied one step further out. The
+ * caller is additionally told, through `outOfRange`, that the driver left the calibrated range downwards.
+ *
+ * IN-SAMPLE THIS CHANGES NOTHING, by construction: every calibration driver is at or above the minimum.
+ */
+const applyEnvelope = (envelope: Envelope, driver: number): number => (
+  driver < envelope.minimumDriver
+    ? envelope.minimumValue
+    : envelope.intercept + envelope.slope * driver
+);
+
+/**
+ * The evaluation for a coefficient whose quantity is NOT a function of the driver, which below the calibrated
+ * range means the monotonicity argument above does not apply and the line's value there is the best that can
+ * be justified. Two coefficients need it, and WHICH two was measured rather than assumed.
+ *
+ * THE LINE THAT DIVIDES THEM is whether the quantity is a property of the GRAPH or of a USER CONTRACT.
+ *
+ * Everything the graph itself produces - the transcript, the argument blobs, the two generated covenants and
+ * their costs, the P2PKH fee input - is a function of participant, invocation and slot counts, is monotone in
+ * them, and gets `applyEnvelope`. Measured on the forty-five corpus contracts, all of those hold with room:
+ * the projection blob's floor is 460 bytes against 109 measured, the master blob's 596 against at most 545,
+ * the controller's density floor 0.4067x against 0.21x measured.
+ *
+ * MASTER AND SIDECAR DENSITY ARE NOT. A density ratio is `cost / (bytes * 800)` and a participant's cost is
+ * set by its own CONTRACT BODY, which the descriptor does not carry and this estimator has never claimed to
+ * model (limitation 2). Clamping those to the measurement at the smallest calibrated driver assumes the
+ * smallest calibrated graph's participants are as expensive per byte as any participant, and the corpus says
+ * flatly otherwise: A13's masters reach 0.1598x where real corpus masters at ONE participant reach 0.3673x,
+ * which under-predicted 34 of 45 by up to 56.5% until this split was made. So those two are evaluated at the
+ * LINE, which for the master coefficient is the flat maximum over every calibration master, 0.5758x.
+ *
+ * The cost of being right about this is the binding-LIMIT prediction, and it is stated rather than traded
+ * away: 0.5758x outranks the 0.5002x script prediction, so density is still named first on a population that
+ * measures 0.2177x. That is limitation 1 - no driver in the descriptor separates contract bodies - and it is
+ * a missing MEASUREMENT, not a missing fit. `bindingUnresolved` reports what the model can honestly say.
+ */
+const applyBodyEnvelope = (envelope: Envelope, driver: number): number =>
+  envelope.intercept + envelope.slope * Math.max(driver, envelope.minimumDriver);
 
 /* ------------------------------------------------------------------------------------------------------ */
 /* Calibration coefficients                                                                                 */
@@ -245,17 +361,42 @@ export interface Calibration {
   sidecarSerialized: Envelope;
   /** Worst sidecar density ratio, over slot count. */
   sidecarDensity: Envelope;
-  /** Projection unlocking bytes over participants + invocations. */
-  projectionBytes: Envelope;
+  /**
+   * Projection unlocking bytes ABOVE its compiled redeem script - the transcript blob and its pushes - over
+   * participants + invocations. THE REDEEM SCRIPT IS NOT ENVELOPED, and that is the second half of the X70
+   * fix. The projection verifier is ONE generated covenant: its redeem script is a fixed number of bytes that
+   * the same compile the descriptor already needs will report, and every proof slot's unlocking script pushes
+   * the whole of it. Folding that constant into a fitted line let the linear program trade it for slope and
+   * produce an intercept BELOW the constant, which is not a modelling inaccuracy but an arithmetic
+   * impossibility - no P2SH input can be shorter than the script it redeems. Modelled the way the master term
+   * has always been modelled - a given redeem plus an enveloped argument blob - the constant is carried
+   * exactly and a change to the covenant moves the prediction instead of silently invalidating it.
+   */
+  projectionArgBytes: Envelope;
   /** Projection density ratio over participants + invocations: the driver C2's own fixture identifies. */
   projectionDensity: Envelope;
-  /** Controller unlocking bytes over participants + invocations. */
-  controllerBytes: Envelope;
+  /** Controller unlocking bytes above its compiled redeem script, over participants + invocations. */
+  controllerArgBytes: Envelope;
   /**
-   * Controller density ratio over the transaction's total slot count. The controller additionally scans every
-   * transaction output, which is why the slot count and not the row count is its driver.
+   * Controller density ratio over participants + invocations.
+   *
+   * F2 drove this off the SLOT count, reasoning that the controller scans every transaction output. The real
+   * held-out graph contradicted that and F2 recorded the contradiction as blind spot 6 without acting on it:
+   * E1 reaches 0.6368x on nineteen slots where C1 reaches 0.6182x on thirty-eight, so the quantity is not
+   * monotone in slots at all and the envelope missed E1 by 9.6%. It IS ordered by row count - E1 carries
+   * thirteen rows against C1's eleven - which is also the mechanism, since the controller's own unlocking
+   * bytecode is the transcript and the transcript is rows. Re-driven on rows the same E1 point is predicted
+   * 0.8048x against 0.6368x measured, i.e. conservative, and the four calibration points are unaffected.
    */
   controllerDensity: Envelope;
+  /**
+   * Compiled redeem-script bytes of the generated projection verifier and root controller, as MEASURED in the
+   * calibration set. These are not fitted: one covenant each, one compile, one length. They are the defaults
+   * for a descriptor that does not carry its own, and a descriptor that does carry its own overrides them -
+   * which is what makes a change to either covenant move the prediction instead of quietly invalidating it.
+   */
+  projectionRedeemBytes: number;
+  controllerRedeemBytes: number;
   /** Fee-input unlocking bytes: a P2PKH spend, constant across every shape measured. */
   feeBytes: Envelope;
   feeDensity: Envelope;
@@ -347,13 +488,24 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   // Deduplicated: several classes share a driver, and reporting "participants + invocations 32 exceeds ..."
   // twice tells the reader there are two problems when there is one.
   const outOfRangeSet = new Set<string>();
+  // BOTH ENDS. F2 reported only the upper one, which is how forty-five one-participant graphs were answered
+  // confidently from a coefficient calibrated at six participants and up, and answered wrong.
   const check = (driver: number, envelope: Envelope, what: string): void => {
     if (driver > envelope.maximumDriver) {
       outOfRangeSet.add(`${what} ${driver} exceeds the calibrated maximum ${envelope.maximumDriver}`);
     }
+    if (driver < envelope.minimumDriver) {
+      outOfRangeSet.add(`${what} ${driver} is below the calibrated minimum ${envelope.minimumDriver}`);
+    }
   };
   const classes: ClassPrediction[] = [];
-  const push = (klass: InputClass, count: number, unlockingBytes: number, ratio: number): void => {
+  // The slack a coefficient showed on its OWN calibration points. Carried through to the prediction because
+  // it is what makes two ratios comparable, or shows that they are not.
+  const slackOf = (envelope: Envelope): number => Math.max(0, ...envelope.overPrediction);
+  const push = (
+    klass: InputClass, count: number, unlockingBytes: number, ratio: number,
+    bytesEnvelope: Envelope, densityEnvelope: Envelope,
+  ): void => {
     classes.push({
       klass,
       count,
@@ -361,6 +513,8 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
       densityRatio: ratio,
       operationCost: ratio * (unlockingBytes + BCH_2026_CONSENSUS.densityControlBaseLength)
         * BCH_2026_CONSENSUS.operationCostBudgetPerByte,
+      bytesSlack: slackOf(bytesEnvelope),
+      densitySlack: slackOf(densityEnvelope),
     });
   };
 
@@ -369,28 +523,42 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   const argBytes = applyEnvelope(family.masterArgBytes, rows);
   const masterBytes = spec.redeemBytes.map((redeem) => redeem + argBytes);
   push('master', geometry.masters, Math.max(...masterBytes),
-    applyEnvelope(family.masterDensity, spec.participants));
+    applyBodyEnvelope(family.masterDensity, spec.participants),
+    family.masterArgBytes, family.masterDensity);
 
   const feeBytes = applyEnvelope(calibration.feeBytes, 0);
-  push('fee', geometry.fees, feeBytes, applyEnvelope(calibration.feeDensity, 0));
+  push('fee', geometry.fees, feeBytes, applyEnvelope(calibration.feeDensity, 0),
+    calibration.feeBytes, calibration.feeDensity);
 
   let sidecarSerialized = 0;
   if (geometry.sidecars > 0) {
     check(geometry.slots, calibration.sidecarBytes, 'slot count');
     check(geometry.sidecars, calibration.sidecarSerialized, 'sidecar count');
     push('sidecar', geometry.sidecars, applyEnvelope(calibration.sidecarBytes, geometry.slots),
-      applyEnvelope(calibration.sidecarDensity, geometry.slots));
+      applyBodyEnvelope(calibration.sidecarDensity, geometry.slots),
+      calibration.sidecarBytes, calibration.sidecarDensity);
     sidecarSerialized = applyEnvelope(calibration.sidecarSerialized, geometry.sidecars);
   }
+  // THE TWO GENERATED COVENANTS. Each is a FIXED redeem script carried exactly plus an enveloped argument
+  // blob, which is the construction the master term has always used. `redeemFloor` is the arithmetic fact the
+  // fitted version could violate and did: a P2SH input pushes the script it redeems, so its unlocking
+  // bytecode cannot be shorter than that script, whatever any coefficient says.
+  const redeemFloor = (redeem: number, predicted: number): number => Math.max(redeem, predicted);
+  const projectionRedeem = spec.projectionRedeemBytes ?? calibration.projectionRedeemBytes;
+  const controllerRedeem = spec.controllerRedeemBytes ?? calibration.controllerRedeemBytes;
   if (geometry.projections > 0) {
-    check(rows, calibration.projectionBytes, 'participants + invocations');
-    push('projection', geometry.projections, applyEnvelope(calibration.projectionBytes, rows),
-      applyEnvelope(calibration.projectionDensity, rows));
+    check(rows, calibration.projectionArgBytes, 'participants + invocations');
+    push('projection', geometry.projections,
+      redeemFloor(projectionRedeem, projectionRedeem + applyEnvelope(calibration.projectionArgBytes, rows)),
+      applyEnvelope(calibration.projectionDensity, rows),
+      calibration.projectionArgBytes, calibration.projectionDensity);
   }
   if (geometry.controllers > 0) {
-    check(geometry.slots, calibration.controllerDensity, 'slot count');
-    push('controller', geometry.controllers, applyEnvelope(calibration.controllerBytes, rows),
-      applyEnvelope(calibration.controllerDensity, geometry.slots));
+    check(rows, calibration.controllerDensity, 'participants + invocations');
+    push('controller', geometry.controllers,
+      redeemFloor(controllerRedeem, controllerRedeem + applyEnvelope(calibration.controllerArgBytes, rows)),
+      applyEnvelope(calibration.controllerDensity, rows),
+      calibration.controllerArgBytes, calibration.controllerDensity);
   }
 
   const byClass = new Map(classes.map((row) => [row.klass, row]));
@@ -468,6 +636,22 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
     },
   ].sort((left, right) => right.ratio - left.ratio);
 
+  // WHICH LIMITS THE RANKING CANNOT SEPARATE. The leader's true ratio is at least its predicted ratio divided
+  // by the slack its own coefficient demonstrated on the calibration set; any limit at or above that floor
+  // could still be the real binder. SigChecks and the two size limits are exact or near-exact arithmetic on
+  // the descriptor, so they carry no coefficient slack of their own and enter on their predicted ratio.
+  const worstBytesClass = classes.find((row) => row.unlockingBytes === worstUnlockingBytes)!;
+  const slackFor = (limit: string): number => {
+    if (limit === 'operation-cost density') return worstDensity.densitySlack;
+    if (limit === 'unlocking bytecode length') return worstBytesClass.bytesSlack;
+    return 0;
+  };
+  const leader = limits[0];
+  const leaderFloor = leader.ratio / (1 + slackFor(leader.limit));
+  const bindingUnresolved = limits
+    .filter((row) => row.ratio >= leaderFloor - 1e-12)
+    .map((row) => row.limit);
+
   return {
     shape: spec.name,
     inputCount: geometry.inputs,
@@ -477,6 +661,7 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
     worstDensityRatio: worstDensity.densityRatio,
     worstSigCheckRatio,
     limits,
+    bindingUnresolved,
     verdict: limits[0].ratio > 1 ? 'OVER' : 'FITS',
     outOfRange: [...outOfRangeSet],
     classes,
@@ -510,8 +695,8 @@ export interface MeasuredShape {
     worstCostUnlockingBytes: number;
     worstCostStandardCost: number;
   };
-  projections?: { count: number; unlockingBytes: number; maximumStandardCost: number };
-  controller?: { unlockingBytes: number; standardCost: number };
+  projections?: { count: number; redeemBytes: number; unlockingBytes: number; maximumStandardCost: number };
+  controller?: { redeemBytes: number; unlockingBytes: number; standardCost: number };
   fee: { unlockingBytes: number; standardCost: number; signatureChecks: number };
   worstUnlockingBytes: number;
   worstDensityRatio: number;
@@ -569,10 +754,12 @@ export function distill(
     },
     projections: projectionRows.length === 0 ? undefined : {
       count: projectionRows.length,
+      redeemBytes: classification.projectionRedeemBytes,
       unlockingBytes: Math.max(...projectionRows.map((row) => row.unlockingBytes)),
       maximumStandardCost: Math.max(...projectionRows.map((row) => row.standardCost)),
     },
     controller: classification.controller === undefined ? undefined : {
+      redeemBytes: classification.controllerRedeemBytes,
       unlockingBytes: at(classification.controller).unlockingBytes,
       standardCost: at(classification.controller).standardCost,
     },
@@ -641,10 +828,12 @@ export function deriveCalibration(
   const sidecarBytePoints: EnvelopePoint[] = [];
   const sidecarSerializedPoints: EnvelopePoint[] = [];
   const sidecarDensityPoints: EnvelopePoint[] = [];
-  const projectionBytePoints: EnvelopePoint[] = [];
+  const projectionArgPoints: EnvelopePoint[] = [];
   const projectionDensityPoints: EnvelopePoint[] = [];
-  const controllerBytePoints: EnvelopePoint[] = [];
+  const controllerArgPoints: EnvelopePoint[] = [];
   const controllerDensityPoints: EnvelopePoint[] = [];
+  let projectionRedeem = 0;
+  let controllerRedeem = 0;
   const feeBytePoints: EnvelopePoint[] = [];
   const feeDensityPoints: EnvelopePoint[] = [];
 
@@ -667,8 +856,15 @@ export function deriveCalibration(
         label: `${spec.name}/sidecar-density`,
       });
     }
+    // THE ARGUMENT BLOB, not the whole script: the redeem script of each generated covenant is carried as the
+    // measured constant it is, and only what the input pushes ON TOP of it is fitted.
     if (sample.projections !== undefined) {
-      projectionBytePoints.push({ x: rows, y: sample.projections.unlockingBytes, label: `${spec.name}/projection` });
+      projectionRedeem = Math.max(projectionRedeem, sample.projections.redeemBytes);
+      projectionArgPoints.push({
+        x: rows,
+        y: sample.projections.unlockingBytes - sample.projections.redeemBytes,
+        label: `${spec.name}/projection-args`,
+      });
       projectionDensityPoints.push({
         x: rows,
         y: densityOf(sample.projections.maximumStandardCost, sample.projections.unlockingBytes),
@@ -676,9 +872,14 @@ export function deriveCalibration(
       });
     }
     if (sample.controller !== undefined) {
-      controllerBytePoints.push({ x: rows, y: sample.controller.unlockingBytes, label: `${spec.name}/controller` });
+      controllerRedeem = Math.max(controllerRedeem, sample.controller.redeemBytes);
+      controllerArgPoints.push({
+        x: rows,
+        y: sample.controller.unlockingBytes - sample.controller.redeemBytes,
+        label: `${spec.name}/controller-args`,
+      });
       controllerDensityPoints.push({
-        x: geometry.slots,
+        x: rows,
         y: densityOf(sample.controller.standardCost, sample.controller.unlockingBytes),
         label: `${spec.name}/controller-density`,
       });
@@ -697,12 +898,14 @@ export function deriveCalibration(
     sidecarBytes: fit(sidecarBytePoints),
     sidecarSerialized: fit(sidecarSerializedPoints),
     sidecarDensity: fit(sidecarDensityPoints),
-    projectionBytes: fit(projectionBytePoints),
+    projectionArgBytes: fit(projectionArgPoints),
     projectionDensity: fit(projectionDensityPoints),
-    controllerBytes: fit(controllerBytePoints),
+    controllerArgBytes: fit(controllerArgPoints),
     controllerDensity: fit(controllerDensityPoints),
     feeBytes: fit(feeBytePoints),
     feeDensity: fit(feeDensityPoints),
+    projectionRedeemBytes: projectionRedeem,
+    controllerRedeemBytes: controllerRedeem,
     signedInputBytesFloor: Math.min(...samples.map((sample) => sample.fee.unlockingBytes)),
     basis: { commit, shapes: samples.map((sample) => sample.name) },
   };
@@ -825,6 +1028,13 @@ export interface InputClassification {
   blockSizes: number[];
   /** Per-participant redeem script bytes, recovered exactly from the unlocking bytecode. */
   redeemBytes: number[];
+  /**
+   * Redeem-script bytes of the two generated covenants, recovered the same way. Zero for the binding sweep,
+   * which has neither. These are what let the calibration carry the covenant sizes as MEASURED CONSTANTS
+   * instead of folding them into a fitted intercept.
+   */
+  projectionRedeemBytes: number;
+  controllerRedeemBytes: number;
 }
 
 /**
@@ -858,6 +1068,8 @@ export function classifyInputs(
       sidecars: [],
       blockSizes: prefixRedeem.map(() => 1),
       redeemBytes: prefixRedeem,
+      projectionRedeemBytes: 0,
+      controllerRedeemBytes: 0,
     };
   }
   const controller = total - 2;
@@ -894,6 +1106,8 @@ export function classifyInputs(
     sidecars,
     blockSizes,
     redeemBytes: masters.map((index) => redeemBytes[index]),
+    projectionRedeemBytes: redeemBytes[projectionStart],
+    controllerRedeemBytes: redeemBytes[controller],
   };
 }
 
@@ -920,6 +1134,7 @@ export function formatEstimate(prediction: Estimate): string {
     `worstScript<=${prediction.worstUnlockingBytes.toFixed(0)}B`,
     `worstDensity<=${prediction.worstDensityRatio.toFixed(4)}x`,
     `binds=${first.limit} ${first.ratio.toFixed(4)}x at ${first.where}`,
+    `unresolved=[${prediction.bindingUnresolved.join('; ')}]`,
     prediction.verdict,
     prediction.outOfRange.length === 0 ? 'in-range' : `OUT-OF-RANGE(${prediction.outOfRange.length})`,
   ].join(' | ');

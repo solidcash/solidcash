@@ -200,7 +200,18 @@ import { binToHex } from '@bitauth/libauth';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
-// Deployment-oriented density tuning may lower this per artifact after measurement.
+//
+// X28 measured whether this can be split into a compile-time-sized LOOP leg and a conservative CHUNK leg, and
+// it cannot: there is no loop leg. `needsTrailingRegion` below is gated on `__scb1`, and every reservation
+// measured - 18 of 2,283 layout computations in the compiler suite, 111 of 6,881 in the SDK suite - fired
+// through the chunk term. No loop term fired on any function that reached the reservation. See the note there.
+//
+// Nor can the chunk leg be narrowed to "only when a dispatched handler touches a dynamic variable": the scan
+// that would decide it sees `StateAccessNode`/`StateAssignNode` only, and the bare `note = t` spelling is still
+// an `AssignNode` over an `IdentifierNode` here (X19's gap). 4 of those 18 reservations report NO function
+// touching a dynamic variable while the contract writes one, so that narrowing would drop the region for
+// exactly those contracts - and the failure is silent, since the SDK enforces `trailingCapacity` only when the
+// layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
 const BALANCED_TRAILING_CAPACITY = 64;
 
 // Counts identifier occurrences in an expression subtree (structural children only, no definition backrefs).
@@ -9213,6 +9224,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (touchesDynamicState) break;
       }
     }
+    // X28: only the FIRST term can fire here. `computeBlockLayout` is called from `SymbolTableTraversal` alone,
+    // which compiler.ts runs strictly before `GenerateTargetTraversal` - and `dynamicReads`, `dynamicWrites`,
+    // `entryLoopWrites`, `sortedInsertLoops` and `keccakLoopReads` are assigned only inside that later pass, so
+    // they are `undefined` at every call site. `entryAccesses.some(inLoop)` is live but never reaches a route: a
+    // loop-keyed collection handler is refused from the batch earlier, by
+    // `collection-route-requires-one-parameter-keyed-entry-per-collection`. `touchesDynamicState` is itself
+    // subsumed - it can only be set for a name in `dynamicNames`, so the blanket two lines up already covers it.
+    // The terms are kept because they state the intent this predicate must regain if the layout ever moves after
+    // code generation; they are not, today, a second leg that could be sized independently.
     const needsTrailingRegion = node.name === '__scb1' && (touchesDynamicState
       || (node.dynamicReads?.length ?? 0) > 0
       || (node.dynamicWrites?.length ?? 0) > 0

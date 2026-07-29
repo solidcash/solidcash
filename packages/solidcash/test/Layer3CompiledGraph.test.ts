@@ -694,9 +694,11 @@ describe('layer3.planCompiledGraph', () => {
     // projection verifier 36%. X24 unrolled the deep writes, trading emitted bytes for executed instructions -
     // it GREW the projection and SHRANK the controller. X27 then suffix-split the transcript in attest,
     // shrinking the controller again. These pins are measured on the tree carrying BOTH X24 and X27, so they
-    // match neither branch's own figure.
+    // match neither branch's own figure. X5 then bound the ROOT row's call-options byte in the projection
+    // verifier (+37): the byte is hoisted into one read reused by the existing `<= 1` bound, and the root
+    // branch requires it to be 0. The controller is untouched.
     expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_634);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_671);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

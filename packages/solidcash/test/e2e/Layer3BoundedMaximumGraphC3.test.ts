@@ -1545,26 +1545,34 @@ describe('C3 capacity measurement', () => {
     // corrected in place below. The run now prints its own table above these assertions so the next reader
     // compares against a measurement instead of a citation.
     //
+    // X5 then moved the projection figure again, by construction rather than by drift: the row call-options
+    // byte is read once and the ROOT row's copy is required to be 0, the only bound that field has ever had.
+    // 6,009 -> 6,046 bytes (+37), ratio band unchanged. The 6,009 cited above is what X38 measured before X5.
+    //
     // SCOPE, and the reason the two claims are stated separately. "Fits ordinary BCH-2026 capacity" is a
     // CONSENSUS-knob result and is what the empty over-budget set establishes. "Relayable under standard
     // policy" is a different claim and C3 does NOT meet it: the serialized transaction is 100,354 bytes, 354
     // over the 100,000-byte standard relay ceiling, against the 1,000,000-byte consensus figure this profile
     // sets. C1, at 63,130 bytes, clears both (X39).
     for (const projection of projections) {
-      expect(projection.bytes).toBe(6_009);
+      expect(projection.bytes).toBe(6_046);
       expect(projection.ratio).toBeGreaterThan(0.6);
       expect(projection.ratio).toBeLessThan(0.8);
     }
     // The +325 RETURNING-ROW SURCHARGE IS GONE, and that is a finding rather than a re-pin. It was recorded as
     // exactly 325 instructions on three independent compositions and treated as a stable property of the row
-    // that authenticates a result. X24's unroll eliminated it. Measured at this commit, every projection within
-    // a build costs the same regardless of which row it proves: C3 24,067 x8, and on the same harness C1
+    // that authenticates a result. X24's unroll eliminated it. Measured at X38 time, every projection within
+    // a build cost the same regardless of which row it proves: C3 24,067 x8, and on the same harness C1
     // 17,441 x5 and C2 14,798 x4. So the surcharge was an artifact of the counted-loop lowering, not an
     // intrinsic cost of authenticating a result. (The pre-X24 figures this paragraph used to quote - 17,259 /
     // 17,584 for C1 and C2, 25,984 / 26,309 for C3 - are HISTORY, not values obtainable on this tree; the
     // block above also quoted 25,984 as C3's current count while asserting 24,067 six lines later.)
+    //
+    // X5 then added the row call-options bound to the same walk: 24,067 -> 24,382, +315 instructions over 15
+    // invocations, +1.3%. ALL EIGHT ROWS STILL COST THE SAME, so the surcharge finding above is unaffected -
+    // which is the property that mattered, not the absolute figure.
     expect(projections.map((row) => row.instructions))
-      .toEqual([24_067, 24_067, 24_067, 24_067, 24_067, 24_067, 24_067, 24_067]);
+      .toEqual([24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382]);
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);

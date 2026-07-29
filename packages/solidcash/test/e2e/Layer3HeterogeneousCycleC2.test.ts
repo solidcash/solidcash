@@ -836,11 +836,14 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     for (const row of [...participants, ...projections, controller]) expect(row.ratio).toBeLessThan(1);
     expect(controller.ratio).toBeGreaterThan(0.6);
     expect(controller.ratio).toBeLessThan(0.95);
-    expect(projections.map((row) => row.instructions)).toEqual([14_798, 14_798, 14_798, 14_798]);
+    expect(projections.map((row) => row.instructions)).toEqual([15_008, 15_008, 15_008, 15_008]);
     // X24 cut these 14.3% AND removed the +325 returning-row surcharge that used to distinguish the last
     // entry. That surcharge was measured identically across C1, C2 and C3 and recorded as a property of
     // authenticating a result; it was an artifact of the counted-loop lowering. All four rows now cost the
     // same, which is asserted directly so the distinction cannot silently return.
+    // X5 then added the row call-options bound to the same walk: +210 instructions over 5 invocations, +1.4%.
+    // It buys the ROOT row's call-options byte, which no other covenant reads. Every ratio above is unchanged
+    // in sign and the assertions on them still hold, so this is spend, not a capacity move.
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
   }, 600_000);
 

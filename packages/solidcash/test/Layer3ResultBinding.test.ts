@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
+import type { Artifact } from '@solidcash/utils';
 import { layer3 } from '../src/index.js';
 
 // E1 plan-time half: a result edge must name one unambiguous consumer occurrence and agree with the
@@ -93,9 +94,24 @@ describe('layer3 canonical result binding (E1)', () => {
   });
 });
 
-// Result fan-in - one handler consuming two producer results - is not implemented. Every shape that needs
-// it stops at one compiler diagnostic, so the boundary is a single stable rejection rather than a partial
-// lowering. Recorded here so a later relaxation has an exact before/after.
+// X3. Result fan-in - one handler consuming two producer results - is not implemented, and this block states
+// the wall's exact shape rather than only that a wall exists.
+//
+// COMPILER (both files leased elsewhere this round, so the wall is measured, not moved):
+//   1. `SymbolTableTraversal` refuses to lower a graph-emission handler with more than one call slot when any
+//      slot returns. The two isolation cases below show neither conjunct is the problem on its own: two VOID
+//      calls lower, and one RETURNING call lowers; only the conjunction is refused.
+//   2. `GenerateTargetTraversal.verifyGraphEmissionRow` cannot compose a returning row. Its void arm builds a
+//      row for the dispatch site to concatenate; its returning arm instead splits the caller's WHOLE emission
+//      vector at its own prefix and then requires the remainder to be exactly one framed result, so a
+//      returning row consumes the entire vector and nothing can follow it.
+//   3. The multi-slot dispatch site concatenates every row and compares once, which cannot interleave the
+//      per-row result decodes a second returning slot needs.
+//
+// SDK: nothing blocks it. `resultDependencies` is a list, the dependency resolver takes any acyclic table,
+// `finalizeCompiledGraph` frames one emission row per child and the projection verifier walks a caller's rows
+// with a cursor rather than one equality. The probe below reaches that machinery with an artifact the compiler
+// cannot emit, which is why the planner now refuses by name instead of producing an unexecutable transaction.
 describe('layer3 result fan-in is scoped out with one stable diagnostic (E1)', () => {
   const AT_MOST_ONE = /requires call\/staticcall edges and at most one returning call/;
 
@@ -136,6 +152,71 @@ contract ArgForward(int brand, address peerA, address peerB) {
     require(first > 0);
   }
 }`, options)).toThrow(AT_MOST_ONE);
+  });
+
+  // Isolation, both directions: neither conjunct of the lowering predicate is refused on its own, so the
+  // refused shape is exactly "more than one call slot AND at least one of them returns".
+  it('lowers two void calls and one returning call, so only the conjunction is refused', () => {
+    const twoVoid = compileString(TWO_CALLER, options);
+    expect(twoVoid.abi.find((fn) => fn.name === 'fan')!.externalCalls).toHaveLength(2);
+    const oneReturning = compileString(MIS_CONSUMER, options);
+    expect(oneReturning.abi.find((fn) => fn.name === 'consume')!.externalCalls![0].hasReturnValues)
+      .toBe(true);
+  });
+});
+
+/**
+ * X3, SDK half. PROBE, not a fixture: no compiler-emitted artifact can declare two returning callsites on one
+ * graph handler (the block above measures why), so the only way to reach the planner's fan-in path is to
+ * publish that shape by hand. The two producers are REAL compiled contracts; only the consumer's two callsites
+ * are annotated as returning.
+ *
+ * Before this round the planner accepted such a plan and emitted `resultDependencies: [1, 2]`. Nothing
+ * downstream refuses it either, so the failure surfaced only as an unnamed script error at the consumer's own
+ * master input, on a transaction no handler could ever have executed.
+ */
+describe('layer3 refuses result fan-in by name at plan time (X3)', () => {
+  const RETURNING_ALPHA = `pragma solidcash >=0.8.0;
+contract TwoAlphaR(int brand) {
+  function alpha(int n) public pure returns (int) { require(n >= 0); return n * 2; }
+}`;
+  const RETURNING_BETA = `pragma solidcash >=0.8.0;
+contract TwoBetaR(int brand) {
+  function beta(int n) public pure returns (int) { require(n >= 0); return n * 5; }
+}`;
+
+  /** Annotate `count` of the consumer's two void callsites as returning `int256`. */
+  const planFanIn = (count: 1 | 2): ReturnType<typeof layer3.planCompiledGraph> => {
+    const consumer: Artifact = JSON.parse(JSON.stringify(compileString(TWO_CALLER, options)));
+    const calls = consumer.abi.find((fn) => fn.name === 'fan')!.externalCalls!;
+    for (let index = 0; index < count; index += 1) {
+      Object.assign(calls[index], { hasReturnValues: true, returnTypes: ['int256'] });
+    }
+    return layer3.planCompiledGraph([
+      { artifact: consumer, lockingBytecode: '51' },
+      { artifact: compileString(RETURNING_ALPHA, options), lockingBytecode: '52' },
+      { artifact: compileString(RETURNING_BETA, options), lockingBytecode: '53' },
+    ], [
+      { parent: null, callee: 0, function: 'fan', args: [1n] },
+      { parent: 0, callee: 1, function: 'alpha', args: [1n] },
+      { parent: 0, callee: 2, function: 'beta', args: [1n] },
+    ]);
+  };
+
+  // Honest control: the identical graph with ONE of the two callsites annotated. It plans, and its single
+  // result edge binds - so the refusal below is about the SECOND consumed result, not about this shape.
+  it('plans the same graph when only one callsite consumes a result', () => {
+    const plan = planFanIn(1);
+    expect(plan.invocations.map((invocation) => invocation.resultDependencies))
+      .toEqual([[1], [], []]);
+    expect(plan.invocations.map((invocation) => invocation.consumerCallsiteId))
+      .toEqual([undefined, 0, 1]);
+  });
+
+  it('refuses the same graph when both callsites consume a result, naming every producer', () => {
+    expect(() => planFanIn(2)).toThrow(
+      /invocation 0 consumes results from invocations 1, 2; a graph handler binds at most one producer result/,
+    );
   });
 });
 

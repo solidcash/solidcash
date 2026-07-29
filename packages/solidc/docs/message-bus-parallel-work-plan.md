@@ -133,7 +133,9 @@ task-specific report, not in this table.
 | X37 | Publish delegate target/key provenance in the artifact | S3 | E3 | **INTEGRATED** | both `bytes`-cast escapes resolve to `parameter`; 327/327 artifacts SHA-256 identical minus the 2 new keys - see 4.53 |
 | **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **INTEGRATED** | 14/36 -> 0/36 across 7 spellings at both sites; 8 negative controls unflipped - see 4.56 |
 | X46 | Commitment check reads the key's binding, not the writer of its target | — | SEC-17 | **TODO** | a fn assigning `this.pkh` FROM a caller param before comparing is credited anyway |
-| X43 | Make the E3 gate read X37's provenance instead of the published type | — | X37 | **TODO** | X37 publishes but does not consume; E3 still classifies on type alone |
+| X43 | Make the E3 gate read X37's provenance instead of the published type | A1 | X37 | **INTEGRATED** | both escapes refused; admission proven a LIVE hole (5 -> 999); 3 unnamed closures - see 4.59 |
+| X50 | SDK's shipped `defaultProxyArtifact.ts` is a pre-X37 artifact | — | X43 | **TODO** | 13 of 27 gate calls refuse `unpublished-target-provenance`; remedy additive, but regen needs a manual bytecode fix |
+| X51 | Publish the `hash160(key) == committed` commitment as an artifact field | — | X43,SEC-17 | **TODO** | would close X43's `hash160-committed-key` false negative without type-reconstruction |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
@@ -216,6 +218,72 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.59 X43: E3 finally closes against the SEMANTIC class, and the admission was a LIVE hole
+
+Merged at `e4eb1e12`. Sections 4.42 and 4.44 recorded E3 closed against the **published type**; X37 published the
+provenance last round; this consumes it. A1 measured both gates over the same inputs by extracting the baseline
+gate from `4ac40b82` into its worktree - not by reasoning about the change:
+
+| escape | published metadata | baseline | X43 |
+| --- | --- | --- | --- |
+| `address t = address(target); t.delegatecall(input)`, `target` a `bytes` param | `{kind:'parameter'}`, param types `['bytes','bytes']`, containment TRUE | **ADMIT** `bytecode-pinned` | **REFUSE** `pinned-but-caller-selected` |
+| `require(checkSig(s, pubkey(k)))`, `k` a `bytes` param | `{key:{kind:'parameter'}}`, no `pubkey` param published | **ADMIT** `caller-authorized` | **REFUSE** `self-authorized` |
+
+**The admission was a live hole, and A1 proved it rather than asserting it.** New case A13-3b settles a **foreign
+implementation rewriting proxy state 5 -> 999** through a proxy the round-14 gate called `bytecode-pinned`. The
+guard leg fails `mandatory-script-verify-flag-failed` at **input 0**.
+
+**The class is a conjunction, and neither half is the class.** `bytecode-pinned` now requires target provenance
+`constructorArg`/`literal` **and** the implementation locking bytecode contained in the proxy bytecode -
+provenance says the target is FIXED, containment says fixed to WHICH script. Round 14's gate had only the second.
+
+**Three closures nobody had named.** Beyond the two known escapes, the type gate also admitted a **state-variable
+target**, a **computed target** and a **ternary target** as `bytecode-pinned` - because none of them publishes an
+`address` parameter, so a type-based gate saw nothing to object to. All nine `computed` forms X37 enumerates are
+now verified refused.
+
+**The round-14 false positive is repaired, not merely tolerated.** `E3PayoutProxy` - target a constructor arg,
+plus an unrelated `address recipient` parameter - went REFUSE -> **ADMIT**, and its VM case still settles 5 -> 6.
+Of 16 shapes measured across both gates, 7 changed: **6 narrowings and 1 widening**.
+
+**Every refusal is paired with a same-published-types control that is still admitted**, so the refusal is
+credited to provenance and not to "a second `bytes` parameter exists" - which would be round 14's mistake
+respelled. `E3BytesUnusedProxy` has published types **byte-identical** to escape #1, down to the same 35-byte
+require, and settles.
+
+**Compatibility is three stated obligations, and an absent field falls closed.** Never read the raw field; go
+through accessors that spell the missing case `unknown`, a kind the compiler never emits. Admit on an explicit
+allow-list so `unknown` **and any kind a later compiler adds** fail closed. A pre-X37 artifact is refused as
+`unpublished-target-provenance` - verified by stripping `target` from the admitted control and asserting the
+unstripped original still passes.
+
+**A1 declined to apply SEC-17's rule in the SDK, and the reason is right.** The compiler can credit
+`require(hash160(pk) == <committed>)` because it sees the AST. **No artifact field publishes that commitment**,
+and reconstructing it from types - a `bytes20` ctor arg next to a `pubkey` parameter - is precisely the reasoning
+X43 exists to remove. So the shape is refused as `self-authorized`, enumerated as `hash160-committed-key`, with
+the remedy named: one additive artifact field.
+
+**Residual found and named: `decoy-committed-target`.** A proxy with two `address` constructor args -
+delegatecalling one while the other holds the implementation's locking bytecode - is admitted against an
+implementation it does not target, because containment is a substring test over the whole script. **Not an
+authority hole**: both values are committed, no spender varies either, and the covenant refuses the mismatch at
+spend time. Deliberately not closed by matching `target.name`, because X37's author measured `name` as
+walk-order-dependent on a strength tie. Added to `UNDETECTED_BY_THIS_GATE` with a measured case, while the two
+now-detected entries were removed **with their refusals asserted** rather than silently dropped.
+
+**Handoff, opened as X50: the SDK's own shipped default proxy is a pre-X37 artifact.** Re-measuring the
+"gate is not wired" claim over 27 calls gave 27/27 refused - conclusion unchanged - but **13 of those 27 refuse
+as `unpublished-target-provenance`, because `defaultProxyArtifact.ts` is checked in with
+`{callMode:'delegatecall'}` and no `target`.** Compiling its own `DEFAULT_PROXY_SOURCE` with the current compiler
+publishes `{constructorArg, implementation}`, so the remedy is additive. A1 left it alone: outside its lease, and
+the file header warns that regenerating it must reapply a manual bytecode adjustment. **Both halves are asserted
+in the fixture so the finding cannot decay into a comment.**
+
+**Corpus discriminating power: essentially zero, and A1 said so.** Nothing in `packages/solidcash/src` calls the
+gate - re-verified by grep - so only the two E3 fixtures can depend on it. The full runs prove non-regression and
+that the new imports typecheck, nothing more. The evidence is the two-gate blast-radius table and the A13-3 VM
+block.
 
 ### 4.58 F1: the envelope is measured, and a DIFFERENT limit binds first almost every time
 

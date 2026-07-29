@@ -8,12 +8,15 @@ against the measured envelope.**
 Base commit `6a685f33`. The census, every estimate, and all 45 built transactions were produced at that
 commit. No figure here is carried forward from an earlier bench run or from the F1 table.
 
-**R2 reconciliation at `1591e87f`.** Two figures in this report were about shapes measured *elsewhere* rather
-than by the F3 probe, and both moved after `6a685f33` when F4 cut the projection verifier by 129 bytes: C3's
-position against the relay ceiling (section 6, real limit 2) and the size of the projection proof (sections 5
-and 6). Both are corrected in place, with the consequence re-derived rather than the number swapped. **No F3
-measurement is restated**: the census, the verdict counts, the binding-limit table and the 45 built
-transactions are all still the `6a685f33` run and are not re-derived here.
+**R2 reconciliation at `1591e87f`, re-done at `77cd1e8c`.** Two figures in this report were about shapes
+measured *elsewhere* rather than by the F3 probe, and both moved after `6a685f33` when F4 cut the projection
+verifier by 129 bytes: C3's position against the relay ceiling (section 6, real limit 2) and the size of the
+projection proof (sections 5 and 6). X65 then cut the same covenant by a further 444 bytes and moved both
+again, so both are re-measured at `77cd1e8c` rather than carried: the verifier's redeem script is **4,098
+bytes** and C3's build is **96,118 bytes**. Each correction re-derives its consequence rather than swapping
+its number. **No F3 measurement is restated**: the census, the verdict counts, the binding-limit table and
+the 45 built transactions are all still the `6a685f33` run and are not re-derived here - except section 3.2's
+write classification, which X73 invalidated outright and which is re-measured in place, in that section.
 
 ## 0. What is measured and what is estimated
 
@@ -348,9 +351,10 @@ fitted over.
 
 That 4,780 is unlocking bytecode - the covenant's redeem script plus the transcript and proof arguments it
 carries - and it was measured at this report's base commit `6a685f33`, which is **before F4**. F4 then cut
-the projection verifier's redeem script by 129 bytes. Measured at `1591e87f`, that redeem script is **4,542
-bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did not
-re-measure, and is not restated here as a number.
+the projection verifier's redeem script by 129 bytes (4,542 at `1591e87f`), and X65 then cut a further 444
+by replacing its 8-way dispatch with an input-index table. Re-measured at `77cd1e8c`, that redeem script is
+**4,098 bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did
+not re-measure, and is not restated here as a number.
 
 What is new here is the scale and the sign consistency. F2 recorded that blind spot as a 1.8% miss on one
 held-out six-participant graph. On real corpus contracts at **one** participant it is a 7% systematic miss,
@@ -377,11 +381,14 @@ machinery pointed at it, that machinery is named.
    transactions. A consensus limit; no graph design moves it.
 2. **The 100,000-byte standard relay ceiling.** It takes over at N=8 for 317 of 367 rows, so this is the wall
    F1 found, reached earlier by larger contracts. This report originally added *"C3 already sat at 1.0065x of
-   it"*; that is no longer true and the correction does not weaken the point. F4 cut the projection verifier
-   by 129 bytes, which is worth 129 bytes per participant, and C3 has eight, so C3 was executed, accepted and
-   mined at **99,670 bytes**, 0.9967x of the ceiling (citation, X59/X60 at `1591e87f`, not re-measured here).
+   it"*; that is no longer true and the correction does not weaken the point. C3 was executed, accepted and
+   mined at **99,670 bytes**, 0.9967x of the ceiling (citation, X59/X60 at `1591e87f`) after F4's 129-byte
+   cut to the projection verifier, worth 129 bytes per participant across C3's eight. **Re-measured at
+   `77cd1e8c` the same build is 96,118 bytes, 0.9612x**, after X65 cut a further 444 from the same covenant -
+   a re-measurement of the mock-built bytes, NOT a second node run: the node-mined figure is still 99,670.
    The ceiling is still where the corpus meets it at N=8; what changed is that the largest fixture ever built
-   now sits just inside rather than just outside, which is a 330-byte margin and not headroom.
+   went from just outside it to 3,882 bytes inside, and that margin is now wide enough to be headroom rather
+   than a near miss - which retires, rather than re-prices, every C3 slot-removal option this board costed.
 
    **This one is POLICY, not consensus, and it is the only entry in this section that is.** X49 got the same
    101,513 bytes refused `64: tx-size` through the mempool and then accepted in a hand-assembled block; the
@@ -403,11 +410,13 @@ the measurement the production-envelope decision actually needs.
 
 A second observation in the same category: the projection proof is a fixed overhead on every participant,
 which at these sizes is a large share of a limit that real contracts are already close to. It is a generated
-covenant, so it is a compiler artifact rather than a limit - and F4 has since demonstrated exactly that by
-cutting its redeem script to **4,542 bytes** (measured at `1591e87f`) with no require removed, weakened or
-reordered. Because the covenant is instantiated once per participant and each proof slot pushes the whole
-redeem script, **a verifier byte is worth N transaction bytes**, and F4's 129-byte cut was measured landing
-at exactly that multiplier on all four capstones (citation, F4).
+covenant, so it is a compiler artifact rather than a limit - and two rounds have since demonstrated exactly
+that, cutting its redeem script to **4,098 bytes** (re-measured at `77cd1e8c`) with no require removed,
+weakened or reordered: F4's -129 to 4,542, then X65's -444. Because the covenant is instantiated once per
+participant and each proof slot pushes the whole redeem script, **a verifier byte is worth N transaction
+bytes**, and both cuts were measured landing at exactly that multiplier on all four capstones: F4's 129 x N
+(citation, F4), and X65's 444 x N re-measured here as A13 23,458 -> 22,126, C2 52,733 -> 50,957, C1
+62,722 -> 60,502, C3 99,670 -> 96,118.
 
 ### Incidental walls - scope decisions and defects, not limits
 

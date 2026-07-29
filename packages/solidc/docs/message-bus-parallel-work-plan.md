@@ -150,7 +150,10 @@ task-specific report, not in this table.
 | X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
-| F1 | Ordinary-limit consensus and policy measurements | A | A1 | TODO | 2/4/8 participant envelopes |
+| F1 | Ordinary-limit consensus and policy measurements | A6 | — | **INTEGRATED** | envelope measured; a DIFFERENT limit binds first per shape; CONSENSUS_FIT supported but not asserted - see 4.58 |
+| X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | — | F1 | **TODO (ledger accuracy)** | real C3 at N=8 is 0.9217x, 2.54x higher and 9.4x the bytes |
+| X48 | One knob cannot express two hash regimes | — | F1 | **BLOCKED** | `createVirtualMachine.ts:29-30` writes one value into standard AND nonstandard; 6x the real standard 0.5; does not bite by luck |
+| X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | — | F1 | **TODO** | libauth-with-real-constants is not a node; this is the only gap left for the claim |
 | F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
 | F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
@@ -213,6 +216,61 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.58 F1: the envelope is measured, and a DIFFERENT limit binds first almost every time
+
+Merged at `e1b6f779`, test-only (741 lines, four new files, no `src/` touched). Measured at `4ac40b82`, every
+shape run to completion at the **real** consensus profile *and* the **real** standard profile with **nothing
+relaxed**, knob-liveness control live on all seven:
+
+| shape | inputs | serialized | relay % | density std/cons | worst script | **binds first** |
+| --- | --- | --- | --- | --- | --- | --- |
+| synthetic N=2 | 3 | 2,429 B | 2.4% | 0.2177 / 0.2091 | 983 B | per-input SigChecks 0.2500x |
+| synthetic N=4 | 5 | 4,977 B | 5.0% | 0.2570 / 0.2545 | 1,068 B | op-cost density 0.2570x |
+| synthetic N=8 | 9 | 10,661 B | 10.7% | 0.3630 / 0.3605 | 1,184 B | op-cost density 0.3630x |
+| A13 graph | 8 | 23,734 B | 23.7% | 0.4067 / 0.4041 | 5,094 B | script bytes 0.5094x |
+| C2 cycle | 79 | 53,101 B | 53.1% | 0.6491 / 0.6465 | 5,386 B | op-cost density 0.6491x |
+| C1 DeFi | 38 | 63,130 B | 63.1% | 0.6182 / 0.6157 | 7,451 B | script bytes 0.7451x |
+| C3 max graph | 108 | 100,354 B | **100.4%** | 0.9217 / 0.9191 | 5,968 B | **STANDARD RELAY SIZE 1.0035x** |
+
+**The headline result is that "capacity" was never one number.** C1 and A13 bind on the 10,000-byte per-input
+script limit, C2 on operation-cost density, C3 on relay size. **C3 is inside every consensus limit and outside
+exactly one policy limit** - which is the precise, defensible form of a claim this board has been making loosely.
+
+**A ledger figure is misleading and must be corrected.** The ledger's *"N=8 participant binding at 36.5%"* is the
+**synthetic binding-only fixture**, not an 8-participant graph. Real C3 at N=8 measures **0.9217x - 2.54x higher,
+and 9.4x the bytes** (100,354 against 10,661). Read as an 8-participant capacity figure it implies headroom that
+does not exist. A6 measures 36.30% for the synthetic at this commit against the pinned 36.5%.
+
+**BLOCKED, and the reason it has never bitten is luck.** `createVirtualMachine.ts:29-30` writes a single
+`hashDigestIterationsPerByte` into **both** the standard and nonstandard fields, so one knob cannot express two
+hash regimes. Every "ordinary capacity" fixture passes 3, which is 0.86x of the real consensus 3.5 but **6x the
+real standard 0.5**. Worst measured hash usage is 0.1078x, so it does not bite - *luck, not design*. Named
+change: split `ConsensusLimits.hashDigestIterationsPerByte` into standard and nonstandard fields.
+
+**The harness was validated three ways before its numbers were used**: it reproduces round 15's C3 figures
+exactly (100,354 B, 0.9217x, input 106), reproduces the fixtures' own live assertions (6,009 density bytes,
+24,067 projection instructions), and C1/C3 measure identically across independent tests and different providers.
+That is how a measurement row earns the right to contradict recorded figures.
+
+**C3's overrun is costed, not lamented**: 354 B over (0.35%). The two cheapest slot pairs (177 + 211 B) free 388
+and land it at 99,966 B; the 62 unused Ledger trailing slots free 13,048 and land it at 87,306 B (87.3%).
+
+**Promotion, stated with discipline.** **`CONSENSUS_FIT` is now supported** for A13, C2, C1, C3 and the sweep -
+zero refusals at real BCH-2026 limits, nothing relaxed, knob control live - and A6 **declined to assert it**,
+because everything was built on `MockNetworkProvider` and validated by libauth-with-real-constants rather than by
+a node. A BCHN regtest broadcast would close it. **Nothing supports `POLICY_FIT`**: C3 is refuted on relay size,
+and the rest are untested on dust (the fixtures set `enforceDust: false`), minimum relay fee, the full
+`isStandard` predicate, and package/ancestor limits.
+
+**Marginal cost per participant is superlinear**, from the controlled sweep rather than from the capstones (whose
+participant and invocation counts move together): +1,274 B then +1,421 B of transaction, +0.0197 then +0.0265 of
+density - consistent with O(N^2) cross-reads against an O(N) budget.
+
+A6 independently confirmed the stale C1/C3 figures and **flagged them for A5 rather than editing them**,
+respecting the lease. It also found more: C1 now has 5 projections and 38 slots, not "4/5 and 35"; C1/C2
+projections measure 17,441 against 14,798 instructions, not a shared 17,259; and the "32 instructions per output"
+fit does not reproduce at HEAD. **Every fixture assertion still passes** - only the comments are stale.
 
 ### 4.57 Round 15 closes: ALL SIX packages green, 7,029 tests, and round 16 dispatched
 

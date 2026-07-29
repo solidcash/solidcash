@@ -21,25 +21,43 @@ import {
  * NOTHING HERE IS A `CONSENSUS_FIT` OR `POLICY_FIT` CLAIM. A measurement is a point-in-time reading of one
  * shape at one commit. Promotion is the board's to make, and needs the full shape, not one sweep.
  *
- * MEASURED ENVELOPE AT `4ac40b82`. Every figure below was read run-to-completion through this harness, and
- * every shape was ALSO re-evaluated with nothing relaxed - zero inputs refused, at both the real consensus
- * hash allowance and the real standard one - with a knob-liveness control that bites on the same bytes.
+ * MEASURED ENVELOPE AT `5e03daee`, X48 re-measurement with the two hash regimes split and each evaluated by
+ * the instruction set that implements it. Every figure below was read run-to-completion through this harness,
+ * and every shape was ALSO re-evaluated with nothing relaxed - zero inputs refused, at the real consensus
+ * allowance AND the real standard one - with knob-liveness controls that bite on the same bytes. The three
+ * sweep rows are asserted by this file; the four capstone rows come from `layer3-envelope-probe.ts` observing
+ * each capstone's own builder, and are recorded rather than asserted.
  *
- *   shape          part  inputs  serialized   relay%   worst density        binds first
- *   A13 graph       3       8      23,734B    23.7%   0.4067x @ input 6    unlocking bytes  0.5094x
- *   C2 cycle        4      79      53,101B    53.1%   0.6491x @ input 77   op-cost density  0.6491x
- *   C1 DeFi         5      38      63,130B    63.1%   0.6182x @ input 36   unlocking bytes  0.7451x
- *   C3 max graph    8     108     100,354B   100.4%   0.9217x @ input 106  RELAY SIZE       1.0035x
+ *   shape          part  inputs  serialized   relay%   worst density        binds first          worst hash
+ *   N=2             2       3       2,429B     2.4%   0.2177x @ input 2    SigChecks  0.2500x   0.1078x std
+ *   N=4             4       5       4,977B     5.0%   0.2570x @ input 1    op-cost    0.2570x   0.1078x std
+ *   N=8             8       9      10,661B    10.7%   0.3630x @ input 1    op-cost    0.3630x   0.1078x std
+ *   A13 graph       3       8      23,845B    23.8%   0.4067x @ input 6    script B   0.5131x   0.1078x std
+ *   C2 cycle        4      79      53,249B    53.2%   0.6491x @ input 77   op-cost    0.6491x   0.1078x std
+ *   C1 DeFi         5      38      63,315B    63.3%   0.6182x @ input 36   script B   0.7451x   0.1078x std
+ *   C3 max graph    8     108     100,650B   100.7%   0.9217x @ input 106  RELAY SIZE 1.0065x   0.1078x std
  *
- * THE BINDING LIMIT IS NOT THE SAME ONE TWICE, and it is not always density. C1 binds on the 10,000-byte
- * per-input script limit, C2 on operation-cost density, C3 on the 100,000-byte standard relay ceiling. Only
- * C3 is over anything, and what it is over is a POLICY limit: it is inside every consensus limit measured.
+ * THE BINDING LIMIT IS NOT THE SAME ONE TWICE, and it is not always density. C1 and A13 bind on the
+ * 10,000-byte per-input script limit, C2 and the sweep on operation-cost density, N=2 on per-input SigChecks,
+ * C3 on the 100,000-byte standard relay ceiling. Only C3 is over anything, and what it is over is a POLICY
+ * limit: it is inside every consensus limit measured.
  *
- * C3's overrun is 354 bytes, 0.35%. Costed against the measured per-slot serialized sizes: the two cheapest
- * slot pairs are 177 and 211 bytes, so removing two frees 388 and lands at 99,966. The fixture's own note
- * that 62 of its 108 slots are an unused Ledger trailing region prices the same fix at 13,048 bytes, landing
- * at 87,306 (87.3%). Equivalently, 45 bytes off each of the eight projection scripts, or 354 off the single
- * controller script, a 12.4% cut. Which slots are removable is a design question, not a measurement one.
+ * THE CORRECTED HASH REGIME MOVES NOTHING, and that is now measured rather than assumed. Every shape binds on
+ * the same limit it bound on at `4ac40b82`, at the same ratio; the serialized and script-byte figures that did
+ * move (A13 23,734 -> 23,845 B and 0.5094 -> 0.5131x, C2 53,101 -> 53,249, C1 63,130 -> 63,315, C3 100,354 ->
+ * 100,650) are properties of the BUILT TRANSACTION, which no VM knob can reach, and moved with the base commit.
+ *
+ * WHY IT MOVES NOTHING, as a number. Worst hash usage anywhere in the envelope is 0.1078x of the real standard
+ * allowance, and the input that sets it is the same one in all seven shapes: the 126-byte P2PKH fee funder, 9
+ * iterations against an 83-iteration allowance. The multi-kilobyte Layer-3 covenant inputs, which do up to 177
+ * iterations, top out at 0.0487x - their density budget grows with their script faster than their hashing does.
+ * A shape could only be masked by the other fixtures' 3-per-byte knob if it landed between 1.0x and 6.0x of the
+ * standard allowance; the envelope is 9.3x below the bottom of that window.
+ *
+ * C3's overrun is 650 bytes, 0.65%. Costed against the measured per-slot serialized sizes: the cheapest slot
+ * pairs are 177 and 211 bytes each, so removing four frees 810 and lands at 99,840. The fixture's own note that
+ * 62 of its 108 slots are an unused Ledger trailing region prices the same fix far larger. Which slots are
+ * removable is a design question, not a measurement one.
  *
  * Every figure above was derived from a build, never copied from a recorded table. Where a fixture's own
  * comment records a different number, the difference is reported rather than reconciled here: the fixtures'

@@ -344,10 +344,12 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   const geometry = shapeGeometry(spec);
   const family = calibration[spec.family];
   const rows = spec.participants + spec.invocations;
-  const outOfRange: string[] = [];
+  // Deduplicated: several classes share a driver, and reporting "participants + invocations 32 exceeds ..."
+  // twice tells the reader there are two problems when there is one.
+  const outOfRangeSet = new Set<string>();
   const check = (driver: number, envelope: Envelope, what: string): void => {
     if (driver > envelope.maximumDriver) {
-      outOfRange.push(`${what} ${driver} exceeds the calibrated maximum ${envelope.maximumDriver}`);
+      outOfRangeSet.add(`${what} ${driver} exceeds the calibrated maximum ${envelope.maximumDriver}`);
     }
   };
   const classes: ClassPrediction[] = [];
@@ -476,7 +478,7 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
     worstSigCheckRatio,
     limits,
     verdict: limits[0].ratio > 1 ? 'OVER' : 'FITS',
-    outOfRange,
+    outOfRange: [...outOfRangeSet],
     classes,
   };
 }

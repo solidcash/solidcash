@@ -53,7 +53,10 @@ correction), so relay size is still the tightest rule for C3. What changed is th
 **The refusal no capacity measurement would ever have found was dust (X49, citation, BCHN v29.0.0 regtest).**
 C1 is inside every capacity limit and the node still refused it, for a 10-satoshi output to a one-byte `OP_1`
 script against a 474-satoshi threshold. It was invisible for the whole effort because the Layer-3 semantic
-profile sets `enforceDust: false` and `MockNetworkProvider` then sets `dustRelayFeePerKb: 0n`.
+profile sets `enforceDust: false` and `MockNetworkProvider` then sets `dustRelayFeePerKb: 0n`. X60 has since
+fixed the fixtures - **re-measured at `1591e87f`, none of the 22 test files carrying a bare `OP_1` output is
+at 10 satoshis any more** - which changes nothing about why the rule belongs in the envelope. The finding was
+never that one fixture was wrong; it was that a capacity-only envelope cannot see this class at all.
 
 **The estimator cannot be the gate, in either direction (F2, re-measured here).** F2 is conservative in
 sample by construction and is *not* conservative out of sample. Re-derived at `1591e87f`: worst in-sample
@@ -197,7 +200,7 @@ this envelope adds no second, different participant cap, because participant cou
 | A13: 3 participants, 8 inputs, **23,458 B** (citation, X59/X60). | **`CONSENSUS_FIT`** - executed, accepted and **mined** by BCHN v29.0.0 on regtest with May 2026 active, `85a78285c463c5b1...` at height 1401, with a hostile control refused on the same chain in the same run and nothing relaxed (citation, the ledger). | **SUPPORTED** |
 | C2 heterogeneous cycle: 4 participants, 79 inputs, **52,733 B** (citation, X59/X60). | **`CONSENSUS_FIT`** - `de22608f5f088c1f...` at height 1304, same conditions (citation, the ledger). | **SUPPORTED** |
 | C3's maximum graph *as built*: 8 participants, 108 inputs, **99,670 B** (citation, X59/X60) - inside the relay ceiling by 330 bytes, and clear of dust since X60 raised its `OP_1` placeholder from 10 satoshis to 1,000. | **`CONSENSUS_FIT`** - `5eb1fdb123cdcd44...` at height 1090, same conditions (citation, the ledger). | **SUPPORTED.** This row read *OUT OF ENVELOPE at 100,650 B, 650 over relay* before F4 and X60. |
-| C1's DeFi graph: 5 participants, 38 inputs, **62,722 B** (citation, X59/X60). Inside every capacity rule, and its dust defect is fixed. | **`SEMANTIC`.** **C1 is the one capstone that is NOT node-verified**: it executes on the node and fails `mandatory-script-verify-flag-failed` at inputs 2-6, blocked by a provider defect - `RegtestNetworkProvider.addUtxo` ignores `token.category` and silently mints a fresh genesis - and not by the capstone (citation, the ledger). | **SUPPORTED WITH CAVEATS** |
+| C1's DeFi graph: 5 participants, 38 inputs, **62,722 B** (citation, X59/X60). Inside every capacity rule when last measured against them (citation, `ffef8568` at 63,315 B and 0.7451x worst script; both readings can only have improved with F4's cut, and neither is re-derived here). Its dust defect is fixed - X60 raised the placeholder to 1,000 satoshis. | **`SEMANTIC`.** **C1 is the one capstone that is NOT node-verified**: it executes on the node and fails `mandatory-script-verify-flag-failed` at inputs 2-6, blocked by a provider defect - `RegtestNetworkProvider.addUtxo` ignores `token.category` and silently mints a fresh genesis - and not by the capstone (citation, the ledger). | **SUPPORTED WITH CAVEATS** |
 | E1 result graph: 6 participants, 19 inputs, 68,904 B, 0.6890x (citation, `ffef8568`, **not re-measured** - this figure predates F4's per-participant cut and is an upper bound on today's build). | **`SEMANTIC` only.** The node returned `missing-inputs`, so it stopped before executing anything and the script validity is libauth's. | **SUPPORTED WITH CAVEATS** |
 | Any transaction carrying an output below its dust threshold. | **NODE_MEASURED** | **OUT OF ENVELOPE** |
 | Any descriptor outside F2's calibrated driver ranges (e.g. participants + invocations > 16). | none - an upper envelope carries no guarantee outside its fitted range | **NOT SCREENABLE.** WARN at plan time, never CLEAR; the build-time gate still decides |

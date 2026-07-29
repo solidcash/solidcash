@@ -61,12 +61,37 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * measured floor under-predicted real corpus masters 34 times out of 45, because density is a property of a
  * contract body and not of any driver in the descriptor.
  *
- * WHAT IS STILL WRONG, AND IS REPORTED RATHER THAN FIXED: the binding-LIMIT prediction. Density is still
- * named first at 0.5758x against a script prediction of 0.5002x, on a population measuring 0.2177x and
- * 0.4651x, because the master-density coefficient over-predicts its own calibration points by up to 284% and
- * the corpus by up to 601%. Ranking bounds of such different tightness does not rank limits. `estimate` now
- * publishes `bindingUnresolved`, the set the ranking cannot separate, which contained the true binder on all
- * forty-five - but a set is not an answer, and the answer needs per-contract cost measurements.
+ * X78: THE BINDING-LIMIT PREDICTION, WHICH X70 REPORTED RATHER THAN FIXED. Density was named first at
+ * 0.5758x against a script prediction of 0.5002x on a population measuring 0.2177x and 0.4651x, because the
+ * master-density coefficient over-predicts by up to 284% in-sample and 601% on the corpus while the script
+ * coefficient over-predicts by at most 10%. X70 concluded that ranking bounds of such different tightness
+ * does not rank limits and published `bindingUnresolved` instead. THE DIAGNOSIS WAS RIGHT AND THE CONCLUSION
+ * WAS TOO STRONG: what cannot be ranked is bounds of different tightness, and the fix is to stop comparing
+ * them by taking each coefficient's demonstrated over-prediction back out before the comparison.
+ *
+ * Two corrections make that work, and both are measurements the file already had:
+ *
+ *   - the slack to discount is the one the envelope showed AT the driver being predicted, not the largest it
+ *     showed anywhere. The controller-density envelope is exact on C2 and 30.8% loose elsewhere; discounting
+ *     C2's own prediction by 30.8% moves a limit that binds exactly below one that does not;
+ *   - the two SIZE limits do not have zero slack. X70 gave them one because the arithmetic is exact, but
+ *     every byte in that sum comes from the same enveloped class predictions as the script limit. Term by
+ *     term they are TIGHT - 3.3% over on C1, 10.0% on C3 - and ranking them as loose is as wrong as ranking
+ *     density as tight.
+ *
+ * MEASURED AFTER, off the training data and on it: the ranked leader names the measured binder on 45/45 of
+ * the corpus (was 0/45), on 4/4 capstones (was 3/4), and misses the held-out E1 graph exactly as it did
+ * before - 49/50 against 3/50 over the whole population. The measured binder remains inside
+ * `bindingUnresolved` on every row, and that set shrinks from 3 limits to 2 on the corpus and to ONE on C2
+ * and C3, where the one is the measured binder. Not one predicted magnitude moves: `ratio`, `predicted`,
+ * `serializedBytes`, `worstUnlockingBytes` and the FITS/OVER verdict are the same upper bounds, which is why
+ * the conservatism table below is unchanged to the byte.
+ *
+ * WHAT IS STILL WRONG. E1, the one real held-out graph, is still named density 0.8049x where relay size
+ * 0.7129x binds at 0.6813x measured; the de-biased density floor lands at 0.6846x against 0.6368x measured,
+ * i.e. the controller-density envelope is 26.4% loose at E1 where its bracketing calibration points showed
+ * 17.6%. Local slack under-corrects there, and no re-fit fixes it: that IS limitation 2, a cost driven by a
+ * contract body the descriptor does not carry.
  *
  * OUT OF SAMPLE THERE IS NO GUARANTEE, AND THIS FILE MEASURES THE GAP RATHER THAN ASSUMING IT AWAY.
  * Leave-one-out: 24/28, worst -13.5%, all of it on density. A real six-participant graph the calibration
@@ -357,6 +382,11 @@ describe('F2 estimator: calibration against all seven measured shapes', () => {
    * the shape is large. F1's headline was that this differs per shape, so agreement is a real check and not
    * a restatement. The predicted binding RATIO must dominate the measured one, or the estimate is a promise
    * the shape cannot keep.
+   *
+   * X78 ADDRESSES THAT CLAIM BY NAME rather than by list position. It used to read `limits[0].ratio`, which
+   * was the largest predicted ratio only because the list was sorted by ratio; once the list is ordered by
+   * the de-biased ratio, the same claim has to name `worstRatio` or it silently becomes a weaker one. The
+   * number compared is identical - this is the same assertion, addressed differently.
    */
   it('MEASURED: the predicted binding ratio dominates the measured one on every shape', async () => {
     const { shapes } = await fullBasis();
@@ -365,8 +395,11 @@ describe('F2 estimator: calibration against all seven measured shapes', () => {
       const prediction = estimate(shape.spec, calibration);
       console.log(`[F2] ${formatEstimate(prediction)} | measured binds ${shape.bindingLimit} `
         + `${shape.bindingRatio.toFixed(4)}x`);
-      expect(prediction.limits[0].ratio, `${shape.name} predicted binding ratio`)
+      expect(prediction.worstRatio, `${shape.name} predicted binding ratio`)
         .toBeGreaterThanOrEqual(shape.bindingRatio - 1e-9);
+      // And `worstRatio` really is the maximum over the list, not just the head of it.
+      expect(prediction.worstRatio)
+        .toBe(Math.max(...prediction.limits.map((limit) => limit.ratio)));
     }
   }, 900_000);
 
@@ -1207,12 +1240,186 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     const under = rows.filter((row) => row.predictedWorst < row.measuredWorst);
     expect(under.map((row) => `${row.name} ${row.predictedWorst} < ${row.measuredWorst}`)).toEqual([]);
     expect(classMisses).toEqual([]);
-    // THE RANKING IS NOT FIXED, AND IS NOT ASSERTED TO BE. What IS asserted is that the measured binder is
-    // never ruled out: naming density first while the truth is script bytes is a resolution failure the model
-    // declares, where F2 asserted the wrong answer with no qualification at all.
+    // THE RANKING, WHICH X78 FIXED AND WHICH IS NOW ASSERTED. X70 could only assert that the measured binder
+    // was never RULED OUT, because the leader named density on every row while script bytes bound on every
+    // row. De-biased ranking names the measured binder itself, so both are asserted: the set still contains
+    // it, and the leader now IS it. The second assertion is the one that would fail if a later coefficient
+    // change re-loosened the script term or tightened the density term.
     expect(inUnresolved).toBe(rows.length);
+    expect(bindingAgreement, 'the ranked leader disagrees with the measured binder').toBe(rows.length);
+    // The unresolved set is smaller than it was, and that is asserted rather than admired: interval
+    // dominance rules out per-input SigChecks on this population, which the leader-floor rule could not.
+    const unresolvedSizes = rows.map((row) => row.unresolved.length);
+    console.log(`[F2/X70] unresolved set size ${Math.min(...unresolvedSizes)}..${Math.max(...unresolvedSizes)}`);
+    expect(Math.max(...unresolvedSizes)).toBeLessThanOrEqual(2);
     // The before column is kept as an assertion too, so this row cannot quietly stop demonstrating anything:
     // the model it replaced must still be visibly wrong on this population.
     expect(before.filter((error) => error < 0).length).toBeGreaterThanOrEqual(before.length - 1);
   }, 1_800_000);
+});
+
+/* -------------------------------------------------------------------------------------------------------- */
+/* X78: the ranking, on every shape whose binder is measured, and on the whole published corpus              */
+/* -------------------------------------------------------------------------------------------------------- */
+
+/** Same limit under two names: the fixtures record `standard transaction size` and a hash-priced density. */
+const namesTheSameLimit = (measured: string, predicted: string): boolean =>
+  measured === predicted
+  || (measured.startsWith('operation-cost density') && predicted === 'operation-cost density')
+  || (measured === 'standard transaction size' && predicted === 'standard relay transaction size');
+
+/** The pre-X78 ranking: sort by the raw predicted ratio, which is what `limits` used to be sorted by. */
+const legacyLeader = (prediction: ReturnType<typeof estimate>): string =>
+  [...prediction.limits].sort((left, right) => right.ratio - left.ratio)[0].limit;
+
+describe('F2 estimator: X78 - which limit is NAMED, against which limit was measured', () => {
+  /**
+   * THE SCORE, on every shape in this repository whose binding limit was actually measured.
+   *
+   * Five of them: the four recorded capstones, which are the calibration set, and the held-out E1 graph,
+   * which is not. Both rankings are computed from ONE set of predictions in one process, so the columns
+   * differ by the ordering rule and by nothing else.
+   */
+  it('MEASURED: the ranked leader against the measured binder, before and after, on all five built shapes',
+    () => {
+      const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+      let before = 0;
+      let after = 0;
+      let inSet = 0;
+      for (const shape of [...F2_BASIS, ...F2_HELD_OUT]) {
+        const prediction = estimate(shape.spec, calibration);
+        const legacy = legacyLeader(prediction);
+        const ranked = prediction.limits[0];
+        const legacyHit = namesTheSameLimit(shape.bindingLimit, legacy);
+        const rankedHit = namesTheSameLimit(shape.bindingLimit, ranked.limit);
+        before += legacyHit ? 1 : 0;
+        after += rankedHit ? 1 : 0;
+        inSet += prediction.bindingUnresolved.some((limit) => namesTheSameLimit(shape.bindingLimit, limit))
+          ? 1 : 0;
+        console.log(`[F2/X78] ${shape.name.padEnd(20)} measured=${shape.bindingLimit.padEnd(36)}`
+          + ` before=${legacy.padEnd(32)}${legacyHit ? 'HIT ' : 'MISS'}`
+          + ` after=${ranked.limit.padEnd(32)}${rankedHit ? 'HIT ' : 'MISS'}`
+          + ` unresolved=${prediction.bindingUnresolved.length}`);
+        for (const limit of prediction.limits) {
+          console.log(`[F2/X78]     ${limit.limit.padEnd(32)} ratio=${limit.ratio.toFixed(4)}`
+            + ` floor=${limit.ratioFloor.toFixed(4)}`);
+        }
+      }
+      console.log(`[F2/X78] leader agrees with the measured binder: before ${before}/5, after ${after}/5;`
+        + ` the measured binder is in the unresolved set on ${inSet}/5`);
+      // The claim, asserted. E1 is the one miss and stays a miss - see the file header for why local slack
+      // under-corrects there - so this is `>` and not a clean sweep, deliberately.
+      expect(after).toBeGreaterThan(before);
+      expect(inSet).toBe(5);
+      // And the four in-sample capstones are all named correctly, which is the part that regressed under a
+      // GLOBAL-slack discount and is the reason the slack is local.
+      const capstones = F2_BASIS.filter((shape) => namesTheSameLimit(
+        shape.bindingLimit, estimate(shape.spec, calibration).limits[0].limit,
+      ));
+      expect(capstones).toHaveLength(F2_BASIS.length);
+    });
+
+  /**
+   * THE SAME QUESTION ON THE PUBLISHED CORPUS, predicted for every bus-reachable contract at four
+   * participant counts. Nothing is built here - this is the estimator's own output over the census, which is
+   * what the board's fit table reports - so it says which limit the table NAMES, not which one binds.
+   */
+  it('MEASURED: what the ranking names across the whole census, before and after', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const rows = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
+    const beforeTally: Record<string, number> = {};
+    const afterTally: Record<string, number> = {};
+    let widened = 0;
+    for (const row of rows) {
+      for (const participants of [1, 2, 4, 8]) {
+        const prediction = estimate(replicaSpec(row, participants), calibration);
+        const key = (limit: string): string => `${limit} @ N=${participants}`;
+        beforeTally[key(legacyLeader(prediction))] = (beforeTally[key(legacyLeader(prediction))] ?? 0) + 1;
+        afterTally[key(prediction.limits[0].limit)] = (afterTally[key(prediction.limits[0].limit)] ?? 0) + 1;
+        // The unresolved set may never GROW under interval dominance relative to what it rules in: the
+        // largest floor on the shape is at least the leader's own floor, by definition of a maximum.
+        if (prediction.bindingUnresolved.length > prediction.limits.length) widened += 1;
+      }
+    }
+    console.log(`[F2/X78] census rows ${rows.length} at N=1,2,4,8`);
+    for (const [key, count] of Object.entries(beforeTally).sort()) {
+      console.log(`[F2/X78]   BEFORE ${String(count).padStart(4)}  ${key}`);
+    }
+    for (const [key, count] of Object.entries(afterTally).sort()) {
+      console.log(`[F2/X78]   AFTER  ${String(count).padStart(4)}  ${key}`);
+    }
+    expect(widened).toBe(0);
+    // At N=1 every one of these is a one-participant graph whose projection input alone is 4,542 bytes, and
+    // F3 measured script bytes binding on every such graph it built. After X78 the table names script bytes
+    // on all of them. BEFORE, it named them on 22 - the rows whose own redeem script is wide enough to beat
+    // a flat 0.5758x density prediction on its own - which is why the corpus row that matters is the 45
+    // BUILT one-slot contracts, where the raw ranking scored zero: those are selected by widest redeem and
+    // are still all under it.
+    expect(afterTally['unlocking bytecode length @ N=1']).toBe(rows.length);
+    const beforeScriptAtOne = beforeTally['unlocking bytecode length @ N=1'] ?? 0;
+    console.log(`[F2/X78] script bytes named at N=1: before ${beforeScriptAtOne}/${rows.length},`
+      + ` after ${rows.length}/${rows.length}`);
+    expect(beforeScriptAtOne).toBeLessThan(rows.length);
+  });
+
+  /**
+   * CONSERVATISM IS UNTOUCHED, ASSERTED RATHER THAN ASSUMED.
+   *
+   * Re-ordering a list is only safe if nothing reads the order for a capacity decision. Every predicted
+   * magnitude is recomputed here from the same descriptors and compared against the ordering-independent
+   * quantity it must equal, and the FITS/OVER verdict is checked against the MAXIMUM ratio rather than
+   * against the head of the list - which is the one place a re-ordering could have turned an OVER into a
+   * FITS without anyone noticing.
+   */
+  it('the ranking change moves no predicted magnitude and no verdict', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const specs = [
+      ...[...F2_BASIS, ...F2_HELD_OUT].map((shape) => shape.spec),
+      ...F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number')
+        .flatMap((row) => [1, 4, 8].map((participants) => replicaSpec(row, participants))),
+    ];
+    for (const spec of specs) {
+      const prediction = estimate(spec, calibration);
+      expect(prediction.worstRatio).toBe(Math.max(...prediction.limits.map((limit) => limit.ratio)));
+      expect(prediction.verdict).toBe(prediction.worstRatio > 1 ? 'OVER' : 'FITS');
+      // THE NAMED BINDER AGREES WITH THE VERDICT. An OVER shape must be led by a limit it is predicted to
+      // exceed, or the estimator says "too big" and then points at something that fits.
+      expect(prediction.limits[0].ratio > 1).toBe(prediction.verdict === 'OVER');
+      // The de-biased ratio is a LOWER figure than the bound it discounts, on every limit, always: an exact
+      // limit discounts nothing and a fitted one discounts a non-negative slack.
+      for (const limit of prediction.limits) {
+        expect(limit.ratioFloor).toBeLessThanOrEqual(limit.ratio + 1e-12);
+        expect(limit.ratioFloor).toBeGreaterThanOrEqual(0);
+      }
+      // A P2SH input's de-biased bytes still cannot fall below the script it redeems.
+      for (const klass of prediction.classes) {
+        expect(klass.bytesFloor).toBeGreaterThanOrEqual(klass.exactBytes - 1e-9);
+        expect(klass.bytesFloor).toBeLessThanOrEqual(klass.unlockingBytes + 1e-9);
+      }
+    }
+    console.log(`[F2/X78] ${specs.length} descriptors: worstRatio is the list maximum, the verdict follows it,`
+      + ' and every de-biased figure sits between its exact floor and its conservative bound');
+  });
+
+  /**
+   * THE CONTROL. If `localSlack` returned zero everywhere - i.e. if no coefficient had ever been measured
+   * loose - the de-biased ranking would be the raw ranking, and this whole row would be measuring nothing.
+   * The check is that the two rankings actually DIFFER on the population, and by how much.
+   */
+  it('CONTROL: the de-biased ranking is not the raw ranking', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const specs = [...F2_BASIS, ...F2_HELD_OUT].map((shape) => shape.spec);
+    const differing = specs.filter((spec) => {
+      const prediction = estimate(spec, calibration);
+      return legacyLeader(prediction) !== prediction.limits[0].limit;
+    });
+    console.log(`[F2/X78] the two rankings name a different leader on ${differing.length}/${specs.length}`
+      + ` built shapes: ${differing.map((spec) => spec.name).join(', ')}`);
+    expect(differing.length).toBeGreaterThan(0);
+    // And at least one coefficient really is measured loose at a driver in use, or there is nothing to take
+    // back out. The master-density envelope is the one X70 named at 284%.
+    expect(Math.max(...calibration.graph.masterDensity.overPrediction)).toBeGreaterThan(1);
+    expect(calibration.graph.masterDensity.drivers)
+      .toHaveLength(calibration.graph.masterDensity.overPrediction.length);
+  });
 });

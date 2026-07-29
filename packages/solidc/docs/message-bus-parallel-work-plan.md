@@ -166,7 +166,7 @@ task-specific report, not in this table.
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
 | F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
-| X64 | DECISION: does `standard-output-template` ship? | — | R1 | **DECISION NEEDED** | the weakest-evidence rule decides whether C2 and E1 are in the envelope; 18 fixtures build a bare `OP_1` |
+| X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **DECIDED - measure on the node** | user's call: probe a 1,000-sat bare `OP_1` against BCHN and let the result decide; relayed to the agent already holding the stack |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |

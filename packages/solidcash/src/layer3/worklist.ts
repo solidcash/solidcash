@@ -1,11 +1,11 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  occurrenceCountViolation, scriptToBytecode,
+  scriptToBytecode,
   type AbiFunction, type ArgSource, type ExternalCallAbi,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
-  assertNoUnboundCallOptions, planCompiledGraph, resolveGraphAbiFunction,
+  assertNoUnboundCallOptions, assertPlannedOccurrenceCount, planCompiledGraph, resolveGraphAbiFunction,
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
 
@@ -69,9 +69,10 @@ const functionAbi = (participant: WorklistParticipant, name: string): AbiFunctio
 /**
  * Compiler-authored mode of one graph edge.
  *
- * Never coerce. `planCompiledGraph` now refuses an explicit mode outside `call`/`staticcall`, but this helper
- * always supplies one, which bypasses that planner's INFERENCE path - so a silent `mode ?? 'call'` here would
- * still let a delegate edge execute as an ordinary call, unseen by either check.
+ * Never coerce. This helper always supplies a mode, so a silent `mode ?? 'call'` here would hand
+ * `planCompiledGraph` an explicit `call` for a delegate edge. That planner now reads the compiler-authored
+ * mode whether or not one was supplied, so the two agree - but the refusal belongs here as well, because this
+ * is where the published mode is first read and where a coercion would be written.
  */
 const edgeCallMode = (call: ExternalCallAbi): 'call' | 'staticcall' => {
   const mode = call.callMode ?? 'call';
@@ -325,18 +326,18 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           callsiteId: call.callsiteId!,
           kind: occurrenceKind,
         }) ?? -1;
-        const valid = Number.isInteger(count) && count >= 0
-          && (occurrenceKind === 'loop' || count <= 1)
-          && (call.maximumOccurrences === undefined || count <= call.maximumOccurrences);
-        if (!valid) {
+        // Only what the shared bound cannot know: whether the derivation probe answered at all. An absent
+        // callback yields -1 and a non-integer answer is not a row count; both mean there is no proof to check.
+        if (!Number.isInteger(count) || count < 0) {
           throw new Error(
             `layer3: callsite ${call.callsiteId} lacks a valid ${occurrenceKind} occurrence proof`,
           );
         }
-        // A published floor is a compile-time trip count, so planning fewer rows than it proves is a builder
-        // error the planner can name precisely instead of deferring to a covenant row-partition mismatch.
-        const violation = occurrenceCountViolation(call, count);
-        if (violation) throw new Error(`layer3: ${violation}`);
+        // X36: every bound leg - the conditional ceiling of one, the proven ceiling and the proven floor - is
+        // the shared helper's, so this entry point and `planCompiledGraph` refuse the same counts with the same
+        // words. The ceiling legs used to be spelled out again in the gate above, which refused the same counts
+        // with a coarser message and was free to drift from the bound it was duplicating.
+        assertPlannedOccurrenceCount(call, count);
       }
       if (call.selectorArrayVar || call.fnPtrCall) {
         for (let reached = 0; reached < count; reached += 1) {

@@ -245,6 +245,36 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.81 The X74 follow-up found a hole that survived the merged fix
+
+Two questions went back to D3 after `9238abff`. Both answers were better than the questions, and the second one
+**found a live hole in code the board had already merged**.
+
+**The question was premised wrong, and D3 said so.** I asked what happens once the category label exists
+on-chain. **The label never exists on-chain** - `'77'*32` is not a category and never becomes one; only the real
+category, a txid, does. As posed, the question had no reachable case.
+
+**The reachable version, which D3 then went and found: a real category from a PREVIOUS RUN, requested by a fresh
+instance.** The in-memory index is empty, so the merged code took the genesis path and **minted a replacement** -
+the exact silent substitution this row exists to kill, **surviving across runs**, still live after the fix. Nobody
+was looking for it.
+
+The resolution rests on a fact that makes the check exact rather than approximate: **a CashTokens category id IS
+the txid of the genesis transaction**, so "does this category exist on this chain" is answerable by asking the
+node for that transaction. Resolution is now three steps - memoized -> mint; **on-chain -> throw**; not a category
+at all -> genesis and memoize, which is the path the board directed be kept. A node lacking `txindex` answers
+"no" and **degrades to the genesis path rather than to a wrong mint** - the correct failure direction, since a
+missing index must never become a silent substitution.
+
+**The scope answer is complete in both directions.** The maps are per-instance fields, with the only `static`
+being a numeric constant. The effective scope is one level up, in `test-util.ts`'s module-scoped
+`regtestSingleton`, and D3 bounded it by **verifying vitest's `isolate: true` in the shipped default file rather
+than assuming it**. So: shared within a test file, never across files - which is exactly what `Keccak256`'s seven
+call sites in one file require.
+
+D3 also declined to rebuild mid-run, naming the phantom-failure trap explicitly. Correct: that trap cost a
+round-18 worker four phantom failures and cost the integration owner a false alarm two rounds running.
+
 ### 4.80 ALL FOUR CAPSTONES MINED, in one run, on a real node
 
 Merged at `9238abff`. This is the milestone the effort was pointed at.

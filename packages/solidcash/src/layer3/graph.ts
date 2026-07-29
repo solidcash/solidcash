@@ -1283,6 +1283,10 @@ export function planCompiledGraph(
       // rebuilds this byte from its own slot and rejects the mismatch, so the transaction never settled - but it
       // failed as an unnamed script error at the caller's input rather than as a planning refusal.
       //
+      // Ordered AFTER the read-only proof on purpose: when a supplied `staticcall` disagrees with a published
+      // `call` AND names a state-writing callee, both would fire, and "target is not compiler-proven read-only"
+      // is the more specific answer.
+      //
       // A name-matched candidate set is the only place a published mode exists to compare against. When it is
       // empty the callsite resolves its method at runtime - a raw `__raw__` edge, a function pointer, a selector
       // table - and its `functionName` is a placeholder, so there is nothing to disagree with here; that shape

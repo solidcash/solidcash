@@ -119,7 +119,13 @@ interface InvocationFrame {
   depthStart: number;
   subtreeEndStart: number;
   selectorStart: number;
-  callModeStart: number;
+  /**
+   * X5 turned this byte into a call-OPTIONS bitfield, not a two-valued mode: bit 0 is the compiler-proven
+   * read-only (`staticcall`) mode and bits 1-7 are source-level options, none of them an admitted graph edge.
+   * The projection verifier bounds the whole byte with `require(callOptions <= 1)` and pins the root row's
+   * copy to 0, so the name here is the field, not one of its readings.
+   */
+  callOptionsStart: number;
   argsStart: number;
   argsLength: number;
   resultStart: number;
@@ -184,7 +190,7 @@ function transcriptFields(bytes: Uint8Array): TranscriptFields {
       depthStart: cursor + 4,
       subtreeEndStart: cursor + 5,
       selectorStart: cursor + 7,
-      callModeStart: cursor + 11,
+      callOptionsStart: cursor + 11,
       argsStart: cursor + 14,
       argsLength,
       resultStart: cursor + 16 + argsLength,
@@ -781,11 +787,14 @@ describe('A1 review: unattacked transcript fields', () => {
       },
     },
     {
-      // Invocation frame: call vs staticcall.
-      field: 'invocation call mode',
+      // Invocation frame: the call-options byte. Setting bit 0 claims the read-only (`staticcall`) mode on a
+      // row the caller's compiled route emitted as an ordinary call. Bits 1-7 are unreachable from here:
+      // `require(callOptions <= 1)` in the projection verifier refuses them before any comparison runs, so
+      // this case attacks the only bit that has a defined honest value to disagree with.
+      field: 'invocation call options (read-only bit)',
       input: INPUT.projection0,
       rewrite: (transcript) => patchTranscript(transcript, [{
-        at: transcriptFields(transcript.bytes).invocations[1].callModeStart,
+        at: transcriptFields(transcript.bytes).invocations[1].callOptionsStart,
         bytes: Uint8Array.of(1),
       }]),
     },

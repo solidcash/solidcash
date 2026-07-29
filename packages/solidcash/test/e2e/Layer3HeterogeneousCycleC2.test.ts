@@ -800,35 +800,53 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     const transaction = built.builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
     const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: RELAXED_BUDGET_LIMITS } as never);
+    const measured: { input: number; bytes: number; cost: number; ratio: number; instructions: number }[] = [];
     const measure = (input: number): { bytes: number; cost: number; ratio: number; instructions: number } => {
       const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as any;
-      expect(state.error).toBeUndefined();
+      expect(state.error, `input ${input} failed on the relaxed budget`).toBeUndefined();
       const { densityControlLength: bytes, operationCost: cost } = state.metrics;
-      return {
-        bytes, cost, ratio: cost / (bytes * 800), instructions: state.metrics.evaluatedInstructionCount,
+      const row = {
+        input, bytes, cost, ratio: cost / (bytes * 800), instructions: state.metrics.evaluatedInstructionCount,
       };
+      measured.push(row);
+      return row;
     };
     const controller = measure(built.layout.controllerInput);
     const projections = built.layout.projectionInputs.map(measure);
     const participants = built.layout.participantInputs.map(measure);
+    console.log('C2 capacity, run to completion (input:bytes:cost:instructions:ratio): '
+      + measured.sort((left, right) => left.input - right.input)
+        .map((row) => `${row.input}:${row.bytes}b:${row.cost}:${row.instructions}i:${row.ratio.toFixed(4)}`)
+        .join(' '));
+    console.log(`C2 serialized transaction size: ${built.transaction.length / 2} bytes; `
+      + `transcript ${built.transcript.bytes.length} bytes; ${built.layout.totalSlots} slots`);
 
-    // Measured at this commit. 4 participants, 5 invocations, a 743-byte transcript, 79 slots:
+    // RE-MEASURED at this commit, run to completion, ratio against the ORDINARY 800/byte budget.
+    // 4 participants, 5 invocations, a 743-byte transcript, 79 slots:
     //
-    //   hub        4,709 B  2,234,254  0.5931   projections  5,294 B each  1,951,194-1,980,786  0.4607-0.4677
-    //   leg B      2,602 B    935,055  0.4492   controller   2,354 B       1,538,567            0.8170
-    //   leg C      2,739 B    949,332  0.4332
-    //   auditor    2,682 B    905,373  0.4220
+    //   input             bytes   cost        instructions   ratio
+    //   0    hub          4,766   2,195,317    20,603        0.5758
+    //   66   leg B        2,585     894,508     8,398        0.4325
+    //   68   leg C        2,722     910,810     8,543        0.4183
+    //   70   auditor      2,766   1,159,267    10,996        0.5239
+    //   73-76 projections 5,464 each, 1,721,310-1,739,262, 15,008 each, 0.3938-0.3979
+    //   77   controller   2,309   1,198,938     9,536        0.6491   <- the worst input, and it FITS
     //
-    // EVERY input fits. C2 settles under ordinary BCH-2026 capacity today, so the relaxed profile is NOT what
-    // this composition needs - its SEMANTIC-only label is conservative rather than forced.
+    // Serialized transaction: 53,249 bytes, inside both the 100,000-byte standard relay ceiling and the
+    // 1,000,000-byte consensus one. EVERY input fits, so C2 settles under ordinary BCH-2026 capacity today and
+    // the relaxed profile is NOT what this composition needs - its SEMANTIC-only label is conservative.
     //
-    // This is also the control X25 needed. C1 and C2 have the SAME row counts - 4 participants, 5 invocations
-    // - with different compositions and very different transcripts (1,141 vs 743 bytes). Their projection
-    // inputs evaluate to a BYTE-IDENTICAL 17,259 instructions, and the fourth projection, the one covering the
-    // returning participant, is 17,584 in both. So the projection verifier's cost is a pure function of
-    // participant and invocation count: it depends on neither transcript length nor on what the participants
-    // do. The controller differs - 10,035 against 11,443 - because it additionally scans every transaction
-    // output, at a measured 32 instructions per output over C1's 35 slots, C2's 79 and C3's 108.
+    // WHAT THIS CORRECTS, and it is all six rows. The block that stood here recorded hub 4,709 B / 2,234,254 /
+    // 0.5931, leg B 2,602 / 935,055 / 0.4492, leg C 2,739 / 949,332 / 0.4332, auditor 2,682 / 905,373 / 0.4220,
+    // projections 5,294 B at 0.4607-0.4677 and controller 2,354 / 1,538,567 / 0.8170. Not one reproduces. It
+    // was taken before X24 and X27 were composed on one tree and never re-run - the same failure that produced
+    // the stale C1 and C3 blocks, found in this file only after both of those were repaired. The run now prints
+    // its own table above these assertions so the next reader compares against a measurement, not a citation.
+    //
+    // The re-measurement that FLAGGED this block is itself already stale, which is the point. It reported
+    // projections at 5,427 B / 0.3916-0.3957 and controller 2,309 / 1,198,938 / 0.6491. The controller half
+    // reproduces exactly; the projection half does not, because X5 landed afterwards and added 37 bytes and 210
+    // instructions to the projection verifier alone. A capacity figure is a reading, never a standing claim.
     expect(outcome).toBeNull();
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
     expect(built.transcript.plan.participants).toHaveLength(4);
@@ -836,6 +854,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     for (const row of [...participants, ...projections, controller]) expect(row.ratio).toBeLessThan(1);
     expect(controller.ratio).toBeGreaterThan(0.6);
     expect(controller.ratio).toBeLessThan(0.95);
+    // Both consensus claims stated separately, as C1 and C3 state theirs: C2 clears the relay ceiling too.
+    expect(built.transaction.length / 2).toBeLessThan(100_000);
     expect(projections.map((row) => row.instructions)).toEqual([15_008, 15_008, 15_008, 15_008]);
     // X24 cut these 14.3% AND removed the +325 returning-row surcharge that used to distinguish the last
     // entry. That surcharge was measured identically across C1, C2 and C3 and recorded as a property of
@@ -845,6 +865,49 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     // It buys the ROOT row's call-options byte, which no other covenant reads. Every ratio above is unchanged
     // in sign and the assertions on them still hold, so this is spend, not a capacity move.
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
+
+    // THE CROSS-BUILD COMPARISON, re-measured at this commit rather than carried over. C1 and C3 print their
+    // own tables from their own capacity tests; these are the readings this file's claims are stated against:
+    //
+    //   build  P/N   transcript  slots  projection instr  controller instr  controller ratio  serialized
+    //   C1     5/6   1,314 B      38    17,686 x5          9,561            0.6182            63,315 B
+    //   C2     4/5     743 B      79    15,008 x4          9,536            0.6491            53,249 B
+    //   C3     8/8   1,325 B     108    24,382 x8         15,336            0.9217           100,650 B
+    //
+    // WHAT THAT SUPPORTS, and what this file must STOP claiming:
+    //   1. Within a build every projection costs the same instruction count whatever row it proves, which is
+    //      what the assertion above pins for C2's four.
+    //   2. "C1 and C2 have the SAME row counts, so the projection verifier is a pure function of participant
+    //      and invocation count and transcript length does not enter" - GONE. The SEC-6 reshape made C1 5/6, so
+    //      no two of these builds share row counts, and the three projection counts differ (17,686 / 15,008 /
+    //      24,382). The 17,259-in-both and 17,584-returning-row figures that stood here are pre-X24 history and
+    //      are obtainable on no tree today. Re-earning the claim needs two builds at equal P/N and different
+    //      transcript length; none exists.
+    //   3. "The controller is that plus 32 instructions per output, fitted over C1's 35 slots, C2's 79 and
+    //      C3's 108" - NOT what these builds establish. The controller counts it fitted, C1 10,035 and C2
+    //      11,443, reproduce as 9,561 and 9,536, and C2 now costs FEWER controller instructions than C1 while
+    //      carrying more than twice the slots, which no monotone per-output model admits. P, N and slots also
+    //      move together across the three, so a linear model in them has four unknowns against three points
+    //      and any constant fits. C1 has 38 slots, not 35. The constant itself is not in doubt - X28 re-fit it
+    //      at exactly 32 per output holding P, N and transcript length fixed, which is the control to cite,
+    //      and this file cites it rather than re-deriving it.
+
+    // KNOB LIVENESS. "Every input fits under ordinary capacity" is only evidence if the budget knob can refuse
+    // these exact bytes. Same transaction, same source outputs, a budget the worst input provably cannot meet:
+    // it must now fail on density. Without this control an aborted evaluation - which reports the budget back
+    // rather than the cost, and once made a 2.07x overrun read as 0.0095% - would look like a pass. The control
+    // budget is DERIVED from the reading, half the density the controller was measured to need, because a fixed
+    // fraction passes vacuously against a row measured well under budget.
+    const controlBudget = Math.max(1, Math.floor(controller.cost / controller.bytes / 2));
+    expect(controlBudget).toBeLessThan(800);
+    const tightened = createVirtualMachineBch2026ForProvider({
+      consensusLimits: { ...RELAXED_BUDGET_LIMITS, operationCostBudgetPerByte: controlBudget },
+    } as never);
+    const tight = tightened.evaluate({
+      inputIndex: built.layout.controllerInput, sourceOutputs, transaction,
+    }) as any;
+    expect(tight.error, `the operation-cost knob does not bite at ${controlBudget}/byte`).toBeDefined();
+    expect(String(tight.error)).toMatch(/density|operation cost/i);
   }, 600_000);
 
   it('refuses a staticcall mode on a state-writing handler, before a transcript exists', async () => {

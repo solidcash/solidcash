@@ -926,12 +926,18 @@ describe('C1 DeFi integrated semantic capstone', () => {
     //   7   P2 Accrue     3,134     566,383     5,083        0.2259
     //   9   P3 Vault      3,415     755,279     6,920        0.2765
     //   12  P4 Notifier   4,857     835,595     7,505        0.2150
-    //   31-35 projections 5,998 each, 2,171,302-2,220,260, 17,441 each, ratio 0.4525-0.4627
+    //   31-35 projections 6,035 each, 2,196,060-2,245,022, 17,686 each, ratio 0.4549-0.4650
     //   36  controller    2,880   1,424,386     9,561        0.6182   <- the worst input, and it FITS
     //
-    // Serialized transaction: 63,130 bytes, inside the 100,000-byte standard relay ceiling as well as the
+    // Serialized transaction: 63,315 bytes, inside the 100,000-byte standard relay ceiling as well as the
     // 1,000,000-byte consensus one. Layout: participants [0,2,7,9,12], projections [31..35], controller 36,
     // 38 slots, 1,314-byte transcript.
+    //
+    // The projection and serialized rows moved after X38 wrote them, and by construction rather than by drift:
+    // X5 edited `generateGraphProjectionVerifier` only, adding 37 bytes and 245 instructions to each of the
+    // five projection scripts. 5,998 -> 6,035 B, 17,441 -> 17,686 instructions, and 63,130 -> 63,315 bytes of
+    // transaction, which is exactly 5 x 37. Every participant row and the whole controller row reproduce to the
+    // operation, which is the control: a change scoped to one covenant moved exactly one covenant's figures.
     //
     // WHAT THIS CORRECTS. The block that stood here recorded projections ~0.5231/0.5154/0.5151/0.5204/0.5127
     // and controller 0.8057, and inferred from a pre-reshape controller of 0.7268 that "the fifth participant

@@ -25,6 +25,31 @@ contract A(bytes target) {
   }
 }`;
 
+/**
+ * WHY NO TEST IN THIS FILE CARRIES A WALL-CLOCK BUDGET.
+ *
+ * The regression instrument here is already load-invariant: every row asserts exact compiled BYTE COUNTS
+ * (`directBytes`, `batchBytes`, `covenantDeltaBytes`, `routeBodyBytes`, `expandedOpcodes`). Those do not move
+ * with what else is running on the box. A vitest per-test timeout measures nothing about the compiler; it is
+ * only a hang guard, and it was the one number in this file that varied with load.
+ *
+ * MEASURED at this commit, same bytes, same assertions, on the ERC-20 footprint row:
+ *
+ *   file alone                          2,505 ms
+ *   inside one full `solidc` suite      3,256 ms   (62 files)
+ *   with 3 concurrent `solidc` suites   7,467 ms
+ *   observed on this board              13,352 ms then 3,931 ms on consecutive unchanged runs
+ *
+ * A 5.3x spread on identical input, and the worst observation used 89% of the 15,000 ms these rows carried.
+ * That budget also had a second defect: `packages/solidc/vitest.config.ts` raised the PACKAGE default to
+ * 30,000 ms at `fa79113c` for exactly this failure mode ("pass in isolation and time out under the load of a
+ * full multi-package run"), while these overrides were written at `357157ad` four days earlier, when they were
+ * a raise from vitest's 5,000. They were never revisited, so they had been HALVING the package-wide budget
+ * that exists to prevent this - strictly worse than carrying no override at all.
+ *
+ * Removing them restores the deliberate 30,000 ms: 4.0x margin on the measured worst here and 2.2x on the
+ * worst this board has recorded, while a genuine hang is unbounded and still fails.
+ */
 const ERC20_CALLEE = `pragma solidcash >=0.8.0;
 contract Token() {
   mapping(bytes20 => bigint) balances;
@@ -90,7 +115,7 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       covenantDeltaBytes: 1657,
       routeBodyBytes: 1554,
     });
-  }, 15_000);
+  });
 
   /**
    * X19 anchor: the figure above is the BARE spelling's, not a third one. Respelling the fixture's depth-1
@@ -100,7 +125,7 @@ describe('Release 0 SCB1 compiler cost regression', () => {
     const bare = ERC20_CALLEE.replace(/this\.balances\[/g, 'balances[');
     expect(compileString(bare, { forceStateful: true }).bytecode)
       .toBe(compileString(ERC20_CALLEE, { forceStateful: true }).bytecode);
-  }, 15_000);
+  });
 
   const LEDGER = `pragma solidcash >=0.8.0;
 contract Ledger() {
@@ -126,7 +151,7 @@ contract Ledger() {
     expect(bare.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
       .toEqual([['credit', true]]);
     expect(bare.bytecode).toBe(dotted.bytecode);
-  }, 15_000);
+  });
 
   /**
    * The boundary that convergence stops at, pinned so moving it is deliberate. A SECOND key alternative on one
@@ -150,7 +175,7 @@ contract Ledger() {
       .toEqual([true]);
     expect(compileString(move.replace(/this\.balances\[/g, 'balances['), options).hiddenBatch)
       .toBeUndefined();
-  }, 15_000);
+  });
 
   it('reports an artifact error when library compilation exceeds the BCH script limit', () => {
     const source = `pragma solidcash >=0.8.0;

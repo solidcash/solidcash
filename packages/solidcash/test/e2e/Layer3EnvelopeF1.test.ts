@@ -43,9 +43,7 @@ import {
  * limit: it is inside every consensus limit measured.
  *
  * THE CORRECTED HASH REGIME MOVES NOTHING, and that is now measured rather than assumed. Every shape binds on
- * the same limit it bound on at `4ac40b82`, at the same ratio; the serialized and script-byte figures that did
- * move (A13 23,734 -> 23,845 B and 0.5094 -> 0.5131x, C2 53,101 -> 53,249, C1 63,130 -> 63,315, C3 100,354 ->
- * 100,650) are properties of the BUILT TRANSACTION, which no VM knob can reach, and moved with the base commit.
+ * the same limit it bound on at `4ac40b82`, at the same ratio.
  *
  * WHY IT MOVES NOTHING, as a number. Worst hash usage anywhere in the envelope is 0.1078x of the real standard
  * allowance, and the input that sets it is the same one in all seven shapes: the 126-byte P2PKH fee funder, 9
@@ -54,10 +52,25 @@ import {
  * A shape could only be masked by the other fixtures' 3-per-byte knob if it landed between 1.0x and 6.0x of the
  * standard allowance; the envelope is 9.3x below the bottom of that window.
  *
- * C3's overrun is 650 bytes, 0.65%. Costed against the measured per-slot serialized sizes: the cheapest slot
- * pairs are 177 and 211 bytes each, so removing four frees 810 and lands at 99,840. The fixture's own note that
- * 62 of its 108 slots are an unused Ledger trailing region prices the same fix far larger. Which slots are
- * removable is a design question, not a measurement one.
+ * THE SIZES THAT DID MOVE ARE ATTRIBUTABLE TO ONE EDIT, not to knobs and not to drift. X5 touched
+ * `generateGraphProjectionVerifier` alone, adding 37 bytes to every projection script, so each capstone grew by
+ * 37 times its participant count: A13 23,734 -> 23,845 (+111), C2 53,101 -> 53,249 (+148), C1 63,130 -> 63,315
+ * (+185), C3 100,354 -> 100,650 (+296). These are properties of the BUILT TRANSACTION, which no VM knob can
+ * reach. A13 is the one shape whose BINDING limit is a projection, so it is the only one whose binding ratio
+ * moves: worst script 5,094 -> 5,131 B, 0.5094x -> 0.5131x, still the per-input script limit.
+ *
+ * Every worst-DENSITY ratio in the table reproduces to the operation, because the worst-cost input of each
+ * capstone is a controller or a participant and never a projection. What moves with the size is C3's relay
+ * ratio, 1.0035x -> 1.0065x. The 2/4/8 synthetic sweep is untouched and reproduces exactly, 10,661 B and
+ * 0.3630x at N=8. The table above is kept as the `4ac40b82` reading it is labelled as; these are HEAD's.
+ *
+ * C3's overrun is therefore 650 bytes, 0.65%, not 354 - AND THAT OVERTURNS A CONCLUSION rather than merely
+ * restating a figure. The two cheapest slot pairs are 177 and 211 bytes, so removing two frees 388, which
+ * against the pre-X5 100,354 landed under the ceiling and NO LONGER DOES (100,650 - 388 = 100,262). Removing
+ * four frees 810 and lands at 99,840. The fixture's own note that 62 of its 108 slots are an unused Ledger
+ * trailing region prices the larger fix at 13,048 bytes, landing at 87,602 (87.6%). This is why a dated table
+ * still needs its consequences re-derived, not just its numbers refreshed. Which slots are removable is a
+ * design question, not a measurement one.
  *
  * Every figure above was derived from a build, never copied from a recorded table. Where a fixture's own
  * comment records a different number, the difference is reported rather than reconciled here: the fixtures'

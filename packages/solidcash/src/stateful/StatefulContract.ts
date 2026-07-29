@@ -6102,6 +6102,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let entryAccesses = abiFunction?.entryAccesses;
     let entryAbiFunction = abiFunction;
     let entryArgs = args;
+    // X11. True when the accesses below belong to a delegatecall'd implementation rather than to this entry
+    // point. The proxy's own covenant then constrains the shape (see the sorted-INSERT refusal further down).
+    let entryAccessesAreDelegated = false;
     // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
     // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
     // the proxy's entry NFTs at the proxy-block entry slot (reserved via delegateEventSlots).
@@ -6118,6 +6121,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           entryAccesses = implFn.entryAccesses;
           entryAbiFunction = implFn;
           entryArgs = ci.args ?? [];
+          entryAccessesAreDelegated = true;
           break;
         }
       }
@@ -6288,6 +6292,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const predecessor = list.predecessorOf(slot);
               entryNfts.push({ ...entryBase, utxo: { ...predecessor.utxo, unlocker: wUnlocker } });
             } else {
+              // X11. A delegated sorted write reaches the chain through a `delegatecall` proxy, and that proxy
+              // CONSERVES the count of its own-category mutable (0x01) NFTs across the transaction (C1 full-state
+              // authority, GenerateTargetTraversal.emitOwnCategoryMutableNftConservation). An INSERT mints one new
+              // entry node, so the count rises by one and the proxy rejects at its own input - measured, and the
+              // impl covenant itself accepts the same transaction. An UPDATE keeps the count and settles. Name it
+              // here instead of surfacing an opaque `error in evaluating input index 0` from the proxy.
+              if (entryAccessesAreDelegated) {
+                throw new Error(
+                  `Delegated write to sorted mapping '${access.collection}' would INSERT key `
+                  + `${binToHex(slot)}, minting a new entry NFT. The delegatecall proxy conserves the count of `
+                  + 'its own-category mutable NFTs, so it rejects the extra output. Only writes to a key that '
+                  + 'ALREADY exists settle through a delegate; create the key with a direct (non-delegated) '
+                  + 'call on the proxy first.',
+                );
+              }
               const plan = list.planInsert(slot);
               entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
               // P5b: for a chunkable-value INSERT the covenant chunk-pin adds OP_OUTPUTTOKENCOMMITMENT calls in the
@@ -9431,9 +9450,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)
+    // X11. Read the ROUTED accesses, not the forwarder's. A delegatecall'd impl's mapping write is verified by
+    // the IMPLEMENTATION covenant, so the proxy entry point (`__fallback`) publishes no entryAccesses of its own;
+    // keyed on `abiFunction` a proxy with no data NFTs, no emits and no transfers looked like it had nothing to
+    // derive, derivation was skipped outright, and the entry output kept its INPUT commitment - the delegated
+    // write silently did nothing and the impl covenant rejected it at its own input.
     const hasNothingToDerive = requiredNftIndices.length === 0
-      && (abiFunction?.entryAccesses?.length ?? 0) === 0
-      && (abiFunction?.entryLoopWrites?.length ?? 0) === 0
+      && (entryAccesses?.length ?? 0) === 0
+      && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0

@@ -210,6 +210,11 @@ const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
 // container's identity and conservation are settled inside that subroutine, so a batch whose rows all select a
 // transfer-free sibling would otherwise co-spend the container with nothing verifying its output at all.
 const GRAPH_TRANSFER_REACHED = '__internal__graphTransferReached';
+// SEC-15. Route-local ORDINAL (not a flag): which dispatch site reached an EVENT-carrying graph emission
+// handler, or -1 when none did. The route reserves `sites * eventWidth` event outputs and only the reached
+// site's window is settled by the handler; the epilogue binds every other reserved ordinal to an empty
+// commitment, which needs to know WHICH window to leave alone.
+const GRAPH_EVENT_SITE = '__internal__graphEventSite';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -706,6 +711,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // X29: the route allocated GRAPH_TRANSFER_REACHED for this function.
   private graphTransferFlagActive: boolean = false;
+  // SEC-15: the route allocated GRAPH_EVENT_SITE for this function.
+  private graphEventSiteActive: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
@@ -2836,6 +2843,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GRAPH_TRANSFER_REACHED);
     }
 
+    // SEC-15. Same shape for the EVENT frame, but the value carried is the dispatch-site ORDINAL rather than a
+    // boolean. Only the reached site's window is settled from inside the handler's subroutine; the epilogue has
+    // to bind every OTHER reserved event ordinal, and cannot do that without knowing which window to skip.
+    // -1 is an ordinal no slot has, so a batch that reaches no site binds all of them.
+    this.graphEventSiteActive = !this.isDefineSubTraversal && node.hiddenBatchRoute === true
+      && (node.graphEffectFrame?.eventWidth ?? 0) > 0;
+    if (this.graphEventSiteActive) {
+      this.emit(encodeInt(-1n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GRAPH_EVENT_SITE);
+    }
+
     this.c2WitnessSnapshotsRestored = false;
     this.emitRuntimeAliasWitnessPreflight(node);
     node.body = this.visit(node.body) as BlockNode;
@@ -3059,6 +3077,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (!this.functionHasDelegatecall && hasEventEmits) {
         this.emitEventCovenantVerification(node);
+      }
+      // SEC-15. Reserved frame event ordinals the route has no pending emit for. Must follow the call above:
+      // that one skips ordinals it handled itself, and this reads the same pendingEmits list.
+      if (!this.functionHasDelegatecall && this.graphEventSiteActive) {
+        this.emitGraphFrameEventSlotBinding(node);
       }
       // Deploy covenant verification: verify child master NFT + data NFT outputs
       if (!this.functionHasDelegatecall && hasDeploys) {
@@ -6297,6 +6320,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_1, locationData);
       this.pushToStack('(graph_transfer_reached_new)');
       this.emitReplace(this.getStackIndex(GRAPH_TRANSFER_REACHED), node);
+      this.popFromStack();
+    }
+    // SEC-15. Record WHICH dispatch site reached an event-settling handler, so the epilogue can bind the
+    // reserved event ordinals this dispatch does NOT own. Keyed on the reached handler's OWN emit count for the
+    // same reason SEC-8 keys the transfer flag that way: the shared frame's `eventWidth` is a group maximum, so
+    // a dispatch of an emit-free sibling would otherwise claim a window and exempt it from the binding.
+    if (this.graphEventSiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
+      && (targetFunc.emitInfos?.length ?? 0) > 0 && this.stack.includes(GRAPH_EVENT_SITE)) {
+      this.emit(encodeInt(BigInt(node.graphEffectSite!)), locationData);
+      this.pushToStack('(graph_event_site_new)');
+      this.emitReplace(this.getStackIndex(GRAPH_EVENT_SITE), node);
       this.popFromStack();
     }
 
@@ -18139,7 +18173,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // emit blobs are a shadow of it: the handler settles the reached sites' outputs from inside its OP_INVOKE
     // subroutine, so every route-level blob is empty and the route's per-slot checks are inert. The handler is
     // the authority for those slots - binding them here would refuse the handler's own honest outputs.
-    const frameShadowed = node.hiddenBatchRoute === true && (node.graphEffectFrame?.eventWidth ?? 0) > 0;
+    //
+    // SEC-15. "The handler is the authority" is true of exactly ONE window - the reached dispatch site's - and
+    // this used to skip the not-taken binding for the WHOLE route. The frame reserves `sites * eventWidth`
+    // outputs, so the other `(sites - 1) * eventWidth` were bound by nothing at all, and emitOwnCategory-
+    // ImmutableNftOutputPin admits an own-category immutable NFT at any `event` offset: a forged log at an
+    // unreached ordinal was ACCEPTED and read back beside the genuine ones. Bind per SLOT instead - every
+    // ordinal outside the reached site's window - which keeps the exemption the honest transaction needs
+    // (measured: a route-wide reinstatement rejects the handler's own genuine output at input 0).
+    //
+    // The per-slot form needs the reached site's ordinal on the stack. If it is ever absent - a route compiled
+    // on a path that did not allocate it - fall back to the unshadowed SEC-10 binding rather than skipping:
+    // that over-refuses (it is the measured ablation) but never leaves a slot unbound, and never throws.
+    const frameShadowed = node.hiddenBatchRoute === true && (node.graphEffectFrame?.eventWidth ?? 0) > 0
+      && this.stack.includes(GRAPH_EVENT_SITE);
 
     for (const pendingEmit of this.pendingEmits) {
       const { emitIndex, stackName, eventDef } = pendingEmit;
@@ -18317,30 +18364,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
 
       if (isConditionalEmit && frameShadowed) {
+        // SEC-15. Per SLOT, not per route: bind the ordinals this dispatch did not settle. The reached site's
+        // window is left to the handler, which really is its authority - inside the subroutine the same
+        // not-taken binding runs unshadowed, so a handler whose own emit is conditional still pins its slot.
+        this.emit(Op.OP_ELSE, locationData);
+        this.emitGraphFrameSlotUnowned(emitIndex, locationData);
+        this.emitNotTakenEventSlotBinding(emitIndex, locationData);
+        this.emit(Op.OP_ENDIF, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       } else if (isConditionalEmit) {
-        // SEC-10. The whole verification above sits inside `OP_IF <blob non-empty>`, so on the path that does
-        // NOT reach this emit the reserved output was checked by nothing and any spender could park a forged
-        // event commitment there. Bind the slot on that path too: its commitment must be EMPTY. That is what
-        // both honest not-taken shapes produce - the plain SDK materializes an own-category immutable NFT with
-        // an empty commitment, the route leaves a token-free funding output (also an empty commitment) - and a
-        // forged log has to carry a non-empty commitment to decode to anything.
         this.emit(Op.OP_ELSE, locationData);
-        this.emitBlockSlotIndex('event', emitIndex, locationData);
-        // The SDK omits inactive SUFFIX event outputs, so the reserved index may be past the last output. An
-        // index that does not exist holds nothing to forge; only check one that does.
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
-        this.emit(Op.OP_LESSTHAN, locationData);
-        this.emit(Op.OP_IF, locationData);
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.emit(encodeInt(0n), locationData);
-        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
-        this.emit(Op.OP_ELSE, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emit(Op.OP_ENDIF, locationData);
+        this.emitNotTakenEventSlotBinding(emitIndex, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       }
     }
@@ -18352,6 +18386,93 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROLL, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(idx);
+    }
+  }
+
+  /**
+   * SEC-10. The per-emit verification sits inside `OP_IF <blob non-empty>`, so on the path that does NOT reach
+   * an emit the reserved output was checked by nothing and any spender could park a forged event commitment
+   * there. Bind the slot on that path too: its commitment must be EMPTY. That is what both honest not-taken
+   * shapes produce - the plain SDK materializes an own-category immutable NFT with an empty commitment, the
+   * route leaves a token-free funding output (also an empty commitment) - and a forged log has to carry a
+   * non-empty commitment to decode to anything.
+   *
+   * Leaves the tracked stack unchanged: every value it pushes is consumed in the same span.
+   */
+  private emitNotTakenEventSlotBinding(emitIndex: number, locationData: SingleLocationData): void {
+    this.emitBlockSlotIndex('event', emitIndex, locationData);
+    // The SDK omits inactive SUFFIX event outputs, so the reserved index may be past the last output. An
+    // index that does not exist holds nothing to forge; only check one that does.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * SEC-15. Open an `OP_IF` that runs only when reserved event ordinal `ordinal` is OUTSIDE the window owned by
+   * the dispatch site this execution reached - i.e. exactly the slots no handler settled. The caller closes it.
+   *
+   * GRAPH_EVENT_SITE holds that site's ordinal, or -1 when no site was reached, in which case every reserved
+   * ordinal is bound. Must be called with the tracked stack at its baseline: the PICK depth is read from the
+   * model and nothing untracked may sit above it yet.
+   */
+  private emitGraphFrameSlotUnowned(ordinal: number, locationData: SingleLocationData): void {
+    const width = this.currentFunction.graphEffectFrame?.eventWidth ?? 1;
+    const siteIdx = this.getStackIndex(GRAPH_EVENT_SITE);
+    if (width === 1) {
+      this.emit(encodeInt(BigInt(siteIdx)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(BigInt(ordinal)), locationData);
+      this.emit(Op.OP_NUMNOTEQUAL, locationData);
+    } else {
+      // owned <=> site*width <= ordinal < site*width + width
+      this.emit(encodeInt(BigInt(ordinal)), locationData);
+      this.emit(encodeInt(BigInt(siteIdx + 1)), locationData); // +1 untracked: the ordinal pushed above
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.emit(Op.OP_WITHIN, locationData);
+      this.emit(Op.OP_NOT, locationData);
+    }
+    this.emit(Op.OP_IF, locationData);
+  }
+
+  /**
+   * SEC-15. Bind the reserved frame event ordinals that have NO route-level pending emit of their own.
+   *
+   * `emitEventCovenantVerification` can only reach ordinals the route itself emits at - which happens when a
+   * FLATTENED sibling handler carries an `emit`, giving the route one conditional blob per row. When every
+   * emitting handler is invoked behind OP_INVOKE instead, the route has no pending emits at all, that function
+   * never runs, and all `sites * eventWidth` reserved outputs are unbound. Same defect, same repair: everything
+   * outside the reached site's window must carry an empty commitment.
+   *
+   * The GRAPH_EVENT_SITE guard mirrors the one on GRAPH_TRANSFER_REACHED and is redundant with the caller's
+   * `graphEventSiteActive`. It is there so a future path that loses the ordinal degrades to the baseline rather
+   * than throwing mid-codegen; `frameShadowed` tests the same thing and falls the OTHER way, back to the full
+   * unshadowed binding, so losing it can only leave a route unbound when it also has no pending emit of its own.
+   */
+  private emitGraphFrameEventSlotBinding(node: FunctionDefinitionNode): void {
+    const frame = node.graphEffectFrame;
+    if (!frame || frame.eventWidth === 0 || !this.stack.includes(GRAPH_EVENT_SITE)) return;
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const covered = new Set(this.pendingEmits.map((pendingEmit) => pendingEmit.emitIndex));
+    for (let ordinal = 0; ordinal < frame.sites * frame.eventWidth; ordinal += 1) {
+      if (covered.has(ordinal)) continue;
+      this.emitGraphFrameSlotUnowned(ordinal, locationData);
+      this.emitNotTakenEventSlotBinding(ordinal, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
     }
   }
 

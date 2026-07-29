@@ -29,9 +29,16 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  *  - INSERT is refused here, and by the PROXY, not by the delegate. An insert mints one new entry node, so the
  *    transaction's own-category mutable (0x01) NFT count rises by one, and a proxy carrying
  *    `emitOwnCategoryMutableNftConservation` (C1 full-state authority) rejects at input 0 while the
- *    implementation covenant accepts the same transaction. The checked-in default proxy artifact predates that
- *    conservation and so admits the insert - the boundary is the proxy's bytecode, which is why nothing is
- *    refused ahead of time here.
+ *    implementation covenant accepts the same transaction. The boundary is the PROXY's bytecode, which is why
+ *    nothing is refused ahead of time here.
+ *
+ *    That boundary is currently drawn by a STALE artifact, which is worth recording separately. The checked-in
+ *    `defaultProxyArtifact` ends `... OP_0 OP_LESSTHANOREQUAL OP_VERIFY` - the RELAXED conservation
+ *    (outputs >= inputs). Recompiling `DEFAULT_PROXY_SOURCE` with the current compiler ends
+ *    `... OP_0 OP_NUMEQUALVERIFY` (159 bytes checked in, 173 fresh). So the shipped default upgrades proxy
+ *    permits net creation of own-category mutable NFTs where a freshly compiled one does not, and the delegated
+ *    INSERT in UpgradesDeployProxy.test.ts settles only because of that. Regenerating the artifact per
+ *    docs/upgrades.md would break that test and close the insert.
  */
 const LIB = `pragma solidcash >=0.8.0;
 library MapLib {

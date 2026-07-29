@@ -3128,6 +3128,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys) {
         this.emitOwnCategoryMutableNftConservation(node);
       }
+      // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
+      // event/returnEvent block-layout offset. Without this any spender mints forged logs at any other index.
+      if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
+        && !isSelfdestruct) {
+        this.emitOwnCategoryImmutableNftOutputPin(node);
+      }
       // Value preservation: satoshi and fungible token amounts
       // Selfdestruct functions skip - all NFTs and containers are being destroyed
       if (!this.functionHasDelegatecall && hasAnyStatefulAccess && !isSelfdestruct) {
@@ -18296,6 +18302,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
 
       if (isConditionalEmit) {
+        // SEC-10. The whole verification above sits inside `OP_IF <blob non-empty>`, so on the path that does
+        // NOT reach this emit the reserved output was checked by nothing and any spender could park a forged
+        // own-category event NFT there. Bind the slot on that path too: it may hold anything EXCEPT an
+        // own-category NFT. The SDK leaves a plain (token-free) funding output there, which passes.
+        this.emit(Op.OP_ELSE, locationData);
+        this.emitBlockSlotIndex('event', emitIndex, locationData);
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+        this.emitMasterInputIndex(locationData);
+        this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+        this.emit(encodeInt(32n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_DROP, locationData);    // master's 32-byte category, capability byte dropped
+        this.emit(Op.OP_EQUAL, locationData);
+        this.emit(Op.OP_NOT, locationData);
+        this.emit(Op.OP_VERIFY, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       }
     }
@@ -20016,6 +20037,107 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (mutable_balance)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (this_cat_mutable)
+  }
+
+  /**
+   * SEC-11 / the general form of SEC-10. An event NFT is an own-category IMMUTABLE (0x00) NFT, and nothing
+   * conserved that class: the co-spent master is a minting NFT of the category, so any spender could mint
+   * additional own-category immutable NFTs at the event covenant address and `readEventsFromChain` would
+   * return them as genuine logs. Measured live on a plain stateful contract with NO branch and NO emit at all.
+   *
+   * Pin WHERE such an output may sit: every output whose token category is this contract's 32-byte category
+   * with NO capability byte and whose fungible amount is 0 - i.e. an own-category immutable NFT - must sit at
+   * one of this function's `event` / `returnEvent` block-layout offsets. Anything else (an appended output, a
+   * reserved TRANSFER slot, a reserved tcTransfer slot, a trailing slot) is refused.
+   *
+   * Deliberately a loop over outputs keyed on the token PROPERTY, not a per-slot check: the forgery does not
+   * need a reserved slot, it only needs an output index nothing looked at.
+   *
+   * Residual: an own-category immutable NFT carrying a NON-ZERO fungible amount is not counted (it is
+   * indistinguishable by introspection from a pure-FT output). Creating one needs pre-existing own-category
+   * fungible tokens and still has to satisfy value preservation.
+   */
+  private emitOwnCategoryImmutableNftOutputPin(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const allowedOffsets = (node.blockLayout?.slots ?? [])
+      .filter((slot) => slot.kind === 'event' || slot.kind === 'returnEvent')
+      .map((slot) => slot.offset);
+
+    // This contract's category with NO capability byte: what OP_OUTPUTTOKENCATEGORY reports for an immutable
+    // NFT (or a pure-FT output, which the amount test below excludes).
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(imm_cat)');
+
+    // Block base: allowed offsets are relative to the master's input index.
+    this.emitMasterInputIndex(loc);
+    this.pushToStack('(imm_base)');
+
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.pushToStack('(imm_j)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);                     // [cat, base, j, j]
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);     // [cat, base, j, cat_j]
+    this.emit(encodeInt(3n), loc);                 // cat_j=0, j=1, base=2, cat=3
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);                   // [cat, base, j, ownImmutableOrFt]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);                     // [cat, base, j, j]
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);       // [cat, base, j, ftAmount]
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);                // [cat, base, j, isNft]
+    this.emit(Op.OP_IF, loc);
+    if (allowedOffsets.length === 0) {
+      // No event/returnEvent slot at all: an own-category immutable NFT output is never legitimate here.
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_VERIFY, loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);                   // [cat, base, j, j]
+      this.emit(encodeInt(2n), loc);               // j=0, j=1, base=2
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SUB, loc);                   // [cat, base, j, rel]
+      const lo = Math.min(...allowedOffsets);
+      const hi = Math.max(...allowedOffsets);
+      if (hi - lo + 1 === allowedOffsets.length) {
+        // Contiguous run (the usual layout): one range test instead of an offset-per-slot OR chain.
+        this.emit(encodeInt(BigInt(lo)), loc);
+        this.emit(encodeInt(BigInt(hi + 1)), loc);
+        this.emit(Op.OP_WITHIN, loc);              // [cat, base, j, allowed]
+        this.emit(Op.OP_VERIFY, loc);              // [cat, base, j]
+      } else {
+        this.emit(encodeBool(false), loc);         // [cat, base, j, rel, allowed]
+        for (const offset of allowedOffsets) {
+          this.emit(Op.OP_OVER, loc);
+          this.emit(encodeInt(BigInt(offset)), loc);
+          this.emit(Op.OP_NUMEQUAL, loc);
+          this.emit(Op.OP_BOOLOR, loc);
+        }
+        this.emit(Op.OP_VERIFY, loc);              // [cat, base, j, rel]
+        this.emit(Op.OP_DROP, loc);                // [cat, base, j]
+      }
+    }
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // (imm_j)
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (imm_base)
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (imm_cat)
   }
 
   /**

@@ -884,11 +884,13 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     //      are obtainable on no tree today. Re-earning the claim needs two builds at equal P/N and different
     //      transcript length; none exists.
     //   3. "The controller is that plus 32 instructions per output, fitted over C1's 35 slots, C2's 79 and
-    //      C3's 108" - NOT what these builds establish, and the recorded 10,035 / 11,443 controller counts
-    //      reproduce as 9,561 / 9,536 / 15,336. P, N and slots all move together across them, so a linear model
-    //      has four unknowns against three points and any constant fits. C1 also has 38 slots, not 35. The
-    //      constant itself is not in doubt - X28 re-fit it at exactly 32 per output holding P, N and transcript
-    //      length fixed, which is the control to cite, and this file cites it rather than re-deriving it.
+    //      C3's 108" - NOT what these builds establish. The controller counts it fitted, C1 10,035 and C2
+    //      11,443, reproduce as 9,561 and 9,536, and C2 now costs FEWER controller instructions than C1 while
+    //      carrying more than twice the slots, which no monotone per-output model admits. P, N and slots also
+    //      move together across the three, so a linear model in them has four unknowns against three points
+    //      and any constant fits. C1 has 38 slots, not 35. The constant itself is not in doubt - X28 re-fit it
+    //      at exactly 32 per output holding P, N and transcript length fixed, which is the control to cite,
+    //      and this file cites it rather than re-deriving it.
 
     // KNOB LIVENESS. "Every input fits under ordinary capacity" is only evidence if the budget knob can refuse
     // these exact bytes. Same transaction, same source outputs, a budget the worst input provably cannot meet:

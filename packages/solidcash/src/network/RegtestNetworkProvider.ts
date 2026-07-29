@@ -38,6 +38,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   public network: Network = Network.REGTEST;
 
   private rpc: BchnRpcClient;
+  private probeRpc: BchnRpcClient;
   private miningAddress: string = '';
   private ready: Promise<void> | undefined;
   private importedAddresses = new Set<string>();
@@ -65,6 +66,16 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // sequential getUtxos round-trips against a live node, which can exceed the default per-request timeout.
     this.rpc = new BchnRpcClient({
       url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000,
+    });
+    // A second client for probes whose FAILURE is the answer. The wrapper logs every failed request through
+    // its logger, and `categoryExistsOnChain` misses once per seeded placeholder UTXO, so those misses would
+    // otherwise print an error line each. Same endpoint, same timeout, silent.
+    const quiet = {
+      error: (): void => {}, warn: (): void => {}, log: (): void => {},
+      info: (): void => {}, debug: (): void => {},
+    };
+    this.probeRpc = new BchnRpcClient({
+      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000, logger: quiet as never,
     });
   }
 
@@ -159,6 +170,17 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const requested = utxo.token ? RegtestNetworkProvider.normalizeCategory(utxo.token.category) : '';
     if (requested && this.categoryOfLabel.has(requested)) {
       return this.mintIntoExistingCategory(lbc, utxo, this.categoryOfLabel.get(requested)!, satoshis);
+    }
+    // A category this instance did not create, but which EXISTS on this chain - the second run against a
+    // chain the first run already seeded. The index of retained minting NFTs is in-memory, so this instance
+    // cannot mint into it, and genesising a replacement would be exactly the substitution X74 exists to kill.
+    if (requested && await this.categoryExistsOnChain(requested)) {
+      throw new Error(
+        `RegtestNetworkProvider.addUtxo cannot mint into category ${requested}: it exists on this chain but `
+        + 'was not created by this provider instance, so no minting NFT is retained for it. It is NOT served '
+        + 'with a different category. Create the category in this run (addTokenUtxosDynamic / '
+        + 'setupStatefulUtxos) and request the category it returns.',
+      );
     }
 
     let fundingInput: ListUnspentItem;
@@ -285,6 +307,21 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     });
     this.categoryOfLabel.set(category, category);
     if (requestedLabel) this.categoryOfLabel.set(requestedLabel, category);
+  }
+
+  /**
+   * Does this category exist on this chain? Answerable EXACTLY, because a CashTokens category id is the txid
+   * of the transaction whose output 0 the genesis spent - so every real category id is a real txid, and a
+   * placeholder label like `'77'.repeat(32)` is not. A node without `txindex` answers "no" for old
+   * transactions, which degrades to the pre-X74 genesis path rather than to a wrong mint.
+   */
+  private async categoryExistsOnChain(category: string): Promise<boolean> {
+    try {
+      await this.probeRpc.request<GetRawTransactionVerbosity0>('getrawtransaction', category, false);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private static normalizeCategory(category: string | undefined): string {

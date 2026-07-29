@@ -104,6 +104,33 @@ describe.runIf(process.env.TESTS_USE_REGTEST)('X74: RegtestNetworkProvider mints
     expect(second.token!.nft!.commitment).toBe('02');
   }, 300_000);
 
+  it('REFUSES a category that exists on-chain but was created by another instance - the second-run case', async () => {
+    // The index of retained minting NFTs lives in memory on the instance, so a SECOND RUN against a chain the
+    // first run already seeded cannot mint into the first run's categories. A fresh provider against the same
+    // node reproduces that exactly, with no second process needed.
+    const first = new RegtestNetworkProvider();
+    const genesis = await (first as any).addTokenUtxosDynamic(() => [
+      { address: SCRIPT_A, satoshis: 5_000n, token: { amount: 0n, nft: { capability: 'mutable', commitment: '' } } },
+    ]);
+
+    const second = new RegtestNetworkProvider();
+    await expect(second.addUtxo(SCRIPT_B, {
+      txid: '00'.repeat(32),
+      vout: 0,
+      satoshis: 7_000n,
+      token: { category: genesis.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: 'ab' } },
+    })).rejects.toThrow(/exists on this chain but was not created by this provider instance/);
+
+    // ...and the instance that DID create it is unaffected: same request, served exactly.
+    const served = await first.addUtxo(SCRIPT_B, {
+      txid: '00'.repeat(32),
+      vout: 0,
+      satoshis: 7_000n,
+      token: { category: genesis.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: 'ab' } },
+    });
+    expect(served.token!.category).toBe(genesis.categoryId);
+  }, 300_000);
+
   it('leaves the plain, tokenless addUtxo path alone', async () => {
     const provider = new RegtestNetworkProvider();
     const utxo = await provider.addUtxo(SCRIPT_A, { txid: '00'.repeat(32), vout: 0, satoshis: 4_321n });

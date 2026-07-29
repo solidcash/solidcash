@@ -92,9 +92,14 @@ Route synthesis publishes one reason per entry point. 455 refusals across all fo
 | 2 each | `collection-route-requires-one-parameter-keyed-entry-per-collection`, `not-examined-by-route-synthesis`, `event-route-requires-uniform-events-and-at-most-one-value-transfer`, `direct-versus-batch-introspection-divergence`, `value-route-requires-at-most-one-direct-transfer-per-handler` |
 | 1 | `result-consuming-handler-requires-effect-free-body` |
 
-The largest single reason is **visibility**, at 38% of all refusals. `synthesizeHiddenBatchRoute` refuses any
-entry point whose visibility is not `public`; Solidity convention marks most external entry points
-`external`. That one line of v1 scope turns away more real handlers than any other cause.
+The largest single reason is **visibility**, 172 of 455 (38%). `synthesizeHiddenBatchRoute` refuses any entry
+point whose visibility is not `public`; Solidity convention marks most external entry points `external`. That
+one line of v1 scope turns away more real handlers than any other cause.
+
+Grouped: 364 of the 455 (80%) are route-scope gates - visibility, the two collection gates, the result-route
+gate and the forward-call gate. 56 are contracts that declare no entry point at all, 20 are the unnamed hole
+in the diagnostic channel, 4 are the deliberate lifecycle/unsafe exclusion, and 11 are the remaining
+soundness and shape refusals.
 
 ### 3.2 Reachable is not the same as useful, and for the application corpora the useful count is zero
 
@@ -207,7 +212,9 @@ of its largest and smallest members.
 | 4 | 309 | 58 | 53 |
 | 8 | 241 | 126 | 57 |
 
-**Twelve contracts are predicted OVER at one participant** - before any graph exists at all.
+**Twelve of the 367 are predicted OVER at ONE participant** - before any graph exists at all. Eight of those
+twelve are application contracts (section 4.3), one is `StakingRewards` from solidity-by-example, and three
+are from the solc sample.
 
 ### 4.2 Which limit binds
 
@@ -384,8 +391,9 @@ is a generated covenant, so it is a compiler artifact rather than a limit.
     observed falls on a compiler-synthesized entry point (`__updateBlockOracle`), which is why it is last: a
     hole in the diagnostic channel, not a category of contract.
 
-Items 4 to 10 account for roughly three-quarters of all refusals. **The dominant reason a real contract
-cannot join a message-bus graph today is not a BCH limit.** And for the twelve application contracts that do
+Items 4 to 6 alone account for 364 of the 455 named refusals (80%), and items 7 to 10 are compiler defects
+on top of that. **The dominant reason a real contract cannot join a message-bus graph today is not a BCH
+limit.** And for the twelve application contracts that do
 clear route admission, the reason composing them would be pointless - a read-only admitted surface - is also
 not a BCH limit.
 

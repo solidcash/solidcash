@@ -242,6 +242,42 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.79 Round 18 verified: 7,240 tests, six packages, exit 0 - and round 19 goes where F3 pointed
+
+`yarn test` at `1591e87f`, exit **0**, all six workspaces reached: utils **295/0**, solidc **2,580/0**,
+solidcash **4,322/0**, testing **19/0**, solidhat **24/0**. The skip count rose 27 -> 41: those are the
+regtest-gated node tests, which run only against a live BCHN.
+
+**The ledger was corrected at its own sites**, not appended to. It carried **no evidence-level claims at all**,
+so the strongest result of this effort was absent from the authority document; it pinned the projection parser at
+**4,501** bytes, predating both X5's +37 and F4's -129 (actual **4,542**); and it asserted "N=8 participant
+binding at 36.5%" as though that were an eight-participant graph. All three are fixed in place, with the X47
+correction written where the wrong figure lived.
+
+**Round 19 dispatched at that commit, aimed where F3 pointed rather than where the last four rounds were
+looking.** D1 takes `initial-v1-route-requires-public-visibility` (172 refusals, 38%, three times larger than
+anything else); D2 takes the remaining ~192 route-scope gates; together that is **364 of 455 refusals**. D3 takes
+X74, the provider defect that is the only thing keeping C1 off a node. D4 repairs F2's script term, which
+under-predicts the binding limit 45/45. D5 takes X65, sized at ~6,080 C3 bytes. D6 takes the diagnostic holes.
+D7 takes R2.
+
+**A lease question from D6 produced a better answer than the row asked for.** Diagnosing X71, D6 found the
+`ParseError` is not a position in the user's file at all: it comes from the **second** parse, of the route
+contract `synthesizeHiddenBatchRoute` assembles, and the offending text is a **generated** row decoder emitting
+the **unparenthesised** `uint256 a, address[] b = abi.decode(...)` - while only the **parenthesised** tuple form
+accepts an array type. **The compiler is generating source its own grammar rejects.**
+
+D6 correctly refused to widen the grammar, because that is a language change that makes previously-refused
+programs compile and fails X42's no-artifact property. The board's answer is a fifth option it had not listed:
+**emit the parenthesised form**, which changes no grammar and makes no new user program valid, and may make
+`UniswapV2Router02` **actually compile** rather than fail with a better-labelled error. If it does, the bar rises
+with it - a program that did not compile now does, so the packet must state what the newly-admitted route
+actually exposes, since F3's headline is that every bus-reachable application contract currently offers a
+read-only surface and nothing else.
+
+The `__scbN` overlap between D2 and D6 is resolved to D6, whose lease contains the site; both briefs had told the
+other agent it might take it, which was an ambiguity in the dispatch rather than in the work.
+
 ### 4.78 THREE CAPSTONES EXECUTE ON A REAL NODE, and the template rule does not exist
 
 Merged at `eb7ca398`. The round's capstone, and it closes the decision the board escalated.

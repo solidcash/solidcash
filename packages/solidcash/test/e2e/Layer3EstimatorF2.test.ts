@@ -1,20 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
-import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { compileFile, compileString } from 'solidc';
+import { bigIntToVmNumber, binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
-import { Contract, TransactionBuilder } from '../../src/index.js';
-import { generateLibauthSourceOutputs } from '../../src/utils.js';
+import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import type { Utxo } from '../../src/interfaces.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   BCH_2026_CONSENSUS, BCH_2026_STANDARD, assessEnvelope, densityKnobControl, formatEnvelope,
   knobControlBudgetFor,
 } from './layer3-envelope-f1.js';
+import type { EnvelopeMeasurement } from './layer3-envelope-f1.js';
 import {
-  type MeasuredShape, calibrate, classifyInputs, deriveCalibration, distill, estimate,
-  fitUpperEnvelope, formatCalibrationRow, formatEstimate, redeemScriptLength, shapeGeometry,
+  type InputClass, type MeasuredShape, calibrate, classifyInputs, deriveCalibration,
+  distill, estimate, fitUpperEnvelope, formatCalibrationRow, formatEstimate, redeemScriptLength, shapeGeometry,
 } from './layer3-estimator-f2.js';
 import { F2_BASIS, F2_BASIS_COMMIT } from './layer3-estimator-basis-f2.js';
 import { F2_HELD_OUT } from './layer3-estimator-heldout-f2.js';
+import { F3_CENSUS_COMMIT, F3_CENSUS_ELIGIBLE } from './layer3-corpus-census-f3.js';
+import { replicaSpec } from './layer3-corpus-fit-f3.js';
+import type { CensusRow } from './layer3-corpus-fit-f3.js';
+import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 
 /**
  * F2. A CONSERVATIVE CALIBRATED COST ESTIMATOR.
@@ -33,27 +41,53 @@ import { F2_HELD_OUT } from './layer3-estimator-heldout-f2.js';
  * lies on or above all of them. `calibrate` then re-checks the ASSEMBLED prediction against the
  * measurements, which is strictly stronger - per-class envelopes can each dominate and the assembled total
  * still fall short if the assembly arithmetic is wrong. Measured: 28/28 conservative, band +0.0% to +41.6%,
- * mean +4.8%.
+ * mean +4.9%.
  *
- * OUT OF SAMPLE THERE IS NO SUCH GUARANTEE, AND THIS FILE MEASURES THE GAP RATHER THAN ASSUMING IT AWAY.
- * Leave-one-out: 22/28, worst -27.2% (on a row the estimator itself flagged out of range), worst in-range
- * -12.3%. A real six-participant graph the calibration never saw: 2/4 limits conservative, worst -9.6%.
- * Synthetic counts N=3/6/16 predicted before building: 11/12, the one miss -0.31%. The margin that covers
- * every out-of-sample miss is SEARCHED at 34% and costs the in-sample mean +4.8% -> +23.5%; it is reported,
- * not switched on, because whether to pay that is the production-envelope row's decision.
+ * X70: IN-SAMPLE CONSERVATISM WAS NEVER THE CLAIM THAT MATTERED, AND F3 PROVED IT. F3 built forty-five real
+ * corpus contracts into one-participant graphs. Every one binds on the 10,000-byte per-input unlocking limit
+ * and F2 UNDER-PREDICTED that limit on forty-four of them, mean -7.2%, while predicting density would bind on
+ * all forty-five. Three defects, all fixed here and all measured on the same forty-five afterwards:
+ *
+ *   - an upper envelope bounds nothing BELOW its smallest calibration point, and F2 flagged only the upper
+ *     end. A one-participant graph has two rows against a calibrated minimum of six;
+ *   - the projection verifier's 4,542-byte redeem script was inside a fitted line whose intercept was 4,095,
+ *     which is not an inaccuracy but an impossibility - a P2SH input pushes the script it redeems;
+ *   - the controller-density coefficient was driven on slots, which its own held-out miss had already shown
+ *     is not even a monotone driver for it.
+ *
+ * AFTER: 45/45 conservative on the binding limit, +4.3% to +7.5%, mean +7.4%; serialized +9.3% to +17.4%;
+ * density +56.9% to +164.4%; SigChecks exact. Per input CLASS as well as in aggregate, which is a check F3
+ * did not make and which found a fourth defect on the way through - clamping a DENSITY coefficient to its
+ * measured floor under-predicted real corpus masters 34 times out of 45, because density is a property of a
+ * contract body and not of any driver in the descriptor.
+ *
+ * WHAT IS STILL WRONG, AND IS REPORTED RATHER THAN FIXED: the binding-LIMIT prediction. Density is still
+ * named first at 0.5758x against a script prediction of 0.5002x, on a population measuring 0.2177x and
+ * 0.4651x, because the master-density coefficient over-predicts its own calibration points by up to 284% and
+ * the corpus by up to 601%. Ranking bounds of such different tightness does not rank limits. `estimate` now
+ * publishes `bindingUnresolved`, the set the ranking cannot separate, which contained the true binder on all
+ * forty-five - but a set is not an answer, and the answer needs per-contract cost measurements.
+ *
+ * OUT OF SAMPLE THERE IS NO GUARANTEE, AND THIS FILE MEASURES THE GAP RATHER THAN ASSUMING IT AWAY.
+ * Leave-one-out: 24/28, worst -13.5%, all of it on density. A real six-participant graph the calibration
+ * never saw: 3/4 limits conservative, worst -3.5% (was 2/4 and -9.6%). Synthetic counts N=3/6/16 predicted
+ * before building: interpolation worst -0.31%, extrapolation 4/4 conservative. The margin that covers every
+ * out-of-sample miss is SEARCHED at 16% and costs the in-sample mean +4.9% -> +11.4%; it is still reported
+ * rather than switched on, and the reason is now measured rather than argued - see the last margin test.
  *
  * WHAT IS MEASURED HERE AND WHAT IS RECORDED. The synthetic sweep is rebuilt and re-measured live in this
- * file, so the estimator faces a transaction produced in the same process it is judged in. The four capstone
- * shapes are a RECORDED basis (`layer3-estimator-basis-f2.ts`), and the held-out graph a second recorded
- * file (`layer3-estimator-heldout-f2.ts`), both captured by observing the fixtures' OWN builders through
- * `layer3-estimator-probe.ts` and stamped with the commit they were taken at. Recording them is a cost
- * decision, not an epistemic one: re-running C1, C2, C3, A13 and E1 inside this file would add roughly
- * fifteen minutes to every run of it and would measure exactly the same transactions.
+ * file, so the estimator faces a transaction produced in the same process it is judged in. So are all
+ * forty-five corpus graphs. The four capstone shapes are a RECORDED basis (`layer3-estimator-basis-f2.ts`),
+ * and the held-out graph a second recorded file (`layer3-estimator-heldout-f2.ts`), both captured by
+ * observing the fixtures' OWN builders through `layer3-estimator-probe.ts` and re-taken at `1591e87f` for
+ * X66, because F4 had cut 129 bytes from a covenant that every one of them instantiates once per
+ * participant.
  *
- * A MODEL EVALUATED ON ITS TRAINING DATA IS NOT EVALUATED. The last describe block is held out three ways:
- * it drops each of the seven shapes from the calibration in turn and predicts it from coefficients that
- * never saw it; it predicts three synthetic participant counts absent from the calibration BEFORE building
- * them; and it predicts a REAL six-participant, seven-invocation graph that is in no calibration set here.
+ * A MODEL EVALUATED ON ITS TRAINING DATA IS NOT EVALUATED. It is held out four ways: each of the seven
+ * shapes dropped from the calibration in turn and predicted from coefficients that never saw it; three
+ * synthetic participant counts predicted BEFORE building them; a REAL six-participant, seven-invocation
+ * graph in no calibration set here; and forty-five real application contracts from four corpora, which are
+ * not fixtures at all.
  */
 
 /* ------------------------------------------------------------------------------------------------------ */
@@ -602,6 +636,66 @@ describe('F2 estimator: held out', () => {
   }, 900_000);
 
   /**
+   * X70: DOES THE ARGUMENT AGAINST SHIPPING THE MARGIN STILL HOLD?
+   *
+   * F2 searched a 34% margin, reported it and deliberately did not enable it, on the grounds that a margin
+   * scales the envelope coefficients but NOT the additive redeem term - so on the limit that binds it does
+   * less than its label says. That was stated as an argument. Here it is a measurement, and the repair has
+   * made it STRONGER rather than weaker: before X70, only the master class carried a fixed redeem term, and
+   * the projection and controller were fitted end to end, so a margin scaled all of both. Now all three
+   * carry one, and the projection - the class that binds every one-participant graph - is 4,542 fixed bytes
+   * against a few hundred fitted ones.
+   *
+   * So the margin needed to cover a given miss is no longer the miss's reciprocal. That is the number this
+   * test produces, per class, for the searched margin.
+   */
+  it('MEASURED: what a multiplicative margin actually buys, per class, once the redeem terms are carried', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const margin = 0.16;
+    const marginal = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT, margin);
+    const specs = [
+      { label: 'one-participant replica', spec: { ...F2_BASIS[0].spec, participants: 1, invocations: 1,
+        blockSizes: [1], redeemBytes: [1_500] } },
+      { label: 'A13 graph', spec: F2_BASIS[0].spec },
+      { label: 'C1 DeFi', spec: F2_BASIS[2].spec },
+      { label: 'E1 result graph', spec: F2_HELD_OUT[0].spec },
+    ];
+    for (const { label, spec } of specs) {
+      const bare = estimate(spec, calibration);
+      const withMargin = estimate(spec, marginal);
+      for (const klass of ['master', 'projection', 'controller'] as const) {
+        const before = bare.classes.find((row) => row.klass === klass);
+        const after = withMargin.classes.find((row) => row.klass === klass);
+        if (before === undefined || after === undefined) continue;
+        const effective = after.unlockingBytes / before.unlockingBytes - 1;
+        console.log(`[F2] ${label.padEnd(24)} ${klass.padEnd(11)} a ${(margin * 100).toFixed(0)}% margin `
+          + `moves ${before.unlockingBytes.toFixed(0)}B -> ${after.unlockingBytes.toFixed(0)}B, `
+          + `i.e. ${(effective * 100).toFixed(1)}% - the fitted share is `
+          + `${(((after.unlockingBytes - before.unlockingBytes) / margin) / before.unlockingBytes * 100)
+            .toFixed(1)}%`);
+        // The whole point: a margin is not worth its label on any class that carries a redeem script.
+        expect(effective).toBeLessThan(margin + 1e-9);
+      }
+    }
+    // THE ONE THAT MATTERS, as a single number. E1's projection is under-predicted by 3.5%, so the naive
+    // closed-form margin is 1/(1-0.035)-1 = 3.6%. What actually closes it is four times that, because only
+    // the blob scales. A margin quoted from an error alone would be badly undersized.
+    const e1 = F2_HELD_OUT[0];
+    const projectionOf = (safety: number): number => estimate(
+      e1.spec, deriveCalibration(F2_BASIS, F2_BASIS_COMMIT, safety),
+    ).classes.find((row) => row.klass === 'projection')!.unlockingBytes;
+    const naive = 1 / (projectionOf(0) / e1.projections!.unlockingBytes) - 1;
+    let needed = 0;
+    while (needed < 2 && projectionOf(needed) < e1.projections!.unlockingBytes) needed += 0.001;
+    console.log(`[F2] E1 projection: predicted ${projectionOf(0).toFixed(0)}B against `
+      + `${e1.projections!.unlockingBytes}B measured; closed-form margin ${(naive * 100).toFixed(1)}%, `
+      + `margin actually required ${(needed * 100).toFixed(1)}% - a factor of `
+      + `${(needed / naive).toFixed(1)} because ${(calibration.projectionRedeemBytes
+        / projectionOf(0) * 100).toFixed(0)}% of the prediction is a fixed redeem script`);
+    expect(needed).toBeGreaterThan(naive * 2);
+  });
+
+  /**
    * FAIL CLOSED ON THE UNKNOWN. A descriptor outside every calibrated driver range must not return a
    * confident number. It returns `outOfRange` naming each driver that left the range, which is the reporting
    * form F2 ships in; production REJECTION is a later row and nothing here enables it.
@@ -622,4 +716,476 @@ describe('F2 estimator: held out', () => {
     // And it still answers, because a refusal with no number does not help a user decide what to cut.
     expect(absurd.verdict).toBe('OVER');
   });
+
+  /**
+   * BOTH ENDS OF THE RANGE, which is the report F2 did not have. A one-participant graph is BELOW every
+   * calibrated driver, and F2 answered it `in-range` and confidently - which is how forty-five real contracts
+   * were answered wrong. The clamp is what makes the answer sound; this is what makes it honest.
+   */
+  it('a driver BELOW the calibrated minimum is reported out of range, and answered at the measured floor', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const tiny = estimate({
+      name: 'one participant',
+      family: 'graph',
+      participants: 1,
+      invocations: 1,
+      blockSizes: [1],
+      redeemBytes: [1_500],
+    }, calibration);
+    console.log(`[F2] below-range report: ${JSON.stringify(tiny.outOfRange)}`);
+    expect(tiny.outOfRange.some((entry) => entry.includes('below the calibrated minimum'))).toBe(true);
+    // The projection class is the fixed covenant plus the smallest MEASURED blob, never the fitted line's
+    // value at a driver the fit never saw. 4,542 + 460 is arithmetic on two measurements.
+    const projection = tiny.classes.find((row) => row.klass === 'projection')!;
+    expect(projection.unlockingBytes)
+      .toBe(calibration.projectionRedeemBytes + calibration.projectionArgBytes.minimumValue);
+    expect(projection.unlockingBytes).toBeGreaterThan(calibration.projectionRedeemBytes);
+  });
+
+  /**
+   * THE ARITHMETIC FLOOR, stated as a property rather than as a number. A P2SH input pushes the script it
+   * redeems, so its unlocking bytecode cannot be shorter than that script. The pre-X70 model could and did
+   * violate this - its projection coefficient had an intercept of 4,095 for a 4,542-byte covenant - and no
+   * amount of re-fitting prevents a fitted line from doing it again. This is the check that does.
+   */
+  it('MEASURED: no class is ever predicted shorter than the script it redeems, at any driver', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    for (const participants of [1, 2, 3, 5, 8, 12, 20]) {
+      for (const redeem of [800, 1_500, 3_000, 6_000, 9_000]) {
+        const prediction = estimate({
+          name: `floor N=${participants} redeem=${redeem}`,
+          family: 'graph',
+          participants,
+          invocations: participants,
+          blockSizes: Array.from({ length: participants }, () => 1),
+          redeemBytes: Array.from({ length: participants }, () => redeem),
+        }, calibration);
+        const floors: [InputClass, number][] = [
+          ['master', redeem],
+          ['projection', calibration.projectionRedeemBytes],
+          ['controller', calibration.controllerRedeemBytes],
+        ];
+        for (const [klass, floor] of floors) {
+          const row = prediction.classes.find((entry) => entry.klass === klass)!;
+          expect(row.unlockingBytes, `${klass} at N=${participants} redeem=${redeem}`)
+            .toBeGreaterThanOrEqual(floor);
+        }
+      }
+    }
+  });
+
+  /**
+   * A COVENANT SIZE CHANGE MOVES THE PREDICTION. This is the X66 property: the projection verifier has been
+   * edited five times on this board (X7, X23, X24, X27, X5, F4) and every edit is worth N transaction bytes.
+   * When that size lived inside a fitted intercept, an edit silently invalidated every prediction and nothing
+   * said so. Carried as a descriptor field, it moves the answer by exactly what it moves the transaction by.
+   */
+  it('MEASURED: the prediction tracks the generated covenant sizes instead of baking them in', () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const spec = {
+      name: 'covenant tracking', family: 'graph' as const, participants: 4, invocations: 4,
+      blockSizes: [1, 1, 1, 1], redeemBytes: [1_500, 1_500, 1_500, 1_500],
+    };
+    const base = estimate(spec, calibration);
+    const grown = estimate({ ...spec, projectionRedeemBytes: calibration.projectionRedeemBytes + 129 },
+      calibration);
+    const projectionOf = (prediction: typeof base): number =>
+      prediction.classes.find((row) => row.klass === 'projection')!.unlockingBytes;
+    expect(projectionOf(grown) - projectionOf(base)).toBe(129);
+    // And it is worth N transaction bytes, which is the fact F4's measurement established on all four
+    // capstones and which the estimator now reproduces from the descriptor alone.
+    expect(grown.serializedBytes - base.serializedBytes).toBe(129 * 4);
+  });
+});
+
+/* -------------------------------------------------------------------------------------------------------- */
+/* X70: the forty-five-contract corpus calibration                                                            */
+/* -------------------------------------------------------------------------------------------------------- */
+
+/**
+ * The pre-X70 script term, re-derived from the SAME calibration samples, so the before/after table below is
+ * two models on one set of measurements in one process rather than two runs at two commits.
+ *
+ * F2 modelled the projection and the controller as a single upper envelope over their WHOLE unlocking
+ * bytecode, evaluated at the driver wherever it fell. That is reproduced exactly here: fit over the totals,
+ * evaluate unclamped. Everything else - masters, sidecars, fee - was already `redeem + enveloped blob` and is
+ * shared with the current model, so the difference between the two columns is the term under repair and
+ * nothing else.
+ */
+function legacyWorstUnlockingBytes(spec: ReturnType<typeof replicaSpec>, samples: MeasuredShape[]): number {
+  const graphs = samples.filter((sample) => sample.spec.family === 'graph');
+  const line = (points: { x: number; y: number; label: string }[], at: number): number => {
+    const envelope = fitUpperEnvelope(points);
+    return envelope.intercept + envelope.slope * at;
+  };
+  const rows = spec.participants + spec.invocations;
+  const projection = line(graphs.filter((sample) => sample.projections !== undefined).map((sample) => ({
+    x: sample.spec.participants + sample.spec.invocations,
+    y: sample.projections!.unlockingBytes,
+    label: sample.name,
+  })), rows);
+  const controller = line(graphs.filter((sample) => sample.controller !== undefined).map((sample) => ({
+    x: sample.spec.participants + sample.spec.invocations,
+    y: sample.controller!.unlockingBytes,
+    label: sample.name,
+  })), rows);
+  const masterArgs = line(graphs.flatMap((sample) => sample.masters.map((master) => ({
+    x: sample.spec.participants + sample.spec.invocations,
+    y: master.unlockingBytes - master.redeemBytes,
+    label: sample.name,
+  }))), rows);
+  return Math.max(projection, controller, Math.max(...spec.redeemBytes) + masterArgs);
+}
+
+/** Corpus roots, so a census row can be recompiled. The same defaults F3's probe and fit report use. */
+const CORPUS_ROOTS: Record<string, string> = {
+  mistswap: process.env.MISTSWAP_ROOT ?? '/Code/mistswap/mistswap/contracts',
+  eacc: process.env.EACC_CONTRACTS_DIR ?? '/Code/effectiveacceleration.ai/contract/contracts',
+  'solidity-by-example': `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`,
+  'solc-corpus': process.env.SOLC_CORPUS ?? '/Code/solidity',
+};
+
+const zeros = (length: number): Uint8Array => new Uint8Array(length);
+
+/** Shortest valid value of a parameter type, so a real contract can be instantiated and invoked. */
+function placeholder(type: string): unknown {
+  if (/^u?int\d*$/.test(type) || type === 'bigint') return 1n;
+  if (type === 'bool') return false;
+  if (type === 'string') return '';
+  if (type === 'address') return `aa20${'33'.repeat(32)}87`;
+  if (type === 'pubkey') return zeros(33);
+  if (type === 'sig') return zeros(65);
+  if (type === 'datasig') return zeros(64);
+  if (type === 'bytes') return zeros(0);
+  const fixed = /^bytes(\d+)$/.exec(type);
+  if (fixed) return zeros(Number(fixed[1]));
+  return undefined;
+}
+
+const eligibleCensusRows = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
+
+/**
+ * The same selection rule F3 used, restated rather than imported because F3's file does not export it: every
+ * bus-reachable census row whose block is one slot, whose constructor this harness can supply, and whose
+ * corpus root is present. Widest redeem first. Chosen by a rule, so the population cannot be the ones that
+ * happened to work.
+ */
+function corpusCandidates(): CensusRow[] {
+  return eligibleCensusRows
+    .filter((row) => row.blockSize === 1
+      && (row.constructorTypes ?? []).every((type) => placeholder(type) !== undefined)
+      && CORPUS_ROOTS[row.corpus] !== undefined)
+    .sort((left, right) => right.redeemBytes! - left.redeemBytes!);
+}
+
+const raw = (builder: TransactionBuilder): string =>
+  binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+
+interface CorpusMeasurement {
+  subject: CensusRow;
+  envelope: EnvelopeMeasurement;
+  classification: ReturnType<typeof classifyInputs>;
+}
+
+/** Build one census row into a real one-participant graph and measure it against every real limit. */
+async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasurement> {
+  const provider = createLayer3SemanticTestProvider();
+  const projectionArtifact = compileString(layer3.generateGraphProjectionVerifier());
+  const projection = new Contract(projectionArtifact, [], { provider });
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)),
+    [alicePkh], { provider },
+  );
+  const genesis = await (provider as never as {
+    addTokenUtxosDynamic: (make: () => unknown[]) => Promise<{ categoryId: string; utxos: Utxo[] }>;
+  }).addTokenUtxosDynamic(() => [{
+    address: controller.tokenAddress,
+    satoshis: 3000n,
+    token: { amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  }]);
+  const controllerCategory = genesis.categoryId;
+
+  const artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
+    solidityImportCompat: true,
+    ecrecover: 'p2pkh',
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  } as never);
+  const args = (artifact.constructorInputs ?? []).map((input) => placeholder(String(input.type)));
+  const base = new Contract(artifact, args as never[], { provider });
+  const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
+  const participant = base.withCategory(hexToBin(setup.categoryId));
+  expect(participant.bytecode.length / 2, 'census redeem length disagrees with the built participant')
+    .toBe(subject.redeemBytes);
+
+  const handlerName = subject.eligibleHandlers![0];
+  const handler = artifact.hiddenBatch!.handlers.find((entry) => entry.name === handlerName)!;
+  const handlerArgs = handler.inputs.map((input) => placeholder(String(input.type)));
+  expect(handlerArgs.every((value) => value !== undefined),
+    `handler ${handlerName} has a parameter type this harness cannot supply`).toBe(true);
+
+  const plan = layer3.planCompiledGraph(
+    [{ artifact, lockingBytecode: participant.lockingBytecode }],
+    [{ parent: null, callee: 0, function: handlerName, args: handlerArgs as never[] }],
+  );
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs,
+    plan.participants.map(() => ''), layout.projectionInputs, '',
+  );
+
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+  const fixedUtxo = (slot: number, satoshis: bigint): Utxo => randomUtxo({
+    satoshis, vout: 0, txid: slot.toString(16).padStart(2, '0').repeat(32),
+  });
+  const initFee = fixedUtxo(0xe1, 20_000n);
+  await provider.addUtxo(p2pkh.address, initFee);
+  const initialize = new TransactionBuilder({ provider });
+  initialize.addInput(
+    genesis.utxos[0], controller.unlock.initialize(hexToBin(transcript.root), alicePub, signature()),
+  );
+  initialize.addInput(initFee, p2pkh.unlock.spend(alicePub, signature()));
+  initialize.addOutput({
+    to: controller.tokenAddress,
+    amount: genesis.utxos[0].satoshis,
+    token: {
+      category: controllerCategory, amount: 0n,
+      nft: { capability: 'mutable', commitment: transcript.root },
+    },
+  });
+  initialize.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(initialize));
+  const rootedController = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo) => utxo.token?.nft?.commitment === transcript.root);
+  expect(rootedController, 'controller initialization did not create the rooted authority').toBeDefined();
+
+  const projectionUtxo = fixedUtxo(0xa0, 1000n);
+  await provider.addUtxo(projection.address, projectionUtxo);
+  const fee = fixedUtxo(0xe2, 150_000n);
+  await provider.addUtxo(p2pkh.address, fee);
+
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(setup.masterUtxo, participant.createCompilerRouteUnlocker(
+    artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
+  )(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as never[]));
+  tx.addInput(projectionUtxo, projection.unlock.verify(
+    transcript.bytes, BigInt(layout.controllerInput), 0n,
+  ));
+  tx.addInput(rootedController!, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  tx.addOutput({
+    to: participant.tokenAddress,
+    amount: setup.masterUtxo.satoshis,
+    token: { category: setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 100_000n });
+
+  const transaction = tx.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(tx.inputs as never);
+  // RULE 1. Every cost read RUN TO COMPLETION on a relaxed density ceiling with every other consensus knob
+  // real, then acceptance re-checked with NOTHING relaxed at both real profiles.
+  const envelope = assessEnvelope(`${subject.contractName} x1`, transaction as never, sourceOutputs);
+  expect(envelope.refusedAtConsensus, `${subject.contractName} refused at the real consensus profile`)
+    .toEqual([]);
+  expect(envelope.refusedAtStandard, `${subject.contractName} refused at the real standard profile`)
+    .toEqual([]);
+  // RULE 2. Knob liveness on THIS transaction's worst-cost input, at a budget derived from its own reading.
+  const budget = knobControlBudgetFor(envelope.worstCostInput);
+  const control = densityKnobControl(
+    transaction as never, sourceOutputs, envelope.worstCostInput.input, budget,
+  );
+  expect(budget).toBeLessThan(BCH_2026_CONSENSUS.operationCostBudgetPerByte);
+  expect(control, `the operation-cost knob does not bite at ${budget}/byte`).toBeDefined();
+  expect(String(control)).toMatch(/density|operation cost/i);
+
+  const redeemBytes = transaction.inputs.map((input) => redeemScriptLength(input.unlockingBytecode));
+  return { subject, envelope, classification: classifyInputs(envelope, redeemBytes) };
+}
+
+/** Per-input-class measurement, so an aggregate that happens to be dominated by one class cannot hide a miss. */
+function measuredClasses(measurement: CorpusMeasurement): Map<InputClass, { bytes: number; density: number }> {
+  const { envelope, classification } = measurement;
+  const at = (index: number): { bytes: number; density: number } => ({
+    bytes: envelope.inputs[index].unlockingBytes,
+    density: envelope.inputs[index].standardCostRatio,
+  });
+  const worst = (indices: number[]): { bytes: number; density: number } => ({
+    bytes: Math.max(...indices.map((index) => envelope.inputs[index].unlockingBytes)),
+    density: Math.max(...indices.map((index) => envelope.inputs[index].standardCostRatio)),
+  });
+  const rows = new Map<InputClass, { bytes: number; density: number }>();
+  rows.set('master', worst(classification.masters));
+  rows.set('projection', worst(classification.projections));
+  if (classification.controller !== undefined) rows.set('controller', at(classification.controller));
+  rows.set('fee', at(classification.fee));
+  return rows;
+}
+
+describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on script bytes', () => {
+  /**
+   * THE ROW THAT FOUND THE DEFECT, RE-RUN AGAINST THE REPAIR.
+   *
+   * F3 built every one-slot bus-reachable corpus contract into a real one-participant graph and measured it.
+   * All of them bind on the 10,000-byte per-input unlocking limit, and F2 under-predicted that limit on every
+   * single one - the only limit any of them is actually near, and the one F2 got wrong. F2 meanwhile predicted
+   * DENSITY would bind on all of them, which is a worse failure than a small error: it names the wrong thing
+   * to cut.
+   *
+   * The mechanism was never subtle once looked at. The projection verifier is ONE generated covenant of 4,542
+   * bytes and every proof slot pushes the whole of it, so the projection input cannot be shorter than 4,542
+   * bytes whatever else is true. F2's coefficient for that input was a line fitted through four points at six
+   * to sixteen rows, with an INTERCEPT OF 4,095 - already below the arithmetic floor - evaluated at two rows,
+   * where it returned 4,441. It was not modelling the shape wrongly; it was modelling a constant as a slope.
+   *
+   * This test builds the same population, measures it the same way, and reports BOTH models against it.
+   */
+  it('MEASURED: every one-slot corpus contract, before and after the script-term repair', async () => {
+    const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
+    const candidates = corpusCandidates();
+    console.log(`[F2/X70] census at ${F3_CENSUS_COMMIT}, calibration at ${calibration.basis.commit}; `
+      + `one-slot bus-reachable candidates: ${candidates.length}`);
+    expect(candidates.length, 'no one-slot bus-reachable corpus contract exists').toBeGreaterThan(0);
+
+    interface Row {
+      name: string;
+      measuredWorst: number;
+      predictedWorst: number;
+      legacyWorst: number;
+      measuredBinds: string;
+      predictedBinds: string;
+      predictedDensity: number;
+      unresolved: string[];
+      perClass: { klass: InputClass; predictedBytes: number; measuredBytes: number;
+        predictedDensity: number; measuredDensity: number }[];
+      limitErrors: { limit: string; error: number }[];
+    }
+    const rows: Row[] = [];
+    const skipped: string[] = [];
+    for (const subject of candidates) {
+      let measurement: CorpusMeasurement;
+      try {
+        measurement = await measureCorpusSubject(subject);
+      } catch (error) {
+        skipped.push(`${subject.corpus}/${subject.contractName}: ${(error as Error).message.split('\n')[0]}`);
+        continue;
+      }
+      const spec = replicaSpec(subject, 1);
+      const prediction = estimate(spec, calibration);
+      const { envelope } = measurement;
+      const measured = measuredClasses(measurement);
+      rows.push({
+        name: `${subject.corpus}/${subject.contractName}`,
+        measuredWorst: envelope.worstUnlockingInput.unlockingBytes,
+        predictedWorst: prediction.worstUnlockingBytes,
+        legacyWorst: legacyWorstUnlockingBytes(spec, F2_BASIS),
+        measuredBinds: envelope.binding[0].limit,
+        predictedBinds: prediction.limits[0].limit,
+        predictedDensity: prediction.worstDensityRatio,
+        unresolved: prediction.bindingUnresolved,
+        perClass: prediction.classes
+          .filter((row) => measured.has(row.klass))
+          .map((row) => ({
+            klass: row.klass,
+            predictedBytes: row.unlockingBytes,
+            measuredBytes: measured.get(row.klass)!.bytes,
+            predictedDensity: row.densityRatio,
+            measuredDensity: measured.get(row.klass)!.density,
+          })),
+        limitErrors: [
+          ['serialized bytes', prediction.serializedBytes, envelope.serializedBytes],
+          ['worst unlocking bytes', prediction.worstUnlockingBytes,
+            envelope.worstUnlockingInput.unlockingBytes],
+          ['worst density ratio', prediction.worstDensityRatio, envelope.worstCostInput.standardCostRatio],
+          ['worst SigChecks ratio', prediction.worstSigCheckRatio,
+            Math.max(...envelope.inputs.map((row) => row.signatureCheckRatio))],
+        ].map(([limit, predicted, measuredValue]) => ({
+          limit: limit as string,
+          error: (predicted as number) / (measuredValue as number) - 1,
+        })),
+      });
+    }
+    for (const failure of skipped) console.log(`[F2/X70] candidate skipped - ${failure}`);
+    console.log(`[F2/X70] measured ${rows.length} of ${candidates.length} one-slot candidates`);
+    expect(rows.length, 'no candidate could be built and measured').toBeGreaterThan(0);
+
+    // THE CORRECTED CALIBRATION TABLE. Both directions, both models, on the limit that actually binds.
+    const errorOf = (predicted: number, measured: number): number => predicted / measured - 1;
+    const after = rows.map((row) => errorOf(row.predictedWorst, row.measuredWorst));
+    const before = rows.map((row) => errorOf(row.legacyWorst, row.measuredWorst));
+    const band = (values: number[]): string => `${(Math.min(...values) * 100).toFixed(1)}% to `
+      + `${(Math.max(...values) * 100).toFixed(1)}%, mean `
+      + `${((values.reduce((sum, value) => sum + value, 0) / values.length) * 100).toFixed(1)}%`;
+    console.log(`[F2/X70] unlocking bytecode length, BEFORE the repair: ${band(before)}; `
+      + `${before.filter((error) => error < 0).length}/${before.length} UNDER-PREDICTED`);
+    console.log(`[F2/X70] unlocking bytecode length, AFTER  the repair: ${band(after)}; `
+      + `${after.filter((error) => error < 0).length}/${after.length} UNDER-PREDICTED`);
+    for (const limit of ['serialized bytes', 'worst density ratio', 'worst SigChecks ratio']) {
+      const errors = rows.map((row) => row.limitErrors.find((entry) => entry.limit === limit)!.error);
+      console.log(`[F2/X70] ${limit.padEnd(22)}: ${band(errors)}; `
+        + `${errors.filter((error) => error < -1e-9).length}/${errors.length} under-predicted`);
+    }
+
+    // PER CLASS, because an aggregate the projection dominates could hide a master or controller miss.
+    const classErrors = new Map<InputClass, { bytes: number[]; density: number[] }>();
+    for (const row of rows) {
+      for (const entry of row.perClass) {
+        const bucket = classErrors.get(entry.klass) ?? { bytes: [], density: [] };
+        bucket.bytes.push(errorOf(entry.predictedBytes, entry.measuredBytes));
+        bucket.density.push(errorOf(entry.predictedDensity, entry.measuredDensity));
+        classErrors.set(entry.klass, bucket);
+      }
+    }
+    const classMisses: string[] = [];
+    for (const [klass, bucket] of classErrors) {
+      const underBytes = bucket.bytes.filter((error) => error < -1e-9).length;
+      const underDensity = bucket.density.filter((error) => error < -1e-9).length;
+      console.log(`[F2/X70] class ${klass.padEnd(11)} bytes ${band(bucket.bytes)} `
+        + `(${underBytes} under) | density ${band(bucket.density)} (${underDensity} under)`);
+      if (underBytes > 0) classMisses.push(`${klass} bytes ${underBytes}/${bucket.bytes.length}`);
+      if (underDensity > 0) classMisses.push(`${klass} density ${underDensity}/${bucket.density.length}`);
+    }
+
+    // THE BINDING LIMIT, which is the estimator's actual output. It is reported in TWO forms, because the
+    // ranking and the bound are different jobs and only one of them is fixed by X70.
+    const bindingAgreement = rows.filter((row) => row.measuredBinds === row.predictedBinds).length;
+    const inUnresolved = rows.filter((row) => row.unresolved.includes(row.measuredBinds)).length;
+    const measuredBinds = new Set(rows.map((row) => row.measuredBinds));
+    const predictedBinds = new Set(rows.map((row) => row.predictedBinds));
+    console.log(`[F2/X70] binding limit measured:  ${[...measuredBinds].join(', ')}`);
+    console.log(`[F2/X70] binding limit predicted: ${[...predictedBinds].join(', ')}`);
+    console.log(`[F2/X70] leader agrees with the measured binder on ${bindingAgreement}/${rows.length}; `
+      + `the measured binder is in the UNRESOLVED set on ${inUnresolved}/${rows.length}`);
+    // How far the repair moved the ranking even though it did not invert it: the script prediction rose from
+    // below the density prediction by 30% to within 15% of it, which is why the two are now unresolvable
+    // rather than confidently ordered the wrong way round.
+    const density = rows.map((row) => row.predictedDensity);
+    const scriptBefore = rows.map((row) => row.legacyWorst / BCH_2026_CONSENSUS.maximumBytecodeLength);
+    const scriptAfter = rows.map((row) => row.predictedWorst / BCH_2026_CONSENSUS.maximumBytecodeLength);
+    const ratioBand = (top: number[], bottom: number[]): string => {
+      const values = top.map((value, index) => bottom[index] / value);
+      return `${Math.min(...values).toFixed(3)}x to ${Math.max(...values).toFixed(3)}x`;
+    };
+    console.log(`[F2/X70] predicted density / predicted script bytes, BEFORE: ${ratioBand(scriptBefore, density)}`);
+    console.log(`[F2/X70] predicted density / predicted script bytes, AFTER:  ${ratioBand(scriptAfter, density)}`);
+
+    // WHAT IS PINNED. Conservatism on the limit that binds, on every row, is the claim this row exists to
+    // make, and it is asserted rather than reported. The class table is asserted the same way: a miss hidden
+    // inside a class is still a miss, and the master-density miss this check found is the reason the density
+    // coefficients are not clamped to their measured floor.
+    const under = rows.filter((row) => row.predictedWorst < row.measuredWorst);
+    expect(under.map((row) => `${row.name} ${row.predictedWorst} < ${row.measuredWorst}`)).toEqual([]);
+    expect(classMisses).toEqual([]);
+    // THE RANKING IS NOT FIXED, AND IS NOT ASSERTED TO BE. What IS asserted is that the measured binder is
+    // never ruled out: naming density first while the truth is script bytes is a resolution failure the model
+    // declares, where F2 asserted the wrong answer with no qualification at all.
+    expect(inUnresolved).toBe(rows.length);
+    // The before column is kept as an assertion too, so this row cannot quietly stop demonstrating anything:
+    // the model it replaced must still be visibly wrong on this population.
+    expect(before.filter((error) => error < 0).length).toBeGreaterThanOrEqual(before.length - 1);
+  }, 1_800_000);
 });

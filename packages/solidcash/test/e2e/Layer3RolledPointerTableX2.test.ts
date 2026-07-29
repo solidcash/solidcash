@@ -429,9 +429,12 @@ describe('Layer-3 rolled pointer-table loop (X2, SEMANTIC)', () => {
     expect(call.loopArrayVar).toBe('handlers');
     expect(call.selectorArrayVar).toBe('__fnsel_handlers');
     expect(call.addressParam).toBeUndefined();
-    // The `for` spelling of the same source publishes a ceiling; this one does not. Recorded, not endorsed:
-    // the on-chain `require(handlers.length <= 3)` is what bounds the rolled shape.
-    expect(call.maximumOccurrences).toBeUndefined();
+    // X63. The ceiling this spelling used to escape. The loop is still ROLLED - the four assertions above are
+    // the ones that would move if it had been expanded, and the bytecode is byte-identical to what this file
+    // measured before - but the bound the source proves now reaches the artifact, so a consumer is refused a
+    // fourth row at plan time as well as by the on-chain `require(handlers.length <= 3)`.
+    expect(call.maximumOccurrences).toBe(3);
+    expect(call.occurrenceBoundSource).toBe('guard');
   }, 120_000);
 
   it.each([1, 2, 3])('executes a rolled varying-method table of %i rows', async (rows) => {

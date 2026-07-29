@@ -248,6 +248,24 @@ describe('C1/piece-6: an unguarded caller-supplied implementation address warns'
           impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
   });
 
+  /**
+   * Reading only a local's DECLARATION (findLocalInit) let `pubkey k = owner; k = pk;` launder a caller-supplied
+   * key past the check: the declaration says `owner`, the checkSig sees `pk`. Every binding a local can hold is
+   * read, so a reassigned key is caller-chosen if ANY of them reaches a parameter - both orderings warn.
+   */
+  it('SEC-12: a reassigned key alias cannot launder a caller-supplied key', () => {
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract ReboundAuthorized(pubkey owner) { bigint counter;
+        function up(bytes input, address impl, pubkey pk, sig s) external {
+          pubkey k = owner; k = pk; require(checkSig(s, k));
+          impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+    expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
+      contract ReboundAuthorized2(pubkey owner) { bigint counter;
+        function up(bytes input, address impl, pubkey pk, sig s) external {
+          pubkey k = pk; k = owner; require(checkSig(s, k));
+          impl.delegatecall(input); require(input.length > 0); } }`)).toBe(1);
+  });
+
   it('SEC-12: one real guard beside a self-authorizing check is still a guard', () => {
     expect(callerChosenWarnings(`pragma solidcash >=0.8.0;
       contract MixedAuthorized(pubkey owner) { bigint counter;

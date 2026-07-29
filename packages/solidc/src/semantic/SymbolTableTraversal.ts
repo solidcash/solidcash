@@ -5020,39 +5020,56 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * Resolve a key expression to the value source that decides its BYTES, exactly as
-   * delegatecallTargetsUnguardedParameter resolves its target: strip `CastNode`s and follow `pubkey k = owner`
-   * local aliases. An array index only SELECTS among a container's elements, so the CONTAINER decides -
-   * `this.owners[i]` is stored key material even though `i` is caller-supplied.
+   * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
+   * only the declaration (findLocalInit) lets `pubkey k = owner; k = pk;` launder a caller-supplied key past the
+   * check - the declaration says `owner` but the checkSig sees `pk`. A tuple rebinding contributes its whole
+   * right-hand side, which over-approximates rather than missing.
    */
-  private resolveKeySource(expr: Node | undefined, body: Node | undefined): Node | undefined {
-    let cur = expr;
-    const seenNames = new Set<string>();
-    for (;;) {
-      while (cur instanceof CastNode) cur = cur.expression;
-      if (cur instanceof ArrayAccessNode) { cur = cur.array; continue; }
-      if (!(cur instanceof IdentifierNode) || seenNames.has(cur.name)) return cur;
-      seenNames.add(cur.name);
-      const init = this.findLocalInit(body, cur.name);
-      if (!init) return cur;
-      cur = init;
+  private localBindings(
+    node: Node | undefined, name: string, out: ExpressionNode[] = [], seen: Set<Node> = new Set(),
+  ): ExpressionNode[] {
+    if (!node || seen.has(node)) return out;
+    seen.add(node);
+    if (node instanceof VariableDefinitionNode && node.name === name && node.expression) out.push(node.expression);
+    if (node instanceof AssignNode && node.identifier.name === name) out.push(node.expression);
+    if (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === name)) {
+      for (const e of node.tupleExpressions ?? [node.tuple]) out.push(e);
     }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { this.localBindings(v, name, out, seen); } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) this.localBindings(e, name, out, seen);
+      }
+    }
+    return out;
   }
 
   /**
-   * Does this key resolve to a parameter of `fn` - i.e. does the CALLER choose it? A constructor input (the
-   * contract's own p2sh32 commits to it), a state variable, a literal and an unresolvable symbol (a contract
-   * `const`, an inherited name) are all NOT caller-chosen. A computed key (`pubkey(k)`, `hash160(pk)`, a helper
-   * call) is caller-chosen when any operand feeding it resolves to a parameter.
+   * Does this key resolve to a parameter of `fn` - i.e. does the CALLER choose it? Strip `CastNode`s and follow
+   * `pubkey k = owner` local aliases, as delegatecallTargetsUnguardedParameter resolves its target. A
+   * constructor input (the contract's own p2sh32 commits to it), a state variable, a literal and an
+   * unresolvable symbol (a contract `const`, an inherited name) are NOT caller-chosen. A computed key
+   * (`pubkey(k)`, `hash160(pk)`, a helper call) is caller-chosen when any operand feeding it reaches a
+   * parameter. An array index only SELECTS among a container's elements, so the CONTAINER decides the bytes -
+   * `this.owners[i]` is stored key material even though the caller picks `i`.
    */
-  private keyIsCallerChosen(expr: Node | undefined, fn: FunctionDefinitionNode, seen: Set<Node> = new Set()): boolean {
-    const source = this.resolveKeySource(expr, fn.body);
-    if (!source || seen.has(source)) return false;
-    seen.add(source);
-    if (source instanceof IdentifierNode) return fn.parameters.some((parameter) => parameter.name === source.name);
-    if (source instanceof StateAccessNode || source instanceof MappingAccessNode) return false;
-    if (source instanceof LiteralNode) return false;
-    for (const v of Object.values(source)) {
+  private keyIsCallerChosen(
+    expr: Node | undefined, fn: FunctionDefinitionNode, seen: Set<Node | string> = new Set(),
+  ): boolean {
+    let cur = expr;
+    while (cur instanceof CastNode) cur = cur.expression;
+    if (cur instanceof ArrayAccessNode) return this.keyIsCallerChosen(cur.array, fn, seen);
+    if (!cur || seen.has(cur)) return false;
+    seen.add(cur);
+    if (cur instanceof StateAccessNode || cur instanceof MappingAccessNode) return false;
+    if (cur instanceof LiteralNode) return false;
+    if (cur instanceof IdentifierNode) {
+      const { name } = cur;
+      if (fn.parameters.some((parameter) => parameter.name === name)) return true;
+      if (seen.has(`id:${name}`)) return false;
+      seen.add(`id:${name}`);
+      return this.localBindings(fn.body, name).some((binding) => this.keyIsCallerChosen(binding, fn, seen));
+    }
+    for (const v of Object.values(cur)) {
       if (v instanceof Node) { if (this.keyIsCallerChosen(v, fn, seen)) return true; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node && this.keyIsCallerChosen(e, fn, seen)) return true;
       }

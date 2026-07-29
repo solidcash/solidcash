@@ -13516,8 +13516,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (info.runtimeAliasPriorSlots?.length ?? 0) === 0
       && !info.operations.includes('write') && !info.operations.includes('delete'));
     const extraCollectionOutputs = BigInt(sameCollectionOthers.length);
-    const pinsCollectionOutputCount = !this.currentFunctionIsDelegate
-      && aliasOwner === undefined && runtimeAliasOwners.length === 0
+    // X11. The `delegate` exclusion here was recorded as guarding an unreachable shape. It is reachable: a
+    // delegated C2 write settles, and with the pin off NOTHING bounded the collection's output cardinality on
+    // that route - the only thing left was the PROXY's own-category mutable NFT conservation, and the shipped
+    // default upgrades proxy carries the RELAXED form (outputs >= inputs). MEASURED LIVE: one extra own-category
+    // mutable NFT appended at the collection's entry address beside a genuine delegated write was ACCEPTED, and
+    // `getUsers(0, 0)` then returned [5, 99] - the fabricated value read back as a genuine mapping entry. The
+    // pin is index-free (it counts outputs AT the entry address), so it holds identically inside a delegate.
+    const pinsCollectionOutputCount = aliasOwner === undefined && runtimeAliasOwners.length === 0
       && !this.entrySlots[slotIndex].inLoop
       && !this.sortedInsertLoopActive && !this.sortedUpsertLoopActive
       && otherCountsAreStatic;

@@ -1056,12 +1056,14 @@ contract E3DecoyProxy(address shown, address used) {
     });
 
     /**
-     * THE FALSE NEGATIVE X43 KEEPS, MEASURED. `signatureGuard` publishes the KEY's provenance, not the whole
-     * authority story: P2PKH-shaped authority pins a `pubkey` parameter with a separate unconditional
-     * `require(hash160(pk) == pkh)`, which no artifact field describes. The compiler credits exactly this idiom
-     * (round-15 SEC-17); this gate refuses it as `self-authorized` rather than guess, and names the class.
+     * X51 CLOSED THE FALSE NEGATIVE X43 KEPT. `signatureGuard` published the KEY's provenance but not the whole
+     * authority story, so P2PKH-shaped authority - a `pubkey` parameter pinned by a separate unconditional
+     * `require(hash160(pk) == pkh)` - was refused as `self-authorized`. X43 declined to reconstruct that from
+     * types, correctly: type reconstruction is the reasoning X43 exists to remove. X51 publishes the commitment
+     * itself as `keyCommitment`, computed by the SAME rule that drives the SEC-17 diagnostic, so the gate now
+     * reads the fact instead of guessing it. The pre-X51 artifact is still refused, asserted below.
      */
-    it('refuses honest P2PKH-shaped authority, the known false negative, and names it', () => {
+    it('admits honest P2PKH-shaped authority once the commitment is published', () => {
       const p2pkhShaped = compileString(`pragma solidcash >=0.8.0;
 contract E3Hash160Proxy(bytes20 pkh) {
     bigint counter;
@@ -1072,12 +1074,21 @@ contract E3Hash160Proxy(bytes20 pkh) {
         require(input.length > 0);
     }
 }`);
-      expect(p2pkhShaped.abi.find((entry) => entry.name === 'up')!.signatureGuard)
-        .toEqual({ key: { kind: 'parameter', name: 'pk' } });
-      expect(classify(p2pkhShaped, [alicePkh]))
-        .toThrow(/class 'self-authorized' is not admitted.*'hash160-committed-key'/s);
+      expect(p2pkhShaped.abi.find((entry) => entry.name === 'up')!.signatureGuard).toEqual({
+        key: { kind: 'parameter', name: 'pk' },
+        keyCommitment: { kind: 'constructorArg', name: 'pkh' },
+      });
+      expect((classify(p2pkhShaped, [alicePkh])() as { id: string }).id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
       expect(layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id))
-        .toContain('hash160-committed-key');
+        .not.toContain('hash160-committed-key');
+
+      // GUARD: the identical artifact with only the new field deleted is byte-for-byte a pre-X51 artifact, and
+      // is refused again. So the admission is credited to the published commitment, not to anything else that
+      // moved in the same commit.
+      const preX51 = JSON.parse(JSON.stringify(p2pkhShaped));
+      delete preX51.abi.find((entry: { name: string }) => entry.name === 'up').signatureGuard.keyCommitment;
+      expect(classify(preX51, [alicePkh])).toThrow(/class 'self-authorized' is not admitted/);
     });
 
     /**
@@ -1154,7 +1165,8 @@ contract E3Hash160Proxy(bytes20 pkh) {
         'computed-delegate-target',
         'unpublished-target-provenance',
         'decoy-committed-target',
-        'hash160-committed-key',
+        // 'hash160-committed-key' was removed by X51: the commitment is now published as
+        // signatureGuard.keyCommitment and read by the gate, so the shape is admitted rather than named.
       ]);
       for (const entry of layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES) {
         expect(entry.reason.length).toBeGreaterThan(20);

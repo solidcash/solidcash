@@ -25,6 +25,10 @@ export const fixtures: Fixture[] = [
               'kind': 'parameter',
               'name': 'pk',
             },
+            'keyCommitment': {
+              'kind': 'constructorArg',
+              'name': 'pkh',
+            },
           },
           'selector': '9efe324b',
           'inputs': [
@@ -920,6 +924,10 @@ export const fixtures: Fixture[] = [
             'key': {
               'kind': 'parameter',
               'name': 'pk',
+            },
+            'keyCommitment': {
+              'kind': 'constructorArg',
+              'name': 'funder',
             },
           },
           'selector': '2f7ef34c',

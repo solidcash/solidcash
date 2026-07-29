@@ -20,6 +20,30 @@ import {
  *
  * NOTHING HERE IS A `CONSENSUS_FIT` OR `POLICY_FIT` CLAIM. A measurement is a point-in-time reading of one
  * shape at one commit. Promotion is the board's to make, and needs the full shape, not one sweep.
+ *
+ * MEASURED ENVELOPE AT `4ac40b82`. Every figure below was read run-to-completion through this harness, and
+ * every shape was ALSO re-evaluated with nothing relaxed - zero inputs refused, at both the real consensus
+ * hash allowance and the real standard one - with a knob-liveness control that bites on the same bytes.
+ *
+ *   shape          part  inputs  serialized   relay%   worst density        binds first
+ *   A13 graph       3       8      23,734B    23.7%   0.4067x @ input 6    unlocking bytes  0.5094x
+ *   C2 cycle        4      79      53,101B    53.1%   0.6491x @ input 77   op-cost density  0.6491x
+ *   C1 DeFi         5      38      63,130B    63.1%   0.6182x @ input 36   unlocking bytes  0.7451x
+ *   C3 max graph    8     108     100,354B   100.4%   0.9217x @ input 106  RELAY SIZE       1.0035x
+ *
+ * THE BINDING LIMIT IS NOT THE SAME ONE TWICE, and it is not always density. C1 binds on the 10,000-byte
+ * per-input script limit, C2 on operation-cost density, C3 on the 100,000-byte standard relay ceiling. Only
+ * C3 is over anything, and what it is over is a POLICY limit: it is inside every consensus limit measured.
+ *
+ * C3's overrun is 354 bytes, 0.35%. Costed against the measured per-slot serialized sizes: the two cheapest
+ * slot pairs are 177 and 211 bytes, so removing two frees 388 and lands at 99,966. The fixture's own note
+ * that 62 of its 108 slots are an unused Ledger trailing region prices the same fix at 13,048 bytes, landing
+ * at 87,306 (87.3%). Equivalently, 45 bytes off each of the eight projection scripts, or 354 off the single
+ * controller script, a 12.4% cut. Which slots are removable is a design question, not a measurement one.
+ *
+ * Every figure above was derived from a build, never copied from a recorded table. Where a fixture's own
+ * comment records a different number, the difference is reported rather than reconciled here: the fixtures'
+ * ASSERTIONS all still pass against these readings, which is the property that matters.
  */
 
 const brand = hexToBin('4c3342314354524c'); // L3B1CTRL controller prefix via salt prologue

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
 import { calculateDust, generateLibauthSourceOutputs } from '../../src/utils.js';
@@ -8,9 +8,7 @@ import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test
 import {
   BCH_2026_CONSENSUS, BCH_2026_STANDARD, ORDINARY_LIMITS, refusedInputsAt,
 } from './layer3-envelope-f1.js';
-import {
-  type MeasuredShape, calibrate, deriveCalibration, estimate,
-} from './layer3-estimator-f2.js';
+import { calibrate, deriveCalibration, estimate } from './layer3-estimator-f2.js';
 import { F2_BASIS, F2_BASIS_COMMIT } from './layer3-estimator-basis-f2.js';
 import { F2_HELD_OUT } from './layer3-estimator-heldout-f2.js';
 import { LAYER3_SEMANTIC_TEST_PROFILE } from './layer3-semantic-profile.js';
@@ -159,22 +157,30 @@ const p2pkhScript = (seed: number): Uint8Array => concat(
   Uint8Array.of(0x88, 0xac),
 );
 
+interface SyntheticTransaction {
+  version: number;
+  locktime: number;
+  inputs: { outpointIndex: number; outpointTransactionHash: Uint8Array; sequenceNumber: number;
+    unlockingBytecode: Uint8Array }[];
+  outputs: { lockingBytecode: Uint8Array; valueSatoshis: bigint }[];
+}
+
 /**
- * A transaction of a chosen serialized size, built the same way X49 built the ones it offered to the node:
- * `standardOutputs` P2PKH outputs carry the bulk and one tail output tunes the total to the byte. Every
- * output is well above dust so SIZE is the only rule under test.
+ * A transaction whose every output is a standard template well above dust, so a rule under test is the only
+ * thing that can refuse it. `opReturnBytes` tunes the total to the byte: an OP_RETURN output is exempt from
+ * dust and is a standard template, so it changes size and nothing else.
  */
-function transactionOfSize(
-  standardOutputs: number, tailScriptBytes?: number,
-): Parameters<typeof assessProductionEnvelope>[1] {
-  const outputs = Array.from({ length: standardOutputs }, (_value, index) => ({
+function synthetic(p2pkhOutputs: number, opReturnBytes?: number): SyntheticTransaction {
+  const outputs = Array.from({ length: p2pkhOutputs }, (_value, index) => ({
     lockingBytecode: p2pkhScript(index),
     valueSatoshis: 600n,
   }));
-  if (tailScriptBytes !== undefined) {
+  if (opReturnBytes !== undefined) {
     outputs.push({
-      lockingBytecode: Uint8Array.from({ length: tailScriptBytes }, () => 0x51),
-      valueSatoshis: 600n,
+      lockingBytecode: concat(
+        Uint8Array.of(0x6a), Uint8Array.from({ length: opReturnBytes - 1 }, () => 0x51),
+      ),
+      valueSatoshis: 0n,
     });
   }
   return {
@@ -187,7 +193,26 @@ function transactionOfSize(
       unlockingBytecode: new Uint8Array(0),
     }],
     outputs,
-  } as never;
+  };
+}
+
+/**
+ * A transaction of EXACTLY the requested serialized size, verified by encoding it rather than by arithmetic.
+ * Built the same way X49 built the ones it offered to the node - bulk P2PKH outputs plus one tail output
+ * that tunes the total - so the boundary measured here is the boundary measured there.
+ */
+function syntheticOfExactSize(target: number): SyntheticTransaction {
+  for (let opReturnBytes = 1; opReturnBytes <= 201; opReturnBytes += 1) {
+    const tailBytes = 8 + 1 + opReturnBytes;
+    // 50 = 4 version + 1 input-count varint + 41 input + 4 locktime. The output-count varint is 1 or 3.
+    for (const countBytes of [1, 3]) {
+      const bulk = (target - 50 - countBytes - tailBytes) / 34;
+      if (!Number.isInteger(bulk) || bulk < 1) continue;
+      const candidate = synthetic(bulk, opReturnBytes);
+      if (encodeTransaction(candidate as never).length === target) return candidate;
+    }
+  }
+  throw new Error(`R1: no synthetic transaction of exactly ${target} bytes`);
 }
 
 /* ------------------------------------------------------------------------------------------------------ */
@@ -270,7 +295,8 @@ describe('R1 envelope: the rules', () => {
   it('MEASURED: `enforceDust: false` is what hid the C1 output, not a missing rule', () => {
     const enforcing = new MockNetworkProvider({ policy: { enforceDust: true } });
     expect(() => new TransactionBuilder({ provider: enforcing })
-      .addOutput({ to: Uint8Array.of(0x51), amount: 10n })).toThrow(/10.*474|474/);
+      .addOutput({ to: Uint8Array.of(0x51), amount: 10n }))
+      .toThrow(/less than the required minimum for this output-type \(474\)/);
 
     const relaxed = new MockNetworkProvider({ policy: { enforceDust: false } });
     expect(() => new TransactionBuilder({ provider: relaxed })
@@ -354,15 +380,49 @@ describe('R1 envelope: the build-time gate', () => {
   }, 900_000);
 
   /**
+   * A CORRECTION TO F1'S OWN TABLE, produced by adding one rule it did not model.
+   *
+   * F1 ranked the sweep's binding limit as per-input SigChecks at N=2 (0.2500x) and operation-cost density at
+   * N=4 (0.2570x). Neither is the tightest rule once dust is included: the 2,000-satoshi p2sh32 change output
+   * sits at 0.2880x of its 576-satoshi threshold, ahead of both. The ranking is comparable because every
+   * reading is expressed the same way - the fraction of the distance to refusal - and dust is a floor
+   * expressed as threshold-over-value so that 1.0000x is its boundary too.
+   *
+   * This is not a defect in F1. It is the direct consequence of the finding X49 made on the node: a capacity
+   * measurement that does not model dust is not measuring the whole envelope, and the shape it misses first
+   * is the smallest one.
+   */
+  it('MEASURED: with dust modelled, the tightest rule on the small sweeps is not the one F1 ranked first', async () => {
+    const built = await sweeps();
+    for (const n of [2, 4]) {
+      const verdict = assessProductionEnvelope(
+        `sweep N=${n}`, built.get(n)!.transaction as never, built.get(n)!.sourceOutputs,
+      );
+      const tightest = verdict.readings[0];
+      console.log(`[R1] sweep N=${n} tightest rule ${tightest.rule} ${tightest.ratio.toFixed(4)}x at `
+        + `${tightest.where}; F1 ranked ${n === 2 ? 'per-input SigChecks 0.2500x' : 'op-cost density 0.2570x'}`);
+      expect(tightest.rule).toBe('output-dust');
+      expect(tightest.ratio).toBeGreaterThan(0.25);
+      expect(verdict.admitted).toBe(true);
+    }
+    // At N=8 the capacity rules overtake dust again, so this is a property of the small shapes rather than a
+    // claim that dust always binds.
+    const eight = assessProductionEnvelope(
+      'sweep N=8', built.get(8)!.transaction as never, built.get(8)!.sourceOutputs,
+    );
+    expect(eight.readings[0].rule).toBe('operation-cost-density');
+  }, 900_000);
+
+  /**
    * THE RELAY BOUNDARY, AT THE BYTE, the same measurement X49 made on the node and for the same reason: a
    * ceiling asserted as a band is a ceiling nobody has checked. 100,000 bytes is admitted and 100,001 is
    * refused, by the rule id a diagnostic would quote.
    */
   it('MEASURED: the relay ceiling refuses at exactly one byte over, with a named rule', () => {
-    const atCeiling = transactionOfSize(2_938, 45);
-    const overCeiling = transactionOfSize(2_938, 46);
-    const inside = assessProductionEnvelope('at-ceiling', atCeiling, [], { bytesOnly: true });
-    const outside = assessProductionEnvelope('over-ceiling', overCeiling, [], { bytesOnly: true });
+    const atCeiling = syntheticOfExactSize(BCH_2026_STANDARD.maximumTransactionSize);
+    const overCeiling = syntheticOfExactSize(BCH_2026_STANDARD.maximumTransactionSize + 1);
+    const inside = assessProductionEnvelope('at-ceiling', atCeiling as never, [], { bytesOnly: true });
+    const outside = assessProductionEnvelope('over-ceiling', overCeiling as never, [], { bytesOnly: true });
     expect(inside.serializedBytes).toBe(BCH_2026_STANDARD.maximumTransactionSize);
     expect(outside.serializedBytes).toBe(BCH_2026_STANDARD.maximumTransactionSize + 1);
 
@@ -391,12 +451,21 @@ describe('R1 envelope: the build-time gate', () => {
     const c3SerializedBytesAtBasis = 100_650; // CITATION: measured at `ffef8568`, not re-measured here.
     const over = c3SerializedBytesAtBasis - BCH_2026_STANDARD.maximumTransactionSize;
     expect(over).toBe(650);
-    const shaped = transactionOfSize(2_938, 45 + over);
-    const verdict = assessProductionEnvelope('C3-scale', shaped, [], { bytesOnly: true });
+    const shaped = syntheticOfExactSize(c3SerializedBytesAtBasis);
+    const verdict = assessProductionEnvelope('C3-scale', shaped as never, [], { bytesOnly: true });
     expect(verdict.serializedBytes).toBe(c3SerializedBytesAtBasis);
     const refusal = verdict.refusals.find((row) => row.rule === 'relay-transaction-size')!;
     expect(refusal.overBy).toBe(650);
     console.log(`[R1] a C3-scale transaction is refused by ${refusal.rule}: ${refusal.detail}`);
+
+    // And the largest transaction that is NOT refused, so the boundary is bracketed rather than asserted on
+    // one side. F1's costed C3 fix was sized against 354 bytes and stopped working at 650; this is the same
+    // arithmetic done against the rule instead of against a recorded figure.
+    const justUnder = syntheticOfExactSize(BCH_2026_STANDARD.maximumTransactionSize);
+    expect(assessProductionEnvelope('just-under', justUnder as never, [], { bytesOnly: true }).refusals)
+      .toEqual([]);
+    console.log(`[R1] C3 must shed ${over} bytes; the largest admitted transaction is `
+      + `${BCH_2026_STANDARD.maximumTransactionSize} B`);
   });
 
   /**
@@ -408,9 +477,7 @@ describe('R1 envelope: the build-time gate', () => {
    * The rest of the transaction is deliberately healthy, so the refusal is attributable to the one output.
    */
   it('MEASURED: the gate refuses the exact C1 placeholder output, on two independent rules', () => {
-    const healthy = transactionOfSize(4) as unknown as {
-      outputs: { lockingBytecode: Uint8Array; valueSatoshis: bigint }[];
-    };
+    const healthy = synthetic(4);
     const clean = assessProductionEnvelope('healthy', healthy as never, [], { bytesOnly: true });
     expect(clean.refusals).toEqual([]);
 
@@ -446,13 +513,10 @@ describe('R1 envelope: the build-time gate', () => {
    * while the gate refuses on two rules.
    */
   it('MEASURED: a per-input VM evaluation cannot see size, dust or template - the gate refuses anyway', () => {
-    const shaped = transactionOfSize(2_938, 45 + 650) as unknown as {
-      inputs: { unlockingBytecode: Uint8Array }[];
-      outputs: { lockingBytecode: Uint8Array; valueSatoshis: bigint }[];
-    };
+    const shaped = syntheticOfExactSize(100_650);
     shaped.outputs.push({ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 10n });
-    // An input that succeeds, so the per-input evaluation has a real verdict to give rather than an error.
-    shaped.inputs[0].unlockingBytecode = Uint8Array.of(0x51);
+    // The input EVALUATES SUCCESSFULLY - an empty scriptSig against an `OP_1` locking script leaves exactly
+    // one truthy item - so the per-input verdict below is a genuine acceptance and not a masked error.
     const sourceOutputs = [{ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 100_000_000n }];
 
     const perInputStandard = refusedInputsAt(shaped as never, sourceOutputs as never, true, ORDINARY_LIMITS);
@@ -510,17 +574,23 @@ describe('R1 envelope: the build-time gate', () => {
     const mutated = await buildSweep(2, [{ to: Uint8Array.of(0x51), amount: 10n }]);
 
     const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
-    const spec = {
+    // The descriptor is derived from each build INDEPENDENTLY, so the claim that the two are
+    // indistinguishable at plan time is a measurement rather than an artifact of sharing one object.
+    const descriptorOf = (built: BuiltSweep): Parameters<typeof screenProductionEnvelope>[0] => ({
       name: 'sweep N=2',
       family: 'binding' as const,
-      participants: 2,
+      participants: built.blockSizes.length,
       invocations: 1,
-      blockSizes: clean.blockSizes,
-      redeemBytes: [clean.redeemBytes, clean.redeemBytes],
-    };
-    // The descriptor is the same object for both builds: a plan-time instrument has nothing to distinguish.
-    const screen = screenProductionEnvelope(spec, calibration, { underPrediction: 0.2, overPrediction: 0.5 });
-    console.log(`[R1] plan screen for both builds: ${formatScreen(screen)}`);
+      blockSizes: built.blockSizes,
+      redeemBytes: built.blockSizes.map(() => built.redeemBytes),
+    });
+    expect(descriptorOf(mutated)).toEqual(descriptorOf(clean));
+    const allowances = { underPrediction: 0.123, overPrediction: 0.416 };
+    const cleanScreen = screenProductionEnvelope(descriptorOf(clean), calibration, allowances);
+    const mutatedScreen = screenProductionEnvelope(descriptorOf(mutated), calibration, allowances);
+    console.log(`[R1] plan screen, clean build:   ${formatScreen(cleanScreen)}`);
+    console.log(`[R1] plan screen, mutated build: ${formatScreen(mutatedScreen)}`);
+    expect(formatScreen(mutatedScreen)).toBe(formatScreen(cleanScreen));
 
     const cleanVerdict = assessProductionEnvelope('clean', clean.transaction as never, clean.sourceOutputs);
     const mutatedVerdict = assessProductionEnvelope(
@@ -560,64 +630,67 @@ describe('R1 envelope: the build-time gate', () => {
    * same discipline as F1's knob-liveness control, applied to a gate instead of to a VM knob.
    */
   it('MEASURED: every byte rule has a case that trips it', () => {
-    const cases: { rule: string; make: () => Parameters<typeof assessProductionEnvelope>[1] }[] = [
+    const cases: { rule: string; make: () => SyntheticTransaction }[] = [
       {
         rule: 'relay-transaction-size',
-        make: () => transactionOfSize(2_938, 46),
+        make: () => syntheticOfExactSize(BCH_2026_STANDARD.maximumTransactionSize + 1),
       },
       {
         rule: 'output-dust',
         make: () => {
-          const tx = transactionOfSize(2) as unknown as { outputs: unknown[] };
+          const tx = synthetic(2);
+          // One satoshi below the 546 every implementation agrees on for a P2PKH output.
           tx.outputs.push({ lockingBytecode: p2pkhScript(9), valueSatoshis: 545n });
-          return tx as never;
+          return tx;
         },
       },
       {
         rule: 'standard-output-template',
         make: () => {
-          const tx = transactionOfSize(2) as unknown as { outputs: unknown[] };
+          const tx = synthetic(2);
           tx.outputs.push({ lockingBytecode: Uint8Array.of(0x51, 0x51), valueSatoshis: 100_000n });
-          return tx as never;
+          return tx;
         },
       },
       {
         rule: 'standard-locking-bytes',
         make: () => {
-          const tx = transactionOfSize(2) as unknown as { outputs: unknown[] };
+          const tx = synthetic(2);
           tx.outputs.push({
             lockingBytecode: concat(Uint8Array.of(0x6a), new Uint8Array(220).fill(0x51)),
             valueSatoshis: 100_000n,
           });
-          return tx as never;
+          return tx;
         },
       },
       {
         rule: 'input-unlocking-bytes',
         make: () => {
-          const tx = transactionOfSize(2) as unknown as { inputs: { unlockingBytecode: Uint8Array }[] };
+          const tx = synthetic(2);
           tx.inputs[0].unlockingBytecode = concat(
             Uint8Array.of(0x4e, 0x11, 0x27, 0, 0), new Uint8Array(10_001).fill(0),
           );
-          return tx as never;
+          return tx;
         },
       },
       {
         rule: 'scriptsig-push-only',
         make: () => {
-          const tx = transactionOfSize(2) as unknown as { inputs: { unlockingBytecode: Uint8Array }[] };
+          const tx = synthetic(2);
           tx.inputs[0].unlockingBytecode = Uint8Array.of(0x02, 1, 2, 0x93);
-          return tx as never;
+          return tx;
         },
       },
       {
         rule: 'consensus-transaction-size',
-        make: () => transactionOfSize(29_500),
+        make: () => synthetic(29_500),
       },
     ];
     const tripped = new Set<string>();
     for (const scenario of cases) {
-      const verdict = assessProductionEnvelope(scenario.rule, scenario.make(), [], { bytesOnly: true });
+      const verdict = assessProductionEnvelope(
+        scenario.rule, scenario.make() as never, [], { bytesOnly: true },
+      );
       const hit = verdict.refusals.filter((row) => row.rule === scenario.rule);
       expect(hit.length, `no case trips ${scenario.rule}`).toBeGreaterThan(0);
       tripped.add(scenario.rule);
@@ -657,7 +730,7 @@ describe('R1 envelope: the plan-time screen', () => {
         if (row.outOfRange.length === 0) underRows.push({ label: `${row.shape}/${row.limit}`, error: row.error });
       }
     }
-    for (const row of calibrate(F2_HELD_OUT as MeasuredShape[], full)) {
+    for (const row of calibrate(F2_HELD_OUT, full)) {
       underRows.push({ label: `${row.shape}/${row.limit}`, error: row.error });
     }
     const under = Math.min(...underRows.map((row) => row.error));
@@ -726,7 +799,7 @@ describe('R1 envelope: the plan-time screen', () => {
         if (row.outOfRange.length === 0) underRows.push(row.error);
       }
     }
-    for (const row of calibrate(F2_HELD_OUT as MeasuredShape[], calibration)) underRows.push(row.error);
+    for (const row of calibrate(F2_HELD_OUT, calibration)) underRows.push(row.error);
     const allowances = { overPrediction: over, underPrediction: -Math.min(...underRows) };
     console.log(`[R1] screen allowances: over ${(allowances.overPrediction * 100).toFixed(1)}%, `
       + `under ${(allowances.underPrediction * 100).toFixed(1)}%`);

@@ -258,9 +258,13 @@ export function isPushOnly(bytecode: Uint8Array): boolean {
     cursor += 1;
     let length: number;
     if (opcode <= 0x4b) length = opcode;
-    else if (opcode === 0x4c) { length = bytecode[cursor]; cursor += 1; }
-    else if (opcode === 0x4d) { length = bytecode[cursor] | (bytecode[cursor + 1] << 8); cursor += 2; }
-    else if (opcode === 0x4e) {
+    else if (opcode === 0x4c) {
+      length = bytecode[cursor];
+      cursor += 1;
+    } else if (opcode === 0x4d) {
+      length = bytecode[cursor] | (bytecode[cursor + 1] << 8);
+      cursor += 2;
+    } else if (opcode === 0x4e) {
       length = bytecode[cursor] | (bytecode[cursor + 1] << 8)
         | (bytecode[cursor + 2] << 16) | (bytecode[cursor + 3] << 24);
       cursor += 4;

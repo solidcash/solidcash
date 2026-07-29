@@ -121,6 +121,44 @@ export interface SplitCompileOptions extends CompileOptions {
 // Off by default; enabled via SOLIDC_COMPILE_CACHE=1 (test harness sets it) since compilation is
 // deterministic. Skipped when a custom errorListener/importResolver is present (non-serializable).
 const compileCache = new Map<string, Artifact>();
+/**
+ * X73 SAFETY NET. Admitting `external` entry points must never make a contract WORSE, and a contract that used
+ * to compile as a bus participant and now does not is strictly worse.
+ *
+ * The route's own refusals are decided at synthesis time, but whether the generated wrapper can actually be
+ * compiled is not known until semantic analysis and code generation have run over it - and the corpus turned up
+ * fourteen files where the newly admitted external handler reaches a route-generation gap that its refusal used
+ * to hide (a parameter type the row schema cannot render, a handler whose external-call edges the graph route
+ * rejects, a storage-slot writer whose clone has no block layout). Every one of those is a pre-existing route
+ * limitation; X73 only made the route try.
+ *
+ * So compile once with the external entry points admitted, and if that throws, compile once more with them
+ * refused. The retry differs in exactly one thing, so a retry that succeeds proves the admission caused the
+ * failure. A retry that also throws re-raises the ORIGINAL error, and a contract with no external entry point
+ * compiles identically both times - nothing is masked in either case.
+ */
+function compileWithExternalAdmissionFallback(
+  code: string,
+  mergedCompilerOptions: CompilerOptions,
+  errorListener?: SolidCashErrorListener,
+  primaryContractName?: string,
+): Artifact {
+  const compileOnce = (admitExternalHandlers: boolean): Artifact => compileResolvedAst(
+    parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
+    code, mergedCompilerOptions, false, admitExternalHandlers,
+  );
+  if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
+  try {
+    return compileOnce(true);
+  } catch (admittedError) {
+    try {
+      return compileOnce(false);
+    } catch {
+      throw admittedError;
+    }
+  }
+}
+
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
@@ -132,8 +170,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
-  const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
-  const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
+  const artifact = compileWithExternalAdmissionFallback(code, mergedCompilerOptions, errorListener);
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
 }
@@ -280,6 +317,9 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
   'external-token-container-handler-requires-public-visibility':
     'a handler that moves a token container is invoked as itself so the token covenant binds the consumed '
     + 'container to its own parameter, which an external name cannot be: declare this handler public',
+  'external-handler-route-generation-unsupported':
+    'this external handler is admissible, but the route generated for it could not be compiled, so the '
+    + 'public-only route was kept: the shape is a route-generation gap rather than a visibility rule',
   'external-handler-would-shrink-the-route':
     'admitting this external handler changes the shape the whole route must take, and that shape refuses more '
     + 'handlers than it admits, so the public-only route is kept: split the handler off into its own contract, '
@@ -323,7 +363,9 @@ function hiddenBatchAbsenceMessage(
  * but before symbol/type analysis. Only signature-free scalar entry points
  * (`public` or `external`) enter the initial covenant surface; every other
  * source handler receives an explicit rejection reason in artifact metadata. */
-function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions): void {
+function synthesizeHiddenBatchRoute(
+  ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
+): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
   const graphControllerLbc = compilerOptions.experimentalMessageBusController?.toLowerCase();
@@ -683,7 +725,11 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
       && [...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
     const visibilityRefusal = fn.visibility !== 'public' && fn.visibility !== 'external'
       ? 'initial-v1-route-requires-public-visibility'
-      : externalTokenContainer ? 'external-token-container-handler-requires-public-visibility' : undefined;
+      : fn.visibility !== 'external'
+        ? undefined
+        : externalTokenContainer
+          ? 'external-token-container-handler-requires-public-visibility'
+          : admitExternalHandlers ? undefined : 'external-handler-route-generation-unsupported';
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
@@ -1576,6 +1622,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
+  admitExternalHandlers = true,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -1766,7 +1813,9 @@ function compileResolvedAst(
         || footprint.effects.some((effect) => effect !== 'external-call')
         || fn.returnTypes.length > 0;
     });
-  if (synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
+  if (synthesizeBatchBeforeLowering) {
+    synthesizeHiddenBatchRoute(ast, mergedCompilerOptions, admitExternalHandlers);
+  }
 
   // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
   // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
@@ -1990,7 +2039,9 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
-  if (!synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
+  if (!synthesizeBatchBeforeLowering) {
+    synthesizeHiddenBatchRoute(ast, mergedCompilerOptions, admitExternalHandlers);
+  }
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -2282,8 +2333,9 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     seen.add(contract.name);
     if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
-    const ast = parseAndResolve(code, mergedCompilerOptions, errorListener, contract.name);
-    map[contract.name] = compileResolvedAst(ast, code, mergedCompilerOptions);
+    map[contract.name] = compileWithExternalAdmissionFallback(
+      code, mergedCompilerOptions, errorListener, contract.name,
+    );
   }
 
   // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).

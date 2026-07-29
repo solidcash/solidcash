@@ -235,6 +235,40 @@ contract X73Shrink() {
   });
 
   /**
+   * NEVER FAIL. Whether the route's refusals admit a handler is decided at synthesis time, but whether the
+   * generated wrapper COMPILES is not known until semantic analysis has run over it. The corpus turned up
+   * fourteen files where the newly admitted external handler reaches a route-generation gap its refusal used
+   * to hide - a parameter type the row schema cannot render, external-call edges the graph route rejects, a
+   * storage-slot writer whose clone has no block layout - and the whole file stopped compiling as a
+   * participant, taking eighteen contracts with it.
+   *
+   * A contract that used to compile and now does not is strictly worse, so the compile falls back once to the
+   * public-only route and names the refusal. The control is the same source with the handler spelled `public`:
+   * it does not compile at HEAD either, which is what shows the gap is the route generator's and not X73's,
+   * and that the fallback masks nothing - it only declines to make the route try.
+   */
+  it('falls back to the public-only route when the generated wrapper cannot be compiled', () => {
+    const udvt = (visibility: string): string => `pragma solidcash >=0.8.0;
+type MyAddress is address;
+contract X73Udvt() {
+  bigint calls;
+  function bump(bigint n) public { this.calls = this.calls + n; require(n >= 0); }
+  function id(MyAddress a) ${visibility} returns (MyAddress) { require(true); return a; }
+}`;
+    expect(compileString(udvt('external'), BATCH).hiddenBatch?.handlers).toEqual([
+      expect.objectContaining({ name: 'bump', eligible: true }),
+      expect.objectContaining({
+        name: 'id', eligible: false, rejectionReason: 'external-handler-route-generation-unsupported',
+      }),
+    ]);
+
+    // CONTROL: the same handler as `public` reaches the same gap and still fails. The fallback is not a
+    // catch-all - it re-raises the original error whenever the narrower route fails too.
+    expect(() => compileString(udvt('public'), BATCH))
+      .toThrow(/Found parameters .* in call to function 'id'/);
+  });
+
+  /**
    * NEGATIVE CONTROL. The refusal that remains is the one the route genuinely cannot lift: a name that is not
    * an entry point at all. Nothing here is credited to the visibility gate having been removed wholesale.
    */

@@ -697,8 +697,21 @@ describe('layer3.planCompiledGraph', () => {
     // match neither branch's own figure. X5 then bound the ROOT row's call-options byte in the projection
     // verifier (+37): the byte is hoisted into one read reused by the existing `<= 1` bound, and the root
     // branch requires it to be 0. The controller is untouched.
+    // F4 then cut the projection verifier by 129 (4,671 -> 4,542) in three parts, none of which changes what
+    // the covenant admits: the bare locking bytecode is cut from the FRAMED table entry already on the stack
+    // instead of re-slicing the transcript (-8), and X27's suffix split - which the CONTROLLER's two loops
+    // have carried since X27 - is applied to the projection verifier's invocation loop (-60) and participant
+    // loop (-61). Not one require is removed, weakened or reordered; each `cursor + n <= transcript.length`
+    // is the same predicate as its rewritten `local + n <= frame.length`.
+    // WHY THIS FIGURE IS THE LEVERAGED ONE. The verifier is instantiated once per PARTICIPANT and each proof
+    // slot pushes the whole redeem script, so a verifier byte is worth N transaction bytes. Measured on all
+    // four capstones and the multiplier is exactly N every time: A13 23,845 -> 23,458 (-387 = 3 x 129),
+    // C2 53,249 -> 52,733 (-516 = 4 x), C1 63,315 -> 62,670 (-645 = 5 x), C3 100,650 -> 99,618 (-1,032 = 8 x).
+    // C3 is thereby INSIDE the 100,000-byte standard relay ceiling, by 382 bytes, with all 108 slots intact.
+    // The controller row is unchanged, and that is a control rather than a coincidence: F4 edited
+    // `generateGraphProjectionVerifier` only, so exactly one covenant's figure may move.
     expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_671);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_542);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

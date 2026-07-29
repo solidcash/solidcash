@@ -276,7 +276,10 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
   'unresolved-or-effectful-handler':
     'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
     + 'the footprint is known',
-  'initial-v1-route-requires-public-visibility': 'declare the handler public',
+  'initial-v1-route-requires-public-visibility': 'declare the handler public or external',
+  'external-token-container-handler-requires-public-visibility':
+    'a handler that moves a token container is invoked as itself so the token covenant binds the consumed '
+    + 'container to its own parameter, which an external name cannot be: declare this handler public',
   'result-route-requires-effect-free-handlers':
     'a returning handler cannot also carry an effect; split the return and the effect into two handlers',
   'result-consuming-handler-requires-effect-free-body':
@@ -313,9 +316,9 @@ function hiddenBatchAbsenceMessage(
 }
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
- * but before symbol/type analysis. Only signature-free scalar public handlers
- * enter the initial covenant surface; every other source handler receives an
- * explicit rejection reason in artifact metadata. */
+ * but before symbol/type analysis. Only signature-free scalar entry points
+ * (`public` or `external`) enter the initial covenant surface; every other
+ * source handler receives an explicit rejection reason in artifact metadata. */
 function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
@@ -661,7 +664,23 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         }
       }
     }
-    if (!reason && fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
+    // X73. `external` and `public` differ in exactly one thing: whether the name is callable from inside the
+    // contract. Every other route property - entry-point status, ABI membership, block layout, the final-require
+    // rule, data locations - reads the two identically, and the route's own `__scb1` is itself declared
+    // `external`. The refusal was the dispatcher's bare `handler(args)` call, which the resolver rejects as an
+    // internal call to an external function; an admitted external handler is invoked through an internal clone
+    // instead (see the clone loop below), so the source rule stays enforced for user code.
+    //
+    // A token-container handler is the one shape that cannot be cloned: the token covenant binds the consumed
+    // container to the SOURCE parameter's stack identity, and a synthetic clone emits a second, context-free
+    // covenant (the same reason `tokenCategoryInputByHandler` keeps that handler on its own name). Refuse it by
+    // name rather than route it through a clone that would authenticate the wrong container.
+    const externalTokenContainer = fn.visibility === 'external'
+      && [...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
+    const visibilityRefusal = fn.visibility !== 'public' && fn.visibility !== 'external'
+      ? 'initial-v1-route-requires-public-visibility'
+      : externalTokenContainer ? 'external-token-container-handler-requires-public-visibility' : undefined;
+    if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
     // controller commitment, while that commitment would in turn commit the
@@ -1124,6 +1143,28 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.hiddenBatchKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
+  // X73. An `external` handler is dispatched through an internal clone, because the wrapper's `handler(args)`
+  // is an internal call and `external` means precisely "not callable that way". Some external handlers survive
+  // without one - a collection or returning handler synthesized before lowering has its call rewritten by
+  // LowerCollectionJournalHelpers or InlineReturningStateHelpers before the resolver ever sees it - but that is
+  // an accident of which lowering happens to erase the call, not a property of the shape, so every external
+  // handler that still reaches its own name gets a clone. Runs LAST: the loops above skip a handler that
+  // already has a clone, and claiming one here first would suppress the dynamic-state and fixed-array clones.
+  for (const sourceHandler of eligible) {
+    if (sourceHandler.visibility !== 'external' || sourceHandler === resourceShapedHandler
+      || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
+      || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_external_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
   const buildDecodeAndCall = (captureResults = false, rowIndex?: number): string =>

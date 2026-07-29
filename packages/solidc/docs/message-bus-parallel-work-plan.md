@@ -201,6 +201,51 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.46 Round-15 dispatch: six workers, disjoint leases, two of them reviewers
+
+Baseline `690c868c` (solidc 2,463/0, solidcash 4,102/0, tree clean). The worker count rose from three to six
+because the remaining work stopped being serial: after SEC-10/SEC-11 closed the immutable-NFT class, what is
+left divides cleanly by file, so the lease system that previously forced serialisation now costs nothing.
+
+Leases are disjoint by construction, one compiler file per worker:
+
+| Worker | Task | Lease |
+| --- | --- | --- |
+| S1 | SEC-12 - `hasSignatureGuard` asks *whether*, never *whose key* | `SymbolTableTraversal.ts` + `delegatecall-security.md` |
+| S2 | SEC-13 - own-category immutable pin absent on delegate/`selfdestruct` paths | `GenerateTargetTraversal.ts` |
+| S3 | X37 - publish delegate target/key provenance in the artifact | `artifact.ts` + `Artifact.ts` |
+| S4 | X36 - `planCompiledGraph` does not enforce occurrence bounds | `packages/solidcash/src/**` |
+| R1 | Hostile review of X29 / SEC-6 / SEC-7 | none |
+| R2 | Hostile review of the C1 and C3 reshapes | none |
+
+**X37 is the keystone, not the smallest item.** E3 is recorded closed, but 4.44 established it is closed against
+the published *type* and not the semantic class: both delegate escapes survive by routing the caller value
+through a `bytes` parameter and casting. Refusing `bytes` is unavailable because every admitted class carries a
+`bytes` calldata parameter. The actual blocker is missing metadata - `Artifact.ts:491-492` strips `lowLevelCalls`
+to `{ callMode }` although the AST node already carries `dataParamIndex` (`AST.ts:278`). S3 publishes provenance
+and is explicitly forbidden from touching the SDK gate, which is S4's lease. Un-blunting the gate is a later row.
+
+**Both review targets were chosen because `INTEGRATED` on this board has never meant `attacked`.** X29 is the
+proof: its own author found one hole in it during development, and an independent reviewer then found a second -
+SEC-8, a live container theft that VM-settled and broadcast. The SEC-8 and SEC-9 *fixes* were reviewed and held;
+X29, SEC-6 and SEC-7 themselves never were. The C1/C3 reshapes are in the same position - the originals were
+reviewed, the reshapes that moved them off the forgeable shape were not.
+
+R1 and R2 were each given the known limits of their target up front, so effort goes to new ground rather than
+rediscovery. R1's sharpest: frame width > 1 settles, but every committed fixture uses row 0, so `site * width` is
+multiplied by zero - what is proven is that two consecutive slots at the frame base are bound, **not per-site
+striding**. R2's: an earlier reviewer already showed C1's structural guard is neither sufficient nor attributable,
+so the guard survives as a drift detector while its stated justification is false.
+
+Standing rules restated in every brief: `git stash` is BANNED (`refs/stash` is shared across worktrees); revert
+instrumentation before staging and never `git add -A`; state a corpus check's discriminating power **for the
+specific change**, remembering that this board's own convention was undercut by 7,343 files with zero diffs for a
+fix that was wrong; **a clean review is a real result** and must not be padded into a finding; no worker may mark
+a row PROVEN or edit this plan or the ledger.
+
+R1 died on an API stall before any work landed and was resumed in place rather than respawned - its worktree and
+branch already existed, so a fresh spawn would have failed on `git worktree add`.
+
 ### 4.45 SEC-10/SEC-11 were two indices of a class where EVERY unchecked index was open
 
 Worker C probed whether the forgery actually needs a reserved slot **before** touching either item. **It does

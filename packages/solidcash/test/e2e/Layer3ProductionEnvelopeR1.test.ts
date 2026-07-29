@@ -334,9 +334,14 @@ describe('R1 envelope: the rules', () => {
 
   /**
    * Every rule carries a stable id, a regime, and an honest evidence label. The label is about the RULE's
-   * threshold, not about any shape: three thresholds were measured on a node, the rest are libauth constants,
-   * and exactly one is in the envelope on the conservative side with no measurement behind it. That one is
-   * named rather than blended in.
+   * threshold, not about any shape: three thresholds were measured on a node and the rest are libauth
+   * constants.
+   *
+   * X64 CLOSED THE ONE GAP THIS TEST USED TO NAME. `standard-output-template` was the single
+   * UNMEASURED_CONSERVATIVE rule, and it was measured not to exist - a BCHN v29 node with an explicit
+   * `-acceptnonstdtxn=0` accepts, mines and then lets you spend a bare `OP_1` output. It was removed rather
+   * than relabelled, so no rule in this envelope is unmeasured any more. See `Layer3OutputTemplateX64.test.ts`
+   * and the block where the rule used to stand.
    */
   it('MEASURED: the rule set, its evidence labels, and which rules a byte-only pass can decide', () => {
     expect(new Set(PRODUCTION_ENVELOPE_RULE_IDS).size).toBe(PRODUCTION_ENVELOPE_RULE_IDS.length);
@@ -346,9 +351,9 @@ describe('R1 envelope: the rules', () => {
     const unmeasured = PRODUCTION_ENVELOPE_RULES.filter(
       (rule) => rule.evidence === 'UNMEASURED_CONSERVATIVE',
     );
-    expect(unmeasured.map((rule) => rule.id)).toEqual(['standard-output-template']);
+    expect(unmeasured.map((rule) => rule.id)).toEqual([]);
     const byteRules = PRODUCTION_ENVELOPE_RULES.filter((rule) => rule.cost === 'bytes');
-    expect(byteRules).toHaveLength(7);
+    expect(byteRules).toHaveLength(6);
     expect(PRODUCTION_ENVELOPE_RULES.filter((rule) => rule.cost === 'vm')).toHaveLength(5);
     for (const id of PRODUCTION_ENVELOPE_RULE_IDS) expect(envelopeRule(id)!.reason.length).toBeGreaterThan(40);
   });
@@ -477,7 +482,7 @@ describe('R1 envelope: the build-time gate', () => {
    *
    * The rest of the transaction is deliberately healthy, so the refusal is attributable to the one output.
    */
-  it('MEASURED: the gate refuses the exact C1 placeholder output, on two independent rules', () => {
+  it('MEASURED: the gate refuses the exact C1 placeholder output, on its value and not its script', () => {
     const healthy = synthetic(4);
     const clean = assessProductionEnvelope('healthy', healthy as never, [], { bytesOnly: true });
     expect(clean.refusals).toEqual([]);
@@ -492,13 +497,14 @@ describe('R1 envelope: the build-time gate', () => {
     expect(dust.measured).toBe(474);
     expect(dust.allowed).toBe(10);
     expect(dust.overBy).toBe(464);
-    expect(verdict.refusals.some((row) => row.rule === 'standard-output-template')).toBe(true);
+    // ONE rule, not two. This test used to assert a second refusal on `standard-output-template`; X64
+    // measured that rule out of existence, so the placeholder's script is fine and only its VALUE was wrong.
+    expect(verdict.refusals.map((row) => row.rule)).toEqual(['output-dust']);
 
-    // Raising the value to the threshold closes the dust refusal and leaves the template one, which is why
-    // the two are separate rules rather than one "bad output" verdict.
+    // Raising the value to the threshold closes the refusal outright.
     healthy.outputs[4].valueSatoshis = 474n;
     const raised = assessProductionEnvelope('C1 placeholder, funded', healthy as never, [], { bytesOnly: true });
-    expect(raised.refusals.map((row) => row.rule)).toEqual(['standard-output-template']);
+    expect(raised.refusals).toEqual([]);
   });
 
   /**
@@ -515,9 +521,10 @@ describe('R1 envelope: the build-time gate', () => {
    *     rule in this envelope that refuses it is `standard-output-template`, whose evidence label is
    *     `UNMEASURED_CONSERVATIVE`.
    *
-   * So the rule with the weakest evidence behind it is the rule that decides whether C2 and the E1 result
-   * graph are in the envelope. That is a decision for the board, and it is stated here as one rather than
-   * settled by the default this file happens to ship.
+   * THE DECISION WAS TAKEN BY MEASUREMENT, NOT BY DEFAULT. X64 put the 1,000-satoshi spelling on a BCHN v29
+   * node with an explicit `-acceptnonstdtxn=0`: it was accepted, mined and then spent. So the rule that
+   * decided whether C2 and the E1 result graph were in the envelope was wrong, and the answer is that they
+   * are IN. Only the 10-satoshi spelling was ever a real defect, and that is X60.
    */
   it('MEASURED: both placeholder values, and which rules catch each', () => {
     const belowDust = { lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 10n };
@@ -531,10 +538,10 @@ describe('R1 envelope: the build-time gate', () => {
       return assessProductionEnvelope('placeholder', tx as never, [], { bytesOnly: true })
         .refusals.map((row) => row.rule).sort();
     };
-    expect(check(belowDust)).toEqual(['output-dust', 'standard-output-template']);
-    expect(check(aboveDust)).toEqual(['standard-output-template']);
-    console.log('[R1] OP_1 placeholder at 10 sat is refused by output-dust and standard-output-template; '
-      + 'at 1,000 sat ONLY standard-output-template refuses it');
+    expect(check(belowDust)).toEqual(['output-dust']);
+    expect(check(aboveDust)).toEqual([]);
+    console.log('[R1] OP_1 placeholder at 10 sat is refused by output-dust alone; at 1,000 sat nothing '
+      + 'refuses it - X64 measured the template rule out of the envelope');
   });
 
   /**
@@ -638,8 +645,7 @@ describe('R1 envelope: the build-time gate', () => {
     console.log(`[R1] ${formatVerdict(mutatedVerdict)}`);
     expect(cleanVerdict.admitted).toBe(true);
     expect(mutatedVerdict.admitted).toBe(false);
-    expect(mutatedVerdict.refusals.map((row) => row.rule).sort())
-      .toEqual(['output-dust', 'standard-output-template']);
+    expect(mutatedVerdict.refusals.map((row) => row.rule).sort()).toEqual(['output-dust']);
   }, 900_000);
 
   /**
@@ -679,14 +685,6 @@ describe('R1 envelope: the build-time gate', () => {
           const tx = synthetic(2);
           // One satoshi below the 546 every implementation agrees on for a P2PKH output.
           tx.outputs.push({ lockingBytecode: p2pkhScript(9), valueSatoshis: 545n });
-          return tx;
-        },
-      },
-      {
-        rule: 'standard-output-template',
-        make: () => {
-          const tx = synthetic(2);
-          tx.outputs.push({ lockingBytecode: Uint8Array.of(0x51, 0x51), valueSatoshis: 100_000n });
           return tx;
         },
       },

@@ -12,21 +12,26 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 /**
  * X11 - a `delegate` function performing a C2 sorted-linked-list mapping write.
  *
- * The class had never been shown to settle. It splits in two, and the split is the finding:
+ * The class was recorded as having no settling instance. That is stale: it already settles through the default
+ * upgrades proxy (UpgradesDeployProxy.test.ts, 'writes a msg.sender-keyed C2 mapping from inside a delegate'),
+ * INSERT included. What had no settling instance is this shape - a delegated write against a proxy that owns NO
+ * data NFTs of its own - and the split between the two is the finding.
  *
- *  - UPDATE (the key already exists) SETTLES. The compiler side was already correct - the delegate resolves the
- *    entry input/output through `OP_INPUTINDEX + offset` (implementation-relative) while the entry ADDRESS and
+ *  - UPDATE settles here now. The compiler side was already correct: the delegate resolves the entry
+ *    input/output through `OP_INPUTINDEX + offset` (implementation-relative) while the entry ADDRESS and
  *    category come from the proxy master, so the write lands in the proxy's collection. What blocked it was in
  *    the SDK: `hasNothingToDerive` read `abiFunction.entryAccesses`, and a delegatecall forwarder publishes none
  *    of its own, so a proxy with no data NFTs / emits / transfers looked like it had nothing to derive at all.
- *    Derivation was skipped, the entry output kept its INPUT commitment, and the impl covenant rejected its own
- *    transaction. It now reads the ROUTED accesses.
+ *    Derivation was skipped outright, the entry output kept its INPUT commitment, and the implementation
+ *    covenant rejected its own transaction. It now reads the ROUTED accesses. (The default-proxy case dodged
+ *    this only because that proxy has a data NFT, which made `requiredNftIndices` non-empty.)
  *
- *  - INSERT (absent key) does NOT settle, and the cause is a covenant property, not a gap: the proxy conserves
- *    the count of its own-category mutable (0x01) NFTs (C1 full-state authority,
- *    `emitOwnCategoryMutableNftConservation`). An insert mints one new entry node, the count rises by one, and
- *    the proxy rejects at input 0 - while the implementation covenant ACCEPTS the same transaction. Measured
- *    both ways below. It now fails closed with a named reason at build time instead of an opaque VM rejection.
+ *  - INSERT is refused here, and by the PROXY, not by the delegate. An insert mints one new entry node, so the
+ *    transaction's own-category mutable (0x01) NFT count rises by one, and a proxy carrying
+ *    `emitOwnCategoryMutableNftConservation` (C1 full-state authority) rejects at input 0 while the
+ *    implementation covenant accepts the same transaction. The checked-in default proxy artifact predates that
+ *    conservation and so admits the insert - the boundary is the proxy's bytecode, which is why nothing is
+ *    refused ahead of time here.
  */
 const LIB = `pragma solidcash >=0.8.0;
 library MapLib {
@@ -187,17 +192,20 @@ describe('X11: delegate C2 sorted mapping write', () => {
   }, 300_000);
 
   /**
-   * The INSERT sub-shape. It is the same +1 own-category mutable NFT the case above refuses, so the proxy
-   * cannot admit one without admitting the other. Named, not opaque: it used to surface as
-   * `error in evaluating input index 0` after a full build.
+   * The INSERT sub-shape, and the boundary is the PROXY's bytecode, not the delegate's. An insert mints one new
+   * entry node, which is the same +1 own-category mutable NFT the case above refuses - a proxy that conserves
+   * that count cannot admit one without admitting the other, and rejects at input 0. (The checked-in default
+   * upgrades proxy predates that conservation, so the delegated insert DOES settle there:
+   * UpgradesDeployProxy.test.ts, 'writes a msg.sender-keyed C2 mapping from inside a delegate'.) The
+   * implementation covenant accepts this transaction either way - verified by the tampered-value case above,
+   * which reaches input 1 only because input 0 is satisfied.
    */
-  it('refuses an INSERT through the delegate with a named reason', async () => {
+  it('refuses an INSERT at the conserving proxy, not at the delegate', async () => {
     const fixture = await setup(false);
     const outcome = await fixture.proxySc.call.__fallback()
       .withDelegatecall(fixture.libSc, 'setBal', [30n, 100n]).send()
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain("Delegated write to sorted mapping 'bal' would INSERT key");
-    expect(outcome).toContain('conserves the count of its own-category mutable NFTs');
+    expect(outcome).toContain('error in evaluating input index 0');
     expect(await valueOfKey30(fixture)).toBeUndefined();
   }, 300_000);
 });

@@ -720,6 +720,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractUsesBlockhash: boolean = false;
   private currentContractEmitsEvent: boolean = false;
 
+  /** X12. This contract is a split FACET: `delegateOnly`, so its own data NFTs are never materialized. */
+  private currentContractIsSplitFacet: boolean = false;
+
   // Unchecked block depth: when > 0, bounds checks emit wrapping instead of OP_VERIFY
   private uncheckedDepth: number = 0;
 
@@ -848,11 +851,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the implementation follows the proxy at a non-zero input index.
     const delegateOutputOnly = this.currentFunctionIsDelegate
       && new Set<BlockSlotKind>(['transfer', 'tcTransfer', 'event', 'returnEvent']).has(kind);
-    // X12. The implementation's own `dataNft` slots are PROXY-resident - a delegate never co-spends its own
-    // data NFTs - so nothing occupies those positions after the implementation master. Counting them into an
-    // implementation-relative offset pushes every output-only slot one index too high per data NFT: the
-    // covenant read output[implInput + 2] while the only position after the implementation was implInput + 1.
-    if (delegateOutputOnly) offset -= this.countDataNftSlotsBefore(offset);
+    // X12. A SPLIT FACET is delegateOnly: the SDK never co-spends or materializes its own data NFTs, so
+    // nothing occupies those positions after the facet's input and an implementation-relative offset that
+    // counts them reads one index too high per data NFT - the covenant looked at facetInput + 2 while the only
+    // position after the facet was facetInput + 1. A plain contract that merely HAS `delegate` functions is
+    // NOT delegateOnly: the SDK reserves its data-NFT positions (measured - it materializes a placeholder
+    // output for each), so its offsets stay as the layout states them.
+    if (delegateOutputOnly && this.currentContractIsSplitFacet) offset -= this.countDataNftSlotsBefore(offset);
     if (delegateOutputOnly) this.emit(Op.OP_INPUTINDEX, locationData);
     else this.emitMasterInputIndex(locationData);
     if (offset > 0) {
@@ -1054,6 +1059,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractEmitsEvent = node.emitsEvent;
+    this.currentContractIsSplitFacet = node.isSplitFacet;
     this.contractParameters = node.parameters;
     this.contractFunctionKeys = new Set(node.functions
       .filter((fn) => fn.functionId !== undefined)
@@ -1748,6 +1754,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.collectionCount = this.collectionCount;
       probe.dataNftCount = this.dataNftCount;
       probe.eventDefinitions = this.eventDefinitions;
+      probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       probe.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       probe.userFunctionDefs = this.userFunctionDefs;
       probe.constantExpressions = new Map(this.constantExpressions);
@@ -1904,6 +1911,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.collectionCount = this.collectionCount;
     subTraversal.dataNftCount = this.dataNftCount;
     subTraversal.eventDefinitions = this.eventDefinitions;
+    // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
+    // output-only offsets in that body disagree with the ones in the main script.
+    subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
     subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     subTraversal.constructorParameterCount = 0; // sub-traversal has no constructor params
     subTraversal.userFunctionDefs = this.userFunctionDefs;
@@ -2155,6 +2165,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.collectionCount = this.collectionCount;
     subTraversal.dataNftCount = this.dataNftCount;
     subTraversal.eventDefinitions = this.eventDefinitions;
+    // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
+    // output-only offsets in that body disagree with the ones in the main script.
+    subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
     subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
     subTraversal.userFunctionDefs = this.userFunctionDefs;
@@ -8841,8 +8854,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Visit and pushdata-encode each argument, then OP_CAT them into a single blob
     if (node.args.length === 0) {
-      // Zero-arg emit: push empty bytes as the commitment blob
-      this.emit(encodeInt(0n), locationData);
+      // SEC-14. A zero-parameter emit used to push EMPTY bytes, and that made the emit blob mean two things at
+      // once. `emitEventCovenantVerification` gates a conditional emit's whole verification on `OP_IF <blob>`,
+      // and the reserved dummy for a not-reached emit is also empty - so on the TAKEN path of a conditional
+      // `emit Ping()` the gate was FALSE and the covenant address, capability, FT-amount and satoshi-bound
+      // checks never ran. Measured: the reserved output was replaced with a plain 50,000-satoshi P2SH carrying
+      // no token at all and the transaction was ACCEPTED (the same diversion on an UNCONDITIONAL zero-parameter
+      // emit is refused, which is the control). The taken and not-taken rows were also byte-identical, so the
+      // presence of a log was unprovable and a not-taken row could be presented as one.
+      //
+      // One non-empty ACTIVE marker byte settles both: the gate becomes true exactly when the emit is reached,
+      // and the row carries a byte the not-taken row cannot. OP_1 is the same single script byte OP_0 was, so
+      // the script costs nothing; the on-chain commitment grows by one byte, which is also what makes the row
+      // readable at all (readEventsFromChain skips empty commitments).
+      this.emit(encodeInt(1n), locationData);
       this.pushToStack('(value)');
     }
 
@@ -20232,7 +20257,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // it does.
     const allowedOffsets = (node.blockLayout?.slots ?? [])
       .filter((slot) => slot.kind === 'event')
-      .map((slot) => (this.currentFunctionIsDelegate
+      .map((slot) => (this.currentFunctionIsDelegate && this.currentContractIsSplitFacet
         ? slot.offset - this.countDataNftSlotsBefore(slot.offset) : slot.offset));
     // A B-side return event is also an own-category immutable NFT, but its index is WITNESSED, not the layout
     // offset, and on a standalone call (`_returnOutputIdx < 0`) it is not materialized at all - the reserved

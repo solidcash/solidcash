@@ -6314,21 +6314,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const predecessor = list.predecessorOf(slot);
               entryNfts.push({ ...entryBase, utxo: { ...predecessor.utxo, unlocker: wUnlocker } });
             } else {
-              // X11. A delegated sorted write reaches the chain through a `delegatecall` proxy, and that proxy
-              // CONSERVES the count of its own-category mutable (0x01) NFTs across the transaction (C1 full-state
-              // authority, GenerateTargetTraversal.emitOwnCategoryMutableNftConservation). An INSERT mints one new
-              // entry node, so the count rises by one and the proxy rejects at its own input - measured, and the
-              // impl covenant itself accepts the same transaction. An UPDATE keeps the count and settles. Name it
-              // here instead of surfacing an opaque `error in evaluating input index 0` from the proxy.
-              if (entryAccessesAreDelegated) {
-                throw new Error(
-                  `Delegated write to sorted mapping '${access.collection}' would INSERT key `
-                  + `${binToHex(slot)}, minting a new entry NFT. The delegatecall proxy conserves the count of `
-                  + 'its own-category mutable NFTs, so it rejects the extra output. Only writes to a key that '
-                  + 'ALREADY exists settle through a delegate; create the key with a direct (non-delegated) '
-                  + 'call on the proxy first.',
-                );
-              }
+              // X11. A delegated sorted INSERT mints one new entry node, so the transaction's own-category
+              // mutable (0x01) NFT count rises by one. A proxy that CONSERVES that count
+              // (emitOwnCategoryMutableNftConservation, added for C1 full-state authority) therefore rejects it
+              // at its own input, while the implementation covenant accepts the same transaction. The checked-in
+              // default upgrades proxy predates that conservation and admits it, which is why the delegated
+              // insert settles there. Not refused here: whether it settles is a property of the proxy's
+              // bytecode, not of this call.
               const plan = list.planInsert(slot);
               entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
               // P5b: for a chunkable-value INSERT the covenant chunk-pin adds OP_OUTPUTTOKENCOMMITMENT calls in the
@@ -8738,10 +8730,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (!existingCallSlot && !delegateEventSlots.some((s) => s.kind === 'lowLevelCall')) {
           delegateEventSlots.push({ kind: 'lowLevelCall', offset: callOffset });
         }
+        // X12. A `delegateOnly` implementation never co-spends or materializes its OWN data NFTs (see
+        // bRequiredNftIndices above), so nothing occupies those positions and its covenant resolves an
+        // output-only slot as `OP_INPUTINDEX + (layoutOffset - dataNftSlotsBelow)`. Drop the same slots here or
+        // the reservation and the check land one index apart per data NFT. A non-delegateOnly implementation
+        // keeps its data-NFT positions, so its offsets are used verbatim.
+        const implIsDelegateOnly = g.externalContract.inner.artifact.delegateOnly === true;
+        const implDataNftSlots = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind === 'dataNft');
         for (const s of extra) {
+          const below = implIsDelegateOnly
+            ? implDataNftSlots.filter((d) => d.offset < s.offset).length : 0;
           delegateEventSlots.push({
             kind: s.kind,
-            offset: callOffset + s.offset,
+            offset: callOffset + s.offset - below,
             ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }),
           });
         }

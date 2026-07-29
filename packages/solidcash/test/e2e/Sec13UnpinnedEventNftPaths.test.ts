@@ -411,20 +411,18 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
   }, 300_000);
 
   /**
-   * RESIDUAL 2, measured and STILL OPEN. A ZERO-parameter event encodes to an EMPTY commitment, so the taken
-   * and the not-taken row of a conditional emit are byte-identical at the event slot: same event covenant
-   * address, same `none` capability, same empty commitment. The pin governs POSITION and both rows put the
-   * output at the SAME admitted position, so it cannot separate them; only a non-empty active marker in the
-   * emit blob could. Not exploitable through `readEventsFromChain` today, which decodes neither row as a log -
-   * that is a reader accident, not a covenant property.
+   * RESIDUAL 2, now CLOSED as SEC-14 - and it was worse than "indistinguishable". A zero-parameter event used
+   * to encode to an EMPTY commitment, which is also the reserved dummy for an emit that was not reached, so
+   * `emitEventCovenantVerification`'s `OP_IF <blob non-empty>` gate was FALSE on the TAKEN path and the event's
+   * whole verification never ran there. One non-empty ACTIVE marker byte fixes the gate and separates the rows;
+   * see Sec14ZeroParamEventMarker.test.ts for the diversion that used to be accepted.
    */
-  it('cannot separate a taken from a not-taken ZERO-parameter conditional emit', async () => {
+  it('separates a taken from a not-taken ZERO-parameter conditional emit', async () => {
     const taken = await runZeroParamEvent(200n);
     const notTaken = await runZeroParamEvent(4n);
     expect(taken.outcome).toBe('ACCEPTED');
     expect(notTaken.outcome).toBe('ACCEPTED');
-    // Identical event-slot shape: at the event covenant address, `none` capability, empty commitment.
-    expect(notTaken.eventSlot).toEqual(taken.eventSlot);
-    expect(taken.eventSlot).toBe('EVENTADDR/none/');
+    expect(taken.eventSlot).toBe('EVENTADDR/none/01');
+    expect(notTaken.eventSlot).toBe('EVENTADDR/none/');
   }, 300_000);
 });

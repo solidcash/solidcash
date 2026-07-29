@@ -684,55 +684,64 @@ contract GraphProjectionVerifier() {
     bigint expectedParticipantInput = 0;
     bigint cursor = 10;
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-      require(cursor + 6 <= transcript.length);
-      bigint participantInput = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-      bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
-      bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
+      // F4-3: X27's suffix split, the rewrite the controller's participant loop already carries. ONE split per
+      // participant, then every field is read at \`local + n\` off the suffix rather than at \`cursor + n\` off
+      // the whole blob. \`frame.length == transcript.length - cursor\`, so each old \`cursor + n <=
+      // transcript.length\` bound is the same predicate as \`local + n <= frame.length\`. The split is in range
+      // because cursor <= transcript.length holds on entry to every iteration - 10 <= transcript.length for
+      // the first, and the last bound of the body for the rest.
+      bytes frame = transcript.slice(cursor, transcript.length);
+      require(frame.length >= 6);
+      bigint participantInput = int(bytes.concat(frame.slice(0, 2), hex"00"));
+      bigint blockSize = int(bytes.concat(frame.slice(2, 4), hex"00"));
+      bigint lbcLength = int(bytes.concat(frame.slice(4, 6), hex"00"));
       require(blockSize >= 1 && participantInput == expectedParticipantInput);
       expectedParticipantInput = expectedParticipantInput + blockSize;
       require(participantInput < controllerInput && expectedParticipantInput <= controllerInput);
-      require(lbcLength > 0 && cursor + 8 + lbcLength <= transcript.length);
+      require(lbcLength > 0 && 8 + lbcLength <= frame.length);
       // The table entry keeps the transcript's own 2-byte length frame. Emission target rows and logical
       // caller rows are framed in exactly that encoding, so each compares in one slice.
-      bytes participantLbc = transcript.slice(cursor + 4, cursor + 6 + lbcLength);
+      bytes participantLbc = frame.slice(4, 6 + lbcLength);
+      // F4-1: the bare locking bytecode is the framed entry minus its own 2-byte length frame, so it is cut
+      // from the entry already on the stack instead of slicing the transcript a second time. Byte identity:
+      // participantLbc[2 .. 2+lbcLength) IS transcript[cursor+6 .. cursor+6+lbcLength).
       require(tx.inputs[participantInput].lockingBytecode
-        == transcript.slice(cursor + 6, cursor + 6 + lbcLength));
+        == participantLbc.slice(2, 2 + lbcLength));
       ${lbcAssignments}
-      bigint batchLength = int(bytes.concat(
-        transcript.slice(cursor + 6 + lbcLength, cursor + 8 + lbcLength), hex"00"));
-      cursor = cursor + 8 + lbcLength;
-      require(batchLength >= 7 && cursor + batchLength + 2 <= transcript.length);
+      bigint batchLength = int(bytes.concat(frame.slice(6 + lbcLength, 8 + lbcLength), hex"00"));
+      bigint local = 8 + lbcLength;
+      require(batchLength >= 7 && local + batchLength + 2 <= frame.length);
       bigint emissionsLength = int(bytes.concat(
-        transcript.slice(cursor + batchLength, cursor + batchLength + 2), hex"00"));
+        frame.slice(local + batchLength, local + batchLength + 2), hex"00"));
       if (participant == participantIndex) {
-        ownerBatch = transcript.slice(cursor, cursor + batchLength);
+        ownerBatch = frame.slice(local, local + batchLength);
       }
-      cursor = cursor + batchLength + 2;
-      require(cursor + emissionsLength + 2 <= transcript.length);
+      local = local + batchLength + 2;
+      require(local + emissionsLength + 2 <= frame.length);
       bigint callersLength = int(bytes.concat(
-        transcript.slice(cursor + emissionsLength, cursor + emissionsLength + 2), hex"00"));
+        frame.slice(local + emissionsLength, local + emissionsLength + 2), hex"00"));
       if (participant == participantIndex) {
-        ownerEmissions = transcript.slice(cursor, cursor + emissionsLength);
+        ownerEmissions = frame.slice(local, local + emissionsLength);
       }
-      cursor = cursor + emissionsLength + 2;
-      require(cursor + callersLength + 4 <= transcript.length);
+      local = local + emissionsLength + 2;
+      require(local + callersLength + 4 <= frame.length);
       bigint resultLength = int(bytes.concat(
-        transcript.slice(cursor + callersLength + 2, cursor + callersLength + 4), hex"00"));
+        frame.slice(local + callersLength + 2, local + callersLength + 4), hex"00"));
       if (participant == participantIndex) {
-        ownerCallers = transcript.slice(cursor, cursor + callersLength);
+        ownerCallers = frame.slice(local, local + callersLength);
       }
-      cursor = cursor + callersLength + 4;
-      require(cursor + resultLength + 2 <= transcript.length);
+      local = local + callersLength + 4;
+      require(local + resultLength + 2 <= frame.length);
       bigint projectionInput = int(bytes.concat(
-        transcript.slice(cursor + resultLength, cursor + resultLength + 2), hex"00"));
+        frame.slice(local + resultLength, local + resultLength + 2), hex"00"));
       require(projectionInput > previousProjectionInput && projectionInput < controllerInput);
       previousProjectionInput = projectionInput;
       if (participant == participantIndex) {
         require(projectionInput == this.activeInputIndex);
         require(participantInput < tx.inputs.length);
-        resultVector = transcript.slice(cursor, cursor + resultLength);
+        resultVector = frame.slice(local, local + resultLength);
       }
-      cursor = cursor + resultLength + 2;
+      cursor = cursor + local + resultLength + 2;
     }
     require(cursor + 2 <= transcript.length);
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -749,21 +758,27 @@ contract GraphProjectionVerifier() {
     bytes activeCallees = ${emptyFrames};
     bigint tail = cursor + 2;
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
-      require(tail + 14 <= transcript.length);
-      bigint callee = int(bytes.concat(transcript.slice(tail + 2, tail + 3), hex"00"));
-      bigint depth = int(bytes.concat(transcript.slice(tail + 4, tail + 5), hex"00"));
+      // F4-2: X27's suffix split, the rewrite the controller's invocation loop already carries. ONE split per
+      // row, then every field is read at a constant offset off the suffix instead of at \`tail + n\` off the
+      // whole blob. \`row.length == transcript.length - tail\`, so each old \`tail + n <= transcript.length\`
+      // bound is the same predicate as \`n <= row.length\`. The split is in range because tail <=
+      // transcript.length holds on entry to every iteration - cursor + 2 <= transcript.length for the first,
+      // and the last bound of the body for the rest.
+      bytes row = transcript.slice(tail, transcript.length);
+      require(row.length >= 14);
+      bigint callee = int(bytes.concat(row.slice(2, 3), hex"00"));
+      bigint depth = int(bytes.concat(row.slice(4, 5), hex"00"));
       require(callee < participantCount);
       // X5: the row's call-options byte. Bit 0 is the read-only mode; bits 1-7 are call options, none of which
       // is an admitted graph edge - so the byte bounded here IS the on-chain statement of that policy, not an
       // incidental range check. Read once and reused below, which is also one slice cheaper than the two reads
       // the root bound would otherwise need.
-      bigint callOptions = int(bytes.concat(transcript.slice(tail + 11, tail + 12), hex"00"));
+      bigint callOptions = int(bytes.concat(row.slice(11, 12), hex"00"));
       require(callOptions <= 1);
-      bigint argsLength = int(bytes.concat(transcript.slice(tail + 12, tail + 14), hex"00"));
-      require(tail + 16 + argsLength <= transcript.length);
-      bigint resultLength = int(bytes.concat(
-        transcript.slice(tail + 14 + argsLength, tail + 16 + argsLength), hex"00"));
-      require(tail + 16 + argsLength + resultLength <= transcript.length);
+      bigint argsLength = int(bytes.concat(row.slice(12, 14), hex"00"));
+      require(16 + argsLength <= row.length);
+      bigint resultLength = int(bytes.concat(row.slice(14 + argsLength, 16 + argsLength), hex"00"));
+      require(16 + argsLength + resultLength <= row.length);
       // Frame index 0 is the permanent no-caller sentinel, so a depth-0 row reads no caller at all.
       bigint caller = int(bytes.concat(activeCallees.slice(depth, depth + 1), hex"00"));
       if (invocation == 0) {
@@ -771,7 +786,7 @@ contract GraphProjectionVerifier() {
         // options at all. Every other row's byte is re-derived by its CALLER's compiled route and compared in
         // the emission-row equality below; the root has no caller, so without this bound its call-options byte
         // was a committed field no covenant ever read - forgeable in the transcript at zero cost.
-        require(int(bytes.concat(transcript.slice(tail, tail + 2), hex"00")) == 65535 && depth == 0);
+        require(int(bytes.concat(row.slice(0, 2), hex"00")) == 65535 && depth == 0);
         require(callOptions == 0);
       } else {
         require(depth >= 1 && depth <= ${MAX_GRAPH_DEPTH});
@@ -788,8 +803,8 @@ contract GraphProjectionVerifier() {
         // framed target || call mode || selector || framed args || framed result. The two trailing
         // frames are the record's own contiguous bytes, so the whole row compares in one slice.
         bytes expectedRow = bytes.concat(expectedTarget,
-          transcript.slice(tail + 11, tail + 12), transcript.slice(tail + 7, tail + 11),
-          transcript.slice(tail + 12, tail + 16 + argsLength + resultLength));
+          row.slice(11, 12), row.slice(7, 11),
+          row.slice(12, 16 + argsLength + resultLength));
         require(ownerEmissions.slice(emissionCursor, emissionCursor + expectedRow.length)
           == expectedRow);
         emissionCursor = emissionCursor + expectedRow.length;
@@ -810,9 +825,8 @@ contract GraphProjectionVerifier() {
             == expectedCaller);
           callerCursor = callerCursor + expectedCaller.length;
         }
-        require(int(bytes.concat(transcript.slice(tail + 3, tail + 4), hex"00")) == localRow);
-        require(ownerBatch.slice(batchCursor, batchCursor + 4)
-          == transcript.slice(tail + 7, tail + 11));
+        require(int(bytes.concat(row.slice(3, 4), hex"00")) == localRow);
+        require(ownerBatch.slice(batchCursor, batchCursor + 4) == row.slice(7, 11));
         require(int(bytes.concat(ownerBatch.slice(batchCursor + 4, batchCursor + 8), hex"00"))
           == localRow);
         require(int(bytes.concat(ownerBatch.slice(batchCursor + 8, batchCursor + 10), hex"00")) == 0);
@@ -824,12 +838,12 @@ contract GraphProjectionVerifier() {
         }
         require(ownerBatch.slice(
           batchCursor + 12 + valueSkip, batchCursor + 12 + valueSkip + argsLength)
-          == transcript.slice(tail + 14, tail + 14 + argsLength));
+          == row.slice(14, 14 + argsLength));
         batchCursor = batchCursor + 12 + valueSkip + argsLength;
         localRow = localRow + 1;
         if (resultLength > 0) {
           require(resultVector.slice(resultCursor, resultCursor + resultLength)
-            == transcript.slice(tail + 16 + argsLength, tail + 16 + argsLength + resultLength));
+            == row.slice(16 + argsLength, 16 + argsLength + resultLength));
           resultCursor = resultCursor + resultLength;
         }
       }

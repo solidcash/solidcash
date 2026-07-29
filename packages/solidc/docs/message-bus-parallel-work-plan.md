@@ -136,7 +136,8 @@ task-specific report, not in this table.
 | X43 | Make the E3 gate read X37's provenance instead of the published type | A1 | X37 | **INTEGRATED** | both escapes refused; admission proven a LIVE hole (5 -> 999); 3 unnamed closures - see 4.59 |
 | X50 | SDK's shipped `defaultProxyArtifact.ts` is stale in TWO ways | B2 | X43,X11 | **INTEGRATED** | a THIRD defect found: the manual edit hit `bytecode` only, so `debug.bytecode` and `fingerprint` disagreed - see 4.69 |
 | X61 | `upgrades.deployProxy` + a delegate that INSERTS a mapping key no longer works | — | X50 | **ACCEPTED REGRESSION** | strict conservation cannot admit the node without permitting net proxy-category NFT creation; documented in `docs/upgrades.md` |
-| X51 | Publish the `hash160(key) == committed` commitment as an artifact field | — | X43,SEC-17 | **TODO** | would close X43's `hash160-committed-key` false negative without type-reconstruction |
+| X51 | Publish the `hash160(key) == committed` commitment as an artifact field | B3 | X43,SEC-17 | **INTEGRATED** | one rule shared with the diagnostic; 379/379 SHA-256 identical minus the new key - see 4.70 |
+| X62 | `signatureGuard` says nothing about whether the check DOMINATES the delegatecall | — | X51 | **TODO** | a branch-guarded `checkSig` is admitted identically by the X51 and pre-X51 routes, measured side by side |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
@@ -228,6 +229,56 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.70 X51 closes the false negative X43 kept, without any type reconstruction
+
+Merged at `42b7af50`; the four assertions B3 was leased out of applied at `76e46668`.
+
+`AbiFunction.signatureGuard` gains `keyCommitment`, in X37's vocabulary, read through an accessor that spells
+absence `unknown`. The point is **where the fact comes from**: `commitmentCommitsKey` now returns the committed
+*side* rather than a boolean, factored so the artifact and the SEC-17 diagnostic run **one rule, not a copy** -
+so the artifact cannot credit a commitment the diagnostic would refuse. The fold is the **weakest**, like `key`:
+a single unpinned parameter key drags the published answer to `parameter`, which no allow-list admits.
+
+**A VM triple with real attribution.** Honest: the holder of the committed key spends and the delegate writes
+proxy state 5 -> 6, **settles**. Hostile: a stranger supplying his own pubkey **plus a valid signature over it**
+is refused at **input 0**, failing at `OP_HASH160`/`OP_EQUALVERIFY`. Guard negative: the identical proxy with
+**only the commitment line deleted** lets that same stranger settle 5 -> 6. The refusal is attributable to the
+commitment, not to the signature check.
+
+**Nothing previously measured moved: 171/171 green** across SEC-17's 8 negative controls, X46's 5 warning rows
+and 4 silent controls including the key-rotation idiom, and the `checkMultiSig(ss, [pk, pk])` memoization case.
+Every X51 row asserts the published field **and** the warning from the same source, because the two are computed
+at different pipeline points - and a separate case pins the field **surviving modifier expansion, the locktime
+guard and early returns**, measured rather than assumed.
+
+**X37's compatibility bar met exactly**: 379 artifacts compiled in both runs, **compile status changed on 0**,
+**379/379 SHA-256 identical to baseline after deleting exactly `signatureGuard.keyCommitment`**, bytecode
+identical 379/379. Size +0.1314% with **347/379 files at +0 bytes**; the 32 that move are precisely the 32
+publishing a row. Compile cost 0.0588-0.0603% by in-process attribution, inside X37's band.
+
+**B3 discarded its own favourable measurement.** A whole-compiler in-process A/B gave **-5.89%** - a speedup -
+and it threw the number away as below this box's noise floor under seven-worker load rather than reporting it.
+
+**Corpus discriminating power, stated in both directions.** It genuinely discriminates the emitter change: 233
+ABI functions carry a `signatureGuard`, 157 key resolutions reach the new walk, 41 functions across 32 artifacts
+take the publishing branch. It is **blind** to the SEC-17/X46 decision refactor, which produces only console
+warnings that artifacts never record - the 12 controls carry that load.
+
+**Three judgments B3 made against its own brief, all correct.** (a) It corrected the task text: the class lived
+in `UNADMITTED_DELEGATE_PARTICIPANT_CLASSES`, not `UNDETECTED_BY_THIS_GATE` - it was a shape the gate could see
+and refused anyway. (b) It **declined to mint a second class id** for "artifact predates the field", because an
+absent `keyCommitment` is byte-for-byte identical to "the compiler refused to credit the pin", so a separate id
+would claim a distinction the artifact cannot support - and would have renamed the ordinary A13-2 hole after a
+stale-artifact problem. (c) X46 has **no delegate case for a measured reason**: its vacuous-commitment shape
+needs a self-write inside a delegatecall function, which the compiler refuses outright
+(`DelegatecallSelfMutationError`), so it is pinned as that compile refusal and the artifact behaviour is pinned
+at the selfdestruct site instead.
+
+**Named residual, unchanged rather than introduced:** `signatureGuard` still says nothing about whether the check
+**dominates** the delegatecall. A branch-guarded `checkSig` is admitted by the X51 route and by the pre-X51
+`constructorArg` route **identically** - B3 measured both side by side rather than asserting the new route was
+no worse.
 
 ### 4.69 X50: a THIRD defect in the shipped proxy, and a user capability deliberately removed
 

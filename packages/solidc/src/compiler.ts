@@ -121,6 +121,44 @@ export interface SplitCompileOptions extends CompileOptions {
 // Off by default; enabled via SOLIDC_COMPILE_CACHE=1 (test harness sets it) since compilation is
 // deterministic. Skipped when a custom errorListener/importResolver is present (non-serializable).
 const compileCache = new Map<string, Artifact>();
+/**
+ * X73 SAFETY NET. Admitting `external` entry points must never make a contract WORSE, and a contract that used
+ * to compile as a bus participant and now does not is strictly worse.
+ *
+ * The route's own refusals are decided at synthesis time, but whether the generated wrapper can actually be
+ * compiled is not known until semantic analysis and code generation have run over it - and the corpus turned up
+ * fourteen files where the newly admitted external handler reaches a route-generation gap that its refusal used
+ * to hide (a parameter type the row schema cannot render, a handler whose external-call edges the graph route
+ * rejects, a storage-slot writer whose clone has no block layout). Every one of those is a pre-existing route
+ * limitation; X73 only made the route try.
+ *
+ * So compile once with the external entry points admitted, and if that throws, compile once more with them
+ * refused. The retry differs in exactly one thing, so a retry that succeeds proves the admission caused the
+ * failure. A retry that also throws re-raises the ORIGINAL error, and a contract with no external entry point
+ * compiles identically both times - nothing is masked in either case.
+ */
+function compileWithExternalAdmissionFallback(
+  code: string,
+  mergedCompilerOptions: CompilerOptions,
+  errorListener?: SolidCashErrorListener,
+  primaryContractName?: string,
+): Artifact {
+  const compileOnce = (admitExternalHandlers: boolean): Artifact => compileResolvedAst(
+    parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
+    code, mergedCompilerOptions, false, admitExternalHandlers,
+  );
+  if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
+  try {
+    return compileOnce(true);
+  } catch (admittedError) {
+    try {
+      return compileOnce(false);
+    } catch {
+      throw admittedError;
+    }
+  }
+}
+
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
@@ -132,8 +170,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
-  const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
-  const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
+  const artifact = compileWithExternalAdmissionFallback(code, mergedCompilerOptions, errorListener);
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
 }
@@ -276,7 +313,17 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
   'unresolved-or-effectful-handler':
     'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
     + 'the footprint is known',
-  'initial-v1-route-requires-public-visibility': 'declare the handler public',
+  'initial-v1-route-requires-public-visibility': 'declare the handler public or external',
+  'external-token-container-handler-requires-public-visibility':
+    'a handler that moves a token container is invoked as itself so the token covenant binds the consumed '
+    + 'container to its own parameter, which an external name cannot be: declare this handler public',
+  'external-handler-route-generation-unsupported':
+    'this external handler is admissible, but the route generated for it could not be compiled, so the '
+    + 'public-only route was kept: the shape is a route-generation gap rather than a visibility rule',
+  'external-handler-would-shrink-the-route':
+    'admitting this external handler changes the shape the whole route must take, and that shape refuses more '
+    + 'handlers than it admits, so the public-only route is kept: split the handler off into its own contract, '
+    + 'or make the route uniform (one of returning, event-carrying, or value-carrying, not several)',
   'result-route-requires-effect-free-handlers':
     'a returning handler cannot also carry an effect; split the return and the effect into two handlers',
   'result-consuming-handler-requires-effect-free-body':
@@ -313,10 +360,12 @@ function hiddenBatchAbsenceMessage(
 }
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
- * but before symbol/type analysis. Only signature-free scalar public handlers
- * enter the initial covenant surface; every other source handler receives an
- * explicit rejection reason in artifact metadata. */
-function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions): void {
+ * but before symbol/type analysis. Only signature-free scalar entry points
+ * (`public` or `external`) enter the initial covenant surface; every other
+ * source handler receives an explicit rejection reason in artifact metadata. */
+function synthesizeHiddenBatchRoute(
+  ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
+): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
   const graphControllerLbc = compilerOptions.experimentalMessageBusController?.toLowerCase();
@@ -661,7 +710,27 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
         }
       }
     }
-    if (!reason && fn.visibility !== 'public') reason = 'initial-v1-route-requires-public-visibility';
+    // X73. `external` and `public` differ in exactly one thing: whether the name is callable from inside the
+    // contract. Every other route property - entry-point status, ABI membership, block layout, the final-require
+    // rule, data locations - reads the two identically, and the route's own `__scb1` is itself declared
+    // `external`. The refusal was the dispatcher's bare `handler(args)` call, which the resolver rejects as an
+    // internal call to an external function; an admitted external handler is invoked through an internal clone
+    // instead (see the clone loop below), so the source rule stays enforced for user code.
+    //
+    // A token-container handler is the one shape that cannot be cloned: the token covenant binds the consumed
+    // container to the SOURCE parameter's stack identity, and a synthetic clone emits a second, context-free
+    // covenant (the same reason `tokenCategoryInputByHandler` keeps that handler on its own name). Refuse it by
+    // name rather than route it through a clone that would authenticate the wrong container.
+    const externalTokenContainer = fn.visibility === 'external'
+      && [...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
+    const visibilityRefusal = fn.visibility !== 'public' && fn.visibility !== 'external'
+      ? 'initial-v1-route-requires-public-visibility'
+      : fn.visibility !== 'external'
+        ? undefined
+        : externalTokenContainer
+          ? 'external-token-container-handler-requires-public-visibility'
+          : admitExternalHandlers ? undefined : 'external-handler-route-generation-unsupported';
+    if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
     // controller commitment, while that commitment would in turn commit the
@@ -724,104 +793,175 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     }
   }
 
-  if (eligible.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
-    for (const fn of eligible) {
-      if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'mixed-scalar-and-collection-route-not-enabled';
-      }
-    }
-    eligible = eligible.filter((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0);
-  }
   const eligibleFootprint = (fn: FunctionDefinitionNode) => analyseFunctionFootprint(fn, byName);
-  const eventMode = eligible.some((fn) => eligibleFootprint(fn).effects.includes('events'));
-  const resultMode = eligible.some((fn) => fn.returnTypes.length > 0);
-  const valueEffectMode = eligible.some((fn) => eligibleFootprint(fn).effects.includes('value'));
-  // A nested collection needs one fixed C2 entry slot per row: the composite key is only resolvable against a
-  // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
-  // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
-  // other multi-key handler batchable.
-  const nestedCollectionMode = eligible.some((fn) => {
-    let nested = false;
-    walkInvocationAst(fn.body, (node) => {
-      if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
-        || node instanceof MappingDeleteNode)
-        && (collectionByName.get(node.name)?.allKeyTypes.length ?? 0) > 1) nested = true;
-    });
-    return nested;
-  });
-  const fixedArrayMode = eligible.some((fn) => {
-    let found = false;
-    walkInvocationAst(fn.body, (node) => {
-      if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
-        || node instanceof MappingDeleteNode) && fixedArrayCollections.has(node.name)) found = true;
-    });
-    return found;
-  });
-  // Token transfers reserve one concrete output slot per reached row. Keep each bounded row as a distinct AST
-  // call site so semantic analysis and code generation allocate and populate every transfer slot; a runtime
-  // parser loop has only one syntactic transfer and cannot safely materialize N independently authenticated
-  // outputs.
-  const tokenContainerMode = eligible.some((fn) => {
-    const footprint = eligibleFootprint(fn);
-    return [...footprint.reads, ...footprint.writes]
-      .some((resource) => resource.startsWith('collection:tokens:'));
-  });
-  if (resultMode) {
-    for (const fn of eligible) {
-      if (eventMode || eligibleFootprint(fn).effects.length > 0) {
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
+  /**
+   * The route's uniformity rules, applied to one candidate set.
+   *
+   * These rules pick ONE physical shape for the whole route, so they are a property of the SET and not of any
+   * handler: a candidate that becomes eligible can change the shape and demote candidates that were already
+   * admitted. Extracted so the set can be chosen (see the X73 note at the call site) rather than assumed.
+   * Mutates the per-handler verdict fields, which the caller snapshots and restores between runs.
+   */
+  const applyRouteUniformity = (candidates: FunctionDefinitionNode[]): {
+    survivors: FunctionDefinitionNode[];
+    eventMode: boolean; resultMode: boolean; valueEffectMode: boolean;
+    nestedCollectionMode: boolean; fixedArrayMode: boolean; tokenContainerMode: boolean;
+  } => {
+    let survivors = candidates;
+    if (survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
+      for (const fn of survivors) {
+        if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
+          fn.hiddenBatchEligible = false;
+          fn.hiddenBatchRejectionReason = 'mixed-scalar-and-collection-route-not-enabled';
+        }
       }
+      survivors = survivors.filter((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0);
     }
-    eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
-  }
-  if (eventMode) {
-    const eventWidths = new Set<number>();
-    for (const fn of eligible) {
-      let directEmits = 0;
-      let directTransfers = 0;
+    const eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
+    const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
+    const valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+    // A nested collection needs one fixed C2 entry slot per row: the composite key is only resolvable against a
+    // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
+    // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
+    // other multi-key handler batchable.
+    const nestedCollectionMode = survivors.some((fn) => {
+      let nested = false;
       walkInvocationAst(fn.body, (node) => {
-        if (node instanceof EmitStatementNode) directEmits += 1;
-        if (node instanceof TransferStatementNode) directTransfers += 1;
+        if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
+          || node instanceof MappingDeleteNode)
+          && (collectionByName.get(node.name)?.allKeyTypes.length ?? 0) > 1) nested = true;
       });
-      const effects = eligibleFootprint(fn).effects;
-      const hasValue = effects.includes('value');
-      if (directEmits < 1 || effects.length === 0
-        || effects.some((effect) => !['events', 'value'].includes(effect))
-        || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
-      } else {
-        eventWidths.add(directEmits);
+      return nested;
+    });
+    const fixedArrayMode = survivors.some((fn) => {
+      let found = false;
+      walkInvocationAst(fn.body, (node) => {
+        if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
+          || node instanceof MappingDeleteNode) && fixedArrayCollections.has(node.name)) found = true;
+      });
+      return found;
+    });
+    // Token transfers reserve one concrete output slot per reached row. Keep each bounded row as a distinct AST
+    // call site so semantic analysis and code generation allocate and populate every transfer slot; a runtime
+    // parser loop has only one syntactic transfer and cannot safely materialize N independently authenticated
+    // outputs.
+    const tokenContainerMode = survivors.some((fn) => {
+      const footprint = eligibleFootprint(fn);
+      return [...footprint.reads, ...footprint.writes]
+        .some((resource) => resource.startsWith('collection:tokens:'));
+    });
+    const modes = {
+      eventMode, resultMode, valueEffectMode, nestedCollectionMode, fixedArrayMode, tokenContainerMode,
+    };
+    if (resultMode) {
+      for (const fn of survivors) {
+        if (eventMode || eligibleFootprint(fn).effects.length > 0) {
+          fn.hiddenBatchEligible = false;
+          fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
+        }
       }
+      survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
     }
-    eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
-    if (eventWidths.size > 1) {
+    if (eventMode) {
+      const eventWidths = new Set<number>();
+      for (const fn of survivors) {
+        let directEmits = 0;
+        let directTransfers = 0;
+        walkInvocationAst(fn.body, (node) => {
+          if (node instanceof EmitStatementNode) directEmits += 1;
+          if (node instanceof TransferStatementNode) directTransfers += 1;
+        });
+        const effects = eligibleFootprint(fn).effects;
+        const hasValue = effects.includes('value');
+        if (directEmits < 1 || effects.length === 0
+          || effects.some((effect) => !['events', 'value'].includes(effect))
+          || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
+          fn.hiddenBatchEligible = false;
+          fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
+        } else {
+          eventWidths.add(directEmits);
+        }
+      }
+      survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+      if (eventWidths.size > 1) {
+        for (const fn of survivors) {
+          fn.hiddenBatchEligible = false;
+          fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-per-handler';
+        }
+        survivors = [];
+      }
+      if (survivors.length === 0) return { survivors, ...modes };
+    }
+    if (valueEffectMode) {
+      for (const fn of survivors) {
+        let directTransfers = 0;
+        walkInvocationAst(fn.body, (node) => {
+          if (node instanceof TransferStatementNode) directTransfers += 1;
+        });
+        const effects = eligibleFootprint(fn).effects;
+        const hasValue = effects.includes('value');
+        if (resultMode || effects.some((effect) => !['events', 'value'].includes(effect))
+          || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
+          fn.hiddenBatchEligible = false;
+          fn.hiddenBatchRejectionReason = 'value-route-requires-at-most-one-direct-transfer-per-handler';
+        }
+      }
+      survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+    }
+    return { survivors, ...modes };
+  };
+
+  /**
+   * X73. Admitting `external` must never leave a contract with FEWER admitted handlers than its `public` entry
+   * points alone would have given it. The rules above choose one shape for the whole set, so a newly eligible
+   * handler can demote handlers that were already admitted - measured on a real ERC-20, where admitting the
+   * event-emitting, value-returning `approve` and `transferFrom` made the route both result-shaped and
+   * event-shaped, which refuses EVERY handler, including the two read-only getters that used to be admitted.
+   * The contract went from a route to none at all.
+   *
+   * So run the rules over both candidate sets and keep the public-only answer when the wider one is strictly
+   * worse. Handlers are demoted, never promoted, so restoring the snapshot between runs is enough to make the
+   * second run independent of the first. A set with no external candidates runs exactly once, and a contract
+   * without external entry points therefore sees byte-identical behaviour.
+   */
+  const verdictSnapshot = new Map(eligible.map((fn) =>
+    [fn, { admitted: fn.hiddenBatchEligible, reason: fn.hiddenBatchRejectionReason }]));
+  const restoreVerdicts = (): void => {
+    for (const [fn, state] of verdictSnapshot) {
+      fn.hiddenBatchEligible = state.admitted;
+      fn.hiddenBatchRejectionReason = state.reason;
+    }
+  };
+  const publicCandidates = eligible.filter((fn) => fn.visibility !== 'external');
+  let selection = applyRouteUniformity(eligible);
+  if (publicCandidates.length !== eligible.length) {
+    const wide = { ...selection, reasons: new Map(eligible.map((fn) => [fn, fn.hiddenBatchRejectionReason])) };
+    restoreVerdicts();
+    const narrow = applyRouteUniformity(publicCandidates);
+    if (narrow.survivors.length > wide.survivors.length) {
       for (const fn of eligible) {
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-per-handler';
+        if (fn.visibility === 'external') fn.hiddenBatchRejectionReason ??= 'external-handler-would-shrink-the-route';
+        if (fn.hiddenBatchRejectionReason !== undefined) fn.hiddenBatchEligible = false;
       }
-      eligible = [];
-    }
-    if (eligible.length === 0) return;
-  }
-  if (valueEffectMode) {
-    for (const fn of eligible) {
-      let directTransfers = 0;
-      walkInvocationAst(fn.body, (node) => {
-        if (node instanceof TransferStatementNode) directTransfers += 1;
-      });
-      const effects = eligibleFootprint(fn).effects;
-      const hasValue = effects.includes('value');
-      if (resultMode || effects.some((effect) => !['events', 'value'].includes(effect))
-        || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
+      selection = narrow;
+      // The resource-shaped handler is chosen while verdicts are still provisional; if the narrower set does
+      // not contain it, nothing dispatches to its clone and the route must not be sized for it.
+      if (resourceShapedHandler && !narrow.survivors.includes(resourceShapedHandler)) {
+        resourceShapedHandler = undefined;
+      }
+    } else {
+      restoreVerdicts();
+      for (const [fn, reason] of wide.reasons) {
+        if (reason === undefined) continue;
         fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'value-route-requires-at-most-one-direct-transfer-per-handler';
+        fn.hiddenBatchRejectionReason = reason;
       }
     }
-    eligible = eligible.filter((fn) => fn.hiddenBatchEligible === true);
   }
+  eligible = selection.survivors;
+  const {
+    eventMode, resultMode, valueEffectMode, nestedCollectionMode, fixedArrayMode, tokenContainerMode,
+  } = selection;
   if (eligible.length === 0) return;
 
   const selector = (fn: FunctionDefinitionNode): string => binToHex(computeFunctionSelector(
@@ -1124,6 +1264,28 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
     handler.hiddenBatchKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
+  // X73. An `external` handler is dispatched through an internal clone, because the wrapper's `handler(args)`
+  // is an internal call and `external` means precisely "not callable that way". Some external handlers survive
+  // without one - a collection or returning handler synthesized before lowering has its call rewritten by
+  // LowerCollectionJournalHelpers or InlineReturningStateHelpers before the resolver ever sees it - but that is
+  // an accident of which lowering happens to erase the call, not a property of the shape, so every external
+  // handler that still reaches its own name gets a clone. Runs LAST: the loops above skip a handler that
+  // already has a clone, and claiming one here first would suppress the dynamic-state and fixed-array clones.
+  for (const sourceHandler of eligible) {
+    if (sourceHandler.visibility !== 'external' || sourceHandler === resourceShapedHandler
+      || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
+      || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_external_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
   const buildDecodeAndCall = (captureResults = false, rowIndex?: number): string =>
@@ -1460,6 +1622,7 @@ function synthesizeHiddenBatchRoute(ast: Ast, compilerOptions: CompilerOptions):
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
+  admitExternalHandlers = true,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -1650,7 +1813,9 @@ function compileResolvedAst(
         || footprint.effects.some((effect) => effect !== 'external-call')
         || fn.returnTypes.length > 0;
     });
-  if (synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
+  if (synthesizeBatchBeforeLowering) {
+    synthesizeHiddenBatchRoute(ast, mergedCompilerOptions, admitExternalHandlers);
+  }
 
   // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
   // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
@@ -1874,7 +2039,9 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
-  if (!synthesizeBatchBeforeLowering) synthesizeHiddenBatchRoute(ast, mergedCompilerOptions);
+  if (!synthesizeBatchBeforeLowering) {
+    synthesizeHiddenBatchRoute(ast, mergedCompilerOptions, admitExternalHandlers);
+  }
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -2166,8 +2333,9 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     seen.add(contract.name);
     if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
-    const ast = parseAndResolve(code, mergedCompilerOptions, errorListener, contract.name);
-    map[contract.name] = compileResolvedAst(ast, code, mergedCompilerOptions);
+    map[contract.name] = compileWithExternalAdmissionFallback(
+      code, mergedCompilerOptions, errorListener, contract.name,
+    );
   }
 
   // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).

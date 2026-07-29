@@ -363,6 +363,44 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
         expect(classify(artifact, [alicePkh])).toThrow(/is not admitted/);
       }
     });
+
+    /**
+     * OBLIGATION 2 OF THE ADDITIVE-FIELD CONTRACT, discharged for the new field: admission is an explicit
+     * ALLOW-LIST, so a kind a LATER compiler adds falls closed here rather than being admitted by omission.
+     * Forged rather than compiled, because the point is a value this compiler cannot emit.
+     */
+    it('refuses a commitment kind this gate does not know, rather than admitting by omission', () => {
+      for (const kind of ['futureKind', 'unknown', 'computed']) {
+        const forged = JSON.parse(JSON.stringify(committedProxyArtifact)) as Artifact;
+        const fn = forged.abi.find((entry) => entry.name === 'up')! as {
+          signatureGuard: { key: unknown; keyCommitment: { kind: string } };
+        };
+        fn.signatureGuard.keyCommitment = { kind };
+        expect(classify(forged, [alicePkh])).toThrow(/class 'self-authorized' is not admitted/);
+      }
+    });
+
+    /**
+     * THE WEAKEST FOLD REACHES THE GATE. Two signature checks, one pinned and one not: the compiler publishes
+     * the weakest bound, which is the unpinned key's own `parameter` provenance, and the gate refuses. Without
+     * the fold the pinned check would have spoken for a body a spender can satisfy through the other one.
+     */
+    it('refuses a body where a SECOND signature check is against an unpinned key', () => {
+      const mixed = compileString(`pragma solidcash >=0.8.0;
+contract X51MixedProxy(bytes20 adminPkh) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s, pubkey other, sig s2) external {
+        require(hash160(pk) == adminPkh);
+        require(checkSig(s, pk));
+        require(checkSig(s2, other));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(mixed.abi.find((entry) => entry.name === 'up')!.signatureGuard!.keyCommitment)
+        .toEqual({ kind: 'parameter', name: 'other' });
+      expect(classify(mixed, [alicePkh])).toThrow(/class 'self-authorized' is not admitted/);
+    });
   });
 
   // =========================================================================

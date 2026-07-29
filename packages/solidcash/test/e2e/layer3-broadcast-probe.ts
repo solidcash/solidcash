@@ -32,10 +32,17 @@ interface Capture {
   testName: string;
   transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>;
   sourceOutputs: ReturnType<typeof generateLibauthSourceOutputs>;
-  builds: number;
 }
 
-const captures = new Map<string, Capture>();
+/**
+ * How many builds to keep per test, widest first. F1 kept one, which is right for a capstone: the composed
+ * graph dwarfs every seed. The participant sweep is the exception - it builds N=2, N=4 and N=8 inside a
+ * SINGLE test - and keeping only the widest would discard the two smaller shapes, which are precisely the
+ * ones to put on a node first.
+ */
+const KEEP_PER_TEST = 3;
+
+const captures = new Map<string, { rows: Capture[]; builds: number }>();
 
 /** Bitcoin txid: double SHA-256 of the serialization, displayed in reverse byte order. */
 function transactionId(raw: Uint8Array): string {
@@ -50,19 +57,19 @@ if (OUT !== undefined) {
     const transaction = original.call(this, skipChecks);
     try {
       const testName = expect.getState().currentTestName ?? 'unknown';
-      const existing = captures.get(testName);
-      // Keep the WIDEST build, matching F1's rule: a capstone builds one transaction per seeded UTXO before
-      // it builds the composed graph, and the composed graph has far more inputs than any seed.
-      if (existing === undefined || transaction.inputs.length > existing.transaction.inputs.length) {
-        captures.set(testName, {
-          testName,
-          transaction,
-          sourceOutputs: generateLibauthSourceOutputs(this.inputs),
-          builds: (existing?.builds ?? 0) + 1,
-        });
-      } else {
-        existing.builds += 1;
+      let entry = captures.get(testName);
+      if (entry === undefined) {
+        entry = { rows: [], builds: 0 };
+        captures.set(testName, entry);
       }
+      entry.builds += 1;
+      entry.rows.push({
+        testName, transaction, sourceOutputs: generateLibauthSourceOutputs(this.inputs),
+      });
+      // Widest first, then truncate: a capstone's seeds are far narrower than its composed graph, so this
+      // keeps the graph without needing to know anything about the fixture that built it.
+      entry.rows.sort((left, right) => right.transaction.inputs.length - left.transaction.inputs.length);
+      entry.rows.length = Math.min(entry.rows.length, KEEP_PER_TEST);
     } catch {
       // Capture must never change the outcome of the test it is observing.
     }
@@ -70,37 +77,39 @@ if (OUT !== undefined) {
   } as typeof original;
 
   afterAll(() => {
-    for (const capture of captures.values()) {
-      let record: Record<string, unknown>;
-      try {
-        const raw = encodeTransaction(capture.transaction as never);
-        const hex = binToHex(raw);
-        record = {
-          shape: capture.testName,
-          serializedBytes: raw.length,
-          inputCount: capture.transaction.inputs.length,
-          outputCount: capture.transaction.outputs.length,
-          builds: capture.builds,
-          txid: transactionId(raw),
-          // The source outputs record what these inputs WOULD have spent, so the reason a node cannot
-          // execute them stays visible next to the bytes rather than being inferred later.
-          sourceOutputs: capture.sourceOutputs.map((output) => ({
-            valueSatoshis: String(output.valueSatoshis),
-            lockingBytecodeBytes: output.lockingBytecode.length,
-            token: output.token === undefined ? null : {
-              category: binToHex(output.token.category),
-              amount: String(output.token.amount),
-              commitmentBytes: output.token.nft?.commitment.length ?? null,
-              capability: output.token.nft?.capability ?? null,
-            },
-          })),
-          unlockingBytes: capture.transaction.inputs.map((input) => input.unlockingBytecode.length),
-          rawHex: hex,
-        };
-      } catch (error) {
-        record = { shape: capture.testName, error: String(error), builds: capture.builds };
+    for (const entry of captures.values()) {
+      for (const capture of entry.rows) {
+        let record: Record<string, unknown>;
+        try {
+          const raw = encodeTransaction(capture.transaction as never);
+          const hex = binToHex(raw);
+          record = {
+            shape: capture.testName,
+            serializedBytes: raw.length,
+            inputCount: capture.transaction.inputs.length,
+            outputCount: capture.transaction.outputs.length,
+            builds: entry.builds,
+            txid: transactionId(raw),
+            // The source outputs record what these inputs WOULD have spent, so the reason a node cannot
+            // execute them stays visible next to the bytes rather than being inferred later.
+            sourceOutputs: capture.sourceOutputs.map((output) => ({
+              valueSatoshis: String(output.valueSatoshis),
+              lockingBytecodeBytes: output.lockingBytecode.length,
+              token: output.token === undefined ? null : {
+                category: binToHex(output.token.category),
+                amount: String(output.token.amount),
+                commitmentBytes: output.token.nft?.commitment.length ?? null,
+                capability: output.token.nft?.capability ?? null,
+              },
+            })),
+            unlockingBytes: capture.transaction.inputs.map((input) => input.unlockingBytecode.length),
+            rawHex: hex,
+          };
+        } catch (error) {
+          record = { shape: capture.testName, error: String(error), builds: entry.builds };
+        }
+        appendFileSync(OUT, `${JSON.stringify(record)}\n`);
       }
-      appendFileSync(OUT, `${JSON.stringify(record)}\n`);
     }
     captures.clear();
   });

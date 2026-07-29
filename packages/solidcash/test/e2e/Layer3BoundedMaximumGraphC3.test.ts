@@ -11,7 +11,7 @@ import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {
-  createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
+  acceptedByNode, createLayer3SemanticTestProvider, dustOutputs, formatDustOutputs,
 } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -89,9 +89,12 @@ const CONTAINER_SATS = 5_000n;
  * X60. A real P2PKH script paying 1,000 satoshis, not the one-byte `OP_1` placeholder paying 10 that stood
  * here. BCHN's relay dust rule is `3 * (serialized output bytes + 148)`, so the old pair was 10 satoshis
  * against a 474-satoshi threshold and a real node refuses the transaction `64: dust`. C3 never showed it: at
- * 100,650 bytes the node refuses `64: tx-size` first, and the whole mock stack has dust off by default
+ * 100,650 bytes the node refused `64: tx-size` first, and the whole mock stack has dust off by default
  * (`MockNetworkProvider` defaults `enforceDust: false`), so nothing measured here ever reached the rule.
  * A real recipient RAISES the threshold to `3 * (34 + 148)` = 546, so the amount had to move with it.
+ *
+ * F4 is what turns this from a latent defect into a live one: with C3 now under the relay ceiling the size
+ * rule no longer refuses first, so the dust rule is the next one the node reaches.
  */
 const RECIPIENT = hexToBin(`76a914${binToHex(bobPkh)}88ac`);
 const TRANSFER_SATS = 1_000n;
@@ -300,10 +303,10 @@ function measureRunToCompletion(built: BuiltC3): InputCost[] {
 }
 
 /**
- * X59. Widened to the union `createTestProvider` returns. C3 cannot actually be RELAYED - at 100,676 bytes
- * it is over the 100,000-byte standard ceiling, which round 17 proved is policy rather than consensus - so
- * this widening buys C3 nothing today. It is here so the four capstone builders take the same parameter and
- * a future C3 that fits can be put on the node without another edit.
+ * X59. Widened from `createLayer3SemanticTestProvider`'s mock-only return type to the union
+ * `createTestProvider` returns, so `buildC3` can build this shape against a real BCHN regtest node. Until F4
+ * this bought C3 nothing - it was over the 100,000-byte relay ceiling and the node refused it `64: tx-size`
+ * without executing anything. F4 put it under, so the node block at the bottom of this file is now reachable.
  */
 type Provider = ReturnType<typeof createTestProvider>;
 
@@ -1509,21 +1512,29 @@ describe('C3 capacity measurement', () => {
     // operation of the budget - and the next test still reads the real figure run-to-completion. Keeping a
     // regex that requires an error message would now assert the failure this composition no longer has.
     //
-    // THE POLICY GAP, as a number. Asserted as a band around the measured 100,650 so that shrinking C3 under
-    // the relay ceiling, or growing it further past, both fail here and force this comment to be re-read.
-    // The 100,354 this line used to name was measured before X5, which added 37 bytes to each of the eight
-    // projection scripts: +296, and the overrun grew from 354 bytes to 650. The band still holds, which is
-    // exactly why a band cannot be trusted to keep the comment beside it honest.
+    // THE POLICY GAP IS CLOSED. This band did its job: it was written around the measured 100,650 precisely so
+    // that shrinking C3 under the relay ceiling would FAIL here and force this comment to be re-read, and that
+    // is what happened. F4 cut 129 bytes from the projection verifier, which is ONE covenant instantiated once
+    // per participant, so C3 paid 8x: 100,650 -> 99,618, inside the 100,000-byte standard relay ceiling by 382
+    // bytes with all 108 slots intact.
+    //
+    // The history is worth keeping, because it is the reason this file distrusts its own recorded figures.
+    // 100,354 was measured before X5 added 37 bytes to each of the eight projection scripts (+296, overrun
+    // 354 -> 650); F1 then costed a fix - remove the two cheapest slot pairs, free 388, land at 99,966 - whose
+    // ARITHMETIC STOPPED WORKING when the figure moved (100,650 - 388 = 100,262, still over). F4 cleared it
+    // without removing any slot, so those options remain as headroom rather than as the plan.
     const serialized = built.transaction.length / 2;
     console.log(`C3 serialized transaction size: ${serialized} bytes `
-      + `(${serialized - 100_000} over the 100,000-byte standard relay ceiling)`);
-    expect(serialized).toBeGreaterThan(100_000);
-    expect(serialized).toBeLessThan(101_000);
+      + `(${100_000 - serialized} under the 100,000-byte standard relay ceiling)`);
+    expect(serialized).toBeLessThan(100_000);
+    expect(serialized).toBeGreaterThan(99_000);
 
-    // X60. C3 carried the SAME 10-satoshi placeholder output C1 did, and never showed it: a real node refuses
-    // this transaction `64: tx-size` before it ever reaches the dust rule, so the size overrun masked a second,
-    // independent reason it could not be relayed. Fixing only the visible one would have left C3 unrelayable
-    // even at a legal size. Asserted on the bytes, where no provider policy setting can mask it.
+    // X60, AND F4 IS WHAT MAKES IT MATTER. C3 carried the same 10-satoshi placeholder output C1 did, and no
+    // measurement here ever reached it: a real node refused this transaction `64: tx-size` first, so the size
+    // overrun MASKED a second, independent reason it could not be relayed. F4 removed the mask. Had only the
+    // visible reason been fixed, C3 would have arrived at a legal size and still been unrelayable, and the
+    // masking rule would have been gone to say so. Asserted on the bytes, where no provider setting can mask
+    // it, because the mock stack has dust off by default.
     expect(formatDustOutputs(dustOutputs(built.builder.buildLibauthTransaction()))).toBe('no dust outputs');
   }, 900_000);
 
@@ -1588,9 +1599,9 @@ describe('C3 capacity measurement', () => {
     // over the 100,000-byte standard relay ceiling, against the 1,000,000-byte consensus figure this profile
     // sets. C1, at 63,315 bytes, clears both (X39).
     for (const projection of projections) {
-      expect(projection.bytes).toBe(6_046);
-      expect(projection.ratio).toBeGreaterThan(0.6);
-      expect(projection.ratio).toBeLessThan(0.8);
+      expect(projection.bytes).toBe(5_917);
+      expect(projection.ratio).toBeGreaterThan(0.5);
+      expect(projection.ratio).toBeLessThan(0.7);
     }
     // The +325 RETURNING-ROW SURCHARGE IS GONE, and that is a finding rather than a re-pin. It was recorded as
     // exactly 325 instructions on three independent compositions and treated as a stable property of the row
@@ -1605,7 +1616,7 @@ describe('C3 capacity measurement', () => {
     // invocations, +1.3%. ALL EIGHT ROWS STILL COST THE SAME, so the surcharge finding above is unaffected -
     // which is the property that mattered, not the absolute figure.
     expect(projections.map((row) => row.instructions))
-      .toEqual([24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382]);
+      .toEqual([23_499, 23_499, 23_499, 23_499, 23_499, 23_499, 23_499, 23_499]);
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);
@@ -1699,5 +1710,46 @@ describe('C3 capacity measurement', () => {
     expect(built.plan.invocations).toHaveLength(8);
     expect(built.transcript.bytes.length).toBeGreaterThan(1_100);
     expect(built.transcript.bytes.length).toBeLessThan(1_500);
+  }, 900_000);
+});
+
+/**
+ * X59. THE EIGHT-PARTICIPANT GRAPH, BUILT AGAINST A REAL BCHN NODE.
+ *
+ * Round 17 offered C3's mock-built bytes to BCHN and got `64: tx-size`: at 100,650 bytes it was over the
+ * 100,000-byte standard ceiling, so the node refused it on POLICY without executing a single script. (That the
+ * ceiling is policy rather than consensus was settled separately, by getting oversized bytes refused through
+ * the mempool and then accepted inside a submitted block.) F4 cut 129 bytes from the projection verifier -
+ * one covenant instantiated once per participant, so C3 paid 8x - and put it under.
+ *
+ * That is what makes this block reachable: with the size refusal gone, and X60's dust output gone with it, the
+ * node has to look up the inputs and execute all eight participants, eight projection proofs and the
+ * controller. Nothing is relaxed: `RegtestNetworkProvider` carries no `consensusLimits`.
+ *
+ * Requires the docker regtest stack; see the root CLAUDE.md.
+ */
+describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C3 on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes the eight-participant graph, accepts it and mines it', async () => {
+    const built = await buildC3('none', DEFAULT_ORDER, createTestProvider);
+    expect(built.layout.controllerInput).toBe(106);
+
+    const transaction = built.builder.buildLibauthTransaction();
+    expect(formatDustOutputs(dustOutputs(transaction))).toBe('no dust outputs');
+
+    const accepted = await acceptedByNode(built.provider as never, transaction, built.transaction);
+    console.log(`X59 C3 accepted by BCHN: ${accepted.txid} at height ${accepted.blockHeight}, `
+      + `${accepted.serializedBytes} B, ${accepted.inputCount} inputs`);
+    // The size the node accepted, which is the figure the whole F4 argument turns on - read from the accepted
+    // transaction rather than cited.
+    expect(accepted.serializedBytes).toBeLessThan(100_000);
+    expect(accepted.inputCount).toBe(108);
+    expect(accepted.outputCount).toBe(108);
+    expect(accepted.blockHeight).toBeGreaterThan(0);
+  }, 900_000);
+
+  /** The control: a transaction the covenants should refuse, refused by the node, same chain, same run. */
+  it('CONSENSUS: BCHN refuses the disjoint-root transcript', async () => {
+    const built = await buildC3('disjoint-root', DEFAULT_ORDER, createTestProvider);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 900_000);
 });

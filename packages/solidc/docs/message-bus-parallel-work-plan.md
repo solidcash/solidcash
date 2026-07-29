@@ -128,7 +128,8 @@ task-specific report, not in this table.
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | **PROVEN** | reviewed by C (2 findings), both closed by X7, regressions green - see 4.29 |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | **PROVEN** | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (type-shape only) | A13 escapes closed against the PUBLISHED TYPE, not the semantic class - see 4.44 |
-| **SEC-12** | `hasSignatureGuard` suppresses SEC-2 and C1 at two sites | — | E3 | **TODO (security)** | matches any `checkSig` without asking whose key; both suppressions measured |
+| **SEC-12** | `hasSignatureGuard` suppresses SEC-2 and C1 at two sites | S1 | E3 | **INTEGRATED** | key operand now resolved; guard credited only for a key the caller cannot choose - see 4.51 |
+| **SEC-16** | Same over-broad suppressor in `warnUnauthenticatedSelfdestruct` | S6 | SEC-12 | **LEASED (security)** | `EnsureFinalRequireTraversal.ts:206-207` returns early on any `checkSig`; measured, `keyIsCallerChosen` reusable |
 | X37 | Publish delegate target/key provenance in the artifact | — | E3 | TODO | `lowLevelCalls` stripped to `callMode`; AST already carries `dataParamIndex` |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
@@ -207,6 +208,55 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.51 SEC-12 closed at both sites, and the corpus check was correctly refused as corroboration
+
+Merged at `dbb15944`. Both suppressions were **reproduced verbatim on the baseline before any edit**: at `:5095`
+the self-authorizing proxy emitted zero warnings past the generic notice, and at `:2302` a proxy delegatecalling
+a P2PKH literal warned until `require(checkSig(s, pk))` with a caller-supplied `pk` **silenced it**.
+
+`hasSignatureGuard` is deleted. `hasAuthorizingSignatureGuard` collects key operands (arg 1 of
+`checkSig`/`checkMultiSig`, arg 2 of `checkDataSig`; a missing operand credits nothing) and credits a guard only
+when the key is one the caller cannot choose - constructor input, state variable, literal, or an unresolvable
+symbol such as a contract `const`.
+
+**The negative control is the model this board should copy.** The two silent controls keep a caller-supplied
+`pubkey` parameter, a `sig` parameter **and** an `address impl` parameter, and differ from the hostile in the
+checkSig key alone. The hostile and the controls share all three incidental features, so the warning is
+demonstrably credited to the key's source and not to "has a pubkey param", "has a sig param", or "target is a
+parameter".
+
+**S1 found two holes in its OWN first version by probing it.** (a) Reading only the declaration let
+`pubkey k = owner; k = pk; require(checkSig(s, k))` resolve to the constructor key - the same escape one
+reassignment deeper; every binding is now read, and both orderings warn. (b) The first version would have fired
+on `checkSig(s, this.owners[i])`, but an index only *selects* among stored keys, so the container decides. Carved
+out - otherwise the ordinary multi-owner proxy would have started warning. That is the third fix this round whose
+first version was too broad, and the second caught by its own author rather than a reviewer.
+
+**Item 8 of the packet is the honest one.** The blast-radius run covered 3,539 extracted sources, 1,960
+compiling, with **0 bytecode changes, 0 compile-error changes, 0 warnings lost and 11 gained** - and S1 then
+**declined to count it as corroboration**, because both call sites are gated on `hasExplicitDelegatecall` and
+**2,049 of the 2,070 compiling sources cannot reach the changed code at all**. For those it proves only "no crash
+and no accidental codegen change". The discriminating evidence is the 24-case control matrix. This is the
+convention 4.34 invented, applied by its inheritor against its own favourable number.
+
+All 11 newly-warning sources are `checkSig(s, <caller param>)`; **no legitimate proxy started warning**.
+
+**The doc's exemplar of safe was the unsafe shape.** `delegatecall-security.md:118-119` listed "a signature guard
+in the same function" as sufficient and cited `PINNED_PROXY` as the example - a fixture with no constructor args
+that checks a caller-supplied `pubkey`, i.e. the unsafe shape verbatim. The bullet now states what the guard must
+be, shows the unsafe shape as unsafe, names the fixture as a known-unsafe key kept for its identity/selector pin,
+and records that SEC-12 changes **no bytecode**, so the takeover still settles: this is a diagnostic, not a
+covenant, and A13-2b still settles 5 to 999.
+
+**SEC-16 opened from S1's BLOCKED report.** The identical defect exists at a third site outside its lease:
+`EnsureFinalRequireTraversal.ts:206-207`, `warnUnauthenticatedSelfdestruct`, returns early on any `checkSig`.
+Measured on the current build - an unauthenticated `selfdestruct` warns, and a caller-supplied key silences it
+while a constructor key is correctly silent. Dispatched to S6 with `keyIsCallerChosen` named as reusable, since
+three `abi.find` sites were already closed this round precisely to stop a second copy drifting.
+
+Counts: solidc **2,474/0** (2,463 + 11), solidcash **4,102/0**, exactly baseline. Three test files were edited
+outside the source lease because their assertions **encoded the bug**; each is named in the packet.
 
 ### 4.50 X36: the obvious fix would have been a FALSE REJECTION, and measurement said so first
 

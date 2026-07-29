@@ -6,8 +6,8 @@ import { Contract, TransactionBuilder } from '../../src/index.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {
-  BCH_2026_CONSENSUS, BCH_2026_STANDARD, assessEnvelope, densityKnobControl, formatEnvelope,
-  knobControlBudgetFor,
+  BCH_2026_CONSENSUS, BCH_2026_STANDARD, ORDINARY_LIMITS, assessEnvelope, densityKnobControl, formatEnvelope,
+  hashAllowancesFor, hashKnobControl, knobControlBudgetFor,
 } from './layer3-envelope-f1.js';
 
 /**
@@ -156,18 +156,32 @@ describe('F1 envelope: the limits themselves', () => {
   });
 
   /**
-   * THE POLICY GAP, stated as arithmetic on the pinned constants. Every Layer-3 "ordinary capacity" provider
-   * in this repository sets a single `hashDigestIterationsPerByte`, and `createVirtualMachine.ts` writes that
-   * one value into BOTH the standard and the nonstandard knob. The fixtures pass 3. That is 0.86x of the real
-   * consensus allowance - mildly conservative - and 6x the real standard allowance. So a shape can pass every
-   * one of those fixtures and still be unrelayable on hashing density alone, and no fixture would show it.
+   * THE POLICY GAP that X48 names, stated as arithmetic on the pinned constants, and kept because it still
+   * describes every OTHER Layer-3 "ordinary capacity" fixture in this repository. Those pass a single
+   * `hashDigestIterationsPerByte: 3`. Against the real allowances that is 0.86x of consensus - mildly
+   * conservative - and 6x standard. A shape can pass all of them and still be unrelayable on hashing density
+   * alone, and none of them would show it. The `ORDINARY_LIMITS` profile below no longer has that hole.
    */
-  it('MEASURED: the single hash-iteration knob cannot express both regimes', () => {
+  it('MEASURED: a single hash-iteration knob cannot express both regimes', () => {
     const fixtureKnob = 3;
     expect(fixtureKnob / BCH_2026_CONSENSUS.hashDigestIterationsPerByte).toBeCloseTo(0.857, 3);
     expect(fixtureKnob / BCH_2026_STANDARD.hashDigestIterationsPerByte).toBe(6);
     // And the cost coefficient runs the other way: relaying a hash costs three times what mining it costs.
     expect(BCH_2026_STANDARD.hashDigestIterationCost / BCH_2026_CONSENSUS.hashDigestIterationCost).toBe(3);
+  });
+
+  /**
+   * X48: `ConsensusLimits` now carries the two allowances separately, so the ordinary profile states both real
+   * values at once instead of two profiles each pretending to be the whole story. The regime is selected at
+   * the VM, not by swapping profiles.
+   */
+  it('MEASURED: the ordinary profile now carries both real allowances', () => {
+    expect(ORDINARY_LIMITS.hashDigestIterationsPerByteStandard).toBe(0.5);
+    expect(ORDINARY_LIMITS.hashDigestIterationsPerByteNonstandard).toBe(3.5);
+    // The shared fallback is the TIGHTER of the two, so any caller that ignores the split is conservative
+    // rather than optimistic - the failure mode X48 found was the opposite one.
+    expect(ORDINARY_LIMITS.hashDigestIterationsPerByte).toBe(0.5);
+    expect(ORDINARY_LIMITS.operationCostBudgetPerByte).toBe(800);
   });
 });
 
@@ -182,6 +196,10 @@ describe('F1 envelope: the 2/4/8 participant sweep', () => {
       console.log(`[F1] N=${n} binding order: ${JSON.stringify(
         envelope.binding.map((row) => `${row.limit}=${row.ratio.toFixed(4)}`),
       )}`);
+      const worst = envelope.worstHashInput;
+      console.log(`[F1] N=${n} hash: iterations=${worst.hashIterations}`
+        + ` stdAllowance=${worst.standardHashAllowance} consAllowance=${worst.consensusHashAllowance}`
+        + ` stdCost=${worst.standardCost} consCost=${worst.consensusCost}`);
       envelopes.push({ n, envelope, built });
     }
 
@@ -215,6 +233,59 @@ describe('F1 envelope: the 2/4/8 participant sweep', () => {
       );
       expect(error, `the operation-cost knob does not bite at N=${n} on ${budget}/byte`).toBeDefined();
       expect(String(error)).toMatch(/density|operation cost/i);
+    }
+
+    // THE HASH-KNOB LIVENESS CONTROL (X48), in two halves, because a read-back alone could still be a knob
+    // that is read and then ignored, and a refusal alone could still come from the wrong knob.
+    //
+    // HALF ONE, INDEPENDENCE. One limits object setting the two allowances to different values must produce
+    // two DIFFERENT initialized allowances. Before the split these two readings were the same number for any
+    // input, which is exactly the defect: the nonstandard write was dead and the standard write was whatever
+    // the fixture happened to pass.
+    for (const { n, envelope, built } of envelopes) {
+      const row = envelope.worstHashInput;
+      const allowances = hashAllowancesFor(
+        built.transaction as never, built.sourceOutputs, row.input, ORDINARY_LIMITS,
+      );
+      expect(allowances.standard).toBe(Math.floor(allowances.densityBytes * 0.5));
+      expect(allowances.nonstandard).toBe(Math.floor(allowances.densityBytes * 3.5));
+      expect(allowances.nonstandard, `the two hash regimes are not independent at N=${n}`)
+        .toBeGreaterThan(allowances.standard);
+      // And the same two figures are what `measureInputs` recorded from the run-to-completion profile, where
+      // both regimes share the 3000 fallback: equal there, which is the control on the control.
+      expect(row.standardHashAllowance).toBe(row.consensusHashAllowance);
+    }
+
+    // HALF TWO, REFUSAL, as a 2x2. Drive ONE knob below what the input was measured to need, leave the other
+    // wide, and evaluate in BOTH regimes. The tightened knob's own regime must refuse on hash-iteration
+    // density; the other regime must not, which is what proves the refusal came from the knob under test.
+    for (const { n, envelope, built } of envelopes) {
+      const row = envelope.worstHashInput;
+      const tooTight = (row.hashIterations - 1) / row.densityBytes;
+      for (const knob of ['standard', 'nonstandard'] as const) {
+        const tighten = { [knob]: tooTight };
+        const ownRegime = knob === 'standard';
+        const bites = hashKnobControl(
+          built.transaction as never, built.sourceOutputs, row.input, tighten, ownRegime,
+        );
+        expect(bites, `the ${knob} hash knob does not bite at N=${n}`).toBeDefined();
+        expect(String(bites)).toMatch(/hash digest iteration/i);
+        const other = hashKnobControl(
+          built.transaction as never, built.sourceOutputs, row.input, tighten, !ownRegime,
+        );
+        expect(other, `tightening ${knob} leaked into the other regime at N=${n}`).toBeUndefined();
+      }
+    }
+
+    // The nonstandard instruction set reports the consensus operation cost directly. It must agree with the
+    // arithmetic reprice at 64 per iteration that this harness used before it could run the regime at all.
+    for (const { n, envelope } of envelopes) {
+      for (const row of envelope.inputs) {
+        expect(row.consensusHashIterations, `hash iterations differ by regime at N=${n} input ${row.input}`)
+          .toBe(row.hashIterations);
+        expect(row.consensusCost, `measured and derived consensus cost differ at N=${n} input ${row.input}`)
+          .toBe(row.derivedConsensusCost);
+      }
     }
   }, 900_000);
 });

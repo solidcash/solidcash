@@ -24,6 +24,19 @@ import { createVirtualMachineBch2026ForProvider } from '../../src/network/create
  *     when relayed than when mined directly. The iteration BUDGET runs the other way: 0.5 iterations per
  *     density byte under standard rules against 3.5 under consensus, a 7x tighter allowance. Neither figure
  *     can be substituted for the other, and a single "hashDigestIterationsPerByte" knob cannot express both.
+ *
+ * X48 CORRECTION. Point 3 used to be worked around here by building TWO profiles that each wrote one value
+ * into both of libauth's regime knobs. `ConsensusLimits` now carries the two regimes separately, and
+ * `createVirtualMachineBch2026ForProvider` takes the regime itself, so ONE profile expresses both and each
+ * regime is evaluated by the instruction set that actually implements it: standard mode reads 0.5 per byte and
+ * prices an iteration at 192, nonstandard mode reads 3.5 per byte and prices it at 64.
+ *
+ * ONE FIDELITY CAVEAT ON NONSTANDARD MODE, stated because it runs the other way from every other note here.
+ * libauth's nonstandard instruction set also drops the per-input SigChecks ceiling and leaves
+ * OP_CHECKLOCKTIMEVERIFY / OP_CHECKSEQUENCEVERIFY as no-ops. It is therefore more permissive than real BCH
+ * consensus on those two points, which is why the SigChecks ratio is still computed and ranked separately
+ * below rather than left to the VM, and why an acceptance under `refusedAtStandard` (which keeps every
+ * standard check) remains the stronger of the two readings.
  */
 
 /** Real BCH-2026 consensus limits, read from libauth rather than restated, so a libauth bump is visible. */
@@ -62,32 +75,23 @@ export const RUN_TO_COMPLETION_LIMITS = {
 } as const;
 
 /**
- * The real ordinary BCH-2026 consensus profile: nothing relaxed. Used to check ACCEPTANCE rather than to read
- * a cost, so that "inside capacity" does not have to rest on a relaxed-budget reading.
+ * THE ordinary BCH-2026 profile: nothing relaxed, both hash regimes at their real values in the same object.
+ * Used to check ACCEPTANCE rather than to read a cost, so that "inside capacity" does not have to rest on a
+ * relaxed-budget reading. Which regime applies is chosen by the VM's `standard` flag, not by editing this.
  *
- * CONSERVATIVE IN ONE RESPECT, and deliberately so. `createVirtualMachineBch2026ForProvider` always builds a
- * standard instruction set, so hashing is priced at the standard 192 per iteration even here, where the
- * consensus allowance of 3.5 iterations per byte applies. A shape accepted under this profile is therefore
- * accepted under real consensus too; the reverse does not follow. The true consensus cost is reported
- * separately as `consensusCost`, which repricing at 64 makes exact.
+ * The transaction-size ceiling is a whole-transaction rule rather than a per-input one, so it is assessed
+ * separately in `assessEnvelope` and is not expressible here.
  */
-export const ORDINARY_CONSENSUS_LIMITS = {
+export const ORDINARY_LIMITS = {
   maximumInputBytes: BCH_2026_CONSENSUS.maximumBytecodeLength,
   maximumStackItemBytes: BCH_2026_CONSENSUS.maximumStackItemLength,
   maximumTransactionBytes: BCH_2026_CONSENSUS.maximumTransactionLengthBytes,
   maximumNftCommitmentBytes: BCH_2026_CONSENSUS.maximumTokenCommitmentLength,
   operationCostBudgetPerByte: BCH_2026_CONSENSUS.operationCostBudgetPerByte,
-  hashDigestIterationsPerByte: BCH_2026_CONSENSUS.hashDigestIterationsPerByte,
-} as const;
-
-/**
- * The real standard/relay profile. Identical except for the hash-iteration allowance, which standard policy
- * sets seven times tighter. The transaction-size ceiling is a whole-transaction rule rather than a per-input
- * one, so it is assessed separately in `assessEnvelope` and is not expressible here.
- */
-export const ORDINARY_STANDARD_LIMITS = {
-  ...ORDINARY_CONSENSUS_LIMITS,
+  // Shared fallback, kept so this profile is still valid for any caller that ignores the split.
   hashDigestIterationsPerByte: BCH_2026_STANDARD.hashDigestIterationsPerByte,
+  hashDigestIterationsPerByteStandard: BCH_2026_STANDARD.hashDigestIterationsPerByte,
+  hashDigestIterationsPerByteNonstandard: BCH_2026_CONSENSUS.hashDigestIterationsPerByte,
 } as const;
 
 export interface InputMeasurement {
@@ -96,13 +100,20 @@ export interface InputMeasurement {
   unlockingBytes: number;
   /** `densityControlBaseLength` + unlocking bytecode length. */
   densityBytes: number;
-  /** Operation cost as libauth reports it, i.e. priced with the STANDARD hash-iteration cost of 192. */
+  /** Operation cost as the standard instruction set reports it, i.e. hashing priced at 192 per iteration. */
   standardCost: number;
-  /** The same evaluation repriced with the CONSENSUS hash-iteration cost of 64. */
+  /** Operation cost as the NONSTANDARD instruction set reports it: hashing priced at 64 per iteration. */
   consensusCost: number;
+  /** `standardCost` repriced arithmetically at 64. Equal to `consensusCost` unless the regimes diverge. */
+  derivedConsensusCost: number;
   standardCostRatio: number;
   consensusCostRatio: number;
   hashIterations: number;
+  /** Hash iterations the nonstandard evaluation performed; must equal `hashIterations`. */
+  consensusHashIterations: number;
+  /** `maximumHashDigestIterations` each regime initialized with: which knob libauth actually read. */
+  standardHashAllowance: number;
+  consensusHashAllowance: number;
   standardHashRatio: number;
   consensusHashRatio: number;
   signatureChecks: number;
@@ -157,29 +168,42 @@ const COST_DELTA_PER_ITERATION =
   BCH_2026_STANDARD.hashDigestIterationCost - BCH_2026_CONSENSUS.hashDigestIterationCost;
 
 /**
- * Measure every input of an already-built transaction, run to completion. The transaction is NOT rebuilt, so
- * the same bytes and the same density control length are what both regimes are assessed against.
+ * Measure every input of an already-built transaction, run to completion, ONCE PER REGIME. The transaction is
+ * not rebuilt, so the same bytes and the same density control length are what both regimes are assessed
+ * against, and the consensus cost is now READ from the nonstandard instruction set rather than only derived by
+ * repricing. Both figures are kept so the derivation stays under continuous check.
  */
 export function measureInputs(
   transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
   sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
 ): InputMeasurement[] {
-  const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: RUN_TO_COMPLETION_LIMITS } as never);
+  const standardVm = createVirtualMachineBch2026ForProvider(
+    { consensusLimits: RUN_TO_COMPLETION_LIMITS } as never, undefined, { standard: true },
+  );
+  const consensusVm = createVirtualMachineBch2026ForProvider(
+    { consensusLimits: RUN_TO_COMPLETION_LIMITS } as never, undefined, { standard: false },
+  );
   return transaction.inputs.map((_input, input) => {
-    const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as never as {
-      error?: string;
-      metrics: Record<string, number>;
+    const run = (
+      vm: typeof standardVm, regime: string,
+    ): Record<string, number> => {
+      const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as never as {
+        error?: string;
+        metrics: Record<string, number>;
+      };
+      if (state.error !== undefined) {
+        throw new Error(`run-to-completion ${regime} evaluation still failed at input ${input}: ${state.error}`);
+      }
+      return state.metrics;
     };
-    if (state.error !== undefined) {
-      throw new Error(`run-to-completion evaluation still failed at input ${input}: ${state.error}`);
-    }
-    const metrics = state.metrics;
+    const metrics = run(standardVm, 'standard');
+    const consensusMetrics = run(consensusVm, 'nonstandard');
     const densityBytes = metrics.densityControlLength;
     const unlockingBytes = densityBytes - BCH_2026_CONSENSUS.densityControlBaseLength;
     const budget = densityBytes * BCH_2026_CONSENSUS.operationCostBudgetPerByte;
     const standardCost = metrics.operationCost;
     const hashIterations = metrics.hashDigestIterations;
-    const consensusCost = standardCost - hashIterations * COST_DELTA_PER_ITERATION;
+    const consensusCost = consensusMetrics.operationCost;
     const signatureCheckLimit = Math.floor((unlockingBytes + 60) / 43);
     return {
       input,
@@ -187,9 +211,13 @@ export function measureInputs(
       densityBytes,
       standardCost,
       consensusCost,
+      derivedConsensusCost: standardCost - hashIterations * COST_DELTA_PER_ITERATION,
       standardCostRatio: standardCost / budget,
       consensusCostRatio: consensusCost / budget,
       hashIterations,
+      consensusHashIterations: consensusMetrics.hashDigestIterations,
+      standardHashAllowance: metrics.maximumHashDigestIterations,
+      consensusHashAllowance: consensusMetrics.maximumHashDigestIterations,
       standardHashRatio: hashIterations / (densityBytes * BCH_2026_STANDARD.hashDigestIterationsPerByte),
       consensusHashRatio: hashIterations / (densityBytes * BCH_2026_CONSENSUS.hashDigestIterationsPerByte),
       signatureChecks: metrics.signatureCheckCount,
@@ -207,14 +235,16 @@ export function measureInputs(
  * Evaluate every input at a profile with NOTHING relaxed, and report which inputs are refused. This is the
  * direct question - are these exact bytes accepted at the real limits - and it needs no relaxed reading. It
  * is also the correct place to see the standard/consensus split: the same bytes can pass one and fail the
- * other, because the hash-iteration allowance differs by 7x between them.
+ * other, because the hash-iteration allowance differs by 7x between them, and now because each regime is
+ * evaluated by the instruction set that implements it rather than by one profile pretending to be both.
  */
 export function refusedInputsAt(
   transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
   sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
-  limits: typeof ORDINARY_CONSENSUS_LIMITS | typeof ORDINARY_STANDARD_LIMITS,
+  standard: boolean,
+  limits: { operationCostBudgetPerByte: number } = ORDINARY_LIMITS,
 ): { input: number; error: string }[] {
-  const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: limits } as never);
+  const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: limits } as never, undefined, { standard });
   const refused: { input: number; error: string }[] = [];
   transaction.inputs.forEach((_input, input) => {
     const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as never as {
@@ -223,6 +253,61 @@ export function refusedInputsAt(
     if (state.error !== undefined) refused.push({ input, error: state.error });
   });
   return refused;
+}
+
+/**
+ * THE HASH-KNOB LIVENESS CONTROL, and the direct proof that the two regimes are now independent.
+ *
+ * Returns the allowance libauth actually initialized with in each regime for one input, given a limits object
+ * that sets the two knobs to different values. If the split were not wired through, both readings would be the
+ * same number and the control fails. Reading `maximumHashDigestIterations` is exact: libauth computes it once,
+ * at initialize, from whichever knob its `standard` flag selects.
+ */
+export function hashAllowancesFor(
+  transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
+  sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
+  input: number,
+  limits: { hashDigestIterationsPerByte: number },
+): { standard: number; nonstandard: number; densityBytes: number } {
+  const read = (standard: boolean): Record<string, number> => {
+    const vm = createVirtualMachineBch2026ForProvider({ consensusLimits: limits } as never, undefined, { standard });
+    return (vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as never as {
+      metrics: Record<string, number>;
+    }).metrics;
+  };
+  const standardMetrics = read(true);
+  return {
+    standard: standardMetrics.maximumHashDigestIterations,
+    nonstandard: read(false).maximumHashDigestIterations,
+    densityBytes: standardMetrics.densityControlLength,
+  };
+}
+
+/**
+ * The other half of the hash-knob control: a REFUSAL, not just a read-back. WHICH KNOB IS TIGHTENED AND WHICH
+ * REGIME IS EVALUATED ARE SEPARATE ARGUMENTS, deliberately - that is what makes the 2x2 possible. Tightening
+ * one knob must refuse in its own regime and must NOT refuse in the other, which is the only way to show the
+ * refusal came from the knob under test rather than from its twin. Everything else stays at the
+ * run-to-completion ceiling so nothing but hashing can be the cause.
+ */
+export function hashKnobControl(
+  transaction: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['transaction'],
+  sourceOutputs: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0]['sourceOutputs'],
+  input: number,
+  tighten: { standard?: number; nonstandard?: number },
+  evaluateAsStandard: boolean,
+): string | undefined {
+  const wide = RUN_TO_COMPLETION_LIMITS.hashDigestIterationsPerByte;
+  const limits = {
+    ...RUN_TO_COMPLETION_LIMITS,
+    hashDigestIterationsPerByteStandard: tighten.standard ?? wide,
+    hashDigestIterationsPerByteNonstandard: tighten.nonstandard ?? wide,
+  };
+  const vm = createVirtualMachineBch2026ForProvider(
+    { consensusLimits: limits } as never, undefined, { standard: evaluateAsStandard },
+  );
+  const state = vm.evaluate({ inputIndex: input, sourceOutputs, transaction }) as never as { error?: string };
+  return state.error;
 }
 
 const worstBy = (
@@ -360,8 +445,10 @@ export function assessEnvelope(
     worstHashInput,
     worstUnlockingInput,
     binding,
-    refusedAtConsensus: refusedInputsAt(transaction as never, sourceOutputs, ORDINARY_CONSENSUS_LIMITS),
-    refusedAtStandard: refusedInputsAt(transaction as never, sourceOutputs, ORDINARY_STANDARD_LIMITS),
+    // Each regime is evaluated by the instruction set that implements it, against ONE limits object that
+    // carries both hash allowances: nonstandard reads 3.5/byte at 64 per iteration, standard 0.5/byte at 192.
+    refusedAtConsensus: refusedInputsAt(transaction as never, sourceOutputs, false),
+    refusedAtStandard: refusedInputsAt(transaction as never, sourceOutputs, true),
   };
 }
 
@@ -401,7 +488,8 @@ export function formatEnvelope(envelope: EnvelopeMeasurement): string {
     `serialized=${envelope.serializedBytes}B`,
     `stdSize=${(envelope.standardSizeRatio * 100).toFixed(1)}%`,
     `worstCost=input ${envelope.worstCostInput.input} @ ${envelope.worstCostInput.standardCostRatio.toFixed(4)}x`,
-    `worstHash=input ${envelope.worstHashInput.input} @ ${envelope.worstHashInput.standardHashRatio.toFixed(4)}x`,
+    `worstHash=input ${envelope.worstHashInput.input} @ std ${envelope.worstHashInput.standardHashRatio.toFixed(4)}x`
+      + ` / cons ${envelope.worstHashInput.consensusHashRatio.toFixed(4)}x`,
     `refusedAtConsensus=${envelope.refusedAtConsensus.length}`,
     `refusedAtStandard=${envelope.refusedAtStandard.length}`,
     `binds=${first.limit} (${first.regime}) ${first.ratio.toFixed(4)}x at ${first.where}`,

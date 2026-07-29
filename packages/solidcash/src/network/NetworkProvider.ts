@@ -10,8 +10,17 @@ export interface ConsensusLimits {
   maximumNftCommitmentBytes: number;
   /** Operation-cost units allowed per density-control byte. */
   operationCostBudgetPerByte: number;
-  /** Hash digest iterations allowed per density-control byte in the mock consensus VM. */
+  /**
+   * Hash digest iterations allowed per density-control byte. BCH-2026 prices this differently in the two
+   * regimes - standard relay policy allows 0.5 per byte, consensus allows 3.5 - so one value cannot express
+   * both. This field is the shared fallback used when the regime-specific field below is not set; existing
+   * profiles that set only this keep their previous behaviour exactly.
+   */
   hashDigestIterationsPerByte: number;
+  /** Standard (relay policy) hash-iteration allowance. Real BCH-2026 value: 0.5. */
+  hashDigestIterationsPerByteStandard?: number;
+  /** Nonstandard (consensus) hash-iteration allowance. Real BCH-2026 value: 3.5. */
+  hashDigestIterationsPerByteNonstandard?: number;
 }
 
 export interface NetworkPolicy {

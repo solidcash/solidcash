@@ -3133,10 +3133,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // logs at any other index. Scoped to contracts that DECLARE an event: the forged output is only readable
       // as a log at getEventNftAddress(contract, category, signature), which needs a declared signature, and a
       // hand-written covenant with no events may legitimately place own-category immutable NFTs of its own.
+      // SEC-13: `selfdestruct` and `delegate` were excluded and admitted the SAME forgery. A selfdestruct spends
+      // the master minting NFT, so it can mint own-category immutable NFTs at will and no later honest emit can
+      // ever contradict them; a delegate function's own event NFT carries the PROXY's category, so an appended
+      // one is read back beside the genuine log. Delegate functions are pinned regardless of `declaresEvents`:
+      // the readable signature may be declared by the proxy, which the implementation cannot see.
       const declaresEvents = this.eventDefinitions.length > 0 || this.currentContractEmitsEvent
         || (node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent');
-      if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
-        && !isSelfdestruct && declaresEvents) {
+      if (!this.functionHasDelegatecall && isStatefulContract
+        && (declaresEvents || this.currentFunctionIsDelegate)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
       }
       // Value preservation: satoshi and fungible token amounts
@@ -20075,6 +20080,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Residual: an own-category immutable NFT carrying a NON-ZERO fungible amount is not counted (it is
    * indistinguishable by introspection from a pure-FT output). Creating one needs pre-existing own-category
    * fungible tokens and still has to satisfy value preservation.
+   *
+   * Residual: a delegate function pins the PROXY's category (what its own `emit` produces, via
+   * emitMasterInputIndex). The implementation's OWN category is not pinned here; no genuine log is ever written
+   * there, so a reader has no reason to look.
+   *
+   * Residual: a `delegatecall` proxy is not pinned. Its honest own-category immutable outputs are the co-spent
+   * implementation's event NFTs, at an offset only that implementation's layout names, so the proxy cannot
+   * express the rule; the implementation's own pin covers them. A proxy that does not pin its delegate co-spend
+   * therefore keeps the residual - but that proxy already cedes its whole state (SECURITY-AUDIT C1).
    */
   private emitOwnCategoryImmutableNftOutputPin(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
@@ -20096,8 +20110,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.pushToStack('(imm_cat)');
 
-    // Block base: allowed offsets are relative to the master's input index.
-    this.emitMasterInputIndex(loc);
+    // Block base: allowed offsets are relative to the master's input index - except inside a delegate function,
+    // whose output-only slots are IMPLEMENTATION-relative. Mirrors emitBlockSlotIndex's `delegateOutputOnly`,
+    // so the admitted index is exactly the one emitEventCovenantVerification checked.
+    if (this.currentFunctionIsDelegate) this.emit(Op.OP_INPUTINDEX, loc);
+    else this.emitMasterInputIndex(loc);
     this.pushToStack('(imm_base)');
 
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);

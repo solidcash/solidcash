@@ -1495,8 +1495,10 @@ describe('C3 capacity measurement', () => {
     //
     // The projection input is 5,876 bytes (5,880 before the reshape, which was exactly 2,532 less than the
     // 8,412 this file used to record - the amount X23 shrank the verifier by). Not 8,412 either way.
+    // X5 added 37 bytes of verifier: the row call-options byte is now read once and the ROOT row's copy is
+    // required to be 0, which is the only bound that field ever had. 6,009 -> 6,046, ratio band unchanged.
     for (const projection of projections) {
-      expect(projection.bytes).toBe(6_009);
+      expect(projection.bytes).toBe(6_046);
       expect(projection.ratio).toBeGreaterThan(0.6);
       expect(projection.ratio).toBeLessThan(0.8);
     }
@@ -1505,8 +1507,10 @@ describe('C3 capacity measurement', () => {
     // 26,309 against 25,984 - and was recorded as a stable property of the returning row. X24's unroll
     // eliminated it: all eight projections now cost the same 24,067, returning row included. So the surcharge
     // was an artifact of the counted-loop lowering, not an intrinsic cost of authenticating a result.
+    // X5 added the row call-options bound to the same walk: +315 instructions over 15 invocations, +1.3%.
+    // All eight rows still cost the same, so the surcharge finding above is unaffected.
     expect(projections.map((row) => row.instructions))
-      .toEqual([24_067, 24_067, 24_067, 24_067, 24_067, 24_067, 24_067, 24_067]);
+      .toEqual([24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382, 24_382]);
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);

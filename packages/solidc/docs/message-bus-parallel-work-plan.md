@@ -169,7 +169,8 @@ task-specific report, not in this table.
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
-| X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
+| X2 | Repair rolled (non-expanded) pointer-table loop in codegen | B5 | — | **INTEGRATED** | NOT about rolled loops: an expression selector was double-counted on the tracked stack; old hostiles were VACUOUS - see 4.71 |
+| X63 | The `while` spelling escapes G1's PUBLISHED occurrence ceiling | — | X2 | **TODO** | `maximumOccurrences: undefined`, planner accepts 4; NOT a settlement gap, the covenant refuses at input 0 |
 | X3 | Result fan-in: one handler consuming two producer results | A4 | — | **BLOCKED (wall named, fails closed)** | transcript machinery ACCEPTS fan-in; only caller-side lowering cannot - one bounded compiler change - see 4.62 |
 | X56 | `.emitReturn()` on a delegated call that also emits | — | X12 | **TODO** | event NFT takes the index the forwarder reserved for the return event; refused at build time |
 | X55 | `invocation-transcript-v1.md` still names byte 11 `callMode:u8` | B6 | X5 | **INTEGRATED (premise was wrong)** | the doc does not name byte 11 at all - it specs a DIFFERENT unimplemented format; labelled as such |
@@ -212,7 +213,7 @@ task-specific report, not in this table.
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
 | X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | B6 | X38 | **INTEGRATED** | full table delivered and applied to this document; 2,131,662 base confirmed |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
-| X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | — | SEC-6 | **TODO (diagnostic)** | no artifact produced either way, so not a security gap |
+| X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | B5 | SEC-6 | **INTEGRATED** | the two crashes are at DIFFERENT sites, so the gate sits ahead of both; +0 bytes |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
@@ -229,6 +230,66 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.71 X2 was never about rolled loops, and its old "rejections" were VACUOUS
+
+Merged at `314d09b8`.
+
+**The row's own title was wrong about its subject.** X2 is recorded as the rolled (non-expanded) pointer-table
+loop. B5's guard controls show **rolled loops were never the wall**: an ordinary interface call in a rolled loop,
+and a **fixed-method** rolled pointer table, both settle at `ffef8568` **and** after. The actual defect is a
+callsite whose **selector is an expression** - which a rolled loop merely happens to produce, because
+`ExpandBoundedPointerTableLoop` only rewrites `for`, so a `while` spelling arrives at codegen rolled.
+
+**The root cause is a double-count on the tracked stack.** `verifyGraphEmissionRow` had two selector branches:
+an `IdentifierNode` selector emits `<idx> OP_PICK` with no tracked push and relies on the shared
+`pushToStack('(__graph_selector)')`, while an **expression** selector called `this.visit(...)` - which already
+pushes a tracked entry - and then took the shared push as well. The following `OP_CAT`'s `popFromStack(2)`
+consumed both selector entries, left the stale `(__graph_target_mode)` behind, and the tracked stack sat one
+entry deeper than reality for the rest of the handler. The fix renames the evaluated top instead of pushing
+again - the convention already used twenty lines above for the evaluated *target*, and in
+`emitExternalCallVerification` for the same selector.
+
+**Localized with `vm.debug`, not guessed**: failure at instruction 187, in an opcode window that is a byte-exact
+match for `consumeGraphRuntimeEmissionRow`, with the operands showing the row builder had read the caller's
+emissions blob where its `value` argument belonged.
+
+**The finding that matters most for how this board reads evidence: the pre-fix hostile cases were VACUOUS.**
+Before the repair, the substituted-target and substituted-method cases "rejected" with **the same `OP_SPLIT`
+crash as the honest transaction**. They looked like working hostile controls and proved nothing. After the fix
+they reject with `OP_VERIFY` at **input 0** while the honest case settles. A hostile case that fails for the same
+reason as the honest one is not evidence, and this is the first time this board has caught that pattern directly.
+
+Cost: **+1, +2, -6, -6** bytes on exactly **4 of 11** shapes - precisely the producers of a non-identifier
+`runtimeSelector` - with the other seven byte-identical, **verified rather than assumed**. At `ffef8568`, **8 of
+the new 14 tests fail**; B5 annotated in-file which of the 6 passing ones pass for an unrelated reason, so they
+cannot be miscounted as evidence.
+
+**Not claimed:** the received-value rolled table (+2 B, same code path) has **no settling VM instance**, because
+the layer-3 planner refuses that target set. Structural argument only, and labelled as such.
+
+**A separate measured finding, left where it lies:** the `while` spelling also escapes G1's *published* ceiling.
+`for` publishes `maximumOccurrences: 3` and the planner refuses 4; `while` publishes `undefined` and the planner
+accepts **3 and 4**, stopping only at the participant and worklist caps. **Not a settlement gap** - the source
+`require(handlers.length <= 3)` is in the covenant and refuses at input 0. Fix site is
+`ExpandBoundedPointerTableLoop.visitBlock`, outside the lease. Opened as **X63**.
+
+**X42: the two crashes are at DIFFERENT sites, and that determined where the guard goes.** The deploy fails while
+generating `__scb_graph_run`, whose block layout has no deploy slot. The blockhash **does not fail at the read** -
+both `__scb_graph_run` and `run` resolve the witness fine - it fails in **`__scb1`**, forwarding a handler
+parameter the SCB1 route never receives. **A guard at the blockhash read site would not have caught it**, which
+is why the refusal sits in `visitFunctionDefinition` ahead of both. One gate, two named reason tokens, the
+no-artifact property **confirmed rather than assumed**, and **+0 bytes on every shape** because no compiling
+program passes through the new path.
+
+**Reach measured in both directions**: a blockhash reached through an internal helper **is** named (the helper is
+inlined before codegen); a deploy through a helper is **not** - and B5 checked before calling that a gap, finding
+it fails identically on the **direct** route, so it is pre-existing and unrelated. Left where it was.
+
+**B5's own statement of discriminating power is the model.** Its full green run is real corroboration for X42, a
+compile-time refusal whose false positive would surface as a red compile anywhere in 7,102 tests - and it is
+**not** what establishes X2's repair, because *a green suite cannot see a covenant that settles for the wrong
+reason*. That claim rests on the honest/hostile/guard triple at input 0 plus the 8-of-14 pre-fix control.
 
 ### 4.70 X51 closes the false negative X43 kept, without any type reconstruction
 

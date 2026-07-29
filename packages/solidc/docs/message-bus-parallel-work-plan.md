@@ -165,7 +165,8 @@ task-specific report, not in this table.
 | F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
 | F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
-| R1 | Select and enforce production envelope | Main | F2,F3,F4 | TODO | Semantic support may exceed production profile |
+| R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
+| X64 | DECISION: does `standard-output-template` ship? | — | R1 | **DECISION NEEDED** | the weakest-evidence rule decides whether C2 and E1 are in the envelope; 18 fixtures build a bare `OP_1` |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
@@ -230,6 +231,56 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.72 R1: the gate cannot sit on the plan, and the weakest rule decides the envelope
+
+Merged at `c65c4934`, test-and-doc only (1,858 lines, three new files, **no existing file touched**). C7 was told
+it could add an SDK module only after reporting what it would touch; it **reported and did not add one**.
+
+**Evidence level: none reached, and none claimed.** C7's own framing is the right one - *passing this gate is
+agreement with a rule set, not evidence about a shape*. The sweep stays `CONSENSUS_FIT`, A13/C2/C1/C3 stay
+`SEMANTIC`, nothing is `POLICY_FIT`.
+
+**The plan-time screen CANNOT be the gate, and that is now measured rather than argued.** At the re-derived
+allowances the REFUSE threshold for relay size is **141,562 B** while the largest shape ever built predicts
+**112,955** - so **nothing in the corpus reaches REFUSE**. Worse, a per-input VM evaluation is **structurally
+blind** to size, dust and template: a 100,650-byte transaction carrying a 10-satoshi `OP_1` output produces
+**zero** per-input refusals at both real profiles. The gate must therefore sit on the **finalized bytes** at
+`build()`/`send()`. That is a design conclusion the measurement forced, not a preference.
+
+**Headroom goes at plan time only** - 10.9%, from F2's under-prediction band - and **never at build time**, where
+the measurement is exact and a margin is a guaranteed false refusal.
+
+**The boundary is relay, not mining.** C3 is mineable and unrelayable; choosing relay costs exactly one shape
+across the whole corpus, by 0.65%.
+
+**THE OPEN DECISION, and it is material.** The `OP_1` placeholder is **not** a C1/C3 artifact - **18 e2e fixtures
+build one**, in two values. At 10 satoshis the `dust` rule catches it. At **1,000 satoshis**
+(`Layer3HeterogeneousCycleC2.test.ts:537`, `Layer3ResultGraph.test.ts:499`) the **only** rule that refuses it is
+`standard-output-template`, whose evidence label is **`UNMEASURED_CONSERVATIVE`**. So **the weakest-evidence rule
+in the set decides whether C2 and the E1 result graph are inside the envelope**: keeping it takes them out,
+dropping it leaves an unmeasured mainnet relay risk. X60 currently scopes the placeholder fix to C1/C3 only, so
+this is not resolved by the round-18 work already in flight.
+
+Three further decisions are flagged in the doc, **none gated implicitly**, per the standing rule that defaults
+are ON and gating is asked about rather than assumed: whether the byte rules go default-on at `build()` (blast
+radius unmeasured - X14's analogue rejected 44.5% of sends), whether `POLICY_FIT` should carry a build-time
+margin, and that replacing the provider's limits in `evaluateEveryInput` is a **tightening** that needs measuring
+first.
+
+**Twelve rules, each with a hostile case that trips it** - 100,001 B, a 545-satoshi P2PKH one short of the
+threshold, a bare `OP_1`, a 221-byte locking script, a 10,001-byte scriptSig, `0x93` in a scriptSig, 1,003,050 B -
+plus the C1 placeholder refused on **two independent rules**, and one plan with two builds where only the byte
+gate sees the difference. Dust thresholds 474/546/576 agree with the SDK's own `calculateDust`, and the relay
+boundary is exact at 100,000/100,001.
+
+**A measurement worth keeping: the mock provider's limits are 100x, 100x, 12,500x and 20,000,000x the real
+ones**, and of 8 broadcast call sites in `src/`, **1 is gated**.
+
+**What it does not prove, stated:** the gate has never been run against A13/C2/C1/C3 themselves, because their
+builders are unexported - which is X59, in flight this round; A13's and C2's dust and template status is
+unmeasured on any node; the seven byte rules are **not** the complete `IsStandardTx` set; and the allowances rest
+on a seven-point calibration.
 
 ### 4.71 X2 was never about rolled loops, and its old "rejections" were VACUOUS
 

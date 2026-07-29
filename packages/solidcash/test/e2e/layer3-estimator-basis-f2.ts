@@ -34,7 +34,7 @@ import type { MeasuredShape } from './layer3-estimator-f2.js';
  */
 export const F2_BASIS_COMMIT = 'ffef8568';
 
-export const F2_BASIS: MeasuredShape[] = 
+export const F2_BASIS: MeasuredShape[] =
 [
   {
     'name': 'A13 graph',

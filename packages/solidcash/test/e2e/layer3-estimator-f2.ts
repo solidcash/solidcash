@@ -86,7 +86,10 @@ export interface GraphShapeSpec {
   blockSizes: number[];
   /** Master redeem script bytes per participant, from the instantiated contract's bytecode length. */
   redeemBytes: number[];
-  /** Inputs that perform a signature check. Every shape measured has exactly the one P2PKH fee input. */
+  /**
+   * Inputs that perform a signature check. Used for the transaction-wide SigChecks limit; the per-input one
+   * assumes ONE check on the smallest signed input, which is what every shape measured does.
+   */
   signedInputs?: number;
   /**
    * Unlocking bytes of the SMALLEST signed input, when the caller knows it. Defaults to the calibrated floor.
@@ -401,7 +404,11 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   const worstUnlockingBytes = Math.max(...classes.map((row) => row.unlockingBytes));
   const worstDensity = classes.reduce((best, row) => (row.densityRatio > best.densityRatio ? row : best));
   // Per-input SigChecks: the allowance is `floor((unlockingBytes + 60) / 43)`, so it GROWS with the input and
-  // the tightest signed input is the SMALLEST one. Every shape measured signs exactly the fee input.
+  // the tightest signed input is the SMALLEST one. ONE CHECK ON THAT INPUT is the assumption, and it is what
+  // every shape measured does - including the held-out graph, which signs six inputs rather than one but
+  // performs exactly one check on each, all of them 126-byte P2PKH spends at 0.2500x. A shape that puts
+  // several checks on one small input is outside this and would be under-predicted; `signedInputs` counts
+  // them for the transaction-wide limit but does not change the per-input one.
   const signed = spec.signedInputs ?? 1;
   const signedBytes = spec.signedInputUnlockingBytes ?? calibration.signedInputBytesFloor;
   const sigCheckLimit = Math.max(1, Math.floor((signedBytes + 60) / 43));

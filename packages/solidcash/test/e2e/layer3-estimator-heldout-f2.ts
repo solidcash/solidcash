@@ -22,7 +22,7 @@ import type { MeasuredShape } from './layer3-estimator-f2.js';
  */
 export const F2_HELD_OUT_COMMIT = 'ffef8568';
 
-export const F2_HELD_OUT: MeasuredShape[] = 
+export const F2_HELD_OUT: MeasuredShape[] =
 [
   {
     'name': 'E1 result graph',

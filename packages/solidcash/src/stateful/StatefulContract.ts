@@ -6124,9 +6124,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let entryAccesses = abiFunction?.entryAccesses;
     let entryAbiFunction = abiFunction;
     let entryArgs = args;
-    // X11. True when the accesses below belong to a delegatecall'd implementation rather than to this entry
-    // point. The proxy's own covenant then constrains the shape (see the sorted-INSERT refusal further down).
-    let entryAccessesAreDelegated = false;
     // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
     // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
     // the proxy's entry NFTs at the proxy-block entry slot (reserved via delegateEventSlots).
@@ -6143,7 +6140,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           entryAccesses = implFn.entryAccesses;
           entryAbiFunction = implFn;
           entryArgs = ci.args ?? [];
-          entryAccessesAreDelegated = true;
           break;
         }
       }

@@ -381,6 +381,40 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
     });
 
     /**
+     * A RESIDUAL X51 REACHES BY A NEW ROUTE AND DOES NOT WIDEN, measured with its own control. `signatureGuard`
+     * has never said whether the signature check DOMINATES the delegatecall - a `checkSig` inside a branch
+     * publishes exactly what an unconditional one publishes - and the module header has always said so. X51 lets
+     * a PINNED caller-supplied key reach that same gap. Both rows below are admitted, and they differ only in
+     * which route gets there, so the honest claim is "unchanged", not "introduced": deciding whether the check
+     * runs stays the compiler's `checkSig` emission, not an artifact field.
+     */
+    it('admits a branch-guarded signature check by the X51 route exactly as by the pre-X51 one', () => {
+      const branched = (guard: string, name: string): Artifact => compileString(`pragma solidcash >=0.8.0;
+contract ${name}(bytes20 adminPkh, pubkey owner) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s, bool flag) external {
+        ${guard}
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      const viaX51 = branched(
+        'require(hash160(pk) == adminPkh); if (flag) { require(checkSig(s, pk)); }', 'X51BranchProxy',
+      );
+      const preX51 = branched('if (flag) { require(checkSig(s, owner)); }', 'X51PreBranchProxy');
+      expect(viaX51.abi.find((entry) => entry.name === 'up')!.signatureGuard)
+        .toEqual({ key: { kind: 'parameter', name: 'pk' }, keyCommitment: {
+          kind: 'constructorArg', name: 'adminPkh',
+        } });
+      expect(preX51.abi.find((entry) => entry.name === 'up')!.signatureGuard)
+        .toEqual({ key: { kind: 'constructorArg', name: 'owner' } });
+      for (const artifact of [viaX51, preX51]) {
+        expect(classify(artifact, [alicePkh, alicePub])().id)
+          .toBe('caller-authorized/adjacent-proxy-block/scalar');
+      }
+    });
+
+    /**
      * THE WEAKEST FOLD REACHES THE GATE. Two signature checks, one pinned and one not: the compiler publishes
      * the weakest bound, which is the unpinned key's own `parameter` provenance, and the gate refuses. Without
      * the fold the pinned check would have spoken for a body a spender can satisfy through the other one.

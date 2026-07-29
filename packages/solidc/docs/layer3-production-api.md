@@ -9,6 +9,15 @@
 > HOMOGENEOUS participant covenant and instantiates N copies - it does NOT yet co-spend independently
 > compiled application contracts. Keep default-off; do not merge as a production bus. See the audit for the
 > graduation gates.
+>
+> **SCOPE UPDATE at `1591e87f`: this banner describes `covenant.ts`/`transcript.ts`, not `graph.ts`.**
+> `src/layer3` has since grown the `L3GRAPH1` graph path, and the sentence "does NOT yet co-spend
+> independently compiled application contracts" is false for that path: the C2 capstone is a heterogeneous
+> cycle over four independently compiled participants, executed, accepted and **mined** by BCHN v29.0.0 at
+> 52,733 bytes over 79 inputs (citation, X59/X60 as recorded in the completion ledger). The rest of the
+> banner stands - nothing here is a production bus, nothing is `POLICY_FIT`, and the graduation gates are
+> unchanged. Everything below documents the ORIGINAL homogeneous scaffold; for the graph path read
+> `graph.ts`, the completion ledger, and `layer3-production-envelope.md`.
 
 The spike covenants are generalized into a reusable SDK module, exported from `solidcash` as
 `layer3.*`. It has three parts - a covenant GENERATOR, a blob CODEC, and a transaction DERIVER - so an

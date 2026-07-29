@@ -69,6 +69,19 @@ external assumption of a single immutable mint-once controller NFT (no genesis/u
 
 ## What remains for a general cyclic heterogeneous bus (re-audit required path)
 
+> **SUPERSEDED as of `1591e87f`. This list was accurate when written and most of it has since been built.**
+> The `L3GRAPH1` graph transcript (`packages/solidcash/src/layer3/graph.ts`) is a canonical,
+> domain-separated execution root over calls, args, order and results; the C2 capstone is a heterogeneous
+> cycle over four independently compiled participants, and it was executed, accepted and **mined** by BCHN
+> v29.0.0 at 52,733 bytes over 79 inputs (citation, X59/X60 as recorded in the completion ledger). Per-finding
+> status for R2/R3/R5/R7/R8 is in `layer3-review-package.md`; task and claim state is the completion ledger's
+> alone. This page does not re-adjudicate any of it and no status below should be read as current.
+>
+> What is **not** superseded, and is stated in the ledger's own terms: **no `POLICY_FIT` is claimed
+> anywhere.** The mined capstones ran under regtest **default** policy, which is `CONSENSUS_FIT`. Mainnet
+> standard-policy acceptance of a capstone (R8's second half) and independent covenant review (gate 5) are
+> both still open.
+
 NOT implemented: a canonical, domain-separated EXECUTION transcript root covering calls/args/order/results/
 resources/events (R2); binding independently compiled HETEROGENEOUS participant covenants to their
 projections of that root (R3); a real mint-once controller genesis + uniqueness proof (R7); repeated

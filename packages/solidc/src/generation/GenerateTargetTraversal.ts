@@ -188,7 +188,7 @@ import { getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError,
-  ChainedEntryElementReadError, ConditionalDeployError,
+  ChainedEntryElementReadError, ConditionalDeployError, SolidCashError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
@@ -259,6 +259,65 @@ function splitOnDelimiter(bytes: Uint8Array, delim: Uint8Array): Uint8Array[] {
   }
   out.push(bytes.slice(start));
   return out;
+}
+
+/**
+ * X42. An effect a message-bus graph emission handler cannot carry, refused by name.
+ *
+ * Both shapes reached code generation and died on an internal invariant. A `new C(..)` asked for a `deploy`
+ * block slot the graph route's layout never reserves (`Block slot not found: deploy[0]`), and a `blockhash(n)`
+ * left the route forwarding a `__internal__blockhashInputIndex` witness the SCB1 route never receives
+ * (`Expected variable '__internal__blockhashInputIndex' does not exist on the stack`). Neither produced an
+ * artifact, so naming them changes no emitted bytecode - it replaces an internal invariant message with the
+ * shape, the reason and the remedy.
+ */
+export class GraphHandlerEffectError extends SolidCashError {
+  constructor(node: Node, public readonly reason: string, detail: string) {
+    super(node, `${reason}: ${detail}`);
+  }
+}
+
+const GRAPH_HANDLER_EFFECT_DETAIL: Record<string, string> = {
+  'graph-handler-deploy-not-enabled':
+    'deploying a contract (new C(...)) inside a message-bus graph handler is not admitted. The graph route\'s '
+    + 'block layout reserves owner slots only, with no deploy slot, so the child genesis input and its genesis '
+    + 'output have nowhere to be verified and the handler cannot describe the deploy in its transcript row. '
+    + 'Move the deploy into a function that makes no external call: that function stays on the direct route, '
+    + 'where the deploy covenant is emitted',
+  'graph-handler-blockhash-not-enabled':
+    'reading blockhash(n) inside a message-bus graph handler is not admitted. The block-oracle co-spend is '
+    + 'located through a synthesized __internal__blockhashInputIndex witness that the SCB1 route does not carry, '
+    + 'so the handler would read an unlocated input. Move the blockhash read into a function that makes no '
+    + 'external call: that function stays on the direct route, where the SDK fills the oracle input index',
+};
+
+/** The first effect kind a graph emission handler's body carries that the graph route cannot describe. */
+function graphHandlerUnsupportedEffect(
+  body: Node | undefined,
+): { reason: string; node: Node } | undefined {
+  if (!body) return undefined;
+  let found: { reason: string; node: Node } | undefined;
+  const seen = new WeakSet<object>();
+  const walk = (n: unknown): void => {
+    if (found) return;
+    if (Array.isArray(n)) { for (const item of n) walk(item); return; }
+    if (!(n instanceof Node) || seen.has(n)) return;
+    seen.add(n);
+    if (n instanceof InstantiationNode && n.referencedContract) {
+      found = { reason: 'graph-handler-deploy-not-enabled', node: n };
+      return;
+    }
+    if (n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.BLOCKHASH) {
+      found = { reason: 'graph-handler-blockhash-not-enabled', node: n };
+      return;
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+      walk(value);
+    }
+  };
+  walk(body);
+  return found;
 }
 
 // Count `new C(...)` deploy sites in a function body (each mints a child genesis). Mirrors
@@ -2384,6 +2443,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    // X42. Refuse the two effect kinds a graph emission handler cannot describe BEFORE either of them reaches
+    // the block-slot lookup or the route's parameter forwarding. Scoped to an emission handler: the same
+    // effects on the direct route, and in a route-eligible handler that makes no external call, are unchanged.
+    if (node.graphEmissionHandler) {
+      const unsupported = graphHandlerUnsupportedEffect(node.body);
+      if (unsupported) {
+        throw new GraphHandlerEffectError(
+          unsupported.node, unsupported.reason, GRAPH_HANDLER_EFFECT_DETAIL[unsupported.reason],
+        );
+      }
+    }
     this.graphStraightRuntimeRows = [];
     this.graphStraightRuntimeMode = this.isDefineSubTraversal
       && node.graphRuntimeEmissionHandler === true

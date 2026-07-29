@@ -161,7 +161,7 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
       + ' function kill(bytes20 to) { require(true); selfdestruct(new LockingBytecodeP2PKH(to)); } }')).toBe(true);
   });
 
-  it('does not warn when authenticated with a signature check', () => {
+  it('does not warn when authenticated against a key the caller cannot choose (constructor key)', () => {
     expect(warns('contract C(pubkey admin) { int n;'
       + ' function kill(sig s, address to) { require(checkSig(s, admin)); selfdestruct(to); } }')).toBe(false);
   });
@@ -169,6 +169,83 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
   it('does not warn when the destination comes from contract state', () => {
     expect(warns('contract C(pubkey admin) { address beneficiary; int n;'
       + ' function kill() { require(true); selfdestruct(this.beneficiary); } }')).toBe(false);
+  });
+
+  // SEC-16: "there is a checkSig somewhere in this body" is the wrong question. A signature check authenticates
+  // only the holder of the KEY it checks, so `require(checkSig(s, pk))` with a CALLER-SUPPLIED pk proves the
+  // spender signed with a key they chose - it authorizes nobody and must not silence the diagnostic. Measured on
+  // dbb15944: all three hostile rows below compiled silent. The pairs share every incidental feature (a `sig`
+  // param, a `pubkey` param, an `address` param) and differ only in where the checked key comes from, so the
+  // warning is credited to the key rather than to "this function has a pubkey parameter".
+  describe('SEC-16: the signature check must authorize a key the caller cannot choose', () => {
+    it('WARNS on checkSig against a caller-supplied pubkey', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' require(checkSig(s, pk)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('stays silent on the same shape when the key is the constructor key', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' require(checkSig(s, admin)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('stays silent on the same shape when the key is a state variable', () => {
+      expect(warns('contract C(pubkey admin) { pubkey owner; int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' require(checkSig(s, this.owner)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('WARNS when an alias is rebound to a caller key after being declared from the constructor key', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' pubkey k = admin; k = pk; require(checkSig(s, k)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('WARNS on checkDataSig, whose key is argument 2', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(datasig ds, bytes m, pubkey pk, address to) external {'
+        + ' require(checkDataSig(ds, m, pk)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('stays silent on checkDataSig against the constructor key', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(datasig ds, bytes m, pubkey pk, address to) external {'
+        + ' require(checkDataSig(ds, m, admin)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('WARNS on checkMultiSig against a caller-supplied key list', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig[2] ss, pubkey[2] pks, address to) external {'
+        + ' require(checkMultiSig(ss, pks)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('WARNS when the caller key is only reached through a cast', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, bytes33 raw, address to) external {'
+        + ' require(checkSig(s, pubkey(raw))); selfdestruct(to); } }')).toBe(true);
+    });
+
+    // An index only SELECTS among stored keys, so the CONTAINER decides the bytes: the ordinary multi-owner
+    // shape must not start warning just because the caller picks `i`.
+    it('stays silent when a caller-chosen index selects among keys held in state', () => {
+      expect(warns('contract C(pubkey admin) { pubkey[3] owners; int n;'
+        + ' function kill(sig s, pubkey pk, int i, address to) external {'
+        + ' require(checkSig(s, this.owners[i])); selfdestruct(to); } }')).toBe(false);
+    });
+
+    // One genuine guard is enough; the hostile check alongside it neither adds nor removes authority.
+    it('stays silent when a hostile check sits beside a genuine one', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, sig s2, pubkey pk, address to) external {'
+        + ' require(checkSig(s, pk)); require(checkSig(s2, admin)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('WARNS when the caller-supplied destination is wrapped and the key is caller-supplied', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, bytes20 to) external {'
+        + ' require(checkSig(s, pk)); selfdestruct(new LockingBytecodeP2PKH(to)); } }')).toBe(true);
+    });
   });
 });
 

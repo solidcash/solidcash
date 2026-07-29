@@ -2303,7 +2303,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // - see piece 3) or gated by a signature against a key the caller does not choose (SEC-12: a checkSig against
     // a caller-supplied pubkey silenced this). Library-call sugar is excluded (its own layout/brand guards).
     if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend
-      && !this.hasAuthorizingSignatureGuard(node)) {
+      && !hasAuthorizingSignatureGuard(node)) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against a non-covenant (P2PKH) impl, so the `
@@ -4989,102 +4989,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * SEC-12: which KEY does a signature check authorize? `checkSig(s, pk)` proves only that whoever supplied
-   * `pk` also supplied a matching `s`. When the same caller chooses `pk` the check is self-authorizing and
-   * authorizes nobody - measured: a proxy taking `(address impl, pubkey pk, sig s)` compiled with no C1
-   * diagnostic and a stranger settled 5 -> 999. So a signature check counts as an access guard only when its
-   * key is one the caller cannot choose. Key operand: arg 1 of checkSig / checkMultiSig, arg 2 of checkDataSig
-   * (a missing operand contributes no guard - fail closed).
-   */
-  private static readonly SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
-    checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
-  };
-
-  private collectSignatureGuardKeys(
-    node: Node | undefined, out: ExpressionNode[], seen: Set<Node> = new Set(),
-  ): void {
-    if (!node || seen.has(node)) return;
-    seen.add(node);
-    if (node instanceof FunctionCallNode) {
-      const keyArg = SymbolTableTraversal.SIGNATURE_GUARD_KEY_ARG[node.identifier.name];
-      if (keyArg !== undefined) {
-        const key = node.parameters[keyArg];
-        if (key) out.push(key);
-      }
-    }
-    for (const v of Object.values(node)) {
-      if (v instanceof Node) { this.collectSignatureGuardKeys(v, out, seen); } else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node) this.collectSignatureGuardKeys(e, out, seen);
-      }
-    }
-  }
-
-  /**
-   * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
-   * only the declaration (findLocalInit) lets `pubkey k = owner; k = pk;` launder a caller-supplied key past the
-   * check - the declaration says `owner` but the checkSig sees `pk`. A tuple rebinding contributes its whole
-   * right-hand side, which over-approximates rather than missing.
-   */
-  private localBindings(
-    node: Node | undefined, name: string, out: ExpressionNode[] = [], seen: Set<Node> = new Set(),
-  ): ExpressionNode[] {
-    if (!node || seen.has(node)) return out;
-    seen.add(node);
-    if (node instanceof VariableDefinitionNode && node.name === name && node.expression) out.push(node.expression);
-    if (node instanceof AssignNode && node.identifier.name === name) out.push(node.expression);
-    if (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === name)) {
-      for (const e of node.tupleExpressions ?? [node.tuple]) out.push(e);
-    }
-    for (const v of Object.values(node)) {
-      if (v instanceof Node) { this.localBindings(v, name, out, seen); } else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node) this.localBindings(e, name, out, seen);
-      }
-    }
-    return out;
-  }
-
-  /**
-   * Does this key resolve to a parameter of `fn` - i.e. does the CALLER choose it? Strip `CastNode`s and follow
-   * `pubkey k = owner` local aliases, as delegatecallTargetsUnguardedParameter resolves its target. A
-   * constructor input (the contract's own p2sh32 commits to it), a state variable, a literal and an
-   * unresolvable symbol (a contract `const`, an inherited name) are NOT caller-chosen. A computed key
-   * (`pubkey(k)`, `hash160(pk)`, a helper call) is caller-chosen when any operand feeding it reaches a
-   * parameter. An array index only SELECTS among a container's elements, so the CONTAINER decides the bytes -
-   * `this.owners[i]` is stored key material even though the caller picks `i`.
-   */
-  private keyIsCallerChosen(
-    expr: Node | undefined, fn: FunctionDefinitionNode, seen: Set<Node | string> = new Set(),
-  ): boolean {
-    let cur = expr;
-    while (cur instanceof CastNode) cur = cur.expression;
-    if (cur instanceof ArrayAccessNode) return this.keyIsCallerChosen(cur.array, fn, seen);
-    if (!cur || seen.has(cur)) return false;
-    seen.add(cur);
-    if (cur instanceof StateAccessNode || cur instanceof MappingAccessNode) return false;
-    if (cur instanceof LiteralNode) return false;
-    if (cur instanceof IdentifierNode) {
-      const { name } = cur;
-      if (fn.parameters.some((parameter) => parameter.name === name)) return true;
-      if (seen.has(`id:${name}`)) return false;
-      seen.add(`id:${name}`);
-      return this.localBindings(fn.body, name).some((binding) => this.keyIsCallerChosen(binding, fn, seen));
-    }
-    for (const v of Object.values(cur)) {
-      if (v instanceof Node) { if (this.keyIsCallerChosen(v, fn, seen)) return true; } else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node && this.keyIsCallerChosen(e, fn, seen)) return true;
-      }
-    }
-    return false;
-  }
-
-  /** Does this function carry a signature check against a key the caller does not choose? */
-  private hasAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
-    const keys: ExpressionNode[] = [];
-    this.collectSignatureGuardKeys(fn.body, keys);
-    return keys.some((key) => !this.keyIsCallerChosen(key, fn));
-  }
-
-  /**
    * C1/piece-5: how is the user-written delegatecall reached? 'unconditional' = on every path through the body;
    * 'conditional' = only inside an if/else arm, switch case or try/catch block; 'loop' = inside a loop body,
    * where one pinned input and one block slot serve every iteration. Runs BEFORE EnsureFinalRequire /
@@ -5177,7 +5081,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!(target instanceof IdentifierNode)) return undefined;
     const name = target.name;
     if (!node.parameters.some((parameter) => parameter.name === name)) return undefined;
-    if (this.hasAuthorizingSignatureGuard(node)) return undefined;
+    if (hasAuthorizingSignatureGuard(node)) return undefined;
     if (this.requireMentionsIdentifier(node.body, name)) return undefined;
     return name;
   }
@@ -9471,6 +9375,105 @@ function isCompileTimeExpression(
     return rec(expr.parameters[0]);
   }
   return false;
+}
+
+/**
+ * SEC-12: which KEY does a signature check authorize? `checkSig(s, pk)` proves only that whoever supplied
+ * `pk` also supplied a matching `s`. When the same caller chooses `pk` the check is self-authorizing and
+ * authorizes nobody - measured: a proxy taking `(address impl, pubkey pk, sig s)` compiled with no C1
+ * diagnostic and a stranger settled 5 -> 999. So a signature check counts as an access guard only when its
+ * key is one the caller cannot choose. Key operand: arg 1 of checkSig / checkMultiSig, arg 2 of checkDataSig
+ * (a missing operand contributes no guard - fail closed).
+ *
+ * Module-scope and exported because EnsureFinalRequireTraversal's selfdestruct diagnostic asks the same
+ * question (SEC-16); a second copy would drift.
+ */
+const SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
+  checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
+};
+
+function collectSignatureGuardKeys(
+  node: Node | undefined, out: ExpressionNode[], seen: Set<Node> = new Set(),
+): void {
+  if (!node || seen.has(node)) return;
+  seen.add(node);
+  if (node instanceof FunctionCallNode) {
+    const keyArg = SIGNATURE_GUARD_KEY_ARG[node.identifier.name];
+    if (keyArg !== undefined) {
+      const key = node.parameters[keyArg];
+      if (key) out.push(key);
+    }
+  }
+  for (const v of Object.values(node)) {
+    if (v instanceof Node) { collectSignatureGuardKeys(v, out, seen); } else if (Array.isArray(v)) {
+      for (const e of v) if (e instanceof Node) collectSignatureGuardKeys(e, out, seen);
+    }
+  }
+}
+
+/**
+ * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
+ * only the declaration (findLocalInit) lets `pubkey k = owner; k = pk;` launder a caller-supplied key past the
+ * check - the declaration says `owner` but the checkSig sees `pk`. A tuple rebinding contributes its whole
+ * right-hand side, which over-approximates rather than missing.
+ */
+function localBindings(
+  node: Node | undefined, name: string, out: ExpressionNode[] = [], seen: Set<Node> = new Set(),
+): ExpressionNode[] {
+  if (!node || seen.has(node)) return out;
+  seen.add(node);
+  if (node instanceof VariableDefinitionNode && node.name === name && node.expression) out.push(node.expression);
+  if (node instanceof AssignNode && node.identifier.name === name) out.push(node.expression);
+  if (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === name)) {
+    for (const e of node.tupleExpressions ?? [node.tuple]) out.push(e);
+  }
+  for (const v of Object.values(node)) {
+    if (v instanceof Node) { localBindings(v, name, out, seen); } else if (Array.isArray(v)) {
+      for (const e of v) if (e instanceof Node) localBindings(e, name, out, seen);
+    }
+  }
+  return out;
+}
+
+/**
+ * Does this key resolve to a parameter of `fn` - i.e. does the CALLER choose it? Strip `CastNode`s and follow
+ * `pubkey k = owner` local aliases, as delegatecallTargetsUnguardedParameter resolves its target. A
+ * constructor input (the contract's own p2sh32 commits to it), a state variable, a literal and an
+ * unresolvable symbol (a contract `const`, an inherited name) are NOT caller-chosen. A computed key
+ * (`pubkey(k)`, `hash160(pk)`, a helper call) is caller-chosen when any operand feeding it reaches a
+ * parameter. An array index only SELECTS among a container's elements, so the CONTAINER decides the bytes -
+ * `this.owners[i]` is stored key material even though the caller picks `i`.
+ */
+export function keyIsCallerChosen(
+  expr: Node | undefined, fn: FunctionDefinitionNode, seen: Set<Node | string> = new Set(),
+): boolean {
+  let cur = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (cur instanceof ArrayAccessNode) return keyIsCallerChosen(cur.array, fn, seen);
+  if (!cur || seen.has(cur)) return false;
+  seen.add(cur);
+  if (cur instanceof StateAccessNode || cur instanceof MappingAccessNode) return false;
+  if (cur instanceof LiteralNode) return false;
+  if (cur instanceof IdentifierNode) {
+    const { name } = cur;
+    if (fn.parameters.some((parameter) => parameter.name === name)) return true;
+    if (seen.has(`id:${name}`)) return false;
+    seen.add(`id:${name}`);
+    return localBindings(fn.body, name).some((binding) => keyIsCallerChosen(binding, fn, seen));
+  }
+  for (const v of Object.values(cur)) {
+    if (v instanceof Node) { if (keyIsCallerChosen(v, fn, seen)) return true; } else if (Array.isArray(v)) {
+      for (const e of v) if (e instanceof Node && keyIsCallerChosen(e, fn, seen)) return true;
+    }
+  }
+  return false;
+}
+
+/** Does this function carry a signature check against a key the caller does not choose? */
+export function hasAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
+  const keys: ExpressionNode[] = [];
+  collectSignatureGuardKeys(fn.body, keys);
+  return keys.some((key) => !keyIsCallerChosen(key, fn));
 }
 
 // True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,

@@ -14,6 +14,7 @@ import {
   fitUpperEnvelope, formatCalibrationRow, formatEstimate, redeemScriptLength, shapeGeometry,
 } from './layer3-estimator-f2.js';
 import { F2_BASIS, F2_BASIS_COMMIT } from './layer3-estimator-basis-f2.js';
+import { F2_HELD_OUT } from './layer3-estimator-heldout-f2.js';
 
 /**
  * F2. A CONSERVATIVE CALIBRATED COST ESTIMATOR.
@@ -27,22 +28,32 @@ import { F2_BASIS, F2_BASIS_COMMIT } from './layer3-estimator-basis-f2.js';
  * descriptor - eight participants, eight invocations, the per-participant block sizes and compiled script
  * sizes - is available in seconds. A user should learn that a design does not fit from the descriptor.
  *
- * CONSERVATIVE MEANS IT NEVER UNDER-PREDICTS, and that is a construction rather than an observation: every
- * coefficient is the tightest LINEAR UPPER ENVELOPE over its calibration points, so it lies on or above all
- * of them. `calibrate` then re-checks the ASSEMBLED prediction against the measurements, which is strictly
- * stronger - per-class envelopes can each dominate and the assembled total still fall short if the assembly
- * arithmetic is wrong.
+ * CONSERVATIVE MEANS IT NEVER UNDER-PREDICTS, and IN-SAMPLE that is a construction rather than an
+ * observation: every coefficient is the tightest LINEAR UPPER ENVELOPE over its calibration points, so it
+ * lies on or above all of them. `calibrate` then re-checks the ASSEMBLED prediction against the
+ * measurements, which is strictly stronger - per-class envelopes can each dominate and the assembled total
+ * still fall short if the assembly arithmetic is wrong. Measured: 28/28 conservative, band +0.0% to +41.6%,
+ * mean +4.8%.
+ *
+ * OUT OF SAMPLE THERE IS NO SUCH GUARANTEE, AND THIS FILE MEASURES THE GAP RATHER THAN ASSUMING IT AWAY.
+ * Leave-one-out: 22/28, worst -27.2% (on a row the estimator itself flagged out of range), worst in-range
+ * -12.3%. A real six-participant graph the calibration never saw: 2/4 limits conservative, worst -9.6%.
+ * Synthetic counts N=3/6/16 predicted before building: 11/12, the one miss -0.31%. The margin that covers
+ * every out-of-sample miss is SEARCHED at 34% and costs the in-sample mean +4.8% -> +23.5%; it is reported,
+ * not switched on, because whether to pay that is the production-envelope row's decision.
  *
  * WHAT IS MEASURED HERE AND WHAT IS RECORDED. The synthetic sweep is rebuilt and re-measured live in this
  * file, so the estimator faces a transaction produced in the same process it is judged in. The four capstone
- * shapes are a RECORDED basis (`layer3-estimator-basis-f2.ts`), captured by observing the capstones' own
- * builders through `layer3-estimator-probe.ts` and stamped with the commit it was taken at. Recording them
- * is a cost decision, not an epistemic one: re-running C1, C2, C3 and A13 inside this file would add roughly
+ * shapes are a RECORDED basis (`layer3-estimator-basis-f2.ts`), and the held-out graph a second recorded
+ * file (`layer3-estimator-heldout-f2.ts`), both captured by observing the fixtures' OWN builders through
+ * `layer3-estimator-probe.ts` and stamped with the commit they were taken at. Recording them is a cost
+ * decision, not an epistemic one: re-running C1, C2, C3, A13 and E1 inside this file would add roughly
  * fifteen minutes to every run of it and would measure exactly the same transactions.
  *
- * A MODEL EVALUATED ON ITS TRAINING DATA IS NOT EVALUATED. The last describe block is held-out: it drops each
- * capstone from the calibration in turn and predicts it from coefficients that never saw it, and it predicts
- * three synthetic shapes at participant counts absent from the calibration BEFORE building them.
+ * A MODEL EVALUATED ON ITS TRAINING DATA IS NOT EVALUATED. The last describe block is held out three ways:
+ * it drops each of the seven shapes from the calibration in turn and predicts it from coefficients that
+ * never saw it; it predicts three synthetic participant counts absent from the calibration BEFORE building
+ * them; and it predicts a REAL six-participant, seven-invocation graph that is in no calibration set here.
  */
 
 /* ------------------------------------------------------------------------------------------------------ */
@@ -485,6 +496,109 @@ describe('F2 estimator: held out', () => {
       + `${(lowest * 100).toFixed(2)}%, ${extrapolated.filter((outcome) => outcome.error >= 0).length}`
       + `/${extrapolated.length} limits conservative`);
     expect(worst).toBeGreaterThan(-0.01);
+  }, 900_000);
+
+  /**
+   * THE REAL HELD-OUT SHAPE, and the one that actually tests the model. E1's six-participant transitive
+   * result graph was measured exactly like the calibration basis and deliberately kept out of it. It inverts
+   * the byte distribution every calibration graph has - 3,626 serialized bytes per input against C1's 1,666
+   * and C3's 932, five sidecars against C3's ninety - so if the estimator works only because every graph it
+   * saw was sidecar-heavy, this is where that shows.
+   *
+   * Conservatism is NOT asserted per limit here either. The full four-limit comparison is printed, the
+   * binding-limit agreement is printed, and what is pinned is the measured error floor.
+   */
+  it('MEASURED: a real six-participant graph the calibration never saw', async () => {
+    const { shapes } = await fullBasis();
+    const calibration = deriveCalibration(shapes, F2_BASIS_COMMIT);
+    expect(calibration.basis.shapes).not.toContain(F2_HELD_OUT[0].name);
+    const errors: number[] = [];
+    for (const held of F2_HELD_OUT) {
+      const prediction = estimate(held.spec, calibration);
+      console.log(`[F2] HELD-OUT GRAPH ${formatEstimate(prediction)} | measured binds `
+        + `${held.bindingLimit} ${held.bindingRatio.toFixed(4)}x`);
+      for (const row of calibrate([held], calibration)) {
+        errors.push(row.error);
+        console.log(`[F2] HELD-OUT GRAPH ${formatCalibrationRow(row)}`);
+      }
+      // The geometry is plan-time arithmetic and must reproduce the built shape exactly, held out or not.
+      expect(shapeGeometry(held.spec).inputs, `${held.name} inputs`).toBe(held.inputCount);
+      expect(held.refusedAtConsensus).toBe(0);
+      expect(held.refusedAtStandard).toBe(0);
+      expect(held.knobControlBites).toBe(true);
+    }
+    const worst = Math.min(...errors);
+    console.log(`[F2] held-out real graph: ${errors.filter((error) => error >= -1e-9).length}/${errors.length}`
+      + ` limits conservative, worst error ${(worst * 100).toFixed(1)}%`);
+    expect(errors).toHaveLength(F2_HELD_OUT.length * 4);
+    // Pinned at the measured value rather than at zero, for the same reason leave-one-out is.
+    expect(worst).toBeGreaterThan(-0.20);
+  }, 900_000);
+
+  /**
+   * THE MEASURED SAFETY MARGIN, and what it costs.
+   *
+   * The two out-of-sample exercises above are the only evidence there is about how this estimator behaves on
+   * a shape it did not see, and both found under-predictions: leave-one-out worst -12.3% on an in-range row,
+   * the real held-out graph worst -9.6%. A multiplicative margin large enough to cover the worst of those is
+   * therefore MEASURED rather than chosen, which is the only way a margin is worth anything.
+   *
+   * This test derives that margin from the exercises themselves and then verifies it does what it claims,
+   * and it prints what the margin costs in looseness on the shapes that were already conservative. Whether
+   * to ship it is a product decision that belongs to the production-envelope row, not to this one - which is
+   * why the margin is computed and demonstrated here rather than baked into `deriveCalibration`'s default.
+   */
+  it('MEASURED: the margin the out-of-sample exercises say is needed, and what it costs', async () => {
+    const { shapes } = await fullBasis();
+    const worstOutOfSample = (margin: number): { worst: number; under: string[]; rows: number } => {
+      const errors: { label: string; error: number }[] = [];
+      for (const held of shapes) {
+        const rest = shapes.filter((shape) => shape.name !== held.name);
+        const calibration = deriveCalibration(rest, 'loo', margin);
+        for (const row of calibrate([held], calibration)) {
+          // Rows the estimator itself flagged are declared limitations, not model error, and a margin is
+          // not what fixes them: the fix is a calibration that covers the range.
+          if (row.outOfRange.length === 0) errors.push({ label: `${row.shape}/${row.limit}`, error: row.error });
+        }
+      }
+      const full = deriveCalibration(shapes, F2_BASIS_COMMIT, margin);
+      for (const row of calibrate(F2_HELD_OUT, full)) {
+        errors.push({ label: `${row.shape}/${row.limit}`, error: row.error });
+      }
+      return {
+        worst: Math.min(...errors.map((row) => row.error)),
+        under: errors.filter((row) => row.error < -1e-9).map((row) => `${row.label} ${(row.error * 100).toFixed(1)}%`),
+        rows: errors.length,
+      };
+    };
+    const bare = worstOutOfSample(0);
+    console.log(`[F2] out-of-sample without margin: ${bare.under.length}/${bare.rows} under-predicted, `
+      + `worst ${(bare.worst * 100).toFixed(1)}%: ${bare.under.join(', ')}`);
+    // SEARCHED, not solved in closed form. A margin scales the envelope coefficients but NOT the additive
+    // redeem-script term, and it can change which class is predicted worst, so the arithmetic
+    // `1/(1+worst) - 1` is only a lower bound on what is actually needed. It gives 14% here; 16% is what
+    // the search finds. Reporting the closed-form figure as if it were the answer would understate it.
+    let applied = 0;
+    while (applied < 1 && worstOutOfSample(applied).under.length > 0) applied += 0.01;
+    const covered = worstOutOfSample(applied);
+    console.log(`[F2] closed-form margin from the worst miss ${((1 / (1 + bare.worst) - 1) * 100).toFixed(1)}%; `
+      + `SEARCHED margin that actually covers every out-of-sample row ${(applied * 100).toFixed(0)}%`);
+    console.log(`[F2] out-of-sample WITH the ${(applied * 100).toFixed(0)}% margin: `
+      + `${covered.under.length}/${covered.rows} under-predicted, worst ${(covered.worst * 100).toFixed(1)}%`);
+    expect(covered.under).toEqual([]);
+    expect(applied).toBeGreaterThan(1 / (1 + bare.worst) - 1 - 1e-9);
+
+    // And what it costs, on the shapes that were already conservative: the estimator becomes that much less
+    // useful for deciding what to cut, which is the reason this is reported rather than switched on.
+    const tight = calibrate(shapes, deriveCalibration(shapes, F2_BASIS_COMMIT, 0));
+    const loose = calibrate(shapes, deriveCalibration(shapes, F2_BASIS_COMMIT, applied));
+    const mean = (rows: typeof tight): number =>
+      rows.reduce((sum, row) => sum + row.error, 0) / rows.length;
+    console.log('[F2] cost of the margin: in-sample mean over-prediction '
+      + `${(mean(tight) * 100).toFixed(1)}% -> ${(mean(loose) * 100).toFixed(1)}%, `
+      + `worst ${(Math.max(...tight.map((row) => row.error)) * 100).toFixed(1)}% -> `
+      + `${(Math.max(...loose.map((row) => row.error)) * 100).toFixed(1)}%`);
+    expect(mean(loose)).toBeGreaterThan(mean(tight));
   }, 900_000);
 
   /**

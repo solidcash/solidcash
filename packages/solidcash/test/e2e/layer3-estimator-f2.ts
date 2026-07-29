@@ -52,6 +52,24 @@ import {
  *      Calibrating a coefficient against a knob someone is in the middle of splitting would bake in a number
  *      with a known defect. A shape that becomes hash-bound is therefore OUTSIDE what this estimator covers,
  *      which is stated rather than silently absorbed.
+ *
+ * TWO MORE LIMITATIONS THE HELD-OUT GRAPH FOUND, which are not predictions of what might go wrong but
+ * measurements of what did. Both are consequences of limitation 1 and both are under-predictions, which is
+ * the direction that matters:
+ *
+ *   5. PROJECTION UNLOCKING BYTES ARE NOT A FUNCTION OF PARTICIPANTS AND INVOCATIONS. The projection
+ *      verifier is one generated covenant, so its redeem script is fixed and its unlocking bytes are the
+ *      transcript it carries - and the transcript carries RESULT PAYLOADS, which the descriptor does not
+ *      count. E1 has thirteen rows and a 6,458-byte projection; C3 has sixteen rows and 6,005. The envelope
+ *      over rows therefore under-predicted E1 by 1.8%. C2's fixture comment that the projection is "a pure
+ *      function of participant and invocation count" is about its INSTRUCTION COUNT, and does not transfer
+ *      to its bytes.
+ *   6. CONTROLLER DENSITY IS NOT A FUNCTION OF SLOT COUNT ALONE. Slot count is the documented driver of its
+ *      output scan, and it is the driver used here, but E1's controller reaches 0.6368x on nineteen slots
+ *      where the envelope fitted on A13/C1/C2/C3 predicts less - under by 9.6%. The four calibration graphs
+ *      move slots and rows too nearly together to separate the two terms, which is exactly the situation
+ *      limitation 1 describes, so no second driver is fitted rather than fitting one through points that do
+ *      not separate it.
  */
 
 /** A shape as a user can describe it at plan time. No built transaction is required to fill this in. */

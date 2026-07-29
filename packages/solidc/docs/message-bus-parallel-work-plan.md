@@ -142,13 +142,13 @@ task-specific report, not in this table.
 | S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | **PROVEN** | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | **PROVEN** | preflight is a capability, not a wired gate; 2 criteria SDK-only |
-| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | CHANGES (round 9) | B correcting C1-R1 and C1-R4 in its own file |
+| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | **INTEGRATED** | 16/16 + ReviewR2CapstoneC1 15/15; figures re-measured; clears consensus AND relay |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | **PROVEN** | reviewed by B, clean, re-verified twice post-SEC-5 - see 4.29 |
-| C3 | Eight-participant semantic capstone | C | C1,C2 | CHANGES (round 9) | test fixed by B; A correcting C3-R2, C3-R3 and the blocker attribution |
+| C3 | Eight-participant semantic capstone | C | C1,C2 | **INTEGRATED (relay caveat)** | 13/13 + ReviewR2CapstoneC3; meets consensus capacity, MISSES standard relay by 354 B |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | **SUPERSEDED - table stale in all 10 rows** | controller measured **0.9217x**, over-budget set EMPTY; see 4.48 |
-| X38 | Correct the stale capacity comments in the C1 and C3 fixtures | — | X25 | **TODO** | 3rd occurrence; C1's is wrong in SIGN, C3's in all 10 rows, one quantity stated twice (24,067 vs 25,984) |
-| X39 | C3 serializes to 100,354 B - 354 over the 100,000 B standard relay ceiling | — | X25 | **TODO** | ordinary-capacity fit and relayability are now measurably different claims; blocks any POLICY_FIT for C3 |
-| X40 | Stop citing the C1/C3 reshapes as what closes SEC-6 | — | R2-F3 | **TODO** | flattened-caller shape is UNREACHABLE at HEAD; reshapes redundant with a compiler invariant, not load-bearing |
+| X38 | Correct the stale capacity comments in the C1 and C3 fixtures | A5 | X25 | **INTEGRATED** | all figures re-measured at 4ac40b82 and printed by the run - see 4.60 |
+| X39 | C3 serializes to 100,354 B - 354 over the 100,000 B standard relay ceiling | A5 | X25 | **INTEGRATED** | asserted as a band; consensus fit and relay policy stated as separate claims |
+| X40 | Stop citing the C1/C3 reshapes as what closes SEC-6 | A5 | R2-F3 | **INTEGRATED** | verified two ways independently, not taken from the reviewer |
 | X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | — | X25 | TODO | costed at -6.9%; with X27 reaches ~0.93x |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
@@ -199,7 +199,9 @@ task-specific report, not in this table.
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED, striding now PROVEN** | reviewed by R1: striding holds both directions; opened SEC-15 on its reserved slots |
 | **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **INTEGRATED** | per-slot ordinal binding; a SECOND forgeable entry point found repairing it - see 4.54 |
 | X44 | Two reached event-settling sites collapse to one ordinal | — | SEC-15 | **DEFERRED (fail-closed)** | refuses today; becomes a FALSE refusal if X41's independent limit is ever lifted |
-| X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | — | — | **TODO (test quality)** | error text states its own remedy (re-sign); pre-existing, unrelated to round 15 |
+| X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
+| X52 | C2's capacity block is stale in the same way as C1's and C3's | — | X38 | **TODO** | recorded 0.4607-0.4677 / 0.8170; measured 0.3916-0.3957 / 0.6491 |
+| X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | — | X38 | **TODO** | outside A5's lease; also records controller base 2,129,198 vs measured 2,131,662 |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | — | SEC-6 | **TODO (diagnostic)** | no artifact produced either way, so not a security gap |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
@@ -218,6 +220,55 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.60 The accuracy repairs land, and the 50s test timeout is retired on measured grounds
+
+Merged at `c4aae9ef`. X38, X39, X40 and X45 closed; every figure in both capstone comments is now one A5
+measured at `4ac40b82`, and the capacity tests **print** their table so a future reader can check rather than
+trust.
+
+**C1's recorded figures were wrong; C3's were wrong in all ten rows.** C1's block also inferred the wrong
+**sign** - against the 0.7268 it cites, the measured controller 0.6182 is **10.9 points lower**, not 8 higher.
+C3's 1.2310x "the ONLY input over budget" was already contradicted by the file's own empty-set assertion two
+lines away. **A5 found a third stale block nobody had flagged - C2's** (recorded 0.4607-0.4677 and 0.8170;
+measured 0.3916-0.3957 and 0.6491) - and **reported it rather than repairing it**, being outside the row.
+
+**Two habits worth copying.** Where A5 could not re-measure a figure - the "Router shed 1,452 bytes" pre-vs-post
+delta - it **dropped** the claim rather than carrying it forward, which is exactly how all three stale blocks
+were created. And it labelled every number in the files as re-measured or cited, so the next worker can tell
+which is which.
+
+**X40 was verified independently, not taken from the reviewer.** A5 read `InlineStoragePointerCalls` itself
+(`keepsGraphEmissionBinding` returns `!hasPhysicalEffects || hasOutgoingCall`, true via the second disjunct, so
+the handler stays behind OP_INVOKE; the only way to fail it is a token-container effect or storage-pointer param,
+which then hits the `GraphEmissionEffectError` throw - kept bound or refused, never flattened) **and** ran
+`R2-C1-I` at this commit. Both capstone headers now credit the SEC-6 refusal and call the reshapes redundant.
+
+**X45 is deterministic by PRECONDITION, not by retry luck.** A5 measured the width-0 rate at **4/300 = 1.33%**,
+with ten unguarded positive-path draws compounding to a **~12.6% file-level flake rate** - which is why two
+workers hit it independently. The ten now route through a probe that runs a real VM evaluation of both side-car
+covenants and re-signs until it accepts, so **the test cannot build a transaction from a signature the split
+search has not already accepted**. It still fails loudly: the retry budget is bounded at 24 - replacing an
+unbounded `for(;;)` that would have **hung** - and exhaustion throws naming the condition and quoting the last
+probe failure. **No budget was widened and no assertion removed**; negative-path tests keep the bare call, since
+a width-0 draw cannot turn a required rejection into a false pass.
+
+**The 50s mock test timeout is retired, on evidence from two independent sources.** Four full solidcash runs near
+this commit each failed a **different** file - `Layer3MappingJournalS1`, `RepeatedExternalBatchCorpus`,
+`Layer3ResultGraph`, `Layer3ResultGraphReview` - and every one passed in isolation. A regression cannot move
+between files. A5 isolated the variable properly: re-running its failures with **only `--testTimeout` raised**
+gave **17/17, exit 0**, and it measured its own files at 794s/871s/174s against ~8s/8s/60s unloaded, a **~100x
+slowdown** under six concurrent agents. Raised to **120s** for mock; regtest already sat at 180s. A hang is
+unbounded, so 120s still catches one - what it stops catching is a shared box.
+
+**Both capstones should leave `CHANGES (round 9)`**, on A5's recommendation and round 15's independent reviews:
+C1 fixture 16/16 plus `ReviewR2CapstoneC1` 15/15, C3 fixture 13/13 plus `ReviewR2CapstoneC3`, both with
+re-measured figures and knob-liveness controls. **C3 carries a caveat the ledger must record**: it meets the
+consensus-capacity claim and does **not** meet standard relay policy, by 354 bytes.
+
+Two smaller owner items A5 surfaced: the plan records the post-X24/X27 controller base as 2,129,198 where A5
+measures **2,131,662** (+0.12%, no consequence - both give 9.3%), and the plan's own copies of the stale C1/C3
+figures are outside A5's lease and still need correcting.
 
 ### 4.59 X43: E3 finally closes against the SEMANTIC class, and the admission was a LIVE hole
 

@@ -1650,7 +1650,7 @@ describe('C3 capacity measurement', () => {
     // are the Ledger's trailing region, held at BALANCED_TRAILING_CAPACITY = 64 for ONE chunk UTXO. At X28's
     // 32 instructions per output the unused slots cost the controller 198,400 of the measured 2,131,662 -
     // 9.3%, not the 6.9% recorded, which divided by the stale 2,891,475 base. X28 further records that the
-    // unused count is 63 rather than the 62 written here and that the per-slot price is a floor, which puts
+    // unused count is 63 rather than the 62 that 198,400 is computed from, and that the price is a floor, which puts
     // the cut at 9.3% to 9.5%; this file does not re-derive the slot count, so the correction is cited rather
     // than applied. Either way it is headroom this composition already has, not a deficit it has to close.
     expect(built.plan.participants).toHaveLength(8);

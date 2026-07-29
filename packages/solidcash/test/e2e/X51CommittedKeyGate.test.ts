@@ -95,9 +95,13 @@ contract X51DecoyProxy(bytes20 adminPkh) {
 }`;
 
 /**
- * X46's LIVE SHAPE. The commitment target is written from a caller parameter one statement earlier, and scalar
- * state is read after write, so the require compares `pk` against bytes the caller just supplied. Settled as a
- * real theft in `X46CommitmentWriter.test.ts`; here it must publish no commitment and stay refused.
+ * X46's LIVE SHAPE, which turns out not to be expressible as a proxy at all. The commitment target is written
+ * from a caller parameter one statement earlier, and scalar state is read after write, so the require compares
+ * `pk` against bytes the caller just supplied - settled as a real theft in `X46CommitmentWriter.test.ts`. Written
+ * into a delegatecall function the COMPILER refuses it outright, for an unrelated reason that happens to
+ * foreclose it here: a delegatecall function skips its own state covenant, so it may not write its own state.
+ * The artifact-level fact that this shape publishes no commitment is pinned at the selfdestruct site instead,
+ * in `packages/solidc/test/KeyCommitmentX51.test.ts`.
  */
 const PROXY_OVERWRITTEN_COMMITMENT = `pragma solidcash >=0.8.0;
 contract X51OverwriteProxy() {
@@ -184,7 +188,6 @@ const committedProxyArtifact = compileString(PROXY_COMMITTED);
 const openProxyArtifact = compileString(PROXY_UNCOMMITTED);
 const conditionalProxyArtifact = compileString(PROXY_CONDITIONAL_COMMITMENT);
 const decoyProxyArtifact = compileString(PROXY_COMMITTED_TO_PARAMETER);
-const overwriteProxyArtifact = compileString(PROXY_OVERWRITTEN_COMMITMENT);
 
 /** Run the gate for one proxy artifact against the honest implementation. */
 const classify = (
@@ -289,11 +292,22 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
         .toEqual({ key: { kind: 'parameter', name: 'pk' } });
     });
 
-    it('publishes no commitment for a conditional pin, a pin to a parameter, or an overwritten target', () => {
-      for (const artifact of [conditionalProxyArtifact, decoyProxyArtifact, overwriteProxyArtifact]) {
+    it('publishes no commitment for a conditional pin or a pin to another caller parameter', () => {
+      for (const artifact of [conditionalProxyArtifact, decoyProxyArtifact]) {
         expect(artifact.abi.find((entry) => entry.name === 'up')!.signatureGuard)
           .toEqual({ key: { kind: 'parameter', name: 'pk' } });
       }
+    });
+
+    /**
+     * X46's vacuous-commitment shape cannot reach this gate at all: the write it needs is a self-write inside a
+     * delegatecall function, which the compiler refuses for an unrelated reason. Pinned so the reason X51 does
+     * not carry an X46 delegate case is a measured fact rather than an omission - the artifact-level behaviour
+     * is asserted at the selfdestruct site in the compiler suite.
+     */
+    it('cannot even express X46\'s vacuous commitment as a proxy: the compiler refuses the self-write', () => {
+      expect(() => compileString(PROXY_OVERWRITTEN_COMMITMENT))
+        .toThrow(/delegatecall and also writes contract state/);
     });
   });
 
@@ -325,24 +339,29 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
       delete fn.signatureGuard.keyCommitment;
       expect(fn.signatureGuard).toEqual({ key: { kind: 'parameter', name: 'pk' } });
       expect(classify(stripped, [alicePkh]))
-        .toThrow(/class 'unpublished-key-commitment' is not admitted.*never the claim that the key is pinned/s);
-    });
-
-    it('still refuses a key nothing pins, as self-authorized', () => {
-      expect(classify(openProxyArtifact, [alicePkh]))
-        .toThrow(/class 'unpublished-key-commitment' is not admitted/);
+        .toThrow(/class 'self-authorized' is not admitted.*never the claim that the key is pinned/s);
     });
 
     /**
-     * THE HOSTILE SHAPES. Each publishes a `hash160` require in its source and none publishes a commitment, so
-     * the gate refuses all three. X46's is the one that matters most: it is a settled live theft, not a
-     * conservative refusal, and a rule that credited "a hash160 somewhere" would admit it.
+     * The recompile hint is appended to `self-authorized` rather than promoted to a class of its own, because a
+     * pre-X51 artifact and a pin the compiler refused to credit are byte-for-byte identical here. Both of the
+     * cases below therefore carry the same class id AND the same hint - which is the honest reading, and keeps
+     * the ordinary caller-picks-both hole named after what it is.
      */
-    it('refuses a conditional pin, a pin to another caller parameter, and X46\'s overwritten target', () => {
+    it('still refuses a key nothing pins, under the same class id and with the same hint', () => {
+      expect(classify(openProxyArtifact, [alicePkh]))
+        .toThrow(/class 'self-authorized' is not admitted.*if the field is still absent, the pin is not one/s);
+    });
+
+    /**
+     * THE HOSTILE SHAPES. Each carries a `hash160` require in its source and neither publishes a commitment, so
+     * the gate refuses both. A rule that credited "a hash160 somewhere in the body" would admit them, which is
+     * why the published fact is the compiler's own SEC-17 decision rather than a syntactic hint.
+     */
+    it('refuses a conditional pin and a pin to another caller parameter', () => {
       for (const artifact of [conditionalProxyArtifact, decoyProxyArtifact]) {
         expect(classify(artifact, [alicePkh])).toThrow(/is not admitted/);
       }
-      expect(classify(overwriteProxyArtifact, [])).toThrow(/is not admitted/);
     });
   });
 
@@ -350,10 +369,13 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
   // The enumeration
   // =========================================================================
   describe('the enumeration records the closure', () => {
-    it('drops `hash160-committed-key` and names the residual it leaves', () => {
+    it('drops `hash160-committed-key`, absorbed into `self-authorized`', () => {
       const ids = layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id);
       expect(ids).not.toContain('hash160-committed-key');
-      expect(ids).toContain('unpublished-key-commitment');
+      expect(ids).toContain('self-authorized');
+      // The absorption is recorded in the class's own reason, so a reader of the enumeration alone finds it.
+      expect(layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.find((entry) => entry.id === 'self-authorized')!
+        .reason).toContain('hash160-committed-key');
     });
 
     /** X51 changes nothing about the classes this gate cannot SEE; those are occurrence and the decoy target. */

@@ -59,8 +59,15 @@ import {
  *     compiler adds, then falls closed instead of being admitted by omission.
  *  3. State the consequence rather than hide it: an artifact compiled before X37 carries no `target` on its
  *     delegatecall row and is refused here as `unpublished-target-provenance`; one compiled before X51 carries
- *     no `keyCommitment` and its P2PKH-shaped proxy is refused as `unpublished-key-commitment`. Recompiling the
- *     proxy is the fix in both cases. There is no reading of an absent field that admits anything.
+ *     no `keyCommitment`, so its P2PKH-shaped proxy is refused as `self-authorized` with the recompile hint
+ *     appended. There is no reading of an absent field that admits anything.
+ *
+ *     `target` gets its own class id and `keyCommitment` does not, and the difference is in the DATA. An absent
+ *     `target` is distinguishable from every answer the compiler emits, `computed` included, so it identifies a
+ *     stale artifact on its own. An absent `keyCommitment` is not: a pre-X51 artifact and a current artifact
+ *     whose pin the compiler refused to credit are byte-for-byte the same here. Naming that a class of its own
+ *     would have claimed a distinction the artifact cannot support, and would have renamed the ordinary
+ *     caller-picks-both hole after a stale-artifact problem.
  *
  * WHAT `signatureGuard.key` DOES NOT SAY, AND WHAT X51 ADDED. `key` describes where the checked key came from,
  * not the whole authority story. P2PKH-shaped authority - `require(hash160(pk) == this.pkh);
@@ -74,9 +81,9 @@ import {
  * diagnostic decides on, X46's strengthening included, so a commitment against state the same function already
  * overwrote from a caller parameter publishes nothing. The fold is the weakest across every signature check in
  * the body, so one unpinned parameter key drags it to `parameter` and this gate refuses. That closes the false
- * negative WITHOUT reading a type: `hash160-committed-key` is gone from the unadmitted list below, and the
- * residual - a proxy whose source pins the key but whose artifact predates the field - is named
- * `unpublished-key-commitment` and fails closed exactly as `unpublished-target-provenance` does.
+ * negative WITHOUT reading a type: the honest P2PKH-shaped proxy is admitted as `caller-authorized`, and
+ * `hash160-committed-key` is gone from the unadmitted list below, ABSORBED into `self-authorized` - which is
+ * what a caller-supplied key with no published commitment now is.
  */
 
 /** How the proxy decides which script may write its state. */
@@ -162,9 +169,16 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
   Object.freeze({
     id: 'self-authorized',
     reason: 'the delegatecall target resolves to a caller-supplied parameter, and the key the function\'s '
-      + 'signature is checked against is not one the proxy commits to and not one it pins - it is a parameter '
-      + 'the caller also supplies freely, an expression the compiler could not resolve, or absent entirely. A '
-      + 'caller who picks both the key and the target authorizes nobody',
+      + 'signature is checked against is not one the proxy commits to and not one it publishes a commitment '
+      + 'for - it is a parameter the caller also supplies freely, an expression the compiler could not resolve, '
+      + 'or absent entirely. A caller who picks both the key and the target authorizes nobody. This class '
+      + 'ABSORBS round 16\'s `hash160-committed-key`: the honest pinned shape is now admitted, and what is left '
+      + 'here is a caller-supplied key with no published `signatureGuard.keyCommitment`. Two situations produce '
+      + 'that byte-for-byte - an artifact compiled before X51 added the field, and a current artifact whose pin '
+      + 'the compiler refused to credit (conditional, bound to another caller parameter, or bound to state this '
+      + 'same function overwrote from a caller parameter). They are indistinguishable from published metadata, '
+      + 'so this gate refuses both and the diagnostic states both rather than inventing a class id for a '
+      + 'distinction the artifact cannot support',
   }),
   Object.freeze({
     id: 'unpinned-p2pkh',
@@ -228,18 +242,6 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
       + 'constructor argument VALUE, which this gate is not given. NOT DETECTABLE HERE - see '
       + 'UNDETECTED_BY_THIS_GATE',
   }),
-  Object.freeze({
-    id: 'unpublished-key-commitment',
-    reason: 'the signature is checked against a caller-supplied key and the artifact publishes no '
-      + '`signatureGuard.keyCommitment` for it. TWO SOURCES PRODUCE THAT BYTE-FOR-BYTE: an artifact compiled '
-      + 'before X51 added the field, and a current artifact whose commitment the compiler REFUSED to credit - a '
-      + 'conditional pin, a pin to another caller parameter, or X46\'s vacuous pin against state the same '
-      + 'function overwrote from a caller parameter, which is a live theft rather than a stale artifact. They '
-      + 'are indistinguishable here, so the gate refuses both and names both: recompile, and if the field is '
-      + 'still absent the pin is not one. An absent field is never the claim that the key is pinned. This entry '
-      + 'REPLACES round 16\'s `hash160-committed-key`, which named the honest shape as a false negative back '
-      + 'when no field could express the pin',
-  }),
 ]) as readonly { id: string; reason: string }[];
 
 /**
@@ -268,9 +270,9 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
  *
  * X51 CLOSED THE ONE FALSE NEGATIVE THIS GATE KEPT, which lived in UNADMITTED_DELEGATE_PARTICIPANT_CLASSES
  * rather than here - `hash160-committed-key` was a shape the gate could SEE and refused anyway, not one it was
- * blind to. `signatureGuard.keyCommitment` now publishes the pin, the honest P2PKH-shaped proxy is admitted as
- * `caller-authorized`, and the entry is replaced by `unpublished-key-commitment` for artifacts that predate the
- * field. The refusal-to-admission flip is asserted rather than dropped.
+ * blind to, which is why closing it needed a published fact rather than a new detection. This list is
+ * unchanged by X51. The refusal-to-admission flip is asserted in `X51CommittedKeyGate.test.ts` rather than
+ * dropped, the same way X43 asserted the two entries it removed from here.
  *
  * Naming the blind spot is part of the enumeration: a gate that silently admits a class it cannot see is worse
  * than one that says so. These are named because they are known, not because they are harmless.
@@ -476,25 +478,26 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
           + 'the code that writes the proxy state');
     }
     if (!proxyHoldsCallAuthority(guardKey, guardKeyCommitment)) {
-      // A caller-supplied key with NO published commitment is named separately, because recompiling MAY be the
-      // whole fix - and because it may equally be a pin the compiler refused to credit. The artifact reads the
-      // same either way, so the diagnostic states both rather than picking one.
-      throw new DelegateParticipantClassError(guardKey.kind === 'parameter'
-        && guardKeyCommitment.kind === 'unknown'
-        ? `class 'unpublished-key-commitment' is not admitted: proxy function '${input.proxy.functionName}' `
-          + `delegatecalls ${describeProvenance(targetProvenance)} and checks its signature against `
-          + `${describeProvenance(guardKey)}, and the artifact publishes no 'signatureGuard.keyCommitment' for `
-          + 'it. Either the artifact predates the field, or the compiler refused to credit the pin - a '
-          + 'conditional one, one to another caller parameter, or one against state this same function '
-          + 'overwrote from a caller parameter. Recompile the proxy; if the field is still absent, the pin is '
-          + 'not one. An absent field is never the claim that the key is pinned'
-        : `class 'self-authorized' is not admitted: proxy function '${input.proxy.functionName}' delegatecalls `
-          + `${describeProvenance(targetProvenance)}, and the signature it takes is checked against `
-          + `${describeProvenance(guardKey)} rather than a key the proxy commits to, pinned to `
-          + `${describeProvenance(guardKeyCommitment)}. A caller who picks both the key and the target `
-          + 'authorizes nobody. Check the signature against a constructor argument, a compile-time literal or a '
-          + 'state variable, or pin the caller-supplied key with an unconditional top-level '
-          + '`require(hash160(key) == <committed>)`');
+      // ONE class id, because the artifact cannot support two. A caller-supplied key with no published
+      // commitment reads identically whether the artifact predates the field or the compiler refused to credit
+      // the pin, so the hint is appended to the same diagnostic rather than promoted to a class of its own -
+      // which would have named the ordinary A13-2 hole after a stale-artifact problem.
+      throw new DelegateParticipantClassError(
+        `class 'self-authorized' is not admitted: proxy function '${input.proxy.functionName}' delegatecalls `
+        + `${describeProvenance(targetProvenance)}, and the signature it takes is checked against `
+        + `${describeProvenance(guardKey)} rather than a key the proxy commits to, with its published `
+        + `commitment reading ${describeProvenance(guardKeyCommitment)}. A caller who picks both the key and `
+        + 'the target authorizes nobody. Check the signature against a constructor argument, a compile-time '
+        + 'literal or a state variable, or pin the caller-supplied key with an unconditional top-level '
+        + '`require(hash160(key) == <committed>)`'
+        + (guardKey.kind === 'parameter' && guardKeyCommitment.kind === 'unknown'
+          ? '. If the source already carries that pin, this artifact publishes no '
+            + "'signatureGuard.keyCommitment' for it: either it predates the field, or the compiler refused to "
+            + 'credit the pin as conditional, bound to another caller parameter, or bound to state this same '
+            + 'function overwrote from a caller parameter. Recompile the proxy; if the field is still absent, '
+            + 'the pin is not one. An absent field is never the claim that the key is pinned'
+          : ''),
+      );
     }
     codeIdentity = 'caller-authorized';
   } else if (targetProvenance.kind === 'stateVar') {

@@ -155,14 +155,15 @@ describe('X51: the artifact publishes the key commitment SEC-17 credits', () => 
   }
 
   /**
-   * The remaining two SEC-17 controls bind a DIFFERENT key than the one checked, so the published KEY itself
-   * moves to `computed` and there is nothing for a commitment to describe. Separated from the loop above
-   * because the expected `key` differs, which is the whole reason they are controls.
+   * SEC-17's last negative control, separated because its published KEY differs. The commitment binds `pk` and
+   * the check reads `input`, and X37 resolves `pubkey(input)` through the cast to the `bytes` parameter itself -
+   * so the published key is `{parameter, input}`, a name nothing in this body pins. The commitment is looked up
+   * for the key that is CHECKED, never for whichever name a nearby `hash160` happens to mention.
    */
   it('publishes NO commitment when the commitment binds a different key than the one checked', () => {
     const source = committed('bytes20 pkh;',
       'require(hash160(pk) == this.pkh); require(checkSig(s, pubkey(input)));');
-    expect(guardOf(source, 'up')).toEqual({ key: { kind: 'computed' } });
+    expect(guardOf(source, 'up')).toEqual({ key: { kind: 'parameter', name: 'input' } });
     expect(callerChosenWarnings(source)).toBe(1);
   });
 

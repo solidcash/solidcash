@@ -969,29 +969,42 @@ contract E3StateTargetProxy(address impl) {
       expect(classify(stateTarget, [hexToBin(implementationLbc)]))
         .toThrow(/class 'dynamically-resolved-implementation' is not admitted.*state variable 'stored'/s);
 
-      const computedTarget = compileString(`pragma solidcash >=0.8.0;
-contract E3ComputedTargetProxy(address impl) {
-    bigint counter;
-    function up(bytes input, bytes suffix) external {
-        address t = address(bytes(impl) + suffix);
-        t.delegatecall(input);
-        require(input.length > 0);
-    }
-}`);
-      expect(classify(computedTarget, [hexToBin(implementationLbc)]))
-        .toThrow(/class 'computed-delegate-target' is not admitted/);
+    });
 
-      const ternaryTarget = compileString(`pragma solidcash >=0.8.0;
-contract E3TernaryTargetProxy(address impl, address alt) {
+    /**
+     * Every form the compiler answers `computed` for, refused as one class. `computed` is the compiler saying it
+     * could not follow the value, which is the one answer that must never be read as "then it is fixed" - and
+     * the type gate read all of these as `bytecode-pinned`, because none publishes an `address` parameter.
+     */
+    it('refuses every `computed` target form the compiler publishes', () => {
+      const bodies: Record<string, string> = {
+        ternary: 'address t = flag ? impl : alt; t.delegatecall(input);',
+        'array element': 'address t = address(pool[0]); t.delegatecall(input);',
+        'msg.sender': 'address t = address(msg.sender); t.delegatecall(input);',
+        'tx.origin': 'address t = address(tx.origin); t.delegatecall(input);',
+        slice: 'address t = address(blob.split(35)[0]); t.delegatecall(input);',
+        concatenated: 'address t = address(bytes(impl) + blob); t.delegatecall(input);',
+        'struct field': 'Route memory r = Route(blob); address t = address(r.to); t.delegatecall(input);',
+        'tuple destructured': '(bytes l, bytes r2) = pair(blob); address t = address(l); '
+          + 'require(r2.length >= 0); t.delegatecall(input);',
+        'alias cycle': 'address a = impl; address b = a; a = b; a.delegatecall(input);',
+      };
+      for (const [name, body] of Object.entries(bodies)) {
+        const artifact = compileString(`pragma solidcash >=0.8.0;
+contract E3ComputedProxy(address impl, address alt) {
     bigint counter;
-    function up(bytes input, bool flag) external {
-        address t = flag ? impl : alt;
-        t.delegatecall(input);
+    struct Route { bytes to; }
+    function pair(bytes a) internal pure returns (bytes, bytes) { return (a, a); }
+    function up(bytes input, bool flag, bytes[] pool, bytes blob) external {
+        ${body}
         require(input.length > 0);
     }
 }`);
-      expect(classify(ternaryTarget, [hexToBin(implementationLbc), hexToBin(implementationLbc)]))
-        .toThrow(/class 'computed-delegate-target' is not admitted/);
+        expect(artifact.abi.find((entry) => entry.name === 'up')!.lowLevelCalls![0].target,
+          `${name} must publish computed`).toEqual({ kind: 'computed' });
+        expect(classify(artifact, [hexToBin(implementationLbc), hexToBin(implementationLbc)]), name)
+          .toThrow(/class 'computed-delegate-target' is not admitted/);
+      }
     });
 
     /**

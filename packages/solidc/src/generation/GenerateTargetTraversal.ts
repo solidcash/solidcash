@@ -188,7 +188,7 @@ import { getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError,
-  ChainedEntryElementReadError, ConditionalDeployError, SolidCashError,
+  ChainedEntryElementReadError, ConditionalDeployError, SolidCashError, UnboundReturnCallError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
@@ -11919,8 +11919,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // If this call has return values, read them from the return event UTXO
     if (node.callInfo?.hasReturnValues && node.callInfo.returnTypes) {
       if (!physicalSlot) {
-        throw new Error(
-          `Unbound return call in ${this.currentFunction.name}; graph=${String(this.currentFunction.graphEmissionHandler)}`,
+        // X75. Fail closed with a named diagnostic rather than an internal sentinel. This is the single site
+        // every unbound returning edge converges on, whichever upstream gate let it through.
+        throw new UnboundReturnCallError(
+          node, this.currentFunction.name,
+          `${node.interfaceName}.${node.functionName}()`,
+          node.callInfo.externalCallSlotIndex, this.externalCallSlots.length,
         );
       }
       const returnTypes = node.callInfo.returnTypes;

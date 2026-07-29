@@ -1215,6 +1215,36 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
   }
 }
 
+/**
+ * A returning external edge reached code generation in a function whose compiled external-call layout has no
+ * slot for it, so there is no return-event output to read the result from.
+ *
+ * Code generation aborted here with a bare internal sentinel (`Unbound return call in <fn>; graph=<flag>`) -
+ * no error name, no position and no remedy, which is the shape the message-bus board treats as a defect in
+ * its own right. X22 closed one instance by refusing the shape in route synthesis; this is the gate in front
+ * of every shape that still reaches the generator, whichever upstream gate missed it.
+ */
+export class UnboundReturnCallError extends SolidCashError {
+  constructor(node: Node, functionName: string, edge: string, slotIndex: number, slotCount: number) {
+    const routed = /^__scb/.test(functionName);
+    super(
+      node,
+      `Function '${functionName}' consumes the return value of the external call '${edge}', but no return-event `
+      + `slot is reserved for it in that function's compiled layout (${slotCount} external-call slot`
+      + `${slotCount === 1 ? '' : 's'}; the call carries index ${slotIndex}), so there is no authenticated `
+      + 'output to read the result from. The call was relocated into this function after its layout was fixed. '
+      + (routed
+        ? 'On a message-bus route that is a void helper which both consumes a call result and carries a '
+          + 'physical effect: the effect makes the helper ineligible for its own OP_INVOKE subroutine, so it is '
+          + 'inlined into the SCB1 wrapper, and the wrapper owns the block slots. Keep the returning call in a '
+          + 'handler whose body carries no other physical effect (event, satoshi transfer, token-container move '
+          + 'or deploy), or drop the result and make the call a void tail call.'
+        : 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
+          + 'and make the call a void tail call.'),
+    );
+  }
+}
+
 export class GraphEmissionEffectError extends SolidCashError {
   constructor(node: Node, handlerName: string, effect: string) {
     super(

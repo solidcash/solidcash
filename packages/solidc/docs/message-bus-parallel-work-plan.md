@@ -166,12 +166,15 @@ task-specific report, not in this table.
 | F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
 | F3 | MistSwap/EA and proving-corpus fit report | C6 | F1,F2 | **INTEGRATED** | **THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS**: all 12 bus-reachable app contracts admit READ-ONLY; 80% of refusals are route-scope - see 4.77 |
 | X73 | `initial-v1-route-requires-public-visibility` refuses 172 of 455 (38%) | — | F3 | **TODO (biggest incidental wall)** | Solidity marks entry points `external`; the v1 route admits `public` |
-| X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | — | F3,F2 | **TODO** | F2's blind spot 5 at ONE participant; the projection covenant is larger than any contract it proves |
+| X79 | The route-scope gates are STACKED; no single lift admits anything | D2 | F3 | **MEASURED** | the ERC-20's transfer/approve/transferFrom ARE admissible; 3 gates stacked; relaxing the third hits an unnamed abort |
+| X80 | F3's 455 is a ~2.2x undercount of gate reach | D2 | F3 | **MEASURED** | 419 firings, 226 on contracts that DO get a route and are invisible to the route-absent channel |
+| X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | D4 | F3,F2 | **INTEGRATED** | 44/45 under -> **0/45 under**; one defect was an IMPOSSIBILITY (intercept below the redeem it pushes) - see 4.83 |
+| X78 | The estimator still names DENSITY as the binder on all 45 | — | X70 | **TODO** | coefficient tightness differs 601% vs 10%, so bounds cannot rank limits; `bindingUnresolved` now carries the true binder 45/45 |
 | X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | — | F3 | **TODO (diagnostic)** | the reported line is not a position in the user's file |
 | X72 | 20 refusals published with NO `rejectionReason` | — | F3 | **TODO (diagnostic)** | all on the compiler-synthesized `__updateBlockOracle` |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
 | X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | — | F4 | **TODO (sized)** | ~760 B of the verifier, ~6,080 C3 bytes; table-lookup form needs a 2-byte offset whose soundness rests on the stack-item bound |
-| X66 | F2's basis and F1's header are stale-but-passing after F4 | — | F4 | **TODO** | both work off RECORDED figures; all four graph rows overstate by 129 x N and F2's C3 verdict is no longer live |
+| X66 | F2's basis and F1's header are stale-but-passing after F4 | D4 | F4 | **INTEGRATED** | re-measured not adjusted; consequence re-derived - every costed C3 fix was sized against an overrun that does not exist |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
 | X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED (cross-run throw MERGED, not verified)** | **ALL FOUR capstones MINED in one run**; `c38d96c1` is lint-clean but NOT node-verified - see 4.81 |
@@ -244,6 +247,91 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.82 The gates are STACKED, the count was a 2.2x undercount, and the estimator was unsound at N=1
+
+Merged at `a29a6122`; the R1 control it invalidated rebuilt at `862fbc25`.
+
+**D2's headline is a NEGATIVE result and it is the most useful thing in the round.** Changing one axis at a time
+on the real `solidity-by-example` ERC-20:
+
+| variant | `transfer` |
+| --- | --- |
+| as written | `collection-helper-route-not-enabled` |
+| visibility only (`external` -> `public`) | route ABSENT; still collection-helper |
+| spelling only (`balanceOf[` -> `this.balanceOf[`) | `initial-v1-route-requires-public-visibility` |
+| both | route ABSENT; every handler `result-route-requires-effect-free-handlers` |
+| both + no events | **unnamed internal abort**: `__scb_resource_transfer`, 4 args vs 13 expected |
+| both + no events + no `returns (bool)` | **`transfer`, `approve`, `transferFrom` all ELIGIBLE** |
+
+**The machinery already admits the real ERC-20's state-changing surface.** Three gates are stacked on it - D2's,
+D1's, then D2's again - and **no single lift admits anything.** That invalidates this round's framing, which
+scored D1's 172 and D2's 192 as separable walls. They come off together or not at all, and relaxing the third
+exposes an unnamed internal abort immediately behind it.
+
+**The assigned "192" is a ~2.2x undercount, and D2 proved it by instrumenting the gates rather than reading the
+diagnostic.** F3's 455 counts only refusals published in the route-absent channel, which exists **only when no
+route was synthesized**; refusals on contracts that DO get a route are invisible to it. Measured firings:
+**419**, of which **226** are on routed contracts F3 could not see. Its **193** on F3's own population validates
+the instrument against F3's 192. Gate stacking measured too: **350 of 419 firings are on `public` handlers**, so
+they would not fall to D1's gate at all.
+
+**Two defects closed inside the lease**, with the first genuinely load-bearing: `LowerCollectionJournalHelpers`
+refused **any** `ReturnNode` as an early return, but the Solidity ERC-20 wrapper is
+`_transfer(from,to,v); return true;`. It was a thrown `Error`, so it **failed the whole file's multi-contract
+compile and dropped every sibling** - hitting 6 files carrying 5 of the 12 bus-reachable application contracts.
+Write-backs are now placed before the tail return, as the final `require` guard already was. Second: named
+returns and tuple declarations bind a local, so `amounts[i]` published a phantom `collection:amounts:*` for a
+name the contract never declares.
+
+**The corpus delta is reported honestly and it is small**: 5 gate firings removed, **0 new refusals, ZERO newly
+eligible handlers**. The journal fix advances six real files to the *next* wall rather than through it. D2 also
+classified `mixed-scalar` and `result-route` as **pure sibling collateral** by compiling the same handler alone
+and then beside the sibling - 195 firings, 100% `public`, none with a collection in its own footprint.
+
+### 4.83 X70: the estimator was not conservative where it mattered, and one defect was an IMPOSSIBILITY
+
+**Three defects, not one**, and the second is the sharpest: the projection verifier's 4,542-byte redeem script
+sat inside a fitted line whose intercept was **4,095** - *not an inaccuracy but an impossibility*, since a P2SH
+input must push the script it redeems. Also: an upper envelope bounds nothing **below** its smallest calibration
+point, and a one-participant graph drives 2 rows against a calibrated minimum of 6.
+
+| limit | BEFORE | AFTER |
+| --- | --- | --- |
+| unlocking bytecode (**binds all 45**) | mean **-7.2%**, **44/45 UNDER** | mean **+7.4%**, **0/45 under** |
+| serialized / density / SigChecks | - | 0/45 under on each |
+
+Out of sample: leave-one-out **24/28** (was 22/28), worst **-13.5%** (was -27.2%); the real held-out graph
+**3/4** (was 2/4), worst **-3.5%** (was -9.6%).
+
+**A fourth defect the per-class check found**, which the aggregate could not: clamping a **density** coefficient
+to its measured floor under-predicted real corpus masters **34 of 45**, by up to 56.5%. Density is a property of
+a **contract body**, not of any descriptor driver - so only the two body-dependent coefficients use the line
+below their range, and everything the graph itself produces uses the measured floor.
+
+**The binding-limit prediction is NOT fixed, and D4 said so instead of claiming it.** Density is still named
+first. The cause is precise: the master-density coefficient over-predicts its own calibration points by up to
+**284%** and the corpus by up to **601%**, while the script coefficient over-predicts by at most 10% - **ranking
+bounds of that different a tightness does not rank limits.** Rather than fit again, `estimate` now publishes
+`bindingUnresolved`, and **the true binder is in that set 45/45** - where F2 named the wrong one 45/45 with no
+qualification.
+
+**X66 re-measured, not adjusted**, and the consequence re-derived: **C3 no longer overruns the relay ceiling.**
+D4's line is the one to keep - *every costed C3 fix on this board was sized against an overrun that does not
+exist*. The margin re-derivation strengthened rather than survived: 34% -> **16%**, because all three covenants
+now carry a fixed redeem term instead of one.
+
+**A vacuous control caught by its author.** Commit `0502debf` moved the knob-liveness assertion **outside** the
+try/catch, because a control inside the skip path would have been swallowed into the skip list and proved
+nothing. Same class as X2's hostiles failing for the honest case's reason.
+
+**And it broke R1's positive control, correctly.** `Layer3ProductionEnvelopeR1` asserted "C3 is the one shape in
+the basis that is actually over" - and no shape in the basis is over anything now, so **the control had no
+subject**. D4 reported it rather than re-pinning it, calling it a design decision. Rebuilt at `862fbc25`: the
+loop is now asserted to have had nothing to assert, and the screen is exercised against a **synthetic 2x C3**
+that screens **REFUSE** at a predicted 246,961 B against a 141,562 threshold. Its first version doubled the
+participant count without extending the per-participant arrays, and **the estimator refused it** - one block
+size and one redeem size per participant is validated, not assumed.
 
 ### 4.81 The X74 follow-up found a hole that survived the merged fix
 

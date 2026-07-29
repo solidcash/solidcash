@@ -5,10 +5,10 @@ boundary. Nothing in this document is wired into a send path, and nothing here c
 level. The plan and the completion ledger remain the authorities on task state and on claims.
 
 Harness: `packages/solidcash/test/e2e/layer3-production-envelope-r1.ts` (the rules and the reference gate)
-and `packages/solidcash/test/e2e/Layer3ProductionEnvelopeR1.test.ts` (21 tests, green at `6a0a0b69`).
+and `packages/solidcash/test/e2e/Layer3ProductionEnvelopeR1.test.ts` (21 tests, green at `8632fb98`).
 
 Every figure below is stamped. Figures marked **measured here** were produced by a run of the harness at
-`6a0a0b69`; figures marked **citation** were taken at another commit and are named as such, because a
+`8632fb98`; figures marked **citation** were taken at another commit and are named as such, because a
 recorded number whose consequences were not re-derived has already invalidated one conclusion on this board
 (F1 costed C3's overrun against 354 bytes and the fix stopped working at 650).
 
@@ -30,7 +30,7 @@ script against a 474-satoshi threshold. It was invisible for the whole effort be
 profile sets `enforceDust: false` and `MockNetworkProvider` then sets `dustRelayFeePerKb: 0n`.
 
 **The estimator cannot be the gate, in either direction (F2, re-measured here).** F2 is conservative in
-sample by construction and is *not* conservative out of sample. Re-derived at `6a0a0b69`: worst in-sample
+sample by construction and is *not* conservative out of sample. Re-derived at `8632fb98`: worst in-sample
 over-prediction **+41.6%**, worst out-of-sample in-range under-prediction **-12.3%** (on `C1 DeFi / worst
 unlocking bytes`). Refusing on `predicted > limit` therefore produces false refusals across windows measured
 at **A13 5,093 B, C2 6,299 B, C1 2,082 B, C3 12,305 B** of serialized size; admitting on `predicted <= limit`
@@ -65,7 +65,7 @@ majority of the envelope can be checked on every transaction the SDK builds at e
 ### The dust rule, re-derived rather than cited
 
 BCHN's `GetDustThreshold` is `3 * dustRelayFee.GetFee(GetSerializeSize(txout) + 148)`, which at the default
-1,000 sat/kB is `3 * serialized + 444`. **Measured here** at `6a0a0b69`:
+1,000 sat/kB is `3 * serialized + 444`. **Measured here** at `8632fb98`:
 
 | output | serialized | threshold |
 | --- | --- | --- |
@@ -143,7 +143,7 @@ this envelope adds no second, different participant cap, because participant cou
 
 | class | evidence | status |
 | --- | --- | --- |
-| Participant-binding composition, N = 2, 4, 8. Measured here at 2,429 / 4,977 / 10,661 serialized bytes, admitted on all twelve rules, tightest reading 0.3630x. | **`CONSENSUS_FIT`** - real UTXOs, executed, **accepted and mined** by BCHN v29.0.0 (citation, X49). Sizes reproduce F1's exactly at this commit. | **SUPPORTED** |
+| Participant-binding composition, N = 2, 4, 8. Measured here at 2,429 / 4,977 / 10,661 serialized bytes - reproducing F1's figures exactly - and admitted on all twelve rules. Tightest reading across the three is 0.3630x (op-cost density at N=8); at N=2 and N=4 it is 0.2880x on dust. | **`CONSENSUS_FIT`** - real UTXOs, executed, **accepted and mined** by BCHN v29.0.0 (citation, X49). | **SUPPORTED** |
 | Composed `L3GRAPH1` graphs whose finalized transaction passes all twelve rules. Measured instances (citation, `ffef8568`): A13 3 participants / 8 inputs / 23,845 B / 0.5131x; C2 4 / 79 / 53,249 B / 0.6491x; E1 result graph 6 / 19 / 68,904 B / 0.6890x. | **`SEMANTIC` only.** The node returned `missing-inputs` for all of these, so it **stopped before executing anything** and their script validity is libauth-only. | **SUPPORTED WITH CAVEATS** |
 | C1's DeFi graph *shape*: 5 participants, 38 inputs, 63,315 B, worst script 0.7451x. Inside every capacity rule. | `SEMANTIC`; and the node refused the built transaction `64: dust`. | **SUPPORTED WITH CAVEATS - the shape is in, that build is out** |
 | C3's maximum graph *as built*: 8 participants, 108 inputs, **100,650 B**, 650 over relay. | `SEMANTIC`; node `64: tx-size`; same bytes mined in a submitted block. | **OUT OF ENVELOPE** |
@@ -175,7 +175,7 @@ UTXO, no builder and no VM:
 - `WARN` between the thresholds. The estimator cannot separate fit from overrun here and says so.
 - `REFUSE` when `predicted > limit * (1 + overPrediction)`. No measured over-prediction can explain the gap.
 
-**Measured here at `6a0a0b69`, and this is the decisive result for the design:** with the allowances derived
+**Measured here at `8632fb98`, and this is the decisive result for the design:** with the allowances derived
 from the calibration (over +41.6%, under 12.3%), the four capstone descriptors screen A13 `CLEAR`, C2
 `CLEAR`, C1 `CLEAR`, C3 `WARN`. **Nothing in the corpus reaches `REFUSE`** - for relay size the CLEAR
 threshold is 89,057 B and the REFUSE threshold is 141,562 B, while the largest shape ever built predicts
@@ -200,7 +200,7 @@ ADMIT.
 
 ### 5.2 Where the gate has to sit, and what is unchecked today
 
-**Re-measured at `6a0a0b69`:** `packages/solidcash/src/` contains **8 call sites** that hand bytes to
+**Re-measured at `8632fb98`:** `packages/solidcash/src/` contains **8 call sites** that hand bytes to
 `provider.sendRawTransaction` outside the provider implementations themselves. **Exactly one** of them -
 `src/layer3/preflight.ts:99`, inside `sendPreflightedLayer3Transaction` - runs the Layer-3 gate. The other
 seven are `TransactionBuilder.send()`, `StatefulTransactionBuilder.send()` and five sites in

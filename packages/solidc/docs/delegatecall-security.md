@@ -144,12 +144,20 @@ without asking which key it checked, so this shape compiled with no C1 diagnosti
 `impl` once such a check was added beside it. The compiler now reads the key operand (arg 1 of `checkSig` /
 `checkMultiSig`, arg 2 of `checkDataSig`), resolves it through casts and local aliases, and credits a guard only
 when it lands on a **constructor input, a state variable, or a literal**. A parameter of the same entry point is
-not a guard. An array index only *selects* among a container's elements, so `checkSig(s, this.owners[i])` stays
-a guard even though the caller picks `i`.
+not a guard, and neither is a computed key any of whose operands reaches one (`pubkey(k)`, `hash160(pk)`).
+
+Two resolution details, each because the obvious version had a hole:
+
+- An alias is read through **every** binding it has, not just its declaration. `pubkey k = owner; k = pk;`
+  declares the constructor key and then rebinds the caller's - reading the declaration alone credited a guard
+  the `checkSig` never had.
+- An array index only *selects* among a container's elements, so the CONTAINER decides the bytes:
+  `checkSig(s, this.owners[i])` stays a guard even though the caller picks `i`. Without this the multi-owner
+  proxy would start warning.
 
 > The `PINNED_PROXY` fixture in `packages/solidcash/test/e2e/Delegatecall.test.ts` is written in exactly the
-> unsafe shape above. It is **not** an example of a safe key - it exists to exercise the identity + forwarded
-> -selector pins of rule 3, which are independent of who is authorized, and it now emits the C1 warning.
+> unsafe shape above. It is **not** an example of a safe key - it exists to exercise the identity and
+> forwarded-selector pins of rule 3, which are independent of who is authorized, and it now emits the C1 warning.
 
 **D. The delegatecall must be reached at most once per path.** The state-covenant skip is a *per-function*
 property (`!functionHasDelegatecall`), while the co-spend pin is emitted at the *callsite*. Those two disagree

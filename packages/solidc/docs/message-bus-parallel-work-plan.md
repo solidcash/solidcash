@@ -174,7 +174,7 @@ task-specific report, not in this table.
 | X66 | F2's basis and F1's header are stale-but-passing after F4 | — | F4 | **TODO** | both work off RECORDED figures; all four graph rows overstate by 129 x N and F2's C3 verdict is no longer live |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
-| X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | — | X59 | **TODO (blocks C1 on a node)** | four entry NFTs seeded under one category arrive under four; must mint into the requested category or throw |
+| X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED** | **ALL FOUR capstones now MINED in one run**; throws by name on three paths - see 4.80 |
 | X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **LEASED** | NOT X22's shape: a void internal helper is inlined into the SCB1 wrapper and the relocated edge lands where no return-event slot exists |
 | X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | — | X71 | **TODO** | `UndefinedReferenceError ... __scb_arg_0_0 at Line 28`/`42` on a 13-LINE contract; thrown in SEMANTIC analysis of the merged AST |
 | X77 | `view` functions reported `writesState: true` by the dynamic-array analysis | — | X71 | **TODO** | `getAmountsOut`/`getAmountsIn` are `view` in source; a false positive here refuses legitimate handlers |
@@ -244,6 +244,49 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.80 ALL FOUR CAPSTONES MINED, in one run, on a real node
+
+Merged at `9238abff`. This is the milestone the effort was pointed at.
+
+| capstone | txid | height | bytes | inputs | confirmations | control |
+| --- | --- | --- | --- | --- | --- | --- |
+| C3 | `2878ce367db9b4bc...` | 3718 | **99,670** | **108** | 412 | refused |
+| C2 | `e5cb971178e44385...` | 3933 | 52,733 | 79 | 197 | refused |
+| **C1** | `d670ece5dd172dc3...` | 4058 | 62,722 | 38 | 72 | refused |
+| A13 | `b9e20b84254720ec...` | 4115 | 23,458 | 8 | 15 | refused |
+
+**One run, 637 seconds, 8/8**, every one re-verified mined via `getrawtransaction`, **sizes matching the plan's
+recorded figures exactly**, and each with its hostile control refused on the same chain in the same run. The
+`addUtxo` change did not knock the other three off the node - they reach it **in the same run as C1**.
+
+**The fix has the right shape.** `addUtxo` now mints into the requested category via a retained minting NFT and
+**throws by name on three distinct paths**, each naming the provider, the category and the reason - including
+the one that matters: *"no minting NFT is retained for it, so the request cannot be satisfied. It is NOT served
+with a different category."* Two are pinned by a new test; the third is an internal-consistency guard.
+
+**A caveat D3 put on the record before being asked, and the board's answer.** One non-throwing path remains: a
+category label existing **nowhere on chain** cannot be minted into, so it is genesised, the real category is
+returned, and **the label is remembered** so every later request for it lands in the same real category. That is
+what keeps ~15 existing placeholder call sites working.
+
+**Decision: keep it, do not make it throw.** It removes the defect class without cost - the C1 defect was *one
+requested category silently yielding two real ones*, and memoization makes that impossible. A throw would break
+15 working call sites to buy **no** soundness. The board's rule is that a fail-closed boundary must not become an
+unchecked path, not that every path must be a throw. Two questions returned to D3: whether the memoization is
+per-instance or module-global (global would be shared state across tests in one process), and what a second run
+against the same chain does once the label exists on-chain.
+
+**Two operational findings.** D3's cleanup used a broad `pkill -f vitest`, which **matches globally across every
+worktree** and may have interrupted a sibling mid-run; it flagged this rather than letting it surface as
+someone else's mystery failure. Kill by job or PID here, never by pattern - a round-16 worker had wait loops
+block on other agents' suites for the same reason.
+
+And the box is now a measurable constraint, not a nuisance: **load 35, 56 vitest processes, swap FULLY
+EXHAUSTED at 3/3 GB.** That is the condition that SIGTERM'd R2's single `yarn test` run with **zero** failing
+tests printed - correctly reported as memory exhaustion rather than a test failure, and worked around by running
+per-package to completion. The integration owner's own solidc run then timed out at 10 minutes against a normal
+~2. **Under this load, prefer per-package runs, and check the box before believing a failure.**
 
 ### 4.79 Round 18 verified: 7,240 tests, six packages, exit 0 - and round 19 goes where F3 pointed
 

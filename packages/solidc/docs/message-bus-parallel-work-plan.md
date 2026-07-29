@@ -134,7 +134,7 @@ task-specific report, not in this table.
 | **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **INTEGRATED** | 14/36 -> 0/36 across 7 spellings at both sites; 8 negative controls unflipped - see 4.56 |
 | X46 | Commitment check reads the key's binding, not the writer of its target | A3 | SEC-17 | **INTEGRATED** | LIVE THEFT: bob takes 51,515 sats, broadcast-accepted; key-rotation idiom preserved - see 4.61 |
 | X43 | Make the E3 gate read X37's provenance instead of the published type | A1 | X37 | **INTEGRATED** | both escapes refused; admission proven a LIVE hole (5 -> 999); 3 unnamed closures - see 4.59 |
-| X50 | SDK's shipped `defaultProxyArtifact.ts` is a pre-X37 artifact | — | X43 | **TODO** | 13 of 27 gate calls refuse `unpublished-target-provenance`; remedy additive, but regen needs a manual bytecode fix |
+| X50 | SDK's shipped `defaultProxyArtifact.ts` is stale in TWO ways | — | X43,X11 | **TODO** | pre-X37 (no `target`) AND carries the relaxed conservation form, 159 B vs 173 fresh; regenerating breaks the INSERT test |
 | X51 | Publish the `hash160(key) == committed` commitment as an artifact field | — | X43,SEC-17 | **TODO** | would close X43's `hash160-committed-key` false negative without type-reconstruction |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
@@ -165,6 +165,7 @@ task-specific report, not in this table.
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | A4 | — | **BLOCKED (wall named, fails closed)** | transcript machinery ACCEPTS fan-in; only caller-side lowering cannot - one bounded compiler change - see 4.62 |
+| X56 | `.emitReturn()` on a delegated call that also emits | — | X12 | **TODO** | event NFT takes the index the forwarder reserved for the return event; refused at build time |
 | X55 | `invocation-transcript-v1.md` still names byte 11 `callMode:u8` | — | X5 | **TODO (doc)** | also `Layer3ReviewA1.test.ts` offset `callModeStart`; shared spec doc, left alone deliberately |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
 | X5 | Bind call options as a committed transcript row field | A4 | X31 | **INTEGRATED** | byte 11 now committed; the projection verifier is the FIRST covenant ever to read it - see 4.62 |
@@ -173,8 +174,8 @@ task-specific report, not in this table.
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
 | X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
-| X11 | Delegate C2 sorted writes have no settling instance | C | S1 | TODO | S1's delegate exclusion guards an unreachable shape, unattacked |
-| X12 | `emit`-funder delegate class does not settle | C | X1 | TODO | Pre-existing; verified neither repaired nor regressed by X1 |
+| X11 | Delegate C2 sorted writes have no settling instance | A2 | — | **INTEGRATED** | premise stale; chasing it found a LIVE forgery - reader returned `[5n, 99n]` - see 4.64 |
+| X12 | `emit`-funder delegate class does not settle | A2 | — | **INTEGRATED** | cause was split-facet data-NFT offsets, not a graft position; -6 bytes |
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
 | X14 | Wire the balanced-assembly preflight into the production send path | B | L2 | INTEGRATED (layer-3 only) | direct-route wiring DEFERRED to the owner - would reject 44.5% of settling sends |
 | X17 | Decide whether to gate `StatefulTransactionBuilder.send()` | Main | X14 | **DECIDED: do not gate** | See 4.19; the model, not the sends, is what is wrong |
@@ -189,7 +190,7 @@ task-specific report, not in this table.
 | **SEC-10** | One-armed conditional emit reserves an unsettled slot | C | SEC-9 | **INTEGRATED** | reframed: the class was never slot-specific - see 4.45 |
 | **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | C | SEC-9 | **INTEGRATED** | closed by the same own-category immutable pin |
 | **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | S2 | SEC-11 | **INTEGRATED** | all 3 paths admitted the forgery; A rejects at input 0, B/C at input 2 - see 4.47 |
-| **SEC-14** | Zero-parameter event: taken and not-taken rows are byte-identical | — | SEC-13 | **TODO (security, not demonstrated exploitable)** | positional pin cannot separate them; only `readEventsFromChain` failing to decode prevents it |
+| **SEC-14** | Zero-parameter event: taken and not-taken rows are byte-identical | A2 | SEC-13 | **INTEGRATED** | LIVE: the taken path's covenant checks NEVER RAN; a plain P2SH was accepted - see 4.64 |
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
@@ -222,6 +223,65 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.64 TWO more live forgeries (X11, SEC-14), and A2 retracted its own first fix
+
+The last round-16 packet, and the largest. Two of its three rows had a **stale or wrong recorded premise**, and
+two produced **live forgeries**.
+
+**SEC-14 was far worse than "not demonstrated exploitable".** The board recorded it as a shape a positional pin
+could not separate, saved only by a reader accident. The truth is at the cause:
+`emitEventCovenantVerification` gates a conditional emit on `OP_IF <blob non-empty>`, and a **zero-parameter blob
+is empty** - the same value as the not-reached dummy. So on the **taken** path the gate evaluated false and the
+covenant address, capability, FT-amount and satoshi-bound checks **never ran at all**. Measured: the reserved
+event output replaced with a **plain 50,000-satoshi P2SH carrying no token** was **ACCEPTED**. The same diversion
+on an *unconditional* zero-parameter emit was refused - that is the control that localises it.
+
+The fix is `OP_0` -> `OP_1`, the same single byte: **+0 script cost on all nine shapes** (464 both sides for the
+zero-parameter conditional), and +1 byte in the on-chain commitment, which is also what makes the row *readable*
+- `parseEventCommitment` consumes it, so a genuine `emit Ping()` decodes as a log and a not-taken slot does not.
+**The reader accident is removed, not relied on.** The decisive control is the second guard: a one-parameter
+conditional emit is **byte-for-byte unchanged**, which is exactly what a marker prepended to every emit would
+have broken.
+
+**X11's recorded premise was stale, and chasing the real gap found a live forgery.** A delegate C2 sorted write
+already settled in-repo (`UpgradesDeployProxy`, an INSERT). What had no settling instance was the same write
+against a proxy owning **no data NFTs of its own** - and the cause was SDK-side: `hasNothingToDerive` read
+`abiFunction.entryAccesses`, which a delegatecall forwarder does not publish, so derivation was skipped, the
+entry output kept its **input** commitment, and the implementation covenant rejected its own transaction.
+
+Then the consequence: `pinsCollectionOutputCount` **excluded delegates, recorded as "guarding an unreachable
+shape"**. It is reachable, and with the pin off **nothing bounded collection output cardinality on that route**.
+Appending one own-category mutable NFT at the collection entry address beside a genuine delegated
+`users[msg.sender] = 5` was **ACCEPTED**, and the contract's own paginated reader returned **`[5n, 99n]`** - the
+fabricated value read back as a genuine mapping entry. Refused at input 2 now. Cost **+28 bytes** for a delegate
+performing a C2 sorted write, **+0** for an ordinary mapping write and **+0** for a delegate without one.
+
+**A2 retracted its own first fix.** Its initial version pre-emptively refused every delegated INSERT - too broad,
+and it broke the default-proxy case. Removed in two commits rather than argued for. **Sixth too-broad first
+version across two rounds, and the fifth caught by its own author.**
+
+**A second stale-artifact finding on the same file A1 flagged.** The shipped `defaultProxyArtifact` carries the
+**relaxed** conservation form (`OP_0 OP_LESSTHANOREQUAL OP_VERIFY`, outputs >= inputs) where a fresh compile of
+its own source emits **strict** `OP_0 OP_NUMEQUALVERIFY` - **159 bytes checked in against 173 fresh**. So the
+delegated INSERT settles *only because that artifact is stale*, and **regenerating it per `docs/upgrades.md`
+will break that test and close the insert**. Combined with A1's finding that the same file is a pre-X37 artifact,
+X50 is now two independent defects in one checked-in file.
+
+**X12's cause was not the recorded one either.** Not an unfilled graft position: a **split facet** is
+`delegateOnly`, so the SDK never co-spends or materialises its own data NFTs, and an implementation-relative
+offset counted them anyway - reading one index too high per data NFT. The gating was measured, not assumed: an
+**ungated** subtraction settled the split route and **broke** the deployProxy route, caught by SEC-13's own
+emitting-delegate case. Cost is **-6 bytes** on a split facet (six sites fold `OP_1 OP_ADD` into `OP_1ADD`) and
++0 on all eight other shapes. Newly named and refused at build time: `.emitReturn()` on a delegated call that
+also emits, where the event NFT takes the index the forwarder reserved for the return event.
+
+**A2 declined the cheap fix and said why.** It did not relax the proxy's conservation to admit INSERT on a
+freshly compiled proxy: the cheap variants (`balance <= 0`, or excluding entry addresses from both loops) each
+drop a real C1 property, **and the live forgery above shows that route is not over-protected**.
+
+**Lease note:** A2 edited `StatefulContract.ts`, `StateReader.ts`, `AST.ts` and `compiler.ts`, all unleased and
+untouched by the other five agents, and flagged them for tracking rather than leaving them to be discovered.
 
 ### 4.63 Round-16 verification: all six packages green, 7,063 tests, zero flakes
 

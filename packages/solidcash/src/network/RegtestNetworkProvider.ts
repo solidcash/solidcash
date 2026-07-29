@@ -309,14 +309,18 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     await this.ensureReady();
     await this.rpc.request<GenerateToAddress>('generatetoaddress', 1, this.miningAddress);
 
-    const walletUtxos = (await this.rpc.request<ListUnspent>('listunspent', 1, 9999999))
-      .filter((u) => u.spendable && u.vout === 0);
-    if (walletUtxos.length === 0) {
+    // The genesis input must be VALIDATED LIVE, not merely listed. `listunspent` on this shared wallet reports
+    // coins it still believes unspent, so taking the first one produced two different failures on two
+    // consecutive runs - `Input not found or already spent` when signing, and `txn-mempool-conflict` when a
+    // rapid second genesis reached for the same coin. `pickLiveFundingInput` confirms each candidate with
+    // `gettxout` including the mempool, which is the same rule the funding path already follows.
+    let genesisInput: ListUnspentItem;
+    try {
+      genesisInput = await this.pickLiveFundingInput(true);
+    } catch {
       await this.createVout0Utxo();
-      return this.addTokenUtxosDynamic(outputsFactory);
+      genesisInput = await this.pickLiveFundingInput(true);
     }
-
-    const genesisInput = walletUtxos[0];
     const categoryId = genesisInput.txid;
     const outputs = outputsFactory(categoryId);
     for (const out of outputs) await this.importAddressIfNeeded(out.address);

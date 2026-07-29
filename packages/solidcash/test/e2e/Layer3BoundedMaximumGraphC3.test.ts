@@ -1613,8 +1613,9 @@ describe('C3 capacity measurement', () => {
     //     per invocation - 160 for C3 - which is what makes the instruction count track 14P + 6N, and each
     //     slice pushes O(transcript length) whatever it extracts. Halving the pushed-bytes term saves 294,262,
     //     which is 13.8%.
-    //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs. The constant lives in
-    //     SymbolTableTraversal.ts. See the caveat on the per-output constant below before costing this.
+    //   - Shrinking the Ledger's 64-slot trailing region to what one chunk needs: 198,400 against the measured
+    //     base, which is 9.3%, and 9.5% on X28's corrected slot count. The constant lives in
+    //     SymbolTableTraversal.ts; the per-output price it is costed at comes from X28, not from this file.
     //
     // Scaling, against C1 and C2 run to completion on the same relaxed-budget harness AT THIS COMMIT. C1's row
     // is printed by its own capacity test; C2's projection count is asserted in its file, and its controller
@@ -1636,17 +1637,22 @@ describe('C3 capacity measurement', () => {
     //      5/6, so no two of these three builds share row counts any more and that control is GONE. The claim
     //      is not re-asserted here; re-earning it needs two builds at equal P/N and different transcript
     //      length.
-    //   3. The controller model "projection cost plus 32 instructions per transaction output" CANNOT be
-    //      confirmed or refuted from these three builds: P, N and slots all differ across them, so a linear
-    //      model in P, N, slots and a constant has four unknowns against three measurements and ANY per-output
-    //      constant fits. The recorded 10,035 / 11,443 / 18,771 controller instruction counts reproduce as
-    //      9,561 / 9,536 / 15,336, so the arithmetic that "fit exactly" no longer does.
+    //   3. The controller model "projection cost plus 32 instructions per transaction output" is NOT what these
+    //      three builds establish, and this file should stop citing them for it: P, N and slots all differ
+    //      across them, so a linear model in P, N, slots and a constant has four unknowns against three
+    //      measurements and ANY per-output constant fits. The recorded 10,035 / 11,443 / 18,771 controller
+    //      instruction counts reproduce as 9,561 / 9,536 / 15,336, so the arithmetic that "fit exactly" no
+    //      longer does either. The constant itself is not in doubt - X28 re-fit it independently at exactly 32
+    //      instructions per output with participant count, invocation count and transcript length held fixed,
+    //      which is the right control and the one to cite.
     //
-    // C3's own structural finding stands, but its price is now conditional: 66 of its 108 slots are the
-    // Ledger's trailing region, held at BALANCED_TRAILING_CAPACITY = 64 for ONE chunk UTXO. IF the 32
-    // instructions-per-output figure holds - which point 3 says this file can no longer establish - those 62
-    // unused slots cost the controller 198,400 of the measured 2,131,662, which is 9.3%, not the 6.9% recorded
-    // (that divided by the stale 2,891,475 base). Against 7.8% of headroom rather than a deficit.
+    // C3's own structural finding stands, and its price is now against the measured base: 66 of its 108 slots
+    // are the Ledger's trailing region, held at BALANCED_TRAILING_CAPACITY = 64 for ONE chunk UTXO. At X28's
+    // 32 instructions per output the unused slots cost the controller 198,400 of the measured 2,131,662 -
+    // 9.3%, not the 6.9% recorded, which divided by the stale 2,891,475 base. X28 further records that the
+    // unused count is 63 rather than the 62 written here and that the per-slot price is a floor, which puts
+    // the cut at 9.3% to 9.5%; this file does not re-derive the slot count, so the correction is cited rather
+    // than applied. Either way it is headroom this composition already has, not a deficit it has to close.
     expect(built.plan.participants).toHaveLength(8);
     expect(built.plan.invocations).toHaveLength(8);
     expect(built.transcript.bytes.length).toBeGreaterThan(1_100);

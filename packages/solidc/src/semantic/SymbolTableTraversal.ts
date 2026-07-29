@@ -9488,6 +9488,14 @@ export function keyIsCallerChosen(
  * The decision is MEMOIZED per name. Without that, a key mentioning the same committed parameter twice
  * (`checkMultiSig(ss, [pk, pk])`) got a commitment on the first visit and hit the in-flight marker on the
  * second, so one key resolved two ways and the idiom warned anyway - measured before the memo was added.
+ *
+ * X46: a commitment is only as good as the last WRITER of what it is bound to. Scalar state is read after
+ * write (measured on the BCH-2026 VM: `this.pkh = a; require(this.pkh == a)` settles for any `a`, while the
+ * same require without the preceding write rejects), so `this.pkh = attackerPkh; require(hash160(pk) ==
+ * this.pkh)` pins the key to a value the caller supplied one line earlier. The statements are therefore walked
+ * IN ORDER and each require is judged against the state this body has already overwritten from a caller-chosen
+ * value. Writes AFTER the commitment cannot affect it, which is what keeps the key-ROTATION idiom
+ * (commit, authenticate, then store the new hash) credited.
  */
 function parameterIsCommitted(
   name: string, fn: FunctionDefinitionNode, seen: Set<Node | string>,
@@ -9499,12 +9507,79 @@ function parameterIsCommitted(
   // A fresh Node set: reusing `seen`'s nodes would make an already-visited committed side look non-caller-chosen.
   // The in-flight markers must ride along, or a self-referential commitment recurses forever.
   const markers = [...seen].filter((s): s is string => typeof s === 'string' && s.startsWith('inflight:'));
-  const committed = unconditionalStatements(fn.body).some(
-    (s) => s instanceof RequireNode && commitmentCommitsKey(s.expression, name, fn, markers),
-  );
+  const overwritten = new Set<string>();
+  let committed = false;
+  for (const statement of unconditionalStatements(fn.body)) {
+    if (statement instanceof RequireNode
+      && commitmentCommitsKey(statement.expression, name, fn, markers, overwritten)) {
+      committed = true;
+      break;
+    }
+    collectCallerWrittenState(statement, fn, markers, overwritten);
+  }
   seen.delete(`inflight:${name}`);
   seen.add(committed ? `committed:${name}` : `free:${name}`);
   return committed;
+}
+
+/**
+ * X46: names of contract state this statement overwrites with a value the CALLER chose. Scalar vars, mapping
+ * entries and state-array elements all count, by name - a mapping written at one key and read at another is
+ * over-approximated rather than missed, since the alternative is a hole one line wide. Conditional arms are
+ * descended: an if-arm write may run, so it taints a later top-level commitment exactly as a straight-line one
+ * does. `delete` and a write from stored/constructor material taint nothing - only caller-chosen values do.
+ */
+function collectCallerWrittenState(
+  node: Node | undefined, fn: FunctionDefinitionNode, markers: string[],
+  out: Set<string>, seen: Set<Node> = new Set(),
+): void {
+  if (!node || seen.has(node)) return;
+  seen.add(node);
+  const written = node instanceof StateAssignNode || node instanceof MappingAssignNode
+    ? node.expression
+    : (node instanceof StateArrayAssignNode ? node.value : undefined);
+  if (written !== undefined && keyIsCallerChosen(written, fn, new Set<Node | string>(markers))) {
+    out.add((node as unknown as { name: string }).name);
+  }
+  for (const value of Object.values(node)) {
+    if (value instanceof Node) collectCallerWrittenState(value, fn, markers, out, seen);
+    else if (Array.isArray(value)) {
+      for (const e of value) if (e instanceof Node) collectCallerWrittenState(e, fn, markers, out, seen);
+    }
+  }
+}
+
+/**
+ * X46: does this committed side read state the body already overwrote from a caller-chosen value? Locals are
+ * followed the same way keyIsCallerChosen follows them, so `this.pkh = a; bytes20 z = this.pkh;
+ * require(hash160(pk) == z)` is caught as well as the direct spelling.
+ */
+function readsOverwrittenState(
+  expr: Node | undefined, fn: FunctionDefinitionNode, overwritten: ReadonlySet<string>,
+  seen: Set<Node | string> = new Set(),
+): boolean {
+  if (overwritten.size === 0) return false;
+  let cur = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (!cur || seen.has(cur)) return false;
+  seen.add(cur);
+  if ((cur instanceof StateAccessNode || cur instanceof MappingAccessNode) && overwritten.has(cur.name)) {
+    return true;
+  }
+  if (cur instanceof IdentifierNode) {
+    if (seen.has(`id:${cur.name}`)) return false;
+    seen.add(`id:${cur.name}`);
+    return localBindings(fn.body, cur.name)
+      .some((binding) => readsOverwrittenState(binding, fn, overwritten, seen));
+  }
+  for (const value of Object.values(cur)) {
+    if (value instanceof Node) {
+      if (readsOverwrittenState(value, fn, overwritten, seen)) return true;
+    } else if (Array.isArray(value)) {
+      for (const e of value) if (e instanceof Node && readsOverwrittenState(e, fn, overwritten, seen)) return true;
+    }
+  }
+  return false;
 }
 
 /** Statements that run on every path through this body: the top level, with `unchecked` blocks inlined. */
@@ -9517,20 +9592,26 @@ function unconditionalStatements(body: BlockNode | undefined): StatementNode[] {
   return out;
 }
 
-/** Does this require condition pin `name` to a value the caller cannot choose? Descends `&&`, not `||`. */
+/**
+ * Does this require condition pin `name` to a value the caller cannot choose? Descends `&&`, not `||`.
+ * `overwritten` carries X46's already-written state names; a side that reads one of them was chosen by the
+ * caller a statement earlier, however unchooseable the declaration of that variable looks.
+ */
 function commitmentCommitsKey(
   expr: ExpressionNode | undefined, name: string, fn: FunctionDefinitionNode, markers: string[],
+  overwritten: ReadonlySet<string>,
 ): boolean {
   let cur: ExpressionNode | undefined = expr;
   while (cur instanceof CastNode) cur = cur.expression;
   if (!(cur instanceof BinaryOpNode)) return false;
   if (cur.operator === BinaryOperator.AND) {
-    return commitmentCommitsKey(cur.left, name, fn, markers)
-      || commitmentCommitsKey(cur.right, name, fn, markers);
+    return commitmentCommitsKey(cur.left, name, fn, markers, overwritten)
+      || commitmentCommitsKey(cur.right, name, fn, markers, overwritten);
   }
   if (cur.operator !== BinaryOperator.EQ) return false;
   for (const [hashSide, committedSide] of [[cur.left, cur.right], [cur.right, cur.left]] as const) {
     if (!isHashOf(hashSide, name, fn)) continue;
+    if (readsOverwrittenState(committedSide, fn, overwritten)) continue;
     if (!keyIsCallerChosen(committedSide, fn, new Set<Node | string>(markers))) return true;
   }
   return false;

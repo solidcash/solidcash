@@ -848,6 +848,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the implementation follows the proxy at a non-zero input index.
     const delegateOutputOnly = this.currentFunctionIsDelegate
       && new Set<BlockSlotKind>(['transfer', 'tcTransfer', 'event', 'returnEvent']).has(kind);
+    // X12. The implementation's own `dataNft` slots are PROXY-resident - a delegate never co-spends its own
+    // data NFTs - so nothing occupies those positions after the implementation master. Counting them into an
+    // implementation-relative offset pushes every output-only slot one index too high per data NFT: the
+    // covenant read output[implInput + 2] while the only position after the implementation was implInput + 1.
+    if (delegateOutputOnly) offset -= this.countDataNftSlotsBefore(offset);
     if (delegateOutputOnly) this.emit(Op.OP_INPUTINDEX, locationData);
     else this.emitMasterInputIndex(locationData);
     if (offset > 0) {
@@ -935,6 +940,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!layout) return 0;
     const outputOnly = new Set<BlockSlotKind>(['transfer', 'tcTransfer', 'event', 'returnEvent']);
     return layout.slots.filter((s) => outputOnly.has(s.kind) && s.offset < offset).length;
+  }
+
+  /** X12. `dataNft` slots below `offset` - the ones a delegate leaves in the proxy block, occupying nothing
+   * after the implementation master. */
+  private countDataNftSlotsBefore(offset: number): number {
+    const layout = this.currentFunction.blockLayout;
+    if (!layout) return 0;
+    return layout.slots.filter((s) => s.kind === 'dataNft' && s.offset < offset).length;
   }
 
   /**
@@ -20213,9 +20226,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitOwnCategoryImmutableNftOutputPin(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // X12. Inside a delegate the base below is OP_INPUTINDEX and the implementation's own data NFTs are
+    // proxy-resident, so the admitted offsets must be shifted down exactly as emitBlockSlotIndex shifts the
+    // index it checks. Without this the pin admits a position no honest emit can occupy and refuses the one
+    // it does.
     const allowedOffsets = (node.blockLayout?.slots ?? [])
       .filter((slot) => slot.kind === 'event')
-      .map((slot) => slot.offset);
+      .map((slot) => (this.currentFunctionIsDelegate
+        ? slot.offset - this.countDataNftSlotsBefore(slot.offset) : slot.offset));
     // A B-side return event is also an own-category immutable NFT, but its index is WITNESSED, not the layout
     // offset, and on a standalone call (`_returnOutputIdx < 0`) it is not materialized at all - the reserved
     // offset then belongs to whatever shifted into it. Admit the witnessed index instead of the static offset,

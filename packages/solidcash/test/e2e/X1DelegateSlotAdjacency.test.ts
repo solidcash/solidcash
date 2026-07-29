@@ -97,24 +97,35 @@ describe('X1 delegate implementation slot adjacency', () => {
     expect(stateFromTx(plainSet, deployed.categoryId, compiled.root.stateLayout).x).toBe(21n);
   }, 300_000);
 
-  // OPEN SHAPE, measured not reasoned. The `emit` funder kind was raised as part of this task's blast radius.
-  // It does NOT settle, and it did not settle at the base commit either: both cases below were run at
-  // `4c131f9b` with this fix reverted and produced the SAME two errors, so this fix neither repairs nor
-  // regresses them. The cause is separate: the SDK grafts a delegated implementation's own event slots into
-  // the proxy block at `callOffset + facetOffset`, which leaves an unfilled position between the reserved
-  // implementation slot and the grafted event slot. Recorded so the class is not reported as closed.
-  it('does not yet settle a delegated call that materializes an event funder slot', async () => {
-    const { deployed } = await deploySplit(EMITTING);
-    const outcome = await deployed.call.setXEmitting(23n).send()
-      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('mandatory-script-verify-flag-failed');
-    expect(outcome).toContain('error in evaluating input index 2');
+  // X12. This was the OPEN shape recorded here, and it now settles. The cause was never the graft: the
+  // implementation's own `dataNft` slots are PROXY-resident, so an implementation-relative output-only offset
+  // that counted them read one index too high per data NFT - the covenant looked at implInput + 2 while the
+  // only position after the implementation was implInput + 1. Fixed in emitBlockSlotIndex.
+  it('settles a delegated call that materializes an event funder slot', async () => {
+    const { deployed, compiled } = await deploySplit(EMITTING);
+    const tx = await deployed.call.setXEmitting(23n).send();
+    expect(stateFromTx(tx, deployed.categoryId, compiled.root.stateLayout).x).toBe(23n);
   }, 300_000);
 
-  it('does not yet settle a delegated call with an event slot AND a return channel', async () => {
+  // The same implementation called WITHOUT .emitReturn(): its event settles too, so the emit funder is not
+  // conditional on the function being non-returning.
+  it('settles a delegated emitting call that also returns, when the return channel is not used', async () => {
+    const { deployed, compiled } = await deploySplit(EMITTING);
+    const tx = await deployed.call.setXEmittingReturning(31n).send();
+    expect(stateFromTx(tx, deployed.categoryId, compiled.root.stateLayout).x).toBe(31n);
+    // .staticCall() reads the value through a probe that is never broadcast, so it is unaffected.
+    expect(await deployed.call.setXEmittingReturning(41n).staticCall()).toBe(41n);
+  }, 300_000);
+
+  // STILL OPEN, now named rather than opaque. With .emitReturn() the implementation's event NFT takes the
+  // output index this forwarder reserved for the return event, and the return event moves one later; the two
+  // offsets disagree and the implementation rejected at input 2. Without an `emit` they coincide, which is
+  // why the plain returning delegate above settles. Refused at build time with that reason.
+  it('refuses .emitReturn() on a delegated call that also emits, with a named reason', async () => {
     const { deployed } = await deploySplit(EMITTING);
     const outcome = await deployed.call.setXEmittingReturning(25n).emitReturn().send()
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('Could not derive the return value');
+    expect(outcome).toContain('which both emits an event and returns a value');
+    expect(outcome).toContain('Call it without .emitReturn()');
   }, 300_000);
 });

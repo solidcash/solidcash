@@ -5979,6 +5979,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
+      /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
+      returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
       compilerRouteSelector?: Uint8Array;
     },
@@ -6078,6 +6080,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
       returnEmitOutputIndex = slot.offset;
+      // X12. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
+      // Verification is gated `!functionHasDelegatecall`), which resolves it implementation-relative. When that
+      // implementation ALSO emits, its event slot takes the position this forwarder reserved for the return
+      // event and the return event moves one later - the two disagree and the implementation rejects at its own
+      // input. Without an `emit` the two offsets coincide, which is why the plain returning delegate settles.
+      for (const ci of (overrides?.returnProbeOnly ? [] : (overrides?.calls ?? [])) as Array<{
+        type?: string; contract?: StatefulContract; functionName?: string;
+      }>) {
+        if (ci?.type !== 'stateful' || !ci.contract) continue;
+        const implFn = (ci.contract.inner.artifact.abi as readonly AbiFunction[])
+          .find((f) => f.name === ci.functionName);
+        const implSlots = implFn?.blockLayout?.slots ?? [];
+        if (!implSlots.some((s) => s.kind === 'event') || !implSlots.some((s) => s.kind === 'returnEvent')) continue;
+        throw new Error(
+          `.emitReturn() on '${functionName}' delegates to '${ci.functionName}', which both emits an event and `
+          + 'returns a value. The implementation covenant places its event NFT at the output index this '
+          + 'forwarder reserved for the return event, so the two disagree and the implementation rejects. '
+          + 'Call it without .emitReturn() (the delegated emit settles), or read the value with .staticCall().',
+        );
+      }
     }
     if (abiFunction?.usesMsgSender) {
       let msgSenderCategory = overrides?.msgSenderCategory;
@@ -9594,7 +9616,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
     }
     // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
-    const builder = await this._createBuilder(functionName, args, { emitReturn: true, calls });
+    const builder = await this._createBuilder(
+      functionName, args, { emitReturn: true, returnProbeOnly: true, calls },
+    );
     const blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined
       ?? this._deriveReturnBlob(builder, slot.offset);
     if (!blob) {

@@ -1,7 +1,8 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  ContractNode, FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, Node, VariableDefinitionNode,
+  ContractNode, FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, Node, TupleAssignmentNode,
+  VariableDefinitionNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -137,11 +138,30 @@ export function analyseFunctionFootprint(
   };
 }
 
-/** Parameter and local-declaration names bound inside one function - never a contract collection. */
+/**
+ * Parameter and local-declaration names bound inside one function - never a contract collection.
+ *
+ * A NAMED RETURN (`returns (uint[] memory amounts)`) and a tuple DECLARATION (`(uint a, uint[] b) = f()`) bind
+ * a local exactly as a parameter or a `var` declaration does, and symbol resolution resolves an element access
+ * on either to that local. Omitting them made the bare-element branches below read `amounts[i]` in
+ * UniswapV2Router02 as a collection access and publish `collection:amounts:*` for a name the contract never
+ * declares; the hidden-batch route is gated on this footprint, so every such handler was refused
+ * 'collection-helper-route-not-enabled' with no collection involved at all. Only tuple elements that DECLARE
+ * (they carry a type) are bound here - an `existing` element names a variable bound at its own declaration,
+ * and treating one as local would hide a genuine state write from the footprint.
+ */
 function locallyBoundNames(fn: FunctionDefinitionNode): Set<string> {
-  const names = new Set<string>(fn.parameters.map((parameter) => parameter.name));
+  const names = new Set<string>([
+    ...fn.parameters.map((parameter) => parameter.name),
+    ...fn.returnNames,
+  ]);
   walkInvocationAst(fn.body, (node) => {
     if (node instanceof VariableDefinitionNode) names.add(node.name);
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) {
+        if (element.name !== undefined && element.type !== undefined) names.add(element.name);
+      }
+    }
   });
   return names;
 }

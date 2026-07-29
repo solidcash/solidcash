@@ -175,7 +175,7 @@ task-specific report, not in this table.
 | **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (REPAIRED)** | refusal replaced by X29's real repair - see 4.33 |
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
 | **SEC-8** | X29's shared reached flag permitted satoshi-container theft | A | X29 | **INTEGRATED (closed)** | per-handler flag; design credited to C, validated by A |
-| X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
+| X30 | Multi-ROW mid-chain participant rejects at input 2 | R1 | X29 | **RETRACTED - wrong as written** | a multi-row mid-chain participant DOES settle; R1 reached ordinal 1 via a `StrideKick` root, see 4.49 |
 | **SEC-10** | One-armed conditional emit reserves an unsettled slot | C | SEC-9 | **INTEGRATED** | reframed: the class was never slot-specific - see 4.45 |
 | **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | C | SEC-9 | **INTEGRATED** | closed by the same own-category immutable pin |
 | **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | S2 | SEC-11 | **INTEGRATED** | all 3 paths admitted the forgery; A rejects at input 0, B/C at input 2 - see 4.47 |
@@ -183,11 +183,14 @@ task-specific report, not in this table.
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
-| X36 | `planCompiledGraph` does not enforce occurrence bounds | — | X31 | TODO | 3 children can bind one `once` callsite; caught on chain, not at plan time |
+| X36 | `planCompiledGraph` does not enforce occurrence bounds | S4 | X31 | **INTEGRATED** | one shared assertion on both entry points; bound taken from published capacity, NOT `bindConsumerCallsites` - see 4.50 |
 | X33 | S2's `touchesCollection` does not descend through calls | C | S2 | **INTEGRATED** | BFS over the call graph; caught its own fn-pointer over-approximation |
 | X34 | Relax the over-strict `this.`-spelled dynamic+collection refusal | — | X33 | TODO | admitted form PROVEN sound on the VM; bus-mode leg unsettled |
 | X35 | Eligibility oddity: stricter combination admitted, simpler refused | — | X33 | TODO | dyn+collection `eligible: true` while dyn-only is refused |
-| X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED** | effect-carrying handlers keep binding AND keep their effects; routes SHRANK |
+| X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED, striding now PROVEN** | reviewed by R1: striding holds both directions; opened SEC-15 on its reserved slots |
+| **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **LEASED (security)** | `frameShadowed` drops the whole SEC-10 not-taken binding; repair must be PER-SLOT - see 4.49 |
+| X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
+| X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | — | SEC-6 | **TODO (diagnostic)** | no artifact produced either way, so not a security gap |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
 | X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
@@ -204,6 +207,91 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.50 X36: the obvious fix would have been a FALSE REJECTION, and measurement said so first
+
+Merged at `ed32349c`. Both entry points now route every bound leg through one shared
+`assertPlannedOccurrenceCount`, and the worklist gate keeps only what the bound cannot know - whether the
+derivation probe answered at all.
+
+**The trap this row was actually hiding.** The obvious implementation is to count rows the way
+`bindConsumerCallsites` attributes them. S4 measured that attribution and found it **wrong**: on a handler with a
+`once` and a `conditional` callsite of the same name, **both rows report callsite 0 and the conditional answers
+neither**. Refusing on that guess is a false rejection that kills `Layer3CompiledGraphController`'s honest
+conditional graph, which settles. The bound is therefore taken from the handler's **total published capacity** -
+`batchInvocations.length` for a collapsed repeated call, 1 for any non-loop callsite, `maximumOccurrences ??
+Infinity` for a loop - which needs no attribution guess at all. Fourth time on this board that the obvious fix
+was the wrong one and only a measurement separated them.
+
+**The deliberate many-to-one survived, measured rather than assumed**: instrumented over the layer-3 suite,
+**1,004 caller/callsite binding groups, 6 outside capacity, every one a provable over-count**. Loop many-to-one,
+unbounded loops and collapsed repeated calls all still plan.
+
+**Two further divergences between the entry points, both closed.** `planCompiledGraph` read the compiler-authored
+call mode **only when the caller supplied none**, so `callMode: 'call'` on a `delegatecall` callsite executed as
+an ordinary call - and `Layer3CallOptions.test.ts:561` had documented that in a comment rather than a refusal.
+Separately, `if (abiFunction === undefined) return;` skipped the call-option refusal entirely for the one
+artifact shape that hides the direct-mode `transferCount` the refusal compares against. Three `abi.find` sites
+bypassing the overload check were switched to `resolveGraphAbiFunction` - behaviour-identical today, closed so it
+cannot drift.
+
+**X31's remaining half verified**: both entry points now produce a **byte-identical** refusal string on the same
+artifact, asserted. And the narrowing is confirmed by projection, not by eligibility: `this.transfer(r,900)` and
+`bar{value:900}()` publish the **same** `transferCount: 1` and the same direct slots; the discriminator is
+`handler.transfers` 1 vs undefined and route slots `transfer:8` vs `master:1` only. Both handlers are
+`eligible: true`, so eligibility separates nothing.
+
+Counts: solidc **2,463/0** unchanged, solidcash **4,120/0** (4,102 + 18). Seven assertions across five files
+changed, all named. Four residual gaps reported rather than papered over, including that
+`bindConsumerCallsites`' mis-attribution is now pinned as a `MEASURED:` test and that two evidence cells are
+shadowed by the earlier refusal.
+
+### 4.49 SEC-15: a forged log is LIVE in X29's OWN reserved slots, and X29's striding is PROVEN
+
+R1's review merged at `ba6258bb`, test-only. Three results, and the review closed one gap while opening a worse
+one.
+
+**X29's striding is proven for the first time.** Section 4.41 recorded that every committed fixture uses row 0, so
+`site * width` was multiplied by zero and per-site striding had **no** evidence. R1 reached ordinal >= 1 by making
+the hub a **multi-row mid-chain participant** - a `StrideKick` root that calls it twice, so `fireAll` lands on
+local row 1. The ordinal follows the row **in both directions**, for the transfer frame and the event frame, and
+building the effect at the wrong ordinal rejects at input 0 either way. **X30's row is wrong as written**: a
+multi-row mid-chain participant does settle.
+
+**SEC-15 - a live forgery in the frame's own reserved slots.** The frame reserves 8 event outputs and only the
+reached site settles one. `emitEventCovenantVerification` replaces its **entire SEC-10 not-taken binding with a
+bare `OP_ENDIF`** whenever the route owns an effect frame (`GenerateTargetTraversal.ts:18137`, used at `:18314`),
+and `emitOwnCategoryImmutableNftOutputPin` (`:20079`) admits an own-category immutable NFT at **any** `event`
+offset. The 7 unreached slots are bound by nothing: forging one is ACCEPTED and `readEventsFromChain` returns
+`Fired(999999)` beside the genuine logs, at full fidelity. **It reproduces in the single-row shape the committed
+X29 fixture itself uses**, so it needs none of the reviewer's scaffolding.
+
+**The repair shape was constrained by an ablation, not by argument.** Forcing `frameShadowed` to `false` makes the
+**honest** transaction reject at input 0 as well, because the binding demands an empty commitment while the
+reached site's genuine NFT carries a non-empty one. So the exemption is load-bearing and **the repair must be
+per-slot** - bind the ordinals this dispatch site does not own - not a route-wide reinstatement. Dispatched to S5
+with that constraint stated, because a fix that reinstates the route-wide binding rebuilds the ablation and fails
+the honest control.
+
+**This is SEC-10/SEC-11's class still live on the X29 route**, and off the bus the identical class is already
+refused: `PlainConditionalEmitSlot.test.ts` is green at baseline, plain route rejects at input 0 and reads back
+zero events, while the X29 frame route accepts. Section 4.43's justification - "the handler is the authority" -
+is true only for the **one** slot the handler settles. That step was never checked until now.
+
+**A claim is BLOCKED rather than open.** The subroutine's `containerIn - containerOut <= min(reached site
+transfers)` bound **stays unmeasured**, because the only shape that exercises it (two reached transfer sites) is
+unreachable for an independent reason: two rows that both dispatch an **outgoing-edge** handler never settle,
+whatever the handler carries, while `[note,note]` and `[note,fireAll]` both do. R1 explicitly declined to call
+the bound sound or unsound. Record it as blocked, not as verified.
+
+**SEC-6 and SEC-7 came back clean under direct attack**, with the reason stated in each case. SEC-7's
+`some(kind === 'tcTransfer')` short-circuit (`SymbolTableTraversal.ts:8871`) is **itself unguarded**, but every
+path to it is closed upstream - which matters if the token-container key-parameter restriction is ever relaxed.
+SEC-6's `hasOutgoingCall` is **shallow** and does not descend through internal calls, but an internal helper
+making an external call is not compilable in a bus contract at all. Two effect kinds fail closed with an
+**internal crash instead of a named diagnostic** - `new Child(..)` gives `Block slot not found: deploy[0]` and
+`blockhash(n)` gives a missing-stack-variable error. No artifact is produced either way, so this is a diagnostic
+gap, not a security gap.
 
 ### 4.48 R2's review of the C1/C3 reshapes: PASS on soundness, and the reshapes may be REDUNDANT
 

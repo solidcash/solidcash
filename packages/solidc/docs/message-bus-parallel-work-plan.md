@@ -164,7 +164,9 @@ task-specific report, not in this table.
 | X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient - refused as DUST | — | X49 | **TODO** | invisible to every harness measurement: `enforceDust: false` + `dustRelayFeePerKb: 0n` |
 | F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
-| F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
+| F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
+| X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | — | F4 | **TODO (sized)** | ~760 B of the verifier, ~6,080 C3 bytes; table-lookup form needs a 2-byte offset whose soundness rests on the stack-item bound |
+| X66 | F2's basis and F1's header are stale-but-passing after F4 | — | F4 | **TODO** | both work off RECORDED figures; all four graph rows overstate by 129 x N and F2's C3 verdict is no longer live |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **DECIDED - measure on the node** | user's call: probe a 1,000-sat bare `OP_1` against BCHN and let the result decide; relayed to the agent already holding the stack |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
@@ -231,6 +233,71 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.73 F4: C3 IS UNDER THE RELAY CEILING, and the lever was 82 verifier bytes
+
+Merged at `09c00b62`; capstone pins updated at `d1cb8645`.
+
+**The lever, which is the whole result.** `generateGraphProjectionVerifier` is **one covenant instantiated once
+per participant**, and each proof slot's unlocking script pushes the whole redeem script - so **a verifier byte
+is worth N transaction bytes**. That is the same mechanism X5 was measured on going the other way (+37 -> +296).
+C3 needed 650 bytes; **it needed only 82 verifier bytes**. Nobody had stated the multiplier before, and it
+reframes every future size question on this system.
+
+Three rewrites, **-129 B per projection**: the bare locking bytecode cut from the framed table entry already on
+the stack instead of re-slicing the transcript (-8), and X27's suffix split applied to the verifier's
+**invocation** loop (-60) and **participant** loop (-61) - the controller's loop has carried that split since X27.
+
+| shape | N | before | after | delta | = N x 129 |
+| --- | --- | --- | --- | --- | --- |
+| A13 | 3 | 23,845 | **23,458** | -387 | 3x |
+| C2 | 4 | 53,249 | **52,733** | -516 | 4x |
+| C1 | 5 | 63,315 | **62,670** | -645 | 5x |
+| **C3** | 8 | 100,650 | **99,618** | **-1,032** | 8x |
+
+**C3 is inside the 100,000-byte standard relay ceiling by 382 bytes, with all 108 slots intact.** The
+slot-removal options F1 costed - four cheapest pairs at 810 B, or the 62-slot unused Ledger region at 13,048 B -
+are **no longer needed to clear it** and remain as headroom. The multiplier was confirmed as exactly N on all
+four shapes independently.
+
+**It is not a security change, argued precisely rather than asserted.** No require is removed, weakened, added or
+reordered; the check count is identical. Each `cursor + n <= transcript.length` becomes `local + n <=
+frame.length` and each `tail + n <= transcript.length` becomes `n <= row.length` - **the same predicate**, since
+`frame.length == transcript.length - cursor`, in range by the induction the controller already states. F4-1 is
+**byte identity**: `participantLbc[2 .. 2+lbcLength)` **is** `transcript[cursor+6 .. cursor+6+lbcLength)`.
+
+**The scope control is what makes that credible**: the controller reproduces **to the operation** - 2,891 B /
+2,131,662 / 15,336 / 0.9217x, its exact pre-F4 reading. A change scoped to one covenant moved exactly one
+covenant's figures. Both capstones' knob-liveness assertions still pass on the post-F4 bytes, including C3's that
+the op-cost knob **bites** at 200/byte, and both envelopes re-run clean at the real consensus **and** real
+standard profiles.
+
+**Two limits improved and none regressed.** A13's binding limit **is** a projection: **5,131 -> 5,002 B, 0.5131x
+-> 0.5002x**. C3's projection density improved 0.6284-0.6361 -> 0.5669-0.5707, and **all eight rows still cost
+identically**, so X24's "the returning-row surcharge is gone" property survives. C3's op-cost density is
+unchanged at 0.9217x, and standard size is still first-binding - now at **0.9962x**.
+
+**Three alternatives screened and rejected with costs**, including one that worked: F4-4 hoists
+`transcript.length` into a local for **-3 B**, measured and **deliberately not landed**, because "every landed
+byte here costs a coordinated pin update across fixtures owned by other agents". Judging a real 3-byte win as not
+worth the coordination is the kind of call this board wants made explicitly.
+
+**The remaining opportunity is sized, not hand-waved**: the 8-way locking-bytecode dispatch costs **95 B per
+participant slot**, measured by a throwaway probe that stripped slot 7 (4,542 -> 4,447) - roughly 760 B of the
+verifier, worth **~6,080 C3 bytes**. Not landed, because the obvious table-lookup form needs a 2-byte offset
+encoding whose soundness rests on the 10,000-byte stack-item bound, and the alternative trades bytes for
+operations inside a 24-iteration loop and must be re-measured against C2, **which binds on density**. Opened as
+**X65**.
+
+**The stale-consequence trap, flagged not sprung.** F2's estimator basis and F1's header table are now
+**stale-but-passing**, because both work off *recorded* figures rather than assertions - all four graph rows
+overstate reality by 129 x N, and F2's C3 row verdict (over on relay size) is **no longer live**. C3's author
+flagged this rather than editing another agent's files, naming it as exactly the trap this board has now been
+bitten by four times. Opened as **X66**.
+
+**The C3 size band did its job.** It was written as a band around 100,650 specifically so that shrinking under
+the ceiling would **fail** and force its comment to be re-read - and that is precisely what happened. The comment
+is rewritten rather than the band quietly widened.
 
 ### 4.72 R1: the gate cannot sit on the plan, and the weakest rule decides the envelope
 
@@ -987,7 +1054,7 @@ relaxed**, knob-liveness control live on all seven:
 | A13 graph | 8 | 23,845 B | 23.8% | 0.4067 / 0.4041 | 5,131 B | script bytes 0.5131x |
 | C2 cycle | 79 | 53,249 B | 53.2% | 0.6491 / 0.6465 | 5,423 B | op-cost density 0.6491x |
 | C1 DeFi | 38 | 63,315 B | 63.3% | 0.6182 / 0.6157 | 7,451 B | script bytes 0.7451x |
-| C3 max graph | 108 | 100,650 B | **100.65%** | 0.9217 / 0.9191 | 6,005 B | **STANDARD RELAY SIZE 1.0065x** |
+| C3 max graph | 108 | **99,618 B** | **99.62%** | 0.9217 / 0.9191 | 5,876 B | standard relay size **0.9962x** (F4) |
 
 **The headline result is that "capacity" was never one number.** C1 and A13 bind on the 10,000-byte per-input
 script limit, C2 on operation-cost density, C3 on relay size. **C3 is inside every consensus limit and outside

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 import { UnboundReturnCallError } from '../src/Errors.js';
 
@@ -46,33 +46,34 @@ contract X75(address vault) {
 /** Control: the helper's effect is a scalar state write instead of an emit. Same call, same helper. */
 const scalarEffectHelper = inlinedReturningHelper.replace('emit Accrued(shares);', 'this.collateral = shares;');
 
+// Compile each source ONCE, in one budgeted hook. Recompiling per assertion is what turns a passing file into
+// a timeout under the load of a full multi-package run.
+let refusal: Error | undefined;
+let batchOnlyArtifact: ReturnType<typeof compileString>;
+let scalarEffectArtifact: ReturnType<typeof compileString>;
+
 describe('X75 an unbound returning edge fails closed with a named diagnostic', () => {
+  beforeAll(() => {
+    try { compileString(inlinedReturningHelper, graph); } catch (error) { refusal = error as Error; }
+    batchOnlyArtifact = compileString(inlinedReturningHelper, batchOnly);
+    scalarEffectArtifact = compileString(scalarEffectHelper, graph);
+  }, 300_000);
+
   it('is a named error, not a bare internal sentinel', () => {
-    expect(() => compileString(inlinedReturningHelper, graph)).toThrow(UnboundReturnCallError);
-    try {
-      compileString(inlinedReturningHelper, graph);
-      expect.unreachable('expected the shape to be refused');
-    } catch (error) {
-      expect((error as Error).name).toBe('UnboundReturnCallError');
-      expect((error as Error).message).not.toMatch(/Unbound return call in/);
-    }
+    expect(refusal).toBeInstanceOf(UnboundReturnCallError);
+    expect(refusal!.name).toBe('UnboundReturnCallError');
+    expect(refusal!.message).not.toMatch(/Unbound return call in/);
   });
 
   it('names the edge, the function whose layout has no slot, and why', () => {
-    const message = (() => {
-      try { compileString(inlinedReturningHelper, graph); return ''; } catch (error) { return (error as Error).message; }
-    })();
-    expect(message).toContain("external call 'IVault.deposit()'");
-    expect(message).toContain("Function '__scb1'");
-    expect(message).toContain('no return-event slot is reserved for it');
+    expect(refusal!.message).toContain("external call 'IVault.deposit()'");
+    expect(refusal!.message).toContain("Function '__scb1'");
+    expect(refusal!.message).toContain('no return-event slot is reserved for it');
   });
 
   it('tells the user what to do instead', () => {
-    const message = (() => {
-      try { compileString(inlinedReturningHelper, graph); return ''; } catch (error) { return (error as Error).message; }
-    })();
-    expect(message).toContain('carries no other physical effect');
-    expect(message).toContain('drop the result and make the call a void tail call');
+    expect(refusal!.message).toContain('carries no other physical effect');
+    expect(refusal!.message).toContain('drop the result and make the call a void tail call');
   });
 
   /**
@@ -81,10 +82,7 @@ describe('X75 an unbound returning edge fails closed with a named diagnostic', (
    * The source is 14 lines; the returning call is on line 7.
    */
   it('reports a position inside the user source, not inside generated source', () => {
-    const message = (() => {
-      try { compileString(inlinedReturningHelper, graph); return ''; } catch (error) { return (error as Error).message; }
-    })();
-    const at = /at Line (\d+), Column \d+/.exec(message);
+    const at = /at Line (\d+), Column \d+/.exec(refusal!.message);
     expect(at).not.toBeNull();
     const line = Number(at![1]);
     expect(line).toBe(7);
@@ -94,9 +92,7 @@ describe('X75 an unbound returning edge fails closed with a named diagnostic', (
 
   /** No artifact is produced, which is what makes naming the abort not a behaviour change. */
   it('produces no artifact', () => {
-    let artifact;
-    try { artifact = compileString(inlinedReturningHelper, graph); } catch { artifact = undefined; }
-    expect(artifact).toBeUndefined();
+    expect(refusal).toBeDefined();
   });
 
   /**
@@ -105,10 +101,9 @@ describe('X75 an unbound returning edge fails closed with a named diagnostic', (
    * contract.
    */
   it('control: the same source compiles when no graph controller is requested', () => {
-    const artifact = compileString(inlinedReturningHelper, batchOnly);
-    expect(artifact.hiddenBatch).toBeDefined();
-    expect(artifact.hiddenBatch!.handlers!.filter((handler) => handler.eligible).map((handler) => handler.name))
-      .toContain('accrue');
+    expect(batchOnlyArtifact.hiddenBatch).toBeDefined();
+    expect(batchOnlyArtifact.hiddenBatch!.handlers!
+      .filter((handler) => handler.eligible).map((handler) => handler.name)).toContain('accrue');
   });
 
   /**
@@ -117,9 +112,8 @@ describe('X75 an unbound returning edge fails closed with a named diagnostic', (
    * call by itself.
    */
   it('control: the same route compiles when the helper carries no emission effect', () => {
-    const artifact = compileString(scalarEffectHelper, graph);
-    expect(artifact.hiddenBatch).toBeDefined();
-    expect(artifact.hiddenBatch!.handlers!.filter((handler) => handler.eligible).map((handler) => handler.name))
-      .toContain('accrue');
+    expect(scalarEffectArtifact.hiddenBatch).toBeDefined();
+    expect(scalarEffectArtifact.hiddenBatch!.handlers!
+      .filter((handler) => handler.eligible).map((handler) => handler.name)).toContain('accrue');
   });
 });

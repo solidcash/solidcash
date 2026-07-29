@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 
 /**
@@ -29,8 +29,16 @@ const graph = {
 
 interface PublishedHandler { name: string; eligible: boolean; rejectionReason?: string }
 
+// Compile each source ONCE. Every case below reads the same four artifacts, and recompiling per assertion is
+// what turns a passing file into a wall-clock failure under the load of a full multi-package run.
+const compiled = new Map<string, ReturnType<typeof compileString>>();
+const artifactOf = (code: string): ReturnType<typeof compileString> => {
+  if (!compiled.has(code)) compiled.set(code, compileString(code, graph));
+  return compiled.get(code)!;
+};
+
 const handlersOf = (code: string): PublishedHandler[] =>
-  (compileString(code, graph).hiddenBatch?.handlers ?? []) as PublishedHandler[];
+  (artifactOf(code).hiddenBatch?.handlers ?? []) as PublishedHandler[];
 
 const unnamedOf = (code: string): PublishedHandler[] =>
   handlersOf(code).filter((handler) => !handler.eligible && handler.rejectionReason === undefined);
@@ -75,8 +83,26 @@ contract X72Getter {
   function bump() public { counter = 1; }
 }`;
 
+/** No entry point survives route synthesis, so the reason reaches the user through the ABSENCE channel. */
+const noRoute = `pragma solidity ^0.8.0;
+contract X72NoRoute {
+  mapping(address => uint256) internal balances;
+  uint256 internal lastSeen;
+  function credit(address who, uint256 amount) internal { balances[who] = amount; }
+  function stamp() external { lastSeen = block.number; }
+}`;
+
 describe('X72 a refused hidden-batch handler names its reason', () => {
   const REASON = 'not-examined-by-route-synthesis';
+
+  // Every assertion below reads one of these five artifacts. Compiling them here rather than inside the cases
+  // keeps the wall-clock cost in ONE budgeted hook: recompiling per assertion is what turns a passing file
+  // into a timeout under the load of a full multi-package run.
+  beforeAll(() => {
+    for (const source of [mappingAndBlock, mappingNoBlock, scalarAndBlock, gettersAndBlock, noRoute]) {
+      artifactOf(source);
+    }
+  }, 300_000);
 
   it('publishes no handler with eligible:false and no reason', () => {
     expect(unnamedOf(mappingAndBlock)).toHaveLength(0);
@@ -127,15 +153,11 @@ describe('X72 a refused hidden-batch handler names its reason', () => {
    * the other is told the same thing. This is what makes the fix a diagnostic change and not a new category.
    */
   it('uses the name the absence channel already gives this condition', () => {
-    const noRoute = `pragma solidity ^0.8.0;
-contract X72NoRoute {
-  mapping(address => uint256) internal balances;
-  uint256 internal lastSeen;
-  function credit(address who, uint256 amount) internal { balances[who] = amount; }
-  function stamp() external { lastSeen = block.number; }
-}`;
-    const diagnostics = (compileString(noRoute, graph).diagnostics ?? [])
+    const artifact = artifactOf(noRoute);
+    expect(artifact.hiddenBatch).toBeUndefined();
+    const diagnostics = (artifact.diagnostics ?? [])
       .filter((entry) => entry.code === 'hidden-batch-route-not-synthesized');
-    if (diagnostics.length > 0) expect(diagnostics[0].message).toContain(REASON);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toContain(`'__updateBlockOracle': ${REASON}`);
   });
 });

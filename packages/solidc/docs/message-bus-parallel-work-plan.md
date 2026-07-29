@@ -214,6 +214,29 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.57 Round 15 closes: ALL SIX packages green, 7,029 tests, and round 16 dispatched
+
+`yarn test` at `4ac40b82`, exit **0**, all six workspaces reached:
+
+| package | tests |
+| --- | --- |
+| `@solidcash/utils` | 295 / 0 |
+| `solidc` | **2,524 / 0** |
+| `solidcash` | **4,167 / 0** |
+| `@solidcash/testing` | 19 / 0 |
+| `@solidcash/solidhat` | 24 / 0 |
+| `@solidcash/create-solidhat` | no tests |
+
+**7,029 passing.** This matters specifically because `yarn test` **halts at the first failing package**: for most of this effort a green solidc + solidcash was reported as "green", and it covered three of six. This is a full-repo result. The `EcrecoverRecovery` flake did not recur, which is consistent with its low rate rather than evidence against it - **X45 stands**.
+
+**Round 15 final: eight workers, eight landed, zero abandoned.** Two live forgeries closed (SEC-13, SEC-15), three diagnostic defects closed (SEC-12, SEC-16, SEC-17), two capabilities landed (X36, X37), two independent reviews returned (R1, R2). Nine rows opened rather than left implicit (X38-X46, SEC-14). **Two of the five security findings were in code merged during this same round** - SEC-15 in X29, SEC-17 in SEC-12 - which is the strongest argument yet that INTEGRATED must never be read as reviewed.
+
+**Round 16 dispatched at this commit**, six workers, disjoint leases: A1 X43 (`layer3/delegate.ts`), A2 X11/X12/SEC-14 (GTT + two lowering passes), A3 X34/X35/X28/X46 (`SymbolTableTraversal`, `balancedBlocks`), A4 X3/X5 (`layer3/graph.ts`, `worklist.ts`), A5 the accuracy repairs X38/X39/X40/X45 (tests and docs only), A6 F1 (measurement, no lease).
+
+**A3's brief inverts the usual risk and says so.** Its four rows are *relaxations*, so a wrong answer admits an unsound shape rather than emitting a spurious warning. Its deliverable is a VM case proving each newly admitted shape settles, plus a case just outside the new boundary that still refuses - and explicit permission to conclude "this should stay refused", which the board has accepted before.
+
+**A1 is the row that closes something already recorded as closed.** E3's gate classifies on the published type; both escapes cast through a `bytes` parameter; refusing `bytes` is unavailable because every admitted class carries a `bytes` calldata parameter. X37 landing the provenance fields is what makes it answerable at all.
+
 ### 4.56 SEC-16 and SEC-17 closed; the helper was MOVED, not copied, and verified line-for-line
 
 Merged at `5d30c418`; solidc **2,524/0** (2,494 + 30). Both reproduced verbatim on their baselines first: SEC-16

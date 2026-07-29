@@ -185,7 +185,7 @@ task-specific report, not in this table.
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
-| X10 | Grow the trailing chunk region past one output beside an entry mint | C | X8 | TODO | Blocks multi-chunk dynamic + collection mint |
+| X10 | Grow the trailing chunk region past one output beside an entry mint | C5 | X8 | **BLOCKED (pin REFINED)** | the region DOES grow in general; it fails only beside a C2 mint, where the NEW node commitment is written TWICE |
 | X11 | Delegate C2 sorted writes have no settling instance | A2 | — | **INTEGRATED** | premise stale; chasing it found a LIVE forgery - reader returned `[5n, 99n]` - see 4.64 |
 | X12 | `emit`-funder delegate class does not settle | A2 | — | **INTEGRATED** | cause was split-facet data-NFT offsets, not a graft position; -6 bytes |
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
@@ -219,8 +219,9 @@ task-specific report, not in this table.
 | X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | B6 | X38 | **INTEGRATED** | full table delivered and applied to this document; 2,131,662 base confirmed |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | B5 | SEC-6 | **INTEGRATED** | the two crashes are at DIFFERENT sites, so the gate sits ahead of both; +0 bytes |
-| X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
-| X20 | Widen the assembly model to describe entry/aux inputs | — | X17 | TODO | Then re-measure the 44.5% rejection rate |
+| X26 | A bare `m[k]` READ contributes nothing to the function footprint | C5 | X19 | **INTEGRATED** | SILENT under-reservation: blockSize 2 while the covenant addresses slot +2, so the next block lands on it - see 4.76 |
+| X20 | Widen the assembly model to describe entry/aux inputs | C5 | — | **AUX HALF INTEGRATED; entry half refused** | keyed a POSITION off a WIDTH; one padding slot re-opened the fail-open. Entry half is not a modelling gap |
+| X69 | The direct route declares no trailing region at all | — | X20 | **TODO** | 680 + 381 rejections need `computeBlockLayout` AND `StatefulTransactionBuilder`, not an assembly-model change |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
 | X22 | Result-consuming handler that also carries an effect | A | C1 | LEASED | round 9; name it or admit it - silence and sentinels both unacceptable |
 | X23 | Reduce projection-verifier operation density | B | C1 | **PROVEN** | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
@@ -235,6 +236,76 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.76 X26 is a SILENT under-reservation; X20's entry half is not a modelling gap; X10 BLOCKED
+
+Merged at `584f3025`. Three rows, three different verdicts, each measured.
+
+**X26 - a bare `m[k]` read publishes a SHORT layout, which is worse than none.** `analyseFunctionFootprint`
+recovers a collection from `name`/`keys`, but `ArrayAccessNode` carries `array`/`index`, so the bare read matched
+nothing - **exactly the class round 16 predicted**, a bare spelling a node-kind scan cannot see. X19 closed the
+write half; the read half was still open.
+
+The cost, measured: a handler whose only collection access is a bare read publishes `blockSize = 2`, slots
+`[master@0, dataNft@1]`, **while the same route's covenant addresses block-relative slot `+2`** with ten
+introspection opcodes. **Blocks are concatenated, so the next participant's block is placed at `base + 2` - the
+exact slot the route reads and writes.** The dotted spelling of the same program declares `blockSize = 3`.
+
+**The evidence-inheritance argument is elegant and sound.** After the fix, the bare and dotted spellings compile
+to a **byte-identical bus route and identical route ABI** - so every existing settling test of the dotted
+spelling is VM evidence for the fixed bare one. That is how a repair with no new VM case earns its settlement
+evidence, the same license X63 used this round.
+
+**Item 10 is the strongest refusal-of-corroboration on this board yet.** 500 corpus files, **0 status changes, 0
+bytecode changes, 0 `invocationAnalysis` changes - and C5 measured that this has ZERO discriminating power rather
+than assuming it.** The reason is precise: `analyseContractInvocations` runs at `compiler.ts:2003`, **after**
+`SymbolTableTraversal` at 1880, so the published footprint is post-resolution where a bare `m[k]` is **already** a
+`MappingAccessNode` and was never wrong. The changed call sites are the **pre-resolution** ones, all hidden-batch
+synthesis, and **no corpus file compiles with `experimentalHiddenBatch`**.
+
+**X20 - the auxiliary half was keying a POSITION off a WIDTH.** `deriveBalancedAssemblyFromInputs` claimed the
+sidecar region only when `cursor + participants + 1 === totalSlots - 1`, and both auxiliary checks iterate that
+list - so an empty one runs **neither**, including the 1,000-satoshi sidecar rule that exists to refuse *before
+signing*. **One ordinary padding slot after the controller re-opened the fail-open while every index the model
+would have claimed stayed exactly where it was.** Fixed by claiming wherever it fits (`<=` for `===`); slots
+beyond the region stay unclaimed, so an injected extra participant block still lands outside and the controller's
+own input-count rule remains what names it.
+
+Hostile: padded tail plus a 999-satoshi sidecar previously **passed the gate and got signed**, with the VM
+refusing only afterwards; now refused at **zero signature requests**. Just outside: a padded tail with **honest**
+values is still **ACCEPTED**, so this is not a blanket refusal of wide tails.
+
+**The 44.5% figure was re-measured rather than repeated**: 2,324 settled sends, **1,061 of 2,157 describable
+rejections = 49.2%**, and C5 states plainly that it is **not** directly comparable, because X32 moved 167 sends
+from *skipped* to *refused*. Categories named; **0 satoshi-value mismatches**, since X21 closed round 14's.
+
+**Item 10 again, and again refused**: 0 of 2,157 sends change verdict - "near-zero discriminating power, so I am
+not counting it" - because on the direct route the changed branch is **unreachable in 54 of 54** derivations. The
+discriminating measurement is the layer-3 path: **189 derivations, 186 identical, 3 non-canonical, and all three
+are C3 hostile shapes**.
+
+**The entry half is NOT a modelling gap, and C5 refused to force it.** The two dominant rejection categories
+(680 `unbalanced transaction`, 381 `token outside every participant block`) cannot be described by relaxing
+`balancedBlocks.ts`: a C2 insert mints a **new node output with no paired input**, and chunk NFTs land past
+`regionEnd`, because the **direct route declares no trailing region at all** - `needsTrailingRegion` is
+`__scb1`-gated. Describing them needs the direct route to declare and fund a trailing region at X28's measured
+price, touching `computeBlockLayout` **and** `StatefulTransactionBuilder`. **"Relaxing the model to accept these
+shapes would admit unsound ones and I did not do it."** Opened as **X69**.
+
+**X10 - BLOCKED, and it REFINES the recorded pin rather than repeating it.** X8 pinned the region at one output.
+C5 measured that the region **does** grow past one output in general - a read-only collection and a
+no-collection shape both build **two** chunks at 200 bytes. It fails **only when a C2 entry mint shares the
+region**, and the failure is **worse than "does not grow"**: at 121 bytes the single seeded placeholder is
+**never derived at all**, and the transaction carries the **NEW node commitment twice**, at outputs 3 and 5, with
+a bare `00` between them. So the SDK half is **not** a "seed N instead of 1" change - the new node's placement
+cycles with the chunk count.
+
+The bound is structural in two places, both outside C5's lease: `StatefulContract.ts:9228-9234` seeds exactly one
+chunk candidate, and `GenerateTargetTraversal.ts:5158-5186` carries the PICK depth. **C5 explicitly did not
+re-verify X8's `+1` vs `+6` claim**, could not separate the causes from outside the file, and reported that half
+**as X8's measurement rather than its own**.
+
+Counts: solidc **2,572/0**, solidcash **4,263/0**.
 
 ### 4.75 X57's premise was wrong, X58 was not cosmetic, and a diagnostic was destroying itself
 

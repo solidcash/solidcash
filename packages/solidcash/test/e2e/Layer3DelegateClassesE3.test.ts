@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -116,6 +117,58 @@ contract E3SoloImpl() {
     function increment() delegate { this.counter = this.counter + 1; }
 }`;
 
+/**
+ * ROUND-14 A13-1. The proxy pins one implementation in its CONSTRUCTOR and delegatecalls a caller-supplied
+ * `address` parameter. Bytecode containment is true and means nothing.
+ */
+const PROXY_PINNED_BUT_CALLER_SELECTED = `pragma solidcash >=0.8.0;
+contract E3TrapProxy(address pinned) {
+    bigint counter;
+    function up(bytes input, address impl) external {
+        require(pinned.length == 35);
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/** ROUND-14 A13-2. A `sig` parameter checked against a key the SAME caller supplies. No stored authority. */
+const PROXY_SELF_AUTHORIZED = `pragma solidcash >=0.8.0;
+contract E3SelfAuthProxy() {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(checkSig(s, pk));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/** ROUND-14. A `sig` parameter and a stored key, but the key is a STATE variable rather than a ctor argument. */
+const PROXY_STATE_KEY_AUTHORIZED = `pragma solidcash >=0.8.0;
+contract E3StateKeyProxy(pubkey initial) {
+    bigint counter;
+    pubkey owner;
+    function up(bytes input, address impl, sig s) external {
+        require(checkSig(s, this.owner));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
+/**
+ * ROUND-14 COST. Honest bytecode-pinned proxy - the delegatecall targets the constructor argument - that also
+ * takes an UNRELATED `address` parameter. The gate refuses it, because published metadata does not say which
+ * expression the target is. The VM case below measures that this shape really does settle.
+ */
+const PROXY_PINNED_WITH_UNRELATED_ADDRESS = `pragma solidcash >=0.8.0;
+contract E3PayoutProxy(address impl) {
+    bigint counter;
+    function up(bytes input, address recipient) external {
+        require(recipient.length == 35);
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`;
+
 /** UNADMITTED class CONDITIONAL_DELEGATE_EDGE: the delegatecall sits inside a branch. */
 const PROXY_CONDITIONAL = `pragma solidcash >=0.8.0;
 contract E3CondProxy(address impl) {
@@ -223,6 +276,10 @@ const emittingImplArtifact = compileString(IMPL_EMITTING);
 const collectionImplArtifact = compileString(IMPL_COLLECTION);
 const soloImplArtifact = compileString(IMPL_SINGLE_FUNCTION);
 const conditionalProxyArtifact = compileString(PROXY_CONDITIONAL);
+const trapProxyArtifact = compileString(PROXY_PINNED_BUT_CALLER_SELECTED);
+const selfAuthProxyArtifact = compileString(PROXY_SELF_AUTHORIZED);
+const stateKeyProxyArtifact = compileString(PROXY_STATE_KEY_AUTHORIZED);
+const payoutProxyArtifact = compileString(PROXY_PINNED_WITH_UNRELATED_ADDRESS);
 
 describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
   // =========================================================================
@@ -482,8 +539,10 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
         });
       };
       expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
-      expect(layer3.UNDETECTED_BY_THIS_GATE)
-        .toEqual(['conditional-delegate-edge', 'iterated-delegate-edge']);
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toEqual([
+        'conditional-delegate-edge', 'iterated-delegate-edge',
+        'bytes-typed-delegate-target', 'bytes-typed-key-material',
+      ]);
     });
 
     async function spendProxy(
@@ -696,6 +755,174 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
   });
 
   // =========================================================================
+  // ROUND-14: code identity is fail-closed on what the metadata cannot say
+  // =========================================================================
+  /**
+   * Round-13 review A13 (`ReviewA13DelegateE3.test.ts`) found BOTH admitted classes reachable by shapes this
+   * enumeration refuses by name, both settling a foreign implementation rewriting proxy state 5 -> 999 on the
+   * VM. The two escapes shared one root cause: the gate answered a question the published metadata cannot
+   * answer. `pinnedInProxyBytecode` is a SUBSTRING test, and "some `sig` parameter exists" is not authority.
+   *
+   * The fix asks a narrower question in both places, and refuses when it cannot tell. The cost is measured
+   * below, not asserted away.
+   */
+  describe('round-14: the two A13 escapes fail closed', () => {
+    const provider = createLayer3SemanticTestProvider();
+    const implementationLbc = binToHex(
+      addressToLockScript(new Contract(implArtifact, [], { provider }).address),
+    );
+
+    const classify = (artifact: Artifact, constructorArgs: unknown[]): (() => unknown) => (): unknown => {
+      const proxy = new Contract(artifact, constructorArgs as never[], { provider });
+      return layer3.classifyDelegateParticipant({
+        proxy: { artifact, functionName: 'up', bytecode: proxy.bytecode },
+        implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+      });
+    };
+
+    /**
+     * A13-1. The constructor argument really is the honest implementation, so the substring test really does
+     * pass - and it is no longer allowed to answer the question, because an `address` parameter means the
+     * target may be the caller's value instead. Differs from the admitted control by that one parameter.
+     */
+    it("refuses 'pinned-but-caller-selected': containment is not identity when an address parameter exists", () => {
+      const proxy = new Contract(trapProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
+      expect(proxy.bytecode.toLowerCase()).toContain(implementationLbc.toLowerCase());
+      expect(classify(trapProxyArtifact, [hexToBin(implementationLbc)]))
+        .toThrow(/class 'pinned-but-caller-selected' is not admitted.*address parameter\(s\) 'impl'/s);
+
+      // CONTROL: same pin, same implementation, no `address` parameter - still admitted.
+      expect((classify(pinnedProxyArtifact, [hexToBin(implementationLbc)])() as { id: string }).id)
+        .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+    });
+
+    /**
+     * A13-2. `checkSig(s, pk)` against a caller-supplied `pubkey` authorizes nobody. Differs from the admitted
+     * control by exactly where the checked key comes from.
+     */
+    it("refuses 'self-authorized' when the proxy takes the key as a parameter", () => {
+      expect(classify(selfAuthProxyArtifact, []))
+        .toThrow(/class 'self-authorized' is not admitted.*pubkey parameter\(s\) 'pk'/s);
+
+      // CONTROL: same shape, key is a constructor argument - still admitted.
+      expect((classify(authorizedProxyArtifact, [alicePub])() as { id: string }).id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+    });
+
+    /** The same class covers a proxy that commits no key at all, which is the other half of A13-2. */
+    it("refuses 'self-authorized' when the proxy commits no pubkey anywhere", () => {
+      const artifact = compileString(`pragma solidcash >=0.8.0;
+contract E3KeylessProxy() {
+    bigint counter;
+    function up(bytes input, address impl, sig s) external {
+        require(input.length > 0);
+        impl.delegatecall(input);
+    }
+}`);
+      expect(classify(artifact, [])).toThrow(/class 'self-authorized' is not admitted.*commits no pubkey at all/s);
+    });
+
+    /**
+     * The rule is "a key the PROXY commits to", not "a constructor argument": a `pubkey` STATE variable lives in
+     * the proxy's own data NFT and is just as committed, so this shape stays admitted.
+     */
+    it('admits caller-authorized when the committed key is a state variable', () => {
+      expect((classify(stateKeyProxyArtifact, [alicePub])() as { id: string }).id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+    });
+
+    /**
+     * THE COST, MEASURED. An honest bytecode-pinned proxy whose function takes an unrelated `address` parameter
+     * settles on the VM - and the gate refuses it anyway, because nothing published says `recipient` is not the
+     * delegatecall target. The compiler, which CAN see the target expression, emits no diagnostic for it. The
+     * asymmetry is deliberate: the SDK gate is the side that lacks the fact.
+     */
+    it('refuses an honest pinned proxy that also takes an unrelated address parameter, which DOES settle',
+      async () => {
+        expect(classify(payoutProxyArtifact, [hexToBin(implementationLbc)]))
+          .toThrow(/class 'pinned-but-caller-selected' is not admitted.*address parameter\(s\) 'recipient'/s);
+
+        const vmProvider = createLayer3SemanticTestProvider();
+        const pinned = await deploy(vmProvider, implArtifact, [], { counter: 0n });
+        const pinnedLbc = addressToLockScript(pinned.contract.address);
+        const proxy = await deploy(vmProvider, payoutProxyArtifact, [pinnedLbc], { counter: 5n });
+        const tx = await new StatefulTransactionBuilder({
+          provider: vmProvider,
+          stateLayout: payoutProxyArtifact.stateLayout!,
+          categoryId: proxy.categoryId,
+          masterUtxo: {
+            ...proxy.master,
+            unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), pinnedLbc, 2n),
+          },
+          dataNftUtxos: proxy.dataNfts.map((nft) => ({
+            ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
+          })),
+          externalCallUtxoGroups: [delegateGroup(implArtifact, pinned, 'increment', [0n], 2)],
+        }).setState('counter', 6n).send();
+        expect(stateOf(tx, proxy.categoryId, payoutProxyArtifact.stateLayout!).counter).toBe(6n);
+      }, 240_000);
+
+    /**
+     * THE HOLE THE FIX LEAVES, MEASURED RATHER THAN IMPLIED. Both A13 fixes key off a PARAMETER TYPE, which is
+     * the only thing published metadata offers - so both are defeated by routing the same caller value through
+     * a `bytes` parameter and casting it. These two sources compile, and the gate ADMITS them into the very
+     * classes A13 attacked. That is asserted here so the hole cannot be lost: it is listed in
+     * UNDETECTED_BY_THIS_GATE, and closing it needs the compiler to publish which expression the delegatecall
+     * target and the checked key resolve to. Refusing `bytes` parameters is not an option - the calldata
+     * parameter every admitted class carries is `bytes`.
+     */
+    it('still ADMITS both escapes routed through a `bytes` parameter - named, not hidden', () => {
+      const bytesTarget = compileString(`pragma solidcash >=0.8.0;
+contract E3BytesTargetProxy(address impl) {
+    bigint counter;
+    function up(bytes input, bytes target) external {
+        address t = address(target);
+        t.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect((classify(bytesTarget, [hexToBin(implementationLbc)])() as { id: string }).id)
+        .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+
+      const bytesKey = compileString(`pragma solidcash >=0.8.0;
+contract E3BytesKeyProxy(pubkey owner) {
+    bigint counter;
+    function up(bytes input, address impl, bytes k, sig s) external {
+        require(checkSig(s, pubkey(k)));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect((classify(bytesKey, [alicePub])() as { id: string }).id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('bytes-typed-delegate-target');
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('bytes-typed-key-material');
+    });
+
+    /**
+     * WHY THE GATE IS STILL NOT WIRED, measured rather than asserted. Instrumenting `withDelegatecall` to
+     * classify every pair it receives and running the three SDK suites that use it produced 11 calls over 6
+     * distinct proxy/implementation pairs, and the gate refused 11 of 11 (100%): 5 'dynamically-resolved-
+     * implementation', 4 'not selector-dispatched', 1 'collection-writing-delegate', 1 'self-authorized'.
+     * Nothing that settles today would survive wiring, so it stays an opt-in planner check.
+     *
+     * The 'self-authorized' one is not a synthetic trap: the canonical `PinnedProxy` fixture in the SDK's own
+     * `Delegatecall.test.ts` is the A13-2 shape verbatim, which is what this case pins.
+     */
+    it('is not wired: the SDK\'s own canonical delegatecall fixture is itself an A13-2 shape', () => {
+      const sibling = readFileSync(new URL('./Delegatecall.test.ts', import.meta.url).pathname, 'utf8');
+      const match = /contract PinnedProxy\(\)[\s\S]*?\n {6}}/.exec(sibling);
+      expect(match).not.toBeNull();
+      expect(match![0]).toContain('function up(bytes input, address impl, pubkey pk, sig s) external');
+      expect(match![0]).toContain('require(checkSig(s, pk));');
+
+      const fixtureArtifact = compileString(`pragma solidcash >=0.8.0;\n${match![0]}`);
+      expect(classify(fixtureArtifact, [])).toThrow(/class 'self-authorized' is not admitted/);
+    });
+  });
+
+  // =========================================================================
   // The enumeration itself
   // =========================================================================
   describe('the enumeration is explicit', () => {
@@ -714,6 +941,8 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
     it('publishes every named unadmitted class with a reason', () => {
       expect(layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id)).toEqual([
         'caller-chosen',
+        'pinned-but-caller-selected',
+        'self-authorized',
         'unpinned-p2pkh',
         'dynamically-resolved-implementation',
         'emitting-delegate',

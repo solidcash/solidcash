@@ -15,6 +15,13 @@ import { getTxOutputs } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 
 // Round-13 independent hostile review of E3 (Worker B's). I implemented none of it.
+//
+// ROUND 14 (Worker B): both escapes are CLOSED in `src/layer3/delegate.ts`. The two gate assertions below are
+// inverted in place - A13-1a and A13-2a now demand a NAMED refusal - and every other case in this file is
+// untouched, including the two VM cases that settle 5 -> 999 (they are why the refusals must exist) and the
+// two honest controls that are still refused by the covenant at input 0. A13-2a2 also stands: the compiler's
+// `hasSignatureGuard` suppressor is still over-broad and is reported to the compiler lease holder, not patched
+// here.
 
 const IMPL_SCALAR = `pragma solidcash >=0.8.0;
 contract E3Impl() {
@@ -163,22 +170,30 @@ const authorizedProxyArtifact = compileString(PROXY_CALLER_AUTHORIZED);
 const selfAuthProxyArtifact = compileString(PROXY_SELF_AUTHORIZED);
 
 describe('A13 review of E3: bytecode-pinned detection', () => {
-  it('A13-1a: the gate names the ADMITTED bytecode-pinned class for a caller-chosen proxy', () => {
+  it('A13-1a: FIXED - the gate refuses the caller-chosen proxy by name, pin or no pin', () => {
     const provider = createLayer3SemanticTestProvider();
     const implementation = new Contract(implArtifact, [], { provider });
     const implementationLbc = binToHex(addressToLockScript(implementation.address));
     // The constructor argument is the honest implementation, so its bytes really are in the proxy's p2sh32.
     const proxy = new Contract(trapProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
     expect(proxy.bytecode.toLowerCase()).toContain(implementationLbc.toLowerCase());
-    const verdict = layer3.classifyDelegateParticipant({
+    // The substring test still says "pinned"; it is no longer allowed to answer the code-identity question,
+    // because the proxy function publishes an `address` parameter the delegatecall may target instead.
+    expect(() => layer3.classifyDelegateParticipant({
       proxy: { artifact: trapProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
-    });
-    expect(verdict.id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+    })).toThrow(/class 'pinned-but-caller-selected' is not admitted.*address parameter\(s\) 'impl'/s);
+
+    // CONTROL, one field apart: the same proxy pair with no `address` parameter is still admitted.
+    const honest = new Contract(pinnedProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
+    expect(layer3.classifyDelegateParticipant({
+      proxy: { artifact: pinnedProxyArtifact, functionName: 'up', bytecode: honest.bytecode },
+      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+    }).id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
   });
 
-  it('A13-1a2: the compiler DOES name it caller-supplied, so the gate contradicts the compiler', () => {
-    // SEC-2's warning fires on this exact source. The SDK gate is what disagrees.
+  it('A13-1a2: the compiler names it caller-supplied, which the gate now agrees with', () => {
+    // SEC-2's warning fires on this exact source. Round-13: the SDK gate disagreed. Round-14: it does not.
     expect(compilerWarnings(PROXY_PINNED_BUT_CALLER_CHOSEN).join('\n'))
       .toMatch(/issues delegatecall against 'impl', an unguarded caller-supplied parameter/);
   });
@@ -235,17 +250,23 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
 });
 
 describe('A13 review of E3: caller-authorized authority', () => {
-  it('A13-2a: the gate names the ADMITTED caller-authorized class for a self-authorizing proxy', () => {
+  it('A13-2a: FIXED - the gate refuses the self-authorizing proxy by name', () => {
     const provider = createLayer3SemanticTestProvider();
     const implementation = new Contract(implArtifact, [], { provider });
+    const implementationLbc = binToHex(addressToLockScript(implementation.address));
     const proxy = new Contract(selfAuthProxyArtifact, [] as never[], { provider });
-    expect(layer3.classifyDelegateParticipant({
+    // A `sig` parameter is no longer enough: the gate asks whether the key it could be checked against is one
+    // the CALLER supplies, and refuses when it is (or when the proxy commits no key at all).
+    expect(() => layer3.classifyDelegateParticipant({
       proxy: { artifact: selfAuthProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
-      implementation: {
-        artifact: implArtifact,
-        functionName: 'increment',
-        lockingBytecode: binToHex(addressToLockScript(implementation.address)),
-      },
+      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+    })).toThrow(/class 'self-authorized' is not admitted.*pubkey parameter\(s\) 'pk'/s);
+
+    // CONTROL, one field apart: the same shape whose key is a CONSTRUCTOR argument is still admitted.
+    const honest = new Contract(authorizedProxyArtifact, [alicePub] as never[], { provider });
+    expect(layer3.classifyDelegateParticipant({
+      proxy: { artifact: authorizedProxyArtifact, functionName: 'up', bytecode: honest.bytecode },
+      implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     }).id).toBe('caller-authorized/adjacent-proxy-block/scalar');
   });
 
@@ -321,6 +342,10 @@ describe('A13 review of E3: is the gate wired to anything?', () => {
       ? sourceFiles(join(directory, entry.name))
       : (entry.name.endsWith('.ts') ? [join(directory, entry.name)] : [])));
 
+  // ROUND 14: still true, now as a MEASURED decision. Instrumenting `withDelegatecall` to classify every pair
+  // it receives and running the three suites that use it gave 11 calls over 6 distinct pairs, 11/11 refused -
+  // so wiring it would break every settling delegatecall send in the suite. See the round-14 block in
+  // Layer3DelegateClassesE3.test.ts.
   it('A13-2d: no SDK source calls the gate - it is opt-in, and `withDelegatecall` never consults it', () => {
     const root = new URL('../../src', import.meta.url).pathname;
     const callers = sourceFiles(root).filter((file) => {

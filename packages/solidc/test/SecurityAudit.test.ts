@@ -280,6 +280,83 @@ describe('C1/piece-6: an unguarded caller-supplied implementation address warns'
         function up(bytes input, address impl) external {
           require(impl == this.implementation); impl.delegatecall(input); require(input.length > 0); } }`)).toBe(0);
   });
+
+  /**
+   * SEC-17. SEC-12 read the key's PROVENANCE and stopped there, so it warned on the standard BCH admin-upgrade
+   * idiom: the caller passes the key in and commits it in the same breath with
+   * `require(hash160(pk) == this.pkh)`, which means the caller may supply only the one key whose hash is already
+   * stored. Measured on the post-SEC-12 tree: 7 spellings of that idiom warned at this site and the same 7 at the
+   * selfdestruct site, 14 false positives in all. A diagnostic that fires on the commonest authorization shape
+   * trains people to ignore it, losing the genuine SEC-2 instances above that it exists to catch.
+   *
+   * Every row here shares the parameter list of the warning cases above (a caller `pubkey`, a `sig`, an
+   * `address`), so a silence is attributable to the COMMITMENT and not to the shape of the signature.
+   */
+  const committed = (decls: string, guard: string): string => `pragma solidcash >=0.8.0;
+    contract P(pubkey owner, bytes20 adminPkh) { bigint counter; ${decls}
+      function up(bytes input, address impl, pubkey pk, sig s, bytes20 otherPkh) external {
+        ${guard} impl.delegatecall(input); require(input.length > 0); } }`;
+
+  it('SEC-17: stays silent when hash160(key) is committed to a state variable', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(0);
+  });
+
+  it('SEC-17: stays silent with the operands reversed', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(this.pkh == hash160(pk)); require(checkSig(s, pk));'))).toBe(0);
+  });
+
+  it('SEC-17: stays silent when committed to a constructor argument', () => {
+    expect(callerChosenWarnings(committed('',
+      'require(hash160(pk) == adminPkh); require(checkSig(s, pk));'))).toBe(0);
+  });
+
+  it('SEC-17: stays silent through a bytes20 cast of the hash', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(bytes20(hash160(pk)) == this.pkh); require(checkSig(s, pk));'))).toBe(0);
+  });
+
+  it('SEC-17: stays silent when the commitment is one conjunct of an &&', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(input.length > 0 && hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(0);
+  });
+
+  it('SEC-17: stays silent when the commitment or the check goes through an alias', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'pubkey k = pk; require(hash160(k) == this.pkh); require(checkSig(s, pk));'))).toBe(0);
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'pubkey k = pk; require(hash160(pk) == this.pkh); require(checkSig(s, k));'))).toBe(0);
+  });
+
+  // The negative controls. Each has a hash160 call and an equality in a require - everything the silent rows
+  // have - and differs only in whether the COMMITTED side is something the caller cannot choose, or in whether
+  // the commitment runs on every path. Without these the fix would read as "a hash160 anywhere silences it".
+  it('SEC-17: still warns when the hash is committed to another CALLER parameter', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(hash160(pk) == otherPkh); require(checkSig(s, pk));'))).toBe(1);
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'bytes20 z = otherPkh; require(hash160(pk) == z); require(checkSig(s, pk));'))).toBe(1);
+  });
+
+  it('SEC-17: still warns when the commitment is conditional (an if-arm or an || branch)', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'if (input.length > 0) { require(hash160(pk) == this.pkh); } require(checkSig(s, pk));'))).toBe(1);
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(input.length > 0 || hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(1);
+  });
+
+  it('SEC-17: still warns when the commitment binds a DIFFERENT key than the one checked', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(hash160(pk) == this.pkh); require(checkSig(s, pubkey(input)));'))).toBe(1);
+  });
+
+  it('SEC-17: still warns on an inequality, and on a self-referential commitment', () => {
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(hash160(pk) != this.pkh); require(checkSig(s, pk));'))).toBe(1);
+    expect(callerChosenWarnings(committed('bytes20 pkh;',
+      'require(hash160(pk) == hash160(pk)); require(checkSig(s, pk));'))).toBe(1);
+  });
 });
 
 // C1/piece-5 - the state-covenant skip is per-FUNCTION (!functionHasDelegatecall) while the co-spend pin is

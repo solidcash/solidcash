@@ -274,6 +274,23 @@ one (`pubkey(raw)`, or an alias later rebound to a parameter). An array **index*
 argument 2 of `checkDataSig`; this is the same rule the delegatecall diagnostics apply (see
 [delegatecall-security.md](./delegatecall-security.md)).
 
+A key **parameter** also counts when an unconditional `require()` in the same function pins it to stored key
+material - the standard BCH admin idiom, where the caller may supply only the key whose hash is committed:
+
+```solidity
+// Silent. `pk` arrives from the caller, but only one value of it passes the commitment.
+bytes20 pkh;
+function kill(sig s, pubkey pk, address to) external {
+    require(hash160(pk) == this.pkh);
+    require(checkSig(s, pk));
+    selfdestruct(to);
+}
+```
+
+`require(hash160(pk) == otherParam)` commits nothing and still warns, as does a commitment confined to an `if`
+arm or an `||` branch. The full rule and its boundaries are in
+[delegatecall-security.md](./delegatecall-security.md) (finding SEC-17).
+
 ### The require() guard is structural, not semantic
 
 The compiler only checks that a selfdestruct function ends in *a* `require()`, so the covenant cannot run

@@ -146,7 +146,7 @@ without asking which key it checked, so this shape compiled with no C1 diagnosti
 when it lands on a **constructor input, a state variable, or a literal**. A parameter of the same entry point is
 not a guard, and neither is a computed key any of whose operands reaches one (`pubkey(k)`, `hash160(pk)`).
 
-Two resolution details, each because the obvious version had a hole:
+Three resolution details, each because the obvious version had a hole:
 
 - An alias is read through **every** binding it has, not just its declaration. `pubkey k = owner; k = pk;`
   declares the constructor key and then rebinds the caller's - reading the declaration alone credited a guard
@@ -154,6 +154,44 @@ Two resolution details, each because the obvious version had a hole:
 - An array index only *selects* among a container's elements, so the CONTAINER decides the bytes:
   `checkSig(s, this.owners[i])` stays a guard even though the caller picks `i`. Without this the multi-owner
   proxy would start warning.
+- A key parameter the caller **cannot vary** is not caller-chosen (finding SEC-17). See below.
+
+**A committed key is not a chosen key (finding SEC-17).** Reading the key's provenance and stopping there
+misses that a parameter can be pinned by a sibling `require()`. The standard BCH admin-upgrade idiom passes the
+key in and commits it in the same breath, so the caller may supply only the key whose hash is already stored:
+
+```solidity
+contract AdminProxy() {
+    bigint counter;
+    bytes20 pkh;                                                  // the committed admin key hash
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(hash160(pk) == this.pkh);                         // pk is now the ONLY key that passes
+        require(checkSig(s, pk));                                 // ... so this really does authorize
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}
+```
+
+Measured on the post-SEC-12 tree: seven spellings of this idiom warned here, and the same seven at the
+`selfdestruct` diagnostic - 14 false positives. That matters more than its severity suggests, because a warning
+that fires on the commonest authorization shape in BCH trains authors to ignore it, and the genuine holes above
+are what then get missed.
+
+A key parameter is therefore credited when an **unconditional** `require()` in the same function pins
+`hash160(key)` to something the caller cannot choose, resolved by the same provenance rules (constructor input,
+state variable, literal). Both operand orders count, casts on either side are transparent, and the equality may
+be one conjunct of an `&&`. The boundaries, each of which still warns:
+
+- **the committed side must not be caller-chosen** - `require(hash160(pk) == otherParam)` pins nothing;
+- **the commitment must run on every path** - inside an `if` arm or behind an `||`, the other path leaves the
+  key free, which is the SEC-12 hole again;
+- **it must be the same key** - committing `pk` does not authorize a `checkSig` against something else;
+- `!=` is not a commitment, and neither is a self-referential one such as `hash160(pk) == hash160(pk)`.
+
+This reads the key's binding, not the writer of what it is bound to: if the same function assigns `this.pkh`
+from a caller parameter before comparing against it, the commitment is credited anyway. Authorize the state
+write with the same care as the upgrade itself.
 
 > The `PINNED_PROXY` fixture in `packages/solidcash/test/e2e/Delegatecall.test.ts` is written in exactly the
 > unsafe shape above. It is **not** an example of a safe key - it exists to exercise the identity and

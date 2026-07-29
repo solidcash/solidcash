@@ -247,6 +247,64 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
         + ' require(checkSig(s, pk)); selfdestruct(new LockingBytecodeP2PKH(to)); } }')).toBe(true);
     });
   });
+
+  /**
+   * SEC-17. Reading the key's provenance alone makes the standard BCH admin-upgrade idiom look self-authorizing:
+   * the caller passes `pk` in and commits it in the same breath with `require(hash160(pk) == this.pkh)`, so the
+   * only key they may supply is the one whose hash is already stored. Measured: 7 spellings warned here and the
+   * same 7 at the delegatecall site, 14 false positives. Every row below keeps the parameter list of the
+   * warning cases above, so a silence is attributable to the commitment rather than to the signature's shape.
+   */
+  describe('SEC-17: a key committed by a sibling require is not caller-chosen', () => {
+    const sd = (decls: string, guard: string): string => 'contract C(pubkey admin, bytes20 adminPkh) {'
+      + ` ${decls} int n; function kill(sig s, pubkey pk, address to, bytes20 otherPkh) external {`
+      + ` ${guard} selfdestruct(to); } }`;
+
+    it('stays silent when hash160(key) is committed to a state variable', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent with the operands reversed', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(this.pkh == hash160(pk)); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent when committed to a constructor argument', () => {
+      expect(warns(sd('', 'require(hash160(pk) == adminPkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent through a bytes20 cast and inside an && conjunction', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'require(bytes20(hash160(pk)) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+      expect(warns(sd('bytes20 pkh;',
+        'require(n > 0 && hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent when the commitment or the check goes through an alias', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'pubkey k = pk; require(hash160(k) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+      expect(warns(sd('bytes20 pkh;',
+        'pubkey k = pk; require(hash160(pk) == this.pkh); require(checkSig(s, k));'))).toBe(false);
+    });
+
+    // Negative controls: each has a hash160 call inside an equality inside a require, exactly like the silent
+    // rows, and differs only in what the hash is committed TO or in whether the commitment always runs.
+    it('WARNS when the hash is committed to another caller parameter', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(hash160(pk) == otherPkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS when the commitment is conditional (an if-arm or an || branch)', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'if (n > 0) { require(hash160(pk) == this.pkh); } require(checkSig(s, pk));'))).toBe(true);
+      expect(warns(sd('bytes20 pkh;',
+        'require(n > 0 || hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS on an inequality and on a self-referential commitment', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(hash160(pk) != this.pkh); require(checkSig(s, pk));'))).toBe(true);
+      expect(warns(sd('bytes20 pkh;',
+        'require(hash160(pk) == hash160(pk)); require(checkSig(s, pk));'))).toBe(true);
+    });
+  });
 });
 
 describe('SBE-26: a constructor declaring its own params can pass them to a parent invocation', () => {

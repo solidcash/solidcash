@@ -113,6 +113,7 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  UncheckedNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
@@ -9456,7 +9457,7 @@ export function keyIsCallerChosen(
   if (cur instanceof LiteralNode) return false;
   if (cur instanceof IdentifierNode) {
     const { name } = cur;
-    if (fn.parameters.some((parameter) => parameter.name === name)) return true;
+    if (fn.parameters.some((parameter) => parameter.name === name)) return !parameterIsCommitted(name, fn, seen);
     if (seen.has(`id:${name}`)) return false;
     seen.add(`id:${name}`);
     return localBindings(fn.body, name).some((binding) => keyIsCallerChosen(binding, fn, seen));
@@ -9464,6 +9465,88 @@ export function keyIsCallerChosen(
   for (const v of Object.values(cur)) {
     if (v instanceof Node) { if (keyIsCallerChosen(v, fn, seen)) return true; } else if (Array.isArray(v)) {
       for (const e of v) if (e instanceof Node && keyIsCallerChosen(e, fn, seen)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * SEC-17: a key parameter the caller cannot actually vary. The standard BCH admin-upgrade idiom passes the key
+ * in and commits it in the same breath - `require(hash160(pk) == this.pkh); require(checkSig(s, pk))` - so the
+ * caller may supply only the one key whose hash is already stored. Reading the key's provenance alone calls that
+ * caller-chosen and warns on the most common authorization shape there is; a diagnostic that cries wolf on the
+ * common case trains people to ignore it, which loses the genuine SEC-2 instances it exists to catch.
+ *
+ * The commitment must be UNCONDITIONAL - a require in an if-arm leaves the other arm's `pk` free, which is the
+ * SEC-12 hole again. Only top-level statements of the body count (`unchecked` is transparent), and inside the
+ * condition only `&&` is descended: an `||` branch need not hold.
+ *
+ * The committed side is resolved by keyIsCallerChosen itself, so `hash160(pk) == otherCallerParam` commits
+ * nothing and still warns. Termination: a `commit:` marker rides the seen set, so `hash160(pk) == pk` resolves
+ * the right-hand `pk` as caller-chosen (no commitment) rather than recurring.
+ */
+function parameterIsCommitted(
+  name: string, fn: FunctionDefinitionNode, seen: Set<Node | string>,
+): boolean {
+  if (seen.has(`commit:${name}`)) return false;
+  seen.add(`commit:${name}`);
+  // A fresh Node set: reusing `seen`'s nodes would make an already-visited committed side look non-caller-chosen.
+  // The `commit:` markers must ride along, or a self-referential commitment recurses forever.
+  const markers = [...seen].filter((s): s is string => typeof s === 'string' && s.startsWith('commit:'));
+  return unconditionalStatements(fn.body).some(
+    (s) => s instanceof RequireNode && commitmentCommitsKey(s.expression, name, fn, markers),
+  );
+}
+
+/** Statements that run on every path through this body: the top level, with `unchecked` blocks inlined. */
+function unconditionalStatements(body: BlockNode | undefined): StatementNode[] {
+  const out: StatementNode[] = [];
+  for (const s of body?.statements ?? []) {
+    if (s instanceof UncheckedNode) out.push(...unconditionalStatements(s.block));
+    else out.push(s);
+  }
+  return out;
+}
+
+/** Does this require condition pin `name` to a value the caller cannot choose? Descends `&&`, not `||`. */
+function commitmentCommitsKey(
+  expr: ExpressionNode | undefined, name: string, fn: FunctionDefinitionNode, markers: string[],
+): boolean {
+  let cur: ExpressionNode | undefined = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (!(cur instanceof BinaryOpNode)) return false;
+  if (cur.operator === BinaryOperator.AND) {
+    return commitmentCommitsKey(cur.left, name, fn, markers)
+      || commitmentCommitsKey(cur.right, name, fn, markers);
+  }
+  if (cur.operator !== BinaryOperator.EQ) return false;
+  for (const [hashSide, committedSide] of [[cur.left, cur.right], [cur.right, cur.left]] as const) {
+    if (!isHashOf(hashSide, name, fn)) continue;
+    if (!keyIsCallerChosen(committedSide, fn, new Set<Node | string>(markers))) return true;
+  }
+  return false;
+}
+
+/** `hash160(name)` modulo casts on either the call or its argument, following `pubkey k = pk` aliases. */
+function isHashOf(expr: ExpressionNode | undefined, name: string, fn: FunctionDefinitionNode): boolean {
+  let cur: ExpressionNode | undefined = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (!(cur instanceof FunctionCallNode) || cur.identifier.name !== 'hash160') return false;
+  let arg: ExpressionNode | undefined = cur.parameters[0];
+  while (arg instanceof CastNode) arg = arg.expression;
+  if (!(arg instanceof IdentifierNode)) return false;
+  if (arg.name === name) return true;
+  // An alias of the parameter hashes the same bytes: `pubkey k = pk; require(hash160(k) == this.pkh)`.
+  const walked = new Set<string>([arg.name]);
+  const queue = [arg.name];
+  while (queue.length > 0) {
+    for (const binding of localBindings(fn.body, queue.pop()!)) {
+      let b: ExpressionNode | undefined = binding;
+      while (b instanceof CastNode) b = b.expression;
+      if (!(b instanceof IdentifierNode) || walked.has(b.name)) continue;
+      if (b.name === name) return true;
+      walked.add(b.name);
+      queue.push(b.name);
     }
   }
   return false;

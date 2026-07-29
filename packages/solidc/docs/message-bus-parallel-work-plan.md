@@ -147,13 +147,13 @@ task-specific report, not in this table.
 | C3 | Eight-participant semantic capstone | C | C1,C2 | **INTEGRATED (relay caveat)** | 13/13 + ReviewR2CapstoneC3; meets consensus capacity, MISSES standard relay by 354 B |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | **SUPERSEDED - table stale in all 10 rows** | controller measured **0.9217x**, over-budget set EMPTY; see 4.48 |
 | X38 | Correct the stale capacity comments in the C1 and C3 fixtures | A5 | X25 | **INTEGRATED** | all figures re-measured at 4ac40b82 and printed by the run - see 4.60 |
-| X39 | C3 serializes to 100,354 B - 354 over the 100,000 B standard relay ceiling | A5 | X25 | **INTEGRATED** | asserted as a band; consensus fit and relay policy stated as separate claims |
+| X39 | C3 serializes to 100,650 B - 650 over the 100,000 B standard relay ceiling | A5 | X25 | **INTEGRATED** | asserted as a band; consensus fit and relay policy stated as separate claims |
 | X40 | Stop citing the C1/C3 reshapes as what closes SEC-6 | A5 | R2-F3 | **INTEGRATED** | verified two ways independently, not taken from the reviewer |
 | X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | A3 | — | **NO_CHANGE (measured)** | there IS no loop leg: 129 reservations, 9,164 computations, ZERO loop-term firings; alternative narrowing fails silently |
 | A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
 | F1 | Ordinary-limit consensus and policy measurements | A6 | — | **INTEGRATED** | envelope measured; a DIFFERENT limit binds first per shape; CONSENSUS_FIT supported but not asserted - see 4.58 |
-| X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | — | F1 | **TODO (ledger accuracy)** | real C3 at N=8 is 0.9217x, 2.54x higher and 9.4x the bytes |
+| X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | B6 | F1 | **CONFIRMED - ledger edit pending** | verified by diffing both generators; two harnesses agree; wording supplied |
 | X48 | One knob cannot express two hash regimes | B4 | F1 | **INTEGRATED** | splitting the field alone was COSMETIC - the regime selector was hardcoded; nothing moves, 9.3x margin - see 4.65 |
 | X57 | `createVirtualMachineBch2026ForProvider` silently drops the observer | — | X48 | **TODO (live-network)** | early return when `consensusLimits` is undefined; Electrum/regtest have none, so derivation observers are discarded |
 | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | — | X48 | **TODO** | the regime split is not yet end-to-end into the mem-cash verifier |
@@ -170,7 +170,7 @@ task-specific report, not in this table.
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
 | X3 | Result fan-in: one handler consuming two producer results | A4 | — | **BLOCKED (wall named, fails closed)** | transcript machinery ACCEPTS fan-in; only caller-side lowering cannot - one bounded compiler change - see 4.62 |
 | X56 | `.emitReturn()` on a delegated call that also emits | — | X12 | **TODO** | event NFT takes the index the forwarder reserved for the return event; refused at build time |
-| X55 | `invocation-transcript-v1.md` still names byte 11 `callMode:u8` | — | X5 | **TODO (doc)** | also `Layer3ReviewA1.test.ts` offset `callModeStart`; shared spec doc, left alone deliberately |
+| X55 | `invocation-transcript-v1.md` still names byte 11 `callMode:u8` | B6 | X5 | **INTEGRATED (premise was wrong)** | the doc does not name byte 11 at all - it specs a DIFFERENT unimplemented format; labelled as such |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
 | X5 | Bind call options as a committed transcript row field | A4 | X31 | **INTEGRATED** | byte 11 now committed; the projection verifier is the FIRST covenant ever to read it - see 4.62 |
 | X6 | Stable diagnostics for unadmitted low-level shapes | A (wiring) | E2 | INTEGRATED | 8 shapes named, incl. one in a modifier body; ONE admitted-class leak remains |
@@ -206,9 +206,9 @@ task-specific report, not in this table.
 | **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **INTEGRATED** | per-slot ordinal binding; a SECOND forgeable entry point found repairing it - see 4.54 |
 | X44 | Two reached event-settling sites collapse to one ordinal | — | SEC-15 | **DEFERRED (fail-closed)** | refuses today; becomes a FALSE refusal if X41's independent limit is ever lifted |
 | X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
-| X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | — | — | **TODO (test quality)** | 13,352 ms then 3,931 ms on consecutive unchanged runs against a 15,000 ms budget |
-| X52 | C2's capacity block is stale in the same way as C1's and C3's | — | X38 | **TODO** | recorded 0.4607-0.4677 / 0.8170; measured 0.3916-0.3957 / 0.6491 |
-| X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | — | X38 | **TODO** | outside A5's lease; also records controller base 2,129,198 vs measured 2,131,662 |
+| X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | B6 | — | **INTEGRATED** | the overrides were HALVING a later package-wide fix; removing them restores 30,000 ms |
+| X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
+| X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | B6 | X38 | **INTEGRATED** | full table delivered and applied to this document; 2,131,662 base confirmed |
 | X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | — | SEC-6 | **TODO (diagnostic)** | no artifact produced either way, so not a security gap |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | — | X19 | TODO | `ArrayAccessNode` has no `name`/`keys`; sound or fail-open is UNDETERMINED |
@@ -227,6 +227,62 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.67 The accuracy sweep OVERTURNS a conclusion, and X55's own premise was wrong
+
+Merged at `851d04b7`. B6 corrected C2, then found the defect ran further than its row named - and found that the
+row it was given for the transcript doc was itself mistaken.
+
+**X52: all six of C2's recorded rows were wrong - and B6 did not copy the figures it was handed.** The brief gave
+it A5's measured values. The **controller half reproduces exactly** (2,309 B / 1,198,938 / 0.6491); the
+**projection half does not**, because X5 landed after that reading. Copying the brief would have re-pinned a
+figure that had already moved. C2 also gained the knob-liveness control it never had - budget derived from the
+reading at 259/byte, not a fixed fraction, because a fixed quarter-of-ordinary would have passed vacuously.
+
+**The spillover is attributable to one edit, to the byte.** X5 touched `generateGraphProjectionVerifier` alone,
+so every build grew by exactly **37 B x participant count**: A13 +111, C2 +148, C1 +185, C3 +296. Every
+worst-density ratio reproduces to the operation, because each capstone's worst-cost input is a controller or a
+participant and **never** a projection. **A13 is the one shape whose binding limit IS a projection**, so it is
+the only one whose binding ratio moved: 0.5094x -> 0.5131x.
+
+**A conclusion is overturned, not merely restated.** F1 costed C3's overrun and stated that removing the two
+cheapest slot pairs frees 388 B and lands it at 99,966 - under the ceiling. At **100,650** that arithmetic gives
+**100,262, still over**. Removing four frees 810 -> 99,840. **The stated fix stopped working when the figure
+moved**, which is the sharpest possible argument that a dated table needs its *consequences* re-derived and not
+just its numbers refreshed.
+
+**X55's premise was wrong, and B6 checked before editing.** The row said the spec names byte 11 `callMode:u8`.
+**It does not name byte 11 at all.** `invocation-transcript-v1.md` describes a *different, unimplemented*
+candidate format whose row is `invocationId:u32, parentInvocationId:u32, subtreeEnd:u32, ...` - so byte 11 there
+is the **high byte of `subtreeEnd`**, and `callMode` sits at offset 18. The shipped row is entirely different
+(`parent:u16, callee:u8, localRow:u8, depth:u8, subtreeEnd:u16, selector:bytes4, callOptions:u8`). The two
+formats diverge structurally throughout - different magic, different carrier, five row kinds against two, depth
+ceiling 16 against `MAX_GRAPH_DEPTH = 7`. So B6 added a tabulated **"this is NOT the spec of the transcript the
+SDK ships"** section rather than patching one field name into a document that would still have read as the
+shipped spec. That is the right call: the fix the row asked for would have made the document *more* misleading.
+
+**Two genuine errors it did find, both verified against measurement rather than constants.** The doc's
+"instructions cost roughly eight bytes of budget" is **inverted by 64x** - at 100/instruction against 800/byte,
+**eight instructions cost one byte**, confirmed by the three controllers' 9,561 / 9,536 / 15,336 instructions
+consuming exactly 1,195.125 / 1,192 / 1,917 budget bytes. And §11 published only the **standard** hash regime,
+unlabelled - the precise confusion F1 flagged and X48 fixed.
+
+**X54: the wall-clock number was never the budget, and the overrides were HALVING the fix.** The row's actual
+instrument is already load-invariant (`toEqual({directBytes: 3157, batchBytes: 4814, ...})`); the 15,000 ms was
+only vitest's hang guard. The archaeology settles it: `357157ad` set 15,000 when vitest's default was 5,000 - a
+*raise* - and `fa79113c` later raised the **package** default to **30,000** with a comment naming this exact
+failure mode. Nobody revisited the overrides, so they had been cutting the later fix in half. **Removing them**
+restores 30,000: measured 2,505 ms alone, 3,256 ms in a full suite, 7,467 ms under three concurrent suites - a
+5.3x spread, and a live corroboration at **17,744 ms** in B6's own run that survives only on the 30,000 default.
+
+**X47 confirmed independently**, by diffing both generators to prove F1 measures the same source, then agreeing
+on two harnesses (F1 0.3630, the spike's own 36.3%). **X53 delivered as a full table** of every plan figure
+provably wrong with its measured value - now applied to this document - including confirming the 2,131,662
+controller base and that the derived 9.31% is unaffected.
+
+**Discipline worth recording: B6 weakened no assertion and ADDED three** (a relay-ceiling bound and two
+knob-liveness assertions on C2), reverted its instrumentation to byte-identical before staging, and labelled the
+one figure it did not measure - the board's 13,352/3,931 ms pair - as a citation in the code comment itself.
 
 ### 4.66 X49: the first `CONSENSUS_FIT` this board can assert, and policy-vs-consensus is SETTLED
 
@@ -551,8 +607,8 @@ trust.
 **C1's recorded figures were wrong; C3's were wrong in all ten rows.** C1's block also inferred the wrong
 **sign** - against the 0.7268 it cites, the measured controller 0.6182 is **10.9 points lower**, not 8 higher.
 C3's 1.2310x "the ONLY input over budget" was already contradicted by the file's own empty-set assertion two
-lines away. **A5 found a third stale block nobody had flagged - C2's** (recorded 0.4607-0.4677 and 0.8170;
-measured 0.3916-0.3957 and 0.6491) - and **reported it rather than repairing it**, being outside the row.
+lines away. **A5 found a third stale block nobody had flagged - C2's** (recorded 0.4607-0.4677 and 0.8170; measured
+**0.3938-0.3979 at 5,464 B** and 0.6491 - all SIX rows wrong) - and **reported it rather than repairing it**, being outside the row.
 
 **Two habits worth copying.** Where A5 could not re-measure a figure - the "Router shed 1,452 bytes" pre-vs-post
 delta - it **dropped** the claim rather than carrying it forward, which is exactly how all three stale blocks
@@ -587,8 +643,8 @@ C1 fixture 16/16 plus `ReviewR2CapstoneC1` 15/15, C3 fixture 13/13 plus `ReviewR
 re-measured figures and knob-liveness controls. **C3 carries a caveat the ledger must record**: it meets the
 consensus-capacity claim and does **not** meet standard relay policy, by 354 bytes.
 
-Two smaller owner items A5 surfaced: the plan records the post-X24/X27 controller base as 2,129,198 where A5
-measures **2,131,662** (+0.12%, no consequence - both give 9.3%), and the plan's own copies of the stale C1/C3
+Two smaller owner items A5 surfaced: the plan records the post-X24/X27 controller base as 2,129,198 where two workers
+independently measure **2,131,662** (+0.12%; 198,400/2,131,662 = 9.31%, so the derived figure stands), and the plan's own copies of the stale C1/C3
 figures are outside A5's lease and still need correcting.
 
 ### 4.59 X43: E3 finally closes against the SEMANTIC class, and the admission was a LIVE hole
@@ -668,10 +724,10 @@ relaxed**, knob-liveness control live on all seven:
 | synthetic N=2 | 3 | 2,429 B | 2.4% | 0.2177 / 0.2091 | 983 B | per-input SigChecks 0.2500x |
 | synthetic N=4 | 5 | 4,977 B | 5.0% | 0.2570 / 0.2545 | 1,068 B | op-cost density 0.2570x |
 | synthetic N=8 | 9 | 10,661 B | 10.7% | 0.3630 / 0.3605 | 1,184 B | op-cost density 0.3630x |
-| A13 graph | 8 | 23,734 B | 23.7% | 0.4067 / 0.4041 | 5,094 B | script bytes 0.5094x |
-| C2 cycle | 79 | 53,101 B | 53.1% | 0.6491 / 0.6465 | 5,386 B | op-cost density 0.6491x |
-| C1 DeFi | 38 | 63,130 B | 63.1% | 0.6182 / 0.6157 | 7,451 B | script bytes 0.7451x |
-| C3 max graph | 108 | 100,354 B | **100.4%** | 0.9217 / 0.9191 | 5,968 B | **STANDARD RELAY SIZE 1.0035x** |
+| A13 graph | 8 | 23,845 B | 23.8% | 0.4067 / 0.4041 | 5,131 B | script bytes 0.5131x |
+| C2 cycle | 79 | 53,249 B | 53.2% | 0.6491 / 0.6465 | 5,423 B | op-cost density 0.6491x |
+| C1 DeFi | 38 | 63,315 B | 63.3% | 0.6182 / 0.6157 | 7,451 B | script bytes 0.7451x |
+| C3 max graph | 108 | 100,650 B | **100.65%** | 0.9217 / 0.9191 | 6,005 B | **STANDARD RELAY SIZE 1.0065x** |
 
 **The headline result is that "capacity" was never one number.** C1 and A13 bind on the 10,000-byte per-input
 script limit, C2 on operation-cost density, C3 on relay size. **C3 is inside every consensus limit and outside
@@ -679,7 +735,7 @@ exactly one policy limit** - which is the precise, defensible form of a claim th
 
 **A ledger figure is misleading and must be corrected.** The ledger's *"N=8 participant binding at 36.5%"* is the
 **synthetic binding-only fixture**, not an 8-participant graph. Real C3 at N=8 measures **0.9217x - 2.54x higher,
-and 9.4x the bytes** (100,354 against 10,661). Read as an 8-participant capacity figure it implies headroom that
+and 9.4x the bytes** (100,650 against 10,661). Read as an 8-participant capacity figure it implies headroom that
 does not exist. A6 measures 36.30% for the synthetic at this commit against the pinned 36.5%.
 
 **BLOCKED, and the reason it has never bitten is luck.** `createVirtualMachine.ts:29-30` writes a single
@@ -689,12 +745,15 @@ real standard 0.5**. Worst measured hash usage is 0.1078x, so it does not bite -
 change: split `ConsensusLimits.hashDigestIterationsPerByte` into standard and nonstandard fields.
 
 **The harness was validated three ways before its numbers were used**: it reproduces round 15's C3 figures
-exactly (100,354 B, 0.9217x, input 106), reproduces the fixtures' own live assertions (6,009 density bytes,
-24,067 projection instructions), and C1/C3 measure identically across independent tests and different providers.
+exactly at `4ac40b82` (100,354 B, 0.9217x, input 106 - since re-measured to 100,650 after X5), reproduces the
+fixtures' own live assertions (6,046 density bytes,
+24,382 projection instructions), and C1/C3 measure identically across independent tests and different providers.
 That is how a measurement row earns the right to contradict recorded figures.
 
-**C3's overrun is costed, not lamented**: 354 B over (0.35%). The two cheapest slot pairs (177 + 211 B) free 388
-and land it at 99,966 B; the 62 unused Ledger trailing slots free 13,048 and land it at 87,306 B (87.3%).
+**C3's overrun is costed, not lamented**: at the time 354 B over. **Re-measured after X5 it is 650 B**, and that
+**overturns the fix stated here**: removing the two cheapest slot pairs (177 + 211 B) frees 388 and now lands at
+**100,262, still over**, where against 100,354 it did not. Removing four frees 810 -> 99,840. The 62 unused
+Ledger trailing slots free 13,048 -> **87,602 B (87.6%)**. See 4.67.
 
 **Promotion, stated with discipline.** **`CONSENSUS_FIT` is now supported** for A13, C2, C1, C3 and the sweep -
 zero refusals at real BCH-2026 limits, nothing relaxed, knob control live - and A6 **declined to assert it**,
@@ -709,7 +768,7 @@ density - consistent with O(N^2) cross-reads against an O(N) budget.
 
 A6 independently confirmed the stale C1/C3 figures and **flagged them for A5 rather than editing them**,
 respecting the lease. It also found more: C1 now has 5 projections and 38 slots, not "4/5 and 35"; C1/C2
-projections measure 17,441 against 14,798 instructions, not a shared 17,259; and the "32 instructions per output"
+projections measure 17,686 against 15,008 instructions, not a shared 17,259; and the "32 instructions per output"
 fit does not reproduce at HEAD. **Every fixture assertion still passes** - only the comments are stale.
 
 ### 4.57 Round 15 closes: ALL SIX packages green, 7,029 tests, and round 16 dispatched
@@ -1103,7 +1162,8 @@ inputs, worst input the controller at **0.9217x**, over-budget set **empty** - p
 the same bytes at 200/byte fail on density, so "ACCEPTED at 800/byte" is not vacuous. That control is what this
 board lacked when it once read a 2.07x overrun as 0.0095%.
 
-**A new bounded fact, measured for the first time: the C3 transaction serializes to 100,354 bytes - 354 over the
+**A new bounded fact, measured for the first time (since re-measured to 100,650 / 650 over, see 4.67): the C3
+transaction serializes to 100,354 bytes - 354 over the
 100,000-byte standard relay ceiling.** The fixture correctly said standard size was untested; this turns that
 into a number. "Fits ordinary BCH-2026 capacity" and "relayable under standard policy" are now known to be
 different claims for C3, and no POLICY_FIT may be asserted for it.

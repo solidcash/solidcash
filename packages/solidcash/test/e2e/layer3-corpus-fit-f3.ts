@@ -47,6 +47,10 @@ export interface CensusRow {
   route?: 'PRESENT' | 'ABSENT';
   handlerCount?: number;
   eligibleHandlers?: string[];
+  /** Admitted handlers the compiler does NOT prove read-only: what this participant can actually change. */
+  eligibleWrites?: string[];
+  /** Refused handlers the compiler does not prove read-only: the write surface the route turned away. */
+  refusedWrites?: number;
   rejectionReasons?: string[];
   blockSize?: number;
   maximumRows?: number;

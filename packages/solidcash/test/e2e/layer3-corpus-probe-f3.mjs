@@ -293,6 +293,13 @@ function probeOne(file, rel, corpus) {
     row.route = 'PRESENT';
     row.handlerCount = handlers.length;
     row.eligibleHandlers = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
+    // WHICH admitted handlers can change anything. `writesState: false` is the compiler's own proof that a
+    // function is read-only; absent means unknown, which is read here as writing. A participant whose entire
+    // admitted surface is read-only can be co-spent but cannot do anything in the graph that a plain read
+    // could not, so this is the difference between a reachable contract and a useful one.
+    const writesOf = (name) => directArtifact.abi?.find((entry) => entry.name === name)?.writesState !== false;
+    row.eligibleWrites = row.eligibleHandlers.filter(writesOf);
+    row.refusedWrites = handlers.filter((handler) => !handler.eligible && writesOf(handler.name)).length;
     row.rejectionReasons = [...new Set(handlers.filter((handler) => !handler.eligible)
       .map((handler) => handler.rejectionReason ?? 'unnamed'))];
     row.blockSize = artifact.hiddenBatch.route.blockLayout?.blockSize;
@@ -307,14 +314,68 @@ function probeOne(file, rel, corpus) {
 }
 
 const limit = process.env.F3_LIMIT ? Number(process.env.F3_LIMIT) : Infinity;
+// A SYSTEMATIC sample, for a corpus too large to compile twice in full. Every stride-th in-scope file is
+// probed, which spreads the sample across the whole sorted corpus; a `F3_LIMIT` prefix would instead take an
+// alphabetical block, which for a corpus laid out by feature directory is a sample of one or two features.
+const stride = process.env.F3_STRIDE ? Number(process.env.F3_STRIDE) : 1;
 const out = process.env.F3_OUT
   || '/tmp/claude-0/-Code-cashscript/97db2cb3-5b7a-49a1-82fd-6dd1634533cf/scratchpad/f3-census.json';
 
 const rows = [];
 const skipped = {};
 const files = {};
-for (const corpus of corpora()) {
+
+/**
+ * ENRICHMENT PASS. `F3_ENRICH=a.json,b.json` recompiles ONLY the files that produced a bus-reachable contract
+ * and fills in the write classification for census runs taken before it existed, then rewrites each file in
+ * place. Recompiling seventy files rather than five thousand is the whole reason this is a separate pass.
+ */
+if (process.env.F3_ENRICH) {
+  for (const path of process.env.F3_ENRICH.split(',')) {
+    const census = JSON.parse(readFileSync(path, 'utf8'));
+    const targets = [...new Set(census.rows
+      .filter((row) => (row.eligibleHandlers?.length ?? 0) > 0)
+      .map((row) => `${row.corpus} ${row.rel}`))];
+    let done = 0;
+    for (const target of targets) {
+      const [corpus, rel] = target.split(' ');
+      const root = { mistswap: MISTSWAP_ROOT, eacc: EACC_ROOT, 'solc-corpus': SOLC_ROOT }[corpus]
+        ?? join(SBE_ROOT, 'contracts', 'src');
+      const fresh = probeOne(join(root, rel), rel, corpus);
+      for (const row of fresh) {
+        const existing = census.rows.find((candidate) => candidate.corpus === corpus
+          && candidate.rel === rel && candidate.contractName === row.contractName);
+        if (!existing) continue;
+        existing.eligibleWrites = row.eligibleWrites;
+        existing.refusedWrites = row.refusedWrites;
+      }
+      done += 1;
+      if (done % 20 === 0) process.stderr.write(`  enriched ${done}/${targets.length} of ${path}\n`);
+    }
+    writeFileSync(path, JSON.stringify(census, null, 1));
+    process.stderr.write(`enriched ${targets.length} files in ${path}\n`);
+  }
+  process.exit(0);
+}
+
+// MERGE. The corpora are probed in separate processes because they take very different lengths of time;
+// `F3_MERGE=a.json,b.json` combines their outputs and emits one recorded module from all of them.
+if (process.env.F3_MERGE) {
+  for (const path of process.env.F3_MERGE.split(',')) {
+    const census = JSON.parse(readFileSync(path, 'utf8'));
+    rows.push(...census.rows);
+    for (const [key, count] of Object.entries(census.skipped ?? {})) {
+      skipped[key] = (skipped[key] ?? 0) + count;
+    }
+    for (const [key, count] of Object.entries(census.files ?? {})) {
+      files[key] = (files[key] ?? 0) + count;
+    }
+  }
+}
+
+for (const corpus of process.env.F3_MERGE ? [] : corpora()) {
   let seen = 0;
+  let inScope = 0;
   const started = Date.now();
   for (const file of corpus.files) {
     if (seen >= limit) break;
@@ -322,6 +383,11 @@ for (const corpus of corpora()) {
     const skip = corpus.skip(rel, file);
     if (skip) {
       skipped[`${corpus.name}/${skip}`] = (skipped[`${corpus.name}/${skip}`] ?? 0) + 1;
+      continue;
+    }
+    inScope += 1;
+    if ((inScope - 1) % stride !== 0) {
+      skipped[`${corpus.name}/NOT-IN-SAMPLE`] = (skipped[`${corpus.name}/NOT-IN-SAMPLE`] ?? 0) + 1;
       continue;
     }
     seen += 1;

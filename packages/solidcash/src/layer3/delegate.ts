@@ -206,6 +206,17 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
       + 'with a compiler that publishes `lowLevelCalls[].target`',
   }),
   Object.freeze({
+    id: 'decoy-committed-target',
+    reason: 'the delegatecall target IS a committed constructor argument and the implementation locking '
+      + 'bytecode IS in the proxy bytecode - but they may be DIFFERENT constructor arguments. Containment is a '
+      + 'substring test over the whole script, and the provenance names one of several committed values, so a '
+      + 'proxy taking two `address` constructor arguments can be classified against the implementation it does '
+      + 'not target. NOT AN AUTHORITY HOLE: both values are committed and no spender can vary either, so the '
+      + 'mismatch surfaces as a covenant refusal at spend time rather than as a takeover. Closing it needs the '
+      + 'constructor argument VALUE, which this gate is not given. NOT DETECTABLE HERE - see '
+      + 'UNDETECTED_BY_THIS_GATE',
+  }),
+  Object.freeze({
     id: 'hash160-committed-key',
     reason: 'a FALSE NEGATIVE this gate accepts rather than guess around. `require(hash160(pk) == <committed>); '
       + 'require(checkSig(s, pk));` is honest P2PKH-shaped authority, but `signatureGuard` publishes the KEY\'s '
@@ -230,12 +241,22 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
  * and this gate now refuses both. They are asserted refused in `Layer3DelegateClassesE3.test.ts` rather than
  * silently dropped from the list.
  *
+ * X43 ADDED ONE. `decoy-committed-target` is the residual of pairing a substring containment test with a
+ * provenance that names ONE of several committed values: a proxy taking two `address` constructor arguments,
+ * delegatecalling one while the other holds the implementation's locking bytecode, is classified
+ * `bytecode-pinned` against an implementation it does not target. MEASURED. It is deliberately not closed by
+ * matching `target.name` against the constructor inputs: `name` is walk-order-dependent on a strength tie, so
+ * `kind` is the only load-bearing field, and the gate is given the proxy's BYTECODE rather than its argument
+ * values. It is also not an authority hole - both values are committed, so the mismatch is refused by the
+ * covenant at spend time rather than exploited.
+ *
  * Naming the blind spot is part of the enumeration: a gate that silently admits a class it cannot see is worse
- * than one that says so. These two are named because they are known, not because they are harmless.
+ * than one that says so. These are named because they are known, not because they are harmless.
  */
 export const UNDETECTED_BY_THIS_GATE: readonly string[] = Object.freeze([
   'conditional-delegate-edge',
   'iterated-delegate-edge',
+  'decoy-committed-target',
 ]);
 
 /** Stable, exact rejection for a delegate participant outside the admitted classes. */

@@ -540,9 +540,9 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
       };
       expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
       // ROUND 16 (X43): the two `bytes`-typed entries are GONE from this list, because the gate now detects
-      // them. Occurrence is still the only thing left that published metadata cannot separate.
+      // them. Occurrence, plus the decoy residual measured below, is what is left.
       expect(layer3.UNDETECTED_BY_THIS_GATE).toEqual([
-        'conditional-delegate-edge', 'iterated-delegate-edge',
+        'conditional-delegate-edge', 'iterated-delegate-edge', 'decoy-committed-target',
       ]);
     });
 
@@ -1025,6 +1025,34 @@ contract E3ComputedProxy(address impl, address alt) {
     });
 
     /**
+     * THE RESIDUAL X43 LEAVES, MEASURED. Containment is a substring test over the whole script and the
+     * provenance names ONE of several committed values, so a proxy with two `address` constructor arguments -
+     * delegatecalling one while the other holds this implementation's locking bytecode - is classified against
+     * an implementation it does not target. It is NOT an authority hole: both values are committed, so no
+     * spender can vary either and the mismatch is refused by the covenant at spend time. It is not closed by
+     * matching `target.name`, because `name` is walk-order-dependent on a strength tie and the gate is handed
+     * the proxy's bytecode rather than its argument values. Named in UNDETECTED_BY_THIS_GATE.
+     */
+    it('ADMITS a decoy proxy whose committed target is a different ctor arg - the named residual', () => {
+      const decoy = compileString(`pragma solidcash >=0.8.0;
+contract E3DecoyProxy(address shown, address used) {
+    bigint counter;
+    function up(bytes input) external {
+        require(shown.length == 35);
+        used.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(decoy.abi.find((entry) => entry.name === 'up')!.lowLevelCalls![0].target)
+        .toEqual({ kind: 'constructorArg', name: 'used' });
+      // `shown` is this implementation; `used` is a script the gate never sees. Still admitted.
+      expect((classify(decoy, [hexToBin(implementationLbc), hexToBin(`aa20${'cd'.repeat(32)}87`)])() as {
+        id: string;
+      }).id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('decoy-committed-target');
+    });
+
+    /**
      * THE FALSE NEGATIVE X43 KEEPS, MEASURED. `signatureGuard` publishes the KEY's provenance, not the whole
      * authority story: P2PKH-shaped authority pins a `pubkey` parameter with a separate unconditional
      * `require(hash160(pk) == pkh)`, which no artifact field describes. The compiler credits exactly this idiom
@@ -1101,6 +1129,7 @@ contract E3Hash160Proxy(bytes20 pkh) {
         'iterated-delegate-edge',
         'computed-delegate-target',
         'unpublished-target-provenance',
+        'decoy-committed-target',
         'hash160-committed-key',
       ]);
       for (const entry of layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES) {

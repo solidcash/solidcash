@@ -175,7 +175,8 @@ task-specific report, not in this table.
 | X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
 | **SEC-10** | One-armed conditional emit reserves an unsettled slot | C | SEC-9 | **INTEGRATED** | reframed: the class was never slot-specific - see 4.45 |
 | **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | C | SEC-9 | **INTEGRATED** | closed by the same own-category immutable pin |
-| **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | — | SEC-11 | **TODO (security)** | not emitted for `delegatecall` proxies, `delegate` fns or `selfdestruct` |
+| **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | S2 | SEC-11 | **MERGED, solidcash UNVERIFIED** | all 3 paths admitted the forgery; A rejects at input 0, B/C at input 2 - see 4.47 |
+| **SEC-14** | Zero-parameter event: taken and not-taken rows are byte-identical | — | SEC-13 | **TODO (security, not demonstrated exploitable)** | positional pin cannot separate them; only `readEventsFromChain` failing to decode prevents it |
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
@@ -200,6 +201,58 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.47 SEC-13 confirmed on all three paths; closed on two, and the third should NOT be closed separately
+
+Merged at `7c57e293`. **All three excluded paths admitted the identical SEC-10/SEC-11 forgery** - an own-category
+`none`-capability zero-FT NFT appended past the block end, accepted and read back by `readEventsFromChain` as a
+genuine log. Measured before the fix, with honest and token-free guard controls on every row:
+
+| path | honest | forgery | after fix |
+| --- | --- | --- | --- |
+| A `selfdestruct` | ACCEPTED | **ACCEPTED, logs `[999999n]`** | REJECTED at **input 0** (master) |
+| B `delegatecall` proxy, impl declares no event | ACCEPTED | **ACCEPTED, logs `[999999n]`** | REJECTED at **input 2** (impl) |
+| C `delegate` fn that genuinely emits | ACCEPTED, logs `[25n]` | **ACCEPTED, logs `[25n, 999999n]`** | REJECTED at **input 2** (impl) |
+
+The fix is two hunks in `GenerateTargetTraversal.ts`: the gate drops `!isSelfdestruct` and
+`!currentFunctionIsDelegate`, and inside a delegate function the allowed offsets become **implementation-relative**
+(`OP_INPUTINDEX`, mirroring `emitBlockSlotIndex`'s `delegateOutputOnly`) while the pinned **category stays the
+proxy's** - which is what a delegate `emit` actually produces.
+
+**The gate exemption is measured, not assumed.** `declaresEvents` - the gate whose absence failed 17 spike files -
+is untouched for every non-delegate function. Delegate functions are exempted from it *only* because case B's
+forged log is readable against the **proxy's** declaration, which the implementation cannot see; gated on
+`declaresEvents` alone, B stayed open.
+
+**Cost is an order of magnitude below the original pin's +189 bytes**, because OP_DEFINE/OP_INVOKE outlining emits
+the loop once and shares it: **+39 bytes** for a contract newly gaining a pin body, **~+3** per additional gated
+entry point sharing it, **+49** for a second body shape when a delegate carries event offsets, and **+0** for
+already-pinned, ungated, and proxy contracts.
+
+**A negative result worth as much as the fix: path B should NOT be closed at the proxy.** The proxy's honest
+own-category immutable outputs are the co-spent implementation's event NFTs, at an offset only that
+implementation's layout names - the proxy cannot express the rule, and the implementation's pin already covers
+them. What remains is exactly a proxy that does not *force* the co-spend, which is already SECURITY-AUDIT C1 and
+which the compiler warns about verbatim. S2 asserted this in the fixture rather than arguing it: the same shape
+writes `counter := 987654321` with **no implementation co-spent at all**, so a forged log adds nothing.
+
+**Residual 1 closed by consensus, not by us.** An own-category immutable NFT carrying a non-zero FT amount is
+refused by **CashTokens consensus** (`output amount: 1` against `input amount: 0`) and is unreachable for any
+contract without own-category FTs in circulation, since FTs exist only from genesis. A cheap tightening exists -
+an own-category output with no capability byte and a non-empty commitment is definitively an immutable NFT - and
+was deliberately NOT added, because it could not be demonstrated live and costs bytes in every gated loop.
+
+**Residual 2 is sharper than the handoff described, and is opened as SEC-14.** The taken and not-taken rows of a
+conditional `emit Ping()` on a zero-parameter event are **byte-identical** at the event slot: same event covenant
+address, `none` capability, empty commitment. **No positional pin can separate them** - only a non-empty active
+marker in the emit blob could. It is not exploitable today solely because `readEventsFromChain` decodes neither
+row as a log. That is a reader accident, not a covenant property, and it should not be recorded as a defence.
+
+**Status is MERGED, not INTEGRATED.** solidc is verified at **2,463/0 across 60 files, exactly baseline**.
+solidcash is **not** verified: S2's full run and a 15-file blast-radius subset were both still in flight with 0
+failures when it reported, on a box carrying 93 vitest processes at load 47 from six sibling worktrees. S2
+declined to claim 4,114/0 rather than round up an unfinished run, which is the correct call and the reason this
+row does not read INTEGRATED yet.
 
 ### 4.46 Round-15 dispatch: six workers, disjoint leases, two of them reviewers
 

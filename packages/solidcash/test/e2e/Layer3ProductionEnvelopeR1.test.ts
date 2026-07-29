@@ -857,10 +857,35 @@ describe('R1 envelope: the plan-time screen', () => {
         expect(screen.verdict, `${shape.name} is over the envelope and was screened CLEAR`).not.toBe('CLEAR');
       }
     }
-    // C3 is the one shape in the basis that is actually over, and the screen must not clear it.
+    // THE POSITIVE CONTROL LOST ITS SUBJECT, so it is rebuilt rather than deleted. This previously read "C3 is
+    // the one shape in the basis that is actually over" and asserted C3 exceeded the relay ceiling. F4 cut 129
+    // bytes from the projection verifier - one covenant instantiated once per participant, so C3 paid 8x - and
+    // C3 is now 99,670 B, 330 UNDER the ceiling. NO SHAPE IN THE BASIS IS OVER ANYTHING.
+    //
+    // A control with no subject proves nothing, which is the same defect class as a hostile case that fails for
+    // the same reason as its honest control. So the loop above is now asserted to have had nothing to assert,
+    // and the screen is exercised against a descriptor built to BE over instead.
+    expect(F2_BASIS.filter((shape) => shape.serializedBytes > BCH_2026_STANDARD.maximumTransactionSize))
+      .toEqual([]);
+
     const c3 = F2_BASIS.find((shape) => shape.name === 'C3 max graph')!;
-    expect(c3.serializedBytes).toBeGreaterThan(BCH_2026_STANDARD.maximumTransactionSize);
-    expect(screenProductionEnvelope(c3.spec, calibration, allowances).verdict).not.toBe('CLEAR');
+    expect(c3.serializedBytes).toBeLessThan(BCH_2026_STANDARD.maximumTransactionSize);
+    expect(BCH_2026_STANDARD.maximumTransactionSize - c3.serializedBytes).toBe(330);
+
+    // Scale C3 past the ceiling and require the screen to refuse it. The subject is synthetic by necessity -
+    // nothing measured is over any more - and it is labelled as such rather than dressed up as a capstone
+    // reading. The per-participant arrays are duplicated alongside the count because the estimator validates
+    // that a descriptor carries one block size and one redeem size per participant, and rejects it otherwise.
+    const overSpec = {
+      ...c3.spec,
+      participants: c3.spec.participants * 2,
+      invocations: c3.spec.invocations * 2,
+      blockSizes: [...c3.spec.blockSizes, ...c3.spec.blockSizes],
+      redeemBytes: [...c3.spec.redeemBytes, ...c3.spec.redeemBytes],
+    };
+    const overScreen = screenProductionEnvelope(overSpec, calibration, allowances);
+    console.log(`[R1] SYNTHETIC over-limit descriptor (2x C3): ${formatScreen(overScreen)}`);
+    expect(overScreen.verdict).not.toBe('CLEAR');
   });
 
   /**

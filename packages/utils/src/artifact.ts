@@ -144,6 +144,29 @@ export interface FunctionBlockLayout {
   trailingCapacity?: number;
 }
 
+/**
+ * Where a value the covenant depends on came from in the source the artifact was compiled from.
+ *
+ * The published TYPE of a value answers nothing about who chose it: `address t = address(target)` with
+ * `target` a `bytes` parameter reaches a delegatecall as an `address`, and every admitted delegate class
+ * carries a `bytes` calldata parameter, so refusing the type is not available. This is the semantic answer.
+ *
+ * - `constructorArg` - a contract constructor parameter. Committed into the contract's p2sh32, so it is fixed
+ *   for a given address and no spender can vary it.
+ * - `stateVar` - a persisted state variable. Varies only through the contract's own authorized writes.
+ * - `literal` - a compile-time constant baked into the script.
+ * - `parameter` - a function parameter the CALLER supplies at spend time. Nothing about it is committed.
+ * - `computed` - anything else: an expression, an external read, a reassigned local, an alias chain the
+ *   compiler could not follow. Unknown, never a proof of safety.
+ */
+export type ValueProvenanceKind = 'constructorArg' | 'parameter' | 'stateVar' | 'literal' | 'computed';
+
+export interface ValueProvenance {
+  kind: ValueProvenanceKind;
+  /** Source name, present for `constructorArg` / `parameter` / `stateVar` and absent otherwise. */
+  name?: string;
+}
+
 export interface AbiFunction {
   name: string;
   selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
@@ -186,10 +209,34 @@ export interface AbiFunction {
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;
+  /**
+   * The signature check that authorizes this function, described by the key it is checked against.
+   *
+   * `key` is the WEAKEST key of every `checkSig` / `checkDataSig` / `checkMultiSig` in the body, ordered
+   * `parameter` (the caller picks it outright) < `computed` (the compiler could not say) < `stateVar` <
+   * `constructorArg` < `literal`. Weakest is the sound reading: guards in different branches are alternatives,
+   * so the authority a spender actually has to defeat is the cheapest one. Two guards that BOTH have to pass
+   * therefore read weaker than they are - a refusal, never an admission.
+   *
+   * Absent means no signature check was proven, whether because the body has none or because the artifact
+   * predates this field. Both readings are "unguarded"; absent is never a proof of authority. Read it with
+   * `signatureGuardKeyProvenance`.
+   */
+  signatureGuard?: { key: ValueProvenance };
   unsafeTier?: number;
   splitCountParam?: string;
   mergeCountParam?: string;
-  lowLevelCalls?: readonly { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
+  lowLevelCalls?: readonly {
+    callMode: 'call' | 'staticcall' | 'delegatecall';
+    dataParamIndex?: number;
+    /**
+     * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
+     * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled
+     * before the field existed - it is never a claim that the target is fixed. Read it with
+     * `lowLevelCallTargetProvenance`, which makes that unknown leg explicit.
+     */
+    target?: ValueProvenance;
+  }[];
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
   // library instance (registerLibrary). `args` are positional: a forwarded enclosing-function parameter (the SDK
   // reads its value from the consumer call) or a compile-time literal. See docs/library-contracts.md (3b).
@@ -783,6 +830,67 @@ export function occurrenceCountViolation(call: ExternalCallAbi, count: number): 
       + (bound.exact ? `; this callsite reaches exactly ${bound.minimum} rows` : '');
   }
   return undefined;
+}
+
+/**
+ * A provenance as a consumer must read it, with the unpublished leg made explicit.
+ *
+ * `unknown` is not one of the compiler's five answers: it is what an artifact that carries no answer at all
+ * has to be read as. It exists so a consumer can never spell "the field was absent" and "the compiler proved
+ * the value is fixed" the same way.
+ */
+export type ReadValueProvenance =
+  | ValueProvenance
+  | { kind: 'unknown'; name?: undefined };
+
+const UNKNOWN_PROVENANCE: ReadValueProvenance = Object.freeze({ kind: 'unknown' as const });
+
+/**
+ * Read a low-level call's published target provenance.
+ *
+ * Returns `unknown` when the artifact publishes none, which is every artifact compiled before the field
+ * existed. A consumer must treat `unknown` exactly as it treats `parameter`: not fixed, not proven, refuse.
+ */
+export function lowLevelCallTargetProvenance(
+  call: { target?: ValueProvenance },
+): ReadValueProvenance {
+  return call.target ?? UNKNOWN_PROVENANCE;
+}
+
+/**
+ * Read a function's published signature-guard key provenance.
+ *
+ * Returns `unknown` when the artifact publishes no guard - the body has none, or the artifact predates the
+ * field. Both mean the same thing to a consumer: no authority is proven here.
+ */
+export function signatureGuardKeyProvenance(fn: Pick<AbiFunction, 'signatureGuard'>): ReadValueProvenance {
+  return fn.signatureGuard?.key ?? UNKNOWN_PROVENANCE;
+}
+
+/**
+ * Is this value fixed for a given contract address - committed into the p2sh32 or into the script itself?
+ *
+ * True for `constructorArg` and `literal` only. `stateVar` is fixed only relative to the contract's own
+ * authorized writes, which is a different question a consumer has to answer for itself; `parameter`,
+ * `computed` and `unknown` are all "a spender may vary this". Anything not on the true list is refused, so a
+ * kind added by a later compiler falls closed here rather than being admitted by omission.
+ */
+export function isAddressCommittedProvenance(provenance: ReadValueProvenance): boolean {
+  return provenance.kind === 'constructorArg' || provenance.kind === 'literal';
+}
+
+/** Human-readable provenance, for diagnostics that have to say why a value was refused. */
+export function describeProvenance(provenance: ReadValueProvenance): string {
+  switch (provenance.kind) {
+    case 'constructorArg': return `constructor argument '${provenance.name}'`;
+    case 'parameter': return `caller-supplied parameter '${provenance.name}'`;
+    case 'stateVar': return `state variable '${provenance.name}'`;
+    case 'literal': return 'a compile-time literal';
+    case 'computed': return 'a computed expression';
+    // Either the body carried nothing to describe or the artifact predates the field; a consumer must not
+    // distinguish them, because both mean the artifact proves nothing here.
+    default: return 'a source this artifact does not name';
+  }
 }
 
 export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {

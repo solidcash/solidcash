@@ -170,7 +170,8 @@ describe('Stateful fallback/receive ABI metadata (M-NEW-3)', () => {
       const fallback = artifact.abi.find((f) => f.name === '__fallback');
       expect(fallback).toBeDefined();
       expect(fallback!.isFallback).toBe(true);
-      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+      // The alias `address impl = address(0x76a9..)` resolves through the cast to the hex literal it wraps.
+      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'delegatecall', target: { kind: 'literal' } }]);
     });
 
     it('should have ALL data NFT indices for delegatecall fallback', () => {

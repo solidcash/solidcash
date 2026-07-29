@@ -215,7 +215,7 @@ describe('X6 low-level call shape diagnostics', () => {
       // The DIRECT route keeps its fire-and-forget block-slot form for the same source.
       const direct = compileString(voidSingular, { forceStateful: true });
       expect(direct.abi.find((fn) => fn.name === 'run')!.lowLevelCalls)
-        .toEqual([{ callMode: 'call' }]);
+        .toEqual([{ callMode: 'call', target: { kind: 'parameter', name: 'target' } }]);
     });
 
     it('admits a contract with no low-level call at all', () => {

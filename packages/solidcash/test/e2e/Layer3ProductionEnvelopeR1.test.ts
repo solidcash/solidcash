@@ -80,8 +80,9 @@ interface BuiltSweep {
 
 /**
  * `extraOutputs` is the whole point of this helper existing rather than F1's. It appends outputs AFTER the
- * graph is planned, which is what an SDK's own sidecar auto-co-spend does at `TransactionBuilder.ts:467`,
- * and it is how the plan-versus-bytes divergence below is produced from one descriptor.
+ * graph is planned, which is what the SDK's own auto-co-spend passes do: `TransactionBuilder.ts:406` and
+ * `:545` splice recreation outputs in permanently, before `send()` builds, and neither goes through
+ * `validateOutput`. It is how the plan-versus-bytes divergence below is produced from one descriptor.
  */
 async function buildSweep(
   n: number, extraOutputs: { to: Uint8Array; amount: bigint }[] = [],
@@ -601,9 +602,10 @@ describe('R1 envelope: the build-time gate', () => {
    * UNCHECKED WITNESS PATH.
    *
    * One descriptor, two builds. The second appends an output after the graph is planned - which is exactly
-   * what the SDK's own sidecar auto-co-spend does at `TransactionBuilder.ts:467`, and which is why a gate
-   * keyed on the plan is not a gate. The plan-time screen returns the SAME verdict for both, because it sees
-   * the same descriptor. The byte gate admits one and refuses the other.
+   * what the SDK's own auto-co-spend passes do at `TransactionBuilder.ts:406` and `:545`, permanently and
+   * without `validateOutput`, and which is why a gate keyed on the plan is not a gate. The plan-time screen
+   * returns the SAME verdict for both, because it sees the same descriptor. The byte gate admits one and
+   * refuses the other.
    */
   it('MEASURED: one plan, two builds - the plan screen cannot tell them apart and the gate can', async () => {
     const clean = (await sweeps()).get(2)!;

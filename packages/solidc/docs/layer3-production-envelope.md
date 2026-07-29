@@ -204,7 +204,10 @@ ADMIT.
 `provider.sendRawTransaction` outside the provider implementations themselves. **Exactly one** of them -
 `src/layer3/preflight.ts:99`, inside `sendPreflightedLayer3Transaction` - runs the Layer-3 gate. The other
 seven are `TransactionBuilder.send()`, `StatefulTransactionBuilder.send()` and five sites in
-`StatefulContract.ts`, three of which are documented as deliberately bypassing `send()`.
+`StatefulContract.ts`, two of which carry the explicit comment "Build and send directly (bypass debug step
+which doesn't handle covenant unlockers)" (`:10040`, `:10180`) and a third of which is named
+`_sendBuilderWithCustomUnlockers` (`:3238`) - custom unlockers being exactly the class Layer-3 route
+unlockers belong to.
 
 `src/layer3/transcript.ts:358` returns a plain `TransactionBuilder`, so `.send()` is available on every
 Layer-3 builder the SDK produces. **3 test files** use `sendPreflightedLayer3Transaction`; 14 of the 84
@@ -236,8 +239,10 @@ production constants.
 this proposal is built around:
 
 - the gate is keyed on the serialized transaction, so a mutation after the plan cannot slip past it. This is
-  not hypothetical: the SDK's own sidecar auto-co-spend appends outputs at `TransactionBuilder.ts:467`
-  *after* any external preflight, and those outputs never pass through `validateOutput`;
+  not hypothetical, and it is measured: `TransactionBuilder` mutates `this.outputs` at **six** places and only
+  one of them - `addOutputs` at `:576` - runs `validateOutput`. Two of the rest are **persistent** auto-co-spend
+  splices (`:406` ecrecover, `:545` the dynamic keccak loop) that `send()` performs *before* it builds, and one
+  (`:650`) adds an OP_RETURN. So the SDK itself appends outputs that the only dust check never sees;
 - refusing at `sendPreflightedLayer3Transaction` alone would leave `.send()` as the witness path, and
   `.send()` is what 14 of the 84 Layer-3 e2e files actually use.
 

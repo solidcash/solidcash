@@ -8,6 +8,13 @@ against the measured envelope.**
 Base commit `6a685f33`. The census, every estimate, and all 45 built transactions were produced at that
 commit. No figure here is carried forward from an earlier bench run or from the F1 table.
 
+**R2 reconciliation at `1591e87f`.** Two figures in this report were about shapes measured *elsewhere* rather
+than by the F3 probe, and both moved after `6a685f33` when F4 cut the projection verifier by 129 bytes: C3's
+position against the relay ceiling (section 6, real limit 2) and the size of the projection proof (sections 5
+and 6). Both are corrected in place, with the consequence re-derived rather than the number swapped. **No F3
+measurement is restated**: the census, the verdict counts, the binding-limit table and the 45 built
+transactions are all still the `6a685f33` run and are not re-derived here.
+
 ## 0. What is measured and what is estimated
 
 | Class | Produced by | Status |
@@ -339,6 +346,12 @@ projection proof, at roughly 4,780 bytes: **the generated projection covenant is
 contracts**, and its size is driven by the transcript it carries rather than by the row count the envelope is
 fitted over.
 
+That 4,780 is unlocking bytecode - the covenant's redeem script plus the transcript and proof arguments it
+carries - and it was measured at this report's base commit `6a685f33`, which is **before F4**. F4 then cut
+the projection verifier's redeem script by 129 bytes. Measured at `1591e87f`, that redeem script is **4,542
+bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did not
+re-measure, and is not restated here as a number.
+
 What is new here is the scale and the sign consistency. F2 recorded that blind spot as a 1.8% miss on one
 held-out six-participant graph. On real corpus contracts at **one** participant it is a 7% systematic miss,
 on 45 of 45, on the axis that decides fit for the application corpora. Any use of F2 to answer "will this
@@ -362,8 +375,13 @@ machinery pointed at it, that machinery is named.
 1. **The 10,000-byte per-input unlocking-bytecode limit.** This is what stops eight of the twelve
    bus-reachable application contracts, at one participant, and it is what binds on all 45 measured
    transactions. A consensus limit; no graph design moves it.
-2. **The 100,000-byte standard relay ceiling.** It takes over at N=8 for 317 of 367 rows. C3 already sat at
-   1.0065x of it, so this is the wall F1 found, reached earlier by larger contracts.
+2. **The 100,000-byte standard relay ceiling.** It takes over at N=8 for 317 of 367 rows, so this is the wall
+   F1 found, reached earlier by larger contracts. This report originally added *"C3 already sat at 1.0065x of
+   it"*; that is no longer true and the correction does not weaken the point. F4 cut the projection verifier
+   by 129 bytes, which is worth 129 bytes per participant, and C3 has eight, so C3 was executed, accepted and
+   mined at **99,670 bytes**, 0.9967x of the ceiling (citation, X59/X60 at `1591e87f`, not re-measured here).
+   The ceiling is still where the corpus meets it at N=8; what changed is that the largest fixture ever built
+   now sits just inside rather than just outside, which is a 330-byte margin and not headroom.
 3. **Operation-cost density.** Predicted to bind for the majority of contracts at N=1..4, though section 5
    shows that prediction is wrong for the 45 shapes that were actually built.
 
@@ -376,9 +394,13 @@ roughly a 70% reduction to fit one input. Whether any combination of those reach
 bus mode is unmeasured, here and elsewhere; this report neither claims it does nor claims it cannot. That is
 the measurement the production-envelope decision actually needs.
 
-A second observation in the same category: the 4,780-byte projection proof is a fixed overhead on every
-participant, which at these sizes is a large share of a limit that real contracts are already close to. It
-is a generated covenant, so it is a compiler artifact rather than a limit.
+A second observation in the same category: the projection proof is a fixed overhead on every participant,
+which at these sizes is a large share of a limit that real contracts are already close to. It is a generated
+covenant, so it is a compiler artifact rather than a limit - and F4 has since demonstrated exactly that by
+cutting its redeem script to **4,542 bytes** (measured at `1591e87f`) with no require removed, weakened or
+reordered. Because the covenant is instantiated once per participant and each proof slot pushes the whole
+redeem script, **a verifier byte is worth N transaction bytes**, and F4's 129-byte cut was measured landing
+at exactly that multiplier on all four capstones (citation, F4).
 
 ### Incidental walls - scope decisions and defects, not limits
 

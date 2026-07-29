@@ -86,7 +86,15 @@ export default class MockNetworkProvider implements NetworkProvider {
       maximumStandardTransactionSize: this.consensusLimits.maximumTransactionBytes,
       maximumTokenCommitmentLength: this.consensusLimits.maximumNftCommitmentBytes,
       operationCostBudgetPerByte: this.consensusLimits.operationCostBudgetPerByte,
-      hashDigestIterationsPerByteNonstandard: this.consensusLimits.hashDigestIterationsPerByte,
+      // Both regimes, mirroring createVirtualMachine.ts: each falls back to the shared value when unset.
+      // mem-cash builds its primary VM with `standard = policy.enforceDust` (and a second consensus VM
+      // alongside it), so writing only the nonstandard field left a dust-enforcing mock on libauth's real
+      // 0.5/byte standard allowance regardless of its profile. mem-cash rejects non-integer overrides, so the
+      // real fractional allowances (0.5 and 3.5) cannot be expressed here - it throws rather than round.
+      hashDigestIterationsPerByteStandard:
+        this.consensusLimits.hashDigestIterationsPerByteStandard ?? this.consensusLimits.hashDigestIterationsPerByte,
+      hashDigestIterationsPerByteNonstandard:
+        this.consensusLimits.hashDigestIterationsPerByteNonstandard ?? this.consensusLimits.hashDigestIterationsPerByte,
     };
     const verifier = createTxVerifier({
       // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the

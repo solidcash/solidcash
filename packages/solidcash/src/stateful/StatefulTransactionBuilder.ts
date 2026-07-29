@@ -166,6 +166,12 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   lowLevelCallRawInputs?: UnlockableUtxo[];
   /** Delegate implementation master/data outputs precede grafted proxy-state entry slots. */
   delegateEntriesAfterLowLevel?: boolean;
+  /**
+   * X56. The delegate return-event output follows the implementation's own event outputs rather than its
+   * master. Set only when the co-spent implementation BOTH emits and returns, which is the only case where the
+   * two claim the same index.
+   */
+  delegateReturnEventAfterEvents?: boolean;
   /** Absolute input offset selected by the caller's encoded low-level-call index. */
   lowLevelCallInputBase?: number;
   batchEntriesBeforeDynamicChunks?: boolean;
@@ -243,6 +249,7 @@ export class StatefulTransactionBuilder {
   private lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallRawInputs: UnlockableUtxo[];
   private delegateEntriesAfterLowLevel: boolean;
+  private delegateReturnEventAfterEvents: boolean;
   private lowLevelCallInputBase?: number;
   private batchEntriesBeforeDynamicChunks: boolean;
   private iterationEntryInputs: UnlockableUtxo[];
@@ -310,6 +317,7 @@ export class StatefulTransactionBuilder {
     this.lowLevelCallUtxoGroups = options.lowLevelCallUtxoGroups ?? [];
     this.lowLevelCallRawInputs = options.lowLevelCallRawInputs ?? [];
     this.delegateEntriesAfterLowLevel = options.delegateEntriesAfterLowLevel ?? false;
+    this.delegateReturnEventAfterEvents = options.delegateReturnEventAfterEvents ?? false;
     this.lowLevelCallInputBase = options.lowLevelCallInputBase;
     this.batchEntriesBeforeDynamicChunks = options.batchEntriesBeforeDynamicChunks ?? false;
     this.entryNfts = options.entryNfts ?? [];
@@ -1262,6 +1270,9 @@ export class StatefulTransactionBuilder {
       ? { ...baseOpts, allowImplicitNftBurn: true }
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
+    // X56. Delegate return events held back until after the implementation's own event outputs. Empty unless
+    // `delegateReturnEventAfterEvents` is set, i.e. unless the co-spent implementation emits AND returns.
+    let deferredDelegateReturnEvents: Array<{ categoryId: string; commitment: Uint8Array }> = [];
     if (this.locktimeOverride !== undefined) builder.locktime = this.locktimeOverride;
     builder.addInputs(this.allInputs);
     // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
@@ -1723,7 +1734,13 @@ export class StatefulTransactionBuilder {
           });
         }
       }
-      for (const re of this.pendingReturnEventOutputs) {
+      // X56. The return channel follows the implementation's OWN output-only slots, not the facet master
+      // directly. An implementation that also emits resolves its event at `implInput + 1` - the position this
+      // used to hand the return event - and computeBlockLayout always orders events before the returnEvent, so
+      // deferring the return channel past the event outputs is what makes the two agree. `deferred` is empty
+      // for every implementation without an event slot, so a plain returning delegate keeps this exact index.
+      if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents = this.pendingReturnEventOutputs;
+      for (const re of (this.delegateReturnEventAfterEvents ? [] : this.pendingReturnEventOutputs)) {
         builder.addOutput({
           to: new Uint8Array([0x51]),
           amount: 800n,
@@ -2010,6 +2027,20 @@ export class StatefulTransactionBuilder {
             capability: 'none',
             commitment: eo.commitment,
           },
+        },
+      });
+    }
+
+    // X56. The delegate return channel, deferred from the facet-preservation block above so the co-spent
+    // implementation's own event outputs keep the position its covenant resolves for them.
+    for (const re of deferredDelegateReturnEvents) {
+      builder.addOutput({
+        to: new Uint8Array([0x51]),
+        amount: 800n,
+        token: {
+          amount: 0n,
+          category: re.categoryId,
+          nft: { capability: 'none', commitment: binToHex(re.commitment) },
         },
       });
     }

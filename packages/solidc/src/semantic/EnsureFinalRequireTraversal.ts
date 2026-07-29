@@ -35,10 +35,10 @@ import {
   StateArrayDeleteNode,
   SelfdestructStatementNode,
   IdentifierNode,
-  FunctionCallNode,
   BlockNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { hasAuthorizingSignatureGuard } from './SymbolTableTraversal.js';
 import { EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError } from '../Errors.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
@@ -166,8 +166,6 @@ function warnOrThrowUnverified(node: Node, strict: boolean): void {
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
 }
 
-const SIGNATURE_CHECK_NAMES = new Set(['checkSig', 'checkDataSig', 'checkMultiSig']);
-
 // Finds whether a subtree references any of the given names (used to detect a caller-controlled selfdestruct
 // destination: an identifier matching a function parameter). Other expression nodes recurse via the base.
 class NameReferenceFinder extends AstTraversal {
@@ -181,30 +179,22 @@ class NameReferenceFinder extends AstTraversal {
   }
 }
 
-// Finds whether a subtree contains a signature-check call - on BCH the only primitive that authenticates a
-// specific party (covenant/introspection conditions authenticate transaction shape, not who triggers it).
-class SignatureCheckFinder extends AstTraversal {
-  found = false;
-
-  visitFunctionCall(node: FunctionCallNode): Node {
-    if (node.identifier && SIGNATURE_CHECK_NAMES.has(node.identifier.name)) this.found = true;
-    return super.visitFunctionCall(node);
-  }
-}
-
 // selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant
 // reads. If addr is caller-controlled (a function parameter) AND the function has no signature check, ANY
 // caller can pass their own address and take the balance. The two safe forms - authenticate the function, or
 // take the destination from contract state / a constant - are not flagged. Warning only; the author may
 // have a non-signature authorization. See docs/selfdestruct.md (Security considerations).
+//
+// SEC-16: "has a signature check" is not the question - a signature check authenticates only the holder of the
+// KEY it checks, so `require(checkSig(s, pk))` with a caller-supplied `pk` authorizes nobody and must not
+// silence this. Reuse SEC-12's hasAuthorizingSignatureGuard, which credits a guard only when the key is one
+// the caller cannot choose (constructor input, state variable, literal, contract const).
 function warnUnauthenticatedSelfdestruct(node: FunctionDefinitionNode): void {
   const selfdestructs = (node.body.statements ?? [])
     .filter((s): s is SelfdestructStatementNode => s instanceof SelfdestructStatementNode);
   if (selfdestructs.length === 0) return;
 
-  const sigFinder = new SignatureCheckFinder();
-  sigFinder.visit(node.body);
-  if (sigFinder.found) return; // authenticated by a signature check
+  if (hasAuthorizingSignatureGuard(node)) return; // authenticated against a key the caller cannot choose
 
   const paramNames = new Set(node.parameters.map((p) => p.name));
   for (const sd of selfdestructs) {

@@ -1,4 +1,7 @@
-import type { Artifact, AbiFunction } from '@solidcash/utils';
+import type { Artifact, AbiFunction, ReadValueProvenance } from '@solidcash/utils';
+import {
+  describeProvenance, isAddressCommittedProvenance, lowLevelCallTargetProvenance, signatureGuardKeyProvenance,
+} from '@solidcash/utils';
 
 /**
  * E3 - explicit delegate-participant classes.
@@ -19,33 +22,66 @@ import type { Artifact, AbiFunction } from '@solidcash/utils';
  * authority for an admitted class is listed per class below and is what the VM cases in
  * `test/e2e/Layer3DelegateClassesE3.test.ts` attack.
  *
- * ADMISSION IS FAIL-CLOSED ON WHAT THE METADATA CANNOT SAY. Two shapes escaped an earlier revision of this
- * module (round-13 review A13, `test/e2e/ReviewA13DelegateE3.test.ts`), both settling a foreign implementation
- * rewriting proxy state on the VM:
+ * ADMISSION READS SEMANTICS, NOT PUBLISHED TYPES (X43). Two shapes escaped the round-13 revision of this module
+ * (review A13, `test/e2e/ReviewA13DelegateE3.test.ts`), both settling a foreign implementation rewriting proxy
+ * state on the VM: a proxy pinning one implementation in its constructor while delegatecalling a caller-supplied
+ * `address`, and a proxy whose `checkSig` runs against a caller-supplied `pubkey`. Round 14 closed both by
+ * refusing those PARAMETER TYPES, and both reopened immediately - route the same caller value through a `bytes`
+ * parameter and cast it, and no `address` or `pubkey` parameter is published at all. A type could never have
+ * answered the question, and refusing `bytes` is not available: every admitted class carries a `bytes` calldata
+ * parameter.
  *
- *  - A proxy pinning one implementation in its constructor while delegatecalling a caller-supplied `address`
- *    parameter. Bytecode containment is a SUBSTRING test and says nothing about which expression the target is.
- *  - A proxy with a `sig` parameter whose `checkSig` runs against a caller-supplied `pubkey` parameter, storing
- *    no authority at all.
+ * X37 publishes the answer instead. `lowLevelCalls[].target` says where the delegatecall target came from and
+ * `signatureGuard.key` says where the checked key came from, both with casts stripped and alias bindings
+ * followed - so `address t = address(target)` over a `bytes` parameter resolves to `parameter`, not to
+ * `computed`. This gate reads those two fields:
  *
- * So `bytecode-pinned` now requires that the proxy function publish NO `address` parameter, and
- * `caller-authorized` requires that no caller-supplied `pubkey` parameter exists AND the proxy commits a pubkey
- * of its own. Both refuse shapes that may be honest (an `address` parameter used as a payout recipient; a key
- * checked against storage the gate cannot type). That cost is deliberate: the missing fact is which expression
- * feeds the target and which key `checkSig` checks, and only the compiler sees either.
+ *  - `bytecode-pinned` requires the target to be `constructorArg` or `literal`, i.e. committed into the proxy's
+ *    own p2sh32, AND the implementation locking bytecode to appear in the proxy bytecode. Provenance says the
+ *    target is FIXED; containment says WHICH script it is fixed to. Neither alone is the class.
+ *  - `caller-authorized` requires the target to be `parameter`, a `sig` parameter to exist, AND the
+ *    signature-guard key to be one the proxy commits (`constructorArg`, `literal` or `stateVar`).
+ *
+ * Every other target - `stateVar`, `computed`, and the `unknown` that an artifact publishing no `target` reads
+ * back as - is refused by name.
+ *
+ * READING AN ABSENT FIELD, which is the X37 compatibility contract as this consumer honours it. Both fields are
+ * additive and optional, so a consumer must do three things and this module does all three:
+ *
+ *  1. Never touch `call.target` or `fn.signatureGuard` directly. Go through `lowLevelCallTargetProvenance` and
+ *     `signatureGuardKeyProvenance`, which spell the missing case `unknown` - a kind the compiler never emits -
+ *     so "the artifact said nothing" can never be written the same way as one of its five answers.
+ *  2. Decide admission on an explicit ALLOW-LIST of kinds (`isAddressCommittedProvenance` for the target,
+ *     COMMITTED_KEY_PROVENANCE_KINDS for the key). `unknown`, and any kind a later compiler adds, then falls
+ *     closed instead of being admitted by omission.
+ *  3. State the consequence rather than hide it: an artifact compiled before X37 carries no `target` on its
+ *     delegatecall row and is refused here as `unpublished-target-provenance`. Recompiling the proxy is the
+ *     fix. There is no reading of an absent field that admits anything.
+ *
+ * WHAT `signatureGuard` DOES NOT SAY. It describes the KEY's provenance, not the whole authority story.
+ * P2PKH-shaped authority - `require(hash160(pk) == this.pkh); require(checkSig(s, pk));` - publishes
+ * `{parameter, pk}`, because what makes it authority is a separate require this field does not describe. The
+ * compiler credits exactly that idiom (round-15 SEC-17, `hasAuthorizingSignatureGuard`). This gate deliberately
+ * does NOT, because the fact it would need - that an unconditional top-level require commits that parameter -
+ * is published in no artifact field, and reconstructing it from types (a `bytes20` constructor argument next to
+ * a `pubkey` parameter) is the exact reasoning X43 removed. The shape is therefore refused as `self-authorized`
+ * and named as the false-negative class `hash160-committed-key`. Closing it needs one additive artifact field,
+ * not a cleverer reading of the fields that exist.
  */
 
 /** How the proxy decides which script may write its state. */
 export type DelegateCodeIdentity =
   /**
-   * `impl` is a source literal or constructor argument, so the proxy's own p2sh32 commits to it AND no caller
-   * value can be the target: the proxy function publishes no `address` parameter at all.
+   * The delegatecall target resolves to a source literal or a constructor argument, so the proxy's own p2sh32
+   * commits to it and no caller value can be the target, AND the implementation locking bytecode is in that
+   * bytecode, so the commitment names THIS implementation.
    */
   | 'bytecode-pinned'
   /**
-   * `impl` is a parameter, the proxy function also takes a signature, and the key that signature is checked
-   * against is one the PROXY commits to (a constructor argument or a state variable) rather than one the caller
-   * hands in - so an authorized signer, not any signer, selects the implementation.
+   * The target resolves to a function parameter, the proxy function also takes a signature, and the key that
+   * signature is checked against is one the PROXY commits to (a constructor argument, a compile-time literal or
+   * a state variable) rather than one the caller hands in - so an authorized signer, not any signer, selects
+   * the implementation.
    */
   | 'caller-authorized';
 
@@ -101,22 +137,22 @@ export const ADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly DelegateParticipant
 export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; reason: string }[] = Object.freeze([
   Object.freeze({
     id: 'caller-chosen',
-    reason: 'the proxy takes the implementation address as a parameter with no signature parameter, so any '
-      + 'spender selects the code that writes the proxy state',
+    reason: 'the delegatecall target resolves to a caller-supplied parameter and the proxy function takes no '
+      + 'signature parameter, so any spender selects the code that writes the proxy state',
   }),
   Object.freeze({
     id: 'pinned-but-caller-selected',
-    reason: 'the proxy bytecode DOES contain the implementation locking bytecode, but the proxy function also '
-      + 'takes an `address` parameter. Published metadata does not say which expression the delegatecall target '
-      + 'evaluates to, so containment proves only that the p2sh32 commits to those bytes somewhere - not that '
-      + 'they are the target. A proxy that pins one implementation in its constructor and delegatecalls a '
-      + 'caller-supplied parameter is `caller-chosen` wearing a pin',
+    reason: 'the proxy bytecode DOES contain the implementation locking bytecode, and the delegatecall target '
+      + 'still resolves to a caller-supplied parameter. Containment proves only that the p2sh32 commits to '
+      + 'those bytes somewhere, not that they are what the call reaches. A proxy that pins one implementation '
+      + 'in its constructor and delegatecalls a parameter is `caller-chosen` wearing a pin',
   }),
   Object.freeze({
     id: 'self-authorized',
-    reason: 'the proxy function takes a signature AND either a caller-supplied `pubkey` parameter or no key the '
-      + 'proxy itself commits to, so the signature check can only prove the caller signed for a key the caller '
-      + 'chose - which authorizes nobody',
+    reason: 'the delegatecall target resolves to a caller-supplied parameter, and the key the function\'s '
+      + 'signature is checked against is not one the proxy commits to - it is a parameter the caller also '
+      + 'supplies, an expression the compiler could not resolve, or absent entirely. A caller who picks both '
+      + 'the key and the target authorizes nobody',
   }),
   Object.freeze({
     id: 'unpinned-p2pkh',
@@ -124,8 +160,9 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
   }),
   Object.freeze({
     id: 'dynamically-resolved-implementation',
-    reason: 'the proxy bytecode does not contain the implementation locking bytecode, so code identity is only '
-      + 'as strong as whatever resolves it at spend time',
+    reason: 'the delegatecall target is resolved at spend time rather than committed for the proxy address: '
+      + 'either it reads a state variable, whose authority is only whatever wrote it, or it is committed to '
+      + 'bytes that are not this implementation\'s locking bytecode',
   }),
   Object.freeze({
     id: 'emitting-delegate',
@@ -154,6 +191,28 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
       + 'delegates N times produces a covenant satisfied by delegating once. NOT DETECTABLE HERE - see '
       + 'UNDETECTED_BY_THIS_GATE',
   }),
+  Object.freeze({
+    id: 'computed-delegate-target',
+    reason: 'the published target provenance is `computed`: a ternary, an array element, a slice, a '
+      + 'concatenation, a struct field, a tuple-destructured local, `tx.origin`/`msg.sender`, or an alias cycle '
+      + 'the compiler refused to pick an arm of. The compiler could not say where the target came from, and '
+      + '"could not say" is never evidence that a spender cannot choose it',
+  }),
+  Object.freeze({
+    id: 'unpublished-target-provenance',
+    reason: 'the proxy artifact publishes no `target` on its delegatecall row, which identifies an artifact '
+      + 'compiled before X37 added the field - every compiler that knows how to answer writes the row, '
+      + '`computed` included. An absent field is the weakest fact, never "unconstrained": recompile the proxy '
+      + 'with a compiler that publishes `lowLevelCalls[].target`',
+  }),
+  Object.freeze({
+    id: 'hash160-committed-key',
+    reason: 'a FALSE NEGATIVE this gate accepts rather than guess around. `require(hash160(pk) == <committed>); '
+      + 'require(checkSig(s, pk));` is honest P2PKH-shaped authority, but `signatureGuard` publishes the KEY\'s '
+      + 'provenance only - `{parameter, pk}` - so the commitment that turns it into authority is invisible '
+      + 'here. The compiler credits the idiom (SEC-17); this gate refuses it as `self-authorized` until an '
+      + 'artifact field publishes the commitment',
+  }),
 ]) as readonly { id: string; reason: string }[];
 
 /**
@@ -164,20 +223,12 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
  * entry. Typed interface edges already publish `occurrence`/`maximumOccurrences`; low-level edges do not.
  * Until that additive field exists, refusing these two classes has to happen in the compiler, not here.
  *
- * The last two are the residual of the A13 fixes, and they are the SAME two escapes routed through a `bytes`
- * parameter. Both fixes key off a PARAMETER TYPE, because a type is the only thing published metadata offers:
- *
- *  - `bytes-typed-delegate-target`: `address t = address(target); t.delegatecall(input);` where `target` is a
- *    `bytes` parameter. The function publishes no `address` parameter, so a proxy that also commits an
- *    implementation in its constructor is still classified `bytecode-pinned`. MEASURED: it compiles and this
- *    gate admits it (`Layer3DelegateClassesE3.test.ts`, round-14 block).
- *  - `bytes-typed-key-material`: `checkSig(s, pubkey(k))` where `k` is a `bytes` parameter. No `pubkey`
- *    parameter is published, so a proxy with a committed key is still classified `caller-authorized`. Also
- *    measured admitted.
- *
- * Neither can be closed by refusing `bytes` parameters: the delegatecall's own calldata parameter is `bytes`
- * and every admitted class has one. Closing them needs the compiler to publish which expression the target and
- * the checked key resolve to - see the handoff in the round-14 evidence packet.
+ * X43 REMOVED TWO ENTRIES from this list. `bytes-typed-delegate-target` (`address t = address(target);
+ * t.delegatecall(input);`) and `bytes-typed-key-material` (`checkSig(s, pubkey(k))`) were the residual of the
+ * round-14 fixes, which keyed off parameter TYPES because a type was the only thing published metadata then
+ * offered. X37 publishes where the target and the checked key resolve to, both routes resolve to `parameter`,
+ * and this gate now refuses both. They are asserted refused in `Layer3DelegateClassesE3.test.ts` rather than
+ * silently dropped from the list.
  *
  * Naming the blind spot is part of the enumeration: a gate that silently admits a class it cannot see is worse
  * than one that says so. These two are named because they are known, not because they are harmless.
@@ -185,8 +236,6 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
 export const UNDETECTED_BY_THIS_GATE: readonly string[] = Object.freeze([
   'conditional-delegate-edge',
   'iterated-delegate-edge',
-  'bytes-typed-delegate-target',
-  'bytes-typed-key-material',
 ]);
 
 /** Stable, exact rejection for a delegate participant outside the admitted classes. */
@@ -225,6 +274,22 @@ const isP2pkh = (lockingBytecode: string): boolean => {
 
 /** Block-slot kinds an admitted implementation function may publish, mapped to their output authority. */
 const ADMITTED_IMPLEMENTATION_SLOTS = new Set(['master', 'dataNft', 'returnEvent']);
+
+/**
+ * Signature-guard key provenances the PROXY commits to, as an ALLOW-LIST - so `computed`, `parameter`, and the
+ * `unknown` an artifact publishing no guard reads back as all fall closed, and so does any kind a later
+ * compiler adds.
+ *
+ * `stateVar` is on this list while `isAddressCommittedProvenance` refuses it, and the difference is deliberate.
+ * A `pubkey` state variable lives in the proxy's own data NFT and changes only through the proxy's own
+ * authorized writes, which is what "the proxy commits this key" means (round-14's `PROXY_STATE_KEY_AUTHORIZED`,
+ * settled). A delegatecall TARGET read from state is a different question - an upgrade pointer whose authority
+ * is whatever wrote it, with no settling case here - and is refused below.
+ */
+const COMMITTED_KEY_PROVENANCE_KINDS: ReadonlySet<string> = new Set(['constructorArg', 'literal', 'stateVar']);
+
+const isCommittedKeyProvenance = (provenance: ReadValueProvenance): boolean =>
+  COMMITTED_KEY_PROVENANCE_KINDS.has(provenance.kind);
 
 /**
  * Classify one proxy/implementation pair, or throw a named diagnostic.
@@ -299,70 +364,91 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
     );
   }
 
-  // NECESSARY, NOT SUFFICIENT. The implementation locking bytecode appearing in the proxy's instantiated
-  // bytecode proves the proxy's own p2sh32 commits to those bytes - a source literal or a constructor argument
-  // both land there. It does not prove those bytes are what the delegatecall target expression evaluates to;
-  // that is the compiler's `OP_UTXOBYTECODE[delegateIndex] == impl` emission, attacked separately on the VM.
+  // NECESSARY, NOT SUFFICIENT, AND NO LONGER LOAD-BEARING ALONE. The implementation locking bytecode appearing
+  // in the proxy's instantiated bytecode proves the proxy's own p2sh32 commits to those bytes - a source
+  // literal or a constructor argument both land there. It does not prove those bytes are what the delegatecall
+  // target expression evaluates to; the published target provenance answers that, and `bytecode-pinned` is the
+  // conjunction of the two. The covenant-level pin remains the compiler's `OP_UTXOBYTECODE[delegateIndex] ==
+  // impl` emission, attacked separately on the VM.
   const proxyBytecode = input.proxy.bytecode.toLowerCase();
   const implementationLbc = input.implementation.lockingBytecode.toLowerCase();
   const pinnedInProxyBytecode = proxyBytecode.includes(implementationLbc);
-  const addressParameters = proxyFn.inputs.filter((parameter) => parameter.type === 'address');
-  // A `sig` parameter is NECESSARY for the caller-authorized class, not sufficient: the artifact cannot show
-  // that the signature check dominates the delegatecall. That remains the compiler's `checkSig` emission.
-  // `datasig` is deliberately NOT accepted here: no BCH-2026 case settles a checkDataSig-authorized proxy, and
-  // an admitted class without a settling case is exactly what this module refuses to have.
-  const hasSignatureParameter = proxyFn.inputs.some((parameter) => parameter.type === 'sig');
-  // A `pubkey` PARAMETER is key material the CALLER supplies. `checkSig(s, pk)` against it proves only that the
-  // caller signed for a key the caller picked, which is not authority (A13-2).
-  const callerSuppliedKeys = proxyFn.inputs.filter((parameter) => parameter.type === 'pubkey');
-  // Keys the PROXY commits to: a constructor argument lands in its p2sh32, a state variable in its data NFT.
-  const commitsAKey = input.proxy.artifact.constructorInputs.some((parameter) => parameter.type === 'pubkey')
-    || (input.proxy.artifact.stateLayout?.variables ?? []).some((variable) => variable.type === 'pubkey');
 
-  // ORDER MATTERS (A13-1). The caller-selected question is asked FIRST, because bytecode containment cannot
-  // answer it: published metadata never says which expression the delegatecall target evaluates to, so a proxy
-  // that commits one implementation in its constructor AND delegatecalls an `address` parameter contains the
-  // pinned bytes while targeting the caller's. Only a proxy whose function publishes NO `address` parameter has
-  // a target no caller value can reach.
+  // X43. WHERE the target and the checked key came from, read through the `unknown`-spelling readers so an
+  // artifact that predates the fields cannot be confused with one that answered.
+  const targetProvenance = lowLevelCallTargetProvenance(delegateEdges[0]);
+  const guardKey = signatureGuardKeyProvenance(proxyFn);
+  // A `sig` parameter stays REQUIRED for caller-authorized, on top of the committed key. It is not redundant
+  // with the key: `signatureGuard` covers `checkDataSig` too, and no BCH-2026 case settles a
+  // checkDataSig-authorized proxy - an admitted class without a settling case is exactly what this module
+  // refuses to have. It is still not sufficient either: the artifact cannot show that the signature check
+  // dominates the delegatecall, which remains the compiler's `checkSig` emission.
+  const hasSignatureParameter = proxyFn.inputs.some((parameter) => parameter.type === 'sig');
+
   let codeIdentity: DelegateCodeIdentity;
-  if (addressParameters.length === 0) {
+  if (isAddressCommittedProvenance(targetProvenance)) {
+    // `constructorArg` or `literal`: fixed for this proxy address, so no caller value can be the target. Which
+    // script it is fixed TO is a separate question, and containment is what answers it.
     if (!pinnedInProxyBytecode) {
       throw new DelegateParticipantClassError(
         "class 'dynamically-resolved-implementation' is not admitted: proxy function "
-        + `'${input.proxy.functionName}' neither commits the implementation locking bytecode in its own bytecode `
-        + 'nor names it as an authorized parameter, so code identity is only as strong as whatever resolves it '
-        + 'at spend time',
+        + `'${input.proxy.functionName}' delegatecalls ${describeProvenance(targetProvenance)}, which the proxy `
+        + 'address does commit - but the implementation locking bytecode does not appear in the proxy '
+        + 'bytecode, so what it commits to is some script other than '
+        + `'${input.implementation.artifact.contractName}'`,
       );
     }
     codeIdentity = 'bytecode-pinned';
-  } else if (!hasSignatureParameter) {
-    const named = addressParameters.map((parameter) => `'${parameter.name}'`).join(', ');
-    throw new DelegateParticipantClassError(pinnedInProxyBytecode
-      ? `class 'pinned-but-caller-selected' is not admitted: proxy function '${input.proxy.functionName}' takes `
-        + `address parameter(s) ${named} and no signature parameter. Its bytecode does contain the `
-        + 'implementation locking bytecode, but published metadata does not say which expression the '
-        + 'delegatecall targets, so the pin proves only that the p2sh32 commits to those bytes somewhere - any '
-        + 'spender may still pass a different address and select the code that writes the proxy state'
-      : `class 'caller-chosen' is not admitted: proxy function '${input.proxy.functionName}' takes the `
-        + 'implementation address as a parameter with no signature parameter, so any spender selects the code '
-        + 'that writes the proxy state');
-  } else if (callerSuppliedKeys.length > 0) {
+  } else if (targetProvenance.kind === 'parameter') {
+    // The caller picks the target, so the only thing that can make this a class is authority over who calls.
+    if (!hasSignatureParameter) {
+      throw new DelegateParticipantClassError(pinnedInProxyBytecode
+        ? `class 'pinned-but-caller-selected' is not admitted: proxy function '${input.proxy.functionName}' `
+          + `delegatecalls ${describeProvenance(targetProvenance)} and takes no signature parameter. Its `
+          + 'bytecode does contain the implementation locking bytecode, so the p2sh32 commits to those bytes '
+          + 'somewhere - but they are not what the call reaches, and any spender may pass a different address '
+          + 'and select the code that writes the proxy state'
+        : `class 'caller-chosen' is not admitted: proxy function '${input.proxy.functionName}' delegatecalls `
+          + `${describeProvenance(targetProvenance)} and takes no signature parameter, so any spender selects `
+          + 'the code that writes the proxy state');
+    }
+    if (!isCommittedKeyProvenance(guardKey)) {
+      throw new DelegateParticipantClassError(
+        `class 'self-authorized' is not admitted: proxy function '${input.proxy.functionName}' delegatecalls `
+        + `${describeProvenance(targetProvenance)}, and the signature it takes is checked against `
+        + `${describeProvenance(guardKey)} rather than a key the proxy commits to. A caller who picks both the `
+        + 'key and the target authorizes nobody. Check the signature against a constructor argument, a '
+        + 'compile-time literal or a state variable. If the key IS pinned by an unconditional '
+        + '`require(hash160(key) == <committed>)`, this is the named false-negative class '
+        + "'hash160-committed-key': no artifact field publishes that commitment, so this gate cannot read it",
+      );
+    }
+    codeIdentity = 'caller-authorized';
+  } else if (targetProvenance.kind === 'stateVar') {
     throw new DelegateParticipantClassError(
-      `class 'self-authorized' is not admitted: proxy function '${input.proxy.functionName}' takes both a `
-      + `signature and pubkey parameter(s) ${callerSuppliedKeys.map((k) => `'${k.name}'`).join(', ')}. Published `
-      + 'metadata does not say which key the signature is checked against, so a caller may sign for their own '
-      + 'key and select the code that writes the proxy state. Check the signature against a constructor '
-      + 'argument or state variable instead of a parameter',
+      "class 'dynamically-resolved-implementation' is not admitted: proxy function "
+      + `'${input.proxy.functionName}' delegatecalls ${describeProvenance(targetProvenance)}, so code identity `
+      + 'is only as strong as whatever authorized the write that put the value there - a question no published '
+      + 'field answers, and one no BCH-2026 case here settles',
     );
-  } else if (!commitsAKey) {
+  } else if (targetProvenance.kind === 'unknown') {
     throw new DelegateParticipantClassError(
-      `class 'self-authorized' is not admitted: proxy '${input.proxy.artifact.contractName}' commits no pubkey `
-      + 'at all - no pubkey constructor argument and no pubkey state variable - so there is no authority its '
-      + `signature parameter could be checked against, and '${input.proxy.functionName}' selects the code that `
-      + 'writes the proxy state on any caller\'s signature',
+      "class 'unpublished-target-provenance' is not admitted: the artifact for proxy "
+      + `'${input.proxy.artifact.contractName}' publishes no target provenance on the delegatecall edge of `
+      + `'${input.proxy.functionName}'. Every compiler that knows how to answer writes that row, 'computed' `
+      + 'included, so an absent one identifies an artifact compiled before the field existed. An absent field '
+      + 'is not a claim that the target is fixed; recompile the proxy',
     );
   } else {
-    codeIdentity = 'caller-authorized';
+    // `computed`, and any kind a later compiler adds: an allow-list, so a new kind falls closed here.
+    throw new DelegateParticipantClassError(
+      "class 'computed-delegate-target' is not admitted: proxy function "
+      + `'${input.proxy.functionName}' delegatecalls ${describeProvenance(targetProvenance)} `
+      + `(provenance '${targetProvenance.kind}') - a ternary, an array element, a slice, a concatenation, a `
+      + 'struct field, a tuple-destructured local, `tx.origin`/`msg.sender`, or an alias cycle. The compiler '
+      + 'could not say where the target came from, and "could not say" is never evidence that a spender cannot '
+      + 'choose it',
+    );
   }
 
   // --- state owner -----------------------------------------------------------------------------------------

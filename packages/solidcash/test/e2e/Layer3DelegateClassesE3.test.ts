@@ -539,9 +539,10 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
         });
       };
       expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
+      // ROUND 16 (X43): the two `bytes`-typed entries are GONE from this list, because the gate now detects
+      // them. Occurrence is still the only thing left that published metadata cannot separate.
       expect(layer3.UNDETECTED_BY_THIS_GATE).toEqual([
         'conditional-delegate-edge', 'iterated-delegate-edge',
-        'bytes-typed-delegate-target', 'bytes-typed-key-material',
       ]);
     });
 
@@ -785,11 +786,11 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
      * pass - and it is no longer allowed to answer the question, because an `address` parameter means the
      * target may be the caller's value instead. Differs from the admitted control by that one parameter.
      */
-    it("refuses 'pinned-but-caller-selected': containment is not identity when an address parameter exists", () => {
+    it("refuses 'pinned-but-caller-selected': containment is not identity when the target is a parameter", () => {
       const proxy = new Contract(trapProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
       expect(proxy.bytecode.toLowerCase()).toContain(implementationLbc.toLowerCase());
       expect(classify(trapProxyArtifact, [hexToBin(implementationLbc)]))
-        .toThrow(/class 'pinned-but-caller-selected' is not admitted.*address parameter\(s\) 'impl'/s);
+        .toThrow(/class 'pinned-but-caller-selected' is not admitted.*delegatecalls caller-supplied parameter 'impl'/s);
 
       // CONTROL: same pin, same implementation, no `address` parameter - still admitted.
       expect((classify(pinnedProxyArtifact, [hexToBin(implementationLbc)])() as { id: string }).id)
@@ -802,15 +803,19 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
      */
     it("refuses 'self-authorized' when the proxy takes the key as a parameter", () => {
       expect(classify(selfAuthProxyArtifact, []))
-        .toThrow(/class 'self-authorized' is not admitted.*pubkey parameter\(s\) 'pk'/s);
+        .toThrow(/class 'self-authorized' is not admitted.*checked against caller-supplied parameter 'pk'/s);
 
       // CONTROL: same shape, key is a constructor argument - still admitted.
       expect((classify(authorizedProxyArtifact, [alicePub])() as { id: string }).id)
         .toBe('caller-authorized/adjacent-proxy-block/scalar');
     });
 
-    /** The same class covers a proxy that commits no key at all, which is the other half of A13-2. */
-    it("refuses 'self-authorized' when the proxy commits no pubkey anywhere", () => {
+    /**
+     * The same class covers a proxy that CHECKS no key at all, which is the other half of A13-2. Round 14 asked
+     * whether the proxy stored a `pubkey` anywhere; X43 asks what the guard was checked against, and a body
+     * with no signature check publishes no `signatureGuard` - read back as `unknown`, refused by the allow-list.
+     */
+    it("refuses 'self-authorized' when the proxy checks no key anywhere", () => {
       const artifact = compileString(`pragma solidcash >=0.8.0;
 contract E3KeylessProxy() {
     bigint counter;
@@ -819,7 +824,9 @@ contract E3KeylessProxy() {
         impl.delegatecall(input);
     }
 }`);
-      expect(classify(artifact, [])).toThrow(/class 'self-authorized' is not admitted.*commits no pubkey at all/s);
+      expect(artifact.abi.find((entry) => entry.name === 'up')!.signatureGuard).toBeUndefined();
+      expect(classify(artifact, []))
+        .toThrow(/class 'self-authorized' is not admitted.*checked against a source this artifact does not name/s);
     });
 
     /**
@@ -832,15 +839,22 @@ contract E3KeylessProxy() {
     });
 
     /**
-     * THE COST, MEASURED. An honest bytecode-pinned proxy whose function takes an unrelated `address` parameter
-     * settles on the VM - and the gate refuses it anyway, because nothing published says `recipient` is not the
-     * delegatecall target. The compiler, which CAN see the target expression, emits no diagnostic for it. The
-     * asymmetry is deliberate: the SDK gate is the side that lacks the fact.
+     * ROUND 14's COST, REPAIRED IN ROUND 16, with the VM leg untouched. An honest bytecode-pinned proxy whose
+     * function takes an unrelated `address` parameter settles on the VM, and round 14 refused it anyway because
+     * nothing published said `recipient` was not the delegatecall target. X37 publishes exactly that: the
+     * target resolves to constructor argument `impl`, so the `recipient` parameter is no longer evidence of
+     * anything and this shape is admitted.
+     *
+     * This is the HONEST POSITIVE CONTROL for X43: the widening is credited to the target's provenance, because
+     * `E3TrapProxy` above has the same `address` parameter and the same containment and is still refused - the
+     * ONLY difference between them is which expression the delegatecall reaches.
      */
-    it('refuses an honest pinned proxy that also takes an unrelated address parameter, which DOES settle',
+    it('ADMITS an honest pinned proxy that also takes an unrelated address parameter, and it settles',
       async () => {
-        expect(classify(payoutProxyArtifact, [hexToBin(implementationLbc)]))
-          .toThrow(/class 'pinned-but-caller-selected' is not admitted.*address parameter\(s\) 'recipient'/s);
+        expect((classify(payoutProxyArtifact, [hexToBin(implementationLbc)])() as { id: string }).id)
+          .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+        expect(payoutProxyArtifact.abi.find((entry) => entry.name === 'up')!.lowLevelCalls![0].target)
+          .toEqual({ kind: 'constructorArg', name: 'impl' });
 
         const vmProvider = createLayer3SemanticTestProvider();
         const pinned = await deploy(vmProvider, implArtifact, [], { counter: 0n });
@@ -863,16 +877,18 @@ contract E3KeylessProxy() {
       }, 240_000);
 
     /**
-     * THE HOLE THE FIX LEAVES, MEASURED RATHER THAN IMPLIED. Both A13 fixes key off a PARAMETER TYPE, which is
-     * the only thing published metadata offers - so both are defeated by routing the same caller value through
-     * a `bytes` parameter and casting it. These two sources compile, and the gate ADMITS them into the very
-     * classes A13 attacked. That is asserted here so the hole cannot be lost: it is listed in
-     * UNDETECTED_BY_THIS_GATE, and closing it needs the compiler to publish which expression the delegatecall
-     * target and the checked key resolve to. Refusing `bytes` parameters is not an option - the calldata
-     * parameter every admitted class carries is `bytes`.
+     * ROUND 16 (X43). The hole round 14 measured and left open is CLOSED, and the two cases below are the same
+     * two sources inverted in place. Round 14's fixes keyed off a PARAMETER TYPE, so both were defeated by
+     * routing the caller's value through a `bytes` parameter and casting it. X37 publishes where the target and
+     * the checked key came from, both re-spellings resolve to `parameter`, and the gate reads that instead.
+     *
+     * Each case carries its own GUARD CONTROL: a proxy with the SAME published parameter types whose target (or
+     * key) resolves to the constructor argument. If the guard control were refused too, the refusal would be
+     * credited to "a second `bytes` parameter exists" rather than to the provenance, and the fix would be the
+     * round-14 mistake again in a new spelling.
      */
-    it('still ADMITS both escapes routed through a `bytes` parameter - named, not hidden', () => {
-      const bytesTarget = compileString(`pragma solidcash >=0.8.0;
+    it('refuses the `bytes`-typed delegatecall target, and admits the same shape targeting the ctor arg', () => {
+      const escape = compileString(`pragma solidcash >=0.8.0;
 contract E3BytesTargetProxy(address impl) {
     bigint counter;
     function up(bytes input, bytes target) external {
@@ -881,10 +897,31 @@ contract E3BytesTargetProxy(address impl) {
         require(input.length > 0);
     }
 }`);
-      expect((classify(bytesTarget, [hexToBin(implementationLbc)])() as { id: string }).id)
-        .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+      expect(escape.abi.find((entry) => entry.name === 'up')!.lowLevelCalls![0].target)
+        .toEqual({ kind: 'parameter', name: 'target' });
+      expect(classify(escape, [hexToBin(implementationLbc)]))
+        .toThrow(/class 'pinned-but-caller-selected' is not admitted.*delegatecalls caller-supplied parameter 'target'/s);
 
-      const bytesKey = compileString(`pragma solidcash >=0.8.0;
+      // GUARD CONTROL, byte-identical published parameter TYPES (`bytes`, `bytes`), one expression apart: the
+      // delegatecall reaches the constructor argument and `target` is only read. Still admitted.
+      const honest = compileString(`pragma solidcash >=0.8.0;
+contract E3BytesUnusedProxy(address impl) {
+    bigint counter;
+    function up(bytes input, bytes target) external {
+        require(target.length == 35);
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      const types = (artifact: Artifact): string[] => artifact.abi.find((entry) => entry.name === 'up')!.inputs
+        .filter((entry) => !entry.name.startsWith('__internal__')).map((entry) => entry.type);
+      expect(types(honest)).toEqual(types(escape));
+      expect((classify(honest, [hexToBin(implementationLbc)])() as { id: string }).id)
+        .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+    });
+
+    it('refuses the `bytes`-typed key material, and admits the same shape checking the ctor key', () => {
+      const escape = compileString(`pragma solidcash >=0.8.0;
 contract E3BytesKeyProxy(pubkey owner) {
     bigint counter;
     function up(bytes input, address impl, bytes k, sig s) external {
@@ -893,11 +930,110 @@ contract E3BytesKeyProxy(pubkey owner) {
         require(input.length > 0);
     }
 }`);
-      expect((classify(bytesKey, [alicePub])() as { id: string }).id)
-        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+      expect(escape.abi.find((entry) => entry.name === 'up')!.signatureGuard)
+        .toEqual({ key: { kind: 'parameter', name: 'k' } });
+      expect(classify(escape, [alicePub]))
+        .toThrow(/class 'self-authorized' is not admitted.*checked against caller-supplied parameter 'k'/s);
 
-      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('bytes-typed-delegate-target');
-      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('bytes-typed-key-material');
+      // GUARD CONTROL, same parameter types, same `bytes k`, one expression apart: the signature is checked
+      // against the constructor argument. Still admitted, so the refusal is credited to the KEY's provenance.
+      const honest = compileString(`pragma solidcash >=0.8.0;
+contract E3BytesKeyHonestProxy(pubkey owner) {
+    bigint counter;
+    function up(bytes input, address impl, bytes k, sig s) external {
+        require(k.length == 33);
+        require(checkSig(s, owner));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect((classify(honest, [alicePub])() as { id: string }).id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+    });
+
+    /**
+     * THREE MORE SHAPES the round-14 gate admitted, found by measuring rather than by reasoning: none of them
+     * publishes an `address` parameter, so the type-driven gate called all three `bytecode-pinned` on the
+     * strength of a constructor argument that is not the target.
+     */
+    it('refuses a state-variable target and a computed target the type gate called bytecode-pinned', () => {
+      const stateTarget = compileString(`pragma solidcash >=0.8.0;
+contract E3StateTargetProxy(address impl) {
+    bytes stored;
+    bigint counter;
+    function up(bytes input) external {
+        address(this.stored).delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(classify(stateTarget, [hexToBin(implementationLbc)]))
+        .toThrow(/class 'dynamically-resolved-implementation' is not admitted.*state variable 'stored'/s);
+
+      const computedTarget = compileString(`pragma solidcash >=0.8.0;
+contract E3ComputedTargetProxy(address impl) {
+    bigint counter;
+    function up(bytes input, bytes suffix) external {
+        address t = address(bytes(impl) + suffix);
+        t.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(classify(computedTarget, [hexToBin(implementationLbc)]))
+        .toThrow(/class 'computed-delegate-target' is not admitted/);
+
+      const ternaryTarget = compileString(`pragma solidcash >=0.8.0;
+contract E3TernaryTargetProxy(address impl, address alt) {
+    bigint counter;
+    function up(bytes input, bool flag) external {
+        address t = flag ? impl : alt;
+        t.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(classify(ternaryTarget, [hexToBin(implementationLbc), hexToBin(implementationLbc)]))
+        .toThrow(/class 'computed-delegate-target' is not admitted/);
+    });
+
+    /**
+     * THE COMPATIBILITY CONTRACT, EXERCISED. `target` is additive and optional, so an artifact compiled before
+     * X37 carries none - and an absent field must never read as "unconstrained". The proxy here is the admitted
+     * `bytecode-pinned` control with the field stripped from the delegatecall row: everything else about it is
+     * byte-identical, and it is refused.
+     */
+    it('refuses an artifact that publishes no target provenance, rather than falling through to admitted', () => {
+      const stripped = JSON.parse(JSON.stringify(pinnedProxyArtifact)) as Artifact;
+      const fn = stripped.abi.find((entry) => entry.name === 'up')! as { lowLevelCalls: { callMode: string }[] };
+      fn.lowLevelCalls = fn.lowLevelCalls.map((call) => ({ callMode: call.callMode }));
+      expect(classify(stripped, [hexToBin(implementationLbc)]))
+        .toThrow(/class 'unpublished-target-provenance' is not admitted.*recompile the proxy/s);
+      // The unstripped original is the same artifact and IS admitted, so the refusal is the missing field.
+      expect((classify(pinnedProxyArtifact, [hexToBin(implementationLbc)])() as { id: string }).id)
+        .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+    });
+
+    /**
+     * THE FALSE NEGATIVE X43 KEEPS, MEASURED. `signatureGuard` publishes the KEY's provenance, not the whole
+     * authority story: P2PKH-shaped authority pins a `pubkey` parameter with a separate unconditional
+     * `require(hash160(pk) == pkh)`, which no artifact field describes. The compiler credits exactly this idiom
+     * (round-15 SEC-17); this gate refuses it as `self-authorized` rather than guess, and names the class.
+     */
+    it('refuses honest P2PKH-shaped authority, the known false negative, and names it', () => {
+      const p2pkhShaped = compileString(`pragma solidcash >=0.8.0;
+contract E3Hash160Proxy(bytes20 pkh) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(p2pkhShaped.abi.find((entry) => entry.name === 'up')!.signatureGuard)
+        .toEqual({ key: { kind: 'parameter', name: 'pk' } });
+      expect(classify(p2pkhShaped, [alicePkh]))
+        .toThrow(/class 'self-authorized' is not admitted.*'hash160-committed-key'/s);
+      expect(layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id))
+        .toContain('hash160-committed-key');
     });
 
     /**
@@ -950,6 +1086,9 @@ contract E3BytesKeyProxy(pubkey owner) {
         'multi-edge-proxy',
         'conditional-delegate-edge',
         'iterated-delegate-edge',
+        'computed-delegate-target',
+        'unpublished-target-provenance',
+        'hash160-committed-key',
       ]);
       for (const entry of layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES) {
         expect(entry.reason.length).toBeGreaterThan(20);

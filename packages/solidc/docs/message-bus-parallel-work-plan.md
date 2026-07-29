@@ -173,8 +173,9 @@ task-specific report, not in this table.
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
 | **SEC-8** | X29's shared reached flag permitted satoshi-container theft | A | X29 | **INTEGRATED (closed)** | per-handler flag; design credited to C, validated by A |
 | X30 | Multi-ROW mid-chain participant rejects at input 2 | — | X29 | TODO | width>1 was CONFLATED with site ordinal; width 2 now settles on the VM |
-| **SEC-10** | One-armed conditional emit reserves an unsettled slot | — | SEC-9 | **TODO (security, LIVE)** | MEASURED: forged event NFT accepted and broadcast; **NOT bus-specific** - see 4.43 |
-| **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | — | SEC-9 | **TODO (security, LIVE)** | forged NFT at a reserved TRANSFER slot accepted; reads back on chain |
+| **SEC-10** | One-armed conditional emit reserves an unsettled slot | C | SEC-9 | **INTEGRATED** | reframed: the class was never slot-specific - see 4.45 |
+| **SEC-11** | SEC-9's refusal is event-only; `transferWidth` never compared | C | SEC-9 | **INTEGRATED** | closed by the same own-category immutable pin |
+| **SEC-13** | Own-category immutable pin is absent for delegate/selfdestruct | — | SEC-11 | **TODO (security)** | not emitted for `delegatecall` proxies, `delegate` fns or `selfdestruct` |
 | **SEC-9** | Divergent event-frame widths leave a reached slot unverified | A | SEC-8 | **INTEGRATED (fail-closed)** | EXPLOITABLE - spurious event NFT accepted; gate counted pre-lowering emits |
 | X31 | Call-option refusal is on `deriveCompiledGraphPlan` only | B | E2 | **INTEGRATED** | both entry points share one check; refusal NARROWED - see 4.40 |
 | X32 | L2's derived gate is silenced by a bare `Unlocker` | B | L2 | **INTEGRATED** | out-of-scope now separated from in-scope-but-underivable |
@@ -199,6 +200,42 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.45 SEC-10/SEC-11 were two indices of a class where EVERY unchecked index was open
+
+Worker C probed whether the forgery actually needs a reserved slot **before** touching either item. **It does
+not.** On a plain stateful contract whose function has no branch and no `emit` statement at all - block layout
+`[master, dataNft]`, no `event` slot anywhere - appending one own-category `none`-capability NFT past the end of
+the block was **ACCEPTED and broadcast**, and `readEventsFromChain` returned it as a genuine log.
+
+The cause: an event NFT is an own-category **immutable (0x00)** NFT. `emitMintingNftUniqueness` conserves 0x02
+and `emitOwnCategoryMutableNftConservation` conserves 0x01. **Nothing conserved 0x00**, while the co-spent
+master is a minting NFT of the category. So SEC-10 and SEC-11 were two indices of a class in which every index
+outside the checked slots was open.
+
+**Independent corroboration nobody connected.** `Layer3BalancedAssemblyL2.test.ts:342` had ALREADY recorded this
+exact capability as a measured limit of L2 - *"a SECOND NFT of its category can be minted in the tail and the
+BCH-2026 VM accepts it"*. It sat in the repository as an assembly caveat for rounds, and no one read it as a
+forgery primitive until the fix for a narrower bug went looking for the general form.
+
+**A premise this board recorded was wrong.** The ledger said the not-taken slot carries "plain funding". Off the
+bus it does not: the SDK materializes an own-category immutable NFT with an EMPTY commitment there. The
+worker's first cut bound the slot to "not own-category" and broke the honest row. The fix instead requires
+commitment size 0 on the `OP_ELSE` arm, which both honest shapes satisfy and a forged log cannot.
+
+**Measured discipline throughout:** the X29 exclusion was bisected, not assumed - when a graph handler owns the
+frame the route's own emit blobs are all empty, so route-level binding refused honest outputs; the route now
+skips it and the handler is the authority. The existence guard came from a real `invalid transaction output
+index` failure. Blast radius went 29 files / 51 tests on the first cut to **0**. Cost measured at dist level:
++189 bytes per contract, about +37 per gated covenant entry point.
+
+**Residuals the worker named rather than left implicit:** the pin is not emitted for `delegatecall` proxies,
+`delegate` functions or `selfdestruct` (opened as SEC-13); an own-category immutable NFT carrying a non-zero FT
+amount is not counted, because introspection cannot distinguish it from a pure-FT output; a zero-parameter event
+encodes to an empty commitment and is therefore indistinguishable from the honest inactive shape at an unsettled
+slot - pre-existing, not introduced; and mocknet only, no regtest.
+
+**Baseline correction:** this board's quoted `solidcash 4,034` was stale by 54 - the worktree baseline is 4,088.
 
 ### 4.44 E3's escapes are closed against the published TYPE, not the semantic class
 

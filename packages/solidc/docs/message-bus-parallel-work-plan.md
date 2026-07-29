@@ -127,7 +127,9 @@ task-specific report, not in this table.
 | G3 | Remaining admitted symbolic target/selector expressions | A | G1 | INTEGRATED (scoped) | 4.7 gaps 1-2 closed; gap 3 closed where a bound exists, SCOPED otherwise |
 | E1 | Nested/transitive heterogeneous result graph | B | P0.1 | **PROVEN** | reviewed by C (2 findings), both closed by X7, regressions green - see 4.29 |
 | E2 | Call options and bounded iterated low-level calls | B | E1 | **PROVEN** | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
-| E3 | Explicit delegate-participant classes | B | E1 | **CHANGES** | reviewed by A: BOTH admitted classes escape - see 4.42 |
+| E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (type-shape only) | A13 escapes closed against the PUBLISHED TYPE, not the semantic class - see 4.44 |
+| **SEC-12** | `hasSignatureGuard` suppresses SEC-2 and C1 at two sites | — | E3 | **TODO (security)** | matches any `checkSig` without asking whose key; both suppressions measured |
+| X37 | Publish delegate target/key provenance in the artifact | — | E3 | TODO | `lowLevelCalls` stripped to `callMode`; AST already carries `dataParamIndex` |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
@@ -197,6 +199,45 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.44 E3's escapes are closed against the published TYPE, not the semantic class
+
+Worker B closed both A13 escapes, then **self-reviewed its own fix and found the hole it leaves** - which is the
+more valuable half.
+
+`address t = address(target); t.delegatecall(input);` with `target` a **`bytes`** parameter publishes no
+`address` parameter, so the gate still classifies it `bytecode-pinned` - A13-1 verbatim. And
+`checkSig(s, pubkey(k))` with `k` a `bytes` parameter publishes no `pubkey` parameter, so it still classifies
+`caller-authorized` - A13-2 verbatim. Both compile and both are admitted into the very classes A13 attacked.
+Refusing `bytes` parameters is not available, because the calldata parameter every admitted class carries is
+`bytes`. **So "closed" means closed against the published-type shape only**, and the worker said so rather than
+letting the row read as settled.
+
+**The gate is deliberately still unwired, and the measurement is why.** Instrumenting `withDelegatecall` across
+the suites that use it: **11 calls over 6 distinct proxy pairs, 11/11 refused.** Wiring it would break every
+settling delegatecall send in the suite. Worse, the `self-authorized` refusal is not synthetic - **the SDK's own
+canonical `PinnedProxy` fixture is the A13-2 unsafe shape verbatim**: no constructor arguments,
+`require(checkSig(s, pk))` against a caller-supplied `pk`.
+
+**One rule is a measured over-refusal, committed as a stated cost.** `E3PayoutProxy` - target from the
+constructor argument, plus an unrelated `address recipient` parameter - settles 5 to 6 on the VM and the gate
+refuses it. The compiler, which can see the target expression, emits no diagnostic for it.
+
+**The narrowing the worker caught in itself:** its first draft accepted `datasig` as well as `sig`, which would
+have admitted a `checkDataSig`-authorized proxy that no BCH-2026 case settles. Reverted before committing.
+
+**SEC-12 opened from the handoff.** `hasSignatureGuard` returns true for any `checkSig`/`checkMultiSig`/
+`checkDataSig` anywhere in the subtree and is used as if it answered "is this delegatecall authorized". Both
+suppressions are measured: at `:5095` it silences SEC-2 (the shape compiles with only a generic notice and a
+stranger settles 5 to 999), and at `:2302` it silences the C1 P2PKH warning - a proxy warns with no `checkSig`
+and **stops warning** once a caller-supplied-key `checkSig` is added. The fix shape is to resolve which key,
+reusing machinery already in that class. **A doc defect ships with it:** `delegatecall-security.md` lists a
+signature guard as sufficient and cites `PINNED_PROXY` as the example - the doc's exemplar of the safe shape is
+the unsafe one.
+
+**X37 opened:** the artifact strips `lowLevelCalls` to `{ callMode }` though the AST already carries
+`dataParamIndex`. Publishing target and key provenance would let the gate answer both questions exactly, instead
+of refusing whole parameter types and still missing the `bytes` route.
 
 ### 4.43 SEC-10 is LIVE and reaches plain contracts; SEC-9's refusal is incomplete
 

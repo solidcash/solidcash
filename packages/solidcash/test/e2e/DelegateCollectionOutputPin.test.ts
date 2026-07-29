@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
+import type { Artifact } from '@solidcash/utils';
 import {
-  Contract, Signer, StatefulContract, SortedList, encodeEntryCommitment, getContractFactory,
-  getEntryNftAddress, slotValueToBytes, upgrades,
+  Contract, ContractFactory, Signer, StatefulContract, SortedList, encodeEntryCommitment, getContractFactory,
+  getEntryNftAddress, slotValueToBytes,
 } from '../../src/index.js';
+import { ProxyContract } from '../../src/stateful/upgrades.js';
+import { defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { SignatureTemplate } from '../../src/index.js';
@@ -20,14 +24,25 @@ import { SignatureTemplate } from '../../src/index.js';
  *
  * The shape is reachable: a delegated C2 write settles. With the pin off, the only thing bounding the
  * collection's output cardinality on that route was the PROXY's own-category mutable NFT conservation - and the
- * shipped `defaultProxyArtifact` carries the RELAXED form of it (`OP_0 OP_LESSTHANOREQUAL OP_VERIFY`, outputs
- * >= inputs) rather than the strict `OP_0 OP_NUMEQUALVERIFY` the current compiler emits. So on the default
- * upgrades proxy nothing refused an appended node at all.
+ * shipped `defaultProxyArtifact` carried the RELAXED form of it (`OP_0 OP_LESSTHANOREQUAL OP_VERIFY`, outputs
+ * >= inputs) rather than the strict `OP_0 OP_NUMEQUALVERIFY` the compiler emits. So on the default upgrades
+ * proxy nothing refused an appended node at all.
  *
  * MEASURED LIVE before the fix: appending one extra own-category mutable NFT at the collection's entry address
  * beside a genuine delegated `users[msg.sender] = 5` was ACCEPTED, and the contract's own paginated reader then
  * returned `[5n, 99n]` - the fabricated value read back beside the genuine one. The pin is index-free (it counts
  * outputs AT the entry address, it does not name positions), so it holds identically inside a delegate.
+ *
+ * X50 CHANGED WHICH PROXY THESE ROWS RUN ON, and the reason is worth stating rather than hiding in a diff.
+ * `defaultProxyArtifact` is now a verbatim compile of its own source, so it CONSERVES: a delegated INSERT mints
+ * one entry node, the own-category mutable count rises by one, and the proxy refuses at its own input before
+ * this pin is ever reached (UpgradesDeployProxy.test.ts pins that refusal). Running these rows on the shipped
+ * proxy would therefore credit the pin for a refusal the conservation makes.
+ *
+ * So they run on a NON-CONSERVING proxy: the shipped forwarder with its four-token tail put back to
+ * `OP_0 OP_LESSTHANOREQUAL OP_VERIFY` and nothing else changed. That is exactly the population this pin
+ * protects - every proxy already deployed from the stale artifact, plus any `unsafe`-tier or hand-written
+ * forwarder that does not conserve - and it is the shape the live forgery above was measured on.
  */
 const MAP_IMPL = `pragma solidcash >=0.8.0;
 contract MapImpl() {
@@ -46,6 +61,8 @@ contract PlainMap() {
 
 const FORGED_SLOT = new Uint8Array(32).fill(0x77);
 const FORGED_VALUE = new Uint8Array([0x63]); // 99
+const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
+const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
 const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
 async function fundedSigner(): Promise<{ signer: Signer; provider: any }> {
@@ -57,21 +74,68 @@ async function fundedSigner(): Promise<{ signer: Signer; provider: any }> {
   return { signer, provider };
 }
 
+/** The layout graft `upgrades.deployProxy` performs for the built-in proxy, applied to a chosen forwarder. */
+function graft(proxyArtifact: Artifact, impl: Artifact): Artifact {
+  const dataNftCount = impl.stateLayout?.dataNftCount ?? 0;
+  const requiredNftIndices = Array.from({ length: dataNftCount }, (_, index) => index);
+  return {
+    ...proxyArtifact,
+    abi: proxyArtifact.abi.map((entry) => (entry.name !== '__forward' ? entry : {
+      ...entry,
+      requiredNftIndices,
+      blockLayout: {
+        blockSize: 1 + dataNftCount,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          ...requiredNftIndices.map((nftIndex) => ({ kind: 'dataNft' as const, offset: nftIndex + 1, nftIndex })),
+        ],
+      },
+    })),
+    stateLayout: { ...impl.stateLayout, constructorInputs: proxyArtifact.stateLayout?.constructorInputs },
+  } as Artifact;
+}
+
+/**
+ * Deploy `MAP_IMPL` behind a NON-CONSERVING copy of the shipped forwarder: identical in every byte except the
+ * four-token tail. That is the only difference from `upgrades.deployProxy`, and it is what lets a delegated
+ * INSERT reach the pin under test instead of being refused one input earlier.
+ */
+async function deployBehindRelaxedProxy(
+  signer: Signer,
+): Promise<{ handle: any; categoryId: string; entryAddress: string }> {
+  expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
+  const relaxed = {
+    ...defaultProxyArtifact,
+    bytecode: defaultProxyArtifact.bytecode.slice(0, -STRICT_TAIL.length) + RELAXED_TAIL,
+  } as Artifact;
+  const implArtifact = compileString(MAP_IMPL);
+  const implementation = await getContractFactory(implArtifact, signer).deploy({ logicalNonce: false });
+  const proxy = await new ContractFactory(graft(relaxed, implArtifact), signer)
+    .deploy(addressToLockScript(implementation.address), { initialState: { count: 0n }, logicalNonce: false });
+  const categoryId = (proxy as any).categoryId!;
+  const inner = (proxy as any).inner;
+  const salted = inner.category ? inner : inner.withCategory(hexToBin(categoryId));
+  return {
+    handle: new ProxyContract(
+      proxy, implementation as any, { name: '__forward', mode: 'baked' }, () => [], signer,
+    ),
+    categoryId,
+    entryAddress: getEntryNftAddress(salted, categoryId, 'users'),
+  };
+}
+
 describe('X11 follow-on: collection output-count pin inside a delegate', () => {
   // HONEST POSITIVE CONTROL. The pin must not refuse the two outputs an honest insert produces (the re-pointed
   // predecessor and the new node), on the very route that carries it.
   it('still settles the delegated insert it now bounds', async () => {
     const { signer, provider } = await fundedSigner();
-    const implArtifact = compileString(MAP_IMPL);
-    const proxy: any = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
-    await proxy.register(5n).send();
-    expect(await proxy.getUsers(0, 0)).toEqual([5n]);
-    expect(await proxy.users(signer.getAddress())).toBe(5n);
-    const proxyContract = new Contract(proxy.proxy.inner.artifact, proxy.proxy.inner.constructorArgs ?? [], { provider });
-    const salted = proxyContract.category ? proxyContract : proxyContract.withCategory(hexToBin(proxy.proxy.categoryId!));
-    const address = getEntryNftAddress(salted, proxy.proxy.categoryId!, 'users');
+    const { handle, entryAddress } = await deployBehindRelaxedProxy(signer);
+    await handle.forward('register', [5n]).send();
     // HEAD plus exactly one node: nothing extra was minted by the honest path either.
-    expect(SortedList.fromUtxos(await provider.getUtxos(address)).all.length).toBe(2);
+    const list = SortedList.fromUtxos(await provider.getUtxos(entryAddress));
+    expect(list.all.length).toBe(2);
+    const node = list.all.find((entry: any) => entry.value.length > 0)!;
+    expect(vmNumberToBigInt(node.value, { requireMinimalEncoding: false })).toBe(5n);
   }, 300_000);
 
   /**
@@ -80,14 +144,9 @@ describe('X11 follow-on: collection output-count pin inside a delegate', () => {
    */
   it('refuses a fabricated node appended beside a genuine delegated write', async () => {
     const { signer, provider } = await fundedSigner();
-    const implArtifact = compileString(MAP_IMPL);
-    const proxy: any = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
-    const categoryId = proxy.proxy.categoryId!;
-    const proxyContract = new Contract(proxy.proxy.inner.artifact, proxy.proxy.inner.constructorArgs ?? [], { provider });
-    const salted = proxyContract.category ? proxyContract : proxyContract.withCategory(hexToBin(categoryId));
-    const address = getEntryNftAddress(salted, categoryId, 'users');
+    const { handle, categoryId, entryAddress: address } = await deployBehindRelaxedProxy(signer);
 
-    const builder: any = await proxy.register(5n).build();
+    const builder: any = await handle.forward('register', [5n]).build();
     const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
     builder.addInput(utxo, unlocker);
     builder.addOutput({

@@ -13,6 +13,15 @@ const busOptions = {
 };
 const plainOptions = { forceStateful: true };
 
+// Message-bus compilation dominates this file's cost and the solidc project runs its files in parallel, so
+// every source here is compiled at most once however many rows read it.
+const compiled = new Map<string, unknown>();
+const once = (source: string, options: Record<string, unknown>): any => {
+  const key = `${JSON.stringify(options)}::${source}`;
+  if (!compiled.has(key)) compiled.set(key, compileString(source, options));
+  return compiled.get(key);
+};
+
 /**
  * X34 - the SCOPE of the dynamic-plus-collection journal refusal, measured rather than assumed.
  *
@@ -56,17 +65,19 @@ contract MixedBoundary() {
 }`;
 
   it('PLAIN: both spellings compile and are byte-identical, so this leg is already admitted', () => {
-    const thisSpelling = compileString(scash('this.note = tag;'), plainOptions);
-    const bareSpelling = compileString(scash('note = tag;'), plainOptions);
+    const thisSpelling = once(scash('this.note = tag;'), plainOptions);
+    const bareSpelling = once(scash('note = tag;'), plainOptions);
     expect(thisSpelling.bytecode).toBe(bareSpelling.bytecode);
     expect(thisSpelling.debug.bytecode).toBe(bareSpelling.debug.bytecode);
   }, COMPILE_TIMEOUT_MS * 2);
 
-  it('BUS: the same two spellings diverge - only the `this.` one reaches the dj conversion', () => {
+  // The companion half - that the BARE spelling of this same program IS admitted in bus mode - is already
+  // pinned by `MixedJournalBoundaryReviewB11.test.ts`, and compiling it again here is the most expensive row in
+  // the file (a bus route over chunk-backed storage), so this row asserts only the side that diverges.
+  it('BUS: the `this.` spelling reaches the dj conversion and is refused', () => {
     expect(() => compileString(scash('this.note = tag;'), busOptions))
       .toThrow(/Handler 'set' writes unbounded bytes\/string state/);
-    expect(compileString(scash('note = tag;'), busOptions).hiddenBatch).toBeDefined();
-  }, COMPILE_TIMEOUT_MS * 2);
+  }, COMPILE_TIMEOUT_MS);
 });
 
 /**
@@ -90,7 +101,6 @@ describe('X35: the mixed-route refusal tracks the entry slot, not the handler', 
   const mixed = (scalarBody: string): string => `pragma solidcash >=0.8.0;
 contract Mixed() {
   bigint total;
-  string note;
   mapping(address => bigint) balances;
   function bump(address who, bigint a) public { ${scalarBody} require(a >= 0); }
   function credit(address who, bigint a) public {
@@ -99,8 +109,8 @@ contract Mixed() {
 }`;
 
   it('refuses the scalar-only handler and admits the one that also writes a collection entry', () => {
-    const scalarOnly: any = compileString(mixed('this.total = this.total + a;'), busOptions);
-    const alsoCollection: any = compileString(
+    const scalarOnly = once(mixed('this.total = this.total + a;'), busOptions);
+    const alsoCollection = once(
       mixed('this.total = this.total + a; this.balances[who] = this.balances[who] + a;'), busOptions,
     );
     const reasonOf = (artifact: any, name: string): unknown =>
@@ -112,7 +122,7 @@ contract Mixed() {
   }, COMPILE_TIMEOUT_MS * 2);
 
   it('the entry slot is unconditional, so a refused row would still carry the entry NFT', () => {
-    const artifact: any = compileString(mixed('this.total = this.total + a;'), busOptions);
+    const artifact = once(mixed('this.total = this.total + a;'), busOptions);
     const entrySlots = artifact.hiddenBatch.route.blockLayout.slots
       .filter((slot: any) => slot.kind === 'entry');
     expect(entrySlots.length).toBeGreaterThan(0);

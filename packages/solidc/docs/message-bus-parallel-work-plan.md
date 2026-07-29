@@ -129,9 +129,10 @@ task-specific report, not in this table.
 | E2 | Call options and bounded iterated low-level calls | B | E1 | **PROVEN** | mode/target/calldata/result bound; options+iteration FAIL_CLOSED, binding BLOCKED |
 | E3 | Explicit delegate-participant classes | B | E1 | INTEGRATED (type-shape only) | A13 escapes closed against the PUBLISHED TYPE, not the semantic class - see 4.44 |
 | **SEC-12** | `hasSignatureGuard` suppresses SEC-2 and C1 at two sites | S1 | E3 | **INTEGRATED** | key operand now resolved; guard credited only for a key the caller cannot choose - see 4.51 |
-| **SEC-16** | Same over-broad suppressor in `warnUnauthenticatedSelfdestruct` | S6 | SEC-12 | **LEASED (security)** | `EnsureFinalRequireTraversal.ts:206-207` returns early on any `checkSig`; measured, `keyIsCallerChosen` reusable |
+| **SEC-16** | Same over-broad suppressor in `warnUnauthenticatedSelfdestruct` | S6 | SEC-12 | **INTEGRATED** | helper MOVED not copied, 66/66 lines verified identical; 3/8 mismatches -> 0/8 - see 4.56 |
 | X37 | Publish delegate target/key provenance in the artifact | S3 | E3 | **INTEGRATED** | both `bytes`-cast escapes resolve to `parameter`; 327/327 artifacts SHA-256 identical minus the 2 new keys - see 4.53 |
-| **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **LEASED (security)** | standard BCH admin idiom indistinguishable from the real hole; measured on the merged tree |
+| **SEC-17** | SEC-12 warns on a key committed by `hash160(pk)==pkh` | S6 | SEC-12 | **INTEGRATED** | 14/36 -> 0/36 across 7 spellings at both sites; 8 negative controls unflipped - see 4.56 |
+| X46 | Commitment check reads the key's binding, not the writer of its target | — | SEC-17 | **TODO** | a fn assigning `this.pkh` FROM a caller param before comparing is credited anyway |
 | X43 | Make the E3 gate read X37's provenance instead of the published type | — | X37 | **TODO** | X37 publishes but does not consume; E3 still classifies on type alone |
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
@@ -212,6 +213,67 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.56 SEC-16 and SEC-17 closed; the helper was MOVED, not copied, and verified line-for-line
+
+Merged at `5d30c418`; solidc **2,524/0** (2,494 + 30). Both reproduced verbatim on their baselines first: SEC-16
+as 3 mismatches of 8 (a caller-supplied `pk`, a rebound alias, and `checkDataSig` each silenced the selfdestruct
+warning), SEC-17 as **14 of 36** across 7 spellings of the P2PKH admin idiom at **both** sites. After: 0/8 and
+0/36.
+
+**The helper was moved, and the move was verified mechanically rather than asserted.**
+`warnUnauthenticatedSelfdestruct` now calls SEC-12's `hasAuthorizingSignatureGuard` instead of
+`SignatureCheckFinder`. It read no instance state, so it moved from a private method to module scope - and S6
+normalized `this.`/indent/`private` and confirmed **66/66 executable lines identical**. `SignatureCheckFinder`,
+`SIGNATURE_CHECK_NAMES` and a now-unused import were deleted. That is the opposite of the drift this board
+closed three `abi.find` sites to prevent.
+
+**SEC-17 is deliberately narrow and the boundary was measured, not asserted.** A key parameter is credited only
+when an **unconditional** top-level `require` pins `hash160(key)` to something the existing resolver says the
+caller cannot choose; `unchecked` is transparent and only `&&` is descended. All **8 negative controls still
+warn and none flipped**: committed to another caller param (directly and via alias), commitment inside an `if`
+arm, commitment behind `||`, commitment binding a different key, `!=`, and the self-referential
+`hash160(pk) == hash160(pk)`.
+
+**S6 introduced a defect and found it in self-review.** Its first SEC-17 version answered **inconsistently within
+a single key expression**: the cycle marker set on the first visit to a parameter made the second occurrence
+resolve the other way, so `checkMultiSig(ss, [pk, pk])` with `pk` committed still warned while the
+single-occurrence control was silent - the same false positive surviving in narrower form. Memoized per name,
+with the in-flight marker deliberately not memoized so genuine self-reference still terminates. That is the
+**fifth** too-broad-or-inconsistent first version this round and the **fourth** caught by its own author.
+
+**An honest correction inside the measurement itself.** S6's first harness over-counted, because the generic
+"Low-level .delegatecall() used" notice also contains the word "delegatecall"; the reported figures use the
+C1-specific text. A measurement whose instrument is wrong is worse than no measurement, and it said so.
+
+**Item 9 refuses corroboration for the third time this round.** The corpus run is 656 sources with **0
+differing** - but only **9 of 656** mention `selfdestruct` at all and **none of those 9** emit the diagnostic on
+either side, while SEC-17's reachable set is **1 of 656**. It is a regression net proving the 74 sources that
+warn about other things were undisturbed; the evidence for both fixes is the before/after harnesses.
+
+**Independent corroboration of X45.** S6 hit the same `EcrecoverRecovery` failure, in a contract with no
+`selfdestruct` and no `delegatecall`, and attributed it the same way rather than assuming: 17/17 in isolation
+**plus a second full run on identical tree and binaries at 4,162/0**. Two workers, two trees, same conclusion.
+
+**No VM case, stated as a position.** Both are compile-time diagnostics that change no bytecode - the corpus run
+confirms 0 emitted-output differences - so there is no input index to pin, and S6 wrote that manufacturing one
+"would be theatre" rather than padding the packet. Correct.
+
+**A documented limit, recorded not fixed**: the commitment check reads the key's binding, not the writer of what
+it is bound to, so a function that assigns `this.pkh` **from a caller parameter** before comparing against it is
+credited anyway. Opened as X46.
+
+**Board verification, independent of the worker.** The integration owner re-ran its own three-shape probe against
+the merged build: the `hash160`-committed idiom is now **silent**, the state-var control **silent**, and the
+uncommitted key **still warns**. That last row is the one that matters - it shows the fix did not simply switch
+the diagnostic off.
+
+**A process failure worth recording, second occurrence.** The first attempt to merge S6 ran **in S6's own
+worktree**, because the shell's working directory had persisted from a progress check. It was a no-op (merging a
+branch into itself) and both trees were verified untouched, but the diffstat it printed looked exactly like a
+catastrophic revert of X37 and SEC-15. **Rule going forward: every merge names its worktree explicitly via
+`git -C <path>`, never relying on the ambient cwd.** This is the second time this exact error has occurred in
+this effort.
 
 ### 4.55 Composed verification after SEC-15: 4,167, and the one failure was a self-diagnosing flake
 

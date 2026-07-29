@@ -818,24 +818,20 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
 
   /**
    * THE MEASUREMENT. One variable against control B: whether the one-armed branch ran. The forged output is
-   * byte-identical in both. Currently the forgery is ACCEPTED and broadcast, so the honest assertion fails -
-   * `it.fails` keeps the capability visible and will fail loudly the day SEC-10 is repaired.
+   * byte-identical in both. REPAIRED: the conditional emit's covenant now has an OP_ELSE that binds the
+   * reserved slot's commitment to EMPTY on the path that does not reach the emit.
    */
-  it.fails('SEC-10: rejects a forged event NFT in the reserved slot of a NOT-taken branch', async () => {
+  it('SEC-10: rejects a forged event NFT in the reserved slot of a NOT-taken branch', async () => {
     const built = await buildConditionalEmitBatch({ value: 4n, second: 'forge' });
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
-  /** What the forgery buys: the SDK's own reader returns it as a genuine `Fired` log beside the real one. */
-  it('SEC-10 impact: the forged NFT reads back as a genuine event', async () => {
+  /** What the forgery used to buy: the SDK's own reader returned it as a genuine `Fired` log. It no longer
+   * reaches the chain, so the reader sees only the honest emit. */
+  it('SEC-10 impact: the forged NFT no longer reaches the chain to be read back', async () => {
     const built = await buildConditionalEmitBatch({ value: 4n, second: 'forge' });
-    await built.provider.sendRawTransaction(built.transaction);
-    const { readEventsFromChain } = await import('../../src/index.js');
-    const events = await readEventsFromChain(
-      built.provider as any, built.eventAddress, built.categoryId, built.eventDef,
-    );
-    expect(events.map((e: any) => e.values.value)).toEqual([4n, 999_999n]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
   // The minimal shape: one handler, one emit, that emit one-armed. Frame width 1, no sibling, no divergence.
@@ -859,8 +855,8 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
-  // The capability needs neither a sibling nor a width divergence: one handler, one emit, one arm.
-  it.fails('SEC-10 narrow: rejects a forged NFT in the width-1 slot of a NOT-taken branch', async () => {
+  // The capability needed neither a sibling nor a width divergence: one handler, one emit, one arm.
+  it('SEC-10 narrow: rejects a forged NFT in the width-1 slot of a NOT-taken branch', async () => {
     const built = await buildConditionalEmitBatch({ value: 4n, second: 'forge', narrow: true });
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
@@ -951,19 +947,15 @@ contract ArmHub() {
   }, 600_000);
 
   // The measurement: one variable, which of the reached site's two transfer slots carries the forgery.
-  it.fails('SEC-9 gap: rejects a forged NFT in the RESERVED transfer slot', async () => {
+  // REPAIRED by emitOwnCategoryImmutableNftOutputPin: a transfer offset is not an event offset.
+  it('SEC-9 gap: rejects a forged NFT in the RESERVED transfer slot', async () => {
     const built = await buildDivergentTransferBatch('reserved');
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
-  it('SEC-9 gap impact: the transfer-slot forgery reads back as a genuine event', async () => {
+  it('SEC-9 gap impact: the transfer-slot forgery no longer reaches the chain', async () => {
     const built = await buildDivergentTransferBatch('reserved');
-    await built.provider.sendRawTransaction(built.transaction);
-    const { readEventsFromChain } = await import('../../src/index.js');
-    const events = await readEventsFromChain(
-      built.provider as any, built.eventAddress, built.categoryId, built.eventDef,
-    );
-    expect(events.map((e: any) => e.values.value).sort()).toEqual([4n, 999_999n]);
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 });

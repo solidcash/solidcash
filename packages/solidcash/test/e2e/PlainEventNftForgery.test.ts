@@ -77,10 +77,12 @@ const run = async (
   const builder = await (sc as any).bump(x).build();
   const eventAddress = getEventNftAddress(salted, categoryId, artifact.events![0].signature);
 
+  // A funding input past the block pays the fee in every row, so the honest control and the forged row differ
+  // only in the appended OUTPUT.
+  const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
+  builder.addInput(utxo, unlocker);
+
   if (append) {
-    // A funding input and its output BOTH sit past the block, so the 1:1 block layout is untouched.
-    const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
-    builder.addInput(utxo, unlocker);
     if (append === 'own') {
       builder.addOutput({
         to: eventAddress,

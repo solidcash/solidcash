@@ -298,6 +298,14 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
           continue;
         }
       }
+      // X63. The SOURCE `while` spelling of the same loop: an ordinary variable definition followed by a
+      // `while` carrying its own trailing step. `forLoopUpdateCount` is 0 and `isLoopVariable` is false, so
+      // the desugared-`for` match above never sees it and nothing was published for it at all.
+      if (statement instanceof VariableDefinitionNode && index + 1 < statements.length
+        && statements[index + 1] instanceof WhileNode
+        && (statements[index + 1] as WhileNode).forLoopUpdateCount === 0) {
+        this.recordWhileLoopCeiling(statement, statements[index + 1] as WhileNode);
+      }
       out.push(this.visit(statement) as StatementNode);
     }
     node.statements = out;
@@ -356,16 +364,70 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
   }
 
   /**
+   * X63. Publish the ceiling a SOURCE `while` loop proves, without touching the loop.
+   *
+   * `for` is desugared into a `WhileNode` carrying `forLoopUpdateCount` trailing update statements; a `while`
+   * written by hand carries none, so every match above misses it and its callsites published
+   * `maximumOccurrences: undefined`. The planner then accepted any count up to the participant and worklist
+   * caps, while the source's own dominating `require` refused the same count on-chain at input 0 - a bound the
+   * compiler had already proven but never told anyone.
+   *
+   * Publish ONLY. The `while` spelling keeps the loop rolled all the way to code generation, and that rolled
+   * route is separately proven to settle and to reject its hostiles (X2); expanding it here would delete the
+   * only producer of the expression-selector callsite that repair covers. So this records a ceiling and
+   * returns the statement untouched - zero emitted bytes change.
+   *
+   * Two conditions the desugared form gets for free have to be checked here: the trailing statement really is
+   * the step, and nothing ELSE in the body writes the counter. A hand-written `while` can move its own counter
+   * anywhere, and a second write in the decreasing direction would make the published ceiling an
+   * under-estimate. The rest of the proof - the initializer, the condition shape, break/continue/return, the
+   * dominating guard and its mutation analysis - is `provenTripCount`, unchanged and shared with the
+   * expansion, so a `while` can never publish on weaker evidence than a `for`.
+   */
+  private recordWhileLoopCeiling(initializer: VariableDefinitionNode, loop: WhileNode): void {
+    if (!this.ceilings) return;
+    const all = loop.block.statements ?? [];
+    if (all.length < 2) return;
+    const bodyStatements = all.slice(0, all.length - 1);
+    if (this.stepOf(all.slice(all.length - 1), initializer.name) === undefined) return;
+    if (mutatedNames(bodyStatements).has(initializer.name)) return;
+    const calls = this.rolledCallsiteCount(bodyStatements);
+    if (calls === 0) return;
+    const count = this.provenTripCount(initializer, loop, bodyStatements, 'decline', 1);
+    if (count === undefined) return;
+    for (let index = 0; index < calls; index += 1) {
+      recordProvenLoopCeiling(this.ceilings, this.currentFunction, Number(count));
+    }
+  }
+
+  /**
+   * External callsites a ROLLED loop body holds, each of which publishes one `loop` ABI row.
+   *
+   * Both dispatch forms count: a pointer dispatch stays rolled in the `while` spelling (the expansion above
+   * never sees it), and an ordinary `IFoo(addr).m()` stays rolled in either spelling.
+   */
+  private rolledCallsiteCount(bodyStatements: StatementNode[]): number {
+    return countNodes(bodyStatements, (node) => node instanceof IndirectCallNode
+      || (node instanceof MethodCallNode && node.selectorArrayVar !== undefined)
+      || (node instanceof MethodCallNode && node.selectorArrayVar === undefined
+        && node.object instanceof FunctionCallNode
+        && this.interfaceNames.has(node.object.identifier.name)));
+  }
+
+  /**
    * The compiler-proven ceiling on a loop's trip count, or undefined when no ceiling is proven.
    *
    * `onFailure: 'throw'` is the pointer-table contract - every unbounded shape must be refused with one stable
    * diagnostic - while `'decline'` is used where the loop is admitted either way and only the published bound
    * is at stake. The two modes share one proof so a bound can never be published on weaker evidence than the
    * expansion demands.
+   *
+   * `updateCount` is how many TRAILING statements of the loop block hold the step: `forLoopUpdateCount` for a
+   * desugared `for`, and 1 for the source `while` spelling, whose step is the last statement of its own body.
    */
   private provenTripCount(
     initializer: VariableDefinitionNode, loop: WhileNode, bodyStatements: StatementNode[],
-    onFailure: 'throw' | 'decline',
+    onFailure: 'throw' | 'decline', updateCount = loop.forLoopUpdateCount,
   ): bigint | undefined {
     const decline = (node: Node, detail: string): undefined => {
       if (onFailure === 'throw') throw new PointerTableBoundError(node, detail);
@@ -387,7 +449,7 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
     const inclusive = condition.operator === BinaryOperator.LE;
 
     const all = loop.block.statements ?? [];
-    const step = this.stepOf(all.slice(all.length - loop.forLoopUpdateCount), variable);
+    const step = this.stepOf(all.slice(all.length - updateCount), variable);
     if (step === undefined || step <= 0n) {
       return decline(loop, `the loop update must be '${variable} = ${variable} + literal'`);
     }

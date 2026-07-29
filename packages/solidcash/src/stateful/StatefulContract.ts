@@ -6080,26 +6080,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
       returnEmitOutputIndex = slot.offset;
-      // X12. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
-      // Verification is gated `!functionHasDelegatecall`), which resolves it implementation-relative. When that
-      // implementation ALSO emits, its event slot takes the position this forwarder reserved for the return
-      // event and the return event moves one later - the two disagree and the implementation rejects at its own
-      // input. Without an `emit` the two offsets coincide, which is why the plain returning delegate settles.
-      for (const ci of (overrides?.returnProbeOnly ? [] : (overrides?.calls ?? [])) as Array<{
-        type?: string; contract?: StatefulContract; functionName?: string;
-      }>) {
-        if (ci?.type !== 'stateful' || !ci.contract) continue;
-        const implFn = (ci.contract.inner.artifact.abi as readonly AbiFunction[])
-          .find((f) => f.name === ci.functionName);
-        const implSlots = implFn?.blockLayout?.slots ?? [];
-        if (!implSlots.some((s) => s.kind === 'event') || !implSlots.some((s) => s.kind === 'returnEvent')) continue;
-        throw new Error(
-          `.emitReturn() on '${functionName}' delegates to '${ci.functionName}', which both emits an event and `
-          + 'returns a value. The implementation covenant places its event NFT at the output index this '
-          + 'forwarder reserved for the return event, so the two disagree and the implementation rejects. '
-          + 'Call it without .emitReturn() (the delegated emit settles), or read the value with .staticCall().',
-        );
-      }
+      // X12/X56. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
+      // Verification is gated `!functionHasDelegatecall`), which resolves EVERY output-only slot
+      // implementation-relative - its event and its own returnEvent alike. When the implementation also emits,
+      // this forwarder's returnEvent offset is therefore the wrong one: the event sits there. The delegate slot
+      // reservation below (`delegateReturnEventOffset`) relocates it, once the co-spent implementation and its
+      // block layout are known. Without an `emit` the two offsets coincide, which is why a plain returning
+      // delegate settles on this offset alone.
     }
     if (abiFunction?.usesMsgSender) {
       let msgSenderCategory = overrides?.msgSenderCategory;
@@ -8641,6 +8628,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // proxyMaster+offset, so they reserve funder inputs + outputs in the PROXY block, shifting the co-spent
     // impl UTXOs after them. Populated once below; drives lowLevelCallInputBase, block layout, and funders.
     let delegateEventSlots: { kind: BlockSlotKind; offset: number; slotIndex?: number }[] = [];
+    // X56. Where a delegatecall'd impl that ALSO returns resolves its own return event, once the co-spent
+    // implementation is known. The forwarder's reserved returnEvent slot moves here; the impl's event keeps the
+    // position the forwarder had reserved for the return.
+    let delegateReturnEventOffset: number | undefined;
 
     // Track per-group proxy master index for delegatecall composability
     const groupProxyMasterIndices: number[] = [];
@@ -8720,7 +8711,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const gFn = (g.externalContract.inner.artifact.abi as readonly { name: string; blockLayout?: FunctionBlockLayout }[])
           .find((f) => f.name === g.functionName);
         const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
-        if (extra.length === 0 || !extra.every((s) => s.kind === 'event' || s.kind === 'entry')) continue;
+        if (extra.length === 0
+          || !extra.every((s) => s.kind === 'event' || s.kind === 'entry' || s.kind === 'returnEvent')) continue;
         const existingCallSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'lowLevelCall');
         const callOffset = existingCallSlot?.offset ?? (abiFunction?.blockLayout?.blockSize ?? 1);
         if (!existingCallSlot && !delegateEventSlots.some((s) => s.kind === 'lowLevelCall')) {
@@ -8736,12 +8728,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (const s of extra) {
           const below = implIsDelegateOnly
             ? implDataNftSlots.filter((d) => d.offset < s.offset).length : 0;
+          const offset = callOffset + s.offset - below;
+          // X56. The implementation's own returnEvent is implementation-relative like every other output-only
+          // slot, so the proxy's reserved returnEvent has to MOVE to that position rather than have a second
+          // one appended beside it: `getBlockSlotOffset` returns the first slot of a kind, and the forwarder's
+          // would win. Recorded here and applied to the effective layout and to __internal__returnOutputIdx,
+          // which is what emitReturnEventCovenantVerification actually reads.
+          if (s.kind === 'returnEvent') { delegateReturnEventOffset = offset; continue; }
           delegateEventSlots.push({
             kind: s.kind,
-            offset: callOffset + s.offset - below,
+            offset,
             ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }),
           });
         }
+      }
+      // The forwarder's own offset was computed before the co-spent implementation was known; only now is the
+      // implementation-relative position available. A plain send materializes no return event, so only the
+      // layout slot moves there - the witness stays -1 and the covenant skips the check entirely.
+      if (delegateReturnEventOffset !== undefined && returnEmitOutputIndex >= 0) {
+        returnEmitOutputIndex = delegateReturnEventOffset;
       }
       const denseCallInputBase = 1 + requiredNftIndices.length
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
@@ -9152,8 +9157,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // so the proxy must reserve those output-only slots (funder input + event output), shifting the co-spent impl
     // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
     let effectiveBlockLayout = abiFunction?.blockLayout;
-    if (effectiveBlockLayout && delegateEventSlots.length > 0) {
-      const maxOff = Math.max(effectiveBlockLayout.blockSize - 1, ...delegateEventSlots.map((s) => s.offset));
+    // X56. Relocate - never duplicate - the forwarder's returnEvent slot when the impl resolves its own return
+    // event at a DIFFERENT index in this block. Unconditional on the send mode: two slots at one offset would
+    // have the funder loop position the same index twice, and a plain send has to keep the event where it is.
+    // A returning implementation with no event resolves to the offset the forwarder already published, so this
+    // is a no-op there and the layout object is left exactly as it was.
+    const returnSlotMoved = delegateReturnEventOffset !== undefined
+      && effectiveBlockLayout?.slots.some((s) => s.kind === 'returnEvent' && s.offset !== delegateReturnEventOffset);
+    if (effectiveBlockLayout && returnSlotMoved) {
+      effectiveBlockLayout = {
+        ...effectiveBlockLayout,
+        slots: effectiveBlockLayout.slots.map((s) => (s.kind === 'returnEvent'
+          ? { ...s, offset: delegateReturnEventOffset! } : s)),
+      };
+    }
+    if (effectiveBlockLayout && (delegateEventSlots.length > 0 || returnSlotMoved)) {
+      const maxOff = Math.max(
+        effectiveBlockLayout.blockSize - 1,
+        ...delegateEventSlots.map((s) => s.offset),
+        ...(returnSlotMoved ? [delegateReturnEventOffset!] : []),
+      );
       effectiveBlockLayout = { blockSize: maxOff + 1, slots: [...effectiveBlockLayout.slots, ...delegateEventSlots] };
     }
 
@@ -9191,6 +9214,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
         && { delegateEntriesAfterLowLevel: true }),
+      // X56. Only when the co-spent implementation BOTH emits and returns: its event resolves to the index the
+      // forwarder had reserved for the return channel, so the return channel has to follow the events.
+      ...(delegateReturnEventOffset !== undefined && delegateEventSlots.some((s) => s.kind === 'event')
+        && { delegateReturnEventAfterEvents: true }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
         && { lowLevelCallInputBase }),
       ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),

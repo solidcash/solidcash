@@ -44,6 +44,21 @@ contract WhileGuardedLoop() {
   }
 }`;
 
+/** The X2 fixture itself: a varying-method POINTER table left rolled by the `while` spelling. */
+const WHILE_POINTER_TABLE = `pragma solidcash >=0.8.0;
+interface IVaryingHandler { function inc(uint value); function dec(uint value); }
+contract WhilePointerTable() {
+  function(uint) external[] handlers;
+  function registerInc(address target) public { this.handlers.push(IVaryingHandler(target).inc); require(true); }
+  function registerDec(address target) public { this.handlers.push(IVaryingHandler(target).dec); require(true); }
+  function fireAll(uint value) public {
+    require(handlers.length <= 3);
+    int i = 0;
+    while (i < handlers.length) { handlers[i](value); i = i + 1; }
+    require(value >= 0);
+  }
+}`;
+
 /** GUARD NEGATIVE CONTROL - the same `while` loop with no dominating guard. Nothing is proven to publish. */
 const WHILE_UNGUARDED = `pragma solidcash >=0.8.0;
 interface IFoo { function bar(uint value); }
@@ -102,6 +117,28 @@ describe('X63 - the planner sees the ceiling a while-spelled loop proves', () =>
     expect(row.maximumOccurrences).toBeUndefined();
     const plan = layer3.deriveCompiledGraphPlan({ ...planFor(WHILE_UNGUARDED), occurrence: () => 4 });
     expect(plan.invocations).toHaveLength(5);
+  }, TIMEOUT);
+
+  /**
+   * The shape the row is actually about: X2's rolled POINTER table, planned through the dynamic-call entry
+   * point. This is the exact case where the planner accepted 4 and only the chain refused it, at input 0. The
+   * ACCEPTING side of this fixture is on the VM in `Layer3RolledPointerTableX2.test.ts`, which settles 1, 2 and
+   * 3 rows and rejects a fourth registration at input 0; it needs a real co-spent graph, which the ceiling
+   * check runs ahead of, so it cannot be re-asserted here.
+   */
+  it('refuses a fourth row of the while-spelled POINTER table, naming the bound', () => {
+    const artifact = artifactOf(WHILE_POINTER_TABLE);
+    const root = { artifact, lockingBytecode: '51' };
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'fireAll',
+      args: [CALL_VALUE],
+      targets: {},
+      occurrence: () => 4,
+      dynamicCall: () => ({ participant: root, function: 'inc' }),
+    })).toThrow(
+      'layer3: callsite 0 was planned with 4 occurrences, above the 3 proven by a dominating require guard',
+    );
   }, TIMEOUT);
 
   /**

@@ -35,11 +35,21 @@ import {
  * per-input script limit, C2 on operation-cost density, C3 on the 100,000-byte standard relay ceiling. Only
  * C3 is over anything, and what it is over is a POLICY limit: it is inside every consensus limit measured.
  *
- * C3's overrun is 354 bytes, 0.35%. Costed against the measured per-slot serialized sizes: the two cheapest
- * slot pairs are 177 and 211 bytes, so removing two frees 388 and lands at 99,966. The fixture's own note
- * that 62 of its 108 slots are an unused Ledger trailing region prices the same fix at 13,048 bytes, landing
- * at 87,306 (87.3%). Equivalently, 45 bytes off each of the eight projection scripts, or 354 off the single
- * controller script, a 12.4% cut. Which slots are removable is a design question, not a measurement one.
+ * RE-MEASURED AT `ffef8568`, and the capstone rows have MOVED - by construction, not by drift. X5 edited
+ * `generateGraphProjectionVerifier` alone, adding 37 bytes to every projection script, so each capstone grew
+ * by 37 times its participant count: C2 53,101 -> 53,249 (+148), C1 63,130 -> 63,315 (+185), C3 100,354 ->
+ * 100,650 (+296). Every worst-density ratio above reproduces to the operation, because the worst input of each
+ * capstone is a controller or a participant and never a projection; what moves with the size is C3's relay
+ * ratio, 1.0035x -> 1.0065x. The 2/4/8 synthetic sweep is untouched and reproduces exactly, 10,661 B and
+ * 0.3630x at N=8. The table above is kept as the `4ac40b82` reading it is labelled as; these are HEAD's.
+ *
+ * C3's overrun is therefore 650 bytes, 0.65%, not 354. Costed against the measured per-slot serialized sizes:
+ * the two cheapest slot pairs are 177 and 211 bytes, so removing two frees 388 - which NO LONGER lands it
+ * under the ceiling (100,650 - 388 = 100,262), where against the pre-X5 100,354 it did. That is the one
+ * conclusion the +296 overturns, and it is why a dated table still needs its consequences re-derived. The
+ * fixture's own note that 62 of its 108 slots are an unused Ledger trailing region prices the larger fix at
+ * 13,048 bytes, landing at 87,602 (87.6%). Which slots are removable is a design question, not a measurement
+ * one.
  *
  * Every figure above was derived from a build, never copied from a recorded table. Where a fixture's own
  * comment records a different number, the difference is reported rather than reconciled here: the fixtures'

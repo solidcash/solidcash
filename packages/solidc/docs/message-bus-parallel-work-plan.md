@@ -160,7 +160,7 @@ task-specific report, not in this table.
 | X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | B1 | F1 | **INTEGRATED (scoped)** | CONSENSUS_FIT holds for the sweep N=2/4/8 ONLY - accepted AND mined; policy-vs-consensus settled - see 4.66 |
 | X59 | Thread `createProvider` into the four capstone fixtures | — | X49 | **TODO** | only obstacle to node-executing A13/C2/C1; builders take the param but are file-local and unexported |
 | X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient - refused as DUST | — | X49 | **TODO** | invisible to every harness measurement: `enforceDust: false` + `dustRelayFeePerKb: 0n` |
-| F2 | Conservative calibrated cost estimator | B | F1 | TODO | Reporting first; rejection only after calibration |
+| F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
 | F3 | MistSwap/EA and proving-corpus fit report | C | F1 | TODO | Separate demand from synthetic capacity |
 | F4 | Measured protocol/bytecode minimization | A | F1 | TODO | Optimize only invariant-preserving spans |
 | R1 | Select and enforce production envelope | Main | F2,F3,F4 | TODO | Semantic support may exceed production profile |
@@ -227,6 +227,54 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.68 F2: conservative on 28/28 in-sample, and it says where it is NOT
+
+Merged at `4c9176eb`, test-only (2,170 lines, six new files, no `src/` touched and **no existing test edited**).
+It predicts from participant/invocation counts, per-participant `blockSize` and bytecode length alone - no UTXO,
+no builder, no VM.
+
+| shape | serialized pred/meas | worst script | worst density pred/meas |
+| --- | --- | --- | --- |
+| sweep N=2 / N=4 / N=8 | +0.9% / +0.3% / +0.0% | +0.0% | +0.0% on all three |
+| A13 graph | 28,938 / 23,845 **+21.4%** | +0.0% | 0.5758 / 0.4067 **+41.6%** |
+| C2 cycle | 59,548 / 53,249 +11.8% | +7.0% | 0.7960 / 0.6491 +22.6% |
+| C1 DeFi | 65,397 / 63,315 +3.3% | +0.0% | +0.0% |
+| C3 max graph | 112,955 / 100,650 +12.2% | +14.2% | +0.0%, correctly called **OVER** |
+
+**28/28 conservative in-sample**, band +0.0% to +41.6%, mean +4.8%, erring high every time. All four limits are
+modelled because the basis genuinely binds on four different ones.
+
+**A model defect B7 found and fixed in its own first version, and the mathematics is the point.** Bounding an
+operation cost above **and** its density bytes above bounds **nothing** about their quotient. The first version
+did exactly that and **under-predicted C3 by -22.7% in-sample** - a conservative estimator that was not
+conservative. Every cost coefficient now envelopes the **density ratio** directly. **Seventh first-version defect
+across three rounds, and the sixth caught by its own author.**
+
+**It was evaluated off its training data, three ways, and reported every miss.** A **real** held-out graph - E1's
+six-participant, seven-invocation result graph, 19 inputs, never in any calibration set - came out **2/4 limits
+conservative, worst -9.6%**. Leave-one-out 22/28, worst in-range -12.3%. Unseen counts N=3/6/16 **predicted
+before building**, 11/12, the one miss -0.31% because the density-vs-participants curve bulges above the chord
+between N=4 and N=8. A model evaluated on its training data is not evaluated, and this one was not.
+
+**The margin arithmetic was wrong in the obvious direction, and B7 checked instead of assuming.** The closed-form
+14% implied by the worst miss does not work, because a margin scales envelope coefficients but **not the additive
+redeem term**. Searched: **34%** clears all 24 out-of-sample rows, at the cost of in-sample mean +4.8% -> +23.5%.
+Reported and deliberately **not switched on**.
+
+**Six limitations documented in the source, including the one that mattered most: it could not separate marginal
+cost per resource/result/chunk/event either - and said so rather than fitting a curve through points that do not
+separate the variables.** F1 hit the same wall. Two further limits the held-out graph actively *measured*:
+projection unlocking bytes are **not** a function of participants plus invocations (they carry result payloads),
+and controller density is **not** a function of slot count alone.
+
+**Third independent confirmation of the C3 figure and its consequence.** B1 (on a node), B6 (re-measuring) and
+B7 (estimating) each arrived at **100,650 B** and at F1's costed fix no longer clearing the ceiling - **four**
+slot pairs needed, not two. Three workers, three methods, no coordination between them.
+
+B7 also independently confirmed C2's fixture staleness for B6, matching on every figure, and confirmed for B4
+that its basis inherits the single-knob regime with worst hash usage 0.1078x - so the regime split moves nothing
+here, which is why it deliberately calibrates no hash coefficient.
 
 ### 4.67 The accuracy sweep OVERTURNS a conclusion, and X55's own premise was wrong
 

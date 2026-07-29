@@ -952,11 +952,12 @@ contract E3BytesKeyHonestProxy(pubkey owner) {
     });
 
     /**
-     * THREE MORE SHAPES the round-14 gate admitted, found by measuring rather than by reasoning: none of them
-     * publishes an `address` parameter, so the type-driven gate called all three `bytecode-pinned` on the
-     * strength of a constructor argument that is not the target.
+     * ANOTHER SHAPE the round-14 gate admitted, found by measuring rather than by reasoning. It publishes no
+     * `address` parameter, so the type-driven gate called it `bytecode-pinned` on the strength of a constructor
+     * argument that is not the target. An upgrade pointer read from state is only as strong as whatever wrote
+     * it, which is a question no published field answers and no case here settles.
      */
-    it('refuses a state-variable target and a computed target the type gate called bytecode-pinned', () => {
+    it('refuses a state-variable target the type gate called bytecode-pinned', () => {
       const stateTarget = compileString(`pragma solidcash >=0.8.0;
 contract E3StateTargetProxy(address impl) {
     bytes stored;
@@ -966,9 +967,10 @@ contract E3StateTargetProxy(address impl) {
         require(input.length > 0);
     }
 }`);
+      expect(stateTarget.abi.find((entry) => entry.name === 'up')!.lowLevelCalls![0].target)
+        .toEqual({ kind: 'stateVar', name: 'stored' });
       expect(classify(stateTarget, [hexToBin(implementationLbc)]))
         .toThrow(/class 'dynamically-resolved-implementation' is not admitted.*state variable 'stored'/s);
-
     });
 
     /**

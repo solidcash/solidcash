@@ -72,9 +72,9 @@ const dummySc = (v: number): { txid: string; vout: number; satoshis: bigint; tok
 // A small fraction of signatures are "width-0": their GLV ladder is too long for the 2-covenant (A+B) split, so
 // recovery fails closed with "no ladder split fits both side-cars' op-budget for this signature ... Re-sign to obtain
 // a different signature, which will decompose differently". Measured on this tree at 4/300 = 1.33% of random signers
-// over a fixed message. EVERY positive-path test below draws a fresh random signature, so a full run of this file
-// touches ~10 of them and flakes at about 1 - 0.9867^10 = 12.6% - which is how two workers hit it independently in
-// one round on the STATEFUL test alone.
+// over a fixed message. EVERY positive-path test below draws a fresh random signature: ten of them were unguarded,
+// so a full run of this file flaked at about 1 - 0.9867^10 = 12.6%, and the STATEFUL test alone at 1.33% - which is
+// the rate at which it was reported failing.
 //
 // This applies the remedy the error text itself prescribes: re-sign with a fresh message until the split probe
 // accepts. The probe builds both side-car covenants and evaluates them on the VM in an isolated two-input

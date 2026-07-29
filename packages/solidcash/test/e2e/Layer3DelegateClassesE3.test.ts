@@ -539,8 +539,10 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
         });
       };
       expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
-      expect(layer3.UNDETECTED_BY_THIS_GATE)
-        .toEqual(['conditional-delegate-edge', 'iterated-delegate-edge', 'bytes-typed-key-material']);
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toEqual([
+        'conditional-delegate-edge', 'iterated-delegate-edge',
+        'bytes-typed-delegate-target', 'bytes-typed-key-material',
+      ]);
     });
 
     async function spendProxy(
@@ -859,6 +861,44 @@ contract E3KeylessProxy() {
         }).setState('counter', 6n).send();
         expect(stateOf(tx, proxy.categoryId, payoutProxyArtifact.stateLayout!).counter).toBe(6n);
       }, 240_000);
+
+    /**
+     * THE HOLE THE FIX LEAVES, MEASURED RATHER THAN IMPLIED. Both A13 fixes key off a PARAMETER TYPE, which is
+     * the only thing published metadata offers - so both are defeated by routing the same caller value through
+     * a `bytes` parameter and casting it. These two sources compile, and the gate ADMITS them into the very
+     * classes A13 attacked. That is asserted here so the hole cannot be lost: it is listed in
+     * UNDETECTED_BY_THIS_GATE, and closing it needs the compiler to publish which expression the delegatecall
+     * target and the checked key resolve to. Refusing `bytes` parameters is not an option - the calldata
+     * parameter every admitted class carries is `bytes`.
+     */
+    it('still ADMITS both escapes routed through a `bytes` parameter - named, not hidden', () => {
+      const bytesTarget = compileString(`pragma solidcash >=0.8.0;
+contract E3BytesTargetProxy(address impl) {
+    bigint counter;
+    function up(bytes input, bytes target) external {
+        address t = address(target);
+        t.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect((classify(bytesTarget, [hexToBin(implementationLbc)])() as { id: string }).id)
+        .toBe('bytecode-pinned/adjacent-proxy-block/scalar');
+
+      const bytesKey = compileString(`pragma solidcash >=0.8.0;
+contract E3BytesKeyProxy(pubkey owner) {
+    bigint counter;
+    function up(bytes input, address impl, bytes k, sig s) external {
+        require(checkSig(s, pubkey(k)));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect((classify(bytesKey, [alicePub])() as { id: string }).id)
+        .toBe('caller-authorized/adjacent-proxy-block/scalar');
+
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('bytes-typed-delegate-target');
+      expect(layer3.UNDETECTED_BY_THIS_GATE).toContain('bytes-typed-key-material');
+    });
 
     /**
      * WHY THE GATE IS STILL NOT WIRED, measured rather than asserted. Instrumenting `withDelegatecall` to

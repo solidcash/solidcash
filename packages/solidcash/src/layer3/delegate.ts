@@ -164,18 +164,28 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
  * entry. Typed interface edges already publish `occurrence`/`maximumOccurrences`; low-level edges do not.
  * Until that additive field exists, refusing these two classes has to happen in the compiler, not here.
  *
- * `bytes-typed-key-material` is the residual of the A13-2 fix. The gate refuses a `pubkey` PARAMETER because a
- * caller-supplied key makes `checkSig` prove nothing. A key handed in as `bytes` and cast inside the body is
- * indistinguishable in published metadata from the delegatecall's own calldata parameter, which every admitted
- * proxy has - so refusing all `bytes` parameters would refuse the admitted classes too. Only the compiler,
- * which sees which expression `checkSig` checks, can close it.
+ * The last two are the residual of the A13 fixes, and they are the SAME two escapes routed through a `bytes`
+ * parameter. Both fixes key off a PARAMETER TYPE, because a type is the only thing published metadata offers:
+ *
+ *  - `bytes-typed-delegate-target`: `address t = address(target); t.delegatecall(input);` where `target` is a
+ *    `bytes` parameter. The function publishes no `address` parameter, so a proxy that also commits an
+ *    implementation in its constructor is still classified `bytecode-pinned`. MEASURED: it compiles and this
+ *    gate admits it (`Layer3DelegateClassesE3.test.ts`, round-14 block).
+ *  - `bytes-typed-key-material`: `checkSig(s, pubkey(k))` where `k` is a `bytes` parameter. No `pubkey`
+ *    parameter is published, so a proxy with a committed key is still classified `caller-authorized`. Also
+ *    measured admitted.
+ *
+ * Neither can be closed by refusing `bytes` parameters: the delegatecall's own calldata parameter is `bytes`
+ * and every admitted class has one. Closing them needs the compiler to publish which expression the target and
+ * the checked key resolve to - see the handoff in the round-14 evidence packet.
  *
  * Naming the blind spot is part of the enumeration: a gate that silently admits a class it cannot see is worse
- * than one that says so.
+ * than one that says so. These two are named because they are known, not because they are harmless.
  */
 export const UNDETECTED_BY_THIS_GATE: readonly string[] = Object.freeze([
   'conditional-delegate-edge',
   'iterated-delegate-edge',
+  'bytes-typed-delegate-target',
   'bytes-typed-key-material',
 ]);
 

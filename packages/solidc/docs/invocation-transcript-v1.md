@@ -995,7 +995,10 @@ ALLOWANCE is 7x tighter under relay policy. Earlier revisions of this section li
 
 An evaluated instruction costs 100 against a budget of 800 per byte, so EIGHT instructions consume one
 byte of the evaluating input's own unlocking-bytecode budget - an instruction is worth an eighth of a
-byte, not the "roughly eight bytes" this paragraph used to claim.
+byte, not the "roughly eight bytes" this paragraph used to claim, a 64x error in the direction that
+makes instruction count look unaffordable. Confirmed against measurement rather than only against the
+constants: the three Layer-3 controllers measured at `ffef8568` run 9,561, 9,536 and 15,336 instructions,
+whose instruction term is exactly 1,195.125, 1,192 and 1,917 bytes of their own density budget.
 `OP_BEGIN`/`OP_UNTIL` reduce emitted bytecode but do not reduce per-iteration operation cost.
 `OP_SPLIT` charges for pushed bytes, so repeatedly splitting the full transcript is forbidden by the
 streaming rule in section 4.

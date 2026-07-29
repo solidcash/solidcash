@@ -164,9 +164,10 @@ task-specific report, not in this table.
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | — | — | TODO | `OP_SPLIT` on 1-byte item at input 0; off G1's path |
-| X3 | Result fan-in: one handler consuming two producer results | B | E1 | TODO | Needs `SymbolTableTraversal.ts` + `GenerateTargetTraversal.ts` leases |
+| X3 | Result fan-in: one handler consuming two producer results | A4 | — | **BLOCKED (wall named, fails closed)** | transcript machinery ACCEPTS fan-in; only caller-side lowering cannot - one bounded compiler change - see 4.62 |
+| X55 | `invocation-transcript-v1.md` still names byte 11 `callMode:u8` | — | X5 | **TODO (doc)** | also `Layer3ReviewA1.test.ts` offset `callModeStart`; shared spec doc, left alone deliberately |
 | X4 | Publish exact minimum occurrence, not just a ceiling | A | G1 | INTEGRATED | floor + provenance published and wired into the planner |
-| X5 | Bind call options as a committed transcript row field | B | E2 | TODO | Needs `artifact.ts` + `GenerateTargetTraversal.ts` |
+| X5 | Bind call options as a committed transcript row field | A4 | X31 | **INTEGRATED** | byte 11 now committed; the projection verifier is the FIRST covenant ever to read it - see 4.62 |
 | X6 | Stable diagnostics for unadmitted low-level shapes | A (wiring) | E2 | INTEGRATED | 8 shapes named, incl. one in a modifier body; ONE admitted-class leak remains |
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
@@ -221,6 +222,60 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.62 X5 binds the call-options byte - the first covenant ever to read it; X3's wall is NAMED
+
+Merged at `d2f11a2c`, after a hand-resolved conflict (below). Transcript byte 11 is now a documented
+**call-options field**: bit 0 the compiler-proven read-only (`staticcall`) mode, bits 1-7 source-level options,
+none admitted.
+
+**Two divergences closed, both measured before the fix.** Round 15 refused only `delegatecall`, leaving the two
+ordinary modes free to disagree: on real compiler output, `peek.staticcall(n)` publishes `staticcall` while a
+supplied `callMode: 'call'` committed **`call`** - which also **skipped the staticcall read-only proof**. Worse,
+the **root row was unbound end to end**: no caller re-derived its byte and no covenant read it, so a supplied
+root `staticcall` was accepted and produced a transcript differing from the honest one in **exactly one byte**,
+emission rows byte-identical. The projection verifier now requires the root row's byte to be 0 - **the first
+covenant that has ever read that field.**
+
+**One encoder writes both framings and asserts agreement with `callMode`**, so a hand-built plan handed straight
+to `finalizeCompiledGraph` cannot desynchronize them; `assertNoUnboundCallOptions` was split into measurement
+plus the same single exported refusal, keeping X31's byte-identical string intact.
+
+VM evidence at ordinary capacity: honest settles; a **1-byte** root tamper refuses at **input 3**; a **1-byte**
+edge-row rename refuses at **input 3**; the same rename carried into the emission vector (**2 bytes**) refuses at
+**input 0**, the caller's own route. The mode-divergence refusal deliberately runs **after** the read-only proof
+so the more specific message wins, which is why C2's refusal text is unchanged.
+
+**X3 is BLOCKED for implementation and failed closed with a named diagnostic - and A4 respected the lease to get
+there.** The wall is entirely compiler-side, in two files leased to other agents this round, and A4 touched
+neither. It measured the wall instead of inferring it: `SymbolTableTraversal.ts:1855` refuses
+`logicalCallSlots.length > 1 && some(hasReturnValues)` - **broader than fan-in**, since one returning plus one
+void is refused by the same clause, isolation-pinned. And `verifyGraphEmissionRow`'s returning arm `OP_SPLIT`s
+the caller's **whole** emission vector and requires the remainder to equal the declared length, so **a returning
+row consumes the entire vector and nothing can follow it**. It named the fix: the cursor form
+`consumeGraphRuntimeEmissionRow` already uses for loop rows.
+
+**The sharpest part is what it proved is NOT the blocker.** Running the baseline SDK against a fan-in plan:
+**accepted**, `resultDependencies: [[1,2],[],[]]`, failing only as an unnamed script error. And an honest fan-in
+transcript needs **no relaxation to build**, because a row's result field comes from the producer's handler
+outputs rather than the consumer's annotations - on that transaction, preflight fails at **input 0** (the
+caller's route) while inputs 1, 3, 5, 6, 7 and 8 each evaluate clean individually. **The transcript machinery
+accepts fan-in; only the caller-side lowering cannot.** That converts a vague capability gap into one bounded
+compiler change.
+
+**Cost, all measured and all budgets still passing**: projection verifier +37 bytes; C2 +210 instructions
+(+1.4% over 5 invocations); C3 +315 (+1.3% over 15). All eight C3 projections remain equal, so that file's
+"no returning-row surcharge" finding survives.
+
+**The conflict, and why neither side was right.** A5 corrected C3's stale figures in the same block where X5
+moved two of them. Taking A5's side would have re-pinned pre-X5 numbers; taking A4's would have discarded the
+staleness corrections and reinstated text A5 had disproved. Resolved by hand: A5's corrected prose kept, X5's
+deltas recorded as a **second, by-construction movement**, and the surcharge finding preserved explicitly
+because equality across rows - not the absolute figure - is the property that mattered. Verified: C1 + C3 **29/29**.
+
+**Follow-up A4 declined to take, correctly**: `docs/invocation-transcript-v1.md` still names the field
+`callMode:u8` and `Layer3ReviewA1.test.ts` still names its offset `callModeStart`. Both are now the call-options
+field. A4 left the shared spec doc alone. Opened as X55.
 
 ### 4.61 X46 is a LIVE THEFT closed; X28/X34/X35 stay refused, and one of MY premises was wrong
 

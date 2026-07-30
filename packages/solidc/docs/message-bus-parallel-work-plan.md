@@ -167,6 +167,10 @@ task-specific report, not in this table.
 | F3 | MistSwap/EA and proving-corpus fit report | C6 | F1,F2 | **INTEGRATED** | **THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS**: all 12 bus-reachable app contracts admit READ-ONLY; 80% of refusals are route-scope - see 4.77 |
 | X73 | `initial-v1-route-requires-public-visibility` refuses 172 of 455 (38%) | — | F3 | **TODO (biggest incidental wall)** | Solidity marks entry points `external`; the v1 route admits `public` |
 | X79 | The route-scope gates are STACKED; no single lift admits anything | D2 | F3 | **MEASURED** | the ERC-20's transfer/approve/transferFrom ARE admissible; 3 gates stacked; relaxing the third hits an unnamed abort |
+| X76b | Lift `result-route` and normalize the bare entry spelling | E1 | X79 | **INTEGRATED** | 2 of 3 stacked gates; every bare shape lands on its DOTTED TWIN'S byte count; +2 state-changing, 0 lost - see 4.88 |
+| X94 | `mixed-scalar` needs its own mixed-route VM settle | — | X76b | **TODO** | the only gate whose relaxation puts a row with NO physical entry into a route sized for per-row entry slots; 139/88 firings |
+| X95 | `bareShapeIsNormalizable` is over-conservative | — | X76b | **TODO** | blocks on any bare index of a non-collection name; narrowing to collection names is sound but was not shipped |
+| X96 | X73's never-shrink guard may no longer have a subject | — | X76b | **TODO** | its ERC-20 scenario no longer shrinks and firings fell 22 -> 5; third vacuous-guard instance on this board |
 | X80 | F3's 455 is a ~2.2x undercount of gate reach | D2 | F3 | **MEASURED** | 419 firings, 226 on contracts that DO get a route and are invisible to the route-absent channel |
 | X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | D4 | F3,F2 | **INTEGRATED** | 44/45 under -> **0/45 under**; one defect was an IMPOSSIBILITY (intercept below the redeem it pushes) - see 4.83 |
 | X78 | The estimator names DENSITY as the binder on all 45 | E3 | X70 | **INTEGRATED** | de-bias each coefficient before comparing: 0/43 -> **43/43**, census 22/367 -> **367/367** |
@@ -260,6 +264,69 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.88 TWO gates lifted, and the byte table IS the soundness argument
+
+Merged at `699730a3`. Iteration 1's E1, which held `compiler.ts` through two iterations.
+
+**Two of the three stacked gates are lifted**: `result-route` now demotes only handlers that **carry** an effect, with
+event and value modes recomputed from the survivors - the old rule read `eventMode`, a property of the **set**, so
+**one emitting sibling refused every effect-free handler and the route vanished**. And
+`normalizeBareEntryAccesses` rewrites the clone's bare `ArrayAccess`/`ArrayAssign` into the `Mapping*` nodes
+`SymbolTableTraversal` would have produced - the **same decision procedure**, including the packed and
+dynamic-state-array exclusions.
+
+**Corpus delta measured both ways, which is the part that makes it trustworthy:**
+
+| | apps (190 rows) | solc sample (478 rows) |
+| --- | --- | --- |
+| new compile failures / rows disappeared | **0 / 0** | **0 / 0** |
+| routes lost / eligibility lost | **0 / 0** | **0 / 0** |
+| routes gained | **+6** | **+11** |
+| handlers newly eligible | **+21** | **+75** |
+| state-changing gained / lost | **1 / 0** | **1 / 0** |
+
+`collection-helper-route-not-enabled` fell **88 -> 67** on apps and **55 -> 5** on solc;
+`external-handler-would-shrink-the-route` **22 -> 5**.
+
+**The byte-cost table is the soundness argument, not decoration.** Every newly admitted bare shape lands
+**exactly on its dotted twin's byte count** - 4211/4211, 4152/4152, 2531/2531, 5854/5854. E1's own framing:
+*"the soundness argument is therefore not 'the route looks right' but 'the route is the same script the other
+spelling already reached'."* The 4-handler bare ERC-20 also went from a hard
+`UndefinedReferenceError: __scb_arg_2_1` crash to a working 5,854-byte route.
+
+**Two state-changing handlers on REAL corpus contracts, 0 lost**, re-derived by recompiling every changed file
+against both dists and reading `artifact.abi[].writesState`: `EventSubscription.subscribe()` (a bare mapping write
+plus a dynamic-array push) and **`TestToken.issueTokens()` - a real ERC-20 mint**.
+
+**A regression the measurement caught that no test or reading found.** The first solc pass showed **4 files
+stopped compiling**, and because a throw fails the whole multi-contract compile, **22 contract rows
+disappeared**. Both causes were pre-existing route-generation gaps the refusals had been hiding. Fixed by turning
+X73's two-rung fallback into a **four-rung monotone ladder** (`[ext,bare,result]` TTT -> TTF -> TFF -> FFF) whose
+last two rungs reproduce X73's exactly, where the widest that compiles wins and the first error is re-raised if
+none does. **Same class X73's own measurement caught** - and E1 stated that its corpus check *did* detect this and
+that nothing else would have.
+
+**Honest scoping, and it keeps a claim the board has now re-verified three times.** Neither corpus handler is
+itself VM-settled - both are admitted only in **graph-controller** mode, needing ~200 lines of
+authenticated-graph harness. What settles is the **shape**: the bare two-alternative ERC-20 `transferFrom`,
+byte-identical to the dotted route the corpus test already settles. **F3's application headline is UNMOVED** -
+all three application-corpus gains are read-only, and the two state-changing gains are on solidity-by-example and
+solc. And the solc figure is a deterministic **450-file sample**, not its full denominator.
+
+**`mixed-scalar` was NOT attempted, with a reason worth more than an attempt.** It is the only one of the three
+whose relaxation would put **a row with no physical entry into a route sized for per-row entry slots**, so it
+needs its own mixed-route VM settle. 139 apps / 88 solc firings, unchanged. Opened as **X94**.
+
+**Also declined as over-conservative but deliberately kept**: `bareShapeIsNormalizable` blocks on any bare index
+of a non-locally-bound non-collection name; tightening it to collection names only would widen the gain and E1
+judged it sound - but shipped the measured version rather than the wider one. Opened as **X95**.
+
+**One re-pin is substantive rather than mechanical**, and it is the third instance of this class on this board:
+X73's never-shrink guard may **no longer have a subject** - the ERC-20 scenario it was built for no longer
+shrinks, and firings of that reason fell 22 -> 5. Same shape as the vacuous `participantLbc` regex and R1's
+positive control that lost its subject. Handed to the tests/docs holder with instructions to check whether the
+guard is now unreachable rather than just update its number.
 
 ### 4.87 X83 lands with a SECOND FACE left standing; X76 is wider than filed and BLOCKED
 

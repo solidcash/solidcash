@@ -308,8 +308,20 @@ ADMIT.
 
 **Re-measured at `1591e87f`:** `packages/solidcash/src/` contains **8 call sites** that hand bytes to
 `provider.sendRawTransaction` outside the provider implementations themselves - unchanged in count.
-**Exactly one** of them - `src/layer3/preflight.ts:99`, inside `sendPreflightedLayer3Transaction` - runs the
-Layer-3 gate. The other seven are `TransactionBuilder.send()` (`TransactionBuilder.ts:901`),
+**SUPERSEDED (X126/X172).** There are now **7 live sites and every one of them is gated**: the eighth,
+`_sendBuilderWithCustomUnlockers`, was DELETED rather than gated, because the reason it existed - `send()`
+failing to produce a meaningful error for custom unlockers - no longer holds, and a dormant ungated broadcast
+path is the shape a later edit picks up without noticing. A test now pins the live-site count so a new
+ungated one cannot appear quietly.
+
+The four `StatefulContract` admin sites were not gated on population evidence, which was only 14 sends across
+11 tests. They were gated on CONSTRUCTED coverage: all four compute a payout arithmetically with no floor and
+write it over a placeholder BY INDEX on `builder.outputs` - the one path an output can take that
+`addOutput`'s policy check never sees - and all four were driven to a 100-satoshi output against a
+576-satoshi threshold with the mock accepting every one.
+
+As measured at `1591e87f`, exactly one of them - `src/layer3/preflight.ts:99`, inside
+`sendPreflightedLayer3Transaction` - ran the Layer-3 gate. The other seven were `TransactionBuilder.send()` (`TransactionBuilder.ts:901`),
 `StatefulTransactionBuilder.send()` (`:2899`) and five sites in `StatefulContract.ts` (`:3055`, `:3238`,
 `:10067`, `:10207`, `:11095`), two of which carry the explicit comment "Build and send directly (bypass
 debug step which doesn't handle covenant unlockers)" (`:10067`, `:10207`) and a third of which is named

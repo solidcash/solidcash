@@ -2117,7 +2117,8 @@ gate sees the difference. Dust thresholds 474/546/576 agree with the SDK's own `
 boundary is exact at 100,000/100,001.
 
 **A measurement worth keeping: the mock provider's limits are 100x, 100x, 12,500x and 20,000,000x the real
-ones**, and of 8 broadcast call sites in `src/`, **1 is gated**.
+ones**, and of the broadcast call sites in `src/` there are now **7 live and all 7 are gated** - the eighth
+was DELETED, not gated, because its reason to exist had been removed (X172).
 
 **What it does not prove, stated:** the gate has never been run against A13/C2/C1/C3 themselves, because their
 builders are unexported - which is X59, in flight this round; A13's and C2's dust and template status is

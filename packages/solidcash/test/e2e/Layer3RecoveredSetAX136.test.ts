@@ -60,6 +60,10 @@ import type { Utxo } from '../../src/interfaces.js';
  * covenant's own commitment bytes exactly. A harness that guessed the encoding wrong could not accidentally
  * agree with the covenant, because it never writes an encoding down.
  *
+ * THE 112 IS STALE. `Layer3RecoveredPartitionX160.test.ts` re-takes this partition at HEAD against the same
+ * `c988817e` and measures 206 gained, 0 lost. Set A's total is unchanged at 53 - it read 50 only while
+ * `StableSwap` had stopped compiling - so every per-contract figure below still holds.
+ *
  * WHAT IS NOT ESTABLISHED, and it is most of the population.
  *
  *  - SEVEN of 112. That is what this file adds; it does not speak for the other rows.

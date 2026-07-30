@@ -39,6 +39,13 @@ import type { Utxo } from '../../src/interfaces.js';
  *     route's READ rows on the same contract - so the refusal discriminates the writer from the readers
  *     rather than reporting a builder that never worked.
  *
+ * SINCE RE-TAKEN, AND THE POPULATION IS BIGGER. The 65 below is what this file measured over
+ * solidity-by-example at the commit it was written at, and it is left as that record.
+ * `Layer3RecoveredPartitionX160.test.ts` re-takes the whole partition at HEAD against the same `c988817e`:
+ * 206 gained, 0 lost, with ELEVEN gained writers rather than one. `Attack.attack` is still one of them and
+ * everything below still holds; what changed is that the row's positive case now HAS a subject, run to
+ * completion in `Layer3RecoveredWriterSettlesX160.test.ts`.
+ *
  * SO THE ANSWER TO THE ROW IS NEGATIVE, AND IT IS THE SAFE NEGATIVE. A recovered handler that mutates state
  * does not settle; it is a published-but-dead admission, which is the X115 hazard shape and not an exploit -
  * no witness path opened, nothing accepted that should not have been. What is NOT established is that a

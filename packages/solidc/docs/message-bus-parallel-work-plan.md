@@ -169,7 +169,12 @@ task-specific report, not in this table.
 | X79 | The route-scope gates are STACKED; no single lift admits anything | D2 | F3 | **MEASURED** | the ERC-20's transfer/approve/transferFrom ARE admissible; 3 gates stacked; relaxing the third hits an unnamed abort |
 | X80 | F3's 455 is a ~2.2x undercount of gate reach | D2 | F3 | **MEASURED** | 419 firings, 226 on contracts that DO get a route and are invisible to the route-absent channel |
 | X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | D4 | F3,F2 | **INTEGRATED** | 44/45 under -> **0/45 under**; one defect was an IMPOSSIBILITY (intercept below the redeem it pushes) - see 4.83 |
-| X78 | The estimator still names DENSITY as the binder on all 45 | — | X70 | **TODO** | coefficient tightness differs 601% vs 10%, so bounds cannot rank limits; `bindingUnresolved` now carries the true binder 45/45 |
+| X78 | The estimator names DENSITY as the binder on all 45 | E3 | X70 | **INTEGRATED** | de-bias each coefficient before comparing: 0/43 -> **43/43**, census 22/367 -> **367/367** |
+| X85 | `replicaSpec` drops 444 B of every corpus prediction | — | X78 | **TODO** | defaults to the recorded basis (4,542/1,514) where HEAD generates 4,098/1,493 |
+| X86 | The F3 census has DRIFTED and needs re-taking | — | X78 | **TODO** | 3 rows fail "census redeem length disagrees with the built participant"; population is 43, not 45 |
+| X87 | `Layer3CorpusFitF3.test.ts:183` stale after X73 | — | X73 | **TODO** | SushiRoll now has zero unnamed refusals; reproduces with E3's change reverted |
+| X88 | Route-synthesis arity bug on collection-iteration handlers | — | — | **TODO** | `Found parameters () ... where parameters (bigint) were expected` in the generated wrapper |
+| X89 | A collection ITERATION read never enters the footprint | — | X88 | **TODO** | `CollectionIterationNode` carries `collectionName`, not `name`; harmless only because X88 stops it compiling |
 | X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
 | X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | — | X71 | **TODO** | `MerkleTree.sol` lands here once the ParseError is past |
 | X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **TODO** | likely a missing `compileFile` fallback for FAIL rows; reconcile before quoting those numbers |
@@ -184,7 +189,7 @@ task-specific report, not in this table.
 | X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED (cross-run throw MERGED, not verified)** | **ALL FOUR capstones MINED in one run**; `c38d96c1` is lint-clean but NOT node-verified - see 4.81 |
 | X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **INTEGRATED** | NOT X22's shape; all 7 corpus files now name the real edge at a position INSIDE the user's file, 7/7 |
 | X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | — | X71 | **TODO** | `UndefinedReferenceError ... __scb_arg_0_0 at Line 28`/`42` on a 13-LINE contract; thrown in SEMANTIC analysis of the merged AST |
-| X77 | `view` functions reported `writesState: true` by the dynamic-array analysis | — | X71 | **TODO** | `getAmountsOut`/`getAmountsIn` are `view` in source; a false positive here refuses legitimate handlers |
+| X77 | `view` functions reported `writesState: true` | E3 | X71 | **DISPROVED - no defect** | fires on `externalCalls > 0`, not the array analysis; cannot refuse a handler; corpus delta ZERO - see 4.86 |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
@@ -251,6 +256,73 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.86 X77's premise was WRONG and moves nothing; X78's diagnosis was right and its conclusion too strong
+
+Merged at `91f673ce`. Iteration 1 of the 5-iteration loop, 4-agent cap.
+
+**X77 - disproved, no code change, corpus delta ZERO.** The row claimed the conservative dynamic-array analysis
+flags `view` functions as state-writing. It is **none of the three things the row named**: not the array
+analysis, not an absent-means-writing default, and `InvocationAnalysis.ts` is not involved at all. The firing term
+is `(func.externalCalls?.length ?? 0) > 0` in `Artifact.ts:254` - `getAmountsOut` and `getAmountsIn` both reach
+`getReserves()` through a library, and their `dynamicWrites` and `entryAccesses` are **both empty**, measured on
+the real artifact.
+
+**Isolated with a control in both directions**: one contract, four `view` functions - the dynamic-array,
+**named-return** and **tuple-declaration** shapes the row suspected all read **false**, while writers still read
+**true**, so `false` is not a stuck value.
+
+**And it cannot refuse a handler, which was the row's whole justification.** Nothing in route synthesis reads
+`writesState`; the external-call refusal comes from `footprint.effects` independently. Of its three consumers,
+two already exclude external calls explicitly, and flipping the flag at the third would **admit** an
+external-call-bearing callee as a staticcall target - a weakening, not a fix.
+
+**The corpus settles it.** 1,099 handlers, **`absent: 0`** - with `forceStateful` the field is never absent, so
+the *absent = writing* convention this board has been caveating its counts with **contributes nothing**. 251
+handlers declare `view`/`pure` and **244 are confirmed read-only (97.2%)**. Of the 7 flagged, 6 are external-call
+and already refused for an unrelated reason, and **the single eligible one genuinely writes** - a `view` function
+whose *modifier* assigns state, in `modifier_overriding_3.sol`. So the annotation is the lie, not the compiler.
+Published counts do not move.
+
+**X78 - fixed, and the earlier conclusion was the error.** X70 diagnosed the cause correctly (ranking bounds of
+unequal tightness cannot rank limits) but concluded it needed per-contract cost measurement. It needed each
+coefficient's **demonstrated over-prediction taken back out before the comparison** - a `ratioFloor` de-biasing
+using **local** slack read at the bracketing calibration drivers, because a global discount regressed C1 and C2 in
+trial.
+
+| population | before | after |
+| --- | --- | --- |
+| built corpus graphs | **0/43** | **43/43** |
+| capstones (in-sample) | 3/4 | **4/4** |
+| census at N=1 | 22/367 | **367/367** |
+| held-out E1 | 0/1 | 0/1 (unchanged) |
+
+**Conservatism was preserved by measurement, not assertion**: E3 re-ran the whole 43-contract row with **both
+estimator files reverted**, and every band came back **identical** - script, serialized, density and SigChecks all
+0/43 under-predicted. The only line that differed was the ranking. It also added anti-regression guards so
+re-ordering cannot turn OVER into FITS, asserted over 1,106 descriptors.
+
+**Two of X70's published figures do not reproduce, and E3 proved it is staleness by measuring at the reverted
+baseline.** The population is **43, not 45** - three rows now fail "census redeem length disagrees with the built
+participant", so **the census has drifted**. And **444 bytes of every corpus prediction is a dead covenant**:
+`estimate` defaults to the recorded basis (4,542 / 1,514) while HEAD generates **4,098 / 1,493**, because
+`replicaSpec` never fills the override fields. With HEAD's sizes the band returns to X70's published
++4.3%..+7.5%. Both handed to E4, whose lease holds that file.
+
+**A stale assertion replaced with one that cannot drift.** X70's legacy `before >= 44 under-predictions` fails at
+the **baseline** commit too, because the legacy fit returns 4,441 B for a covenant that *was* 4,542 and is now
+4,098 - so the impossibility decayed into mere looseness. E3 re-asserted the impossibility on the **calibration**
+instead: a **3,966 B intercept against a 4,542 B covenant**, where no size change can soften it.
+
+**The remaining miss is stated rather than fitted away.** E1 is still named density where relay size binds; its
+de-biased floor lands 0.6846x against 0.6368x measured, because the envelope is 26.4% loose there where its
+bracketing points showed 17.6%. **No re-fit closes it** - it is a cost driven by a contract body the descriptor
+does not carry, and closing it needs a per-participant operation-cost reading at compile time.
+
+**Five handoffs**, opened as **X85** (`replicaSpec` must pass the covenant overrides), **X86** (the F3 census
+needs re-taking), **X87** (`Layer3CorpusFitF3.test.ts:183` stale after X73), **X88** (route-synthesis arity bug on
+collection-iteration handlers: `Found parameters () ... where parameters (bigint) were expected`), and **X89** (a
+collection *iteration* read never enters the footprint - harmless only because X88 stops it compiling).
 
 ### 4.84 X65 beat F4's sizing 3.4x by REJECTING the form F4 sized
 

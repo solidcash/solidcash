@@ -120,6 +120,51 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
   }
 }
 
+/**
+ * X119. A graph handler whose call shape route synthesis cannot lower.
+ *
+ * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
+ * SYNTHESIZED handler (`__scb_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
+ * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
+ * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
+ * caveats the same way every other diagnostic here does.
+ *
+ * Only in bus/participant mode. Measured at `0103ce9d` over the full 152-file solidity-by-example denominator:
+ * SIX firings - four of `requires call/staticcall edges ..` (TokenSwap, TokenLock, UniswapV2Liquidity, Optimal)
+ * and two of `currently requires forwarded identifier arguments` (DiscreteStakingRewards, UniswapV2FlashSwap) -
+ * and ZERO in direct mode. Counting only the 141 files the SBE bench keeps in its denominator gives 3, which is
+ * the same measurement over a smaller corpus, not a different one.
+ *
+ * FOUR OF THE SIX SITES HAVE NO SUBJECT in mistswap + eacc + solidity-by-example, either mode: the runtime-graph,
+ * pinned-parameter-target, raw-calldata and unresolved-target-method refusals never fire. They share this class
+ * and therefore the position mechanism, but nothing here exercises them.
+ */
+export class GraphHandlerShapeError extends SolidCashError {
+  // Inherits `SolidCashError(node, message)`: the six sites already compose their own message, and the value this
+  // class adds is the position, the two file caveats and a name that is not `Error`.
+}
+
+/**
+ * X118. A value-returning, internally-invoked helper that emits an event.
+ *
+ * Such a helper compiles to an OP_INVOKE subroutine whose epilogue returns before emit settlement, so the event
+ * would be silently dropped; code generation refuses it. It refused with a bare internal `Error` carrying no class
+ * name, no position and no remedy, which is what the user saw on the canonical solidity-by-example `ERC20.sol` in
+ * PLAIN direct-mode compilation. `_mint` there is VOID as written - `LowerCollectionJournalHelpers` is what makes
+ * it returning - so `collectionJournal` is reported when that is the cause, because otherwise the message names a
+ * return value the source does not have.
+ */
+export class EmittingStateHelperEventError extends SolidCashError {
+  constructor(node: Node, name: string, viaCollectionJournal: boolean) {
+    super(node, `Helper '${name}' emits an event and is invoked internally as a value-returning subroutine, whose `
+      + 'event would be dropped at its exit'
+      + (viaCollectionJournal
+        ? ' (it is void as written; its single mapping entry made it a value-threaded collection-journal handler)'
+        : '')
+      + '. Move the emit into the calling entry point, or split the emit and the state write into separate helpers');
+  }
+}
+
 export class ParseError extends Error {
   constructor(
     message: string,

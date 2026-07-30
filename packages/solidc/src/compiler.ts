@@ -89,8 +89,8 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
-import { CircularContractReferenceError } from './Errors.js';
-import { generatedOriginOf, Location, Point, withGeneratedSource } from './ast/Location.js';
+import { CircularContractReferenceError, EmittingStateHelperEventError } from './Errors.js';
+import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
@@ -2513,6 +2513,8 @@ function compileResolvedAst(
   // Compile referenced contracts in dependency order
   const compiledBytecodes = compileReferencedContracts(ast, mergedCompilerOptions);
 
+  refuseEmittingReturningStateHelpers(ast.contract);
+
   // Code generation
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions);
   traversal.compiledBytecodes = compiledBytecodes;
@@ -3225,6 +3227,8 @@ function compileReferencedContracts(
     }
     singleAst = singleAst.accept(new EarlyReturnTransformation()) as Ast;
 
+    refuseEmittingReturningStateHelpers(singleAst.contract);
+
     const traversal = new GenerateTargetTraversal(compilerOptions);
     traversal.compiledBytecodes = compiledBytecodes;
     singleAst.accept(traversal);
@@ -3384,6 +3388,61 @@ function topologicalSort(
   return sorted;
 }
 
+/**
+ * X118. Name the one shape code generation refuses with a bare internal `Error`.
+ *
+ * `GenerateTargetTraversal.computeScalarJournalClosures` rejects a RETURNING internally-invoked helper that emits
+ * an event: the OP_INVOKE epilogue returns before emit settlement, so the event would be silently dropped. It
+ * raised `throw new Error("Returning state helper '<n>' with an event must be inlined before code generation")` -
+ * an internal invariant, with no class name, no position and no remedy, reaching users on the canonical
+ * solidity-by-example `ERC20.sol` in PLAIN direct-mode compilation (not only under the bus). `_mint` there is void
+ * as written; `LowerCollectionJournalHelpers` is what makes it returning.
+ *
+ * Placed HERE, immediately before code generation, rather than in the lowering pass that creates the shape: an
+ * earlier check masks whatever a later pass would have said, and measured on four real contracts (OZ ERC1155 /
+ * ERC721 / ERC777, mistswap FlexUsd) it replaced a live type or reference error with this one. From here it can
+ * mask nothing - every other pass has already had its say.
+ *
+ * The condition mirrors the code-generation site exactly, so this refuses no program that site accepts.
+ */
+function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
+  const functions = contract.fallbackDef ? [...contract.functions, contract.fallbackDef] : contract.functions;
+  const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0);
+  if (candidates.length === 0) return;
+  const walk = (node: Node, visit: (n: Node) => void, seen = new Set<Node>()): void => {
+    if (seen.has(node)) return;
+    seen.add(node);
+    visit(node);
+    for (const [key, value] of Object.entries(node)) {
+      if (['resolvedFunction', 'functionReference', 'definition', 'collection', 'stateVariable',
+        'symbolTable'].includes(key)) continue;
+      if (value instanceof Node) walk(value, visit, seen);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) walk(item, visit, seen);
+      }
+    }
+  };
+  // Invoked internally, by the same two forms code generation counts: a resolved internal call, and a function
+  // used as a VALUE (function pointer / self-reference), which is invoked indirectly.
+  const invoked = new Set<number>();
+  walk(contract, (node) => {
+    if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
+      invoked.add(node.resolvedFunction.functionId);
+    }
+    if (node instanceof IdentifierNode && node.functionReference?.functionId !== undefined) {
+      invoked.add(node.functionReference.functionId);
+    }
+  });
+  for (const fn of candidates) {
+    if (!invoked.has(fn.functionId!)) continue;
+    let emits = false;
+    walk(fn.body!, (node) => { if (node instanceof EmitStatementNode) emits = true; });
+    if (!emits) continue;
+    // Name the handler the user wrote, not the compiler's synthetic clone spelling of it.
+    throw new EmittingStateHelperEventError(fn, fn.name.replace(/^__scb_[a-z]+_/, ''), fn.collectionJournal === true);
+  }
+}
+
 export function parseCode(
   code: string,
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
@@ -3407,26 +3466,37 @@ export function parseCode(
     },
   );
 
-  const syntaxErrorListener = new ForwardingErrorListener(errorListener);
+  // X120. The file stamp has to cover LEXING AND PARSING, not only the AST build. An ANTLR error listener builds
+  // its own `Location` from the offending token while the parse is still running, i.e. before
+  // `AstBuilder.build()` opens the stamped scope, so every SYNTAX error in an imported file printed a bare
+  // Line/Column that belongs to that file: `IERC5805.sol` (10 lines) reported `Mismatched input 'delegate' ... at
+  // Line 63`, which is line 63 of the `IVotes.sol` it re-exports.
+  //
+  // `withSourceFile(undefined, ..)` for a root parse CLEARS an ambient stamp rather than inheriting one, so a
+  // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
+  // wins over any file label anyway (`importedFileCaveat`).
+  return withSourceFile(importedFileId, () => {
+    const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 
-  // Lexing (throwing on errors)
-  const inputStream = new CharStream(code);
-  const lexer = new SolidCashLexer(inputStream);
-  lexer.removeErrorListeners();
-  lexer.addErrorListener(syntaxErrorListener);
-  const tokenStream = new CommonTokenStream(lexer);
+    // Lexing (throwing on errors)
+    const inputStream = new CharStream(code);
+    const lexer = new SolidCashLexer(inputStream);
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(syntaxErrorListener);
+    const tokenStream = new CommonTokenStream(lexer);
 
-  // Parsing (throwing on errors)
-  const parser = new SolidCashParser(tokenStream);
-  parser.removeErrorListeners();
-  parser.addErrorListener(syntaxErrorListener);
-  const parseTree = parser.sourceFile();
-  syntaxErrorListener.throwFirstError();
+    // Parsing (throwing on errors)
+    const parser = new SolidCashParser(tokenStream);
+    parser.removeErrorListeners();
+    parser.addErrorListener(syntaxErrorListener);
+    const parseTree = parser.sourceFile();
+    syntaxErrorListener.throwFirstError();
 
-  // AST building
-  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, importedFileId).build() as Ast;
+    // AST building
+    const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, importedFileId).build() as Ast;
 
-  return ast;
+    return ast;
+  });
 }
 
 // Re-resolve array element types that parsed to a named AddressType placeholder (an imported struct not yet

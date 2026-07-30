@@ -187,6 +187,7 @@ import {
   AbiEncodeCallUndefinedFunctionError,
   AbiEncodeCallArgCountError,
   GraphEmissionEffectError,
+  GraphHandlerShapeError,
   SolidCashError,
 } from '../Errors.js';
 import {
@@ -1942,6 +1943,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
         if (node.graphEmissionHandler) {
+          // X119. All six refusals below carry the handler's definition node, so each gains a Line/Column plus
+          // the imported-file and generated-source caveats. The message text is unchanged: a `__scb_graph_*`
+          // clone keeps the location of the function it was cloned from, so the position names the user's own
+          // function even though the name is synthesized.
           if (logicalCallSlots.length < 1
             || logicalCallSlots.some((slot) =>
               (slot.loopArrayVar && !node.graphRuntimeEmissionHandler)
@@ -1949,7 +1954,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
             || (logicalCallSlots.length > 1 && logicalCallSlots.some((slot) => slot.hasReturnValues))) {
-            throw new Error(
+            throw new GraphHandlerShapeError(
+              node,
               `Graph handler '${node.name}' requires call/staticcall edges and at most one returning call`,
             );
           }
@@ -1959,13 +1965,16 @@ export default class SymbolTableTraversal extends AstTraversal {
                 && !slot.fnPtrCall
                 && !slot.selectorArrayVar
                 && !node.parameters.some((parameter) => parameter.name === slot.addressParam)))) {
-            throw new Error(
+            throw new GraphHandlerShapeError(
+              node,
               `Runtime graph handler '${node.name}' requires void calls with parameter- or state-pinned targets`,
             );
           }
           for (const slot of logicalCallSlots) {
             if (!slot.addressParam && !node.graphRuntimeEmissionHandler) {
-              throw new Error(`Graph handler '${node.name}' requires a pinned parameter target`);
+              throw new GraphHandlerShapeError(
+                node, `Graph handler '${node.name}' requires a pinned parameter target`,
+              );
             }
             if (!node.graphRuntimeEmissionHandler
               && !(slot.argSources ?? []).every((source) =>
@@ -1973,7 +1982,8 @@ export default class SymbolTableTraversal extends AstTraversal {
                 && source.paramIndex !== undefined
                 && source.paramIndex >= 0
                 && source.paramIndex < node.parameters.length)) {
-              throw new Error(
+              throw new GraphHandlerShapeError(
+                node,
                 `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
               );
             }
@@ -1988,7 +1998,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (slot.argSources?.length !== 1
                 || slot.argSources[0].kind !== 'forward'
                 || slot.argSources[0].paramIndex === undefined) {
-                throw new Error(`Graph handler '${node.name}' requires one forwarded raw calldata argument`);
+                throw new GraphHandlerShapeError(
+                  node, `Graph handler '${node.name}' requires one forwarded raw calldata argument`,
+                );
               }
               continue;
             }
@@ -1996,7 +2008,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
               .filter((candidate) => candidate.name === slot.functionName);
             const ifaceFunc = ifaceFuncs?.length === 1 ? ifaceFuncs[0] : undefined;
-            if (!ifaceFunc) throw new Error(`Graph handler '${node.name}' has an unresolved target method`);
+            if (!ifaceFunc) {
+              throw new GraphHandlerShapeError(
+                node, `Graph handler '${node.name}' has an unresolved target method`,
+              );
+            }
             slot.compileTimeSelector = computeFunctionSelector(computeFunctionSignature(
               slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
             ));

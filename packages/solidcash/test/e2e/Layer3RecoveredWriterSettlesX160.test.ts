@@ -23,8 +23,9 @@ import type { Utxo } from '../../src/interfaces.js';
  * THE POPULATION WAS RE-TAKEN AND IT IS BIGGER. Both sides of the repair were compiled in two dedicated
  * worktrees - `c988817e` (= `a2885464^`, pre-repair) and this branch - over mistswap, EA and
  * solidity-by-example, 179 files, one probe binary copied to both sides so only the compiler differs.
- * 206 handlers gained, 0 lost, over 135 rows and 54 moved contracts. ELEVEN of the 206 publish
- * `writesState: true`, not one.
+ * 206 handlers gained, 0 lost, over 135 rows and 54 moved contracts. ELEVEN of the 206 are state-changing
+ * under the census's own classifier (`writesState` anything but false), not one - and SEVEN of those
+ * eleven publish `writesState: true` outright, the other four publishing it absent.
  *
  * `solidity-by-example/fallback/FallbackInputOutput.sol` contract `Counter` is the cleanest of the eleven and
  * is the subject here:

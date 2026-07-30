@@ -40,9 +40,12 @@ import { verifyCorpusPins } from './layer3-corpus-pins.js';
  *    to DIRECT-FAIL. The inverse of the StableSwap case does not occur anywhere in this population.
  *  - Whole-corpus gate counts moved only upward: bus-OK 2 -> 7 (mistswap), 8 -> 10 (EA), 101 -> 134 (SBE).
  *
- * AND THE WRITER COUNT IS ELEVEN, NOT ONE. `writesState` is published TRUE on eleven of the 206 gained
- * handlers. The recorded figure was one, and that one - `TxOrigin.sol`'s `Attack.attack` - is the only member
- * proved NOT to settle, fail-closed, its counterparty bus-inadmissible. The other ten were never in the count.
+ * AND THE WRITER COUNT IS ELEVEN, NOT ONE. Eleven of the 206 gained handlers are state-changing under the
+ * census's own classifier - `writesState` anything but false, where ABSENT reads as writing. Seven publish
+ * `writesState: true` outright; the other four (`Bar.log`, `HashFunction.hash`, `HashFunction.collision`,
+ * `TestTransientStorage.val`) publish it absent and are counted conservatively, not shown to mutate.
+ * The recorded figure was one, and that one - `TxOrigin.sol`'s `Attack.attack` - is the only member proved
+ * NOT to settle, fail-closed, its counterparty bus-inadmissible. The other ten were never in the count, and
  * `Layer3RecoveredWriterSettlesX160.test.ts` runs the cleanest of them, `Counter.inc`, to completion.
  *
  * WHAT THIS FILE IS AND IS NOT.
@@ -73,6 +76,21 @@ interface PartitionRow {
 }
 
 const PRE_REPAIR_COMMIT = 'c988817e';
+
+/**
+ * The seven gained handlers whose DIRECT artifact publishes `writesState: true` outright. The other four in
+ * the eleven publish it ABSENT, which the census reads as writing; counting them is conservative and is not a
+ * claim that they mutate.
+ */
+const EXPLICIT_WRITERS: ReadonlyArray<readonly [string, string, string]> = [
+  ['uniswapv2/UniswapV2Factory.sol', 'UniswapV2Pair', 'initialize'],
+  ['defi/staking-rewards/StakingRewards.sol', 'StakingRewards', 'setRewardsDuration'],
+  ['fallback/FallbackInputOutput.sol', 'Counter', 'inc'],
+  ['hacks/contract-size/ContractSize.sol', 'Target', 'protected'],
+  ['hacks/delegatecall/Delegatecall_2.sol', 'Lib', 'doSomething'],
+  ['hacks/hiding-malicious-code-with-external-contract/ExternalContract.sol', 'Foo', 'callBar'],
+  ['hacks/phishing-with-tx-origin/TxOrigin.sol', 'Attack', 'attack'],
+];
 
 const ROOTS: Record<PartitionRow['corpus'], string> = {
   eacc: process.env.EACC_CONTRACTS_DIR ?? '/Code/effectiveacceleration.ai/contract/contracts',
@@ -1086,6 +1104,15 @@ describe('X160: the re-taken L2-F2 partition', () => {
     expect(gainedWriters).toHaveLength(11);
     expect(gainedWriters).toContain('fallback/FallbackInputOutput.sol::Counter.inc');
     expect(gainedWriters).toContain('hacks/phishing-with-tx-origin/TxOrigin.sol::Attack.attack');
+    // The split inside the eleven, because "state-changing" here is two different statements. Recompiled.
+    const explicit = EXPLICIT_WRITERS.filter(([rel, name, handler]) => {
+      const direct = compileFileMulti(`${ROOTS[rel.startsWith('uniswapv2/') ? 'mistswap' : 'sbe']}/${rel}`,
+        DIRECT as never) as any;
+      const abi = direct[name]?.abi?.find((entry: any) => entry.name === handler);
+      console.log(`[X160P]   ${name}.${handler} writesState=${JSON.stringify(abi?.writesState)}`);
+      return abi?.writesState === true;
+    });
+    expect(explicit).toHaveLength(7);
     // Recompiled for the two that carry VM evidence, so the classification is not only a record: `inc`
     // SETTLES (`Layer3RecoveredWriterSettlesX160.test.ts`) and `attack` is proved NOT to, fail-closed
     // (`Layer3RecoveredWriterX136.test.ts`). Nine of the eleven are unproven either way.

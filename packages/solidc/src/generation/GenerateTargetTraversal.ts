@@ -2607,70 +2607,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the write of its own variable is indexed off a footprint that is still growing, and only a second pass
     // sees the complete one. Idempotent - the shared helper registries are keyed, not appended.
     const compileBody = (): GenerateTargetTraversalWithLocation => {
-    // Create a sub-traversal to compile the function body independently
-    const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+      // Create a sub-traversal to compile the function body independently
+      const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);
 
-    // Copy necessary context
-    subTraversal.stateVariables = this.stateVariables;
-    subTraversal.collectionCount = this.collectionCount;
-    subTraversal.dataNftCount = this.dataNftCount;
-    subTraversal.eventDefinitions = this.eventDefinitions;
-    // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
-    // output-only offsets in that body disagree with the ones in the main script.
-    subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
-    subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
-    subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
-    subTraversal.userFunctionDefs = this.userFunctionDefs;
-    subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
-    subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
-    subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
-    subTraversal.constantExpressions = new Map(this.constantExpressions);
-    subTraversal.compiledBytecodes = this.compiledBytecodes;
-    subTraversal.subroutineDefined = new Map(this.subroutineDefined);
-    subTraversal.structSkipIds = this.structSkipIds;
-    subTraversal.structSkipTypes = this.structSkipTypes;
-    subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
-    subTraversal.structFieldPrefixes = this.structFieldPrefixes;
-    subTraversal.structFieldExtractIds = this.structFieldExtractIds;
-    subTraversal.structFieldExtracts = this.structFieldExtracts;
-    subTraversal.scanLoopIds = this.scanLoopIds;
-    subTraversal.scanLoopTypes = this.scanLoopTypes;
-    subTraversal.arrayElementIds = this.arrayElementIds;
-    subTraversal.arrayElementTypes = this.arrayElementTypes;
-    subTraversal.arraySplitIds = this.arraySplitIds;
-    subTraversal.arraySplitTypes = this.arraySplitTypes;
-    subTraversal.arrayTruncateIds = this.arrayTruncateIds;
-    subTraversal.arrayTruncateTypes = this.arrayTruncateTypes;
-    subTraversal.stateDecodeIds = this.stateDecodeIds;
-    subTraversal.stateDecodes = this.stateDecodes;
-    subTraversal.stateReadIds = this.stateReadIds;
-    subTraversal.stateReads = this.stateReads;
-    subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
-    subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
-    subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
-    subTraversal.compactHelperIds = this.compactHelperIds;
-    subTraversal.contractUsesMsgData = this.contractUsesMsgData;
-    subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
-    subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
-    subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
-    subTraversal.contractParameters = this.contractParameters;
-    subTraversal.contractFunctionKeys = this.contractFunctionKeys;
+      // Copy necessary context
+      subTraversal.stateVariables = this.stateVariables;
+      subTraversal.collectionCount = this.collectionCount;
+      subTraversal.dataNftCount = this.dataNftCount;
+      subTraversal.eventDefinitions = this.eventDefinitions;
+      // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
+      // output-only offsets in that body disagree with the ones in the main script.
+      subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
+      subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
+      subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
+      subTraversal.userFunctionDefs = this.userFunctionDefs;
+      subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+      subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
+      subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
+      subTraversal.constantExpressions = new Map(this.constantExpressions);
+      subTraversal.compiledBytecodes = this.compiledBytecodes;
+      subTraversal.subroutineDefined = new Map(this.subroutineDefined);
+      subTraversal.structSkipIds = this.structSkipIds;
+      subTraversal.structSkipTypes = this.structSkipTypes;
+      subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
+      subTraversal.structFieldPrefixes = this.structFieldPrefixes;
+      subTraversal.structFieldExtractIds = this.structFieldExtractIds;
+      subTraversal.structFieldExtracts = this.structFieldExtracts;
+      subTraversal.scanLoopIds = this.scanLoopIds;
+      subTraversal.scanLoopTypes = this.scanLoopTypes;
+      subTraversal.arrayElementIds = this.arrayElementIds;
+      subTraversal.arrayElementTypes = this.arrayElementTypes;
+      subTraversal.arraySplitIds = this.arraySplitIds;
+      subTraversal.arraySplitTypes = this.arraySplitTypes;
+      subTraversal.arrayTruncateIds = this.arrayTruncateIds;
+      subTraversal.arrayTruncateTypes = this.arrayTruncateTypes;
+      subTraversal.stateDecodeIds = this.stateDecodeIds;
+      subTraversal.stateDecodes = this.stateDecodes;
+      subTraversal.stateReadIds = this.stateReadIds;
+      subTraversal.stateReads = this.stateReads;
+      subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
+      subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
+      subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
+      subTraversal.compactHelperIds = this.compactHelperIds;
+      subTraversal.contractUsesMsgData = this.contractUsesMsgData;
+      subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
+      subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
+      subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
+      subTraversal.contractParameters = this.contractParameters;
+      subTraversal.contractFunctionKeys = this.contractFunctionKeys;
 
-    // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
-    // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
-    if (this.contractUsesMsgData) {
-      subTraversal.stack.push('__internal__redeemPushSize');
-    }
-    for (const param of contractParams) {
-      subTraversal.stack.push(param.name);
-    }
+      // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
+      // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
+      if (this.contractUsesMsgData) {
+        subTraversal.stack.push('__internal__redeemPushSize');
+      }
+      for (const param of contractParams) {
+        subTraversal.stack.push(param.name);
+      }
 
-    // Visit the function definition - this will:
-    // 1. Push function params to tracked stack
-    // 2. Run body (including covenant verification for stateful contracts)
-    // 3. removeFinalVerify / cleanStack -> leaves 1 truthy value
-    subTraversal.currentFunction = func;
-    subTraversal.visit(func);
+      // Visit the function definition - this will:
+      // 1. Push function params to tracked stack
+      // 2. Run body (including covenant verification for stateful contracts)
+      // 3. removeFinalVerify / cleanStack -> leaves 1 truthy value
+      subTraversal.currentFunction = func;
+      subTraversal.visit(func);
       return subTraversal;
     };
 

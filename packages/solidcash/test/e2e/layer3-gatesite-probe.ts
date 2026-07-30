@@ -33,15 +33,23 @@ import { assessFinalizedTransactionBytes } from '../../src/layer3/preflight.js';
  *   site                                            sends  net-ok  newly refuses  tests  tests hit
  *   StatefulTransactionBuilder.ts:2925 submit        2535    2315       1 (0.04%)  1110    1 (0.1%)
  *   TransactionBuilder.ts:1147 send                  1170    1159       0 (0.00%)  1030    0 (0.0%)
- *   StatefulContract.ts:3061 destroy                    8       7       0 (0.00%)     5    0 (0.0%)
- *   StatefulContract.ts:10105 split                     3       3       0 (0.00%)     3    0 (0.0%)
- *   StatefulContract.ts:11133 _sendRawBuilder            2       2       0 (0.00%)     2    0 (0.0%)
- *   StatefulContract.ts:10245 merge                      1       1       0 (0.00%)     1    0 (0.0%)
+ *   StatefulContract.ts:3078 destroy      [NOW GATED]    8       7       0 (0.00%)     5    0 (0.0%)
+ *   StatefulContract.ts:10133 split       [NOW GATED]    3       3       0 (0.00%)     3    0 (0.0%)
+ *   StatefulContract.ts:11181 _sendRawB.. [NOW GATED]    2       2       0 (0.00%)     2    0 (0.0%)
+ *   StatefulContract.ts:10285 merge       [NOW GATED]    1       1       0 (0.00%)     1    0 (0.0%)
  *   layer3/preflight.ts:667 (ALREADY GATED)             3       3       0 (0.00%)     3    0 (0.0%)
- *   StatefulContract.ts:3244 _sendBuilderWith...         -       -           DEAD      -          -
+ *   StatefulContract.ts:3244 _sendBuilderWith...     DELETED, not gated - see below
  *   (not a site) fixtures broadcasting directly       1648    1178       6 (0.51%)   694    6 (0.9%)
  *
- * VERDICT: NOT LANDED, at the one site this worker's lease could land it. Gating
+ * VERDICT AT THE TIME: NOT LANDED. SUPERSEDED - all seven live sites are now gated, and the eighth was
+ * DELETED. THE ZEROES ABOVE ARE WHY THIS TABLE COULD NOT DECIDE IT: the four admin sites saw 14 sends across
+ * 11 tests between them, and 0% over that sample is not the evidence 2,315 net-ok sends gave. They were
+ * gated on CONSTRUCTED coverage instead - all four compute a payout arithmetically with NO FLOOR and write it
+ * over a placeholder BY INDEX on `builder.outputs`, the one path an output can take that `addOutput`'s policy
+ * check never sees, and all four accepted a 100-satoshi output against a 576-satoshi threshold. The eighth
+ * was deleted rather than gated because the reason it existed had been removed. See X126/X172/X175.
+ *
+ * The original verdict below is kept because its reasoning was right for what it had. Gating
  * `StatefulTransactionBuilder.send` costs exactly TWO tests, both in `HiddenBatchRelease4.test.ts`, MEASURED
  * by applying the hunk rather than predicted: that fixture transfers 100/200/300 satoshis to a one-byte
  * `OP_1` recipient, and the gate answers `100 satoshis is 374 short of the 474-satoshi dust threshold for a

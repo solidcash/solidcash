@@ -161,19 +161,33 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
+import { ImportedLocations } from './ImportedLocations.js';
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
 
+  // Names the imported file a warned-about position belongs to. This traversal runs on the MERGED ast, so a bare
+  // `at line N` cites a line that only exists in an import and is impossible in the file the user named.
+  private importedLocations = new ImportedLocations();
+
   // The `solidityImportCompat`-named literal coercions (hex->int/address, string->bytesN, bytes widen, negate)
   // are now plain SolidCash defaults - they only fire on source/target pairings that are a native type error, so
   // they can't change working code. Default true; kept as a field so the coercion helpers read uniformly.
-  constructor(private solidityImportCompat: boolean = true) {
+  constructor(private solidityImportCompat: boolean = true, rootFileId?: string) {
     super();
+    this.rootFileId = rootFileId ?? '';
+  }
+
+  private rootFileId: string;
+
+  /** ` at line N` for a warning, naming the imported file when line N is not in the file being compiled. */
+  private diagLine(location?: { start?: { line: number } }): string {
+    return this.importedLocations.diagLine(location as never);
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.importedLocations = new ImportedLocations(node, this.rootFileId);
     node.constantDefinitions.forEach((cd) => this.visitConstantDefinition(cd));
 
     // Build function definitions map from free functions
@@ -1228,7 +1242,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
 
-    const loc = node.location ? ` at line ${node.location.start.line}` : '';
+    const loc = this.diagLine(node.location);
     console.log(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
     return node;
   }
@@ -1260,7 +1274,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // embedded 20-byte hash (see compileCast). Lossy, so warn once at the cast site.
     if (node.expression.type instanceof AddressType
       && ((node.type instanceof BytesType && node.type.bound === 20) || node.type instanceof IntType)) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
         + 'bytecode) to its embedded 20-byte hash; this is lossy and differs from a fixed-width EVM address.');
     }
@@ -1271,7 +1285,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.type instanceof AddressType && !(node.expression.type instanceof AddressType)
       && ((node.expression.type instanceof BytesType && node.expression.type.bound === 20)
         || node.expression.type instanceof IntType)) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
         + 'a BCH address is a variable-length locking bytecode, not a 20-byte hash; this does not yield a valid '
         + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
@@ -1282,7 +1296,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       const litValue = node.expression.value;
       if (node.type instanceof IntType) {
         if (litValue < node.type.minValue || litValue > node.type.maxValue) {
-          const loc = node.location ? ` at line ${node.location.start.line}` : '';
+          const loc = this.diagLine(node.location);
           console.log(
             `Warning: integer literal ${litValue}${loc} exceeds `
             + `${node.type.toString()} range (${node.type.minValue} to ${node.type.maxValue}).`,
@@ -1292,7 +1306,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         const maxVal = (1n << (BigInt(node.type.bound) * 8n)) - 1n;
         const absVal = litValue < 0n ? -litValue : litValue;
         if (absVal > maxVal) {
-          const loc = node.location ? ` at line ${node.location.start.line}` : '';
+          const loc = this.diagLine(node.location);
           console.log(
             `Warning: integer literal ${litValue}${loc} exceeds `
             + `bytes${node.type.bound} range (max ${maxVal}).`,

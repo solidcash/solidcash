@@ -132,6 +132,56 @@ The contrast with the solc corpus (190 of 264 admit a write) is the diagnosis: t
 contracts that have both mappings and `external` entry points, which is what an application is and what a
 conformance test is not.
 
+#### 3.2.1 Re-measured at `77cd1e8c`, after X73 lifted the visibility gate: THE HEADLINE STILL HOLDS
+
+X73 removed `initial-v1-route-requires-public-visibility` entirely - the 172 refusals that were 38% of the
+total, and the single largest reason in section 3.1's table. That is the gate this report named as the thing
+standing between the application corpora and a useful surface, so the sentence above was re-measured rather
+than reasoned about: `layer3-corpus-probe-f3.mjs` was re-run over both application corpora at `77cd1e8c`,
+same options, same denominators.
+
+**The verdict does not move. Not one of the twelve admits a state-changing handler, and the refused-write
+counts reproduce exactly.**
+
+| corpus | bus-reachable | admit >= 1 state-changing handler | read-only surface only | state-changing handlers refused |
+| --- | --- | --- | --- | --- |
+| MistSwap | 3 | **0** | 3 | 18 |
+| Effective Acceleration | 9 | **0** | 9 | 116 |
+| total | 12 | **0** | 12 | 134 |
+
+Every gate count reproduces too: MistSwap 16 files / 16 contracts / 7 direct-OK / 3 bus-OK / 3 routed, EA 22
+files / 28 contracts / 28 direct-OK / 10 bus-OK / 9 routed.
+
+**What DID move is the reason, and that is the finding.** The visibility gate is gone from both corpora - 0
+refusals, down from 2 and 14 - and every handler it used to refuse landed on a different gate rather than
+becoming eligible:
+
+| refusal | MistSwap: census -> `77cd1e8c` | EA: census -> `77cd1e8c` |
+| --- | --- | --- |
+| `initial-v1-route-requires-public-visibility` | 2 -> **0** | 14 -> **0** |
+| `unnamed` | 2 -> **0** | 7 -> **0** |
+| `not-examined-by-route-synthesis` | 0 -> 2 | 0 -> 7 |
+| `mixed-scalar-and-collection-route-not-enabled` | 2 -> 2 | 4 -> **7** |
+| `collection-helper-route-not-enabled` | 1 -> 1 | 7 -> 7 |
+| `external-handler-route-generation-unsupported` | - | 0 -> **6** |
+| `external-handler-would-shrink-the-route` | - | 0 -> **4** |
+| `lifecycle-or-unsafe-handler` | - | 3 -> 3 |
+| `batched-handler-forward-call-not-enabled` | 1 -> 2 | - |
+| `collection-route-requires-one-parameter-keyed-entry-per-collection` | 1 -> 1 | - |
+
+Two things follow, and neither is a restatement. First, **`unnamed` is no longer a hole**: X72 named it
+`not-examined-by-route-synthesis`, one-for-one on both corpora, so section 3.1's "20 are the unnamed hole in
+the diagnostic channel" is a property of the census run and not of the compiler. Second, **admitting external
+entry points bought reach without buying usefulness**: EA gained two new named refusals worth ten entry
+points, its `mixed-scalar-and-collection` count grew from 4 to 7, and its admitted-handler total rose to 17
+against MistSwap's 6 - all of them still read-only. This is D2's stacked-gates result reproduced on real
+applications: **no single lift admits anything**, and lifting the largest gate on the board moved the useful
+count for the application corpora from zero to zero.
+
+That makes the headline sentence *more* durable than when it was written, not less: it now survives the
+removal of the gate that was supposed to be the explanation for it. It is still a `6a685f33` measurement for
+the solidity-by-example and solc rows, which were not re-taken here.
+
 At full resolution on two contracts everybody recognises, recompiled by the test that prints the table:
 
 ```
@@ -186,10 +236,32 @@ message-bus low-level-call shape gate.
 | 2 | `Error: Graph handler requires call/staticcall edges and at most one returning call` |
 | 1 | `ParseError: Unexpected token '[' at Line N, Column N` |
 
-Two deserve naming.
+Three deserve naming.
+
+**`contract absent from the bus-mode artifact map` names no cause, and that is a probe defect (X84).** The
+probe compiles each file with `compileFileMulti` and falls back to `compileFile` when that throws, so a file
+whose primary contract still compiles contributes one row instead of all of its declarations, and the rest are
+recorded absent. The fallback hands back the error it swallowed; the direct path keeps it as
+`directSiblingError` and the bus path used to discard it. Measured at `77cd1e8c`, all five EA rows -
+`MarketplaceDataV1` and `MarketplaceV1` under `MarketplaceV1/V2/V3.sol` - are one and the same
+`InvalidParameterTypeError: Found parameters (string) in call to function 'meceTags'` at
+`MarketplaceDataV1.sol:126`, reached only in bus mode, and the census records none of it. The probe now
+carries the sibling error through.
+
+**This does not touch section 3.1's 80%.** The refusal histogram is tallied over rows that compiled in bus
+mode - routed plus route-absent - so a bus-failure row contributes nothing to the 455 refusals. Nor does it
+move a gate count: widening `busOk` is what the fallback is for. What it corrupted is the attribution in this
+one table.
 
 **`Unbound return call in __scbN; graph=undefined`** is an internal abort, not a named refusal - the class of
 defect X22 already closed one instance of. Five contracts reach it.
+
+**A REPORT THIS SECTION HAS NOW ABSORBED.** It was reported that `MerkleTree.sol` produces a `ParseError`
+under the census's own bus options while this table lists none for solidity-by-example, suspected to be a
+missing `compileFile` fallback. Measured at `77cd1e8c`, that is not a discrepancy: `MerkleTree.sol` fails in
+**direct** mode, on `Error: Block slot not found: keccakSideCar[0]`, and the probe returns on a direct failure
+before bus mode is reached, so the row belongs in section 3.3 and is there. X71 has since made both modes
+report the same error. The fallback exists; the real gap was what it discards, above.
 
 **The `ParseError` is a bus-mode-only failure whose reported position is not in the user's file.**
 `UniswapV2Router02.sol` compiles in direct mode and with `forceStateful`, and fails the moment

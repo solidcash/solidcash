@@ -50,6 +50,7 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
+import { assertFinalizedTransactionBytes } from './layer3/preflight.js';
 import { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
@@ -1141,6 +1142,20 @@ export class TransactionBuilder {
 
     this.checkMaxFee(transaction);
     const tx = binToHex(encodeTransaction(transaction));
+
+    // X131, the finalized-bytes gate at site 2 of 8. It reads the DECODED broadcast bytes rather than a
+    // re-derived shape, so it judges exactly what `sendRawTransaction` is about to receive.
+    //
+    // IT SPEAKS LAST, deliberately. `debug()` above already refused every script-level failure it can see, so a
+    // transaction that cannot execute still reports its semantic cause; only bytes that would execute reach a
+    // relay or consensus verdict here. That ordering is what keeps the gate from masking a covenant diagnostic
+    // with whichever size or dust observation happens to be true of the same transaction.
+    //
+    // MEASURED BEFORE LANDING, not assumed: 1,170 sends through this site across the whole SDK e2e population,
+    // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
+    // `test/e2e/layer3-gatesite-probe.ts` for the per-site table and `test/e2e/X131SendFinalizedBytesGate.test.ts`
+    // for the throw census that confirms it after the gate was applied.
+    assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(tx)));
 
     let txid: string;
     try {

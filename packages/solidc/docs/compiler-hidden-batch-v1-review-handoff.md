@@ -39,10 +39,18 @@ physical entry UTXOs. Compiler and SDK tests require:
 
 Standard ERC-20 `transferFrom`, whose allowance is keyed by authenticated `msg.sender`, remains
 batch-ineligible. Alias-collapsed and cold-insert routes require new capabilities and are not implied by this one.
-The stripped route-cost fixture compiles to 9,775 bytes, leaving only 225 bytes below the covenant
-limit. The executable corpus token with mint, approve, and check helpers is 10,600 bytes and carries
-a library-visible `contract-size-limit` error diagnostic; it is test evidence, not a deployable
-token artifact. Default enablement remains outside this handoff.
+The stripped route-cost fixture compiles to 4,814 bytes, leaving 5,186 bytes below the covenant limit.
+The executable corpus token with mint, approve, and check helpers is 6,032 bytes, carries no
+`contract-size-limit` diagnostic, and has 3,968 bytes of headroom. Default enablement remains outside
+this handoff.
+
+X125 re-pin, superseding the two figures this paragraph used to carry, and a reversal rather than a
+refresh: the route was 9,775 bytes with 225 bytes of headroom, and the corpus token was 10,600 bytes,
+over the limit, described here as "test evidence, not a deployable token artifact". That description
+was withdrawn, not corrected: `RepeatedExternalBatchCorpus.test.ts:124-125` now asserts the diagnostic
+is ABSENT and the artifact is under 10,000 bytes. Both figures moved when cross-function outlining
+landed at `67342f24`. Authority: `compiler-hidden-batch-v1.md`'s Release 0 table, pinned by
+`BatchCostRegression.test.ts:112-117`.
 
 ## 3. Rejected implementation spike and replacement
 
@@ -82,7 +90,9 @@ Confirm from compiler output, SDK construction, and BCH 2026 VM execution:
 - only exact version 1 capability matching is accepted, with no translation or inferred fallback;
 - frozen scalar 2/3/8-row byte, operation, stack, unlocking, and transaction measurements reproduce
   under `BCH_2026_05`;
-- the parameter-authorized transfer direct/batch size regression reproduces at 3,047/9,775 bytes.
+- the parameter-authorized transfer direct/batch size regression reproduces at 3,157/4,814 bytes
+  (X125: superseding the 3,047/9,775 this checklist item used to ask a reviewer to confirm; a reviewer
+  who reproduced the current figures against the old ones would have reported a false discrepancy).
 
 ## 5. Required review disposition
 

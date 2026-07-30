@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
-  assertCorpusPinsOrRefuse, censusFiles, corpusRoot, digestOf, loadCorpusManifest, verifyCorpus,
-  verifyCorpusPins,
+  assertCorpusPinsOrRefuse, censusFiles, corpusRoot, digestOf, loadCorpusManifest, stridesConsistentWith,
+  verifyCorpus, verifyCorpusPins,
 } from './layer3-corpus-pins.js';
 import { F3_CENSUS_CORPORA, F3_CENSUS_GATES } from './layer3-corpus-census-f3.js';
 
@@ -152,7 +155,94 @@ describe('F3 corpus checkouts are pinned and drift is detectable', () => {
     // over most freely.
     expect(Object.entries(byCorpus).filter(([, value]) => value.stride !== 1).map(([name]) => name))
       .toEqual(['solc-corpus']);
-    expect(byCorpus['solc-corpus']!.strideIsInferred).toBe(true);
+  });
+
+  /**
+   * X125. THE STRIDE IS DERIVED HERE, NOT READ FROM THE PIN.
+   *
+   * It was recorded as `strideIsInferred: true` on two corroborations, and neither was proof: `ceil(4876/12) =
+   * 407` shows 12 is CONSISTENT with the counts, and the probe's "at stride 12: 29 minutes" note is prose. This
+   * searches every stride the counts admit and requires exactly one. If several fit, the counts do not determine
+   * the stride and the pin is a guess again - which is the failure this test must be able to report.
+   */
+  it('derives each stride from the recorded counts and finds exactly one that fits', () => {
+    const { byCorpus } = manifest.samplingOfTheRecordedCensus;
+    for (const pin of manifest.corpora) {
+      const sampling = byCorpus[pin.name]!;
+      const fits = stridesConsistentWith(sampling.population, sampling.sampled);
+      expect(fits, `${pin.name} strides consistent with ${sampling.sampled}/${sampling.population}`)
+        .toEqual([sampling.stride]);
+      expect(sampling.strideIsInferred, `${pin.name} stride is derived`).toBe(false);
+    }
+    // The three full corpora are the control that the search discriminates at all: it returns [1] for them and
+    // 12 for solc-corpus from the same code path, so a single-element result is not an artefact of the method.
+    expect(stridesConsistentWith(4876, 407)).toEqual([12]);
+    expect(Math.ceil(4876 / 11)).toBe(444);
+    expect(Math.ceil(4876 / 13)).toBe(376);
+  });
+
+  /**
+   * A truncated run has a DIFFERENT relation between counts and stride, so ruling it out is a separate step: a
+   * `F3_LIMIT` run stops mid-corpus, giving `sampled == (population - 1) / stride + 1` with `population - 1`
+   * divisible by the stride. No divisor of 4,875 produces 407, so no truncated run reproduces these counts.
+   */
+  it('rules out a truncated run as an alternative explanation of the same counts', () => {
+    const { population, sampled } = manifest.samplingOfTheRecordedCensus.byCorpus['solc-corpus']!;
+    const truncated: number[] = [];
+    for (let stride = 1; stride <= population; stride += 1) {
+      if ((population - 1) % stride === 0 && (population - 1) / stride + 1 === sampled) truncated.push(stride);
+    }
+    expect(truncated).toEqual([]);
+    // Control: the relation is not vacuous. A run truncated at 326 sampled files IS expressible this way.
+    expect((population - 1) % 15).toBe(0);
+    expect((population - 1) / 15 + 1).toBe(326);
+  });
+
+  /**
+   * THE DERIVATION HAS TWO PREMISES IN THE PROBE, AND A PREMISE THAT VANISHES SILENTLY IS THE DEFECT.
+   *
+   * The uniqueness argument holds only while the probe samples by `(inScope - 1) % stride` and only while it
+   * refuses to write the committed census from a partial or merged run. Rewrite either and the recorded counts
+   * stop determining the stride, with nothing to say so. Both are asserted by name.
+   */
+  it('refuses by name if the probe stops backing the derivation', () => {
+    const probe = readFileSync(join(dirname(fileURLToPath(import.meta.url)),
+      'layer3-corpus-probe-f3.mjs'), 'utf8');
+    expect(probe, 'the probe no longer samples by (inScope - 1) % stride, so ceil(population / stride) is not '
+      + 'the sampling relation and the derived stride is unverifiable')
+      .toContain('if ((inScope - 1) % stride !== 0) {');
+    expect(probe, 'the probe no longer refuses to write the committed census from a partial run, so the '
+      + 'recorded counts may be a truncation or a merge of two strides and no single stride is derivable')
+      .toContain('refusing to overwrite the committed census from a PARTIAL run');
+    for (const flag of ['F3_LIMIT', 'F3_CORPORA', 'F3_MERGE']) {
+      expect(probe, `${flag} is no longer part of the partial-run refusal`)
+        .toContain(`process.env.${flag} !== undefined`);
+    }
+    // The stride is still an unrecorded INPUT: the probe reads F3_STRIDE and emits it nowhere. This asserts the
+    // gap rather than the fix, so that closing it must come here and flip the pin deliberately.
+    expect(probe).toContain('process.env.F3_STRIDE');
+    expect(manifest.samplingOfTheRecordedCensus.byCorpus['solc-corpus']!.strideRecordedByProbe).toBe(false);
+  });
+
+  /**
+   * The live coupling, asserted so it cannot surprise anyone: this file's denominators come from the pins and the
+   * census module's come from a probe run. A re-take at a different stride moves `F3_CENSUS_GATES.files`, the
+   * derivation above then yields the NEW stride, and the pin no longer matches. That failure is correct - it is
+   * the whole point - but it must name the coupling rather than read as a broken test.
+   */
+  it('names the census module as the other end of the sampling coupling', () => {
+    const { byCorpus } = manifest.samplingOfTheRecordedCensus;
+    for (const pin of manifest.corpora) {
+      const sampling = byCorpus[pin.name]!;
+      expect(sampling.sampled, `${pin.name}: layer3-corpus-pins.json records ${sampling.sampled} sampled files `
+        + `at stride ${sampling.stride}, and layer3-corpus-census-f3.ts records `
+        + `${F3_CENSUS_GATES[pin.name]!.files}. A re-taken census must re-pin this manifest in the same change.`)
+        .toBe(F3_CENSUS_GATES[pin.name]!.files);
+    }
+    // NOT-IN-SAMPLE is the census's own record of what the stride discarded, so it reconciles the two counts.
+    const solc = F3_CENSUS_GATES['solc-corpus']!;
+    expect(solc.files + (solc.skipped['NOT-IN-SAMPLE'] ?? 0))
+      .toBe(byCorpus['solc-corpus']!.population);
   });
 
   it('refuses by name when the manifest itself is missing', () => {

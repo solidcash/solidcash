@@ -303,8 +303,12 @@ not corruption. Same gap noted for collection value handlers.
   chunks force-consumed. Corruption only arises via J4, which is fail-closed.
 - **Batch positional binding, whole-blob equality, parser exhaustion, eligibility fail-closed, entry
   key-binding**: see companion `compiler-hidden-batch-v1-audit.md` (findings F1-F6 there:
-  overstated "real ERC-20" claim, SDK-only alias/cold tests, metadata-dependent cold gate, 225-byte
-  size wall, test over-attestation, load-bearing route bifurcation).
+  overstated "real ERC-20" claim, SDK-only alias/cold tests, metadata-dependent cold gate, missing
+  library-path size gate, test over-attestation, load-bearing route bifurcation).
+  X125: F4 was named "225-byte size wall" in this list. There is no size wall - the route has 5,186
+  bytes of headroom, superseding 225 - and F4's surviving half is the library-path size gate, which
+  now exists (`compiler.ts:2579-2586`). F4 is renamed here so this index cannot re-seed the dead
+  figure into a doc that quotes it.
 
 ## Root cause and priority
 

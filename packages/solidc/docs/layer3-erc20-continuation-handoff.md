@@ -122,7 +122,15 @@ Two follow-ups this work exposed:
 
 - Outlining only sees OP_DEFINE'd bodies. A single-function contract is emitted
   inline at the top level and gets no sharing (the ERC20_CALLEE direct compile
-  stayed at 3,047 bytes for exactly this reason).
+  stayed at 3,157 bytes for exactly this reason).
+
+  X125: this read 3,047, superseded by the 3,157 pinned at
+  `BatchCostRegression.test.ts:113`. The 110-byte move is X19's spelling
+  convergence, not outlining, so the CLAIM is unaffected - which is the point
+  worth recording, because it is directly testable rather than inferred. Adding
+  one trivial second function to the same contract drops the direct compile to
+  2,048 bytes, a 1,109-byte fall from nothing but the appearance of OP_DEFINE'd
+  bodies for the outliner to share across.
 - The per-entry C2 machinery is still emitted inline before outlining dedupes
   it. Emitting it as a parameterized helper in the first place would beat
   post-hoc span sharing, which can only share what happens to be byte-identical.

@@ -679,8 +679,14 @@ This is not generic dynamic resource planning. Existing-entry distinct-recipient
 supported; repeated recipient, sender-equals-recipient, and cold recipient shapes fail before
 construction. Supporting aliases requires a separately advertised shape which collapses them into
 one journal, while cold insertion requires authenticated predecessor planning. The compiled
-fixture is 9,775 bytes, leaving 225 bytes below the covenant limit; that narrow margin and the
-resource classification remain explicit independent-review targets.
+fixture is 4,814 bytes, leaving 5,186 bytes below the covenant limit; the resource classification
+remains an explicit independent-review target.
+
+X125 re-pin, superseding the 9,775 bytes and 225 bytes of headroom this paragraph carried. The
+consequence is re-derived, not refreshed: the margin was the second of the two named review targets
+here, and at 5,186 bytes it is no longer narrow and is struck from the list. The resource
+classification survives untouched, because nothing about it was ever a size argument. Authority:
+`compiler-hidden-batch-v1.md`'s Release 0 table, pinned by `BatchCostRegression.test.ts:112-117`.
 
 This graduates the multi-entry journal/resource layout, not standard ERC-20 authorization. The
 fixture supplies `spender` as row data; a standard allowance keyed by authenticated `msg.sender`

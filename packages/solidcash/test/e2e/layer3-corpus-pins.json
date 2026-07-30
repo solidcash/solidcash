@@ -29,17 +29,51 @@
       "distinguish it from a compiler or corpus change.",
       "mistswap 16, eacc 22 and solidity-by-example 141 are full in-scope populations (stride 1).",
       "solc-corpus is NOT: the census records 407 files against an in-scope population of 4,876.",
-      "INFERRED, not read from the census: the probe keeps files where (inScope - 1) % stride == 0, and",
-      "ceil(4876 / 12) = 407 exactly. The probe's own note 'a full four-corpus re-take at stride 12: 29 minutes'",
-      "corroborates it. So the solc-corpus row is a 1-in-12 systematic sample, 407 of 4,876.",
+      "",
+      "X125 ESTABLISHED THE STRIDE INSTEAD OF INFERRING IT. It was recorded here as INFERRED from ceil(4876/12)",
+      "= 407 plus the probe's 'at stride 12: 29 minutes' note. Neither is proof: the first shows 12 is CONSISTENT",
+      "with the counts, not that it is the only value that is, and the second is prose. The stride is now derived,",
+      "and the derivation is a uniqueness argument over the probe's own sampling rule, re-run by",
+      "CorpusPinsR316.test.ts rather than asserted here:",
+      "",
+      "  1. layer3-corpus-probe-f3.mjs:487 keeps a file when (inScope - 1) % stride == 0, so for a whole run",
+      "     sampled == ceil(population / stride).",
+      "  2. Searching every stride in 1..4876, exactly ONE satisfies ceil(4876 / s) == 407, and it is 12. The",
+      "     neighbours miss: ceil(4876/11) = 444 and ceil(4876/13) = 376. Same search returns exactly [1] for the",
+      "     other three corpora, which is the control that the method distinguishes strides at all.",
+      "  3. A run truncated by F3_LIMIT would instead give sampled == (population - 1) / stride + 1 with",
+      "     (population - 1) divisible by stride. 4875 = 3 * 5^3 * 13 and no divisor of it yields 407, so no",
+      "     truncated run reproduces these counts either.",
+      "  4. Independently of (3), layer3-corpus-probe-f3.mjs:609-613 REFUSES to overwrite the committed census",
+      "     when F3_LIMIT, F3_CORPORA or F3_MERGE is set, so the recorded counts cannot be a truncation or a",
+      "     merge of two runs at different strides.",
+      "",
+      "So the solc-corpus row is a 1-in-12 systematic sample, 407 of 4,876. What is still NOT true is that the",
+      "probe RECORDS the stride: strideRecordedByProbe is false for every corpus, and that is the residual gap.",
+      "The above derives the stride from outputs; only the probe emitting F3_STRIDE into the census module would",
+      "read it from the source. Until then a stride that produced counts consistent with another stride would be",
+      "misread - the derivation is sound but it is arithmetic over results, not a record of the input.",
+      "",
       "Consequence for any consumer: a solc-corpus percentage has a denominator of 407 sampled files, not the",
       "4,876 population, and must not be quoted as if the whole corpus were censused."
     ],
     "byCorpus": {
-      "solc-corpus": { "stride": 12, "sampled": 407, "population": 4876, "strideIsInferred": true },
-      "mistswap": { "stride": 1, "sampled": 16, "population": 16, "strideIsInferred": false },
-      "eacc": { "stride": 1, "sampled": 22, "population": 22, "strideIsInferred": false },
-      "solidity-by-example": { "stride": 1, "sampled": 141, "population": 141, "strideIsInferred": false }
+      "solc-corpus": {
+        "stride": 12, "sampled": 407, "population": 4876,
+        "strideIsInferred": false, "strideRecordedByProbe": false
+      },
+      "mistswap": {
+        "stride": 1, "sampled": 16, "population": 16,
+        "strideIsInferred": false, "strideRecordedByProbe": false
+      },
+      "eacc": {
+        "stride": 1, "sampled": 22, "population": 22,
+        "strideIsInferred": false, "strideRecordedByProbe": false
+      },
+      "solidity-by-example": {
+        "stride": 1, "sampled": 141, "population": 141,
+        "strideIsInferred": false, "strideRecordedByProbe": false
+      }
     }
   },
   "corpora": [

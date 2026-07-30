@@ -122,19 +122,34 @@ measured, or independently verified:
    `800 * (41 + |own unlocking bytecode|)`, i.e. roughly `8 * |unlocking|` instructions; `OP_SPLIT`
    charges full item length, so transcript parsing must be strictly front-consuming single-pass (~9%
    of budget) - random-access or pairwise-uniqueness shapes measured 1.7-20x over budget.
-4. **Contract size.** The parameter-authorized two-row ERC-20 route already compiles to 9,775 bytes
-   (225 under the 10,000 limit); a general graph covenant is far larger and hits the deploy wall.
+4. **Contract size.** The parameter-authorized two-row ERC-20 route already compiles to 4,814 bytes
+   (5,186 under the 10,000 limit); a general graph covenant is far larger and hits the deploy wall.
 
    **This prediction was wrong, and the correction is measured.** The general graph covenants that shipped
-   are *smaller* than the ERC-20 route this point was worried about, not far larger: re-measured at
-   `77cd1e8c`, the graph projection verifier compiles to **4,098 bytes** (4,542 at `1591e87f`, before X65
-   replaced its 8-way dispatch with an input-index table) and the graph root controller to **1,493 bytes**
-   with a 35-byte p2sh32 target (1,459 with a 1-byte placeholder). Both are well inside the 10,000-byte
-   per-input limit and neither hits a deploy wall. The 9,775-byte ERC-20 figure is left as recorded and is
-   **not** re-measured here; cross-function outlining has landed since and moves it, so do not carry it
-   forward without re-measuring. What the point got right is that per-input script size is the binding limit
+   are *smaller* than the ERC-20 route this point was worried about, not far larger: the graph projection
+   verifier compiles to **4,121 bytes** and the graph root controller to **1,493 bytes** with a 35-byte
+   p2sh32 target (1,459 with a 1-byte placeholder). Both are pinned at
+   `Layer3CompiledGraph.test.ts:732-733` and are well inside the 10,000-byte per-input limit; neither hits
+   a deploy wall. What the point got right is that per-input script size is the binding limit
    for real application contracts - F3 later measured it stopping eight of the twelve bus-reachable
    application contracts at a single participant.
+
+   **X125 re-derived BOTH SIDES of this comparison, and the second side was stale too.** This paragraph
+   used to end with an explicit warning: "the 9,775-byte ERC-20 figure is left as recorded and is **not**
+   re-measured here; cross-function outlining has landed since and moves it, so do not carry it forward
+   without re-measuring." That warning is now discharged - the route is 4,814 bytes with 5,186 of headroom,
+   superseding 9,775 and 225. Re-measuring it exposed that the figure it was being compared against had
+   also moved: the projection verifier was recorded as **4,098 bytes** (measured at `77cd1e8c`, itself
+   4,542 at `1591e87f` before X65 replaced its 8-way dispatch with an input-index table), but X81 traded
+   the NUM2BIN width bound for a 6-byte table stride and put 23 bytes back, so it is 4,121. The
+   controller's 1,493/1,459 pair did not move, which is the control: X65 and X81 both edited
+   `generateGraphProjectionVerifier` only.
+
+   The conclusion survives; its margin does not, and the margin is what the paragraph was arguing. The
+   verifier is smaller than the ERC-20 route by **693 bytes** (4,814 - 4,121), not by the 5,677 the stale
+   pair implied. "Smaller, not far larger" still holds and the deploy-wall prediction is still refuted,
+   but the two covenants are now within 15% of each other, so this comparison can no longer carry any
+   claim that graph covenants are comfortably cheaper than a batch route.
 
 Concrete path if the project wants to pursue tier 2: (a) implement a format/cost spike for the
 candidate's corrected transaction-binding and streaming-validation invariants; (b) measure realistic

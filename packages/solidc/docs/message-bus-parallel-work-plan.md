@@ -183,13 +183,14 @@ task-specific report, not in this table.
 | X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
 | X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | E2 | X71 | **INTEGRATED** | origin is a WHOLE-FUNCTION flag, not the lookup; corpus enumerated (78 files), 1 row changed - see 4.87 |
 | X90 | The keccak second face: satisfiable or not? | F1 | X83 | **SETTLED - satisfiable AND sound** | X83's belief was wrong but its refusal to act was right; the real defect is the builder - see 4.89 |
-| X97 | `TransactionBuilder.ts:258` never reaches the stateless keccak co-spend path | — | X90 | **TODO** | early `continue` splices only stateful side-cars, so `send()` always fails on a satisfiable shape |
+| X97 | `TransactionBuilder.ts:258` never reaches the stateless keccak co-spend | G4 | X90 | **INTEGRATED** | no SEQUENTIAL order works - source order decides which family runs first; one fixpoint reads both - see 4.93 |
 | X91 | X42's `blockhash` guard escapes | F1 | X42 | **INTEGRATED** | the briefed option set was wrong AND that IS the gap; it is a call EDGE, and it reaches the DIRECT route too - see 4.90 |
 | X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **TODO** | likely a missing `compileFile` fallback for FAIL rows; reconcile before quoting those numbers |
 | X72 | 20 refusals published with NO `rejectionReason` | D6 | F3 | **INTEGRATED** | an ORDERING defect: the oracle pass appends an entry point after route synthesis names reasons; 16 -> 0 |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
 | X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | D5 | F4 | **INTEGRATED** | **-444 B/projection**, 3.4x F4's sizing, by REJECTING the form F4 sized; C3 now 3,882 B under - see 4.84 |
-| X81 | DECISION: take the axiom-free verifier variant at +19 B/projection? | — | X65 | **TODO (decision)** | one fewer bound to reason about for 152 B on C3, which now has 3,882 B of headroom |
+| X81 | DECISION: take the axiom-free verifier variant? | F3 | X65 | **TAKEN** | price was +28 not +19; the real argument is a PARTIAL map became TOTAL - a forward-compatibility hazard - see 4.93 |
+| X100 | The route refusal is stamped on every external entry point, not the thrower | — | X81 | **TODO** | 10 of 12 contracts lose the route ENTIRELY; attribute by error position and refuse only that handler |
 | X82 | The F4-era comment tables already did not reproduce at `1591e87f` | — | X65 | **TODO** | C3 controller 2,131,662 recorded vs 2,131,942 measured; Sink 4,951 B vs 4,979 B |
 | X66 | F2's basis and F1's header are stale-but-passing after F4 | D4 | F4 | **INTEGRATED** | re-measured not adjusted; consequence re-derived - every costed C3 fix was sized against an overrun that does not exist |
 | R1 | Select and enforce production envelope | C7 | F1,F2,X49 | **INTEGRATED (gate unwired, by design)** | the plan-time screen CANNOT be the gate - measured; doc `layer3-production-envelope.md` - see 4.72 |
@@ -267,6 +268,59 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.93 X81 taken for a better reason than the board's, and X97 closed by a fixpoint
+
+Merged at `775da681` (X81) and `fdb2d08e` (X97); re-pins at `cd7baa9c`.
+
+**X81 - the board's price was wrong and its argument was weak, and the worker corrected both.** The brief said
+the axiom was priced at **19 B**. Measured: **+28**, across four encodings tried, and the 4,117 figure **could not
+be reproduced**. Net landed **+23**, only because an *independent* fold of a local refunds -5.
+
+**Its own argument for taking it is better than the one it was given.** The board offered "one fewer thing to
+reason about". The real content is that **the direction of the map changed**: the old form went VALUE->BYTES
+through `OP_NUM2BIN`, a **partial** function whose domain sits one VM constant away from the field's own domain;
+the new goes BYTES->VALUE through `OP_BIN2NUM`, **total**, resting on injectivity rather than a bound. Its words:
+*"BCH has raised its stack and commitment limits twice in two years; a covenant whose admitted set NARROWS when a
+limit RISES is a forward-compatibility hazard, not a fail-closed convenience."*
+
+**Three of four bar items pass exactly** - `require(` 51->51, `&&`/`||` 13/6 unchanged, controller **byte-identical
+by hash** - and **the fourth cannot pass for any byte-positive change**, which it said rather than dropped: *"the
+verifier got denser, not only bigger - the board priced this on one limit and it lands on two."* Exactly N inputs
+per shape rise, all of them projections, and **every worst-density ratio still reproduces to ten decimals**. No
+binding limit moves. C3 96,118 -> **96,302**, headroom 3,882 -> **3,698**.
+
+**`MEASURED_COVENANTS` is 4,121, not 4,117**, so the dead-covenant arithmetic is **421 x N**, not 444 x N. Five
+pins re-applied; the integration owner missed the instruction count on the first pass and the X25 test caught it.
+
+**The frontier survey found the count was the wrong UNIT.** The refusal is stamped on **every** external entry
+point reaching that arm, not the handler that threw - so **10 of 12 contracts lose the SCB1 route entirely**. The
+frontier is **12 contracts, not 30 handlers**. Its own first probe read one channel and saw **3**, a 10x
+undercount, which is why the committed census reads both. Six mechanisms mapped with throw sites, fix sites and
+v1-structural classification, verifying the prior worker's list as **contract** counts and finding **one it
+missed**. The cheap high-value fix it named: attribute a throw to the handler containing the error position and
+refuse **only that one**, turning "the contract loses its route" into "one named handler refusal". Opened as
+**X100**.
+
+**X97 - the fix was not the missing branch, and that is the finding.** Adding the straight-line path *after* the
+loop path **does not work**: in the mixed shape the straight-line `keccak256` runs **before** the loop, so a
+loop-only probe aborts on the straight-line bind before it ever sees an iteration - *which is literally where the
+old "no side-car read found in the probe trace" came from*. **Source order decides which family runs first, so no
+sequential order works.** Replaced by one progressive **fixpoint** that lays out the full candidate transaction
+each round and reads both families off a single trace, with both families at the same relative offsets in the
+trial as in the final layout.
+
+**The positive control lands on X90's exact pinned witness** - contract 0, stateful side-car 1, stateless side-car
+2 (`NI-2`, `NI=4`), funder 3 - with commitments asserted as the real hash chain. The hostile is pinned to **input
+2, the index the builder itself picks**. And the guard negative has **two halves**: the `NI=3` collision is
+VM-rejected *and* **the builder never emits it**, refused by name.
+
+**A candour note worth copying**: G4 marked its own window/loop-block overlap check as **defensive and
+unreachable** under the current arithmetic, *"rather than letting a reader think it is load-bearing."*
+
+**Lease flagged rather than assumed**: it edited X90's test file because that file's negative control asserted
+*"the SDK cannot build it"* - the precise assertion its row inverts. Surgical, with the four covenant-side controls
+X90 proved left untouched, and an offer to revert. Correct call: the assertion was its own row's subject.
 
 ### 4.92 The census re-taken in FULL: the 80% figure is 53%, and "hours" was 29 minutes
 

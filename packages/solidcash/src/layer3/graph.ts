@@ -646,39 +646,49 @@ contract GraphRootController(bytes20 initializer) {
  * alone is prefix-only. A non-root row is additionally bound by its consumer's route.
  */
 export function generateGraphProjectionVerifier(): string {
-  // X65: one fixed-stride INPUT-INDEX table replaces eight live `participantLbcN` locals and the three 8-way
-  // if/else chains that wrote and read them. The table is the participant loop's own 2-byte `participantInput`
-  // field appended in participant order, so `lbcInputs[2i .. 2i+2)` is participant `i`'s input index, and
-  // `lbcLookup(i)` reconstructs the framed entry that `participantLbc{i}` used to hold.
+  // X65: one fixed-stride PARTICIPANT-FRAME table replaces eight live `participantLbcN` locals and the three
+  // 8-way if/else chains that wrote and read them. The table is the participant loop's own 6-byte frame header
+  // appended in participant order, so `lbcHeaders[6i .. 6i+2)` is participant `i`'s input index,
+  // `lbcHeaders[6i+4 .. 6i+6)` is its 2-byte locking-bytecode length field, and the two together reconstruct
+  // the framed entry that `participantLbc{i}` used to hold.
   //
   // NOT A BYTE-OFFSET TABLE, and that is the point. An offset table needs a computed 2-byte offset whose
   // soundness rests on the stack-item bound; this stores RAW TRANSCRIPT BYTES at a constant stride and needs
   // no offset arithmetic at all. Measured against the shipped chains, the offset forms were also simply
   // worse: framed-entry table 4,522 / terminal-offset 4,385 / one-slice offset span 4,374 / bounded walk
-  // 4,418, against 4,542 for the chains and 4,098 for this.
+  // 4,418, against 4,542 for the chains and 4,098 for the 2-byte index-only table X65 first landed.
   //
-  // WHY THE ENTRY IS BYTE-IDENTICAL to the framed transcript entry the chains assigned. Two links, both
-  // already required by this loop: `tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6+lbcLength)`
-  // makes the introspected script the transcript's own bytes AND fixes its length at `lbcLength`; and
-  // `lbcLength` IS the unsigned decode of `frame.slice(4, 6)`, so `bytes2(lbcLength)` reproduces those two
-  // frame bytes exactly whenever `lbcLength < 32,768`. It always is: `8 + lbcLength <= frame.length` and
-  // `frame.length <= transcript.length <= 10,000`, since `transcript` is one stack item and BCH-2025 caps
-  // `maximumStackItemLength` at 10,000. THE AXIOM IS FAIL-CLOSED: outside that range OP_NUM2BIN aborts on
-  // `insufficientLength` rather than truncating, so a wrong bound costs availability, never authenticity -
-  // this form can refuse where the chains accepted, never the reverse. The cast-free variant that carries
-  // `frame.slice(4, 6)` in the table beside the index and needs no bound at all measures 4,117, so the axiom
-  // is priced at 19 bytes per projection script.
+  // X81: THE `bytes2(...)` BOUND IS GONE, AND THE TABLE CARRIES THE LENGTH FIELD INSTEAD. X65 stored the index
+  // alone (stride 2) and re-derived the framed entry's 2-byte length prefix as `bytes2(targetLbc.length)`. That
+  // reproduces `frame.slice(4, 6)` exactly only while `lbcLength < 32,768`, which held on an appeal to a VM
+  // constant - `8 + lbcLength <= frame.length <= transcript.length <= 10,000`, `transcript` being one stack item
+  // under BCH-2025's `maximumStackItemLength`. The bound was fail-closed (OP_NUM2BIN aborts on
+  // `insufficientLength` rather than truncating) and VM-verified, so it was never an authenticity risk. It was
+  // the last appeal to `maximumStackItemLength` in this covenant, and widening the table's stride to 6 removes
+  // it outright: the prefix is now the transcript's OWN two bytes, and the participant loop's
+  // `tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength)` is what ties them to the
+  // introspected script's length. Measured at `6183cf12`: 4,098 -> 4,126 for the swap alone, and 4,121 with the
+  // independent `expectedTarget` fold below, so the axiom was priced at 28 bytes per projection script and the
+  // landed net is 23. (The 19 recorded before this measurement belonged to an encoding that could not be
+  // reproduced here; the four encodings tried were 6-byte stride 4,126, 4-byte stride index-then-length 4,135,
+  // 4-byte stride length-then-index 4,130, two parallel 2-byte tables 4,180. Requiring the prefix's decode
+  // instead of comparing its bytes - also bound-free - measures 4,278 and is much worse.)
   //
-  // WHY THE ADMITTED SET IS UNCHANGED. `callee < participantCount` is required before either lookup, and every
-  // byte of `activeCallees` is either a `bytes1(callee)` written under that same bound or the 0xff no-caller
-  // sentinel - so a lookup index is in `[0, participantCount)` or is 255. In range the table returns the bytes
-  // the chain assigned. At 255 the chain hit `revert("caller out of range")` and `lbcInputs.slice(510, 512)`
-  // runs off a <= 16-byte item: both abort the script. No index reaches the chain's dead
-  // `participantCount <= i < 8` arms, which compared against an unassigned EMPTY local, so removing them
-  // removes no admitted case - and would have been a tightening, not a loosening, had one been reachable.
+  // WHY THE ADMITTED SET IS UNCHANGED, BOTH TIMES. `callee < participantCount` is required before either
+  // lookup, and every byte of `activeCallees` is either a `bytes1(callee)` written under that same bound or the
+  // 0xff no-caller sentinel - so a lookup index is in `[0, participantCount)` or is 255. In range the table
+  // returns the bytes the chain assigned: entry `i` is appended on participant `i`'s iteration, in order, so
+  // both fields come from ONE frame and cannot be crossed between participants. At 255 the chain hit
+  // `revert("caller out of range")` and `lbcHeaders.slice(1530, 1532)` runs off a <= 48-byte item: both abort
+  // the script. No index reaches the chain's dead `participantCount <= i < 8` arms, which compared against an
+  // unassigned EMPTY local, so removing them removes no admitted case - and would have been a tightening, not a
+  // loosening, had one been reachable.
   const lbcLookup = (selector: string, name: string): string =>
     `bytes ${name}Lbc = tx.inputs[int(bytes.concat(
-            lbcInputs.slice(${selector} * 2, ${selector} * 2 + 2), hex"00"))].lockingBytecode;`;
+            lbcHeaders.slice(${selector} * 6, ${selector} * 6 + 2), hex"00"))].lockingBytecode;`;
+  /** The framed entry's 2-byte length prefix, read out of the table rather than re-derived by a NUM2BIN. */
+  const lbcFramedPrefix = (selector: string): string =>
+    `lbcHeaders.slice(${selector} * 6 + 4, ${selector} * 6 + 6)`;
   // One byte per reachable depth frame plus a leading no-caller sentinel, so frame `d` lives at index
   // `d + 1` and the root's caller read at index 0 needs no branch.
   const frameSlots = MAX_GRAPH_DEPTH + 2;
@@ -698,7 +708,7 @@ contract GraphProjectionVerifier() {
     bytes ownerEmissions;
     bytes ownerCallers;
     bytes resultVector;
-    bytes lbcInputs = hex"";
+    bytes lbcHeaders = hex"";
     bigint previousProjectionInput = -1;
     bigint expectedParticipantInput = 0;
     bigint cursor = 10;
@@ -722,9 +732,11 @@ contract GraphProjectionVerifier() {
       // With the index table it has no reader left, so this reverts to the direct transcript slice the
       // CONTROLLER's participant loop has always used - identical bytes, one local fewer, -39.
       require(tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength));
-      // X65: append, never overwrite. The loop runs participants in order, so the two bytes appended here are
-      // participant \`participant\`'s own \`participantInput\` field, at a constant 2-byte stride.
-      lbcInputs = bytes.concat(lbcInputs, frame.slice(0, 2));
+      // X65: append, never overwrite. The loop runs participants in order, so the six bytes appended here are
+      // participant \`participant\`'s own frame header - \`participantInput\`, \`blockSize\`, \`lbcLength\` - at a
+      // constant 6-byte stride. X81 widened it from the 2-byte index field: one slice either way, and carrying
+      // the length field is what retires the NUM2BIN width bound at the two lookups.
+      lbcHeaders = bytes.concat(lbcHeaders, frame.slice(0, 6));
       bigint batchLength = int(bytes.concat(frame.slice(6 + lbcLength, 8 + lbcLength), hex"00"));
       bigint local = 8 + lbcLength;
       require(batchLength >= 7 && local + batchLength + 2 <= frame.length);
@@ -814,11 +826,13 @@ contract GraphProjectionVerifier() {
         activeCallees.slice(depth + 2, ${frameSlots}));
       if (caller == participantIndex) {
         ${lbcLookup('callee', 'target')}
-        bytes expectedTarget = bytes.concat(bytes2(targetLbc.length), targetLbc);
         // The canonical emission row is fully determined by the authenticated transcript record:
         // framed target || call mode || selector || framed args || framed result. The two trailing
         // frames are the record's own contiguous bytes, so the whole row compares in one slice.
-        bytes expectedRow = bytes.concat(expectedTarget,
+        // X81: the framed target had its own local, whose single reader was this concat. Folding it in is
+        // independent of the bound retired above and measures -5 on its own.
+        bytes expectedRow = bytes.concat(
+          bytes.concat(${lbcFramedPrefix('callee')}, targetLbc),
           row.slice(11, 12), row.slice(7, 11),
           row.slice(12, 16 + argsLength + resultLength));
         require(ownerEmissions.slice(emissionCursor, emissionCursor + expectedRow.length)
@@ -835,7 +849,7 @@ contract GraphProjectionVerifier() {
           callerCursor = callerCursor + 2 + logicalCallerLength;
         } else {
           ${lbcLookup('caller', 'caller')}
-          bytes expectedCaller = bytes.concat(bytes2(callerLbc.length), callerLbc);
+          bytes expectedCaller = bytes.concat(${lbcFramedPrefix('caller')}, callerLbc);
           require(ownerCallers.slice(callerCursor, callerCursor + expectedCaller.length)
             == expectedCaller);
           callerCursor = callerCursor + expectedCaller.length;

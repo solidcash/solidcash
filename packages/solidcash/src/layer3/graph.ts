@@ -1,4 +1,4 @@
-import { occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
+import { MAX_HIDDEN_BATCH_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
@@ -324,18 +324,20 @@ const MAX_GRAPH_DEPTH = 7;
 /**
  * Largest SCB1 batch blob the GENERATED root controller admits, in bytes (X106).
  *
- * This is the controller's own bound, compiled into `generateGraphRootController`. It has a twin: the compiler
- * publishes `artifact.hiddenBatch.maximumBlobBytes` from its private `MAX_HIDDEN_BATCH_BLOB_BYTES`, and the two
- * must agree. It was a bare `223` in the generated source, so nothing connected them.
+ * NOT A SECOND COPY ANY MORE. This is the shared `MAX_HIDDEN_BATCH_BLOB_BYTES` from `@solidcash/utils` under
+ * the name the SDK's layer3 callers already use, so the controller's per-participant frame check and the
+ * compiler's route check (republished as `artifact.hiddenBatch.maximumBlobBytes`) cannot drift apart. Both were
+ * a bare `223`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
+ * only place they can share one literal.
  *
- * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary, the
- * blob and not the trailing region is the binding constraint - an argument-carried value caps at 202 bytes
- * (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than the
- * region. A silent drift between the two copies therefore moves a real limit.
+ * A re-export rather than a rename, because the value is load-bearing: for a chunk-backed value crossing a
+ * handler boundary the blob and not the trailing region is the binding constraint - an argument-carried value
+ * caps at 202 bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x
+ * earlier than the region.
  *
  * `assertGraphBatchBlobEnvelope` closes the loop the other way, from the artifact back to this bound.
  */
-export const GRAPH_MAX_BATCH_BLOB_BYTES = 223;
+export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_HIDDEN_BATCH_BLOB_BYTES;
 
 /**
  * Refuse a participant whose published blob envelope is wider than the generated controller admits.

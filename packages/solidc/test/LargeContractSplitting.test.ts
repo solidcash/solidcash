@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { asmToBytecode } from '@solidcash/utils';
 import { compileString, compileStringSplit } from '../src/index.js';
+import { assertSplitLayoutsAgree } from '../src/compiler.js';
 
 const SOURCE = `
 contract SplitCounter() {
@@ -154,18 +155,21 @@ describe('large-contract state-local splitting', () => {
   });
 
   /**
-   * The split planner never compared the root's storage layout against its facets'. The manifest fingerprint
-   * was taken from the unsplit BASELINE and checked against nothing the bundle contains, and two orderings in
-   * the split path are shard-dependent: `LowerStorageSlotPointers` appends one hidden state variable per
-   * ERC-7201 namespace in the order the SURVIVING functions first reach it, and `prepareSplitAst` runs
-   * `SynthesizeBlockOracle` earlier than the ordinary pipeline. Measured on the corpus MarketplaceV1: root,
-   * six facets and the manifest carry THREE layouts - root slot 2.0 is `OwnableStorage___owner` while five of
-   * six facets put `PausableStorage___paused` there. Every shard fits and the bundle compiles clean.
+   * X162/X166. The split planner never compared the root's storage layout against its facets'. The manifest
+   * fingerprint was taken from the unsplit BASELINE and checked against nothing the bundle contains, and two
+   * orderings in the split path were shard-dependent: `LowerStorageSlotPointers` appends one hidden state
+   * variable per ERC-7201 namespace in the order the SURVIVING functions first reach it, and `prepareSplitAst`
+   * ran `SynthesizeBlockOracle` earlier than the ordinary pipeline. Measured on the corpus MarketplaceV1:
+   * baseline, root, five facets and a sixth carried FOUR layouts - root slot 2.0 was `OwnableStorage___owner`
+   * where five of six facets put `PausableStorage___paused`, and the baseline put the namespaces at 0.8-0.11
+   * with `__block_timestamp@0.12`. Every shard fit and the bundle compiled clean; the SDK refused it at load,
+   * so it could not be deployed - but a delegate facet writes the ROOT's state through physical slots, and the
+   * divergence IS spendable once a transaction is built around it (see the SDK's SplitLayoutAgreementX162).
    *
-   * Reproduced here without the corpus. A delegate facet writes the ROOT's state through physical slots, so
-   * the disagreement is a wrong-variable write, not a metadata nit.
+   * Both passes now run in `prepareSplitAst`, on the complete function set, in the ordinary pipeline's
+   * relative order. The corpus-free reproduction of the refusal is the subject here, and it now AGREES.
    */
-  it('refuses a bundle whose facets do not share the root storage layout', () => {
+  it('emits one storage layout across the baseline, the root and every facet', () => {
     const source = `pragma solidity ^0.8.7;
       abstract contract AMod {
         struct AStorage { uint256 a; }
@@ -192,18 +196,52 @@ describe('large-contract state-local splitting', () => {
         function touchB(uint256 v) public { _setB(v); own = v + 2; require(v >= 0, "n"); }
       }`;
     const options = { solidityImportCompat: true, forceSplit: true };
-    // GUARD NEGATIVE CONTROL, differing ONLY in the shard limit: one facet holds every entry, every shard
-    // promotes the namespaces in the same order, and the bundle is admitted.
-    const together = compileStringSplit(source, { ...options, maxShardBytes: 10_000 });
-    expect(together.manifest.facets).toHaveLength(1);
     const slots = (layout: any): string[] => (layout?.variables ?? [])
       .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
+    // One facet holds every entry: the case that always agreed, so the divided case below is compared
+    // against a layout that the shard split cannot have influenced.
+    const together = compileStringSplit(source, { ...options, maxShardBytes: 10_000 });
+    expect(together.manifest.facets).toHaveLength(1);
     expect(slots(together.facets[together.manifest.facets[0].name].stateLayout))
       .toEqual(slots(together.root.stateLayout));
 
-    // The same source at a limit that forces separate facets: refused, naming the first disagreeing slot.
-    expect(() => compileStringSplit(source, { ...options, maxShardBytes: 1100 }))
-      .toThrow(/does not share the root's storage layout \(root has AStorage__a@0\.1, it has CStorage__c@0\.1\)/);
+    // The same source at the limit that USED to be refused (root had AStorage__a@0.1 where the touchC facet
+    // had CStorage__c@0.1). It now compiles into more than one facet, and every shard - including the unsplit
+    // baseline the manifest fingerprint is taken from - names the same variable at every slot.
+    const divided = compileStringSplit(source, { ...options, maxShardBytes: 1100 });
+    expect(divided.manifest.facets.length).toBeGreaterThan(1);
+    const expected = slots(compileString(source, { solidityImportCompat: true }).stateLayout);
+    expect(expected).toEqual(slots(together.root.stateLayout));
+    expect(slots(divided.root.stateLayout)).toEqual(expected);
+    for (const info of divided.manifest.facets) {
+      expect(slots(divided.facets[info.name].stateLayout), `${info.name} layout`).toEqual(expected);
+    }
+  });
+
+  /**
+   * THE GUARD IS STILL ARMED, and it has to be checked separately now that no source reaches it: the repair
+   * removed the two orderings that produced a divergent bundle, not the refusal. `assertSplitLayoutsAgree`
+   * reads only `stateLayout.variables`, so it is driven here from minimal shards that differ in exactly one
+   * field. Both arms are pinned, and the first row is the positive control that makes the refusals mean
+   * something.
+   */
+  it('refuses a shard that does not share the root storage layout', () => {
+    const layout = (...names: string[]): any => ({
+      stateLayout: { variables: names.map((name, index) => ({ name, nftIndex: 0, fieldIndex: index })) },
+    });
+    const root = layout('own', 'AStorage__a', 'BStorage__b');
+    const agreeing = [{ name: 'F0', artifact: layout('own', 'AStorage__a', 'BStorage__b') }];
+    expect(() => assertSplitLayoutsAgree('M', root, agreeing as never, root as never)).not.toThrow();
+
+    const swapped = [{ name: 'F0', artifact: layout('own', 'BStorage__b', 'AStorage__a') }];
+    expect(() => assertSplitLayoutsAgree('M', root, swapped as never, root as never))
+      .toThrow(/facet 'F0' does not share the root's storage layout \(root has AStorage__a@0\.1, it has BStorage__b@0\.1\)/);
+
+    // The second arm: the root agreeing with its facets is not enough if the PUBLISHED layout - the unsplit
+    // baseline the manifest fingerprint is taken from - describes something else.
+    expect(() => assertSplitLayoutsAgree(
+      'M', root, agreeing as never, layout('own', 'BStorage__b', 'AStorage__a') as never,
+    )).toThrow(/generated root does not share the unsplit contract's storage layout/);
   });
 
   it('CONTROL: a call-edge union that fits is not divided and keeps both entries in one facet', () => {

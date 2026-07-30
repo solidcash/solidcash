@@ -1,6 +1,10 @@
+import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
 import { compileStringSplit } from 'solidc';
-import { Signer, SignatureTemplate, SplitContractBundle } from '../../src/index.js';
+import {
+  ContractFactory, Signer, SignatureTemplate, SplitContractBundle, StatefulContract,
+} from '../../src/index.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
@@ -145,5 +149,113 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     expect(afterOracle.__block_timestamp).toBe(1_700_000_000n);
     expect(afterOracle.AStorage__a).toBe(5n);
     expect(afterOracle.CStorage__c).toBe(9n);
+  }, 300_000);
+});
+
+/**
+ * THE DIVERGENCE WAS EXPLOITABLE, not only detectable, and this is the transaction that proves it.
+ *
+ * The fixture is the real pre-repair bundle for the `Multi` source above at a 1,100-byte shard limit: the
+ * root says slot 0.1 is `AStorage__a`, the facet holding `touchC` says slot 0.1 is `CStorage__c`. The
+ * compiler no longer emits it, so it is carried as a fixture rather than recompiled.
+ *
+ * Three guards stand in front of it and ALL THREE ARE METADATA: the compiler's `assertSplitLayoutsAgree`,
+ * the SDK's `validateSplitBundle` fingerprint check at load, and `assertDelegateLayoutCompatible` on the
+ * delegatecall. None of them is consensus. Replacing ONLY the facet's published `stateLayout` - its script
+ * byte-identical - satisfies every guard, and the resulting spend SETTLES and writes the wrong variable.
+ */
+const DIVERGENT = new URL('../fixture/split-divergent-multi-x162.json', import.meta.url).pathname;
+const loadDivergent = (): any => JSON.parse(readFileSync(DIVERGENT, 'utf8'));
+
+async function deployDivergent(bundle: any): Promise<any> {
+  const provider = createTestProvider();
+  const signer = new Signer(alicePriv, provider);
+  const funding = [];
+  for (const byte of ['a1', 'b2', 'c3', 'd4', 'e5', 'f6']) {
+    funding.push(await provider.addUtxo(signer.getAddress(), {
+      txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
+    }));
+  }
+  const rootCategory = funding[0].txid;
+  const facets: Record<string, any> = {};
+  let index = 1;
+  for (const info of bundle.manifest.facets) {
+    facets[info.name] = await new ContractFactory(bundle.facets[info.name], signer).deploy(
+      StatefulContract.libraryBrand(rootCategory),
+      {
+        fundingUtxo: funding[index], funder: signer.unlockP2PKH(),
+        changeAddress: signer.getAddress(), logicalNonce: false,
+      } as never,
+    );
+    index += 1;
+  }
+  const links = bundle.manifest.facets.map((info: any) => addressToLockScript(facets[info.name].address));
+  const root = await new ContractFactory(bundle.root, signer).deploy(...links, {
+    fundingUtxo: funding[0], funder: signer.unlockP2PKH(), changeAddress: signer.getAddress(),
+    logicalNonce: false,
+    initialState: { own: 0n, AStorage__a: 0n, BStorage__b: 0n, CStorage__c: 0n },
+  } as never);
+  return { root, facets, signer };
+}
+
+describe('X162: the divergence the repair removes was exploitable', () => {
+  it('the fixture really is the divergent bundle, and both metadata guards refuse it', async () => {
+    const bundle = loadDivergent();
+    const target = bundle.manifest.routes.find((r: any) => r.function === 'touchC').target;
+    expect(slots(bundle.root.stateLayout)[1]).toBe('AStorage__a@0.1');
+    expect(slots(bundle.facets[target].stateLayout)[1]).toBe('CStorage__c@0.1');
+
+    const provider = createTestProvider();
+    const signer = new Signer(alicePriv, provider);
+    expect(() => SplitContractBundle.from(bundle, signer)).toThrow(/state layout differs/i);
+
+    // The second metadata guard, on the delegatecall itself, reached only by deploying the shards directly.
+    const { root, facets } = await deployDivergent(bundle);
+    expect(() => (root as any).getFunction('touchC')(9n)
+      .withDelegatecall(facets[target], 'touchC', [9n]))
+      .toThrow(/Delegate layout mismatch: 'Multi__Facet1' state field 'CStorage__c'/);
+  }, 300_000);
+
+  it('SPENDS THE WRONG VARIABLE once the facet publishes the root layout it does not implement', async () => {
+    const bundle = loadDivergent();
+    const target = bundle.manifest.routes.find((r: any) => r.function === 'touchC').target;
+    const script = bundle.facets[target].bytecode;
+    // The ONLY change: the facet's published layout. Its script is untouched, and consensus reads the script.
+    bundle.facets[target].stateLayout = JSON.parse(JSON.stringify(bundle.root.stateLayout));
+    expect(bundle.facets[target].bytecode).toBe(script);
+
+    const { root, facets } = await deployDivergent(bundle);
+    expect(await root.getState()).toMatchObject({ own: 0n, AStorage__a: 0n, CStorage__c: 0n });
+    const tx = await (root as any).getFunction('touchC')(9n)
+      .withDelegatecall(facets[target], 'touchC', [9n]).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+
+    // `touchC(9)` names `CStorage__c`. The facet wrote its own slot 0.1, which the root calls `AStorage__a`.
+    const after = await root.getState();
+    expect(after.AStorage__a).toBe(9n);
+    expect(after.CStorage__c).toBe(0n);
+    expect(after.own).toBe(9n);
+  }, 300_000);
+
+  /**
+   * GUARD NEGATIVE CONTROL, differing only in which bundle it drives. The same construction - publish the
+   * root's layout on the facet, spend `touchC` through it - on a bundle the REPAIRED compiler emits writes
+   * the variable the caller named. Without this row the settlement above could be credited to the
+   * construction rather than to the divergence.
+   */
+  it('CONTROL: the same construction on a repaired bundle writes the variable it names', async () => {
+    const repaired: any = compileStringSplit(SOURCE.replace(/ \+ block\.timestamp/, ' + 2'), {
+      ...OPTIONS, maxShardBytes: 1100,
+    });
+    expect(repaired.manifest.facets.length).toBeGreaterThan(1);
+    const target = repaired.manifest.routes.find((r: any) => r.function === 'touchC').target;
+    repaired.facets[target].stateLayout = JSON.parse(JSON.stringify(repaired.root.stateLayout));
+
+    const { root, facets } = await deployDivergent(repaired);
+    await (root as any).getFunction('touchC')(9n).withDelegatecall(facets[target], 'touchC', [9n]).send();
+    const after = await root.getState();
+    expect(after.CStorage__c).toBe(9n);
+    expect(after.AStorage__a).toBe(0n);
+    expect(after.own).toBe(9n);
   }, 300_000);
 });

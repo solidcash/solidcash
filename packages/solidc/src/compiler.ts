@@ -3004,7 +3004,7 @@ function byteSize(artifact: Artifact): number { return asmToBytecode(artifact.by
  * wrong variable. The SDK refuses it at load, but a compiler that emits it has already shipped the defect, so
  * it is refused here, by name, with the first disagreeing slot quoted.
  */
-function assertSplitLayoutsAgree(
+export function assertSplitLayoutsAgree(
   name: string, root: Artifact, facets: Array<{ name: string; artifact: Artifact }>, baseline: Artifact,
 ): void {
   const slots = (artifact: Artifact): string[] =>

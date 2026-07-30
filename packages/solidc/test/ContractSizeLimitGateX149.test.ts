@@ -117,7 +117,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
     // The number in the message is the SCRIPT length, not the listing length.
     expect(found[0].message).toContain(`${scriptBytes} bytes`);
     expect(found[0].message, 'the diagnostic does not state the overage')
-      .toContain(`${scriptBytes - MAX_INPUT_BYTESIZE} over`);
+      .toContain(`limit by ${scriptBytes - MAX_INPUT_BYTESIZE}`);
     expect(found[0].message).not.toContain(`${lengths(artifact).listingHalfChars} bytes`);
 
     expect(warn, 'the compiler compiled an unspendable contract without printing anything').toHaveBeenCalled();

@@ -2587,8 +2587,8 @@ function compileResolvedAst(
   // is the same script - measured twice, once correctly.
   const artifactBytes = scriptToBytecode(optimisationResult.script).length;
   if (artifactBytes > MAX_INPUT_BYTESIZE) {
-    const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, `
-      + `${artifactBytes - MAX_INPUT_BYTESIZE} over the BCH ${MAX_INPUT_BYTESIZE}-byte input-script limit. `
+    const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the BCH `
+      + `${MAX_INPUT_BYTESIZE}-byte input-script limit by ${artifactBytes - MAX_INPUT_BYTESIZE}. `
       + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
       + '(compileFileSplit / compileStringSplit) or reduction.';
     // X149. APPEND. This used to assign, and it is the only site on this path that does not - so any diagnostic

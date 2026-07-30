@@ -302,8 +302,11 @@ export const FINALIZED_BYTE_GATE_BLIND_SPOTS: readonly string[] = Object.freeze(
   'VM-priced rules - operation-cost density, hash-iteration density, per-input and per-transaction SigChecks. '
   + 'They need an evaluation, not bytes. `evaluateEveryInput` owns that surface and currently runs at the '
   + 'PROVIDER limits, which is an open contradiction (X109/X121) this gate deliberately does not touch.',
-  'Minimum relay fee. Computable from these bytes, but the threshold is not node-measured on this effort and '
-  + 'the corpus relationship to it is unmeasured, so no rule is claimed. See the measurement in the report.',
+  'Minimum relay fee. Computable from these bytes, and DELIBERATELY not a rule: unlike dust, this class is '
+  + 'not invisible. `MockNetworkProvider` already publishes `minRelayFeePerKb: 1000n` to its verifier '
+  + 'unconditionally, so every fixture that broadcasts through the mock has already been judged against it, '
+  + 'and the SDK own `checkMaxFee` covers the other direction. The threshold is also not node-measured on '
+  + 'this effort. A rule here would add a second decider for a class that already has one.',
   'More than one OP_RETURN output (`multi-op-return`). BCHN enforces it; nobody here has measured it.',
   'The rest of `IsStandardTx`: version range, mempool ancestor and descendant limits, and the transaction '
   + 'version policy. Seven byte rules are not the complete standardness set and this list is not exhaustive.',
@@ -606,11 +609,12 @@ const evaluateEveryInput = (
 };
 
 /**
- * Evaluate every input of a fully assembled Layer-3 transaction on the BCH-2026 VM.
+ * Evaluate every input of a fully assembled Layer-3 transaction on the BCH-2026 VM, then decide its finalized
+ * bytes against the byte rules.
  *
- * Layer-3 derivation is an untrusted witness-construction step. This gate is not a
- * substitute for covenant checks; it ensures the exact final transaction satisfies
- * every covenant before it is handed to a provider.
+ * Layer-3 derivation is an untrusted witness-construction step. Neither check is a substitute for covenant
+ * checks: the first establishes that the exact final transaction satisfies every covenant, the second that its
+ * bytes are ones a peer would forward. `options` reaches only the byte rules.
  */
 export const preflightLayer3Transaction = (
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,
@@ -633,6 +637,12 @@ export const preflightLayer3Transaction = (
  * Layer-3 assembly must explicitly include every sidecar and funding input before this call;
  * unlike the general TransactionBuilder send path, this function never mutates the shape
  * between preflight and broadcast.
+ *
+ * SCOPE. This is the only broadcast site in `src/` carrying the byte gate. The other seven -
+ * `TransactionBuilder.send`, `StatefulTransactionBuilder`'s submit phase and five in `StatefulContract` - do
+ * not, so a Layer-3-shaped composition assembled through the stateful builder reaches the network unjudged by
+ * these rules. That is a scope statement rather than a design claim: whether the byte rules should be
+ * default-on at the general `build()` has an unmeasured blast radius.
  */
 export async function sendPreflightedLayer3Transaction(
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,

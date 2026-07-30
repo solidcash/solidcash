@@ -246,32 +246,34 @@ describe('X8 multi-chunk boundary beside a C2 entry mint', () => {
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   };
 
-  // OPEN DEFECT PIN, two independent causes, both measured.
+  // OPEN DEFECT PIN, ONE remaining cause. X10 closed the SDK half and re-pinned the refusal below.
   //
-  // 1. Covenant. `emitAddDynamicOutputsBeforeEntries` PICKs the written value at `trackedIndex + 1`, but the C2
-  //    upsert's INSERT arm carries five untracked working values (key hash, entry address, predecessor slot,
-  //    next and value) between the tracked stack and the running output index - the same five the neighbouring
-  //    returnEvent adjustment reaches past with `+ 6`. The PICK therefore measures a 32-byte raw C2 field, so
-  //    `(size + 119) / 120` is 1 for every dynamic value. That is right for values up to one 120-byte chunk and
-  //    wrong above it, which is exactly where this boundary sits.
-  // 2. SDK. Correcting the depth to `+ 6` was prototyped and measured: 120 bytes still settles and the covenant
-  //    then computes the true chunk count, but 121 bytes still fails, because auto-derivation never grows the
-  //    trailing chunk region past one output while an entry mint shares it - its first probe now fails outright
-  //    and the builder broadcasts an underived transaction. So the covenant repair is necessary and not
-  //    sufficient, and was reverted rather than shipped alone.
+  // 1. Covenant, STILL OPEN. `emitAddDynamicOutputsBeforeEntries` PICKs the written value at `trackedIndex + 1`,
+  //    but the C2 upsert's INSERT arm carries five untracked working values (key hash, entry address,
+  //    predecessor slot, next and value) between the tracked stack and the running output index - the same five
+  //    the neighbouring returnEvent adjustment reaches past with `+ 6`. The PICK therefore measures a 32-byte
+  //    raw C2 field, so `(size + 119) / 120` is 1 for every dynamic value. That is right for values up to one
+  //    120-byte chunk and wrong above it, which is exactly where this boundary sits. Re-measured under X10 with
+  //    the depth at `+ 6`: the PICK then reaches the 200-byte value, OP_SIZE reads 200 and the covenant computes
+  //    a chunk count of 2, so the depth is confirmed as the covenant half.
+  // 2. SDK, CLOSED by X10. The old failure was not "the region does not grow" - it grew to two outputs and
+  //    filled them wrong, broadcasting the C2 NEW node's commitment at outputs 3 AND 5 with a never-derived
+  //    '00' between them. Chunk commitments are now keyed by their output index, an underived region is
+  //    refused by name before signing, and the region grows out of the probe-ordering cycle a trailing entry
+  //    mint creates. Measured with both halves applied, 121 and 200 bytes SETTLE with two real chunks.
   //
-  // The assertions below record the CURRENT behaviour so the boundary cannot move silently - when both sides are
-  // repaired these must become acceptances, not be deleted.
+  // The assertions below record the CURRENT behaviour so the boundary cannot move silently - when the covenant
+  // half lands these must become acceptances, not be deleted.
   it('accepts one chunk and refuses two chunks beside a collection write', async () => {
     expect(await attempt(INLINE_HANDLER, 120)).toBe('ACCEPTED');
-    expect(await attempt(INLINE_HANDLER, 121)).toContain('mandatory-script-verify-flag-failed');
-    expect(await attempt(INLINE_HANDLER, 200)).toContain('mandatory-script-verify-flag-failed');
+    expect(await attempt(INLINE_HANDLER, 121)).toContain('dynamic storage chunk region');
+    expect(await attempt(INLINE_HANDLER, 200)).toContain('dynamic storage chunk region');
   }, 300_000);
 
   it('is not caused by the journal passes: the same shape with no helper fails identically', async () => {
     // INLINE_HANDLER has no internal helper, so neither journal pass touches it. The boundary is therefore
     // the shared trailing region, not the dynamic-plus-collection journal interaction X8 was raised against.
-    expect(await attempt(INLINE_HANDLER, 200)).toContain('mandatory-script-verify-flag-failed');
+    expect(await attempt(INLINE_HANDLER, 200)).toContain('dynamic storage chunk region');
   }, 300_000);
 
   it('is caused by the entry MINT: the same multi-chunk write with a collection READ settles', async () => {

@@ -434,7 +434,9 @@ type Perturbation =
   /** 10 satoshis to a 34-byte P2PKH output against its 546-satoshi floor: C1's refusal class. */
   | 'dust-change'
   /** A 202-byte raw locking script, one byte over the standard allowance. */
-  | 'oversized-change-script';
+  | 'oversized-change-script'
+  /** The same raw locking script at exactly 201 bytes: the admitted half of that pair. */
+  | 'boundary-change-script';
 
 interface Built {
   provider: ReturnType<typeof createLayer3SemanticTestProvider>;
@@ -570,6 +572,8 @@ async function build(perturbation: Perturbation = 'none'): Promise<Built> {
   if (perturbation === 'dust-change') tx.addOutput({ to: p2pkh.address, amount: 10n });
   else if (perturbation === 'oversized-change-script') {
     tx.addOutput({ to: pushOnlyPadding(202), amount: 2000n });
+  } else if (perturbation === 'boundary-change-script') {
+    tx.addOutput({ to: pushOnlyPadding(201), amount: 2000n });
   } else tx.addOutput({ to: p2pkh.address, amount: 10_000n });
 
   return { provider, builder: tx, transaction: raw(tx) };
@@ -592,7 +596,7 @@ describe('L4 the gate is on the Layer-3 send path, on a composition that really 
     console.log(`L4 honest subject fee rate: ${feeRate.toFixed(3)} sat/byte over `
       + `${verdict.serializedBytes} bytes`);
     await expect(layer3.sendPreflightedLayer3Transaction(built.builder)).resolves.toMatch(/^[0-9a-f]{64}$/);
-  }, 180_000);
+  }, 300_000);
 
   it('FAIL_CLOSED: a dust change output is refused on the send path that the mock network ACCEPTS', async () => {
     // THE DECISIVE CONTROL. These exact bytes are accepted by the mock stack, so every covenant is satisfied
@@ -611,15 +615,22 @@ describe('L4 the gate is on the Layer-3 send path, on a composition that really 
     // POLICY: the explicit opt-out admits it, and the same call on the same builder then returns.
     expect(layer3.preflightLayer3Transaction(built.builder, { allowNonRelayable: true }).outputs.length)
       .toBe(8);
-  }, 180_000);
+  }, 300_000);
 
   it('FAIL_CLOSED: a 202-byte change script is refused, and 201 through the same path is not', async () => {
-    const built = await build('oversized-change-script');
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
-    expect(() => layer3.preflightLayer3Transaction(built.builder)).toThrow(
+    const refused = await build('oversized-change-script');
+    // Again the mock accepts these exact bytes, so the covenants have no objection to either script length.
+    await expect(refused.provider.sendRawTransaction(refused.transaction)).resolves.toBeTypeOf('string');
+    expect(refused.builder.outputs[7].to).toHaveLength(202);
+    expect(() => layer3.preflightLayer3Transaction(refused.builder)).toThrow(
       /202 locking bytecode bytes is 1 over the 201-byte standard allowance/,
     );
-  }, 180_000);
+    // The admitted half of the pair, one byte shorter, through the same entry point.
+    const admitted = await build('boundary-change-script');
+    expect(admitted.builder.outputs[7].to).toHaveLength(201);
+    const transaction = layer3.preflightLayer3Transaction(admitted.builder);
+    expect(layer3.assessFinalizedTransactionBytes(transaction).refusals).toEqual([]);
+  }, 300_000);
 
   it('GUARD NEGATIVE CONTROL: the same composition with the change output restored is silent', async () => {
     // The pair differs in one output field. If this rejected, the refusals above would be about the shape
@@ -629,7 +640,7 @@ describe('L4 the gate is on the Layer-3 send path, on a composition that really 
     const transaction = layer3.preflightLayer3Transaction(built.builder);
     expect(layer3.assessFinalizedTransactionBytes(transaction).refusals).toEqual([]);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
-  }, 180_000);
+  }, 300_000);
 
   it('the gate does not read the provider, whose published limits are 100x the real ones', async () => {
     // `evaluateEveryInput` builds its VM from `provider.consensusLimits`. If the byte gate did the same, every

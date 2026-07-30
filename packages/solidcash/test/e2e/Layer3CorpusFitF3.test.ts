@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileFile, compileString } from 'solidc';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
+import { Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import type { Utxo } from '../../src/interfaces.js';
 import { setupStatefulUtxos } from '../test-util.js';
@@ -54,23 +54,37 @@ const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
  * HEAD does not generate. Two compiles - no UTXO, no builder, no VM - remove the whole class of error, and
  * they are the same two figures `Layer3EnvelopeDocR2.test.ts` guards the documents against.
  *
- * X85. THE FIGURE WAS FILED AS 444 BYTES AND IT IS 444 PLUS 21. Measured at this commit: the projection
- * verifier is 4,098 bytes against the basis's 4,542, and the CONTROLLER is 1,493 against 1,514, so a graph of
- * N participants was carrying `444 * N + 21` bytes of covenant that no longer exists - one projection proof
- * per participant plus the single controller. The controller's 21 bytes were not in the filing.
+ * X85. THE FIGURE IS 444 BYTES ON THE PROJECTION AND NOTHING ON THE CONTROLLER, and getting that wrong the
+ * first time is why these are INSTANTIATED lengths rather than compiled ones.
+ *
+ * The quantity `estimate` wants is the redeem script the input PUSHES, which for a covenant with constructor
+ * parameters is the compiled bytecode plus each argument's push. The projection verifier takes none, so its
+ * compile and its deployment are both 4,098 bytes against the basis's 4,542: 444 bytes of real staleness, once
+ * per participant. The root controller takes a `bytes20 initializer`, so it compiles to 1,493 and deploys at
+ * 1,514 - which is exactly what the calibration holds. Reading 1,493 off the compile and calling the
+ * difference a stale covenant invented a 21-byte saving that does not exist, and passing it would have
+ * UNDER-stated the controller input, which is the one direction a conservative estimator may not err in. The
+ * built-graph rows assert both figures against the script their transaction actually pushes, and that
+ * assertion is what caught it.
  *
  * AND THE CONSEQUENCE IS NOT ONLY A LOOSE BAND. The estimated-landing test tallies both descriptors and prints
- * the difference, so the run states its own figure; measured over the recorded census it moves 18 predictions
- * from OVER to FITS - 9 at four participants and 9 at eight - because at N=8 the dead covenant is 3,573
- * serialized bytes and the standard relay ceiling is what those rows were being refused on. A stale constant
- * that only inflated a published band would be an accuracy problem; one that answers "will not fit" about a
- * graph that fits is a wrong answer, and it was being given to 18 of 1,468 rows.
+ * the difference, so the run states its own figure rather than quoting this comment: the dead covenant is 444
+ * bytes per participant, 3,552 serialized bytes at eight, and the standard relay ceiling is what the affected
+ * rows were being refused on. A stale constant that only inflated a published band would be an accuracy
+ * problem; one that answers "will not fit" about a graph that fits is a wrong answer.
  */
-const MEASURED_COVENANTS = {
-  projectionRedeemBytes: compileString(layer3.generateGraphProjectionVerifier()).debug.bytecode.length / 2,
-  controllerRedeemBytes: compileString(layer3.generateGraphRootController(`aa20${'ab'.repeat(32)}87`))
-    .debug.bytecode.length / 2,
-};
+const MEASURED_COVENANTS = ((): { projectionRedeemBytes: number; controllerRedeemBytes: number } => {
+  const provider = new MockNetworkProvider();
+  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)),
+    [new Uint8Array(20)], { provider },
+  );
+  return {
+    projectionRedeemBytes: projection.bytecode.length / 2,
+    controllerRedeemBytes: controller.bytecode.length / 2,
+  };
+})();
 
 const corpora = Object.keys(F3_CENSUS_GATES);
 const eligible = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
@@ -609,11 +623,12 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
       + `${eligible.length * 4} rows that fit, at ${MEASURED_COVENANTS.projectionRedeemBytes} vs `
       + `${calibration.projectionRedeemBytes} B of projection and `
       + `${MEASURED_COVENANTS.controllerRedeemBytes} vs ${calibration.controllerRedeemBytes} B of controller`);
-    // The control has to be doing something, or the fix is untested: this file exists at a commit where both
-    // covenants have moved away from the calibration, and if they ever agree again this line says so rather
-    // than letting the check pass vacuously.
+    // The control has to be doing something, or the fix is untested: the PROJECTION has moved away from the
+    // calibration at this commit and that is the whole of the effect. The controller has NOT - its deployed
+    // length is the calibration's 1,514 exactly - and that is asserted rather than left implicit, because
+    // reading 1,493 off its compile instead of its deployment is how a 21-byte saving got invented once.
     expect(MEASURED_COVENANTS.projectionRedeemBytes).not.toBe(calibration.projectionRedeemBytes);
-    expect(MEASURED_COVENANTS.controllerRedeemBytes).not.toBe(calibration.controllerRedeemBytes);
+    expect(MEASURED_COVENANTS.controllerRedeemBytes).toBe(calibration.controllerRedeemBytes);
     console.log('[F3] which limit is predicted to bind, counted:');
     for (const [key, count] of Object.entries(binding).sort((left, right) => right[1] - left[1])) {
       console.log(`[F3]   ${String(count).padStart(4)}  ${key}`);

@@ -921,19 +921,31 @@ function placeholder(type: string): unknown {
 const eligibleCensusRows = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
 
 /**
- * X85. THE TWO GENERATED COVENANTS AS THIS COMMIT BUILDS THEM, so a corpus descriptor stops carrying the
- * calibration's.
+ * X85. THE TWO GENERATED COVENANTS AS THIS COMMIT DEPLOYS THEM, so a corpus descriptor stops carrying the
+ * calibration's - and DEPLOYS, not compiles, which is the distinction that made the first attempt wrong.
  *
  * `GraphShapeSpec` has override fields for both and `estimate` defaults them from the calibration, which holds
- * whatever the basis run measured - 4,542 and 1,514. This commit generates 4,098 and 1,493, so a descriptor
- * that omits them prices every projection proof 444 bytes too high and the controller 21 too high. Two
- * compiles, no UTXO and no builder, which is inside the estimator's declared input boundary.
+ * whatever the basis run measured: 4,542 and 1,514. The quantity both fields mean is the redeem script the
+ * input PUSHES, i.e. the compiled bytecode plus each constructor argument's push. The projection verifier takes
+ * no arguments, so it is 4,098 either way and a descriptor that omits it over-prices every proof slot by 444
+ * bytes. The root controller takes a `bytes20 initializer`: it COMPILES to 1,493 and DEPLOYS at 1,514, which is
+ * the calibration's figure exactly. Passing the compiled 1,493 would have under-stated that input by 21 bytes -
+ * the one direction a conservative estimator may not err in - and it is asserted against the built graph below.
+ *
+ * Still inside the declared input boundary: two compiles and two instantiations, no UTXO, no builder, no VM.
  */
-const MEASURED_COVENANTS = {
-  projectionRedeemBytes: compileString(layer3.generateGraphProjectionVerifier()).debug.bytecode.length / 2,
-  controllerRedeemBytes: compileString(layer3.generateGraphRootController(`aa20${'ab'.repeat(32)}87`))
-    .debug.bytecode.length / 2,
-};
+const MEASURED_COVENANTS = ((): { projectionRedeemBytes: number; controllerRedeemBytes: number } => {
+  const provider = createLayer3SemanticTestProvider();
+  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)),
+    [alicePkh], { provider },
+  );
+  return {
+    projectionRedeemBytes: projection.bytecode.length / 2,
+    controllerRedeemBytes: controller.bytecode.length / 2,
+  };
+})();
 
 /**
  * The same selection rule F3 used, restated rather than imported because F3's file does not export it: every
@@ -1370,9 +1382,11 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     // AND IT HOLDS THE OTHER WAY TOO, which is the only reason the stale column was ever safe: defaulting the
     // covenants only ever inflates, so it cannot have hidden an under-prediction.
     expect(staleErrors.filter((error) => error < 0)).toEqual([]);
-    // The control is not vacuous: both covenants really have moved away from the calibration at this commit.
+    // The control is not vacuous, and it is not symmetric either: the PROJECTION has moved away from the
+    // calibration and the controller has not. Both directions are pinned, because the second one is what a
+    // reader would otherwise assume from the first.
     expect(MEASURED_COVENANTS.projectionRedeemBytes).not.toBe(calibration.projectionRedeemBytes);
-    expect(MEASURED_COVENANTS.controllerRedeemBytes).not.toBe(calibration.controllerRedeemBytes);
+    expect(MEASURED_COVENANTS.controllerRedeemBytes).toBe(calibration.controllerRedeemBytes);
     // THE BEFORE COLUMN, AND WHY IT IS NO LONGER PINNED AT A COUNT. X70 asserted that the model it replaced
     // still under-predicts at least 44 of 45 rows here. At this commit it under-predicts 1 of 43, and that is
     // not the defect healing: the legacy line returns 4,441 bytes for the projection input, which was an

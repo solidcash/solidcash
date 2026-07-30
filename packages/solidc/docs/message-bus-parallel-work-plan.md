@@ -272,6 +272,84 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.97 THE HEADLINE MOVES: state-changing handlers reach the bus on real contracts
+
+Merged at `9958d9c0`; two re-pointed guards at `c1ec6d60`. This is the result five iterations were aimed at.
+
+**F3's application headline, re-verified unchanged at FOUR commits, has moved.** Was: *12 bus-reachable, **0**
+admitting a state-changing handler, 134 refused.* Now: **12 bus-reachable, 2 admitting a state-changing handler,
+4 state-changing handlers admitted, 130 refused** - application handlers **26 -> 88**. The subjects are
+`UniswapV2Factory` (`setFeeTo`, `setFeeToSetter`, `setMigrator`) and `UniswapV2Pair.initialize`.
+
+**And the live assertion does not catch it.** `Layer3CorpusFitF3.test.ts` still passes 12/12, because its
+`redeemBytes < 8000` rule **excludes both subjects** (43,939 B and 14,556 B). The headline lives in a recorded
+census module and is **now stale** - which is R3-4 confirmed from the opposite direction.
+
+**The gate protected something different from what the board briefed.** The brief said lifting it would put a row
+with **no physical entry** into a route sized for per-row entry slots. In fact every physical entry key on a route
+is a **wrapper parameter**, so the entry read is hoisted to the top of the wrapper and its write-back to the
+bottom - **outside the row dispatch**. A row addressing no entry therefore flushes the reserved entry
+**UNCHANGED, not unconstrained**.
+
+**The genuine exception is narrower and is what the gate now keys on**: a `perRow` witness, which fails **two**
+measured ways with the gate fully removed - an unbindable `_r{n}` witness, and **duplicate co-spend of one entry
+NFT**, because the alias gating lives inside the entry handler's dispatch arm.
+
+**Soundness stated in the byte table's form**: `blockLayout` **identical**, `entryAccesses` **identical** - same
+collection, same offset, same wrapper parameter. The claim is *"the entry the covenant addresses is the same slot
+the other route already addressed"*.
+
+Corpus delta both ways: admitted handlers **895 -> 1008**, state-changing **435 -> 441**, contracts admitting one
+**286 -> 290**, `mixed-scalar` firings 40 -> 18, and **0 rows lost, 0 gained, 0 shrank**. All five blockSize moves
+explained.
+
+**X95 REFUSED, and the prior author's judgement did not hold.** That worker judged the narrowing sound and shipped
+the conservative version anyway. G2 shipped the narrowing, measured it, and found it **admits a shape a negative
+control pins as refused** - dynamic and packed array state variables, which resolve to `StateArrayAssignNode`.
+Its **only** corpus subject is one contract, against the control. Reverted, finding recorded at the site.
+
+**X88 + X89 closed together, and X89 alone would not have been enough** - the sharper half: an iteration
+contributes no key, so `directKeys` stays empty **and** the footprint carries no `collection:` resource, making
+`nonEntryCollectionOnly` **vacuously true** and letting the chain fall through with **no reason at all**. Nor is
+`directKeys.size === 0` the right test. The refusal is unconditional and named.
+
+**Two guards lost their subject to this lift and were re-pointed rather than re-expected.** X35's row asserted the
+refusal and argued it was *"the correct conservative proxy until those slots are conditional"* - the measurement
+**inverted that argument**, so its companion case (the slot is unconditional) becomes the **supporting evidence**
+rather than the justification. And the absence-diagnostic case was borrowing `mixed-scalar` as a convenient
+refused handler; **two replacement candidates were tried and are now admitted too**, so it is re-pointed at a
+refusal grounded in the handler's own shape. **That file has now had its borrowed subject lifted twice.**
+
+**X73's never-shrink guard lost its subject for the THIRD time** - it had been re-pointed onto the mixed-scalar
+gate one commit before that gate was lifted. Recommend checking reachability rather than re-pointing a fourth.
+
+### 4.98 X101: measured before building, and the search was unnecessary
+
+Merged at `2a2ba8d4`.
+
+**The linear grow generalises.** The covenant reaches the trailing C2 NEW node's **address** before it verifies
+**any** chunk - so while the region is all `'00'` placeholders, only its **total output count** is observable and
+**the per-var split is not**. The first probe past the NEW node reads every `$len` off the state data NFT and
+snaps each var to its exact count.
+
+**The decisive measurement**: growing the **first** var and growing the **last** var produce **the same accepted
+transaction** for (200,60), (60,200) and (200,200) - **including the two cases whose grown split is wrong with
+the right total**. So a search would have been wasted work, and I3 measured that before building one.
+
+The hostile swaps two commitments **while leaving both chunk addresses in place**, so the rejection is about
+contents rather than layout - refused at input 0, honest control re-broadcast and accepted. The bound is loud and
+by name, and confirmed to be on the **total** (4000 B one var -> `0 of 32`; 2000+2000 -> `0 of 31`).
+
+**Its revert check reports zero discriminating power on this tree, and says so.** 6 of 6 pass with the change
+reverted; with the unlanded covenant depth applied locally, **3 of 4 flip and 1 passes both ways**. Stated in the
+commit message and the test header rather than left for a reader to discover.
+
+**And it declined to add a validator it could have justified.** On base, the NEW node's 65-byte commitment is
+credited into a chunk window - but under a correct covenant that is **dead code**, and its only live effect today
+is a count in a message on a path that already refuses. *"That is the check-without-evidence shape the board
+refuses."*
+
+
 ### 4.96 X92 found X93 was creating FALSE labels; S3's constraint is 32x earlier than expected
 
 **X92 - the row's four named sites no longer existed**, because X93 had routed all six diagnostic sites through

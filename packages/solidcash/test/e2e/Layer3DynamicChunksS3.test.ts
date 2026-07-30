@@ -37,8 +37,11 @@ import {
  * all 64. So "dynamic values across handlers" is bounded by what the transcript can carry into a handler,
  * 32x tighter than the region the compiler reserves for what comes out.
  *
- * The READ direction is pinned separately at the bottom and does NOT work: a persisted read of a non-empty
- * value fails closed on this route while the identical read settles on the direct route.
+ * The READ direction is pinned separately at the bottom and does NOT cross the boundary. Two halves: a
+ * persisted read of a non-empty chunked value fails CLOSED on this route while the identical read settles on
+ * the direct route; and a handler row that only READS any state variable observes the PRE-transaction value
+ * even when an earlier row wrote it, and SETTLES. The second half is not chunk-specific - a scalar behaves
+ * the same - and it is a divergence from the documented single read-your-writes journal.
  */
 
 const raw = (builder: TransactionBuilder): string =>
@@ -67,6 +70,25 @@ const READ_WRITE = `pragma solidcash >=0.8.0;
       }
     }`;
 
+/**
+ * The contrast source: one handler writes BOTH a scalar and the chunk-backed value, a second handler reads
+ * the scalar back. `expected.length` is the scalar being asserted, because every graph handler here takes one
+ * `bytes` parameter.
+ */
+const SCALAR_CONTRAST = `pragma solidcash >=0.8.0;
+    contract DynNote() {
+      bytes note;
+      bigint writes;
+      function setNote(bytes t) public {
+        this.note = t;
+        this.writes = this.writes + 1;
+        require(true);
+      }
+      function checkWrites(bytes expected) public {
+        require(this.writes == expected.length);
+      }
+    }`;
+
 /** A handler that GROWS its value instead of receiving it, so the 223-byte blob stops binding. */
 const grownSource = (repeats: number): string => `pragma solidcash >=0.8.0;
     contract DynNote() {
@@ -90,6 +112,10 @@ interface Spec {
   source?: string;
   /** Post-state per dynamic participant when the rows do not name it (grown values, read-only rows). */
   finalValue?: Uint8Array[];
+  /** Extra scalar register fields the post-state data NFT must carry. */
+  registerExtras?: Record<string, unknown>;
+  /** Extra scalar register fields the PRE-state data NFT is seeded with. */
+  seedExtras?: Record<string, unknown>;
 }
 
 interface Built {
@@ -123,7 +149,10 @@ async function buildDynamicGraph(spec: Spec, tamper: Tamper = 'none'): Promise<B
   const dyns: any[] = [];
   for (let d = 0; d < spec.dynCount; d++) {
     const base = new Contract(dynArtifact, [], { provider });
-    const setup = await setupStatefulUtxos(provider, base, dynArtifact.stateLayout!, { note: initial[d] });
+    const setup = await setupStatefulUtxos(
+      provider, base, dynArtifact.stateLayout!,
+      { note: initial[d], ...(spec.seedExtras ?? {}) },
+    );
     const contract = base.withCategory(hexToBin(setup.categoryId));
     const chunkAddress = getDynamicChunkAddress(contract, setup.categoryId, 'note', 'bytes');
     const oldChunks: any[] = [];
@@ -273,7 +302,9 @@ ${calls}
         category: dyn.setup.categoryId, amount: 0n,
         nft: {
           capability: 'mutable',
-          commitment: buildInitialStateCommitments(dynArtifact.stateLayout!, { note: registerValue })[0],
+          commitment: buildInitialStateCommitments(
+            dynArtifact.stateLayout!, { note: registerValue, ...(spec.registerExtras ?? {}) },
+          )[0],
         },
       },
     });
@@ -531,21 +562,32 @@ describe('S3 bounds', () => {
   }, 300_000);
 });
 
-describe('S3 read direction - pinned as NOT crossing the handler boundary', () => {
+describe('S3 read direction - a later handler reads the PRE-state, and it SETTLES', () => {
   /**
-   * The write direction crosses handler boundaries; the read direction does not, and this pins where.
+   * The write direction crosses handler boundaries. The read direction does not, and this pins both halves.
    *
-   * A persisted read of an EMPTY value settles, including as a second row after a write - so the read is
-   * reached and evaluated. A persisted read of a NON-EMPTY value fails closed in every assembly measured
-   * (destroy-and-recreate chunks, read-only preserved chunks, write-and-read route, read-only route), while
-   * the IDENTICAL read settles on the direct route. It is fail-closed and not a forgery: expecting the wrong
-   * value is refused too, so nothing accepts a value that is not the state.
+   * (a) DIVERGENCE. A handler row that only READS a state variable observes the PRE-TRANSACTION value even
+   *     when an earlier row of the same batch wrote it, and the transaction SETTLES. It is not fail-closed
+   *     and it is not chunk-specific: the same shape with a SCALAR variable behaves identically. The
+   *     documented model is one live read-your-writes journal for the whole transaction
+   *     (`invocation-transcript-v1.md`, and the S1-S3 checklist item "scalar, collection and dynamic writes
+   *     share one read-your-writes journal"), so this is a divergence from it, in the direction that
+   *     admits a stale view rather than a forged post-state. The post-state itself stays exactly
+   *     authenticated - the settlement suite above is the same shape - so nothing here forges state; a
+   *     handler's own `require` can be satisfied against a value the transaction is simultaneously changing.
+   *     S2 measured the other half and it still holds: a handler that READS AND WRITES the same variable IS
+   *     journalled across rows, which is why two `move` rows advance a counter twice.
    *
-   * The lead is that the bus route publishes `dynamicReads: undefined` for a read-only handler while still
-   * declaring the 66-slot region - measured on `hiddenBatch.route` - so a composer has no published signal
-   * that chunks must be co-spent. Both the route ABI and the read-loop lowering are outside this lease.
+   * (b) A persisted read of a NON-EMPTY chunk-backed value does not settle at all on this route, in any of
+   *     the six assemblies measured (destroy-and-recreate chunks, read-only preserved chunks, write-and-read
+   *     route, read-only route, wiped post-state, correct post-state), while the IDENTICAL read settles on
+   *     the direct route. It fails CLOSED: expecting the wrong value is refused too. The lead is that the bus
+   *     route publishes `dynamicReads: undefined` for a read-only handler while still declaring the 66-slot
+   *     region, so a composer gets no published signal that chunks must be co-spent. Both the route ABI and
+   *     the read-loop lowering are outside this lease.
    */
-  it('settles a read of an EMPTY value as the second row after a write', async () => {
+  it('DIVERGENCE: a later handler does not see an earlier handler DYNAMIC write, and it settles', async () => {
+    // Row 0 writes 40 bytes; row 1 asserts the value is EMPTY and the transaction settles.
     const built = await buildDynamicGraph({
       rows: [set(bytes(40, 0x48)), { fn: 'checkNote', value: new Uint8Array() }],
       targets: [0, 0], dynCount: 1, source: READ_WRITE,
@@ -554,7 +596,57 @@ describe('S3 read direction - pinned as NOT crossing the handler boundary', () =
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
 
-  it('fails closed on a read of a NON-EMPTY persisted value', async () => {
+  it('control: the same read expecting the value row 0 actually wrote is refused', async () => {
+    const built = await buildDynamicGraph({
+      rows: [set(bytes(40, 0x48)), { fn: 'checkNote', value: bytes(40, 0x48) }],
+      targets: [0, 0], dynCount: 1, source: READ_WRITE,
+    });
+    expect(failingInput(built.builder)).toBe(INPUT.dynamic);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  }, 300_000);
+
+  it('DIVERGENCE is not chunk-specific: a later handler misses a SCALAR write the same way', async () => {
+    // Pre-state writes = 2, row 0 advances it to 3, row 1 asserts writes == 2 and the transaction settles.
+    const built = await buildDynamicGraph({
+      rows: [set(bytes(40, 0x48)), { fn: 'checkWrites', value: bytes(2, 0x77) }],
+      targets: [0, 0], dynCount: 1, source: SCALAR_CONTRAST,
+      seedExtras: { writes: 2n }, registerExtras: { writes: 3n },
+    });
+    expect(failingInput(built.builder)).toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
+
+  it('control: the same scalar read expecting the POST value is refused', async () => {
+    const built = await buildDynamicGraph({
+      rows: [set(bytes(40, 0x48)), { fn: 'checkWrites', value: bytes(3, 0x77) }],
+      targets: [0, 0], dynCount: 1, source: SCALAR_CONTRAST,
+      seedExtras: { writes: 2n }, registerExtras: { writes: 3n },
+    });
+    expect(failingInput(built.builder)).toBe(INPUT.dynamic);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  }, 300_000);
+
+  it('a pure scalar read of the pre-state is authenticated, so the reads above are not vacuous', async () => {
+    const honest = await buildDynamicGraph({
+      rows: [{ fn: 'checkWrites', value: bytes(3, 0x77) }], targets: [0], dynCount: 1,
+      source: SCALAR_CONTRAST, seedExtras: { writes: 3n }, registerExtras: { writes: 3n },
+      finalValue: [new Uint8Array()],
+    });
+    expect(failingInput(honest.builder)).toBe(null);
+    await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeTypeOf('string');
+    const forged = await buildDynamicGraph({
+      rows: [{ fn: 'checkWrites', value: bytes(2, 0x77) }], targets: [0], dynCount: 1,
+      source: SCALAR_CONTRAST, seedExtras: { writes: 3n }, registerExtras: { writes: 3n },
+      finalValue: [new Uint8Array()],
+    });
+    expect(failingInput(forged.builder)).toBe(INPUT.dynamic);
+    await expect(forged.provider.sendRawTransaction(forged.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  }, 300_000);
+
+  it('fails closed on a read of a NON-EMPTY persisted chunk-backed value', async () => {
     const built = await buildDynamicGraph({
       rows: [{ fn: 'checkNote', value: bytes(40, 0x4a) }],
       targets: [0], dynCount: 1, source: READ_WRITE,
@@ -565,7 +657,7 @@ describe('S3 read direction - pinned as NOT crossing the handler boundary', () =
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
-  it('refuses the same read with a wrong expectation, so the failure above is not a forgery', async () => {
+  it('refuses the same chunk read with a wrong expectation, so the failure above is not a forgery', async () => {
     const built = await buildDynamicGraph({
       rows: [{ fn: 'checkNote', value: bytes(40, 0x4b) }],
       targets: [0], dynCount: 1, source: READ_WRITE,

@@ -52,8 +52,27 @@ export interface CorpusSampling {
   stride: number;
   sampled: number;
   population: number;
+  /** False once the stride is DERIVED from the recorded counts rather than guessed. See `stridesConsistentWith`. */
   strideIsInferred: boolean;
+  /** Still false everywhere: the probe does not emit its stride, so it is derived from outputs, never read. */
+  strideRecordedByProbe: boolean;
 }
+
+/**
+ * Every stride that could have produced `sampled` files from `population` in-scope files, under the probe's
+ * own rule (`layer3-corpus-probe-f3.mjs:487`: keep when `(inScope - 1) % stride === 0`).
+ *
+ * This is what turns the recorded stride from a guess into a derivation. `ceil(population / stride) === sampled`
+ * shows a stride is CONSISTENT with the counts; a search showing it is the ONLY consistent one establishes it.
+ * A search returning several values means the counts do not determine the stride and the pin is unverifiable.
+ */
+export const stridesConsistentWith = (population: number, sampled: number): number[] => {
+  const fits: number[] = [];
+  for (let stride = 1; stride <= population; stride += 1) {
+    if (Math.ceil(population / stride) === sampled) fits.push(stride);
+  }
+  return fits;
+};
 
 export interface CorpusManifest {
   recordedAt: string;

@@ -77,6 +77,24 @@ let keccakProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
  * aborted); the mixed shape needs the whole set, because the slots the trace never touches are exactly the ones
  * reserved for the in-loop calls, which read forward from the master instead.
  */
+/** Budget/standardness cap on runtime keccak side-cars per transaction (matches the pure dynamic-loop path). */
+const MAX_KECCAK_LOOP_ITERS = 64;
+
+function bytesEqual(a: Uint8Array | undefined, b: Uint8Array): boolean {
+  return a !== undefined && a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+/**
+ * Does this contract read a keccak256 side-car COUNT-RELATIVE (offset from the end)? That reading is the only
+ * thing that bakes the STATELESS compute covenant's hash: a stateful contract compares the STATEFUL hash and a
+ * dynamic loop byte-compares the STATEFUL covenant inline. So its presence alongside `keccakLoopReads` is
+ * exactly the mixed straight-line + in-loop shape, and its absence leaves the pure dynamic loop untouched.
+ */
+function hasCountRelativeKeccakReads(unlocker: Unlocker): boolean {
+  const asm = (unlocker as unknown as { contract?: { artifact?: { bytecode?: string } } }).contract?.artifact?.bytecode;
+  return typeof asm === 'string' && asm.split(' ').includes(KECCAK256_COMPUTE_COVENANT_HASH);
+}
+
 function scanKeccakSideCarReads(trace: unknown[], base: number, n: number): { slot: number; arg: Uint8Array }[] {
   const reads: { slot: number; arg: Uint8Array }[] = [];
   for (const s of trace) {
@@ -277,11 +295,15 @@ export class TransactionBuilder {
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
       // A dynamic (runtime-bound) keccak loop reads N absolute-forward side-cars right after the master, one per
       // iteration - resolved by a progressive probe, not the fixed one-per-call path. A function that ALSO has a
-      // straight-line keccak256 call mixes two index families (forward-from-master + count-relative-from-end), so
-      // the trailing count-relative window is funded after the loop block; see the mixed helper.
+      // straight-line keccak256 call mixes that with a second, count-relative index family and needs both funded
+      // in one pass (either can execute first, so neither probe converges without the other's side-cars).
       if (abiFn.keccakLoopReads) {
-        const loopCount = await this.addStatelessKeccakLoopCoSpends(input, salt);
-        await this.addMixedStraightLineKeccakCoSpends(input, salt, abiFn.keccakPreimageParams ?? [], loopCount);
+        const params = abiFn.keccakPreimageParams ?? [];
+        if (params.length > 0 && hasCountRelativeKeccakReads(input.unlocker)) {
+          await this.addMixedKeccakCoSpends(input, salt, params);
+        } else {
+          await this.addStatelessKeccakLoopCoSpends(input, salt);
+        }
         continue;
       }
       // Resolve each keccak256 call's preimage (direct params from args; complex/nested via a VM probe), then
@@ -517,10 +539,8 @@ export class TransactionBuilder {
    * iterations, one placeholder), evaluate the master, and read the newly-aborted iteration's preimage off the
    * trace. Converges when the k-th placeholder is never read (the loop exited) - N = resolved count. Fails closed:
    * each iteration BINDS its side-car preimage == the running value, so a wrong/missing side-car aborts.
-   * Returns the resolved iteration count (the number of side-cars spliced), which the mixed straight-line
-   * co-spend below needs to know where the forward loop block ends.
    */
-  private async addStatelessKeccakLoopCoSpends(input: UnlockableUtxo, salt: Uint8Array): Promise<number> {
+  private async addStatelessKeccakLoopCoSpends(input: UnlockableUtxo, salt: Uint8Array): Promise<void> {
     const contractIdx = this.inputs.indexOf(input);
     const base = contractIdx + 1; // absolute-forward: side-cars/recreations at [master+1 ..] (blockSize 1)
     if (base > this.outputs.length) {
@@ -573,7 +593,6 @@ export class TransactionBuilder {
     const { sideCars, recreates } = spliceSideCars(preimages.length);
     this.inputs.splice(base, 0, ...sideCars);
     this.outputs.splice(base, 0, ...recreates);
-    return preimages.length;
   }
 
   /**
@@ -581,34 +600,32 @@ export class TransactionBuilder {
    * STATELESS contract (a stateful one is refused at compile time - no block-layout slot is reserved for the
    * unlooped call). The two calls read DIFFERENT index families off the same transaction:
    *
-   *   straight-line call i  input NI - (n - i), output NO - (n - i), STATELESS covenant (hash256 compare)
-   *   in-loop call         input/output masterIndex + 1 + counter,  STATEFUL covenant (inline byte compare)
+   *   straight-line call p  input NI - (n - p), output NO - (n - p), STATELESS covenant (hash256 compare)
+   *   in-loop call          input/output masterIndex + 1 + counter, STATEFUL covenant (inline byte compare)
    *
-   * `n` is the function's STATIC keccak256 call count (keccakPreimageParams.length), so codegen reserves n
-   * trailing slots even though only the S straight-line calls read them - the L = n - S in-loop calls read
-   * forward instead and leave holes in the trailing window. This fills the whole window: a resolved side-car in
-   * every straight-line slot, and an occupant in every hole (an existing trailing input/output first, else a
-   * pad side-car). NI and NO are free, so the two families need not collide - but they DO collide when the
-   * window would reach back into the forward loop block, which is the SDK's natural minimal layout
-   * (NI - 2 == masterIndex + 1 + 0). That case is refused BY NAME rather than built wrong.
+   * `n` is the function's STATIC keccak256 call count, so codegen reserves n trailing slots even though only the
+   * S straight-line calls read them; the L = n - S in-loop calls read forward instead and leave holes in the
+   * trailing window. Fill the whole window: a resolved side-car in every straight-line slot, and an occupant in
+   * every hole (an existing trailing input/output first, else a pad side-car, since a hole is never read).
+   *
+   * NI and NO are free, so the two families need not collide - but they DO collide when the window would reach
+   * back into the forward loop block, which is the SDK's natural minimal layout (NI - 2 == masterIndex + 1 + 0).
+   * That case is refused BY NAME rather than built wrong.
    */
-  private async addMixedStraightLineKeccakCoSpends(
-    input: UnlockableUtxo, salt: Uint8Array, params: readonly (string | null)[], loopCount: number,
+  private async addMixedKeccakCoSpends(
+    input: UnlockableUtxo, salt: Uint8Array, params: readonly (string | null)[],
   ): Promise<void> {
     const n = params.length;
-    if (n === 0) return;
-    // Cheap exact gate: a count-relative straight-line read is the ONLY thing that bakes the STATELESS compute
-    // covenant hash. A pure dynamic loop byte-compares the STATEFUL covenant instead, so it never gets here.
-    const unlockerRef = input.unlocker as unknown as { contract?: { artifact?: { bytecode?: string } } };
-    const asm = unlockerRef.contract?.artifact?.bytecode ?? '';
-    if (!asm.split(' ').includes(KECCAK256_COMPUTE_COVENANT_HASH)) return;
-
     const contractIdx = this.inputs.indexOf(input);
-    const loopEnd = contractIdx + loopCount;              // last forward loop side-car (== master when no loop ran)
-    const lock = keccakComputeLockingBytecode(salt);      // STATELESS covenant (self-preserve offset-from-end)
-    const scUtxos = (await this.provider.getUtxosForLockingBytecode(lock))
-      .filter((u) => u.token?.nft?.capability === 'mutable'
-        && !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
+    if (contractIdx + 1 > this.outputs.length) {
+      throw new Error('mixed keccak256 shape needs the spent contract near the front of the tx (its input index '
+        + `+ 1 must be <= the output count; got index ${contractIdx}, ${this.outputs.length} outputs).`);
+    }
+    const spent = (u: Utxo): boolean => this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout);
+    const free = async (lock: Uint8Array): Promise<Utxo[]> => (await this.provider.getUtxosForLockingBytecode(lock))
+      .filter((u) => u.token?.nft?.capability === 'mutable' && !spent(u));
+    const loopUtxos = await free(keccakComputeLockingBytecode(salt, true)); // forward block: STATEFUL covenant
+    const winUtxos = await free(keccakComputeLockingBytecode(salt));        // trailing window: STATELESS covenant
     // Direct-parameter preimages come straight from the call args; complex/nested ones fall out of the probe.
     const unlocker = input.unlocker as unknown as {
       abiFunction: { inputs: readonly { name: string }[] }; params: unknown[];
@@ -618,43 +635,70 @@ export class TransactionBuilder {
       const v = unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === p)];
       return v instanceof Uint8Array ? v : null;
     });
-    const found = await this.probeMixedStraightLineSlots(contractIdx, salt, n, direct, scUtxos);
-    const slots = [...found.keys()].sort((a, b) => a - b);
-    if (slots.length === 0) return;                      // this function's calls are all in-loop after all
 
-    const S = slots.length;
-    const L = n - S;                                     // reserved-but-unread trailing slots (the in-loop calls)
-    // Holes are filled from the trailing inputs/outputs that sit AFTER the forward loop block; each hole needs one
-    // of each, so the usable count is the smaller side. Whatever is left over is padded with extra side-cars.
+    const { loopPreimages, found } = await this.probeMixedKeccakLayout(contractIdx, salt, n, direct, loopUtxos, winUtxos);
+    const K = loopPreimages.length;
+    const S = found.size;
+    const L = n - S;                 // trailing slots reserved for the in-loop calls; read by nobody
+    if (S === 0 || L < 0) {
+      throw new Error(`mixed keccak256 shape: the probe resolved ${S} of the ${n} reserved trailing slots and `
+        + `${K} loop iteration(s), which does not describe a fundable layout. This function mixes a straight-line `
+        + 'keccak256 with one inside a loop; co-spend its side-cars explicitly.');
+    }
+    if (loopUtxos.length < K) {
+      throw new Error(`mixed keccak256 shape needs ${K} STATEFUL compute side-car UTXO(s) for its ${K} loop `
+        + `iteration(s); found ${loopUtxos.length} at the branded address. Deploy more mutable-NFT side-cars.`);
+    }
+    // Splice the forward loop block right after the master (input index == output index: it self-preserves via
+    // OP_INPUTINDEX), then lay the trailing window out behind it.
+    const loopIn: UnlockableUtxo[] = [];
+    const loopOut: Output[] = [];
+    for (let j = 0; j < K; j++) {
+      const { unlocker: scUnlocker, recreate } = buildKeccakComputeSidecar(loopPreimages[j], salt, loopUtxos[j], true);
+      loopIn.push({ ...loopUtxos[j], unlocker: scUnlocker });
+      loopOut.push(recreate);
+    }
+    this.inputs.splice(contractIdx + 1, 0, ...loopIn);
+    this.outputs.splice(contractIdx + 1, 0, ...loopOut);
+
+    const loopEnd = contractIdx + K;  // last forward side-car (== the master itself when the loop never ran)
+    // A hole can be occupied by an existing trailing input/output pair sitting AFTER the loop block; each hole
+    // needs one of each, so the usable count is the smaller side. The rest are padded with extra side-cars.
     const userFills = Math.max(0, Math.min(L, this.inputs.length - 1 - loopEnd, this.outputs.length - 1 - loopEnd));
     const padFills = L - userFills;
-    if (scUtxos.length < S + padFills) {
+    if (winUtxos.length < S + padFills) {
       throw new Error(`mixed keccak256 shape (${S} straight-line call(s) + ${L} in-loop call(s)) needs `
-        + `${S + padFills} STATELESS compute side-car UTXO(s) - ${S} read by the straight-line call(s) and `
-        + `${padFills} padding the reserved in-loop slot(s) - besides the ${loopCount} STATEFUL loop side-car(s); `
-        + `found ${scUtxos.length} at the branded address. Deploy one mutable-NFT stateless side-car per slot, or `
-        + 'add a funding input and a change output so the reserved slots are occupied by them instead.');
+        + `${S + padFills} STATELESS compute side-car UTXO(s) - ${S} read by the straight-line call(s), `
+        + `${padFills} padding the reserved in-loop slot(s) - besides the ${K} STATEFUL loop side-car(s); found `
+        + `${winUtxos.length} at the branded address. Deploy one mutable-NFT stateless side-car per slot, or add `
+        + 'a funding input and a change output so the reserved slots are occupied by them instead.');
     }
     const winStartIn = this.inputs.length - userFills;
     const winStartOut = this.outputs.length - userFills;
     if (winStartIn <= loopEnd || winStartOut <= loopEnd) {
-      throw new Error(`mixed keccak256 shape (${S} straight-line call(s) + ${L} in-loop call(s)) cannot be `
-        + `funded at this layout: the straight-line call(s) read the last ${n} inputs/outputs count-relative while `
-        + `the loop reads forward from the master at [${contractIdx + 1}..${loopEnd}], and the trailing window `
-        + `would start at input ${winStartIn} / output ${winStartOut}, colliding with the loop block. Add a `
-        + 'funding input and a change output (or deploy more stateless side-cars) so the two index families sit at '
+      throw new Error(`mixed keccak256 shape (${S} straight-line call(s) + ${L} in-loop call(s)) cannot be funded `
+        + `at this layout: the straight-line call(s) read the last ${n} inputs/outputs count-relative while the `
+        + `loop reads forward from the master at [${contractIdx + 1}..${loopEnd}], and the trailing window would `
+        + `start at input ${winStartIn} / output ${winStartOut}, colliding with the loop block. Add a funding `
+        + 'input and a change output (or deploy more stateless side-cars) so the two index families sit at '
         + 'distinct indices.');
     }
-    // Pull the hole occupants out of the tail, then rebuild the window slot by slot.
+    // Pull the hole occupants off the tail, then rebuild the window slot by slot.
     const tailIn = this.inputs.splice(winStartIn);
     const tailOut = this.outputs.splice(winStartOut);
     let fill = 0;
     let sc = 0;
     for (let p = 0; p < n; p++) {
       const preimage = found.get(p);
-      if (!preimage && fill < tailIn.length) { this.inputs.push(tailIn[fill]); this.outputs.push(tailOut[fill]); fill++; continue; }
+      if (!preimage && fill < tailIn.length) {
+        this.inputs.push(tailIn[fill]);
+        this.outputs.push(tailOut[fill]);
+        fill++;
+        continue;
+      }
       // A straight-line slot gets its resolved preimage; a padded hole is never read, so it commits keccak256("").
-      const utxo = scUtxos[sc++];
+      const utxo = winUtxos[sc];
+      sc++;
       const { unlocker: scUnlocker, recreate } = buildKeccakComputeSidecar(preimage ?? new Uint8Array(0), salt, utxo);
       this.inputs.push({ ...utxo, unlocker: scUnlocker });
       this.outputs.push(recreate);
@@ -662,38 +706,57 @@ export class TransactionBuilder {
   }
 
   /**
-   * Which of the n reserved trailing slots a MIXED function's straight-line keccak256 calls actually read, and
-   * what argument each is bound to. Probed rather than read off the script: the trial appends n side-cars at the
-   * tail so slot p sits at NI - (n - p), exactly where the final layout puts it (the window is always the last n,
-   * so a call's slot is its emission index either way). Every in-range OP_INPUTBYTECODE read in the trace is a
-   * straight-line call - the in-loop calls read forward from the master and never land in this window. A wrong
-   * preimage aborts at the binding OP_EQUALVERIFY, but the read already put the true argument on the stack, so
-   * each probe learns at least one slot; repeat until nothing changes. Slots the trace never reads are the in-loop
-   * calls' reserved holes. Missing side-car UTXOs are stood in for here (the probe only evaluates the master, so
-   * a stand-in's outpoint is never checked) - the real count is enforced by the caller once S is known.
+   * One progressive VM probe resolving BOTH keccak256 index families of a mixed function at once. Either family
+   * can execute first (source order decides), so resolving them in sequence deadlocks: the straight-line call
+   * aborts before the loop probe can see an iteration, and vice versa. Each round lays out the FULL candidate
+   * transaction - the forward loop block after the master with one extra placeholder (so another iteration is
+   * detectable), the n reserved slots at the tail - evaluates the master, and reads every side-car index off the
+   * trace. A wrong preimage aborts at the binding OP_EQUALVERIFY, but the read already put the true argument on
+   * the stack, so each round learns at least one value; repeat to a fixpoint. Trailing slots the trace never
+   * touches are the in-loop calls' reserved holes. Both families sit at the same relative offsets here as in the
+   * final layout (forward from the master; the window is always the last n), so the resolved slots transfer.
+   * Missing side-car UTXOs are stood in for - the probe only evaluates the master, so a stand-in's outpoint is
+   * never checked - and the real counts are enforced by the caller once K and S are known.
    */
-  private async probeMixedStraightLineSlots(
-    contractIdx: number, salt: Uint8Array, n: number, direct: readonly (Uint8Array | null)[], scUtxos: Utxo[],
-  ): Promise<Map<number, Uint8Array>> {
+  private async probeMixedKeccakLayout(
+    contractIdx: number, salt: Uint8Array, n: number,
+    direct: readonly (Uint8Array | null)[], loopUtxos: Utxo[], winUtxos: Utxo[],
+  ): Promise<{ loopPreimages: Uint8Array[]; found: Map<number, Uint8Array> }> {
+    const loopPreimages: Uint8Array[] = [];
     const found = new Map<number, Uint8Array>();
     const savedInputs = [...this.inputs];
     const savedOutputs = [...this.outputs];
-    const base = savedInputs.length; // the trial appends the window, so slot p is at base + p
-    const standInCategory = scUtxos[0]?.token?.category ?? binToHex(new Uint8Array(32));
-    const utxoFor = (j: number): Utxo => scUtxos[j] ?? {
-      txid: 'ee'.repeat(32),
+    const standIn = (pool: Utxo[], j: number, tag: string): Utxo => pool[j] ?? {
+      txid: tag.repeat(32),
       vout: j,
       satoshis: 1_000n,
-      token: { category: standInCategory, amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } },
+      token: {
+        category: pool[0]?.token?.category ?? binToHex(new Uint8Array(32)),
+        amount: 0n,
+        nft: { capability: 'mutable' as const, commitment: '' },
+      },
     };
     keccakProbeVm ??= createVirtualMachineBch2026();
     try {
-      for (let guard = 0; guard <= n + 1; guard++) {
+      for (let round = 0; round <= MAX_KECCAK_LOOP_ITERS + n + 1; round++) {
+        const k = loopPreimages.length + 1; // one extra placeholder: if it is read, the loop has another iteration
         this.inputs = [...savedInputs];
         this.outputs = [...savedOutputs];
-        for (let j = 0; j < n; j++) {
-          const utxo = utxoFor(j);
-          const preimage = found.get(j) ?? direct[j] ?? new Uint8Array(0);
+        const loopIn: UnlockableUtxo[] = [];
+        const loopOut: Output[] = [];
+        for (let j = 0; j < k; j++) {
+          const utxo = standIn(loopUtxos, j, 'ee');
+          const preimage = loopPreimages[j] ?? new Uint8Array(0);
+          const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, utxo, true);
+          loopIn.push({ ...utxo, unlocker });
+          loopOut.push(recreate);
+        }
+        this.inputs.splice(contractIdx + 1, 0, ...loopIn);
+        this.outputs.splice(contractIdx + 1, 0, ...loopOut);
+        const winBase = this.inputs.length; // the window is appended, so it is always the last n
+        for (let p = 0; p < n; p++) {
+          const utxo = standIn(winUtxos, p, 'dd');
+          const preimage = found.get(p) ?? direct[p] ?? new Uint8Array(0);
           const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, utxo);
           this.inputs.push({ ...utxo, unlocker });
           this.outputs.push(recreate);
@@ -702,19 +765,27 @@ export class TransactionBuilder {
         const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
         const trace = keccakProbeVm.debug({ inputIndex: contractIdx, sourceOutputs, transaction }) as unknown[];
         let changed = false;
-        for (const { slot, arg } of scanKeccakSideCarReads(trace, base, n)) {
-          const known = found.get(slot);
-          if (known && known.length === arg.length && known.every((b, k) => b === arg[k])) continue;
+        for (const { slot, arg } of scanKeccakSideCarReads(trace, contractIdx + 1, k)) {
+          if (slot === loopPreimages.length) { loopPreimages.push(arg); changed = true; continue; }
+          if (bytesEqual(loopPreimages[slot], arg)) continue;
+          loopPreimages[slot] = arg;
+          changed = true;
+        }
+        for (const { slot, arg } of scanKeccakSideCarReads(trace, winBase, n)) {
+          if (bytesEqual(found.get(slot), arg)) continue;
           found.set(slot, arg);
           changed = true;
         }
         if (!changed) break;
+        if (loopPreimages.length > MAX_KECCAK_LOOP_ITERS) {
+          throw new Error(`mixed keccak256 shape exceeds ${MAX_KECCAK_LOOP_ITERS} loop iterations.`);
+        }
       }
     } finally {
       this.inputs = savedInputs;
       this.outputs = savedOutputs;
     }
-    return found;
+    return { loopPreimages, found };
   }
 
   /**

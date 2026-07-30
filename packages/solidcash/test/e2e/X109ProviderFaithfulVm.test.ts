@@ -11,8 +11,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 /**
  * X109 - two VM callers that discard the provider's limits, and why reading them is NOT the repair.
  *
- * The row: `StatefulTransactionBuilder.ts:2687` (`_logCovenantFailureTrace`) and `:2716`
- * (`_strictRecursiveVmPreflight`) build a bare `createVirtualMachineBch2026()`. The first is reached whenever
+ * The row: `StatefulTransactionBuilder.ts` `_logCovenantFailureTrace` (the row cited :2662, now :2668 after the
+ * comment this measurement left at the site) and `_strictRecursiveVmPreflight` (:2691, now :2707) build a bare
+ * `createVirtualMachineBch2026()`. The first is reached whenever
  * `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000` is false, so a provider publishing limits
  * AT 10,000 lands there; the second has no gate at all and builds the bare VM for every provider. The proposed
  * repair was `createVirtualMachineBch2026ForProvider(provider)` at both.

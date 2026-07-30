@@ -14,7 +14,7 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * X111 - the residual SEC-18 left behind: a route-reachable read-only GRAPH EMISSION CLONE.
  *
  * SEC-18 widened the scalar journal closure to every route-reachable function, so a pure reader observes an
- * earlier row's write instead of the pre-transaction commitment. `GenerateTargetTraversal.ts:1774` excludes
+ * earlier row's write instead of the pre-transaction commitment. `GenerateTargetTraversal.ts:1771,1779` excludes
  * graph EMISSION clones from that widening: their frame is owned by the graph effect-frame protocol, which
  * already pushes hidden context, so journal slots leave the frame one item deeper than the caller pushes.
  * Widening to them broke C2's honest A -> B -> A cycle at input 0, and a per-slot COMPILE-time refusal

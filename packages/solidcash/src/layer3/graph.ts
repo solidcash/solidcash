@@ -1222,7 +1222,7 @@ const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
  * Name the compiler gives one handler's graph EMISSION clone.
  *
  * `compiler.ts` clones every `graphTailHandlers` member as `__scb_graph_<handler>`, and
- * `GenerateTargetTraversal.ts:1774` excludes exactly that set from SEC-18's widened scalar-journal closure -
+ * `GenerateTargetTraversal.ts:1771,1779` excludes exactly that set from SEC-18's widened closure -
  * an emission clone's frame is owned by the graph effect-frame protocol, so extra journal slots leave it one
  * item deeper than the caller pushes. The presence of this name in the published invocation analysis is
  * therefore the compiler's own answer to "does this row read the pre-state instead of the journal", not a

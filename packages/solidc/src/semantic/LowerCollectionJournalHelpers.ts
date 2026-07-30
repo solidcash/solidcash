@@ -6,6 +6,7 @@ import {
   ArrayAssignNode,
   ArrayDeleteNode,
   ContractNode,
+  EmitStatementNode,
   ExpressionNode,
   FunctionCallNode,
   FunctionCallStatementNode,
@@ -154,6 +155,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           || fn.modifiers.includes(FunctionModifier.PRIVATE))
         || fn.inheritedFrom || constructorCalls.has(fn.name)
         || (nameCounts.get(fn.name) ?? 0) > 1) continue;
+      // X118. An event emitted inside a value-threaded OP_INVOKE handler is dropped at the subroutine exit, so
+      // code generation refuses this shape outright. It compiles on the pre-existing inline path, so do not
+      // select it: the journal is an optimisation, and taking it here costs the whole contract.
+      let emitsEvent = false;
+      this.walk(fn.body, (candidate) => {
+        if (candidate instanceof EmitStatementNode) emitsEvent = true;
+      });
+      if (emitsEvent) continue;
       const accesses: Array<{
         name: string;
         keys: ExpressionNode[];

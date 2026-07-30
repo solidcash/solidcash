@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../src/index.js';
+import { EmittingStateHelperEventError } from '../src/Errors.js';
 
 // The three positions X107's construction-time file stamp could NOT reach, and what reaches them.
 //
@@ -282,21 +283,34 @@ describe('X118: the emitting returning state helper is refused by name, with a p
     '        require(true);', '    }', '}', ''];
   const SRC = lines.join('\n');
 
-  it('names the helper, the cause and the remedy, at the declaration position', () => {
+  // SUBJECT RETIRED, and that is the outcome this row wanted. K4 landed the NAMED refusal below and handed
+  // over the real repair as a blocked hunk; applying it stops `LowerCollectionJournalHelpers` selecting an
+  // emit-carrying void helper at all, so the shape compiles on the pre-existing inline path instead of being
+  // refused. Measured: the canonical solidity-by-example `app/erc20/ERC20.sol` and `app/airdrop/Token.sol`
+  // both went from this refusal to compiling (5,523.5 B and 6,160.5 B), and reverting only the hunk turns
+  // both back into `EmittingStateHelperEventError`. So the refusal is retained as a BACKSTOP with no known
+  // reachable subject - filed as X131 - and asserting that it fires would be asserting the unreachable.
+  it('the emit-carrying helper now COMPILES rather than being refused, in both modes', () => {
     for (const options of [DIRECT, BUS]) {
       const { error } = compileCapturing(() => compileString(SRC, options as never));
-      expect(error?.name).toBe('EmittingStateHelperEventError');
-      expect(error?.name).not.toBe('Error');
-      expect(error?.message).toContain("Helper '_credit' emits an event");
-      // The cause, which the baseline message got backwards by calling a void function "returning".
-      expect(error?.message).toContain('it is void as written');
-      // The remedy. A refusal with no remedy is why this row was opened.
-      expect(error?.message).toContain('Move the emit into the calling entry point');
-      expect(error?.message).toContain('at Line 6, Column 4');
-      // The internal invariant must no longer be what the user sees.
-      expect(error?.message).not.toContain('must be inlined before code generation');
+      expect(error).toBeUndefined();
     }
+    // Pinned so the subject cannot drift out from under this row unnoticed.
     expect(lines[5]).toBe('    function _credit(address to, uint256 amount) internal {');
+  });
+
+  it('the refusal it replaced is still NAMED, not a bare internal Error', () => {
+    // The class must keep its position and remedy even while unreachable, because a backstop that degrades to
+    // `Error: ... must be inlined before code generation` is the defect this row was opened on. Asserted on the
+    // class itself rather than on a compile, since no input reaches it.
+    const built = new EmittingStateHelperEventError(
+      { location: undefined } as never, '_credit', true,
+    );
+    expect(built.name).toBe('EmittingStateHelperEventError');
+    expect(built.message).toContain("Helper '_credit' emits an event");
+    expect(built.message).toContain('it is void as written');
+    expect(built.message).toContain('Move the emit into the calling entry point');
+    expect(built.message).not.toContain('must be inlined before code generation');
   });
 
   it('GUARD: the same contract with ONLY the emit removed compiles', () => {

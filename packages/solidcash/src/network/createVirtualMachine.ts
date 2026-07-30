@@ -17,6 +17,23 @@ import type NetworkProvider from './NetworkProvider.js';
  *
  * `limits` and `observer` are independent. Only MockNetworkProvider publishes `consensusLimits`, so binding
  * the observer to their presence dropped it on every live network (Electrum, regtest, FullStack, Bitcoin RPC).
+ *
+ * THE CALLERS DO NOT PASS ONE FOR A LIMITS-LESS PROVIDER, AND SHOULD NOT START. Every in-tree observer caller
+ * first checks `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, so the fix above removes a
+ * trap rather than changing behaviour; the gate, not this factory, is what keeps live networks on full
+ * `vm.debug()`. Relaxing the gate was measured and is wrong in both directions:
+ *
+ * - AT ordinary capacity `debug()` is cheap AND BOUNDED, because BCH-2026 density control caps a probe at
+ *   `operationCostBudgetPerByte * (densityControlBaseLength + inputBytes)`. A maximal 9,817-byte input reaches
+ *   77,216 retained states and then the VM refuses the next operation: 0.6-0.9 s, 63-68 MB. That is the worst
+ *   case, not a typical one.
+ * - The observer trace is NOT a faithful substitute. It retains only the six inspected opcodes, and
+ *   `extractCommitmentMapFromTrace` treats ANY opcode between `OP_OUTPUTTOKENCOMMITMENT` and `OP_EQUALVERIFY`
+ *   as proof the pair is not a commitment verification. An intervening opcode outside the observed set is
+ *   invisible, so a pattern the full trace correctly derives nothing from yields a phantom commitment.
+ * - ABOVE ordinary capacity `debug()` is not merely slow, it throws: libauth's `proxyDebug` spreads the whole
+ *   state array into `push`, which exceeds V8's argument limit between 100,014 and 124,014 states. Past that
+ *   point the observer is the only usable instrument, which is exactly what the gate selects it for.
  */
 export function createVirtualMachineBch2026ForProvider(
   provider?: NetworkProvider,

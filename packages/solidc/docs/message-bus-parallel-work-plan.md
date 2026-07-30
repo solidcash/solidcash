@@ -272,7 +272,11 @@ task-specific report, not in this table.
 | X92 | Generated-source nodes carry no origin label | I2 | X98 | **INTEGRATED, now pinned** | a 49-line shift, both beyond the file; three subject breaks all red |
 | X83 | The keccak side-car slot pre-check | I2 | — | **INTEGRATED, now pinned** | the index claim now rests on two measured artifacts, not a quoted message the rename deleted |
 | X108 | `compiler-hidden-batch-v1.md`'s Release 5 table matches NEITHER build | L3 | X105 | **CLOSED - my diagnosis was WRONG** | not a different fixture: the SAME one, frozen at `99abfbe2` and written to the doc two minutes later, never re-derived through seven commits. Both tables re-derived and now assertable, 11 cases, failing 9/11 against the stale doc - see 4.106 |
-| X123 | The same stale Release 0 figures propagated into 5 more docs, 13 sites | L3 | X108 | **1 of 13 fixed, TODO** | includes `compiler-hidden-batch-v1-audit.md:35`, a row marked **FIXED** whose cited assertion no longer exists and whose 225-byte margin is now 5,186 - fixed. Twelve remain in review-handoff, audit, buffered-state-research, journal-bus-status, state-journal-audit |
+| X123 | The same stale Release 0 figures propagated into 5 more docs, 13 sites | M4 | X108 | **CLOSED - and it was 13, not 12** | every figure re-derived by COMPILING the fixture the doc names, not copied. Consequences too: "roughly triples contract size" is dead at 1.52x, and **F4's own named counter-example INVERTED** - the token it predicted would silently compile oversize is 5,777 B with 4,223 headroom - see 4.110 |
+| X136 | Four more rows marked FIXED on rotted citations, one of them MINE | M4 | X123 | **INTEGRATED** | my own X123 fix of F4 cited `compiler.ts:959-967`, which is collection-route key-witness synthesis and has **never** emitted a size diagnostic. F1/F2/F3/F5 all cite drifted lines, and "all F1-F6 closed" is contradicted by the completion review directly above it |
+| X125 | The solc-corpus stride was never recorded | M4 | R3-16 | **ESTABLISHED, not inferred** | searching all strides 1..4,876, exactly **one** gives 407 - twelve - and the same search returns exactly `[1]` for the other three corpora, which is the control that it discriminates. `strideRecordedByProbe` stays false and the test asserts that gap |
+| X132 | UnicrowClaim is still not bus-compilable | M4 | SEC-18 | **MY DIAGNOSIS WAS WRONG** | no option decides it, the SUBJECT does: `UnicrowClaim.sol` compiles under every option set that parses and has **no `refund` at all**. `refund` is `Unicrow.sol:218`, a separate file. The refusal is CORRECT - a transcript row has no field to bind a `value` option |
+| X137 | `journal-bus-implementation-status`'s margin collapses 5,677 -> 693 B | M4 | X123 | **RECORDED** | **both sides** of its comparison were stale; the conclusion survives but can no longer carry any claim that graph covenants are comfortably cheaper |
 | R3-16 | The corpus result rests on four unpinned external checkouts | L3 | R3 | **INTEGRATED** | all four pinned and currently AT their pins; detection is three-layered because a commit does NOT pin the denominator - SBE moved 139 -> 141 in-scope with its pin unchanged - see 4.106 |
 | X124 | mistswap is NOT recreatable from any public commit | L3 | R3-16 | **RECORDED, not closeable** | a local unpushed commit; 15 of 16 targets byte-identical to public ancestor `1f8622bb`, exactly one differs - `BentoBoxV1.sol`, a load-bearing anchor. Divergence is cosmetic rebranding, immaterial to what the census measures |
 | X125 | The solc-corpus row is a 1-in-12 stride SAMPLE and the stride was recorded nowhere | L3 | R3-16 | **TODO** | 407 of 4,876; a second unpinned reproducibility parameter moving the same denominators, now marked `strideIsInferred: true` with two corroborations |
@@ -1006,7 +1010,7 @@ delta measurement. Two different samples; the in-flight survey was told to enume
 rather than inherit either.
 
 **X85 - F2 got it wrong first, and its own new assertion caught it.** The override fields mean the **DEPLOYED**
-redeem length, not the compiled one. The projection takes no constructor args, so 4,098 either way against the
+redeem length, not the compiled one. The projection takes no constructor args, so 4,121 either way against the
 basis's 4,542 - **444 B of real staleness per participant**. But the controller takes a `bytes20 initializer`:
 **compiles to 1,493 and deploys at 1,514**, which is the calibration's figure exactly. F2's first pass read 1,493
 off `debug.bytecode` and passed a controller input **21 bytes shorter than the script the transaction pushes** -
@@ -1046,7 +1050,7 @@ vacuous-guard instance on this board and the first to be re-pointed rather than 
 134 refused** - identical at `6a685f33`, `6183cf12` and `b4d33fc1`. What moved is the census's **admitted** count,
 38 -> **26**, because the 38 was stale.
 
-**A dependency flagged for an in-flight sibling**: X81 would move the projection verifier 4,098 -> 4,117, which
+**A dependency flagged for an in-flight sibling**: X81 would move the projection verifier 4,098 -> 4,117 (PREDICTION, never reconciled: the landed figure is **4,121**, off by 4 - see 4.93), which
 moves `MEASURED_COVENANTS` and the 444 with it. Relayed, so the board does not ship a third stale number.
 
 **Still to correct, outside F2's lease**: the plan and ledger cite **455 / 364 / 367 / 45**. Opened as **X99**.
@@ -1336,13 +1340,13 @@ re-ordering cannot turn OVER into FITS, asserted over 1,106 descriptors.
 **Two of X70's published figures do not reproduce, and E3 proved it is staleness by measuring at the reverted
 baseline.** The population is **43, not 45** - three rows now fail "census redeem length disagrees with the built
 participant", so **the census has drifted**. And **444 bytes of every corpus prediction is a dead covenant**:
-`estimate` defaults to the recorded basis (4,542 / 1,514) while HEAD generates **4,098 / 1,493**, because
+`estimate` defaults to the recorded basis (4,542 / 1,514) while HEAD generates **4,121 / 1,493**, because
 `replicaSpec` never fills the override fields. With HEAD's sizes the band returns to X70's published
 +4.3%..+7.5%. Both handed to E4, whose lease holds that file.
 
 **A stale assertion replaced with one that cannot drift.** X70's legacy `before >= 44 under-predictions` fails at
 the **baseline** commit too, because the legacy fit returns 4,441 B for a covenant that *was* 4,542 and is now
-4,098 - so the impossibility decayed into mere looseness. E3 re-asserted the impossibility on the **calibration**
+4,098 at the time, **4,121** at HEAD - so the impossibility decayed into mere looseness. E3 re-asserted the impossibility on the **calibration**
 instead: a **3,966 B intercept against a 4,542 B covenant**, where no size change can soften it.
 
 **The remaining miss is stated rather than fitted away.** E1 is still named density where relay size binds; its

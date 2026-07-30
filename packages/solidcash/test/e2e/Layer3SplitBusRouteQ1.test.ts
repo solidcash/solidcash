@@ -139,6 +139,11 @@ contract Kashi(bytes bentoAddr) {
    * the same refusal is reproduced by a facet-resident entry that only READS a constructor parameter, with no
    * external call anywhere in the source. That separates "external calls do not survive a split" from the
    * wider mechanism actually in play.
+   *
+   * The mechanism is one line: `compileFacet` REPLACES `contract.parameters` with a single `__brand`, so a
+   * facet has no constructor parameters of its own and any moved body referencing one is an undefined symbol.
+   * `IContract(addr).method()` with `addr` a constructor parameter is the canonical caller shape, so this is
+   * why the caller direction cannot even reach the VM - it is not a capacity result.
    */
   it('MEASURED: a split CALLER whose entry carries an outgoing external call', () => {
     const attempt = (source: string): string | undefined => {

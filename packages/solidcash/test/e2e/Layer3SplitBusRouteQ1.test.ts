@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringSplit } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
+import { asmToBytecode } from '@solidcash/utils';
 import { Contract, SplitContractBundle, StatefulContract, Signer } from '../../src/index.js';
 import type { ConnectedStatefulContract } from '../../src/stateful/StatefulContract.js';
 import { addressToLockScript } from '../../src/utils.js';
@@ -173,6 +174,39 @@ contract Plain(bytes owner) {
     expect(plainCtorRead, 'the refusal is NOT about external calls: it reproduces on a bare constructor read')
       .toMatch(/Undefined reference to symbol owner/);
     expect(noCtorRead, 'the guard control must split cleanly, or the isolation proves nothing').toBeUndefined();
+  });
+
+  /**
+   * MEASUREMENT (3), at COMPILE time rather than at settlement: bus mode reaches the split ROOT and stops
+   * there. The root grows by the hidden-batch machinery; every facet is byte-identical to its direct-mode
+   * build, so the moved function bodies were compiled as if the bus did not exist. That is the compile-side
+   * shape of the runtime result above - the split root's route has no notion of its own facets.
+   */
+  it('MEASURED: bus mode reaches the split root and not its facets', () => {
+    const busOptions = {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const direct = compileStringSplit(VAULT_SPLITTABLE, { forceSplit: true });
+    const bus = compileStringSplit(VAULT_SPLITTABLE, { ...busOptions, forceSplit: true });
+    const rootDirect = asmToBytecode(direct.root.bytecode).length;
+    const rootBus = asmToBytecode(bus.root.bytecode).length;
+    console.log(`[Q1-A2] split root direct=${rootDirect}B bus=${rootBus}B (+${rootBus - rootDirect})`);
+    console.log(`[Q1-A2] facets direct=${direct.manifest.facets.map((f) => f.estimatedRedeemBytes).join(',')} `
+      + `bus=${bus.manifest.facets.map((f) => f.estimatedRedeemBytes).join(',')}`);
+
+    // The root DOES take the bus machinery. A control, so "facets unchanged" cannot be read as "nothing ran".
+    expect(rootBus).toBeGreaterThan(rootDirect);
+    expect((bus.root as unknown as Record<string, unknown>).hiddenBatch).toBeDefined();
+    // And the facets do not.
+    expect(bus.manifest.facets.map((f) => f.estimatedRedeemBytes))
+      .toEqual(direct.manifest.facets.map((f) => f.estimatedRedeemBytes));
+    for (const info of bus.manifest.facets) {
+      expect(bus.facets[info.name].bytecode).toBe(direct.facets[info.name].bytecode);
+      expect((bus.facets[info.name] as unknown as Record<string, unknown>).hiddenBatch).toBeUndefined();
+    }
   });
 
   /**

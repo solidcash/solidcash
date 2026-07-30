@@ -375,7 +375,7 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
         function pay(bytes recipient, bigint amount) public {
           this.transfer(recipient, amount);
           // Each logical call sees its own effect, while the physical
-          // container observes the aggregate -600 satoshi transition.
+          // container observes the aggregate -1800 satoshi transition.
           require(msg.value == -amount && amount >= 0);
         }
       }
@@ -388,17 +388,30 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
     await provider.addUtxo(contract.getSatoshiContainerAddress(), {
       txid: '74'.repeat(32), vout: 0, satoshis: 5000n,
     });
+    // AMOUNTS ARE INCIDENTAL HERE. What this asserts is per-row transfer ordering and that inactive slots
+    // stay empty; nothing about the assertion depends on the magnitudes, only on their being distinct and
+    // increasing. They were 100/200/300, which pays a 10-byte output below the 474-satoshi dust floor
+    // (3 * (10 + 148)) - the same floor BCHN used to refuse C1 with `64: dust`, so that shape was one the
+    // real network rejects. 500/600/700 keeps the ordering and clears the floor.
     const transaction = await contract.batch([
-      { function: 'pay', args: [Uint8Array.of(0x51), 100n] },
-      { function: 'pay', args: [Uint8Array.of(0x52), 200n] },
-      { function: 'pay', args: [Uint8Array.of(0x53), 300n] },
+      { function: 'pay', args: [Uint8Array.of(0x51), 500n] },
+      { function: 'pay', args: [Uint8Array.of(0x52), 600n] },
+      { function: 'pay', args: [Uint8Array.of(0x53), 700n] },
     ]).send();
-    const amounts = getTxOutputs(transaction).map((output) => output.amount);
-    expect(amounts).toEqual(expect.arrayContaining([100n, 200n, 300n, 4400n]));
+    const outputs = getTxOutputs(transaction);
+    const amounts = outputs.map((output) => output.amount);
+    expect(amounts).toEqual(expect.arrayContaining([500n, 600n, 700n, 3200n]));
+    // Strengthened while the amounts moved: `arrayContaining` is order-blind, and this test claims order.
+    // The three bare-script recipients must carry their own row's amount, in row order.
+    expect(outputs.filter((output) => ['51', '52', '53'].includes(output.to as string)))
+      .toEqual([
+        { to: '51', amount: 500n, token: undefined },
+        { to: '52', amount: 600n, token: undefined },
+        { to: '53', amount: 700n, token: undefined },
+      ]);
   });
 
   it('rejects a row value that differs from its compiler-authored transfer effect', async () => {
-    const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract ValueBatchRelease4Hostile() {
         function pay(bytes recipient, bigint amount) public {
@@ -407,26 +420,70 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
         }
       }
     `, { forceStateful: true, experimentalHiddenBatch: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    await provider.addUtxo(contract.getSatoshiContainerAddress(), {
-      txid: '76'.repeat(32), vout: 0, satoshis: 5000n,
-    });
+
+    // A fresh deployment per submission, so the control and the attack differ in the forged byte and in
+    // nothing else - not in a spent container, not in carried state.
+    const submit = async (blob: Uint8Array): Promise<unknown> => {
+      const provider = createTestProvider();
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      await provider.addUtxo(contract.getSatoshiContainerAddress(), {
+        txid: '76'.repeat(32), vout: 0, satoshis: 5000n,
+      });
+      return contract._batchRaw(blob)
+        .transfer(Uint8Array.of(0x51), 500n)
+        .transfer(Uint8Array.of(0x52), 600n)
+        .send();
+    };
+
+    // AMOUNTS ARE INCIDENTAL: this asserts that an authenticated row value must equal the compiler-authored
+    // transfer effect. 100/200 paid a 10-byte output under the 474-satoshi dust floor (3 * (10 + 148)), a
+    // shape the network refuses `64: dust`; 500/600 clears it and the attack is byte-for-byte the same one.
     const encoded = layer3.encodeHiddenBatch(artifact, [
-      { function: 'pay', args: [Uint8Array.of(0x51), 100n] },
-      { function: 'pay', args: [Uint8Array.of(0x52), 200n] },
+      { function: 'pay', args: [Uint8Array.of(0x51), 500n] },
+      { function: 'pay', args: [Uint8Array.of(0x52), 600n] },
     ]);
     const forged = encoded.blob.slice();
-    // Header(7) + selector/callsite/occurrence/args-length(12) + sign(1):
-    // change row 0's authenticated magnitude from 100 to 101 without changing args.
-    forged[20] = 101;
-    await expect(contract._batchRaw(forged)
-      .transfer(Uint8Array.of(0x51), 100n)
-      .transfer(Uint8Array.of(0x52), 200n)
-      .send()).rejects.toThrow();
+    /*
+     * SCB1 OFFSETS, RE-DERIVED FOR THE RAISED AMOUNTS.
+     *   header  = magic 'SCB1'(4) + [version, valueMode, rowCount](3)          -> row 0 starts at 7
+     *   row     = selector(4) + rowIndex(4) + occurrence(2) + argsLength(2)    -> value field at 7+12 = 19
+     *   value   = sign(1) at 19, then magnitude as a FIXED-WIDTH uint64 LE at 20..27
+     * The magnitude is fixed width and precedes the variable-length args, so byte 20 is the magnitude LSB
+     * at any amount - it did not move when 100 became 500. 500 = 0x01f4, so byte 20 reads 0xf4 and byte 21
+     * reads 0x01; writing 0xf5 authenticates 501 and touches nothing else. The row's own args still encode
+     * 500 (`02 f4 01` at offset 30) and `.transfer` below still declares 500, which is the disagreement
+     * under test. Asserted rather than assumed: a shifted layout must fail here, not silently forge a
+     * selector byte and be refused for the wrong reason.
+     */
+    expect(forged.slice(0, 4)).toEqual(hexToBin('53434231'));
+    expect(forged[19]).toBe(1); // sign: msg.value is -500
+    expect(forged[20]).toBe(0xf4);
+    expect(forged[21]).toBe(0x01);
+    expect(binToHex(forged.slice(28, 33))).toBe('015102f401'); // args: push 0x51, push VM-number 500
+    forged[20] = 0xf5;
+
+    // GUARD NEGATIVE CONTROL: the identical submission with the unforged blob is accepted. Without it the
+    // rejection below could be the dust floor, a broken `_batchRaw` path, or an unfunded container.
+    await expect(submit(encoded.blob)).resolves.toBeDefined();
+
+    /*
+     * ATTRIBUTION. The refusal must be the forged byte's, so the message is matched rather than counted.
+     * The covenant reaches input 0 and fails OP_VERIFY comparing the authenticated row value against the
+     * negated row argument: the VM trace at ip=182..183 holds `f581` (sign-magnitude -501, the forged
+     * field) beside `f481` (-500, negated from the row's own `02 f4 01`). A dust refusal would be a
+     * `layer3:` byte-rule message raised in the SDK before the VM ever ran, which is asserted against
+     * explicitly - that is the exact way this guard would go vacuous.
+     */
+    const failure = await submit(forged).then(() => undefined, (error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure!.message).toMatch(
+      /mandatory-script-verify-flag-failed .*evaluating input index 0: Program failed an OP_VERIFY operation/,
+    );
+    expect(failure!.message).not.toMatch(/layer3: finalized transaction refused/);
   });
 });
 
@@ -708,9 +765,12 @@ describe('Release 4 output-substitution adversarial gate', () => {
       throw new Error('capture-only');
     };
     try {
+      // AMOUNTS ARE INCIDENTAL: this asserts that moving a satoshi between a recipient and the container is
+      // refused. 100/200 paid a 10-byte output under the 474-satoshi dust floor (3 * (10 + 148)), the same
+      // floor BCHN used to refuse C1 `64: dust`; 500/600 clears it and the substitution is unchanged.
       await expect(contract.batch([
-        { function: 'pay', args: [Uint8Array.of(0x51), 100n] },
-        { function: 'pay', args: [Uint8Array.of(0x52), 200n] },
+        { function: 'pay', args: [Uint8Array.of(0x51), 500n] },
+        { function: 'pay', args: [Uint8Array.of(0x52), 600n] },
       ]).send()).rejects.toThrow('capture-only');
     } finally {
       (provider as any).sendRawTransaction = originalSend;
@@ -718,14 +778,23 @@ describe('Release 4 output-substitution adversarial gate', () => {
 
     const forged = decodeTransactionUnsafe(hexToBin(captured));
     const recipient = forged.outputs.find((output) =>
-      output.valueSatoshis === 100n && output.lockingBytecode.length === 1
+      output.valueSatoshis === 500n && output.lockingBytecode.length === 1
       && output.lockingBytecode[0] === 0x51);
-    const container = forged.outputs.find((output) => output.valueSatoshis === 4700n);
+    // 5000 funded minus 500 + 600 paid out.
+    const container = forged.outputs.find((output) => output.valueSatoshis === 3900n);
     expect(recipient).toBeDefined();
     expect(container).toBeDefined();
     recipient!.valueSatoshis += 1n;
     container!.valueSatoshis -= 1n;
-    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    // The refusal is the covenant's at input 0, not a relay-byte observation: both sides of the move stay
+    // well above their dust floors, so no byte rule is even in play.
+    const failure = await originalSend(binToHex(encodeTransaction(forged)))
+      .then(() => undefined, (error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure!.message).toMatch(
+      /mandatory-script-verify-flag-failed .*evaluating input index 0: Program failed an OP_VERIFY operation/,
+    );
+    // Guard negative control: the same bytes without the one-satoshi move are accepted.
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
   });
 });

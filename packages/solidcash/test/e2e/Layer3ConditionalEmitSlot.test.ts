@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -771,6 +771,15 @@ const outcomeOf = (builder: TransactionBuilder): string => {
   return 'ACCEPTED';
 };
 
+/**
+ * X152. Which byte rules the finalized bytes break, if any. The container-drain hostile below leaves a
+ * below-dust output BECAUSE it drains the container, so it cannot be moved off the dust without deleting the
+ * attack; what is pinned instead is that the dust is not what refuses it.
+ */
+const byteRefusals = (rawTx: string): string[] =>
+  layer3.assessFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(rawTx)))
+    .refusals.map((row) => row.rule).sort();
+
 describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies (SEMANTIC)', () => {
   const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
 
@@ -946,8 +955,14 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
     const built = await buildCondTransferBatch(4n, true);
     expect(built.containerSlots).toBe(1);
     expect(built.callerInput).toBe(0);
-    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    const outcome = outcomeOf(built.builder);
+    expect(outcome).toContain(at(built.callerInput));
+    // X152. The drain leaves a below-dust output, so the byte gate HAS an objection to these bytes - and it
+    // is not the one delivered. The refusal is the covenant's, at the caller's own input, on both paths.
+    expect(byteRefusals(built.transaction)).toEqual(['output-dust']);
+    expect(outcome, 'the byte gate spoke before the covenant').not.toMatch(/finalized transaction refused by/);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(new RegExp(`evaluating input index ${built.callerInput}`));
   }, 600_000);
 
   /**

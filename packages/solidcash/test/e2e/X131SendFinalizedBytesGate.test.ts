@@ -34,14 +34,36 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * where that changes a message, but the window is real - rows 4 and 4b are themselves on the custom-unlocker
  * path and reach the gate with no `debug()` ahead of them.
  *
- * THE GATE IS STRICTER THAN A RELAXED MOCK, BY CONSTRUCTION, and row 2 pins it rather than leaving it latent.
- * `addOutput` already refuses a below-dust output whenever `policy.enforceDust` is true, so the dust rule here
- * is only ever REACHED on a provider that declared it does not enforce dust - and that provider's decider then
- * accepts the same bytes. The rules are BCHN's, not the mock's: 474 satoshis is the threshold a live BCHN
- * regtest used to refuse capstone C1 with `64: dust`, and it is the same number the SDK's own
- * `calculateDust` (444 + 3 x output bytes) produces. This site therefore behaves exactly like the two already
- * gated ones; whether a relaxed mock should suppress the policy half is a decision for the gate, not for one
- * call site to take unilaterally.
+ * X157 IS DECIDED, AND "THE GATE IS STRICTER THAN THE PROVIDER" IS THE WRONG READING. Rows 2 and 2b are the
+ * measurement that settles it. The claim handed over was that `addOutput` admits a below-dust output when
+ * `policy.enforceDust` is false - the mock default - so the dust rule is only ever reachable on a provider
+ * whose decider then accepts the same bytes, which reads as the gate refusing more than the network does. It
+ * is not. The gate is stricter than the SWITCH, not than the provider:
+ *
+ *   satoshis   gate                     mock `enforceDust:false`   mock `enforceDust:true`
+ *   100        REFUSE (374 short)       accept                     refuse `dust`
+ *   472        REFUSE (2 short)         accept                     refuse `dust`
+ *   473        REFUSE (1 short)         accept                     refuse `dust`
+ *   474        ADMIT                    accept                     accept
+ *
+ * The SAME in-repo decider agrees with the gate TO THE SATOSHI the moment it is asked to model relay policy.
+ * `enforceDust: false` does not describe a laxer node: it sets `standard: false` and `dustRelayFeePerKb: 0n`
+ * on the verifier, which is a harness that does not model relay policy at all.
+ *
+ * AND THE FIELD NAMES NO NETWORK. `MockNetworkProvider` is the only provider in `src/network/` that publishes
+ * `policy`; Electrum, FullStack, BitcoinRpc and Regtest all leave it undefined, so `enforceDust` resolves true
+ * on every real network. Wiring `provider.policy` into the gate would soften it on exactly one provider - the
+ * test harness - and never on a network, which is how the dust rule came to be present, correct and switched
+ * off while C1 was refused `64: dust` at this same 474 on a live BCHN regtest.
+ *
+ * THE `standard-output-template` PRECEDENT DOES NOT TRANSFER. That rule was deleted because a real BCHN v29
+ * node, started with an explicit `-acceptnonstdtxn=0`, ACCEPTED the shape. The principle it established - a
+ * gate refusing more than the NODE does is wrong, not conservative - is about the node, and the node refuses
+ * these. Nor is any number in dispute: `calculateDust` (444 + 3 x output bytes) and the gate's
+ * `finalizedOutputDustThreshold` (3 x (bytes + 148)) are the same arithmetic.
+ *
+ * SO THE GATE STAYS PROVIDER-BLIND, and row 2b is the behavioural pin: the identical bytes reach the identical
+ * refusal under both policies. Only the caller's explicit `allowNonRelayable` may suppress a policy refusal.
  *
  * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor; this is a correctness aid that saves a
  * round trip and a confusing node error. Nothing here constrains an attacker, who does not call `send()`.
@@ -107,26 +129,84 @@ describe('X131 - TransactionBuilder.send() decides its finalized bytes', () => {
     await expect((await p2pkhBuilder(dustProvider(), 474n)).send()).resolves.toBeDefined();
   });
 
-  it('2. DISCLOSURE: on a relaxed mock the gate is stricter than the provider it is in front of', async () => {
-    // `addOutput` refuses a below-dust output whenever `policy.enforceDust` is true, so the dust rule at this
-    // site is only ever reachable on a provider that declared it does not enforce dust - and that provider's
-    // decider accepts the very bytes the gate refused. Pinned so the asymmetry is visible rather than latent.
-    const provider = dustProvider();
-    const builder = await p2pkhBuilder(provider, 100n);
-    expect(await sendError(builder)).toMatch(/output-dust/);
-    // The same bytes, handed straight to the same provider, settle.
-    await expect(provider.sendRawTransaction(builder.build())).resolves.toBeTypeOf('string');
+  it('2. X157 DECIDED: the gate is stricter than the SWITCH, not than the provider', async () => {
+    // THE DISCRIMINATING MEASUREMENT. The same bytes are offered to two mocks that differ in one field, and
+    // the one that models relay policy agrees with the gate at every value including both sides of the
+    // boundary. "The provider accepts them" is a property of `enforceDust: false`, not of the provider.
+    for (const [amount, policyVerdict] of [[100n, 'refuse'], [472n, 'refuse'], [473n, 'refuse'],
+      [474n, 'accept'], [475n, 'accept']] as const) {
+      const lenient = dustProvider();
+      const builder = await p2pkhBuilder(lenient, amount);
+      const raw = builder.build();
+      const gateRefusal = await sendError(builder);
+      // The gate's own verdict at this value.
+      if (policyVerdict === 'refuse') expect(gateRefusal, `gate at ${amount}`).toMatch(/output-dust/);
+      else expect(gateRefusal, `gate at ${amount}`).toBe('');
 
-    // And on a dust-ENFORCING provider the transaction never reaches `send()`: `addOutput` refuses it, naming
-    // the same 474. That is the sense in which the gate refuses no more than a node does.
+      // The lenient decider takes every one of them - including the three the gate refused.
+      const spare = dustProvider();
+      const contract = new Contract(p2pkhArtifact, [alicePkh], { provider: spare });
+      await spare.addUtxo(contract.address, builder.inputs[0]);
+      await expect(spare.sendRawTransaction(raw), `lenient at ${amount}`).resolves.toBeTypeOf('string');
+
+      // The SAME decider told to model relay policy refuses exactly the set the gate refused, to the satoshi.
+      const strict = new MockNetworkProvider({ policy: { enforceDust: true } });
+      await strict.addUtxo(new Contract(p2pkhArtifact, [alicePkh], { provider: strict }).address,
+        builder.inputs[0]);
+      const send = strict.sendRawTransaction(raw);
+      if (policyVerdict === 'refuse') await expect(send, `policy at ${amount}`).rejects.toThrow(/dust/);
+      else await expect(send, `policy at ${amount}`).resolves.toBeTypeOf('string');
+    }
+  }, 120_000);
+
+  it('2b. the gate never reads `provider.policy`: identical bytes, identical refusal under both', async () => {
+    // THE BEHAVIOURAL HALF OF THE DECISION, and the row that goes red if a future caller ever derives
+    // `allowNonRelayable` from `provider.policy` - the strict run would keep refusing while the lenient one
+    // stopped, so the two messages would stop matching.
+    //
+    // The shape is chosen so the gate is the only thing that can speak on either provider. A custom unlocker
+    // means `send()` does not `debug()`, and pushing the output onto `builder.outputs` bypasses the
+    // policy-aware `addOutput`, which would otherwise refuse on the strict provider before `send()` is
+    // reached. Nothing else differs between the two runs.
+    const messages: string[] = [];
+    for (const enforceDust of [false, true]) {
+      const provider = new MockNetworkProvider({ policy: { enforceDust } });
+      const locking = Uint8Array.from([0x51]);
+      const utxo = { ...randomUtxo({ satoshis: 20_000n }), txid: '31'.repeat(32), vout: 0 };
+      await provider.addUtxo(binToHex(locking), utxo);
+      const builder = new TransactionBuilder({ provider });
+      builder.addInput(utxo, {
+        generateUnlockingBytecode: () => new Uint8Array(), generateLockingBytecode: () => locking,
+      } as never);
+      builder.outputs.push({ to: OP_TRUE_LOCKING, amount: 100n });
+      builder.addOutput({ to: OP_TRUE_LOCKING, amount: 15_000n });
+      messages.push(await sendError(builder));
+    }
+    expect(messages[0]).toMatch(/100 satoshis is 374 short of the 474-satoshi dust threshold/);
+    expect(messages[1]).toBe(messages[0]);
+  }, 120_000);
+
+  it('2c. THREE deciders, one number: the SDK is not offering a second opinion about 474', async () => {
+    // `addOutput` refuses at construction, and on a dust-enforcing provider the provider's OWN standard-
+    // transaction verifier refuses before the gate is even reached. Both name 474, the value the gate's
+    // `finalizedOutputDustThreshold` produces and the value BCHN used to refuse C1 `64: dust`.
     const strict = new MockNetworkProvider({ policy: { enforceDust: true } });
     const contract = new Contract(p2pkhArtifact, [alicePkh], { provider: strict });
     const utxo = randomUtxo({ satoshis: 20_000n });
     await strict.addUtxo(contract.address, utxo);
-    const strictBuilder = new TransactionBuilder({ provider: strict });
-    strictBuilder.addInput(utxo, contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
-    expect(() => strictBuilder.addOutput({ to: OP_TRUE_LOCKING, amount: 100n })).toThrow(/474/);
-  });
+    const builder = new TransactionBuilder({ provider: strict });
+    builder.addInput(utxo, contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
+    // Decider 1: construction time.
+    expect(() => builder.addOutput({ to: OP_TRUE_LOCKING, amount: 100n })).toThrow(/474/);
+    // Decider 2: the provider's own standard-transaction check, reached by placing the output without
+    // `addOutput`. It speaks BEFORE the gate here, which is exactly what "the mock is the lenient one" means:
+    // told to model relay policy, it refuses these bytes on its own.
+    builder.outputs.push({ to: OP_TRUE_LOCKING, amount: 100n });
+    builder.addOutput({ to: contract.address, amount: 15_000n });
+    expect(await sendError(builder)).toMatch(
+      /standard transactions may not have dust outputs.*at least 474 satoshis. Current value: 100/,
+    );
+  }, 120_000);
 
   it('3. ORDERING: a failing require still reports itself, not the byte rule it also breaks', async () => {
     // THE ANTI-VACUITY CONTROL. This transaction breaks BOTH: the P2PKH require fails because `bobPub` does not

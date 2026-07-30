@@ -35,7 +35,7 @@ import {
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
-import { assertFinalizedTransactionBytes } from '../layer3/preflight.js';
+import { assertFinalizedTransactionBytes, inputSubjectsOfBuilder } from '../layer3/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
@@ -2925,7 +2925,9 @@ export class StatefulTransactionBuilder {
     // witness-construction time a transaction whose bytes a node would refuse anyway, so the composer learns
     // the arithmetic here instead of reading `64: dust` off a peer. Ordered after the fee checks so a missing
     // change output still reports as a fee problem rather than as whichever relay observation is also true.
-    assertFinalizedTransactionBytes(decodedTx);
+    // X158: the same input subjects as site 2, read off the builder that produced these exact bytes, so an
+    // over-limit refusal names the contract rather than only an index.
+    assertFinalizedTransactionBytes(decodedTx, { inputSubjects: inputSubjectsOfBuilder(finalBuilder) });
 
     // -- Phase 5: submit --
     let txid: string;

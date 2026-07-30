@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider } from '../test-util.js';
@@ -91,9 +91,17 @@ async function run(tamper: Tamper): Promise<{ provider: any; rawTx: string }> {
     token: { category: ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: root } },
   });
   tx.addOutput({ to: p2.address, amount: 10000n });      // 5 change (fee tail)
-  if (tamper === 'extra-output') tx.addOutput({ to: p2.address, amount: 500n }); // shifts nothing but breaks the closure
+  // X152: 1,000 satoshis, not 500. The attack is that an EXTRA output exists; its value is incidental, and at
+  // 500 the output was below BCHN's 546-satoshi floor for a 34-byte P2PKH output. That made the shape refusable
+  // for dust as well as for the closure, so on any gate-bearing send path the refusal would silently stop being
+  // the covenant's. 1,000 matches the two neutral outputs above and shifts nothing else.
+  if (tamper === 'extra-output') tx.addOutput({ to: p2.address, amount: 1000n }); // breaks the closure
   return { provider, rawTx: raw(tx) };
 }
+
+/** The finalized bytes a hostile shape broadcasts, so a test can prove which decider refused it. */
+const byteVerdict = (rawTx: string): layer3.FinalizedByteVerdict =>
+  layer3.assessFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(rawTx)));
 
 describe('P9: balanced block layouts (shifted bases, closure enforced)', () => {
   it('layout math: A block size 2 puts B base at 2, controller at 4, fee tail at 5', () => {
@@ -110,7 +118,12 @@ describe('P9: balanced block layouts (shifted bases, closure enforced)', () => {
 
   it('HOSTILE: an extra output (breaking the balanced closure) is rejected', async () => {
     const { provider, rawTx } = await run('extra-output');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    // X152. These bytes break NO byte rule, so the refusal below can only be the closure covenant's. Before
+    // the extra output was raised off the dust floor this shape carried a `policy:output-dust` refusal too,
+    // and moving it onto a gate-bearing send path would have made a bare rejection dust-attributable.
+    expect(byteVerdict(rawTx).refusals).toEqual([]);
+    await expect(provider.sendRawTransaction(rawTx))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed|error in evaluating input index/);
   });
 
   it('HOSTILE: a wrong final state (116 != 115) is rejected across the balanced layout', async () => {

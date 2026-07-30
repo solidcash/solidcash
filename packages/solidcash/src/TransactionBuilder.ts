@@ -50,7 +50,7 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
-import { assertFinalizedTransactionBytes } from './layer3/preflight.js';
+import { assertFinalizedTransactionBytes, inputSubjectsOfBuilder } from './layer3/preflight.js';
 import { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
@@ -1155,7 +1155,26 @@ export class TransactionBuilder {
     // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
     // `test/e2e/layer3-gatesite-probe.ts` for the per-site table and `test/e2e/X131SendFinalizedBytesGate.test.ts`
     // for the throw census that confirms it after the gate was applied.
-    assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(tx)));
+    //
+    // IT DOES NOT READ `provider.policy`, AND MUST NOT START (X157, decided). The observation that prompted the
+    // question - `addOutput` admits a below-dust output when `enforceDust` is false, so the dust rule is only
+    // reachable where the provider then accepts the same bytes - reads as the gate refusing more than the
+    // network does, and it is not. Measured at 100/472/473/474/475 satoshis, the SAME mock told to model relay
+    // policy refuses exactly the set the gate refuses, to the satoshi; `enforceDust: false` sets
+    // `standard: false` and `dustRelayFeePerKb: 0n`, which is a harness that models no relay policy at all.
+    // `MockNetworkProvider` is also the only provider in `src/network/` that publishes `policy`, so wiring it
+    // in here would soften the gate on the test harness and on nothing else. Only the caller's explicit
+    // `allowNonRelayable` may suppress a policy refusal.
+    //
+    // X158. THE OVER-LIMIT REFUSAL LIVES HERE, and this is the only place it can. `solidc` warns when the
+    // un-constructed script passes 10,000 bytes and cannot do better: it does not know the constructor
+    // arguments, the redeem push prefix or the call arguments, and consensus limits their SUM. Measured on one
+    // contract family, the true boundary is 122 bytes below the compiler's threshold, so contracts that
+    // compile without a diagnostic are refused here. `inputSubjectsOfBuilder` gives the refusal the contract
+    // name the input index alone does not carry.
+    assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(tx)), {
+      inputSubjects: inputSubjectsOfBuilder(this),
+    });
 
     let txid: string;
     try {

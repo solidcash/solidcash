@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -988,6 +988,19 @@ const outcomeOf = (builder: TransactionBuilder): string => {
   return 'ACCEPTED';
 };
 
+/**
+ * X152. Which byte rules the finalized bytes break, if any.
+ *
+ * The container-drain hostiles below leave a below-dust output BECAUSE they drain the container, so they
+ * cannot be moved off the dust without deleting the attack. What can be pinned is that the dust is not what
+ * refuses them: `preflightLayer3Transaction` runs the VM before the byte rules, so the covenant speaks first
+ * and names the caller's own input. Asserting the byte objection EXISTS and is not the one delivered is what
+ * keeps a future move onto a gate-bearing send path from silently making these rejections dust-attributable.
+ */
+const byteRefusals = (rawTx: string): string[] =>
+  layer3.assessFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(rawTx)))
+    .refusals.map((row) => row.rule).sort();
+
 const BUS_OPTIONS = {
   forceStateful: true,
   experimentalHiddenBatch: true,
@@ -1102,8 +1115,14 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
   it('rejects a sibling-only batch that drains the co-spent container', async () => {
     const built = await buildSiblingOnlyBatch(true);
     expect(built.callerInput).toBe(0);
-    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    const outcome = outcomeOf(built.builder);
+    expect(outcome).toContain(at(built.callerInput));
+    // X152. The drain leaves a below-dust output, so the byte gate HAS an objection to these bytes - and it
+    // is not the one delivered. The refusal is the covenant's, at the caller's own input, on both paths.
+    expect(byteRefusals(built.transaction)).toEqual(['output-dust']);
+    expect(outcome, 'the byte gate spoke before the covenant').not.toMatch(/finalized transaction refused by/);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(new RegExp(`evaluating input index ${built.callerInput}`));
   }, 600_000);
 
   /**
@@ -1123,8 +1142,14 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     const built = await buildSec8ContainerBatch(true);
     expect(built.containerSlots).toBe(1);
     expect(built.callerInput).toBe(0);
-    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    const outcome = outcomeOf(built.builder);
+    expect(outcome).toContain(at(built.callerInput));
+    // X152, same as the sibling-only drain above: the dust is a consequence of the attack, and the refusal
+    // delivered is the covenant's rather than the byte gate's.
+    expect(byteRefusals(built.transaction)).toEqual(['output-dust']);
+    expect(outcome, 'the byte gate spoke before the covenant').not.toMatch(/finalized transaction refused by/);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(new RegExp(`evaluating input index ${built.callerInput}`));
   }, 600_000);
 
   /**

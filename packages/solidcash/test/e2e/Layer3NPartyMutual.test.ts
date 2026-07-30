@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { binToHex, encodeTransaction, hexToBin, sha256 } from '@bitauth/libauth';
+import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin, sha256 } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -143,8 +143,17 @@ describe('layer-3 sound N-party mutual authentication (controller-attested canon
     await s.provider.addUtxo(s.p2.address, fee);
     builder.addInput(fee, s.p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
     addTails(s, builder, s.ordered, s.controller);
-    builder.outputs[2].amount = 1n; // reduce controller output 2000 -> 1; covenant now preserves value
-    builder.addOutput({ to: s.ordered[0].contract.address, amount: 13999n });
-    await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow();
+    // X152. The siphon is 500 satoshis, not 1,999. The attack is that the controller output does NOT preserve
+    // its value; the size of the theft is incidental, and at 1 satoshi the output was far under BCHN's dust
+    // floor - so the shape was refusable for dust as well as for the covenant, and on a gate-bearing send path
+    // a bare rejection would silently have become dust-attributable. The surplus goes to the same tail output
+    // the honest controls use (12,000) plus the siphoned 500, so nothing else about the shape moves.
+    builder.outputs[2].amount = 1500n; // reduce controller output 2000 -> 1500; covenant preserves value
+    builder.addOutput({ to: s.ordered[0].contract.address, amount: 12500n });
+    // These bytes break no byte rule, so the refusal below can only be the controller covenant's.
+    const rawTx = raw(builder);
+    expect(layer3.assessFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(rawTx))).refusals).toEqual([]);
+    await expect(s.provider.sendRawTransaction(rawTx))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed|error in evaluating input index/);
   });
 });

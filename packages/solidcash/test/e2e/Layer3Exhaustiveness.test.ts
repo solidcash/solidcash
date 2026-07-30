@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider } from '../test-util.js';
@@ -13,6 +13,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 // participant positions - a call to a non-participant cannot be an edge) and unique-ownership/transition
 // authority (the scaffold F1: resource category == owner), this closes item 4's exhaustiveness properties.
 const raw = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
+/** The finalized bytes a hostile shape broadcasts, so a test can prove which decider refused it. */
+const byteVerdict = (rawTx: string): layer3.FinalizedByteVerdict =>
+  layer3.assessFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(rawTx)));
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 const INV = [{ caller: 0, callee: 1, selectorHex: 'aabbccdd' }];
 const EVENTS = [{ emitter: 0, topicHex: 'a1'.repeat(32) }];
@@ -66,7 +69,11 @@ async function build(s: any, opts: { extraOpReturn?: boolean; dropEvent?: boolea
     token: { category: s.ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: s.root } },
   });
   if (!opts.dropEvent) tx.addOutput({ to: s.record, amount: 0n }); // 3 committed event record
-  else tx.addOutput({ to: s.p2.address, amount: 500n }); // 3 non-record (event omitted)
+  // X152: 1,000 satoshis, not 500. The attack is that slot 3 is NOT the committed event record; its value is
+  // incidental, and 500 sat on a 34-byte P2PKH output is below BCHN's 546-satoshi floor - so the shape was
+  // refusable for dust as well, and on a gate-bearing send path a bare rejection would have stopped being the
+  // covenant's. 1,000 matches outputs 0 and 1.
+  else tx.addOutput({ to: s.p2.address, amount: 1000n }); // 3 non-record (event omitted)
   tx.addOutput({ to: s.p2.address, amount: 10000n }); // change
   if (opts.extraOpReturn) tx.addOutput({ to: concat(hexToBin('6a04'), hexToBin('deadbeef')), amount: 0n }); // UNRECORDED
   return tx;
@@ -80,11 +87,19 @@ describe('R4: emitter exhaustiveness (exactly the committed events, no extra OP_
 
   it('HOSTILE: an EXTRA unrecorded OP_RETURN is rejected (opret count != committed)', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(raw(await build(s, { extraOpReturn: true })))).rejects.toThrow();
+    const rawTx = raw(await build(s, { extraOpReturn: true }));
+    expect(byteVerdict(rawTx).refusals).toEqual([]);
+    await expect(s.provider.sendRawTransaction(rawTx))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed|error in evaluating input index/);
   });
 
   it('HOSTILE: OMITTING the committed event record is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(raw(await build(s, { dropEvent: true })))).rejects.toThrow();
+    // X152. With slot 3 raised to 1,000 satoshis these bytes break no byte rule, so the refusal below is the
+    // exhaustiveness covenant's and nothing else. At the previous 500 it also carried `policy:output-dust`.
+    const rawTx = raw(await build(s, { dropEvent: true }));
+    expect(byteVerdict(rawTx).refusals).toEqual([]);
+    await expect(s.provider.sendRawTransaction(rawTx))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed|error in evaluating input index/);
   });
 });

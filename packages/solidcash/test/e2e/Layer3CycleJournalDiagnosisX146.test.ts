@@ -354,54 +354,63 @@ async function buildHonestCycle(): Promise<BuiltProbe> {
   };
 }
 
-/** The locking bytecode of each of the first eight inputs, so a chunk-offset landing can be read directly. */
-function sourceOutputsPreview(built: BuiltProbe): string[] {
-  return generateLibauthSourceOutputs(built.builder.inputs).slice(0, 8)
-    .map((output, index) => `${index} ${binToHex(output.lockingBytecode)}`);
+/**
+ * The first input that fails, with the exact instruction and the two operands of the failing check.
+ *
+ * The diagnostic half is the point: a trailing-offset regression on this shape lands on a chunk-address
+ * OP_EQUALVERIFY deep inside an OP_DEFINE'd body, where the bare `preflight failed at input N` says nothing
+ * about which chunk was addressed. Reporting the executing subroutine and both operands names it directly.
+ */
+function firstFailingInput(built: BuiltProbe): { input: number; report: Record<string, unknown> } | null {
+  const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs);
+  const transaction = built.builder.buildLibauthTransaction();
+  const vm = createVirtualMachineBch2026ForProvider(built.builder.provider);
+  for (let input = 0; input < transaction.inputs.length; input += 1) {
+    const trace = vm.debug({ inputIndex: input, sourceOutputs, transaction }) as any[];
+    const failure = trace.findIndex((state) => state.error !== undefined);
+    if (failure < 0) continue;
+    const previous = trace[failure - 1];
+    const instructions = previous?.instructions ?? [];
+    const toBytes = (instruction: any): Uint8Array => (instruction.data !== undefined
+      ? new Uint8Array([instruction.opcode, ...instruction.data])
+      : new Uint8Array([instruction.opcode]));
+    const executing = binToHex(
+      new Uint8Array(instructions.flatMap((instruction: any) => [...toBytes(instruction)])),
+    );
+    return {
+      input,
+      report: {
+        error: trace[failure].error,
+        ip: previous?.ip,
+        stackTop: (previous?.stack ?? []).slice(-4).map((item: Uint8Array) => binToHex(item)),
+        chunkAddresses: built.chunkAddresses,
+        inputBytecodes: sourceOutputs.slice(0, 8)
+          .map((output, index) => `${index} ${binToHex(output.lockingBytecode)}`),
+        executingAsm: disassembleBytecodeBCH(hexToBin(executing)),
+      },
+    };
+  }
+  return null;
 }
 
-describe('X146 diagnosis - the honest C2 cycle at input 0', () => {
-  it('reports the failing instruction of the hub route', async () => {
+describe('X146 diagnosis - the honest C2 cycle on the BCH-2026 VM', () => {
+  /**
+   * A regression guard for the trailing-chunk addressing basis, not evidence of a boundary.
+   *
+   * `emitDynamicReadLoop` addresses a participant's trailing chunk region from the CURRENT FUNCTION's
+   * `dynamicReads` list, while the physical layout the SDK assembles comes from the ROUTE's. On this shape the
+   * two lists agree only by coincidence: the hub's emission clone reads the same two chunk-backed variables the
+   * route journals, in the same order. Any change that drops one of them from the clone's list - journalling
+   * the target array without its parallel selector array is the measured case - shifts the second read to the
+   * first chunk slot, and the hub fails at input 0 on the chunk-address equality.
+   */
+  it('settles at every input, and names the failing instruction when it does not', async () => {
     const built = await buildHonestCycle();
-    const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs);
-    const transaction = built.builder.buildLibauthTransaction();
-    const vm = createVirtualMachineBch2026ForProvider(built.builder.provider);
-    const addressLookup: Record<string, string> = {};
-    for (const [name, address] of Object.entries(built.chunkAddresses)) {
-      const script = (built.builder.provider as any).addressToLockScript?.(address);
-      addressLookup[script ? binToHex(script) : address] = name;
+    const failure = firstFailingInput(built);
+    if (failure !== null) {
+      // eslint-disable-next-line no-console
+      console.log(`X146-DIAG input ${failure.input}`, JSON.stringify(failure.report, null, 1));
     }
-    // eslint-disable-next-line no-console
-    console.log('X146-CHUNKS', JSON.stringify({
-      chunkAddresses: built.chunkAddresses,
-      inputBytecodes: sourceOutputsPreview(built),
-    }, null, 1));
-    const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as any[];
-    const failure = trace.findIndex((state) => state.error !== undefined);
-    const report: Record<string, unknown> = { failedStateIndex: failure };
-    if (failure >= 0) {
-      const state = trace[failure];
-      const previous = trace[failure - 1];
-      report.error = state.error;
-      report.ip = previous?.ip;
-      report.instruction = previous?.instructions?.[previous.ip]
-        ? binToHex(new Uint8Array([previous.instructions[previous.ip].opcode]))
-        : undefined;
-      report.stackTop = (previous?.stack ?? []).slice(-10).map((item: Uint8Array) => binToHex(item));
-      report.stackDepth = previous?.stack?.length;
-      report.controlStackDepth = previous?.controlStack?.length;
-      const toBytes = (instruction: any): Uint8Array => (instruction.data !== undefined
-        ? new Uint8Array([instruction.opcode, ...instruction.data])
-        : new Uint8Array([instruction.opcode]));
-      const instructions = previous?.instructions ?? [];
-      report.instructionCount = instructions.length;
-      report.executingBytecode = binToHex(
-        new Uint8Array(instructions.flatMap((instruction: any) => [...toBytes(instruction)])),
-      );
-      report.executingAsm = disassembleBytecodeBCH(hexToBin(report.executingBytecode as string));
-    }
-    // eslint-disable-next-line no-console
-    console.log('X146-DIAG', JSON.stringify(report, null, 1));
-    expect(failure).toBe(-1);
+    expect(failure === null ? null : failure.input).toBeNull();
   }, 300_000);
 });

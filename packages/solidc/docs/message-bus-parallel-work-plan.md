@@ -253,6 +253,10 @@ task-specific report, not in this table.
 | X105 | Journal divergence: is the spec or the implementation wrong? | I1 | S3 | **ANSWERED: the implementation** | both governing docs already defined `load(slot)` correctly; a direct-route filter was never widened - see 4.99 |
 | X106 | The 223-byte SCB1 blob envelope has two unlinked homes | J2 | X49 | **INTEGRATED (SDK half)** | home is `@solidcash/utils`; compiler half still BLOCKED behind J1's `compiler.ts` lease |
 | X57 | Should the three observer callers gate on relaxed limits? | J2 | — | **ANSWERED: leave all three** | the observer trace is NOT a faithful substitute - it derives PHANTOM state where the full trace correctly derives none - see 4.100 |
+| X111 | Emission-clone readers read the pre-state | K1 | SEC-18 | **GATE LANDED, STILL LIVE AT CONSENSUS** | K1's own headline: it refuses at WITNESS-CONSTRUCTION time, the exploit bytes still settle, and the refused order is the one an honest author writes - see 4.104 |
+| X109 | Two non-relaxed VM callers discard the provider's limits | K1 | X57 | **REOPENED - premise falsified by me** | K1 argued limits are unenforced using the ONE field the mock patches into `ConsensusCommon`; measured, submit refuses both a strict stack item AND a strict op-cost budget at exactly 150 x 167 |
+| X121 | Two X109 measurements cannot both hold for one provider profile | — | X109 | **TODO** | a `recursiveStateHandler` send reported settling-then-refused, while a plain P2PKH spend IS refused at the same published budget. One comparison used two configurations; the recursion path is where the risk is |
+| X122 | A worker worktree without `node_modules` resolves out to the MAIN checkout | K1 | — | **TODO (process, was live)** | K1 found its own imports resolving to `/Code/cashscript/node_modules` -> the main tree at `solidcash_v0.13.1`, i.e. testing another branch's code; it also had a `yarn build` fail `lerna: not found` exit 127 while reporting success through a pipe. K2/K3/K4 verified clean (own relative links) |
 | R3-8 | F3's two soundness rules sat inside the catch that swallowed them | I2 | R3 | **INTEGRATED** | the FIFTH vacuous guard; A/B-proven with the reviewer's own break, and a too-broad break rejected as unfair evidence |
 | R3-15 | The sweep's CONSENSUS_FIT claim never re-ran | I2 | R3 | **INTEGRATED** | 5/5 on the live node twice; a flipped unlocking byte is the direct proof the node EXECUTES rather than accepting on size |
 | R3-13 | 16 present-tense figures left behind by the first sweep | I2 | X99 | **INTEGRATED** | root cause named: the X81 row was never written into the covenant history; residue is 23 x N exactly on all four capstones |
@@ -301,6 +305,61 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.104 K1: the honest half closed a live exploit; the other half I had to falsify
+
+**X111's exploit was real and K1 refused to overclaim the fix.** At `8d2fe0b5` a router emitting
+`withdraw(80)` then `assertFloor(50)` against an opening balance of 100 passed preflight and the mocknet VM
+**resolved** - the emission-clone residual of SEC-18, reachable because `graphTailHandlers`
+(`compiler.ts:912`) is not only outgoing-call handlers: under a controller, a handler merely reading
+`msg.sender` is in it. K1 used that as the cheapest subject.
+
+**The gate is not a soundness repair, and K1 said so in its own headline rather than in a footnote.** It
+refuses at witness-construction time. The exploit bytes settled at base, no covenant moved, so the same bytes
+still settle if any other constructor produces them - **X111 remains live at consensus level.** Worse, the
+hostile order is not a spender's choice: it is the order the caller contract's own body emits and the
+projection verifier then enforces, so **the composition an honest author writes is the one the gate refuses.**
+It converts a silent wrong answer into a named refusal, and that is all.
+
+What made planning time work where compile time failed 23/23: `invocationAnalysis` publishes per-function
+reads/writes **and the clones themselves**, so emission-clone-ness is the compiler's own answer rather than a
+proxy. Two rules keep it from over-refusing, both measured - **per slot** (C2's `absorb` writes `state:total`,
+disjoint from `state:legs`, and `registerCredit`/`registerDebit` write `legs` but are not ROWS, which is
+exactly why the compile-time version false-refused) and **order** (only an earlier writer makes a read stale;
+ignoring order refuses the honest reader-first composition). H1 was proven non-vacuous by deliberate break.
+
+**X109 I had to falsify, and the row is REOPENED rather than closed.** K1's own new test failed at the composed
+HEAD - which is the whole reason composition gets verified instead of trusted. Chasing it broke the row's
+central claim. K1 concluded the published limits are "rules nothing enforces" from a true grep (zero hits for
+`config.consensus` in mem-cash) plus an inference that does not follow. Measured:
+
+| published limit | submit path |
+|---|---|
+| `maximumStackItemBytes: 8` | **REJECTS** - "Maximum stack item length: 8 bytes" |
+| `operationCostBudgetPerByte: 150` | **REJECTS** at exactly `150 x 167 = 25,050` |
+
+The overrides built at `MockNetworkProvider.ts:80-98` reach `createTxVerifier` and bite; the exact arithmetic
+is what makes the second a measurement of the *published* value rather than of some unrelated ceiling. **And
+the instructive part: K1 demonstrated non-enforcement using `maximumStackItemBytes`, which is the one field the
+mock explicitly patches into `ConsensusCommon` at `:264-271`.** It picked an enforced field to argue
+non-enforcement.
+
+So `ForProvider` looks faithful and J2's proposed repair may be correct - but I did not apply it. K1's
+regression measurement cannot hold for the same profile as the row above, so one of the two compares different
+provider configurations, and the recursion path is precisely where the risk lives. Two P2PKH probes do not
+settle it (X121). Row 1 stands, because it is a claim about the two CONSTRUCTORS rather than about the decider,
+and I added its missing guard: the same spends settle when only the attacked limit is relaxed.
+
+**Both source comments K1 left asserted the falsified premise as settled fact.** A wrong comment in the code
+outlives a wrong report, so both now carry the contradiction and state that the status quo is conservative only
+because it is the status quo.
+
+**Process defect, X122, and it was live**: K1's worktree had no `node_modules`, so `solidc` and
+`@solidcash/utils` resolved up to `/Code/cashscript/node_modules` - the **main checkout**, at
+`solidcash_v0.13.1`, i.e. a different branch's code. Its first `yarn build` also failed `lerna: not found`
+exit 127 **while reporting success through a pipe**. It detected both and fixed resolution mid-run. I verified
+K2/K3/K4 independently: each created correctly-scoped relative links into its own worktree, so they are clean.
+Every future dispatch must state this check explicitly.
 
 ### 4.102 J1: the biggest structural fix of the iteration, and the best result was a change WITHHELD
 

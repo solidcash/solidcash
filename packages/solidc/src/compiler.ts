@@ -90,6 +90,7 @@ import expandInheritance from './semantic/InheritanceExpansionTransformation.js'
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
+import { withGeneratedSource } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
@@ -1755,7 +1756,13 @@ function synthesizeHiddenBatchRoute(
   // handing back a number the user cannot act on.
   let routeAst: Ast;
   try {
-    routeAst = parseCode(source, undefined, false, compilerOptions.chunkedArrays);
+    // X92. Mark every position this parse builds as a position in generated source, so a diagnostic raised
+    // LATER - during semantic analysis of the merged AST - says so too. X71's catch below covers only a
+    // failure of the parse itself, which is one of the two sites this class has.
+    routeAst = withGeneratedSource(
+      `the hidden-batch route generated for '${contract.name}'`,
+      () => parseCode(source, undefined, false, compilerOptions.chunkedArrays),
+    );
   } catch (error) {
     throw new Error(
       `The hidden-batch route generated for '${contract.name}' does not parse - ${(error as Error).message}. `

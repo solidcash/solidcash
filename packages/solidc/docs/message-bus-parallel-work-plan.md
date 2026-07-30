@@ -176,7 +176,9 @@ task-specific report, not in this table.
 | X88 | Route-synthesis arity bug on collection-iteration handlers | — | — | **TODO** | `Found parameters () ... where parameters (bigint) were expected` in the generated wrapper |
 | X89 | A collection ITERATION read never enters the footprint | — | X88 | **TODO** | `CollectionIterationNode` carries `collectionName`, not `name`; harmless only because X88 stops it compiling |
 | X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
-| X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | — | X71 | **TODO** | `MerkleTree.sol` lands here once the ParseError is past |
+| X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | E2 | X71 | **INTEGRATED** | origin is a WHOLE-FUNCTION flag, not the lookup; corpus enumerated (78 files), 1 row changed - see 4.87 |
+| X90 | The same root cause has a SECOND FACE that does NOT crash | — | X83 | **TODO (reported, not acted on)** | a stateless mixed shape produces an artifact reading two covenant kinds at overlapping indices; satisfiability unproven either way |
+| X91 | X42's `blockhash` guard escapes on `Multicall2.sol` | — | X42 | **TODO** | still dies on `__internal__blockhashInputIndex` under `+hiddenBatch`, outside the graph-emission-handler gate |
 | X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **TODO** | likely a missing `compileFile` fallback for FAIL rows; reconcile before quoting those numbers |
 | X72 | 20 refusals published with NO `rejectionReason` | D6 | F3 | **INTEGRATED** | an ORDERING defect: the oracle pass appends an entry point after route synthesis names reasons; 16 -> 0 |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
@@ -188,7 +190,9 @@ task-specific report, not in this table.
 | X64 | DECISION: does `standard-output-template` ship? | C1 | R1 | **CLOSED - the rule does not exist** | BCHN v29 does not enforce it, cross-checked with `-acceptnonstdtxn=0`; **C2 and E1 are IN**; no rule is UNMEASURED any more |
 | X74 | `RegtestNetworkProvider.addUtxo` ignores `token.category` and mints a fresh genesis | D3 | X59 | **INTEGRATED (cross-run throw MERGED, not verified)** | **ALL FOUR capstones MINED in one run**; `c38d96c1` is lint-clean but NOT node-verified - see 4.81 |
 | X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **INTEGRATED** | NOT X22's shape; all 7 corpus files now name the real edge at a position INSIDE the user's file, 7/7 |
-| X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | — | X71 | **TODO** | `UndefinedReferenceError ... __scb_arg_0_0 at Line 28`/`42` on a 13-LINE contract; thrown in SEMANTIC analysis of the merged AST |
+| X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | E2 | X71 | **BLOCKED, hunks measured** | WIDER than filed: 161 files cite a line beyond the file, and X76's own position falls INSIDE it - see 4.87 |
+| X92 | Mark generated-source AST nodes so every diagnostic on them says so | — | X76 | **TODO (4 files, one HELD)** | prototyped and demonstrated at +0 bytes; stamp at CONSTRUCTION, since lowering clones and re-parents nodes |
+| X93 | 13 diagnostics report a position in an IMPORTED file with no label | — | X76 | **TODO** | `ERC20Mock.sol` Line 16 of 15; not fixed by the generated-source marking |
 | X77 | `view` functions reported `writesState: true` | E3 | X71 | **DISPROVED - no defect** | fires on `externalCalls > 0`, not the array analysis; cannot refuse a handler; corpus delta ZERO - see 4.86 |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
@@ -256,6 +260,66 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.87 X83 lands with a SECOND FACE left standing; X76 is wider than filed and BLOCKED
+
+Merged at `d2363af0`.
+
+**X83's origin is not the lookup, and E2 instrumented rather than guessed.** `keccakInLoop` is a **whole-function**
+flag; when set, `computeBlockLayout` reserves **zero** fixed `keccakSideCar` slots, because a loop reads one
+side-car per iteration from the trailing region under a runtime counter. But codegen only routes there while
+`keccakLoopActive` is live - so a `keccak256` call **outside** the loop in the same function still asks for a
+fixed slot that was never reserved.
+
+**X42's lesson applied twice over.** The guard is a **pre-check at the top of `emitKeccakComputeCall`**, before
+any opcode is emitted and before `keccakPreimageParams` is mutated - and it checks **against the layout** rather
+than against `keccakInLoop`, which also catches a static-count/emission-count disagreement under its own reason.
+
+**`MerkleTree.sol` is not written as a mix**, which is the part worth remembering: a fixed-bound loop is unrolled
+**before** the keccak pre-scan, so a `string[4]` loop became 4 straight-line calls beside the genuine `while`
+loop's 1. Both orderings fail, at slot `[0]` or `[1]`, because the emission index is shared.
+
+**The corpus check was enumerated, not sampled.** All **78** files containing `keccak256` across three corpora,
+140 contract entries, compiled with the guard live and with it disabled in `dist`: **120 artifacts byte-identical,
+19 of 20 error heads identical, exactly 1 row changed.** And E2 stated the boundary itself - *"a contract with no
+`keccak256` is not discriminating here and I make no claim from one."* +0 bytes on every shape.
+
+**A SECOND FACE of the same root cause, measured and deliberately left standing.** On a **stateless** function the
+mixed shape does **not** crash: it produces an artifact whose straight-line call reads count-relative
+`OP_TXINPUTCOUNT - 2` against the **stateless** compute covenant, while the loop reads absolute-forward
+`OP_INPUTINDEX + 1 + counter` against the **stateful** one compared inline. One transaction would have to supply
+two different covenant kinds at overlapping indices.
+
+E2's handling is the standard to copy: *"I believe it is unsatisfiable (fail-closed) rather than unsound, but **I
+did not prove satisfiability either way**"* - and refusing it would **remove an artifact that exists today**,
+which is a behaviour change rather than a diagnostic one. So it reported instead of acting. Opened as **X90**.
+
+**And X42's own guard escapes.** `Multicall2.sol` under `+hiddenBatch` still dies on
+`Expected variable '__internal__blockhashInputIndex' does not exist on the stack` - X42's *second* crash, outside
+its graph-emission-handler gate. Opened as **X91**.
+
+**X76 is wider than the row filed, and E2 found that by scanning rather than constructing.** **24 hand-built
+fixtures did not reproduce it**; a corpus scan did - `SushiMakerKashi.sol`, `Line 42` under `+controller`, exactly
+the figure the row records. **And it is worse than filed: that position falls INSIDE the file** (line 42 is a
+state-variable declaration), so nothing signals it is wrong.
+
+**The class is far larger than one error.** **161 distinct corpus files emit a warning citing a line beyond the
+file**, 138 naming a generated `__scb_*` symbol. The cheapest live instance is a **6-line** contract reporting
+`'__scb_graph_msg_value' at line 58` under `+hiddenBatch` and **`at line 107`** under `+controller` - a position
+beyond a 6-line file that **moves 49 lines** on an unrelated option. **These print in this repo's own test output
+today.** A distinct sibling also fell out: **13 rows report a position in an IMPORTED file with no label**
+(`ERC20Mock.sol` Line 16 of 15; `KashiPairMock.sol` Line 990 of 22), which the marking does **not** fix.
+
+**BLOCKED by measurement, not by assertion**: the in-lease half alone does not compile
+(`TS2339: Property 'generatedOrigin' does not exist on type 'Location'`), because the mark must exist before any
+diagnostic can read it. The minimum viable change spans **4 files, one of them `compiler.ts`, which E1 holds.**
+Prototyped, built, demonstrated on both channels, reverted, and the diff saved. **+0 bytes measured two ways**,
+with the discriminating set correctly identified as bus-mode contracts only, since marked positions exist solely
+inside a synthesized route. Opened as **X92**, with the note that stamping at **construction** is deliberate -
+later lowering passes clone and re-parent nodes, so a post-parse walk misses everything they create.
+
+**A brief of mine was wrong.** I gave E2 `packages/solidc/src/ast/Errors.ts` as part of its lease. **That file
+does not exist**; it is `packages/solidc/src/Errors.ts`. E2 treated the real one as leased and said so.
 
 ### 4.86 X77's premise was WRONG and moves nothing; X78's diagnosis was right and its conclusion too strong
 

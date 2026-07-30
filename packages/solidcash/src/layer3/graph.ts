@@ -1229,11 +1229,14 @@ const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
  * admitted for its PLAIN SCALAR slots, so a clone reading `state:<scalar>` loads through the live journal and
  * the covenant itself refuses the stale composition - proven by bypass constructors in
  * `Layer3EmissionCloneJournalX111.test.ts`. What survives is the DYNAMIC half: a clone whose stale read is on
- * a chunk-backed slot is still not journalled, because journalling only the header would mix two sources for
- * one array. So the gate below now over-refuses on the scalar half, and on the dynamic half it refuses an
- * HONEST constructor only - `writtenVariablesOf(clone)` is the spender's own data, so one published write on
- * a footprint turns the whole rule off (R3). It is a diagnostic, not a boundary. Narrowing or removing it is
- * an integration decision, not a local one.
+ * a chunk-backed slot is still not journalled. So the gate below over-refuses on the scalar half, and the
+ * dynamic half is the only part of it that is load-bearing.
+ *
+ * X138 removed the one ADMISSION a published claim could buy - see the note on the write claim in
+ * `assertNoStaleEmissionCloneReads`. It is still not a boundary: a spender that never calls
+ * `planCompiledGraph` is not subject to it at all, and `Layer3EmissionCloneFakeWriteX138.test.ts` settles
+ * that residual through a hand-assembled plan. Only the covenant can close it. Narrowing or removing this
+ * rule is an integration decision, not a local one.
  */
 const GRAPH_EMISSION_CLONE_PREFIX = '__scb_graph_';
 
@@ -1262,6 +1265,20 @@ const scalarReadsOf = (summary: InvocationAnalysisFunction): readonly string[] =
 const writtenVariablesOf = (summary: InvocationAnalysisFunction): readonly string[] => summary.writes
   .map(footprintVariable)
   .filter((name): name is string => name !== undefined);
+
+/**
+ * X138. Chunk-backed state variables of one participant, taken from the STATE LAYOUT rather than from a
+ * per-function footprint.
+ *
+ * `stateLayout` is the shape the participant's own covenant rebuilds and compares against its data NFT, so a
+ * participant that misdeclares it cannot settle at all. A per-function `writes`/`reads` list is not like that
+ * - nothing in the transaction commits to `invocationAnalysis`, which is exactly why one fabricated write on
+ * an emission clone used to buy admission (X138). Both are fields of an artifact the spender hands the
+ * planner, so neither is trusted; the difference is that a lie about this one is self-defeating.
+ */
+const dynamicVariablesOf = (artifact: Artifact): ReadonlySet<string> => new Set(
+  (artifact.stateLayout?.variables ?? []).filter((variable) => variable.dynamic).map((v) => v.name),
+);
 
 /** One row of one owner, in the order that owner's SCB1 route executes them. */
 interface OwnerRow { localRow: number; function: string }
@@ -1333,12 +1350,27 @@ function assertNoStaleEmissionCloneReads(
         + 'not an admitted graph shape',
       );
     };
+    // X138. The write claim below is the SPENDER'S, and it used to be read first and unconditionally: one
+    // published `writes: ['state:nosuchslot']` on a read-only clone turned the whole rule off. That is a
+    // claim-driven ADMISSION, the one direction a witness-side check may never take, and behind it the
+    // chunk-backed residual settles - `Layer3EmissionCloneFakeWriteX138.test.ts` broadcasts a transaction
+    // whose guard row is true of the pre-state 30 and false of the 40 the same transaction commits, on an
+    // artifact whose bytecode and address are byte-identical to the honest one.
+    //
+    // The claim is now honoured for a PLAIN SCALAR slot only. There it is not load-bearing: the compiler
+    // journals a clone's scalar slots whether or not it writes, and the covenant refuses the stale scalar
+    // composition itself, so believing a liar costs a diagnostic and nothing else. On a chunk-backed slot the
+    // compiler journals nothing unless the clone really is a writer, so the claim is the entire boundary and
+    // is refused outright. Dynamism comes from `stateLayout`, which the participant's own covenant enforces.
+    const dynamic = dynamicVariablesOf(participant.artifact);
     for (const row of rows) {
       const clone = byName.get(`${GRAPH_EMISSION_CLONE_PREFIX}${row.function}`);
       if (clone === undefined) continue;
-      // A clone that writes any slot joins the journal through `writerIds`, so its reads are live.
-      if (writtenVariablesOf(clone).length > 0) continue;
+      const claimsWrite = writtenVariablesOf(clone).length > 0;
       if (clone.unknown) {
+        // No enumerable read set, so the dynamic arm cannot be isolated: the claim is honoured only when the
+        // participant declares no chunk-backed slot for the unnamed read to be on.
+        if (claimsWrite && dynamic.size === 0) continue;
         for (const [slot, writer] of writtenAt) {
           if (writer.localRow < row.localRow) refuse(row, writer, slot);
         }
@@ -1346,7 +1378,9 @@ function assertNoStaleEmissionCloneReads(
       }
       for (const slot of scalarReadsOf(clone)) {
         const writer = writtenAt.get(slot);
-        if (writer !== undefined && writer.localRow < row.localRow) refuse(row, writer, slot);
+        if (writer === undefined || writer.localRow >= row.localRow) continue;
+        if (claimsWrite && !dynamic.has(slot)) continue;
+        refuse(row, writer, slot);
       }
     }
   });

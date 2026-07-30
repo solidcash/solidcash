@@ -143,20 +143,34 @@ function compileWithExternalAdmissionFallback(
   errorListener?: SolidCashErrorListener,
   primaryContractName?: string,
 ): Artifact {
-  const compileOnce = (admitExternalHandlers: boolean): Artifact => compileResolvedAst(
+  const compileOnce = (
+    admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
+  ): Artifact => compileResolvedAst(
     parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
-    code, mergedCompilerOptions, false, admitExternalHandlers,
+    code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
   );
   if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
-  try {
-    return compileOnce(true);
-  } catch (admittedError) {
+  // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
+  // spelling makes the route TRY a handler its refusal used to hide, and the solc corpus turned up four files
+  // where that reaches a pre-existing route-generation gap ('Block layout not available while compiling
+  // __scb_resource_transfer', 'Graph handler .. requires forwarded identifier arguments'). Those throw for the
+  // WHOLE FILE, so a sibling contract that compiles fine is dropped with it. Each rung refuses one more thing
+  // than the last, the widest that compiles wins, and the FIRST error is re-raised when none does - so no
+  // contract is worse off than at the narrowest rung, and nothing is masked.
+  // Monotone: each rung gives up one relaxation, and the last two reproduce X73's ladder exactly - so a contract
+  // that compiled at 77cd1e8c still compiles, whatever the wider rungs do.
+  const ladder: [boolean, boolean, boolean][] = [
+    [true, true, true], [true, true, false], [true, false, false], [false, false, false],
+  ];
+  let firstError: unknown;
+  for (const [admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects] of ladder) {
     try {
-      return compileOnce(false);
-    } catch {
-      throw admittedError;
+      return compileOnce(admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects);
+    } catch (error) {
+      firstError ??= error;
     }
   }
+  throw firstError;
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
@@ -365,6 +379,7 @@ function hiddenBatchAbsenceMessage(
  * source handler receives an explicit rejection reason in artifact metadata. */
 function synthesizeHiddenBatchRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
+  normalizeBareEntries = true, relaxResultRouteEffects = true,
 ): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
@@ -643,7 +658,7 @@ function synthesizeHiddenBatchRoute(
       });
       const directKeys = bareShapeIsSelfReached
         ? withBareKeys
-        : bareShapeIsNormalizable ? collectKeys(true, true) : mappingOnlyKeys;
+        : bareShapeIsNormalizable && normalizeBareEntries ? collectKeys(true, true) : mappingOnlyKeys;
       const closure = collectNamedFunctionClosure(fn, byName);
       const nonEntryCollectionOnly = directKeys.size === 0
         && [...footprint.reads, ...footprint.writes]
@@ -928,7 +943,7 @@ function synthesizeHiddenBatchRoute(
       // carries an effect is refused, because the effect's block slot flattens it into the wrapper and its
       // returning edge then has no slot to bind (the same mechanism `result-consuming-handler-...` names).
       for (const fn of survivors) {
-        if (eligibleFootprint(fn).effects.length > 0) {
+        if (eligibleFootprint(fn).effects.length > 0 || (!relaxResultRouteEffects && eventMode)) {
           fn.hiddenBatchEligible = false;
           fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
         }
@@ -937,8 +952,10 @@ function synthesizeHiddenBatchRoute(
       // Every effect-carrying handler has just been demoted, so no survivor emits or moves value. Recomputing
       // is what lets the route exist at all here: the blocks below refuse a survivor that carries no event
       // precisely because the flag said the route was event-shaped.
-      eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
-      valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+      if (relaxResultRouteEffects) {
+        eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
+        valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+      }
     }
     if (eventMode) {
       const eventWidths = new Set<number>();
@@ -1767,7 +1784,7 @@ function synthesizeHiddenBatchRoute(
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
-  admitExternalHandlers = true,
+  admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -1959,7 +1976,9 @@ function compileResolvedAst(
         || fn.returnTypes.length > 0;
     });
   if (synthesizeBatchBeforeLowering) {
-    synthesizeHiddenBatchRoute(ast, mergedCompilerOptions, admitExternalHandlers);
+    synthesizeHiddenBatchRoute(
+      ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+    );
   }
 
   // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
@@ -2185,7 +2204,9 @@ function compileResolvedAst(
   }
 
   if (!synthesizeBatchBeforeLowering) {
-    synthesizeHiddenBatchRoute(ast, mergedCompilerOptions, admitExternalHandlers);
+    synthesizeHiddenBatchRoute(
+      ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+    );
   }
 
   // Semantic analysis

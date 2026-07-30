@@ -154,7 +154,7 @@ function recordExternalHandlerSpan(
   attribution.spans.push({ key, name: fn.name, location: fn.location });
 }
 
-/** The internal clone names route synthesis dispatches a source handler through, longest-lived first. */
+/** Name prefixes of the internal clones route synthesis dispatches a source handler through. */
 const HIDDEN_BATCH_CLONE_PREFIXES = [
   '__scb_resource_', '__scb_handler_', '__scb_graph_', '__scb_array_', '__scb_external_',
 ];

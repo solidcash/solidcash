@@ -90,7 +90,7 @@ import expandInheritance from './semantic/InheritanceExpansionTransformation.js'
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
-import { withGeneratedSource } from './ast/Location.js';
+import { generatedOriginOf, Location, Point, withGeneratedSource } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
@@ -122,6 +122,95 @@ export interface SplitCompileOptions extends CompileOptions {
 // Off by default; enabled via SOLIDC_COMPILE_CACHE=1 (test harness sets it) since compilation is
 // deterministic. Skipped when a custom errorListener/importResolver is present (non-serializable).
 const compileCache = new Map<string, Artifact>();
+
+/**
+ * X100. The channel that lets the route-generation refusal name the handler whose shape actually threw.
+ *
+ * `spans` is recorded by route synthesis before anything downstream can throw: one entry per EXTERNAL entry
+ * point it considered, keyed by name and declaration position. `refused` is read at the visibility arm, so a
+ * key in it lands `external-handler-route-generation-unsupported` on that ONE handler while its clean siblings
+ * keep their route - instead of the whole contract losing its route because one sibling was gapped.
+ */
+interface ExternalAdmissionAttribution {
+  /** Handler keys to refuse on this compile. Empty on the first attempt. */
+  refused: Set<string>;
+  /** One entry per external entry point route synthesis considered. Accumulated across attempts, deduped. */
+  spans: { key: string; name: string; location?: Location }[];
+}
+
+/** Identity of one source handler: name plus declaration position, so two overloads stay distinct. */
+function externalHandlerKey(fn: FunctionDefinitionNode): string {
+  const start = fn.location?.start;
+  return `${fn.name}@${start ? `${start.line}:${start.column}` : '?'}`;
+}
+
+/** Record `fn` as an external entry point the route considered. Idempotent across ladder attempts. */
+function recordExternalHandlerSpan(
+  attribution: ExternalAdmissionAttribution | undefined, fn: FunctionDefinitionNode,
+): void {
+  if (!attribution) return;
+  const key = externalHandlerKey(fn);
+  if (attribution.spans.some((span) => span.key === key)) return;
+  attribution.spans.push({ key, name: fn.name, location: fn.location });
+}
+
+/** The internal clone names route synthesis dispatches a source handler through, longest-lived first. */
+const HIDDEN_BATCH_CLONE_PREFIXES = [
+  '__scb_resource_', '__scb_handler_', '__scb_graph_', '__scb_array_', '__scb_external_',
+];
+
+const withinSpan = (location: Location, point: Point): boolean => {
+  const after = point.line > location.start.line
+    || (point.line === location.start.line && point.column >= location.start.column);
+  const before = point.line < location.end.line
+    || (point.line === location.end.line && point.column <= location.end.column);
+  return after && before;
+};
+
+/**
+ * The external handlers a thrown route-generation error implicates, by the two channels an error can carry.
+ *
+ * NAME: the message names one of the internal clones route synthesis pushed - `Block layout not available while
+ * compiling '__scb_external_deposit'` is a plain Error with no position at all, so nothing but the name is
+ * available. The longest matching handler name wins, so `transfer` is not blamed for `transferFrom`.
+ * POSITION: a SolidCashError carries `node.location`, and `cloneNode` shares Location objects, so a diagnostic
+ * raised inside a clone still points into the handler that was cloned. Accepted only when exactly one recorded
+ * span contains it; an ambiguous or generated position names no handler.
+ *
+ * Only external entry points are ever recorded, so the same shape spelled `public` keeps hard-throwing - that
+ * asymmetry is deliberate and is what keeps the refusal a statement about the route rather than about the code.
+ */
+function attributeExternalHandlerRefusal(
+  error: unknown, attribution: ExternalAdmissionAttribution,
+): string[] {
+  const candidates = attribution.spans.filter((span) => !attribution.refused.has(span.key));
+  if (candidates.length === 0) return [];
+  const message = error instanceof Error ? error.message : '';
+  let named: string | undefined;
+  for (const prefix of HIDDEN_BATCH_CLONE_PREFIXES) {
+    for (const span of candidates) {
+      if (!message.includes(`${prefix}${span.name}`)) continue;
+      if (named === undefined || span.name.length > named.length) named = span.name;
+    }
+  }
+  if (named !== undefined) {
+    return candidates.filter((span) => span.name === named).map((span) => span.key);
+  }
+  const location = (error as { node?: { location?: Location } } | undefined)?.node?.location;
+  if (!location || generatedOriginOf(location)) return [];
+  const containing = candidates.filter((span) => span.location !== undefined
+    && !generatedOriginOf(span.location) && withinSpan(span.location, location.start));
+  return containing.length === 1 ? [containing[0].key] : [];
+}
+
+/** Handlers the route actually admitted, or 0 when the artifact carries no route at all. */
+function admittedHandlerCount(artifact: Artifact): number {
+  return (artifact.hiddenBatch?.handlers ?? []).filter((handler) => handler.eligible).length;
+}
+
+/** Rounds of one-handler-at-a-time attribution before the whole-route refusal is reached. */
+const MAX_ATTRIBUTED_EXTERNAL_REFUSALS = 4;
+
 /**
  * X73 SAFETY NET. Admitting `external` entry points must never make a contract WORSE, and a contract that used
  * to compile as a bus participant and now does not is strictly worse.
@@ -144,13 +233,14 @@ function compileWithExternalAdmissionFallback(
   errorListener?: SolidCashErrorListener,
   primaryContractName?: string,
 ): Artifact {
+  const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
     admitMixedScalarHandlers = true,
   ): Artifact => compileResolvedAst(
     parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
     code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-    admitMixedScalarHandlers,
+    admitMixedScalarHandlers, attribution,
   );
   if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
@@ -172,17 +262,69 @@ function compileWithExternalAdmissionFallback(
     [true, false, false, false], [false, false, false, false],
   ];
   let firstError: unknown;
+  let latestError: unknown;
+  // The rungs that still admit every external handler. Walked exactly as the shipped ladder walks them, so a
+  // contract that compiles at any of them returns the same artifact it returned before X100.
+  const admittingRungs = ladder.filter((rung) => rung[0]);
   for (const [
     admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers,
-  ] of ladder) {
+  ] of admittingRungs) {
     try {
       return compileOnce(
         admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers,
       );
     } catch (error) {
       firstError ??= error;
+      latestError = error;
     }
   }
+  // X100. Every admitting rung has thrown, which is exactly where the shipped ladder gave up on `external`
+  // ALTOGETHER: the last rung stamps `external-handler-route-generation-unsupported` on every external entry
+  // point that reaches the visibility arm, so two handlers that are admissible on their own are both refused and
+  // a contract with no public entry point loses its route entirely. Measured on a 3-handler synthetic and on the
+  // application corpus, that is a 12-contract frontier rather than a 30-handler one.
+  //
+  // The throw, however, is attributable: it either names one of the internal clones synthesis pushed or carries a
+  // position inside the handler that was cloned. Refuse THAT handler and try again, one handler per round, so the
+  // outcome is a named refusal on the gapped handler with its siblings still routed.
+  let attributed: Artifact | undefined;
+  for (let round = 0; round < MAX_ATTRIBUTED_EXTERNAL_REFUSALS && attributed === undefined; round += 1) {
+    const named = attributeExternalHandlerRefusal(latestError, attribution);
+    if (named.length === 0) break;
+    for (const key of named) attribution.refused.add(key);
+    try {
+      attributed = compileOnce(...ladder[0]);
+    } catch (error) {
+      latestError = error;
+    }
+  }
+  // A handler can be gapped AND the widest rung independently unavailable, so try the accumulated refusal set
+  // against the narrower admitting rungs too. All of them are wider than the whole-route refusal below.
+  if (attributed === undefined && attribution.refused.size > 0) {
+    for (const rung of admittingRungs.slice(1)) {
+      try {
+        attributed = compileOnce(...rung);
+        break;
+      } catch (error) {
+        latestError = error;
+      }
+    }
+  }
+  // The shipped narrowest rung, and the comparison that makes "never worse" a rule rather than an expectation:
+  // `admitExternalHandlers` false refuses every external handler, so the attributed answer is kept only when it
+  // admits at least as many handlers. A per-handler refusal that somehow reshaped the route into a smaller one
+  // therefore loses to the answer that shipped, and a contract can only gain handlers here.
+  let refusedAll: Artifact | undefined;
+  try {
+    refusedAll = compileOnce(false, false, false, false);
+  } catch (error) {
+    firstError ??= error;
+  }
+  if (attributed !== undefined
+    && (refusedAll === undefined || admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll))) {
+    return attributed;
+  }
+  if (refusedAll !== undefined) return refusedAll;
   throw firstError;
 }
 
@@ -403,6 +545,7 @@ function hiddenBatchAbsenceMessage(
 function synthesizeHiddenBatchRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
+  attribution?: ExternalAdmissionAttribution,
 ): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
@@ -425,6 +568,11 @@ function synthesizeHiddenBatchRoute(
     throw new Error('Source function selector collides with reserved hidden batch selector 0x53434231');
   }
   const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
+  // X100. Record every external entry point's span BEFORE any refusal is decided and before anything downstream
+  // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
+  for (const fn of functions) {
+    if (fn.visibility === 'external') recordExternalHandlerSpan(attribution, fn);
+  }
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of contract.functions) {
     const group = byName.get(fn.name) ?? [];
@@ -860,7 +1008,10 @@ function synthesizeHiddenBatchRoute(
         ? undefined
         : externalTokenContainer
           ? 'external-token-container-handler-requires-public-visibility'
-          : admitExternalHandlers ? undefined : 'external-handler-route-generation-unsupported';
+          // X100. The refusal is per HANDLER, not per contract: `admitExternalHandlers` false is the shipped
+          // whole-route give-up, and the `refused` set is the attributed form the fallback reaches first.
+          : admitExternalHandlers && !(attribution?.refused.has(externalHandlerKey(fn)) ?? false)
+            ? undefined : 'external-handler-route-generation-unsupported';
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
@@ -1893,7 +2044,7 @@ function synthesizeHiddenBatchRoute(
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
-  admitMixedScalarHandlers = true,
+  admitMixedScalarHandlers = true, attribution?: ExternalAdmissionAttribution,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -2087,7 +2238,7 @@ function compileResolvedAst(
   if (synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-      admitMixedScalarHandlers,
+      admitMixedScalarHandlers, attribution,
     );
   }
 
@@ -2316,7 +2467,7 @@ function compileResolvedAst(
   if (!synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-      admitMixedScalarHandlers,
+      admitMixedScalarHandlers, attribution,
     );
   }
 

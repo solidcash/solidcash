@@ -7,7 +7,7 @@ import {
   ExpressionNode,
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
@@ -146,9 +146,11 @@ function compileWithExternalAdmissionFallback(
 ): Artifact {
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
+    admitMixedScalarHandlers = true,
   ): Artifact => compileResolvedAst(
     parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
     code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+    admitMixedScalarHandlers,
   );
   if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
@@ -160,13 +162,23 @@ function compileWithExternalAdmissionFallback(
   // contract is worse off than at the narrowest rung, and nothing is masked.
   // Monotone: each rung gives up one relaxation, and the last two reproduce X73's ladder exactly - so a contract
   // that compiled at 77cd1e8c still compiles, whatever the wider rungs do.
-  const ladder: [boolean, boolean, boolean][] = [
-    [true, true, true], [true, true, false], [true, false, false], [false, false, false],
+  //
+  // X94 joins as the WIDEST rung and is therefore the FIRST thing given up, which keeps the four rungs below it
+  // byte-for-byte the ladder that shipped: a contract whose scalar handler reaches a route-generation gap loses
+  // only that admission and lands on the previously shipped answer rather than on a narrower one.
+  const ladder: [boolean, boolean, boolean, boolean][] = [
+    [true, true, true, true],
+    [true, true, true, false], [true, true, false, false],
+    [true, false, false, false], [false, false, false, false],
   ];
   let firstError: unknown;
-  for (const [admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects] of ladder) {
+  for (const [
+    admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers,
+  ] of ladder) {
     try {
-      return compileOnce(admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects);
+      return compileOnce(
+        admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers,
+      );
     } catch (error) {
       firstError ??= error;
     }
@@ -346,8 +358,18 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
     + 'container: the route wrapper has to declare that effect\'s block slot, which flattens the handler into '
     + 'the wrapper and leaves its returning edge with no slot to bind - move the effect into a second handler '
     + 'that consumes no result, or drop the result and make the call a void tail call',
+  'collection-iteration-handler-not-enabled':
+    'a handler that ITERATES a collection reads every entry of it, and the route addresses entries through '
+    + 'per-entry witnesses fixed at compile time, so an unbounded iteration has no representation in the '
+    + 'block layout: read the entries the batch needs by key, or keep the iteration on the direct route',
   'mixed-scalar-and-collection-route-not-enabled':
-    'every batched handler must address a collection entry, or none may; split the scalar-only handlers out',
+    'a handler that addresses no collection entry is refused on two route shapes. On a route that allocates a '
+    + 'ROW-LOCAL entry slot per row, those slots are bound by the entry handler\'s own row, so a row that '
+    + 'addresses no entry leaves its slot with no witness to bind and no way to gate it off - give the entry '
+    + 'handler a single key alternative so the route\'s entry slots become shared. On any route, a scalar '
+    + 'handler is also refused when admitting it would make the route returning or event-shaped and thereby '
+    + 'refuse MORE handlers than it adds. Either way, splitting the scalar-only handlers out gives them a '
+    + 'route of their own',
 };
 
 /**
@@ -380,7 +402,7 @@ function hiddenBatchAbsenceMessage(
  * source handler receives an explicit rejection reason in artifact metadata. */
 function synthesizeHiddenBatchRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
-  normalizeBareEntries = true, relaxResultRouteEffects = true,
+  normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
 ): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
@@ -587,7 +609,23 @@ function synthesizeHiddenBatchRoute(
       source?: 'argument' | 'msgSender';
       perRow?: boolean;
     }[] = [];
-    if ([...footprint.reads, ...footprint.writes].some((resource) =>
+    // X89. A collection ITERATION - `for (k, v of this.m.entries)`, `for (k in this.m)` - reads every entry of
+    // `m`, but `CollectionIterationNode` carries `collectionName` where the footprint walker reads `name`, so
+    // the read never entered the footprint at all and the branch below could not fire. Same class as X26's bare
+    // read, one node kind further out, and NOT harmless: the route's collection-eligibility branch is gated on
+    // this, so an iteration handler was treated as scalar. It reached the route only because X88 stopped it
+    // compiling - the enumerable-iteration lowering gives the handler extra parameters after the wrapper's
+    // dispatch call has already been generated from the pre-lowering signature, which fails as
+    // `Found parameters () in call to function '<name>' where parameters (bigint,bytes) were expected`.
+    // Recovering the read here makes the route refuse the handler BY NAME instead, which is the fail-closed
+    // half of the pair: fixing the arity alone would have admitted a handler whose entry reads reserve nothing.
+    let iteratesCollection = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof CollectionIterationNode && collectionByName.has(node.collectionName)) {
+        iteratesCollection = true;
+      }
+    });
+    if (iteratesCollection || [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
       // X19: a BARE `m[k] = v` / `m[k]` is an ArrayAssign / ArrayAccess until symbol resolution decides
       // state-vs-local; only the `this.`-prefixed spelling reaches here as a Mapping* node. Walking the
@@ -653,6 +691,15 @@ function synthesizeHiddenBatchRoute(
       walkInvocationAst(fn.body, (node) => {
         if (node instanceof ArrayDeleteNode && !locallyBound.has(node.name)
           && collectionByName.has(node.name)) bareShapeIsNormalizable = false;
+        // X95, MEASURED AND KEPT. Narrowing this clause to COLLECTION names only was filed as a sound widening:
+        // a bare index of a name that is not a collection reserves no entry, so refusing the whole handler for
+        // one looks like a loss for nothing. It is not. The names this clause catches beyond collections are
+        // DYNAMIC and PACKED array state variables, which `bareEntryAccessOf` declines precisely because they
+        // resolve to `StateArrayAssignNode` - and admitting the handler then puts an unbounded array write on a
+        // route beside collection entries, which is the shape NEGATIVE CONTROL 3 in HiddenBatchGatesX76 pins as
+        // refused. Measured on the corpus, the narrowing's ONLY subject is `EventSubscription.unsubscribe`,
+        // whose blocking bare index is `subscriberList[i]` on `address[] public subscriberList` - that exact
+        // shape. So the wider predicate buys one contract and costs the control; it stays as it was.
         if ((node instanceof ArrayAssignNode || node instanceof ArrayAccessNode)
           && bareAccessOf(node) !== undefined
           && bareEntryAccessOf(node, locallyBound) === undefined) bareShapeIsNormalizable = false;
@@ -668,7 +715,15 @@ function synthesizeHiddenBatchRoute(
             const name = resource.split(':')[1];
             return dynamicState.has(name) || name === 'tokens';
           });
-      if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
+      // X88/X89. Refuse the ITERATION first and unconditionally. Recovering the read (above) is not by itself
+      // enough: an iteration contributes no KEY, so `directKeys` stays empty and the handler's footprint has no
+      // `collection:` resource either, which makes `nonEntryCollectionOnly` vacuously TRUE and lets the chain
+      // below fall through with no reason at all. That is how an iteration handler reached the wrapper and
+      // crashed it on arity. Nor is `directKeys.size === 0` the right test: a handler that BOTH iterates and
+      // writes one keyed entry has a non-empty key set while the iteration's reads are still unreserved.
+      if (iteratesCollection) {
+        reason = 'collection-iteration-handler-not-enabled';
+      } else if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => {
           let touches = false;
           walkInvocationAst(candidate.body, (node) => {
@@ -878,13 +933,36 @@ function synthesizeHiddenBatchRoute(
    * admitted. Extracted so the set can be chosen (see the X73 note at the call site) rather than assumed.
    * Mutates the per-handler verdict fields, which the caller snapshots and restores between runs.
    */
-  const applyRouteUniformity = (candidates: FunctionDefinitionNode[]): {
+  const applyRouteUniformity = (
+    candidates: FunctionDefinitionNode[], dropMixedScalars: boolean,
+  ): {
     survivors: FunctionDefinitionNode[];
     eventMode: boolean; resultMode: boolean; valueEffectMode: boolean;
     nestedCollectionMode: boolean; fixedArrayMode: boolean; tokenContainerMode: boolean;
   } => {
     let survivors = candidates;
-    if (survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
+    // X94. A handler that carries no key witness was refused as soon as ONE sibling carried one, so a scalar
+    // handler was refused for the company it kept: measured on this board at 139 application and 88 solc
+    // firings, all `public`, none with a collection in its own footprint.
+    //
+    // What the refusal has to protect is the ROW-LOCAL entry slot, and only that. Every physical entry key on a
+    // route is a WRAPPER parameter - `substituteKeyWitnesses` feeds an uncloned handler's key positions from the
+    // canonical route witnesses, and `bindEntryKeyParameters` rewrites a clone's keys to synthetic parameters
+    // fed the same way - so `LowerCollectionJournalHelpers` hoists the entry read to the top of the wrapper and
+    // its write-back to the bottom, both OUTSIDE the row dispatch. A row that addresses no entry therefore
+    // flushes the reserved entry unchanged rather than leaving its post-state unconstrained. Measured: the
+    // route's `blockLayout` and `entryAccesses` are IDENTICAL with and without the scalar handler admitted -
+    // same slot, same offset, same wrapper parameter - so admitting one adds no covenant.
+    //
+    // A ROW-LOCAL witness (`perRow`) is the exception, and it fails two ways rather than one. The `_r{n}`
+    // witness is bound by the entry handler's invocation AT THAT ROW, so a scalar row leaves slot `r{n}` with
+    // no binder at all; and the alias gating that collapses a duplicated row key onto an earlier slot lives
+    // INSIDE the entry handler's dispatch arm, so a hand-supplied key makes the derivation co-spend one entry
+    // NFT twice. Both are measured, and neither is reachable by widening this predicate.
+    const perRowEntryRoute = survivors.some((fn) =>
+      fn.hiddenBatchKeyWitnesses?.some((binding) => binding.perRow));
+    if ((dropMixedScalars || !admitMixedScalarHandlers || perRowEntryRoute)
+      && survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
       for (const fn of survivors) {
         if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
           fn.hiddenBatchEligible = false;
@@ -1028,12 +1106,35 @@ function synthesizeHiddenBatchRoute(
       fn.hiddenBatchRejectionReason = state.reason;
     }
   };
+  /**
+   * X94 NEVER SHRINK, and it is X73's guard applied to the other admission on this path. A scalar handler that
+   * RETURNS makes the route result-shaped and an emitting one makes it event-shaped, and both of those refuse
+   * handlers that were already admitted - so admitting a scalar handler can cost a contract more handlers than
+   * it gains, exactly as admitting an `external` one could. Run the rules over both sets, keep the wider, and
+   * refuse the scalar handlers by name when the narrower answer is strictly better.
+   */
+  const applyBestUniformity = (candidates: FunctionDefinitionNode[]): ReturnType<typeof applyRouteUniformity> => {
+    const wide = applyRouteUniformity(candidates, false);
+    if (!admitMixedScalarHandlers) return wide;
+    const wideReasons = new Map(candidates.map((fn) => [fn, fn.hiddenBatchRejectionReason]));
+    const wideCount = wide.survivors.length;
+    restoreVerdicts();
+    const narrow = applyRouteUniformity(candidates, true);
+    if (narrow.survivors.length > wideCount) return narrow;
+    restoreVerdicts();
+    for (const [fn, reason] of wideReasons) {
+      if (reason === undefined) continue;
+      fn.hiddenBatchEligible = false;
+      fn.hiddenBatchRejectionReason = reason;
+    }
+    return wide;
+  };
   const publicCandidates = eligible.filter((fn) => fn.visibility !== 'external');
-  let selection = applyRouteUniformity(eligible);
+  let selection = applyBestUniformity(eligible);
   if (publicCandidates.length !== eligible.length) {
     const wide = { ...selection, reasons: new Map(eligible.map((fn) => [fn, fn.hiddenBatchRejectionReason])) };
     restoreVerdicts();
-    const narrow = applyRouteUniformity(publicCandidates);
+    const narrow = applyBestUniformity(publicCandidates);
     if (narrow.survivors.length > wide.survivors.length) {
       for (const fn of eligible) {
         if (fn.visibility === 'external') fn.hiddenBatchRejectionReason ??= 'external-handler-would-shrink-the-route';
@@ -1792,6 +1893,7 @@ function synthesizeHiddenBatchRoute(
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
+  admitMixedScalarHandlers = true,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -1985,6 +2087,7 @@ function compileResolvedAst(
   if (synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+      admitMixedScalarHandlers,
     );
   }
 
@@ -2213,6 +2316,7 @@ function compileResolvedAst(
   if (!synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+      admitMixedScalarHandlers,
     );
   }
 

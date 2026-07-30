@@ -132,7 +132,11 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     expect(afterA.BStorage__b).toBe(0n);
     expect(afterA.CStorage__c).toBe(0n);
 
-    // A second facet-resident write into a DIFFERENT namespace, so one correct slot cannot carry the row.
+    // A second facet-resident write, into a DIFFERENT namespace and from a DIFFERENT facet - the two shards
+    // whose promotion order used to disagree. One correct slot cannot carry this row.
+    const secondRoute = bundle.manifest.routes.find((r: any) => r.function === 'touchC');
+    expect(secondRoute.target).not.toBe('root');
+    expect(secondRoute.target).not.toBe(facetRoute.target);
     await deployed.call.touchC(9n).send();
     const afterC = await deployed.root.getState();
     expect(afterC.CStorage__c).toBe(9n);

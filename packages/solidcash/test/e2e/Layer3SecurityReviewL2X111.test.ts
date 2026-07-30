@@ -422,14 +422,20 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
       .rejects.toThrow(STALE);
   }, 300_000);
 
-  it('L2-A1 HOSTILE: a hand-assembled plan never calls the planner, and the bytes SETTLE', async () => {
-    // opening 100 -> closing 20. `assertFloor(50)` is TRUE of 100 and FALSE of 20.
+  it('L2-A1 was a real bypass and the COVENANT now refuses it', async () => {
+    // INVERTED WHEN THE COMPILER REPAIR LANDED. This recorded a genuine hole: the gate refuses at
+    // witness-construction time, so a plan assembled without ever calling the planner settled the exploit
+    // bytes. opening 100 -> closing 20, and `assertFloor(50)` is TRUE of 100 and FALSE of 20. X111's scalar
+    // half is now closed at CONSENSUS - the emission clone loads through the journal, so the refusal comes
+    // from the covenant at the vault master rather than from any SDK decision. L2-A1n below is unchanged and
+    // is the guard on the attacked field.
     const built = await buildGuardGraph({
       constructor: 'handAssembled', opening: 100n, rows: HOSTILE,
     });
     expect(built.closing).toBe(20n);
-    expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
   it('L2-A1n GUARD on the ATTACKED FIELD: the same hand-assembled route with a TRUE floor', async () => {
@@ -457,15 +463,22 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
     expect(failingInput(built.builder)).toBe(built.vaultInput);
   }, 300_000);
 
-  it('L2-A2 HOSTILE: dropping the clone from invocationAnalysis silences the gate, and it SETTLES', async () => {
-    // The gate's only decision input is `artifact.invocationAnalysis.functions`. Nothing in the transaction
-    // commits to it, so a plan built from a footprint missing the clone produces the same covenant bytes.
+  it('L2-A2 was a real bypass and the COVENANT now refuses it', async () => {
+    // INVERTED alongside L2-A1, and this one is the sharper of the pair. The gate's ONLY decision input is
+    // `artifact.invocationAnalysis.functions`, and nothing in the transaction commits to it, so a plan built
+    // from a footprint missing the clone produced identical covenant bytes and settled. That is why an SDK
+    // gate could never close this row: its input is attacker-supplied. The covenant refuses regardless of
+    // what the spender publishes, which is the property that actually closes it.
+    //
+    // NOTE the residual this does NOT cover, filed as X138: the DYNAMIC half is still open, and there the
+    // gate is still defeatable by publishing one nonexistent write.
     const built = await buildGuardGraph({
       constructor: 'decoyAnalysis', opening: 100n, rows: HOSTILE,
     });
     expect(built.closing).toBe(20n);
-    expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
   it('L2-F3 was a LIVE EXPLOIT and is now refused at the vault master', async () => {

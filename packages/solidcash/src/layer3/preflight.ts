@@ -647,18 +647,25 @@ export const preflightLayer3Transaction = (
  * unlike the general TransactionBuilder send path, this function never mutates the shape
  * between preflight and broadcast.
  *
- * SCOPE. This is the only broadcast site in `src/` carrying the byte gate. The other seven -
- * `TransactionBuilder.send`, `StatefulTransactionBuilder`'s submit phase and five in `StatefulContract` - do
- * not, so a Layer-3-shaped composition assembled through the stateful builder reaches the network unjudged by
- * these rules.
+ * SCOPE. TWO of the eight broadcast sites in `src/` now carry the byte gate: this one and
+ * `StatefulTransactionBuilder`'s submit phase, which is the one a Layer-3-shaped composition assembled
+ * through the stateful builder actually reaches. The remaining six - `TransactionBuilder.send` and five in
+ * `StatefulContract` - do not.
  *
- * THE BLAST RADIUS IS NO LONGER UNMEASURED (X126). Every broadcast of the whole SDK e2e population was
- * assessed against these rules without enforcing them - 5,370 sends across 422 green files - and the
- * per-site table is in `test/e2e/layer3-gatesite-probe.ts`. Six of the seven would newly refuse NOTHING;
- * `StatefulTransactionBuilder.send` would newly refuse exactly two tests in one fixture, both because that
- * fixture pays 100/200/300 satoshis to a one-byte script and trips `output-dust` at the same 474-satoshi
- * threshold BCHN used to refuse C1. The gate is right there and the fixture is not, but turning a green test
- * red is a regression to report rather than a win to land, so it stays off pending that fixture.
+ * THE BLAST RADIUS IS MEASURED, NOT ASSUMED (X126). Every broadcast of the whole SDK e2e population was first
+ * assessed against these rules without enforcing them - 5,370 sends across 422 green files - and the per-site
+ * table is in `test/e2e/layer3-gatesite-probe.ts`. Six of the seven ungated sites would newly refuse NOTHING;
+ * the submit phase would newly refuse two tests in one fixture, both because that fixture paid 100/200/300
+ * satoshis to a one-byte script and tripped `output-dust` at the same 474-satoshi threshold BCHN used to
+ * refuse C1. The gate was node-correct and the fixture was building a transaction the network rejects, so the
+ * fixture was corrected (amounts are incidental to what it asserts) and the gate landed there.
+ *
+ * WHY THE OTHER SIX STAY OFF. `TransactionBuilder.send` was outside the lease that landed this. The five
+ * `StatefulContract` sites are lifecycle admin - destroy, split, merge, and one raw-builder helper - which
+ * never assemble a Layer-3 block, and the whole e2e population exercises them a combined 14 times across 11
+ * tests. A 0% blast radius over 14 sends is not the evidence 2,315 sends gave for the submit path; it is an
+ * unmeasured site with a small number attached. The sixth, `_sendBuilderWithCustomUnlockers`, has no caller
+ * anywhere in the repo and must not be gated at all: a guard on dead code cannot fire on its own subject.
  */
 export async function sendPreflightedLayer3Transaction(
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,

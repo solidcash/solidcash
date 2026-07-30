@@ -35,6 +35,7 @@ import {
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { assertFinalizedTransactionBytes } from '../layer3/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
@@ -2918,6 +2919,13 @@ export class StatefulTransactionBuilder {
         + 'This may indicate a missing change output. Use .withMaxFee() to override.',
       );
     }
+
+    // Byte rules LAST, immediately before the network sees the bytes, and reading the DECODED broadcast bytes
+    // rather than a re-derived shape. A correctness aid, not a security boundary: it refuses at
+    // witness-construction time a transaction whose bytes a node would refuse anyway, so the composer learns
+    // the arithmetic here instead of reading `64: dust` off a peer. Ordered after the fee checks so a missing
+    // change output still reports as a fee problem rather than as whichever relay observation is also true.
+    assertFinalizedTransactionBytes(decodedTx);
 
     // -- Phase 5: submit --
     let txid: string;

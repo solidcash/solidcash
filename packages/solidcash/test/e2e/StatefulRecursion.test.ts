@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString } from 'solidc';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import { Contract, StatefulContract, SignatureTemplate, MockNetworkProvider } from '../../src/index.js';
+import { MOCK_CONSENSUS_LIMITS } from '../../src/network/MockNetworkProvider.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
@@ -123,18 +125,86 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     await sc.chk(-6n).send();
   });
 
-  it('rejects an over-budget concrete recursion before returning a transaction builder', async () => {
+  /**
+   * THE BUDGET ROW, MADE ATTRIBUTABLE AGAIN.
+   *
+   * This row refused for DENSITY CONTROL when it was written - `Maximum operation cost: 551200`, the stock
+   * 800-per-byte budget times a 689-byte density control length. It still refuses and still passes, and it has
+   * not measured a budget since X130 made `debug()` provider-faithful: `MOCK_CONSENSUS_LIMITS` publishes
+   * `operationCostBudgetPerByte: 10_000_000`, 12,500x the stock value, so on the default profile no depth this
+   * handler survives can exceed the budget. Measured on this branch: `decrement(10_000)` refuses `Unsuccessful
+   * evaluation: completed with a non-truthy value on top of the stack`, and every depth from 4 to 40 BUILDS.
+   * The old assertion matched only the SDK's wrapper sentence, so it could not tell the two apart.
+   *
+   * REPAIRED BY PINNING THE CEILING TO A PUBLISHED PROFILE. The subject runs against the STOCK BCH-2026
+   * consensus budget, read from libauth's own `ConsensusBch2026` and never restated here, and the expected
+   * ceiling is that published budget times the density control length the VM reports for this transaction. No
+   * figure below is a literal, so the row measures whatever the profile publishes rather than a number that
+   * was true once.
+   *
+   * THE DEPTH IS ONE THE HANDLER SURVIVES, which is what makes the refusal attributable: the same invocation
+   * at the same depth BUILDS under the relaxed default budget, so the two runs differ in the published budget
+   * and in nothing else. A depth past 47 would refuse non-truthy under either budget and prove nothing.
+   *
+   * This row stages its own `MockNetworkProvider` rather than `createTestProvider()` because its subject is
+   * the SDK's preflight decider - a pure VM decision on published consensus limits, with no node in it.
+   */
+  const OVER_BUDGET_DEPTH = 24n;
+  const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
+  const RELAXED_BUDGET = MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte;
+
+  /** Stage the recursive contract against one published operation-cost budget. */
+  const stageAtBudget = async (operationCostBudgetPerByte: number): Promise<StatefulContract<any>> => {
     const artifact = compileString(SELF, { forceStateful: true });
-    const contract = new Contract(artifact, [], { provider });
+    const staged = new MockNetworkProvider({
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, operationCostBudgetPerByte },
+    });
+    const contract = new Contract(artifact, [], { provider: staged });
     const { categoryId } = await setupStatefulUtxos(
-      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+      staged, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
     );
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.decrement(10_000n).build()).rejects.toThrow(
+    return StatefulContract.withCategory(contract, categoryId);
+  };
+
+  it('rejects an over-budget concrete recursion before returning a transaction builder', async () => {
+    // GUARD NEGATIVE CONTROL, and it differs from the subject in exactly one field: the published budget.
+    // If this ever refuses, the depth - not the budget - is what the subject below is measuring.
+    const relaxed = await stageAtBudget(RELAXED_BUDGET);
+    await expect(
+      relaxed.decrement(OVER_BUDGET_DEPTH).build(),
+      `depth ${OVER_BUDGET_DEPTH} does not fit at the relaxed budget either`,
+    ).resolves.toBeDefined();
+
+    const strict = await stageAtBudget(STOCK_BUDGET);
+    const refusal = await strict.decrement(OVER_BUDGET_DEPTH).build()
+      .then(() => undefined, (error: Error) => error.message);
+    expect(refusal, `depth ${OVER_BUDGET_DEPTH} was ADMITTED at the stock budget`).toBeDefined();
+    expect(refusal).toMatch(
       /Recursive state invocation 'decrement' does not fit or fails its concrete BCH VM preflight/,
     );
-  });
+    // ATTRIBUTABLE. The refusal is density control and not the generic non-truthy completion that made this
+    // row vacuous; it names the participant's own input; and the ceiling it reports is the PUBLISHED budget
+    // times the density control length it reports, computed here rather than written down.
+    expect(refusal).toContain('exceed the operation cost density limit');
+    expect(refusal, 'the refusal regressed to a non-truthy completion').not.toContain('non-truthy');
+    expect(refusal).toContain('at input 0 in contract');
+    const reported = refusal!.match(/Maximum operation cost: (\d+) \(density control length: (\d+)\)/);
+    expect(reported, 'the refusal named no operation-cost ceiling at all').not.toBeNull();
+    const [, ceiling, density] = reported!;
+    expect(Number(ceiling), `ceiling is not the published ${STOCK_BUDGET} x ${density}`)
+      .toBe(STOCK_BUDGET * Number(density));
+    // And the overage is real: the operation the VM refused costs more than the ceiling it just named.
+    const overage = refusal!.match(/operation cost following operation: (\d+)/);
+    expect(overage, 'the refusal named no overage').not.toBeNull();
+    expect(Number(overage![1])).toBeGreaterThan(Number(ceiling));
+  }, 300_000);
 
+  /**
+   * The sibling row, and its refusal is a DIFFERENT one - correctly so. A structurally unbounded recursion
+   * cannot complete, so it fails the evaluation itself rather than a budget, at any budget. That was left
+   * unstated while this row also matched only the wrapper; it is pinned here so the two rows cannot silently
+   * converge on the same refusal again.
+   */
   it('rejects structurally unbounded recursion before returning a transaction builder', async () => {
     const artifact = compileString(UNBOUNDED, { forceStateful: true });
     expect(artifact.abi.find((fn) => fn.name === 'recurse')?.recursiveStateHandler).toBe(true);
@@ -143,9 +213,13 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
       provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.recurse().build()).rejects.toThrow(
+    const refusal = await sc.recurse().build().then(() => undefined, (error: Error) => error.message);
+    expect(refusal, 'unbounded recursion was ADMITTED').toBeDefined();
+    expect(refusal).toMatch(
       /Recursive state invocation 'recurse' does not fit or fails its concrete BCH VM preflight/,
     );
+    expect(refusal).toContain('Unsuccessful evaluation: completed with a non-truthy value');
+    expect(refusal).toContain('at input 0 in contract');
   });
 
   it('a recursive pure helper feeding a state write compiles and runs', async () => {

@@ -663,16 +663,32 @@ export function generateGraphProjectionVerifier(): string {
   // reproduces `frame.slice(4, 6)` exactly only while `lbcLength < 32,768`, which held on an appeal to a VM
   // constant - `8 + lbcLength <= frame.length <= transcript.length <= 10,000`, `transcript` being one stack item
   // under BCH-2025's `maximumStackItemLength`. The bound was fail-closed (OP_NUM2BIN aborts on
-  // `insufficientLength` rather than truncating) and VM-verified, so it was never an authenticity risk. It was
-  // the last appeal to `maximumStackItemLength` in this covenant, and widening the table's stride to 6 removes
-  // it outright: the prefix is now the transcript's OWN two bytes, and the participant loop's
-  // `tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength)` is what ties them to the
-  // introspected script's length. Measured at `6183cf12`: 4,098 -> 4,126 for the swap alone, and 4,121 with the
-  // independent `expectedTarget` fold below, so the axiom was priced at 28 bytes per projection script and the
-  // landed net is 23. (The 19 recorded before this measurement belonged to an encoding that could not be
-  // reproduced here; the four encodings tried were 6-byte stride 4,126, 4-byte stride index-then-length 4,135,
-  // 4-byte stride length-then-index 4,130, two parallel 2-byte tables 4,180. Requiring the prefix's decode
-  // instead of comparing its bytes - also bound-free - measures 4,278 and is much worse.)
+  // `insufficientLength` rather than truncating) and VM-verified, so it was never an authenticity risk.
+  //
+  // WHAT ACTUALLY CHANGES IS THE DIRECTION OF THE MAP, and that is the whole argument. The old form went
+  // VALUE -> BYTES through OP_NUM2BIN, a PARTIAL function whose domain is a VM constant away from the field's
+  // own domain. The new form goes BYTES -> VALUE through OP_BIN2NUM, which is total, and leans on that decode
+  // being INJECTIVE on two bytes (`b0 + 256*b1` for `b0, b1` in `[0, 256)`) - which is unconditional, not a
+  // bound. So `frame.slice(4, 6)` is pinned to the unique encoding of `lbcLength`, `lbcLength` is pinned to the
+  // introspected script's length by the participant loop's
+  // `tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength)`, and nothing appeals to
+  // `maximumStackItemLength` any more. That matters beyond tidiness: BCH has raised its stack and commitment
+  // limits twice in two years, and a covenant whose admitted set narrows when a limit RISES is a forward-
+  // compatibility hazard rather than a fail-closed convenience.
+  //
+  // Measured at `6183cf12`: 4,098 -> 4,126 for the swap alone, and 4,121 with the independent `expectedTarget`
+  // fold below, so the retired bound was priced at 28 bytes per projection script and the landed net is 23.
+  // (The 19 recorded before this measurement belonged to an encoding that could not be reproduced here; the
+  // four encodings tried were 6-byte stride 4,126, 4-byte stride index-then-length 4,135, 4-byte stride
+  // length-then-index 4,130, two parallel 2-byte tables 4,180. Requiring the prefix's decode instead of
+  // comparing its bytes - also bound-free - measures 4,278 and is much worse.)
+  //
+  // AND IT IS NOT ONLY BYTES, which the board should have when it prices the next one. Every projection input's
+  // operation-cost DENSITY ratio rises, because the walk gains 126 instructions against only 23 bytes of
+  // density-control length: measured per shape at `6183cf12`, C2's four projections 0.33485 -> 0.33654, C3's
+  // eight 0.50829 -> 0.51062, A13's three 0.25122 -> 0.25226, C1's five 0.37421 -> 0.37606. No shape's binding
+  // limit moves and no shape's WORST-density input is a projection, so every `worstDensityRatio` reproduces to
+  // ten decimals; but the projections themselves got denser, not merely bigger.
   //
   // WHY THE ADMITTED SET IS UNCHANGED, BOTH TIMES. `callee < participantCount` is required before either
   // lookup, and every byte of `activeCallees` is either a `bytes1(callee)` written under that same bound or the

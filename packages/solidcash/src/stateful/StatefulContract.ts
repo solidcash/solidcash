@@ -59,9 +59,13 @@ import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../ke
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
 import { encodeHiddenBatch } from '../layer3/hidden-batch.js';
 import {
+  assertFinalizedTransactionBytes, inputSubjectsOfBuilder, type FinalizedByteSubject,
+} from '../layer3/preflight.js';
+import {
   binToHex,
   hexToBin,
   binsAreEqual,
+  decodeTransactionUnsafe,
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
@@ -2989,7 +2993,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ];
 
     const totalInputs = masterUtxos.length + allNftInputs.length;
-    const builtTxs: Array<{ hex: string; reclaimed: bigint }> = [];
+    const builtTxs: Array<{
+      hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[];
+    }> = [];
 
     if (totalInputs <= maxInputsPerTx) {
       // Single transaction: destroy everything at once
@@ -3055,6 +3061,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let totalReclaimed = 0n;
     const { decodeTransaction, hash256 } = await import('@bitauth/libauth');
 
+    // X163, the finalized-bytes gate at the `destroy` sweep. Destroy sweeps EVERY remaining UTXO into one reclaim
+    // output whose amount is `totalInputSats - fee` - arithmetic, never checked against a floor - so a contract
+    // holding little more than its fee reclaims a below-dust amount and a node refuses the whole sweep
+    // `64: dust`. MEASURED: a 2,400-satoshi contract swept at a 2,300-satoshi fee produces a 100-satoshi
+    // reclaim against a 576-satoshi threshold, and `MockNetworkProvider` takes those bytes, because its default
+    // policy is `enforceDust: false`. The existing `reclaimed <= 0n` throw is one satoshi wide and never
+    // reaches this band.
+    //
+    // BEFORE THE LOOP, NOT INSIDE IT, and that placement is the whole reason batch mode prebuilds every
+    // transaction before submitting any. The batches chain - each intermediate's master output is the next
+    // one's input, by locally computed txid - so a refusal on batch `i` from inside the loop would leave
+    // `0..i-1` already settled and the contract half-swept, with no path that both finishes and reports. Every
+    // batch is final and decodable here, so deciding all of them first keeps the refusal atomic.
+    for (const { hex, subjects } of builtTxs) {
+      assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(hex)), { inputSubjects: subjects });
+    }
+
     for (let i = 0; i < builtTxs.length; i++) {
       const { hex, reclaimed } = builtTxs[i];
       const txBin = hexToBin(hex);
@@ -3111,7 +3134,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     destroyFunctionArgs: FunctionArgument[],
     isFinal: boolean,
     maxFee?: bigint,
-  ): Promise<{ hex: string; reclaimed: bigint }> {
+  ): Promise<{ hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[] }> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const builder = new TransactionBuilder({
       provider: contract.inner.provider,
@@ -3208,7 +3231,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.outputs.pop(); // remove placeholder - no reclaim
       }
       const hex = builder.build();
-      return { hex, reclaimed: reclaimed > 0n ? reclaimed : 0n };
+      return { hex, reclaimed: reclaimed > 0n ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder) };
     }
 
     // Final: send everything to recipient. Add placeholder output for fee estimation.
@@ -3225,39 +3248,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...builder.outputs[builder.outputs.length - 1], amount: reclaimed,
     };
     const hex = builder.build();
-    return { hex, reclaimed };
+    return { hex, reclaimed, subjects: inputSubjectsOfBuilder(builder) };
   }
 
-  /**
-   * Send a TransactionBuilder that contains custom unlockers.
-   * The standard send() method fails to produce a meaningful error for custom
-   * unlockers because getBitauthUri() throws. This helper builds, sends raw,
-   * and constructs TransactionDetails directly.
+  /*
+   * `_sendBuilderWithCustomUnlockers` WAS HERE AND IS DELETED. X163.
+   *
+   * It was the eighth broadcast site in `src/` and the only one with no caller anywhere - not in `src/`, not in
+   * `test/`, not in `examples/`, not by string. A guard on it could never fire on its own subject, so gating it
+   * was never the question; whether an unreachable `sendRawTransaction` should exist at all was.
+   *
+   * ITS REASON TO EXIST WAS REMOVED, which is why it went dead. The docstring said `send()` "fails to produce a
+   * meaningful error for custom unlockers because getBitauthUri() throws". `TransactionBuilder.send` now wraps
+   * that call in `try { ... } catch { bitauthUri = ''; }` on both of its failure paths, so the throw it was
+   * routing around cannot happen. Nothing was left for it to do.
+   *
+   * DELETED RATHER THAN LEFT DORMANT because a broadcast path that reaches the network with no byte gate ahead
+   * of it is exactly the shape a later edit picks up without noticing what is missing - the gated sites are
+   * gated, and a caller reaching for "the helper that sends a builder directly" would have found the one that
+   * is not. `_sendRawBuilder` does the same job with the gate, and is live.
    */
-  private static async _sendBuilderWithCustomUnlockers(
-    builder: import('../TransactionBuilder.js').TransactionBuilder,
-  ): Promise<TransactionDetails> {
-    const { decodeTransaction, hash256 } = await import('@bitauth/libauth');
-
-    const hex = builder.build();
-    const txBin = hexToBin(hex);
-    const txid = await builder.provider.sendRawTransaction(hex);
-
-    // Verify txid matches locally computed hash to detect compromised providers
-    const expectedTxid = binToHex(hash256(txBin).reverse());
-    if (txid !== expectedTxid) {
-      throw new Error(
-        `Txid mismatch: provider returned '${txid}', expected '${expectedTxid}'. `
-        + 'The network provider may be compromised.',
-      );
-    }
-
-    const libauthTransaction = decodeTransaction(txBin);
-    if (typeof libauthTransaction === 'string') {
-      throw new Error(`Failed to decode transaction: ${libauthTransaction}`);
-    }
-    return { ...libauthTransaction, txid, hex };
-  }
 
   /**
    * Use VM inference to derive initial commitments from the constructor function.
@@ -10100,12 +10110,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Build and send directly (bypass debug step which doesn't handle covenant unlockers)
-    const { decodeTransactionUnsafe, hash256, hexToBin: localHexToBin } = await import('@bitauth/libauth');
+    const { hash256, hexToBin: localHexToBin } = await import('@bitauth/libauth');
     const rawTx = builder.build();
+    const rawTxBin = localHexToBin(rawTx);
+    const decoded = decodeTransactionUnsafe(rawTxBin);
+
+    // X163, the finalized-bytes gate at the static `split` site. `changeAmount` above is pure arithmetic -
+    // `totalFunding - newMintingAmount * splitCount - fee` - and the only floor on it is zero, so any funding
+    // that leaves a small positive remainder produces a below-dust change output. MEASURED: funding of exactly
+    // `2 * 1200 + 2000 + 100` leaves 100 satoshis against a 576-satoshi threshold for a 44-byte output, and the
+    // mock provider accepts it (`enforceDust: false` by default), so nothing in the repo objected.
+    //
+    // The dust output ALSO evades `addOutput`'s own policy check, and not by accident: the placeholder is added
+    // at 1000 satoshis and then overwritten by index on `builder.outputs`, which is the one path into an output
+    // that no validator sees. That is the same construction X131 row 2b uses deliberately to reach the gate.
+    //
+    // THIS SITE HAS NO `debug()` AHEAD OF IT, by design - covenant unlockers do not evaluate in the debug VM on
+    // a mock provider - so the gate is the FIRST thing that speaks here. A split that breaks its covenant AND
+    // pays dust therefore reports the dust, not the covenant. That window is real and is pinned by an explicit
+    // ordering row rather than left to be discovered; the covenant verdict still arrives from the provider for
+    // every split whose bytes are relayable.
+    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+
     const txid = await provider.sendRawTransaction(rawTx);
 
     // Verify txid matches locally computed hash to detect compromised providers
-    const rawTxBin = localHexToBin(rawTx);
     const expectedTxid = binToHex(hash256(rawTxBin).reverse());
     if (txid !== expectedTxid) {
       throw new Error(
@@ -10114,7 +10143,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
 
-    const decoded = decodeTransactionUnsafe(rawTxBin);
     return { tx: { ...decoded, txid, hex: rawTx } as any, categoryId };
   }
 
@@ -10240,12 +10268,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Build and send directly (bypass debug step which doesn't handle covenant unlockers)
-    const { decodeTransactionUnsafe, hash256, hexToBin: localHexToBin } = await import('@bitauth/libauth');
+    const { hash256, hexToBin: localHexToBin } = await import('@bitauth/libauth');
     const rawTx = builder.build();
+    const rawTxBin = localHexToBin(rawTx);
+    const decoded = decodeTransactionUnsafe(rawTxBin);
+
+    // X163, the finalized-bytes gate at the static `merge` site. Same arithmetic hazard as split, from the other
+    // direction: `changeAmount` is `consumedSatoshis + totalFunding - fee`, and merge's whole purpose is to
+    // reclaim the satoshis the consumed masters were holding. Those are typically 1,200 each - a few hundred
+    // above the dust floor - so a fee that eats most of the reclaim leaves a change output under it. MEASURED
+    // at 100 satoshis against 576, accepted by the mock and refused `64: dust` by a node.
+    //
+    // Merge also runs with `allowImplicitNftBurn: true`, so the builder's own burn check is off and the
+    // consumed masters vanish into that change output. Refusing here is refusing before an intentional burn
+    // whose proceeds the network would not have relayed.
+    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+
     const txid = await provider.sendRawTransaction(rawTx);
 
     // Verify txid matches locally computed hash to detect compromised providers
-    const rawTxBin = localHexToBin(rawTx);
     const expectedTxid = binToHex(hash256(rawTxBin).reverse());
     if (txid !== expectedTxid) {
       throw new Error(
@@ -10254,7 +10295,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
 
-    const decoded = decodeTransactionUnsafe(rawTxBin);
     return { tx: { ...decoded, txid, hex: rawTx } as any, categoryId };
   }
 
@@ -11109,7 +11149,7 @@ export class StatefulFunctionCall {
    * cannot validate covenant scripts due to mock provider limitations.
    */
   private async _sendRawBuilder(builder: TransactionBuilder): Promise<TransactionDetails> {
-    const { decodeTransactionUnsafe, encodeTransaction, hash256 } = await import('@bitauth/libauth');
+    const { encodeTransaction, hash256 } = await import('@bitauth/libauth');
     const rawTx = builder.build();
     const rawTxBin = hexToBin(rawTx);
 
@@ -11128,6 +11168,18 @@ export class StatefulFunctionCall {
         + `safety cap of ${MAX_FEE_SATS_PER_BYTE} sat/byte for a ${txSize}-byte transaction.`,
       );
     }
+
+    // X163, the finalized-bytes gate at `_sendRawBuilder`. This is the `sc.call.fork(...)` /
+    // `sc.call.consolidate(...)`
+    // route into the SAME two builders the static `split`/`merge` use, so it inherits their change arithmetic
+    // exactly: measured at 100 satoshis of change against a 576-satoshi threshold through
+    // `withSplitFunding(...).withSplitFee(...)`, accepted by the mock.
+    //
+    // Ordered after the fee-per-byte cap above so a missing change output still reports as a fee problem
+    // rather than as whichever relay observation happens to be true of the same bytes - the same ordering the
+    // stateful submit path uses. Like split and merge, nothing debugs ahead of this, so the gate speaks before
+    // any covenant verdict.
+    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
 
     const provider = this.parentContract!.inner.provider;
     const txid = await provider.sendRawTransaction(rawTx);

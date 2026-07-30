@@ -1740,6 +1740,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           );
         }
       }
+      // X146. `scan` records a state variable only where the AST names it. A foreign function-pointer TABLE is
+      // read by the external-call machinery instead: the target array and its parallel selector array are named
+      // on the call SLOT, not in the body. Leaving them out makes a widened clone's journal PARTIAL, and its
+      // local `dynamicReads` a strict subset of the route's - which is the basis `emitDynamicReadLoop` addresses
+      // the trailing chunk region from.
+      for (const slot of fn.externalCalls ?? []) {
+        for (const name of [slot.loopArrayVar, slot.selectorArrayVar]) {
+          if (!name) continue;
+          const sv = this.stateVariables.find((candidate) => candidate.name === name);
+          if (sv) slots.set(`${sv.nftIndex}:${sv.fieldIndex}`, sv);
+        }
+      }
       slotsById.set(fn.functionId, slots);
       callsById.set(fn.functionId, calls);
       if (writes.value) writerIds.add(fn.functionId);
@@ -1782,13 +1794,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // builds them. A clone is now admitted here, on its own terms:
     //   - it is admitted but NOT DESCENDED THROUGH, so its own callees keep the closure they had. The clone's
     //     slot map already contains theirs through the fixpoint above, which is what it needs to hold.
-    //   - it carries its PLAIN SCALAR slots only. A DYNAMIC slot's journal replaces a chunk read with a
-    //     threaded (header, value) pair, and a pure reader holds only the slots it names: C2's
-    //     `__scb_graph_fireAll` reads `state:legs` plus `collection:legs:i` and `collection:__fnsel_legs:i`,
-    //     so journalling the header while the elements still come from the chunk loop mixes two sources for
-    //     one array and the honest A -> B -> A cycle stops settling at input 0. Measured, not assumed.
-    // The residual is therefore exact and named: a clone whose stale read is on a DYNAMIC slot still reads the
-    // pre-state, and `layer3/graph.ts`'s planning-time gate is the only thing standing in front of it.
+    //   - it carries its DYNAMIC slots too, since X146.
+    // X146 CORRECTS THE RECORDED EXPLANATION OF WHY IT DID NOT. This comment used to say that journalling a
+    // dynamic slot's header while its elements still come from the chunk loop "mixes two sources for one
+    // array". That is not the mechanism, and the instruction that failed says so: the honest C2 cycle aborted
+    // at input 0 on the `OP_EQUALVERIFY` of check (a), "input bytecode == chunk address", in
+    // `emitDynamicReadLoop`. `legs`' header and elements are ONE atomic threaded value and never disagreed.
+    // What broke is an OFFSET BASIS. The trailing chunk index comes from the PER-FUNCTION `dynamicReads`,
+    // while the physical layout the SDK assembles comes from the ROUTE's list. Journalling `legs` makes
+    // `emitReadDynamicScalar` return before the read is registered, so `legs` drops out of the clone's list
+    // and `__fnsel_legs` - a SEPARATE state variable - slides from index 1 to index 0 and the loop addresses
+    // the wrong chunk by one slot. The root cause is that the journal was PARTIAL: `scan` names a state
+    // variable only where the AST does, and a foreign function-pointer table's target and selector arrays are
+    // named on the external-call SLOT. Completing it above puts both back in the basis, and the widening below
+    // then costs nothing.
     const routeFunctionId = functions.find((fn) => fn.hiddenBatchRoute)?.functionId;
     const emissionClones = new Set(functions
       .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
@@ -1814,11 +1833,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // journalling its own chunk-backed slots.
     const invokerHolders = new Set<number>();
     const dynamicInvokerHolders = new Set<number>();
-    // The dynamic exclusion applies only to a clone admitted BY the widening. A clone which also writes, or
-    // one reached as an ordinary route callee, keeps the full slot list it already had.
+    // X146. The dynamic exclusion that used to apply to a clone admitted BY the widening is GONE: with the
+    // journal completed above, a widened clone keeps its DYNAMIC slots like every other admitted holder, and
+    // the stale chunk-backed read it was leaving open closes.
     const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
       [...slots.values()].filter((sv) =>
-        !sv.isDynamic || writerIds.has(id) || routeReachable.has(id) || dynamicInvokerHolders.has(id));
+        !sv.isDynamic || writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id)
+        || dynamicInvokerHolders.has(id));
     // L2-F2. The route must HOLD the journal its rows load through. The walk above admits the route's
     // callees and never the route itself, so a route with no writer among them - a pure-reader resource
     // route, or the `_self_alias` clone the resource shape emits - was filtered out while its callees were

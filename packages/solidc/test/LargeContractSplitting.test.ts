@@ -153,6 +153,59 @@ describe('large-contract state-local splitting', () => {
     expect(publishRoute.target).not.toBe(updateRoute.target);
   });
 
+  /**
+   * The split planner never compared the root's storage layout against its facets'. The manifest fingerprint
+   * was taken from the unsplit BASELINE and checked against nothing the bundle contains, and two orderings in
+   * the split path are shard-dependent: `LowerStorageSlotPointers` appends one hidden state variable per
+   * ERC-7201 namespace in the order the SURVIVING functions first reach it, and `prepareSplitAst` runs
+   * `SynthesizeBlockOracle` earlier than the ordinary pipeline. Measured on the corpus MarketplaceV1: root,
+   * six facets and the manifest carry THREE layouts - root slot 2.0 is `OwnableStorage___owner` while five of
+   * six facets put `PausableStorage___paused` there. Every shard fits and the bundle compiles clean.
+   *
+   * Reproduced here without the corpus. A delegate facet writes the ROOT's state through physical slots, so
+   * the disagreement is a wrong-variable write, not a metadata nit.
+   */
+  it('refuses a bundle whose facets do not share the root storage layout', () => {
+    const source = `pragma solidity ^0.8.7;
+      abstract contract AMod {
+        struct AStorage { uint256 a; }
+        bytes32 private constant ALoc = 0x9016d09d72d40fdae2fd8ceac6b6234c7706214fd39c1cd1e609a0528c199300;
+        function _a() private pure returns (AStorage storage $) { assembly { $.slot := ALoc } }
+        function _setA(uint256 v) internal { AStorage storage $ = _a(); $.a = v; }
+      }
+      abstract contract BMod {
+        struct BStorage { uint256 b; }
+        bytes32 private constant BLoc = 0xcd5ed15c6e187e77e9aee88184c21f4f2182ab5827cb3b7e07fbedcd63f03300;
+        function _b() private pure returns (BStorage storage $) { assembly { $.slot := BLoc } }
+        function _setB(uint256 v) internal { BStorage storage $ = _b(); $.b = v; }
+      }
+      abstract contract CMod {
+        struct CStorage { uint256 c; }
+        bytes32 private constant CLoc = 0x237e158222e3e6968b72b9db0d8043aacf074ad9f650f0d1606b4d82ee432c00;
+        function _c() private pure returns (CStorage storage $) { assembly { $.slot := CLoc } }
+        function _setC(uint256 v) internal { CStorage storage $ = _c(); $.c = v; }
+      }
+      contract Multi is AMod, BMod, CMod {
+        uint256 own;
+        function touchC(uint256 v) public { _setC(v); own = v; require(v >= 0, "n"); }
+        function touchA(uint256 v) public { _setA(v); own = v + 1; require(v >= 0, "n"); }
+        function touchB(uint256 v) public { _setB(v); own = v + 2; require(v >= 0, "n"); }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true };
+    // GUARD NEGATIVE CONTROL, differing ONLY in the shard limit: one facet holds every entry, every shard
+    // promotes the namespaces in the same order, and the bundle is admitted.
+    const together = compileStringSplit(source, { ...options, maxShardBytes: 10_000 });
+    expect(together.manifest.facets).toHaveLength(1);
+    const slots = (layout: any): string[] => (layout?.variables ?? [])
+      .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
+    expect(slots(together.facets[together.manifest.facets[0].name].stateLayout))
+      .toEqual(slots(together.root.stateLayout));
+
+    // The same source at a limit that forces separate facets: refused, naming the first disagreeing slot.
+    expect(() => compileStringSplit(source, { ...options, maxShardBytes: 1100 }))
+      .toThrow(/does not share the root's storage layout \(root has AStorage__a@0\.1, it has CStorage__c@0\.1\)/);
+  });
+
   it('CONTROL: a call-edge union that fits is not divided and keeps both entries in one facet', () => {
     const bundle = compileStringSplit(`pragma solidity ^0.8.7;
       contract Closure {

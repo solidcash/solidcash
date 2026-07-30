@@ -15,7 +15,8 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   ROW_COMPARISON_EXEMPTIONS, SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE,
-  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
+  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_INLINE_SOURCE,
+  SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
   injectPairwiseComparison, scanComparisons,
 } from './layer3-pairwise-guard.js';
 import {
@@ -1073,6 +1074,15 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     }
     expect(scanComparisons(SYNTHETIC_ROW_NEAR_MISS_SOURCE).rowPairwise,
       'the row rule flags a legitimate row comparison, so it over-reports').toEqual([]);
+    // X134's RECORDED BOUNDARY, asserted in both directions so it cannot move silently. The same row-to-row
+    // comparison decoded into scalars is caught when written inline and NOT caught through two `bigint` locals,
+    // because the derivation stops at `bytes`. Propagating through scalars was measured and costs 16 further
+    // named exemptions covering the covenants' own bookkeeping - see the header of `layer3-pairwise-guard.ts`.
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_INLINE_SOURCE).rowPairwise,
+      'the inline scalar decode names both rows in one clause and must still be flagged').toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE).rowPairwise,
+      'the scalar-via-locals form is now caught, so this recorded boundary is stale and the header measurement '
+      + 'in layer3-pairwise-guard.ts should be rewritten rather than this assertion relaxed').toEqual([]);
     for (const source of [projectionSource, controllerSource]) {
       expect(source).toContain('lockingBytecode');
       const scan = scanComparisons(source);

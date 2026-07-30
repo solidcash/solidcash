@@ -38,6 +38,20 @@
  * `tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength)` - so a union vocabulary would
  * flag the very comparison the design depends on. The row rule is therefore a SECOND, independent rule over a
  * different population, not a widening of the first.
+ *
+ * WHAT IS STILL OPEN, WITH THE MEASUREMENT THAT SAYS WHY. The derivation propagates only through `bytes`-typed
+ * assignments, so a row-to-row comparison DECODED INTO SCALARS FIRST is invisible: written inline it is caught
+ * (the clause names both frames), written through two `bigint` locals it is not. Both forms are pinned below by
+ * `SYNTHETIC_ROW_SCALAR_INLINE_SOURCE` and `SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE`, the second asserting the
+ * CURRENT boundary, so it is a recorded limit rather than an unknown.
+ *
+ * Propagating through scalars too was measured and rejected. Every field in both loops is decoded from the
+ * transcript, so scalar propagation marks nearly every identifier: the projection verifier goes from 10 derived
+ * identifiers and 5 both-sides clauses to 38 and 13, and the controller from 4 and 0 to 31 and 8. The 16 new
+ * clauses are the covenants' own bookkeeping - `tail == transcript.length`, `batchCursor == ownerBatch.length`,
+ * `parent == openIndex`, `subtreeEnd == invocationCount - 1` - so closing this form costs 16 more named
+ * exemptions covering the arithmetic, which is a detector that cries wolf rather than one that reports. The
+ * scalar form is left open deliberately and measured, not overlooked.
  */
 
 /**
@@ -317,6 +331,39 @@ export const SYNTHETIC_ROW_TABLE_SOURCE = `contract Fake() {
     bytes lbcHeaders = hex"";
     lbcHeaders = bytes.concat(lbcHeaders, frame.slice(0, 6));
     require(lbcHeaders.slice(a * 6, a * 6 + 2) == lbcHeaders.slice(b * 6, b * 6 + 2));
+    require(true);
+  }
+}`;
+
+/**
+ * The scalar form, HALF of which the rule catches: two rows compared after decoding, written inline. The clause
+ * names both frames, so the row rule sees it. Asserted flagged.
+ */
+export const SYNTHETIC_ROW_SCALAR_INLINE_SOURCE = `contract Fake() {
+  function f(bytes transcript, bigint a, bigint b) public {
+    bytes frame = transcript.slice(a, transcript.length);
+    bytes otherFrame = transcript.slice(b, transcript.length);
+    require(int(bytes.concat(frame.slice(0, 2), hex"00"))
+      == int(bytes.concat(otherFrame.slice(0, 2), hex"00")));
+    require(true);
+  }
+}`;
+
+/**
+ * THE RECORDED HOLE, and the reason it is recorded rather than closed: the same comparison routed through two
+ * `bigint` locals. The derivation stops at `bytes`, so neither comparand names a row and the rule is silent.
+ *
+ * The fixtures assert this is NOT flagged. That is not an endorsement - it is the boundary written down where
+ * it can be seen, so closing it later is a deliberate change with a visible before. The header block above
+ * carries the measurement (16 new exemptions) that says why widening to scalars is the wrong trade today.
+ */
+export const SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE = `contract Fake() {
+  function f(bytes transcript, bigint a, bigint b) public {
+    bytes frame = transcript.slice(a, transcript.length);
+    bytes otherFrame = transcript.slice(b, transcript.length);
+    bigint one = int(bytes.concat(frame.slice(0, 2), hex"00"));
+    bigint two = int(bytes.concat(otherFrame.slice(0, 2), hex"00"));
+    require(one == two);
     require(true);
   }
 }`;

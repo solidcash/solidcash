@@ -14,7 +14,9 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
-  SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE, scanComparisons,
+  ROW_COMPARISON_EXEMPTIONS, SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE,
+  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
+  injectPairwiseComparison, scanComparisons,
 } from './layer3-pairwise-guard.js';
 import {
   createDataNftUnlocker, getDataNftAddress,
@@ -1059,6 +1061,18 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
       .toHaveLength(1);
     expect(scanComparisons(SYNTHETIC_BASE_BINDING_SOURCE).pairwise,
       'the detector flags the HONEST base binding as pairwise, so it over-reports').toEqual([]);
+    // X134. THE HOLE THE LOCKING-BYTECODE VOCABULARY LEFT OPEN, reproduced first and closed second. Two table
+    // rows compared to each other with NEITHER side naming a locking bytecode were silent under the rule
+    // above, and both halves are asserted so the hole stays recorded rather than merely patched.
+    for (const hostile of [SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE]) {
+      expect(scanComparisons(hostile).pairwise,
+        'the locking-bytecode rule now sees the row-to-row shape, so X134 is no longer the hole it was and '
+        + 'this reproduction has stopped reproducing').toEqual([]);
+      expect(scanComparisons(hostile).rowPairwise,
+        'the row rule cannot see a row-to-row comparison, so its verdict below is worthless').toHaveLength(1);
+    }
+    expect(scanComparisons(SYNTHETIC_ROW_NEAR_MISS_SOURCE).rowPairwise,
+      'the row rule flags a legitimate row comparison, so it over-reports').toEqual([]);
     for (const source of [projectionSource, controllerSource]) {
       expect(source).toContain('lockingBytecode');
       const scan = scanComparisons(source);
@@ -1066,6 +1080,19 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
       expect(scan.mentioningLbc, 'no comparison mentions a participant locking bytecode, so the both-sides '
         + 'filter is running over a population that cannot contain a hit').not.toEqual([]);
       expect(scan.pairwise, `pairwise participant comparison in:\n${scan.pairwise.join('\n')}`).toEqual([]);
+      // X134 liveness, the row rule's own version of the assertion above: the derivation found more than the
+      // seed, and there is a population of comparisons carrying transcript bytes for the both-sides filter to
+      // run over. Either at zero would mean the row verdict is being read off an empty set.
+      expect(scan.rowDerived.length, 'the derivation found only the seed, so nothing propagated and the row '
+        + 'rule is running over a vocabulary that cannot match').toBeGreaterThan(1);
+      expect(scan.mentioningRow, 'no comparison carries transcript bytes, so the row both-sides filter is '
+        + 'running over a population that cannot contain a hit').not.toEqual([]);
+      expect(scan.rowPairwise, `row-to-row comparison in:\n${scan.rowPairwise.join('\n')}`).toEqual([]);
+      // MUTATION CONTROL ON THE REAL SOURCE. One row-to-row comparison added to the generated participant
+      // loop and nothing else: the detector must see it HERE, not only in sources this guard wrote. The
+      // injector throws when its anchor is gone, so the control cannot outlive its subject.
+      expect(scanComparisons(injectPairwiseComparison(source)).rowPairwise,
+        'one row-to-row comparison injected into the REAL covenant is invisible to the detector').toHaveLength(1);
       // And the old identifiers really are gone, so a future reader cannot mistake the detector above for the
       // regex that used to run here.
       expect(/participantLbc\d/.test(source)).toBe(false);
@@ -1074,6 +1101,18 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     // and is exempted by name; asserted present so the exemption cannot rot into dead text.
     expect(scanComparisons(controllerSource).exempted,
       'the named self-preservation exemption matches nothing now, so it should be deleted').toHaveLength(1);
+    // X134's exemptions, the same way: every comparison carrying transcript bytes on both sides is named, and
+    // each name is asserted at its EXACT clause count. All five clauses are in the projection verifier; a
+    // sixth landing under an existing name would otherwise be absorbed silently, which is the failure this
+    // guard exists to prevent.
+    const projectionScan = scanComparisons(projectionSource);
+    expect(projectionScan.rowBothSides).toHaveLength(5);
+    expect(scanComparisons(controllerSource).rowBothSides).toEqual([]);
+    for (const exemption of ROW_COMPARISON_EXEMPTIONS) {
+      expect(projectionScan.rowExempted[exemption.name],
+        `the row exemption "${exemption.name}" matches nothing now, so it should be deleted`)
+        .toBe(exemption.count);
+    }
     const built = await buildA1();
     expect(new Set(built.participantLbc).size).toBe(4);
   }, 120_000);

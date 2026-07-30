@@ -12,8 +12,8 @@ commit. No figure here is carried forward from an earlier bench run or from the 
 measured *elsewhere* rather than by the F3 probe, and both moved after `6a685f33` when F4 cut the projection
 verifier by 129 bytes: C3's position against the relay ceiling (section 6, real limit 2) and the size of the
 projection proof (sections 5 and 6). X65 then cut the same covenant by a further 444 bytes and moved both
-again, so both are re-measured at `77cd1e8c` rather than carried: the verifier's redeem script is **4,098
-bytes** and C3's build is **96,118 bytes**. Each correction re-derives its consequence rather than swapping
+again, and X81 then ADDED 23 by retiring a width bound, so all three are re-measured: the verifier's redeem script is
+**4,121 bytes** and C3's build is **96,302 bytes**. Each correction re-derives its consequence rather than swapping
 its number. **No F3 measurement is restated**: the census, the verdict counts, the binding-limit table and
 the 45 built transactions are all still the `6a685f33` run and are not re-derived here - except section 3.2's
 write classification, which X73 invalidated outright and which is re-measured in place, in that section.
@@ -517,8 +517,8 @@ fitted over.
 That 4,780 is unlocking bytecode - the covenant's redeem script plus the transcript and proof arguments it
 carries - and it was measured at this report's base commit `6a685f33`, which is **before F4**. F4 then cut
 the projection verifier's redeem script by 129 bytes (4,542 at `1591e87f`), and X65 then cut a further 444
-by replacing its 8-way dispatch with an input-index table. Re-measured at `77cd1e8c`, that redeem script is
-**4,098 bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did
+by replacing its 8-way dispatch with an input-index table. Re-measured after X81, that redeem script is
+**4,121 bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did
 not re-measure, and is not restated here as a number.
 
 What is new here is the scale and the sign consistency. F2 recorded that blind spot as a 1.8% miss on one
@@ -576,8 +576,8 @@ the measurement the production-envelope decision actually needs.
 A second observation in the same category: the projection proof is a fixed overhead on every participant,
 which at these sizes is a large share of a limit that real contracts are already close to. It is a generated
 covenant, so it is a compiler artifact rather than a limit - and two rounds have since demonstrated exactly
-that, cutting its redeem script to **4,098 bytes** (re-measured at `77cd1e8c`) with no require removed,
-weakened or reordered: F4's -129 to 4,542, then X65's -444. Because the covenant is instantiated once per
+that, cutting its redeem script to **4,121 bytes** with no require removed, weakened or reordered: F4's -129 to
+4,542, X65's -444 to 4,098, then X81's +23 to retire a VM-constant-dependent width bound. Because the covenant is instantiated once per
 participant and each proof slot pushes the whole redeem script, **a verifier byte is worth N transaction
 bytes**, and both cuts were measured landing at exactly that multiplier on all four capstones: F4's 129 x N
 (citation, F4), and X65's 444 x N re-measured here as A13 23,458 -> 22,126, C2 52,733 -> 50,957, C1

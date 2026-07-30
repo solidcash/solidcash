@@ -162,4 +162,17 @@ describe('X167 - a whole-array copy must replace the destination, not append to 
   it('X167-Q DESTINATION EQUAL LENGTH', async () => {
     expect(await copyWith(2, 2)).toEqual([widened(0x11), widened(0x22)]);
   }, 300_000);
+
+  it('X167-R X151-R RE-RUN: the same copy TWICE must leave two elements, not four', async () => {
+    // The shape the held X151 basis correction was measured against: `d2 = d1` run a second time over the
+    // d2 the first run produced. The reported symptom of correcting the basis alone was FOUR elements
+    // instead of two. This asserts the count AND the values, so an append cannot pass by length alone.
+    const { sc } = await deploy(COPY, { d1: [], d2: [] });
+    await sc.pushD1(b8(0x11)).send();
+    await sc.pushD1(b8(0x22)).send();
+    await sc.copy().send();
+    expect((await sc.getState()).d2.length).toBe(2); // d2 is now NON-empty
+    await sc.copy().send();
+    expect((await sc.getState()).d2).toEqual([widened(0x11), widened(0x22)]);
+  }, 300_000);
 });

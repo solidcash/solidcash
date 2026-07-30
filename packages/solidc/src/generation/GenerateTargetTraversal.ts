@@ -1762,13 +1762,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
     // the route's own call closure: a contract with no `__scb1` produces the same map as before, and a
     // read-only function outside the route keeps its established covenant path.
+    // A graph EMISSION clone is excluded, and not as a convenience: its frame is owned by the graph
+    // effect-frame protocol, which already pushes hidden context of its own (see the arity note in
+    // visitFunctionDefinition), and adding journal slots to it leaves the frame one item deeper than the
+    // caller pushes. C2's read-only `__scb_graph_fireAll` is exactly that shape and its honest cycle stops
+    // settling. A read-only clone which also emits or transfers therefore still reads the pre-state.
     const routeFunctionId = functions.find((fn) => fn.hiddenBatchRoute)?.functionId;
+    const emissionClones = new Set(functions
+      .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
+      .map((fn) => fn.functionId!));
     const routeReachable = new Set<number>();
     if (routeFunctionId !== undefined) {
       const pending = [routeFunctionId];
       while (pending.length > 0) {
         for (const calleeId of callsById.get(pending.pop()!) ?? []) {
-          if (routeReachable.has(calleeId)) continue;
+          if (routeReachable.has(calleeId) || emissionClones.has(calleeId)) continue;
           routeReachable.add(calleeId);
           pending.push(calleeId);
         }

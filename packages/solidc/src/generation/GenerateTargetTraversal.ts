@@ -1745,7 +1745,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // on the call SLOT, not in the body. Leaving them out makes a widened clone's journal PARTIAL, and its
       // local `dynamicReads` a strict subset of the route's - which is the basis `emitDynamicReadLoop` addresses
       // the trailing chunk region from.
-      for (const slot of fn.externalCalls ?? []) {
+      //
+      // X152 SCOPES IT TO THE CLONE, which is the only thing X146 is about. Applied to every function it also
+      // journals the table in an ORDINARY entry point, and there the table is read again by
+      // `emitExternalCallVerification` in the EPILOGUE - after the journal frame has been settled off the
+      // stack, while `pendingStateWrites` still names it. `emitReadStateArrayBlob` then asks for a slot that
+      // is gone and code generation aborts with `Expected variable '__internal__state_write_<table>' does not
+      // exist on the stack`. Measured on `solidity-by-example/defi/stable-swap-amm/StableSwap.sol`, which
+      // stopped compiling in DIRECT, DIRECT-stateful and BUS modes alike.
+      for (const slot of fn.graphEmissionHandler ? fn.externalCalls ?? [] : []) {
         for (const name of [slot.loopArrayVar, slot.selectorArrayVar]) {
           if (!name) continue;
           const sv = this.stateVariables.find((candidate) => candidate.name === name);

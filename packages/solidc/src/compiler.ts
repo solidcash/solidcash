@@ -145,9 +145,11 @@ function compileWithExternalAdmissionFallback(
 ): Artifact {
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
+    admitMixedScalarHandlers = true,
   ): Artifact => compileResolvedAst(
     parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
     code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+    admitMixedScalarHandlers,
   );
   if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
@@ -159,13 +161,23 @@ function compileWithExternalAdmissionFallback(
   // contract is worse off than at the narrowest rung, and nothing is masked.
   // Monotone: each rung gives up one relaxation, and the last two reproduce X73's ladder exactly - so a contract
   // that compiled at 77cd1e8c still compiles, whatever the wider rungs do.
-  const ladder: [boolean, boolean, boolean][] = [
-    [true, true, true], [true, true, false], [true, false, false], [false, false, false],
+  //
+  // X94 joins as the WIDEST rung and is therefore the FIRST thing given up, which keeps the four rungs below it
+  // byte-for-byte the ladder that shipped: a contract whose scalar handler reaches a route-generation gap loses
+  // only that admission and lands on the previously shipped answer rather than on a narrower one.
+  const ladder: [boolean, boolean, boolean, boolean][] = [
+    [true, true, true, true],
+    [true, true, true, false], [true, true, false, false],
+    [true, false, false, false], [false, false, false, false],
   ];
   let firstError: unknown;
-  for (const [admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects] of ladder) {
+  for (const [
+    admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers,
+  ] of ladder) {
     try {
-      return compileOnce(admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects);
+      return compileOnce(
+        admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers,
+      );
     } catch (error) {
       firstError ??= error;
     }
@@ -346,7 +358,10 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
     + 'the wrapper and leaves its returning edge with no slot to bind - move the effect into a second handler '
     + 'that consumes no result, or drop the result and make the call a void tail call',
   'mixed-scalar-and-collection-route-not-enabled':
-    'every batched handler must address a collection entry, or none may; split the scalar-only handlers out',
+    'this route allocates a ROW-LOCAL entry slot per row, and those slots are bound by the entry handler\'s own '
+    + 'row: a row that addresses no entry leaves its slot with no witness to bind and no way to gate it off, so '
+    + 'every handler on such a route must address a collection entry - split the scalar-only handlers out, or '
+    + 'give the entry handler a single key alternative so the route\'s entry slots become shared',
 };
 
 /**
@@ -379,7 +394,7 @@ function hiddenBatchAbsenceMessage(
  * source handler receives an explicit rejection reason in artifact metadata. */
 function synthesizeHiddenBatchRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
-  normalizeBareEntries = true, relaxResultRouteEffects = true,
+  normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
 ): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
   const contract = ast.contract;
@@ -883,7 +898,28 @@ function synthesizeHiddenBatchRoute(
     nestedCollectionMode: boolean; fixedArrayMode: boolean; tokenContainerMode: boolean;
   } => {
     let survivors = candidates;
-    if (survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
+    // X94. A handler that carries no key witness was refused as soon as ONE sibling carried one, so a scalar
+    // handler was refused for the company it kept: measured on this board at 139 application and 88 solc
+    // firings, all `public`, none with a collection in its own footprint.
+    //
+    // What the refusal has to protect is the ROW-LOCAL entry slot, and only that. Every physical entry key on a
+    // route is a WRAPPER parameter - `substituteKeyWitnesses` feeds an uncloned handler's key positions from the
+    // canonical route witnesses, and `bindEntryKeyParameters` rewrites a clone's keys to synthetic parameters
+    // fed the same way - so `LowerCollectionJournalHelpers` hoists the entry read to the top of the wrapper and
+    // its write-back to the bottom, both OUTSIDE the row dispatch. A row that addresses no entry therefore
+    // flushes the reserved entry unchanged rather than leaving its post-state unconstrained. Measured: the
+    // route's `blockLayout` and `entryAccesses` are IDENTICAL with and without the scalar handler admitted -
+    // same slot, same offset, same wrapper parameter - so admitting one adds no covenant.
+    //
+    // A ROW-LOCAL witness (`perRow`) is the exception, and it fails two ways rather than one. The `_r{n}`
+    // witness is bound by the entry handler's invocation AT THAT ROW, so a scalar row leaves slot `r{n}` with
+    // no binder at all; and the alias gating that collapses a duplicated row key onto an earlier slot lives
+    // INSIDE the entry handler's dispatch arm, so a hand-supplied key makes the derivation co-spend one entry
+    // NFT twice. Both are measured, and neither is reachable by widening this predicate.
+    const perRowEntryRoute = survivors.some((fn) =>
+      fn.hiddenBatchKeyWitnesses?.some((binding) => binding.perRow));
+    if ((!admitMixedScalarHandlers || perRowEntryRoute)
+      && survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
       for (const fn of survivors) {
         if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
           fn.hiddenBatchEligible = false;
@@ -1785,6 +1821,7 @@ function synthesizeHiddenBatchRoute(
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
+  admitMixedScalarHandlers = true,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -1978,6 +2015,7 @@ function compileResolvedAst(
   if (synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+      admitMixedScalarHandlers,
     );
   }
 
@@ -2206,6 +2244,7 @@ function compileResolvedAst(
   if (!synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+      admitMixedScalarHandlers,
     );
   }
 

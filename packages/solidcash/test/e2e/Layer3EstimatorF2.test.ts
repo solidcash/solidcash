@@ -61,25 +61,32 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * measured floor under-predicted real corpus masters 34 times out of 45, because density is a property of a
  * contract body and not of any driver in the descriptor.
  *
- * RE-MEASURED AT THIS COMMIT, and TWO of X70's figures above no longer reproduce. Both are staleness, not
- * regression, and neither is caused by the X78 ranking change - the whole row was re-run with both estimator
- * files reverted to the baseline and produced the same numbers.
+ * RE-MEASURED AT THIS COMMIT, against a census re-taken at this commit (X86), and X70's figures above are
+ * history. The differences are staleness and lifted gates, not regression, and none of them is caused by the
+ * X78 ranking change - the whole row was re-run with both estimator files reverted to the baseline and
+ * produced the same numbers.
  *
- *   - THE POPULATION IS 43, NOT 45. Seventy-one one-slot bus-reachable census rows are attempted and 28 skip;
- *     three of the new skips are `census redeem length disagrees with the built participant`, i.e. the census
- *     itself has drifted from what the compiler now emits and needs re-taking.
- *   - THE BAND IS +15.0% TO +18.9%, MEAN +18.7%, still 0/43 under-predicted, and 444 bytes of that is a STALE
- *     CONSTANT rather than model looseness. `estimate` defaults the two generated covenant lengths to the
- *     recorded basis - projection 4,542, controller 1,514 - and this commit generates 4,098 and 1,493.
- *     `GraphShapeSpec` carries override fields for exactly this and `replicaSpec` does not fill them in. With
- *     this commit's sizes in the descriptor the band is +4.8% to +8.3%, mean +8.2%, which is X70's published
- *     +4.3% to +7.5% back again. Serialized is +15.2% to +24.3% and carries the same 444-byte inflation.
- *     THE FIX BELONGS IN `replicaSpec` (`layer3-corpus-fit-f3.ts`), which is not this file.
- *   - The legacy `before` column consequently reads -0.9% to +13.1%, mean +2.6%, 1/43 under-predicted, where
- *     X70 measured 44/45 under. The defect has not healed: the legacy fit returns 4,441 bytes for an input
- *     whose covenant WAS 4,542 and is now 4,098, so an impossibility became mere looseness. The corpus count
- *     is therefore no longer asserted; the impossibility is asserted on the calibration instead, where it
- *     does not drift - 3,966-byte intercept against the 4,542-byte covenant every proof input pushes.
+ *   - THE POPULATION IS 50 OF 86, NOT 45 OF 71. The census re-take routes 428 corpus contracts where the
+ *     recorded one routed 367, so there are 86 one-slot candidates; 36 skip, all of them on a handler
+ *     parameter type this harness cannot supply or a contract whose `require` a placeholder cannot satisfy.
+ *     `census rows whose recorded redeem length has drifted: 0`, where three rows had drifted before the
+ *     re-take - and those three were being swallowed by the same try/catch as the `require` failures, which is
+ *     how the population reached 43 without a reason being published.
+ *   - THE BAND IS +4.8% TO +8.3%, MEAN +8.2%, 0/50 under-predicted, once the descriptor carries the covenant
+ *     lengths this commit DEPLOYS. Defaulted from the calibration instead it reads +15.0% to +18.9%, mean
+ *     +18.8%, and the difference is a single stale constant of exactly 444 bytes on every row: the projection
+ *     verifier is 4,098 where the basis measured 4,542. The controller is NOT part of it - it compiles to
+ *     1,493 and deploys at 1,514, which is the calibration's figure - and reading the compile instead of the
+ *     deployment is how a 21-byte saving got invented and then caught by the assertion below. Serialized
+ *     reads +9.8% to +18.4%, mean +17.8%, against +15.2% to +24.3% defaulted.
+ *   - The legacy `before` column reads -0.9% to +13.1%, mean +2.6%, 1/50 under-predicted, where X70 measured
+ *     44/45 under. The defect has not healed: the legacy fit returns 4,441 bytes for an input whose covenant
+ *     WAS 4,542 and is now 4,098, so an impossibility became mere looseness. The corpus count is therefore no
+ *     longer asserted; the impossibility is asserted on the calibration instead, where it does not drift -
+ *     3,966-byte intercept against the 4,542-byte covenant every proof input pushes. That check is deliberately
+ *     left on the RECORDED covenant: derived from the 4,098 this commit generates the same intercept has three
+ *     bytes of margin, and X85 passing live covenant sizes into the DESCRIPTOR does not move it, because the
+ *     legacy fit reads only participants, invocations and master redeem bytes out of that descriptor.
  *
  * X78: THE BINDING-LIMIT PREDICTION, WHICH X70 REPORTED RATHER THAN FIXED. Density was named first at
  * 0.5758x against a script prediction of 0.5002x on a population measuring 0.2177x and 0.4651x, because the
@@ -100,15 +107,14 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  *     density as tight.
  *
  * MEASURED AFTER, off the training data and on it, at THIS commit: the ranked leader names the measured
- * binder on 43/43 built corpus graphs (was 0/43 - see the re-measurement note below for why the population is
- * 43 here and 45 at X70's commit), on 4/4 capstones (was 3/4), and misses the held-out E1 graph exactly as it
- * did before, for 47/48 against 3/48. The measured binder remains inside `bindingUnresolved` on every row,
- * and that set shrinks from 3 limits to 2 on the corpus and to ONE on C2 and C3, where the one is the
- * measured binder. Not one predicted magnitude moves: `ratio`, `predicted`, `serializedBytes`,
+ * binder on 50/50 built corpus graphs (was 0/50 - see the re-measurement note below for why the population is
+ * 50 here and 45 at X70's commit), on 4/4 built shapes whose binder was measured against 3/5 for the raw
+ * ranking, and it misses the held-out E1 graph exactly as it did before. The measured binder remains inside
+ * `bindingUnresolved` on every row, and that set is 2 limits on every corpus row and ONE on C2 and C3, where
+ * the one is the measured binder. Not one predicted magnitude moves: `ratio`, `predicted`, `serializedBytes`,
  * `worstUnlockingBytes` and the FITS/OVER verdict are the same upper bounds. That is not an argument - the
  * whole corpus row was re-run with these two files reverted to the baseline commit and every band came back
- * IDENTICAL (+15.0% to +18.9% script, +15.2% to +24.3% serialized, +56.9% to +164.4% density, 0/43
- * under-predicted on each); the only line that differed was the ranking, at 0/43 against 43/43.
+ * IDENTICAL; the only line that differed was the ranking.
  *
  * WHAT IS STILL WRONG. E1, the one real held-out graph, is still named density 0.8049x where relay size
  * 0.7129x binds at 0.6813x measured; the de-biased density floor lands at 0.6846x against 0.6368x measured,
@@ -124,9 +130,10 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * rather than switched on, and the reason is now measured rather than argued - see the last margin test.
  *
  * WHAT IS MEASURED HERE AND WHAT IS RECORDED. The synthetic sweep is rebuilt and re-measured live in this
- * file, so the estimator faces a transaction produced in the same process it is judged in. So are all
- * forty-five corpus graphs. The four capstone shapes are a RECORDED basis (`layer3-estimator-basis-f2.ts`),
- * and the held-out graph a second recorded file (`layer3-estimator-heldout-f2.ts`), both captured by
+ * file, so the estimator faces a transaction produced in the same process it is judged in. So is every
+ * one-slot corpus graph, fifty of them at this commit. The four capstone shapes are a RECORDED basis
+ * (`layer3-estimator-basis-f2.ts`), and the held-out graph a second recorded file
+ * (`layer3-estimator-heldout-f2.ts`), both captured by
  * observing the fixtures' OWN builders through `layer3-estimator-probe.ts` and re-taken at `1591e87f` for
  * X66, because F4 had cut 129 bytes from a covenant that every one of them instantiates once per
  * participant.
@@ -134,8 +141,8 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * A MODEL EVALUATED ON ITS TRAINING DATA IS NOT EVALUATED. It is held out four ways: each of the seven
  * shapes dropped from the calibration in turn and predicted from coefficients that never saw it; three
  * synthetic participant counts predicted BEFORE building them; a REAL six-participant, seven-invocation
- * graph in no calibration set here; and forty-five real application contracts from four corpora, which are
- * not fixtures at all.
+ * graph in no calibration set here; and every one-slot bus-reachable contract from four real corpora, which
+ * are not fixtures at all.
  */
 
 /* ------------------------------------------------------------------------------------------------------ */
@@ -775,8 +782,8 @@ describe('F2 estimator: held out', () => {
 
   /**
    * BOTH ENDS OF THE RANGE, which is the report F2 did not have. A one-participant graph is BELOW every
-   * calibrated driver, and F2 answered it `in-range` and confidently - which is how forty-five real contracts
-   * were answered wrong. The clamp is what makes the answer sound; this is what makes it honest.
+   * calibrated driver, and F2 answered it `in-range` and confidently - which is how a whole corpus of real
+   * contracts was answered wrong. The clamp is what makes the answer sound; this is what makes it honest.
    */
   it('a driver BELOW the calibrated minimum is reported out of range, and answered at the measured floor', () => {
     const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
@@ -855,7 +862,7 @@ describe('F2 estimator: held out', () => {
 });
 
 /* -------------------------------------------------------------------------------------------------------- */
-/* X70: the forty-five-contract corpus calibration                                                            */
+/* X70: the one-slot corpus calibration, fifty contracts at this commit                                       */
 /* -------------------------------------------------------------------------------------------------------- */
 
 /**
@@ -921,6 +928,33 @@ function placeholder(type: string): unknown {
 const eligibleCensusRows = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
 
 /**
+ * X85. THE TWO GENERATED COVENANTS AS THIS COMMIT DEPLOYS THEM, so a corpus descriptor stops carrying the
+ * calibration's - and DEPLOYS, not compiles, which is the distinction that made the first attempt wrong.
+ *
+ * `GraphShapeSpec` has override fields for both and `estimate` defaults them from the calibration, which holds
+ * whatever the basis run measured: 4,542 and 1,514. The quantity both fields mean is the redeem script the
+ * input PUSHES, i.e. the compiled bytecode plus each constructor argument's push. The projection verifier takes
+ * no arguments, so it is 4,098 either way and a descriptor that omits it over-prices every proof slot by 444
+ * bytes. The root controller takes a `bytes20 initializer`: it COMPILES to 1,493 and DEPLOYS at 1,514, which is
+ * the calibration's figure exactly. Passing the compiled 1,493 would have under-stated that input by 21 bytes -
+ * the one direction a conservative estimator may not err in - and it is asserted against the built graph below.
+ *
+ * Still inside the declared input boundary: two compiles and two instantiations, no UTXO, no builder, no VM.
+ */
+const MEASURED_COVENANTS = ((): { projectionRedeemBytes: number; controllerRedeemBytes: number } => {
+  const provider = createLayer3SemanticTestProvider();
+  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)),
+    [alicePkh], { provider },
+  );
+  return {
+    projectionRedeemBytes: projection.bytecode.length / 2,
+    controllerRedeemBytes: controller.bytecode.length / 2,
+  };
+})();
+
+/**
  * The same selection rule F3 used, restated rather than imported because F3's file does not export it: every
  * bus-reachable census row whose block is one slot, whose constructor this harness can supply, and whose
  * corpus root is present. Widest redeem first. Chosen by a rule, so the population cannot be the ones that
@@ -939,6 +973,18 @@ const raw = (builder: TransactionBuilder): string =>
 
 interface CorpusMeasurement {
   subject: CensusRow;
+  /**
+   * X86. THE PARTICIPANT REDEEM LENGTH THIS RUN COMPILED, which is what the descriptor is built from.
+   *
+   * It used to be read off the recorded census and asserted equal to the built participant INSIDE the caller's
+   * try/catch, so a census that had drifted from the compiler was indistinguishable from a contract whose
+   * handler cannot execute with placeholder arguments: three solc-corpus rows were being dropped into the same
+   * skip list as nineteen `require` failures, and the population silently fell from 45 to 43. A redeem length
+   * is a COMPILE OUTPUT - `new Contract(artifact, args).bytecode.length` - and this run has the compile, so it
+   * takes the figure from there and reports the census disagreement as the drift it is. Nothing about the
+   * estimator's input boundary changes: still a compile, no UTXO, no builder, no VM.
+   */
+  compiledRedeemBytes: number;
   envelope: EnvelopeMeasurement;
   classification: ReturnType<typeof classifyInputs>;
   transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>;
@@ -979,12 +1025,18 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   } as never);
+  // X86. THE SELECTION RULE IS ONE SLOT, AND IT IS RE-CHECKED AGAINST THE COMPILER RATHER THAN THE CENSUS.
+  // A row the census recorded as one-slot can compile to a wider block now, and building it without seeding the
+  // sidecar UTXOs would fail somewhere further down with an unrelated message. Refused here, by name.
+  const compiledBlockSize = artifact.hiddenBatch!.route.blockLayout!.blockSize;
+  if (compiledBlockSize !== 1) {
+    throw new Error(`census recorded a one-slot block; the compiler now emits ${compiledBlockSize}`);
+  }
   const args = (artifact.constructorInputs ?? []).map((input) => placeholder(String(input.type)));
   const base = new Contract(artifact, args as never[], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
   const participant = base.withCategory(hexToBin(setup.categoryId));
-  expect(participant.bytecode.length / 2, 'census redeem length disagrees with the built participant')
-    .toBe(subject.redeemBytes);
+  const compiledRedeemBytes = participant.bytecode.length / 2;
 
   const handlerName = subject.eligibleHandlers![0];
   const handler = artifact.hiddenBatch!.handlers.find((entry) => entry.name === handlerName)!;
@@ -1059,7 +1111,12 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
   const envelope = assessEnvelope(`${subject.contractName} x1`, transaction as never, sourceOutputs);
   const redeemBytes = transaction.inputs.map((input) => redeemScriptLength(input.unlockingBytecode));
   return {
-    subject, envelope, classification: classifyInputs(envelope, redeemBytes), transaction, sourceOutputs,
+    subject,
+    compiledRedeemBytes,
+    envelope,
+    classification: classifyInputs(envelope, redeemBytes),
+    transaction,
+    sourceOutputs,
   };
 }
 
@@ -1068,7 +1125,13 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
  * and a density knob that refuses these exact bytes at a budget derived from this input's own reading.
  */
 function assertMeasurementDiscipline(measurement: CorpusMeasurement): void {
-  const { subject, envelope, transaction, sourceOutputs } = measurement;
+  const { subject, classification, compiledRedeemBytes, envelope, transaction, sourceOutputs } = measurement;
+  // THE DESCRIPTOR'S REDEEM LENGTH IS THE SCRIPT THE MASTER INPUT ACTUALLY PUSHES. This is the assertion the
+  // census-equality check was standing in for, and it belongs here rather than inside the caller's catch: a
+  // within-run disagreement is a broken measurement, where a census disagreement is only a stale record.
+  expect(classification.redeemBytes[0],
+    `${subject.contractName}: the compiled participant is not the script the master input pushes`)
+    .toBe(compiledRedeemBytes);
   expect(envelope.refusedAtConsensus, `${subject.contractName} refused at the real consensus profile`)
     .toEqual([]);
   expect(envelope.refusedAtStandard, `${subject.contractName} refused at the real standard profile`)
@@ -1103,7 +1166,7 @@ function measuredClasses(measurement: CorpusMeasurement): Map<InputClass, { byte
   return rows;
 }
 
-describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on script bytes', () => {
+describe('F2 estimator: X70 - the real corpus contracts that bind on script bytes', () => {
   /**
    * THE ROW THAT FOUND THE DEFECT, RE-RUN AGAINST THE REPAIR.
    *
@@ -1133,14 +1196,14 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       measuredWorst: number;
       predictedWorst: number;
       /**
-       * X78: the same prediction with the descriptor carrying THIS COMMIT'S generated covenant sizes instead
-       * of the recorded calibration's. `replicaSpec` leaves `projectionRedeemBytes`/`controllerRedeemBytes`
-       * unset, so `estimate` defaults them to the basis measurement - 4,542 and 1,514 - which the estimator's
-       * own doc calls a STALE default the moment either covenant moves. Both moved: F4 and its successors cut
-       * the verifier to 4,098 and the controller to 1,493. Reported so the board can see how much of the
-       * over-prediction band is model looseness and how much is a 444-byte stale constant.
+       * X85, THE CONTROL RATHER THAN THE ANSWER, which is the way round it was before this row was repaired.
+       *
+       * `replicaSpec` accepts `projectionRedeemBytes`/`controllerRedeemBytes` and its callers here now pass
+       * them, so `predictedWorst` above prices the covenants this commit generates. This field is the SAME
+       * prediction with both omitted, i.e. defaulted from the calibration to 4,542 and 1,514, and it is kept
+       * so the cost of the stale default stays a measured figure instead of a claim.
        */
-      predictedWorstAtHead: number;
+      predictedWorstStaleCovenant: number;
       legacyWorst: number;
       measuredBinds: string;
       predictedBinds: string;
@@ -1152,6 +1215,7 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     }
     const rows: Row[] = [];
     const skipped: string[] = [];
+    const censusDrift: string[] = [];
     let controlled = 0;
     for (const subject of candidates) {
       let measurement: CorpusMeasurement;
@@ -1163,22 +1227,39 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       }
       assertMeasurementDiscipline(measurement);
       controlled += 1;
-      const spec = replicaSpec(subject, 1);
+      // X86. THE DESCRIPTOR CARRIES THE REDEEM LENGTH THIS RUN COMPILED, not the recorded one, and the census
+      // disagreement is published instead of dropping the row. Same class of defect as X85 one field over: a
+      // recorded constant standing in for a compile output that is available right here.
+      if (measurement.compiledRedeemBytes !== subject.redeemBytes) {
+        censusDrift.push(`${subject.corpus}/${subject.contractName} (${subject.rel}): census `
+          + `${subject.redeemBytes} B, compiled ${measurement.compiledRedeemBytes} B `
+          + `(${measurement.compiledRedeemBytes - subject.redeemBytes! >= 0 ? '+' : ''}`
+          + `${measurement.compiledRedeemBytes - subject.redeemBytes!})`);
+      }
+      const spec = {
+        ...replicaSpec(subject, 1, MEASURED_COVENANTS),
+        redeemBytes: [measurement.compiledRedeemBytes],
+      };
       const prediction = estimate(spec, calibration);
-      // The two generated covenant lengths recovered from the built transaction, which is the same number the
-      // compile the descriptor already needs would report - a length, never a cost or a transaction size.
-      const atHead = estimate({
-        ...spec,
-        projectionRedeemBytes: measurement.classification.projectionRedeemBytes,
-        controllerRedeemBytes: measurement.classification.controllerRedeemBytes,
-      }, calibration);
+      // THE DESCRIPTOR'S COVENANT LENGTHS ARE THE ONES THE BUILT TRANSACTION PUSHES, asserted rather than
+      // assumed. `MEASURED_COVENANTS` comes from two compiles at module scope and this comes from classifying
+      // the assembled inputs; if they ever disagreed, the descriptor would be honest about the wrong commit.
+      expect(measurement.classification.projectionRedeemBytes,
+        'the compiled projection verifier is not the covenant the built graph pushes')
+        .toBe(MEASURED_COVENANTS.projectionRedeemBytes);
+      expect(measurement.classification.controllerRedeemBytes,
+        'the compiled root controller is not the covenant the built graph pushes')
+        .toBe(MEASURED_COVENANTS.controllerRedeemBytes);
+      // The control: the same descriptor with both overrides omitted, so `estimate` falls back to the
+      // calibration's recorded covenant lengths. This is what every corpus prediction carried before X85.
+      const stale = estimate(replicaSpec(subject, 1), calibration);
       const { envelope } = measurement;
       const measured = measuredClasses(measurement);
       rows.push({
         name: `${subject.corpus}/${subject.contractName}`,
         measuredWorst: envelope.worstUnlockingInput.unlockingBytes,
         predictedWorst: prediction.worstUnlockingBytes,
-        predictedWorstAtHead: atHead.worstUnlockingBytes,
+        predictedWorstStaleCovenant: stale.worstUnlockingBytes,
         legacyWorst: legacyWorstUnlockingBytes(spec, F2_BASIS),
         measuredBinds: envelope.binding[0].limit,
         predictedBinds: prediction.limits[0].limit,
@@ -1207,6 +1288,11 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       });
     }
     for (const failure of skipped) console.log(`[F2/X70] candidate skipped - ${failure}`);
+    // X86. WHERE THE RECORDED CENSUS AND THE COMPILER DISAGREE, named and counted rather than skipped. A
+    // non-empty list means the census is due a re-take; it does not invalidate a row, because the descriptor
+    // below is built from the compile and not from the record.
+    console.log(`[F2/X70] census rows whose recorded redeem length has drifted: ${censusDrift.length}`);
+    for (const drift of censusDrift) console.log(`[F2/X70]   DRIFT ${drift}`);
     console.log(`[F2/X70] measured ${rows.length} of ${candidates.length} one-slot candidates, `
       + 'all run to completion, refused by nothing at either real profile, and with a density knob that '
       + `bites on the same bytes: ${controlled}/${rows.length}`);
@@ -1224,14 +1310,14 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       + `${before.filter((error) => error < 0).length}/${before.length} UNDER-PREDICTED`);
     console.log(`[F2/X70] unlocking bytecode length, AFTER  the repair: ${band(after)}; `
       + `${after.filter((error) => error < 0).length}/${after.length} UNDER-PREDICTED`);
-    // X78: HOW MUCH OF THAT BAND IS A STALE CONSTANT RATHER THAN MODEL LOOSENESS. The descriptor the board's
-    // table builds does not carry this commit's covenant sizes, so the prediction pays for 444 bytes of
-    // covenant that no longer exists. Reported next to the band it inflates.
-    const atHeadErrors = rows.map((row) => errorOf(row.predictedWorstAtHead, row.measuredWorst));
-    const covenants = new Set(rows.map((row) => `${row.predictedWorst - row.predictedWorstAtHead}`));
-    console.log('[F2/X70] unlocking bytecode length, AFTER, with the covenant sizes THIS COMMIT generates in '
-      + `the descriptor: ${band(atHeadErrors)}; ${atHeadErrors.filter((error) => error < 0).length}/`
-      + `${atHeadErrors.length} UNDER-PREDICTED (stale-constant share, in bytes: ${[...covenants].join(', ')})`);
+    // X85: WHAT THE STALE COVENANT DEFAULT COST, now that the AFTER column no longer pays it. The band above is
+    // the descriptor carrying this commit's two generated covenants; this is the same descriptor with both
+    // omitted, which is what every corpus prediction in the tree carried until X85 passed them through.
+    const staleErrors = rows.map((row) => errorOf(row.predictedWorstStaleCovenant, row.measuredWorst));
+    const covenants = new Set(rows.map((row) => `${row.predictedWorstStaleCovenant - row.predictedWorst}`));
+    console.log('[F2/X70] unlocking bytecode length, with the covenant sizes DEFAULTED from the calibration '
+      + `instead: ${band(staleErrors)}; ${staleErrors.filter((error) => error < 0).length}/`
+      + `${staleErrors.length} UNDER-PREDICTED (stale-constant share, in bytes: ${[...covenants].join(', ')})`);
     for (const limit of ['serialized bytes', 'worst density ratio', 'worst SigChecks ratio']) {
       const errors = rows.map((row) => row.limitErrors.find((entry) => entry.limit === limit)!.error);
       console.log(`[F2/X70] ${limit.padEnd(22)}: ${band(errors)}; `
@@ -1300,9 +1386,14 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     const unresolvedSizes = rows.map((row) => row.unresolved.length);
     console.log(`[F2/X70] unresolved set size ${Math.min(...unresolvedSizes)}..${Math.max(...unresolvedSizes)}`);
     expect(Math.max(...unresolvedSizes)).toBeLessThanOrEqual(2);
-    // X78 also holds with the stale constant taken out, which is what makes the conservatism claim about the
-    // MODEL rather than about a 444-byte accident.
-    expect(atHeadErrors.filter((error) => error < 0)).toEqual([]);
+    // AND IT HOLDS THE OTHER WAY TOO, which is the only reason the stale column was ever safe: defaulting the
+    // covenants only ever inflates, so it cannot have hidden an under-prediction.
+    expect(staleErrors.filter((error) => error < 0)).toEqual([]);
+    // The control is not vacuous, and it is not symmetric either: the PROJECTION has moved away from the
+    // calibration and the controller has not. Both directions are pinned, because the second one is what a
+    // reader would otherwise assume from the first.
+    expect(MEASURED_COVENANTS.projectionRedeemBytes).not.toBe(calibration.projectionRedeemBytes);
+    expect(MEASURED_COVENANTS.controllerRedeemBytes).toBe(calibration.controllerRedeemBytes);
     // THE BEFORE COLUMN, AND WHY IT IS NO LONGER PINNED AT A COUNT. X70 asserted that the model it replaced
     // still under-predicts at least 44 of 45 rows here. At this commit it under-predicts 1 of 43, and that is
     // not the defect healing: the legacy line returns 4,441 bytes for the projection input, which was an
@@ -1329,7 +1420,7 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     expect(legacyProjection.intercept).toBeLessThan(recordedRedeem);
     // And the repair is what removes it: the current model carries the covenant exactly, so its prediction for
     // that input can never fall below it whatever the driver.
-    expect(Math.min(...rows.map((row) => row.predictedWorstAtHead)))
+    expect(Math.min(...rows.map((row) => row.predictedWorst)))
       .toBeGreaterThanOrEqual(Math.min(...rows.map((row) => row.measuredWorst)) - 1e-9);
 
     // AND A WARNING ABOUT THE REPLACEMENT ASSERTION ABOVE, measured independently by a second worker on the
@@ -1426,7 +1517,7 @@ describe('F2 estimator: X78 - which limit is NAMED, against which limit was meas
     let widened = 0;
     for (const row of rows) {
       for (const participants of [1, 2, 4, 8]) {
-        const prediction = estimate(replicaSpec(row, participants), calibration);
+        const prediction = estimate(replicaSpec(row, participants, MEASURED_COVENANTS), calibration);
         const key = (limit: string): string => `${limit} @ N=${participants}`;
         beforeTally[key(legacyLeader(prediction))] = (beforeTally[key(legacyLeader(prediction))] ?? 0) + 1;
         afterTally[key(prediction.limits[0].limit)] = (afterTally[key(prediction.limits[0].limit)] ?? 0) + 1;
@@ -1443,12 +1534,14 @@ describe('F2 estimator: X78 - which limit is NAMED, against which limit was meas
       console.log(`[F2/X78]   AFTER  ${String(count).padStart(4)}  ${key}`);
     }
     expect(widened).toBe(0);
-    // At N=1 every one of these is a one-participant graph whose projection input alone is 4,542 bytes, and
-    // F3 measured script bytes binding on every such graph it built. After X78 the table names script bytes
-    // on all of them. BEFORE, it named them on 22 - the rows whose own redeem script is wide enough to beat
-    // a flat 0.5758x density prediction on its own - which is why the corpus row that matters is the 45
-    // BUILT one-slot contracts, where the raw ranking scored zero: those are selected by widest redeem and
-    // are still all under it.
+    // At N=1 every one of these is a one-participant graph whose projection input alone is the whole generated
+    // verifier - 4,098 bytes at this commit, and 4,542 before X85 stopped the descriptor defaulting it from the
+    // calibration - and F3 measured script bytes binding on every such graph it built. After X78 the table
+    // names script bytes on all of them. BEFORE, it named them on 29 of 428 - the rows whose own redeem script
+    // is wide enough to beat a flat 0.5758x density prediction on its own - which is why the corpus row that
+    // matters is the BUILT one-slot contracts, where the raw ranking scored zero: those are selected by widest
+    // redeem and are still all under it. Measured both ways at this commit, the 29 and the sweep are the same
+    // either way: taking 444 bytes off an input that is not the widest on any of these rows moves no ranking.
     expect(afterTally['unlocking bytecode length @ N=1']).toBe(rows.length);
     const beforeScriptAtOne = beforeTally['unlocking bytecode length @ N=1'] ?? 0;
     console.log(`[F2/X78] script bytes named at N=1: before ${beforeScriptAtOne}/${rows.length},`
@@ -1470,7 +1563,8 @@ describe('F2 estimator: X78 - which limit is NAMED, against which limit was meas
     const specs = [
       ...[...F2_BASIS, ...F2_HELD_OUT].map((shape) => shape.spec),
       ...F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number')
-        .flatMap((row) => [1, 4, 8].map((participants) => replicaSpec(row, participants))),
+        .flatMap((row) => [1, 4, 8].map((participants) =>
+          replicaSpec(row, participants, MEASURED_COVENANTS))),
     ];
     for (const spec of specs) {
       const prediction = estimate(spec, calibration);

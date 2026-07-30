@@ -154,13 +154,20 @@ contract Ledger() {
   });
 
   /**
-   * The boundary that convergence stops at, pinned so moving it is deliberate. A SECOND key alternative on one
-   * collection makes the route reach the entry through a CLONED handler whose keys are rewritten to synthetic
-   * entry-key parameters (bindEntryKeyParameters), and that rewrite still matches only the `this.`-prefixed
-   * nodes - admitting the bare spelling there fails the build outright rather than producing a route. So the
-   * two-alternative bare spelling keeps its established fail-closed outcome: no route.
+   * THE BOUNDARY THIS TEST WAS PINNED AT HAS MOVED, AND THAT IS THE POINT OF PINNING IT.
+   *
+   * It used to assert that a SECOND key alternative on one collection kept the bare spelling fail-closed with
+   * no route at all: the route reaches such an entry through a CLONED handler whose keys are rewritten to
+   * synthetic entry-key parameters, and that rewrite matched only the `this.`-prefixed nodes. X76 normalizes
+   * the bare spelling before eligibility runs, so both spellings now publish one route.
+   *
+   * WHAT IS ASSERTED NOW IS THE SOUNDNESS ARGUMENT, NOT A BYTE COUNT. Two spellings of one program must
+   * produce one artifact; a bare spelling that got a route of its own, differing anywhere, would be a second
+   * program compiled from the same source. Measured here: both admit `move`, both publish `minimumRows: 2`, and
+   * the bytecode is identical. That is a strictly stronger statement than the absence it replaced, and it is
+   * the one that goes red if the normalization ever produces a route by a different path.
    */
-  it('still publishes no SCB1 route for the bare spelling of a two-alternative entry write', () => {
+  it('publishes one identical SCB1 route for both spellings of a two-alternative entry write', () => {
     const options = { forceStateful: true, experimentalHiddenBatch: true };
     const move = `pragma solidcash >=0.8.0;
 contract Ledger() {
@@ -171,10 +178,14 @@ contract Ledger() {
     require(amount > 0);
   }
 }`;
-    expect(compileString(move, options).hiddenBatch?.handlers.map((handler) => handler.eligible))
-      .toEqual([true]);
-    expect(compileString(move.replace(/this\.balances\[/g, 'balances['), options).hiddenBatch)
-      .toBeUndefined();
+    const dotted = compileString(move, options);
+    const bare = compileString(move.replace(/this\.balances\[/g, 'balances['), options);
+    expect(dotted.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['move', true]]);
+    expect(bare.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['move', true]]);
+    expect(bare.hiddenBatch?.minimumRows).toBe(dotted.hiddenBatch?.minimumRows);
+    expect(bare.bytecode).toBe(dotted.bytecode);
   });
 
   it('reports an artifact error when library compilation exceeds the BCH script limit', () => {

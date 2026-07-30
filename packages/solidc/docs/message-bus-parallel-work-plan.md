@@ -188,7 +188,7 @@ task-specific report, not in this table.
 | X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **TODO** | likely a missing `compileFile` fallback for FAIL rows; reconcile before quoting those numbers |
 | X72 | 20 refusals published with NO `rejectionReason` | D6 | F3 | **INTEGRATED** | an ORDERING defect: the oracle pass appends an entry point after route synthesis names reasons; 16 -> 0 |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
-| X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | D5 | F4 | **INTEGRATED** | **-444 B/projection**, 3.4x F4's sizing, by REJECTING the form F4 sized; C3 now 3,882 B under - see 4.84 |
+| X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | D5 | F4 | **INTEGRATED** | **-444 B/projection**, 3.4x F4's sizing, by REJECTING the form F4 sized; C3 **3,698 B under** at HEAD (3,882 when this row was written, before X81) - see 4.84 |
 | X81 | DECISION: take the axiom-free verifier variant? | F3 | X65 | **TAKEN** | price was +28 not +19; the real argument is a PARTIAL map became TOTAL - a forward-compatibility hazard - see 4.93 |
 | X100 | The route refusal is stamped on every external entry point, not the thrower | — | X81 | **TODO** | 10 of 12 contracts lose the route ENTIRELY; attribute by error position and refuse only that handler |
 | X82 | The F4-era comment tables already did not reproduce at `1591e87f` | — | X65 | **TODO** | C3 controller 2,131,662 recorded vs 2,131,942 measured; Sink 4,951 B vs 4,979 B |
@@ -263,6 +263,10 @@ task-specific report, not in this table.
 | X109 | Two non-relaxed VM callers discard the provider's own limits | — | X57 | **TODO** | gate is `> 10_000`, so a provider AT 10,000 builds a bare VM: measured a program the raw VM ACCEPTS and the provider's verifier REJECTS. `StatefulTransactionBuilder.ts:2662,:2691` |
 | X110 | A shared `refs/stash` entry survived from round s1 | — | — | **TODO (process, hazard live)** | 923 lines of pointer-table files; all five now PRESENT and four LARGER in-tree, so nothing unique - but a `stash pop` would resurrect older copies. Drop was denied by the classifier; needs the user |
 | X111 | Emission-clone readers still read the pre-state, undiagnosable at compile time | I1 | SEC-18 | **BOUNDARY (measured, refusal reverted)** | a per-slot compile-time refusal false-refused C2 **23/23**: route-closure membership is not route-composition membership. Belongs at graph-planning time |
+| X99 | The plan and ledger still cite stale census and capacity figures | J4 | X86 | **CLOSED by the full re-take** | 7 downstream claims invalidated; the ledger was wrong in SIX places in one row, now on its third generation of those figures - see 4.101 |
+| X112 | The F3 census probe CLOBBERS a leased file on every run | J4 | F3 | **TODO (process)** | `layer3-corpus-probe-f3.mjs` overwrites `layer3-corpus-census-f3.ts` as a side effect; J4 restored and re-pinned it, but the next re-take will do it silently |
+| R3-4 | The live drift detector cannot see redeem-length drift | J4 | R3 | **CONFIRMED from a THIRD direction** | reports "drifted: 0" truthfully and uselessly - it checks one-slot candidates only, and all 21 drifted rows have `blockSize > 1` |
+| X113 | The size rule that hides the application headline is UNSTABLE | J4 | F3 | **TODO** | `redeemBytes < 8000` selects 6 rows at recorded bytes and **3** at measured ones; re-taking the census makes the guard weaker, not stronger |
 | X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
 | X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | B6 | — | **INTEGRATED** | the overrides were HALVING a later package-wide fix; removing them restores 30,000 ms |
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
@@ -286,6 +290,58 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.101 J4 re-measured everything: the envelope held, and SEVEN citations did not
+
+The row was opened because this board has had seven stale-figure incidents and nothing had re-measured the
+whole picture at once. Six iterations had changed the verifier three times, lifted three route gates and moved
+the application headline.
+
+**What did NOT move is the most important result.** The entire capacity envelope reproduces at `8685ae91`:
+every serialized size, every binding-limit attribution, both covenants, all four gate chains, the 428 routed
+contracts and the whole application headline. The three verifier changes and three gate lifts moved handler
+admission and redeem scripts; **they did not move the envelope.** All four capstones re-mined on the live node
+at their current bytes - A13 22,195 h5664, C2 51,049 h5847, C1 60,617 h5721, C3 96,302 h5500 - each with its
+hostile control refused on the same chain in the same run.
+
+**The harness was cross-validated against an independent oracle rather than against itself**: J4's new mock
+A13 harness gives 22,195 B, equal to the node's figure to the byte.
+
+**Two ratios moved and both are fully attributed.** Every capstone sits exactly `23 x N` above the pre-X81
+series (+69/+92/+115/+184 at N=3/4/5/8) with participant routes byte-identical, so A13's and C3's moved binding
+ratios are X81's projection growth and nothing else. The instructive part: `layer3-corpus-fit-f3.md` records
+X81's +23 and the pre-X81 capstone bytes **on the same line** - it named the cause without carrying the
+consequence, which is this board's recurring failure mode in miniature. Corrected in place.
+
+**The census moved and the move is accounted for.** Named refusals 280 -> **258**, route-scope 53% -> **48%**,
+route-scope-plus-generation-gap 63% -> **59%**. The 22-refusal drop is exactly `mixed-scalar -22`,
+`result-route -2`, `would-shrink +2` - X94's lift landing, not drift. The census MODULE's own headline is stale
+(895/435/286 against the board's 1008/441/290); the board's figures are the correct ones.
+
+**Seven downstream claims were invalidated, and the ledger was wrong in six places in one row** - it still
+said 504/367, "all 12 admit a READ-ONLY surface and nothing else" with 134 refused, and 148/280 (53%). All
+corrected; that row is now on its THIRD generation of these figures (80% -> 53% -> 48%).
+
+**Two findings that outlast the numbers:**
+
+- **The size rule that hides the headline is itself unstable.** The live assertion's `redeemBytes < 8000` rule
+  selected 6 rows at the recorded bytes and selects **3** at the measured ones, because `UnicrowDispute`,
+  `FakeToken` and `UnicrowArbitrator` all crossed 8,000. Re-taking the census makes that guard WEAKER, not
+  stronger.
+- **The one live drift detector cannot see this drift.** `Layer3CorpusFitF3.test.ts` reports "rows whose
+  recorded redeem length has drifted: 0" - true, and useless, because it only checks one-slot candidates and
+  all 21 drifted rows have `blockSize > 1`. That is R3-4 confirmed from a third independent direction, and it
+  is now the strongest argument on the board for widening that check.
+
+**Process trap, filed as X112**: the F3 census probe **overwrites `layer3-corpus-census-f3.ts`** as a side
+effect of every run. J4 restored it and re-verified the pin, but anyone re-taking the census will silently
+clobber a leased file.
+
+J4 also declined what it had not established: four node results it did not re-measure are explicitly NOT
+carried forward, and it refused to report a wall-clock comparison against the recorded 29 minutes because the
+re-take ran alongside a live node and vitest, where cross-run timing is noise. And when C3's hostile node
+control returned an RPC timeout, it diagnosed that as not-a-refusal instead of banking it as one - the
+aborted-evaluation trap in a new guise.
 
 ### 4.99 SEC-18: one classifier made every pure reader read the PRE-state, and it was exploitable
 
@@ -384,7 +440,9 @@ admitting a state-changing handler, 134 refused.* Now: **12 bus-reachable, 2 adm
 `UniswapV2Factory` (`setFeeTo`, `setFeeToSetter`, `setMigrator`) and `UniswapV2Pair.initialize`.
 
 **And the live assertion does not catch it.** `Layer3CorpusFitF3.test.ts` still passes 12/12, because its
-`redeemBytes < 8000` rule **excludes both subjects** (43,939 B and 14,556 B). The headline lives in a recorded
+`redeemBytes < 8000` rule **excludes both subjects** (**58,786 B and 16,864 B** measured at `8685ae91`; the
+43,939 and 14,556 first recorded here were PRE-LIFT sizes reported beside POST-LIFT admissions, a mixed-vintage
+citation J4 caught). The headline lives in a recorded
 census module and is **now stale** - which is R3-4 confirmed from the opposite direction.
 
 **The gate protected something different from what the board briefed.** The brief said lifting it would put a row
@@ -1406,8 +1464,14 @@ C2 match F4 exactly; C1 and C3 are +52 for X60's real recipient script and large
 Merged at `756682d0`. This row reframes the four rounds of capacity work that preceded it, and the board should
 say so plainly rather than filing it as one more measurement.
 
-**The headline, measured: all 12 bus-reachable application contracts admit a READ-ONLY surface and nothing
-else.** 134 state-changing handlers are refused. A real ERC-20 offers the graph `balanceOf` and `allowance`; a
+**SUPERSEDED FIGURES BELOW - read 4.97 and 4.101 for the current headline.** This section records F3's result
+AS MEASURED AT `756682d0`. The qualitative claim survives (the envelope is still not what stops real
+contracts, and `swap`/`transfer` still never reach the route); the counts do not. Current at `8685ae91`:
+**2 of 12 admit a state-changing handler**, 4 admitted against 130 refused, and the census reads 512 in bus
+mode / **428** reaching the bus.
+
+**The headline as measured at `756682d0`: all 12 bus-reachable application contracts admit a READ-ONLY surface
+and nothing else.** 134 state-changing handlers are refused. A real ERC-20 offers the graph `balanceOf` and `allowance`; a
 constant-product AMM offers `balanceOf`. **The capacity envelope never gets to bind on `swap` or `transfer`,
 because those never reach the route at all.**
 

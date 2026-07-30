@@ -60,7 +60,8 @@ EA 9/0, solidity-by-example 115/60, solc corpus 301/226, total **428 / 286 writi
 
 **X85: 444 bytes of every estimate in section 4 was a covenant this tree does not build.** `estimate` defaults
 the two generated covenant lengths from the calibration and `replicaSpec` never filled the override fields, so
-every projection proof was priced at the basis's 4,542 bytes where the verifier is 4,098 - once per
+every projection proof was priced at the basis's 4,542 bytes where the verifier is **4,121** (4,098 when this
+was written, before X81's +23) - once per
 participant. Passed through, the section 4.1 verdict counts change: at the new census the stale default answers
 OVER on **23 of 1,712** rows that fit, 8 at four participants and 15 at eight, because at N = 8 the dead
 covenant is 3,552 serialized bytes and relay size is what those rows were refused on. The controller is NOT
@@ -552,7 +553,7 @@ machinery pointed at it, that machinery is named.
    `77cd1e8c` the same build is 96,118 bytes, 0.9612x**, after X65 cut a further 444 from the same covenant -
    a re-measurement of the mock-built bytes, NOT a second node run: the node-mined figure is still 99,670.
    The ceiling is still where the corpus meets it at N=8; what changed is that the largest fixture ever built
-   went from just outside it to 3,882 bytes inside, and that margin is now wide enough to be headroom rather
+   went from just outside it to **3,698** bytes inside at HEAD (3,882 before X81), and that margin is wide enough to be headroom rather
    than a near miss - which retires, rather than re-prices, every C3 slot-removal option this board costed.
 
    **This one is POLICY, not consensus, and it is the only entry in this section that is.** X49 got the same
@@ -582,6 +583,12 @@ participant and each proof slot pushes the whole redeem script, **a verifier byt
 bytes**, and both cuts were measured landing at exactly that multiplier on all four capstones: F4's 129 x N
 (citation, F4), and X65's 444 x N re-measured here as A13 23,458 -> 22,126, C2 52,733 -> 50,957, C1
 62,722 -> 60,502, C3 99,670 -> 96,118.
+
+The four figures on the line above are PRE-X81, while the 4,121 verifier figure is POST-X81 - the same line
+named X81's +23 without carrying its consequence, which J4 caught as this document's own instance of the
+board's recurring failure mode. Post-X81, node-mined at `8685ae91`: **A13 22,195, C2 51,049, C1 60,617, C3
+96,302**, each exactly `23 x N` above the figures above (+69/+92/+115/+184 at N=3/4/5/8), with participant
+routes byte-identical - so the growth is attributable to the projection and to nothing else.
 
 ### Incidental walls - scope decisions and defects, not limits
 

@@ -53,6 +53,18 @@ const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
  * projection verifier, so every corpus prediction in this file was carrying 444 bytes per participant that
  * HEAD does not generate. Two compiles - no UTXO, no builder, no VM - remove the whole class of error, and
  * they are the same two figures `Layer3EnvelopeDocR2.test.ts` guards the documents against.
+ *
+ * X85. THE FIGURE WAS FILED AS 444 BYTES AND IT IS 444 PLUS 21. Measured at this commit: the projection
+ * verifier is 4,098 bytes against the basis's 4,542, and the CONTROLLER is 1,493 against 1,514, so a graph of
+ * N participants was carrying `444 * N + 21` bytes of covenant that no longer exists - one projection proof
+ * per participant plus the single controller. The controller's 21 bytes were not in the filing.
+ *
+ * AND THE CONSEQUENCE IS NOT ONLY A LOOSE BAND. The estimated-landing test tallies both descriptors and prints
+ * the difference, so the run states its own figure; measured over the recorded census it moves 18 predictions
+ * from OVER to FITS - 9 at four participants and 9 at eight - because at N=8 the dead covenant is 3,573
+ * serialized bytes and the standard relay ceiling is what those rows were being refused on. A stale constant
+ * that only inflated a published band would be an accuracy problem; one that answers "will not fit" about a
+ * graph that fits is a wrong answer, and it was being given to 18 of 1,468 rows.
  */
 const MEASURED_COVENANTS = {
   projectionRedeemBytes: compileString(layer3.generateGraphProjectionVerifier()).debug.bytecode.length / 2,
@@ -508,6 +520,12 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
       + `${calibration.projectionRedeemBytes} / ${calibration.controllerRedeemBytes})`);
     const binding: Record<string, number> = {};
     const verdicts: Record<string, { fits: number; over: number; outOfRange: number }> = {};
+    // X85's own control, computed in the same run rather than quoted: the identical table with the covenant
+    // sizes DEFAULTED from the calibration, which is what this file produced before the descriptors carried
+    // them. Nothing is asserted from it except the direction of the error; it exists so the cost of the stale
+    // constant is a figure this run measured.
+    const staleVerdicts: Record<string, { fits: number; over: number }> = {};
+    let inflated = 0;
     // Printed in full for the application corpora and for the widest and narrowest of each other corpus; the
     // aggregate below is over EVERY row, so nothing is decided by the sample that is printed.
     const detailed = new Set<string>();
@@ -521,7 +539,7 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
     }
     for (const row of eligible) {
       for (const participants of [1, 2, 4, 8]) {
-        const fit = fitAt(row, participants, calibration);
+        const fit = fitAt(row, participants, calibration, MEASURED_COVENANTS);
         const key = `${participants}`;
         verdicts[key] ??= { fits: 0, over: 0, outOfRange: 0 };
         if (fit.prediction.verdict === 'FITS') verdicts[key].fits += 1; else verdicts[key].over += 1;
@@ -531,13 +549,43 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
         if (detailed.has(`${row.corpus}/${row.rel}/${row.contractName}`)) {
           console.log(`[F3] ${formatFitRow(fit)}`);
         }
+        // THE DESCRIPTOR REALLY CARRIED THE LIVE COVENANT, asserted on the estimator's own exact term rather
+        // than on the argument being passed. `exactBytes` on these two classes IS the redeem script the input
+        // pushes, so this goes red the moment a caller drops the overrides again.
+        const projection = fit.prediction.classes.find((klass) => klass.klass === 'projection')!;
+        const controller = fit.prediction.classes.find((klass) => klass.klass === 'controller')!;
+        expect(projection.exactBytes, 'the projection input is priced at a covenant this commit does not build')
+          .toBe(MEASURED_COVENANTS.projectionRedeemBytes);
+        expect(controller.exactBytes, 'the controller input is priced at a covenant this commit does not build')
+          .toBe(MEASURED_COVENANTS.controllerRedeemBytes);
+        const stale = fitAt(row, participants, calibration);
+        staleVerdicts[key] ??= { fits: 0, over: 0 };
+        if (stale.prediction.verdict === 'FITS') staleVerdicts[key].fits += 1; else staleVerdicts[key].over += 1;
+        if (stale.prediction.verdict === 'OVER' && fit.prediction.verdict === 'FITS') inflated += 1;
+        // Both covenants shrank, and every limit is monotone in the bytes an input pushes, so the stale
+        // default can only ever predict MORE utilization. A row where it predicted less would mean the two
+        // descriptors differ in something other than the covenant sizes.
+        expect(stale.prediction.worstRatio,
+          `${row.contractName} @ N=${participants}: the stale default predicts LESS than the live covenant`)
+          .toBeGreaterThanOrEqual(fit.prediction.worstRatio - 1e-12);
       }
     }
     console.log('[F3] predicted verdicts over EVERY bus-reachable contract:');
     for (const [participants, tally] of Object.entries(verdicts)) {
+      const stale = staleVerdicts[participants];
       console.log(`[F3]   N=${participants}: FITS=${tally.fits} OVER=${tally.over} `
-        + `(${tally.outOfRange} outside the calibrated driver range)`);
+        + `(${tally.outOfRange} outside the calibrated driver range)`
+        + ` | with the covenants DEFAULTED: FITS=${stale.fits} OVER=${stale.over}`);
     }
+    console.log(`[F3] X85: the stale covenant default answered OVER on ${inflated} of `
+      + `${eligible.length * 4} rows that fit, at ${MEASURED_COVENANTS.projectionRedeemBytes} vs `
+      + `${calibration.projectionRedeemBytes} B of projection and `
+      + `${MEASURED_COVENANTS.controllerRedeemBytes} vs ${calibration.controllerRedeemBytes} B of controller`);
+    // The control has to be doing something, or the fix is untested: this file exists at a commit where both
+    // covenants have moved away from the calibration, and if they ever agree again this line says so rather
+    // than letting the check pass vacuously.
+    expect(MEASURED_COVENANTS.projectionRedeemBytes).not.toBe(calibration.projectionRedeemBytes);
+    expect(MEASURED_COVENANTS.controllerRedeemBytes).not.toBe(calibration.controllerRedeemBytes);
     console.log('[F3] which limit is predicted to bind, counted:');
     for (const [key, count] of Object.entries(binding).sort((left, right) => right[1] - left[1])) {
       console.log(`[F3]   ${String(count).padStart(4)}  ${key}`);

@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,50 +10,47 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 /**
- * X109 - two VM callers that discard the provider's limits, and why reading them is NOT the repair.
+ * X109 - two VM callers that discarded the provider's limits. Reading them IS the repair; see X121.
  *
- * The row: `StatefulTransactionBuilder.ts` `_logCovenantFailureTrace` (:2668) and
- * `_strictRecursiveVmPreflight` (:2712) build a bare `createVirtualMachineBch2026()`. The first is reached
- * whenever `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000` is false, so a provider
- * publishing limits AT 10,000 lands there; the second has no gate at all and builds the bare VM for every
- * provider. The proposed repair was `createVirtualMachineBch2026ForProvider(provider)` at both.
+ * The row: `StatefulTransactionBuilder.ts` `_logCovenantFailureTrace` and `_strictRecursiveVmPreflight` built a
+ * bare `createVirtualMachineBch2026()`. The tracer is reached whenever
+ * `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000` is false, so a provider publishing limits
+ * AT 10,000 lands there; the preflight had no gate at all and built the bare VM for every provider.
  *
- * MEASURED ANSWER: do not apply it. The decision and its evidence live in
- * `X121StrictPreflightDecision.test.ts`, which measures the recursion path this file could not settle.
+ * ANSWER: apply it at the preflight, which is done. `X121StrictPreflightDecision.test.ts` carries the decision,
+ * the recursion measurements, and the version pin. This file keeps only the factory-level claims.
  *
- * TWO WRONG TURNS ARE RECORDED HERE, both instructive.
+ * THIS FILE RECORDED THREE WRONG TURNS. All three are kept visible because each failed differently.
  *
- * (1) This file first argued from a grep - zero hits for `config.consensus` in `@mem-cash/validation` - that
- *     the published limits are "rules nothing enforces". Right conclusion, inadequate evidence.
+ * (1) It argued from a grep - zero hits for `config.consensus` in `@mem-cash/validation` - that the published
+ *     limits are "rules nothing enforces". Inadequate evidence, and version-blind.
+ * (2) It then claimed the submit path enforces both a strict `maximumStackItemBytes` and a strict
+ *     `operationCostBudgetPerByte`, quoting 150 x 167 = 25,050. That row was RED at the commit that introduced
+ *     it, because the 25,050 string is emitted by `createVirtualMachineBch2026ForProvider` - which the same row
+ *     also called on the same spend - and was attributed to `sendRawTransaction`.
+ * (3) It then "settled" the row the other way by measuring `@mem-cash/validation` 0.0.7, where the overrides
+ *     genuinely are dropped, and concluded the bare VM is the faithful one. THAT is the conclusion that
+ *     mattered and it was wrong for this repo: `packages/solidcash/package.json` declares `^0.0.8` (exactly
+ *     0.0.8 for a 0.0.x range) and `yarn.lock` resolves 0.0.8. The 0.0.7 reading was accurate; generalising it
+ *     was not.
  *
- * (2) It then "falsified" that, claiming the submit path refuses both a strict `maximumStackItemBytes` and a
- *     strict `operationCostBudgetPerByte`, the latter at exactly 150 x 167 = 25,050. THAT WAS THE REAL ERROR,
- *     and it was RED at the commit that introduced it, in both dimensions. The 25,050 string is emitted by
- *     `createVirtualMachineBch2026ForProvider`, which the same row also called on the same spend; it was read
- *     off the faithful VM and attributed to `sendRawTransaction`. Row 2 below now measures the submit path
- *     ACCEPTING both, which is what it always did.
+ * AT 0.0.8 - the sanctioned version - `TxVerifierConfig.consensus` exists, MockNetworkProvider's overrides
+ * (`MockNetworkProvider.ts:80-98`) reach the decider, and `createVirtualMachineBch2026ForProvider` agrees with
+ * it on every shape measured while the bare VM diverges in both directions. Row 2 below now measures the submit
+ * path REFUSING both dimensions, which is 0.0.8 behaviour and is pinned as such.
  *
- * THE MECHANISM, now established rather than grepped: `@mem-cash/validation` @0.0.7 `TxVerifierConfig` has no
- * `consensus` field, and `createTxVerifier` never reads one - `createVmFacade(version, standard)` calls
- * `createVirtualMachineBch2026(standard)` with libauth's stock `ConsensusBch2026`. The overrides object built
- * at `MockNetworkProvider.ts:80-98` is discarded; the
- * `as Parameters<typeof createTxVerifier>[0] & { consensus: ... }` cast at :106 is what hides that from the
- * compiler. The `ConsensusCommon` patch at :264-271 reaches only libauth's COMMON checked-push helper, which
- * the CashToken introspection operations use - not the generic data-push path, so a 65-byte signature push
- * still settles under `maximumStackItemBytes: 8`.
- *
- * Consequence for the repair: for MockNetworkProvider the BARE VM is the faithful one and
- * `createVirtualMachineBch2026ForProvider` is the unfaithful one, in whichever direction the profile points.
- * On the DEFAULT profile it points at ACCEPT, which is the unsound direction. See X121 row 4.
- *
- * Rows 1 and 3 are unchanged and still stand: they compare the two FACTORIES, not the decider. Row 3 is row
- * 1's guard negative control, differing ONLY in `maximumStackItemBytes`.
+ * Rows 1 and 3 are unchanged and are version-independent: they compare the two FACTORIES, not the decider.
+ * Row 3 is row 1's guard negative control, differing ONLY in `maximumStackItemBytes`.
  *
  * NOT claimed: that the regime (`standard`) is decisive. MockNetworkProvider builds its verifier with
  * `standard: policy.enforceDust`, so a dust-disabled profile decides in the consensus regime while both bare
- * callers evaluate in the standard one. X121 row 2 varies only that field and gets identical verdicts, so the
- * divergence is real but explains nothing here.
+ * callers evaluate in the standard one. Row 2c varies only that field and no verdict moves, so the divergence
+ * is real but explains nothing here.
  */
+
+const MEM_CASH_VALIDATION_VERSION: string = JSON.parse(readFileSync(
+  new URL('../../../../node_modules/@mem-cash/validation/package.json', import.meta.url), 'utf8',
+)).version;
 
 const limits = (maximumStackItemBytes: number): any => ({
   maximumInputBytes: 10_000,
@@ -82,7 +80,7 @@ const evaluateInput0 = (
   transaction: builder.buildLibauthTransaction(),
 }) as { error?: string }).error;
 
-describe('X109 - the decider applies NONE of the published limits, so the bare VM is the faithful one', () => {
+describe('X109 - the decider applies the published limits (@mem-cash/validation 0.0.8)', () => {
   it('1. the bare VM accepts what the provider-faithful VM rejects, with the gate reading false', async () => {
     const provider = new MockNetworkProvider({
       consensusLimits: limits(8), policy: { enforceDust: false },
@@ -95,34 +93,39 @@ describe('X109 - the decider applies NONE of the published limits, so the bare V
       .toMatch(/exceeded the maximum stack item length/);
   });
 
-  it('2. the decider does NOT enforce the published limits, in either dimension', async () => {
-    // maximumStackItemBytes: NOT enforced. A 65-byte signature push settles under a published limit of 8.
+  it('2. the decider DOES enforce the published limits, in both dimensions [0.0.8]', async () => {
+    // VERSION-DEPENDENT. At 0.0.7 both submits below ACCEPT, because TxVerifierConfig has no `consensus` field
+    // and the overrides are dropped. X121 row 0 is the version gate; this row states which side it pins.
+    expect(MEM_CASH_VALIDATION_VERSION, 'this row pins 0.0.8 behaviour').toBe('0.0.8');
+
+    // maximumStackItemBytes: enforced. The refusal names the published 8 and the offending 65-byte signature.
     const strictItem = new MockNetworkProvider({
       consensusLimits: limits(8), policy: { enforceDust: false },
     });
     const itemSpend = await buildP2pkhSpend(strictItem);
-    await expect(strictItem.sendRawTransaction(itemSpend.build())).resolves.toBeTypeOf('string');
-    // GUARD for that accept: the bytes DO violate the published limit - a VM applying it refuses them, naming
-    // the published 8 and the offending 65. So the accept is the decider ignoring the field, not innocuous bytes.
+    await expect(strictItem.sendRawTransaction(itemSpend.build()))
+      .rejects.toThrow(/Maximum stack item length: 8 bytes\. Item length: 65 bytes/);
+    // And the faithful factory refuses the same bytes for the same reason - the agreement this row establishes.
     expect(evaluateInput0(createVirtualMachineBch2026ForProvider(strictItem), itemSpend))
       .toMatch(/Maximum stack item length: 8 bytes\. Item length: 65 bytes/);
 
-    // operationCostBudgetPerByte: also NOT enforced. This is the field X109's previous row 2 claimed as its
-    // strongest evidence, quoting 150 x 167 = 25,050 - a string the FAITHFUL VM emits, asserted below, and
-    // which the submit path never produced.
+    // operationCostBudgetPerByte: also enforced. The arithmetic is exact, which is what makes this a
+    // measurement of the published value rather than of an unrelated ceiling: 150 per byte x 167
+    // density-control bytes = 25,050. Both the decider and the faithful factory quote it.
     const strictCost = new MockNetworkProvider({
       consensusLimits: { ...limits(10_000), operationCostBudgetPerByte: 150 },
       policy: { enforceDust: false },
     });
     const costSpend = await buildP2pkhSpend(strictCost);
-    await expect(strictCost.sendRawTransaction(costSpend.build())).resolves.toBeTypeOf('string');
+    await expect(strictCost.sendRawTransaction(costSpend.build()))
+      .rejects.toThrow(/Maximum operation cost: 25050 \(density control length: 167\)/);
     expect(evaluateInput0(createVirtualMachineBch2026ForProvider(strictCost), costSpend))
       .toMatch(/Maximum operation cost: 25050 \(density control length: 167\)/);
   });
 
-  it('2b. GUARD: the same two spends also settle when the attacked limit is relaxed', async () => {
-    // Each provider differs from its row-2 twin in exactly one field. Row 2 accepts and so does this, which is
-    // the point: the submit verdict does not move when the field moves, in either direction.
+  it('2b. GUARD: the same two spends settle when only the attacked limit is relaxed', async () => {
+    // Each provider differs from its row-2 twin in exactly one field, so row 2 cannot be passing because these
+    // spends fail under any profile.
     const okItem = new MockNetworkProvider({
       consensusLimits: limits(10_000), policy: { enforceDust: false },
     });
@@ -136,20 +139,21 @@ describe('X109 - the decider applies NONE of the published limits, so the bare V
       .resolves.toBeTypeOf('string');
   });
 
-  it('2c. the same two accepts hold with dust ON, so the regime is not what lets them through', async () => {
+  it('2c. the same two refusals hold with dust ON, so the regime is not what produces them', async () => {
     // MockNetworkProvider passes `standard: policy.enforceDust` to mem-cash, so this pair decides in the
-    // STANDARD regime while row 2's pair decides in the CONSENSUS one. Only that field differs.
+    // STANDARD regime while row 2's pair decides in the CONSENSUS one. Only that field differs, and no verdict
+    // moves - which is why the regime is reported as real but not decisive.
     const strictItem = new MockNetworkProvider({
       consensusLimits: limits(8), policy: { enforceDust: true },
     });
     await expect(strictItem.sendRawTransaction((await buildP2pkhSpend(strictItem)).build()))
-      .resolves.toBeTypeOf('string');
+      .rejects.toThrow(/Maximum stack item length: 8 bytes/);
     const strictCost = new MockNetworkProvider({
       consensusLimits: { ...limits(10_000), operationCostBudgetPerByte: 150 },
       policy: { enforceDust: true },
     });
     await expect(strictCost.sendRawTransaction((await buildP2pkhSpend(strictCost)).build()))
-      .resolves.toBeTypeOf('string');
+      .rejects.toThrow(/Maximum operation cost: 25050 \(density control length: 167\)/);
   });
 
   it('3. guard negative control: raising only the attacked field makes the faithful VM accept', async () => {

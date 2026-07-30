@@ -16,6 +16,9 @@ import {
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
+  SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE, scanComparisons,
+} from './layer3-pairwise-guard.js';
+import {
   createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
   getDataNftAddress, getDynamicChunkAddress, getEventNftAddress, getSatoshiContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
@@ -1047,6 +1050,10 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
     expect(built.chunkCount).toBeGreaterThan(0);
     const ledgerLayout = built.artifacts[1].hiddenBatch.route.blockLayout;
     expect(ledgerLayout.trailingBase).toBe(2);
+    // R3-11 class, found sideways: `every` over an empty list is `true`, and `chunkCount > 0` above is a
+    // different quantity from the length of this list. Tie the two together before reading the locality claim.
+    expect(built.assembly.chunkOffsets, 'the chunk offsets the locality claim reads are not the chunks counted')
+      .toHaveLength(built.chunkCount);
     expect(built.assembly.chunkOffsets.every((offset) =>
       offset >= ledgerLayout.trailingBase
       && offset < ledgerLayout.trailingBase + ledgerLayout.trailingCapacity)).toBe(true);
@@ -1327,30 +1334,46 @@ describe('C3 hostile cases', () => {
       strangerOffsets.participants[index].lbcStart + strangerOffsets.participants[index].lbcLength,
     ));
     expect(new Set(Array.from({ length: 8 }, (_unused, index) => strangerRow(index))).size).toBe(8);
-    expect(patchedByteIndices(stranger).every((index) =>
+    // R3-11. THE NON-EMPTINESS FIRST, exactly as the duplicate-owner case thirty lines above already does.
+    // `every` over an empty array is `true`, so a no-op patch satisfied the locality claim, and the
+    // neighbouring distinctness check would ALSO pass on an unpatched honest transcript - there was no backstop.
+    const strangerDiffering = patchedByteIndices(stranger);
+    expect(strangerDiffering.length, 'the stranger-owner patch changed NOTHING, so byte locality is vacuous')
+      .toBeGreaterThan(0);
+    expect(strangerDiffering.every((index) =>
       index >= forged.lbcStart && index < forged.lbcStart + forged.lbcLength)).toBe(true);
     expect(preflightOutcome(stranger)).toContain('layer3: BCH-2026 preflight failed at input 79');
     await expect(stranger.provider.sendRawTransaction(stranger.transaction)).rejects.toThrow();
 
     // Neither generated covenant ever compares two participant rows to each other. This guard went VACUOUS
-    // once: it hunted `participantLbcN == participantLbcM`, and X65 replaced the 8-way dispatch with an
-    // input-index table, so those identifiers stopped existing and the regex could never match again. It is
-    // now expressed against the property rather than the spelling - no comparison may carry a participant
-    // locking bytecode on both sides - plus an assertion that the old identifiers really are gone.
+    // TWICE: it first hunted `participantLbcN == participantLbcM`, and X65 replaced the 8-way dispatch with an
+    // input-index table so those identifiers stopped existing; it was then expressed against the property
+    // rather than the spelling but asserted only that the filtered result was EMPTY, with nothing asserting the
+    // splitter had found any comparison at all (R3-10). The detector, its one named exemption and its POSITIVE
+    // CONTROL now live in `layer3-pairwise-guard.ts`, shared with `Layer3ReviewA1.test.ts` so the two copies
+    // cannot drift apart again. A clause-count floor only says the splitter found SOMETHING; the control is
+    // what says it would find THE THING.
+    expect(scanComparisons(SYNTHETIC_PAIRWISE_SOURCE).pairwise,
+      'the detector cannot see a pairwise participant comparison, so its verdict below is worthless')
+      .toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_BASE_BINDING_SOURCE).pairwise,
+      'the detector flags the HONEST base binding as pairwise, so it over-reports').toEqual([]);
     for (const source of [
       layer3.generateGraphProjectionVerifier(), layer3.generateGraphRootController('51'),
     ]) {
-      const pairwise = source.split('\n')
-        .flatMap((line) => line.split(/&&|\|\|/))
-        .filter((clause) => /[=!]=/.test(clause))
-        .filter((clause) => {
-          const [left, right] = clause.split(/[=!]=/);
-          return right !== undefined
-            && /lockingBytecode|participantLbc/.test(left) && /lockingBytecode|participantLbc/.test(right);
-        });
-      expect(pairwise, `pairwise participant comparison in:\n${pairwise.join('\n')}`).toEqual([]);
+      const scan = scanComparisons(source);
+      // LIVENESS, the two assertions R3-10 is about.
+      expect(scan.comparisons.length, 'the splitter found no comparison clause at all').toBeGreaterThan(20);
+      expect(scan.mentioningLbc, 'no comparison mentions a participant locking bytecode, so the both-sides '
+        + 'filter is running over a population that cannot contain a hit').not.toEqual([]);
+      expect(scan.pairwise, `pairwise participant comparison in:\n${scan.pairwise.join('\n')}`).toEqual([]);
       expect(/participantLbc\d/.test(source)).toBe(false);
     }
+    // The ONE both-sides comparison in the tree, which the old line splitter could not see: the controller
+    // preserving its own script at its own index. Not two participant rows. Exempted by name and asserted
+    // PRESENT, so the exemption cannot rot into dead text while a genuine pairwise comparison lands beside it.
+    expect(scanComparisons(layer3.generateGraphRootController('51')).exempted,
+      'the named self-preservation exemption matches nothing now, so it should be deleted').toHaveLength(1);
 
     // The SDK planner is where uniqueness actually lives: it refuses the construction before any transcript.
     const rows = attacked.plan.participants.map((participant, index) => ({

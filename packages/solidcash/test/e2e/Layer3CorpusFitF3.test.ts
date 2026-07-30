@@ -20,6 +20,7 @@ import {
   F3_CENSUS_GATES, F3_CENSUS_REJECTIONS,
 } from './layer3-corpus-census-f3.js';
 import { fitAt, formatFitRow, replicaSpec } from './layer3-corpus-fit-f3.js';
+import { verifyCorpusPins } from './layer3-corpus-pins.js';
 import type { CensusRow } from './layer3-corpus-fit-f3.js';
 
 /**
@@ -95,6 +96,85 @@ const MEASURED_COVENANTS = ((): { projectionRedeemBytes: number; controllerRedee
 const corpora = Object.keys(F3_CENSUS_GATES);
 const eligible = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
 
+/** The two APPLICATION corpora: the population the report's most-quoted sentence is about. */
+const applicationRows = F3_CENSUS_ELIGIBLE
+  .filter((row) => row.corpus === 'mistswap' || row.corpus === 'eacc');
+
+/**
+ * X113 / R3-4. THE APPLICATION POPULATION IS COMPILED IN FULL, ONCE, AND SHARED.
+ *
+ * WHAT WAS HERE AND WHY IT HAD TO GO. The live headline test selected its subjects with
+ * `redeemBytes < 8_000`, and that rule is not a subject rule at all - it is a rule that ERODES. It selected 6
+ * of the 12 application rows at the recorded bytes and it excluded, by construction, the two rows that carry
+ * the answer: `UniswapV2Pair` (14,556 recorded) and `UniswapV2Factory` (43,939) are the ONLY application
+ * contracts that admit a state-changing handler, so the rule hid exactly the counter-example to the sentence
+ * the test was asserting. A guard that gets weaker as the system grows is worse than no guard, because it
+ * reports green while its subject leaves.
+ *
+ * MEASURED, so the replacement is not a preference: compiling all twelve in bus mode takes 5 m 40 s total
+ * (MarketplaceV1 87 s, V2 61 s, V3 60 s, UnicrowClaim 29 s, SushiRoll 27 s, UniswapV2Factory 17 s,
+ * UniswapV2Pair 16 s, UnicrowArbitrator 9 s, EACCToken 8 s, UnicrowDispute 7 s, FakeToken 7 s,
+ * TreasurySplit 6 s), against this file's 900,000 ms budget. The docstring's claim that
+ * `MarketplaceV1/V2/V3.sol` and `EACCToken.sol` "take minutes each" is right about MarketplaceV1 and wrong
+ * about EACCToken, which is one of the fastest. So the size rule is replaced by NO rule: the whole recorded
+ * application population is the subject, the population size is pinned, and nothing can silently leave it.
+ *
+ * A compile FAILURE is a measurement here, not a skip: the set of failing rows is pinned by name, so both a
+ * new failure and a repair turn the row red and have to be re-read.
+ */
+const APPLICATION_COMPILES = new Map<string, { artifact?: any; error?: string; seconds: number }>();
+
+function compileApplicationRow(row: CensusRow): { artifact?: any; error?: string; seconds: number } {
+  const key = `${row.corpus}/${row.rel}/${row.contractName}`;
+  const cached = APPLICATION_COMPILES.get(key);
+  if (cached !== undefined) return cached;
+  const file = `${CORPUS_ROOTS[row.corpus]}/${row.rel}`;
+  const started = Date.now();
+  let result: { artifact?: any; error?: string; seconds: number };
+  try {
+    const artifact = compileFile(file, {
+      solidityImportCompat: true,
+      ecrecover: 'p2pkh',
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    } as never);
+    result = { artifact, seconds: (Date.now() - started) / 1000 };
+  } catch (error) {
+    result = {
+      error: `${(error as Error).name}: ${(error as Error).message.split('\n')[0]}`,
+      seconds: (Date.now() - started) / 1000,
+    };
+  }
+  APPLICATION_COMPILES.set(key, result);
+  return result;
+}
+
+/**
+ * The application rows that DO NOT COMPILE in bus mode at this commit, pinned by name.
+ *
+ * Every one of them is recorded `bus: 'OK'` in the census taken at `b4d33fc1`, so each is a compiler
+ * regression between that commit and this one rather than a property of the contract. They are named here
+ * because the alternative is what the file used to do: compile them inside the assertion loop with no
+ * try/catch, which made the whole headline test THROW. It was red at `1b7086da` before this row touched it,
+ * on `SushiRoll`.
+ */
+const APPLICATION_COMPILE_FAILURES = ['TreasurySplit', 'UnicrowClaim', 'SushiRoll'];
+
+/**
+ * The application rows admitting at least one handler the compiler does NOT prove read-only, pinned by name.
+ *
+ * THE "12 / 0 / 134" HEADLINE IS RETIRED AND THIS IS THE FIGURE THAT REPLACES IT. Measured at `1b7086da` over
+ * the full application population: 2 of 12 contracts admit 4 state-changing handlers -
+ * `UniswapV2Pair.initialize`, and `UniswapV2Factory.setFeeTo` / `setMigrator` / `setFeeToSetter`, all four
+ * `writesState: true` with an ABI entry present, so none is the conservative absent-flag reading. Both
+ * contracts sit above the 8,000-byte rule that used to select the subjects, which is why the old subset could
+ * assert exactly zero and stay green.
+ */
+const APPLICATION_STATE_CHANGERS = ['UniswapV2Pair', 'UniswapV2Factory'];
+const APPLICATION_STATE_CHANGING_HANDLERS = 4;
+
 /** Corpus roots, so a census row can be recompiled. Same defaults the probe uses. */
 const CORPUS_ROOTS: Record<string, string> = {
   mistswap: process.env.MISTSWAP_ROOT ?? '/Code/mistswap/mistswap/contracts',
@@ -139,6 +219,19 @@ function measuredControlCandidates(): CensusRow[] {
 }
 
 describe('F3 census: how much of the real corpora can reach the bus at all', () => {
+  /**
+   * R3-16. THE FIT REPORT QUOTES PERCENTAGES OVER FOUR EXTERNAL CHECKOUTS, so it must not quote them from
+   * unpinned sources. Wiring supplied as a BLOCKED hunk by the R3-16 worker; `layer3-corpus-pins.ts` is the
+   * verifier and `Layer3CorpusPins.test.ts` proves it independently. A checkout that cannot be verified is a
+   * NAMED refusal here rather than a silently different denominator - the same standard X113 applies to the
+   * subject rule below.
+   */
+  it('rests on corpus checkouts at their pinned commits', () => {
+    const verdict = verifyCorpusPins();
+    for (const refusal of verdict.refusals) console.log(`[F3] R3-16 ${refusal}`);
+    expect(verdict.refusals).toEqual([]);
+  });
+
   /**
    * The gate chain, counted. Each gate is a strictly weaker population than the one before it, which is
    * asserted rather than assumed: a census whose "eligible" count exceeded its "compiles" count would be a
@@ -241,15 +334,30 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     expect(candidates, 'the census records no refused entry point to recompile').not.toEqual([]);
     let examined = 0;
     let refusing: { name: string; reasons: string[] } | undefined;
+    // THE WALK NOW SURVIVES A CANDIDATE THAT NO LONGER COMPILES, and it has to: this test was RED at
+    // `1b7086da` before this row touched it, because its FIRST candidate is `mistswap/SushiRoll` and SushiRoll
+    // stopped compiling in bus mode ("Missing journal context '__internal__state_write_oldRouter'") since the
+    // census commit `b4d33fc1` that recorded it as `bus: 'OK'`. X87 built this walk precisely so that one
+    // candidate ceasing to reproduce could not turn the row red for the wrong reason - and then handled only
+    // "stops refusing", not "stops compiling". A compile failure is NAMED, PRINTED and counted here; it is not
+    // swallowed, and the two load-bearing assertions below still run on every candidate that does compile.
+    const uncompilable: string[] = [];
     for (const subject of candidates.slice(0, 4)) {
-      const artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
-        solidityImportCompat: true,
-        ecrecover: 'p2pkh',
-        forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
-      } as never);
+      let artifact;
+      try {
+        artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
+          solidityImportCompat: true,
+          ecrecover: 'p2pkh',
+          forceStateful: true,
+          experimentalHiddenBatch: true,
+          experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+          experimentalMessageBusControllerCategory: '22'.repeat(32),
+        } as never);
+      } catch (error) {
+        uncompilable.push(`${subject.corpus}/${subject.contractName}: `
+          + `${(error as Error).name}: ${(error as Error).message.split('\n')[0]}`);
+        continue;
+      }
       examined += 1;
       const refused = (artifact.hiddenBatch?.handlers ?? []).filter((handler) => !handler.eligible);
       const unnamed = refused.filter((handler) => handler.rejectionReason === undefined);
@@ -267,8 +375,14 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
       expect(unnamed, `${subject.contractName}: a refused entry point is published with no reason`).toEqual([]);
       if (refused.length > 0) { refusing = { name: subject.contractName!, reasons }; break; }
     }
-    console.log(`[F3] examined ${examined} census candidate(s); refusing subject: `
+    for (const failure of uncompilable) console.log(`[F3] candidate NO LONGER COMPILES - ${failure}`);
+    console.log(`[F3] examined ${examined} census candidate(s), ${uncompilable.length} uncompilable; `
+      + 'refusing subject: '
       + `${refusing === undefined ? 'NONE' : `${refusing.name} ${JSON.stringify(refusing.reasons)}`}`);
+    // The walk has to have EXAMINED something, or the invariant assertions above ran zero times and the
+    // "doing work" guard below is the only line left standing.
+    expect(examined, `every candidate the walk tried failed to compile: ${uncompilable.join('; ')}`)
+      .toBeGreaterThan(0);
     // The "doing work" guard, on the WALK rather than on one row: at least one recorded refusal must still
     // reproduce, or this test is checking a channel nothing sends down.
     expect(refusing, 'every census-flagged row now refuses nothing, so the closure is vacuous').toBeDefined();
@@ -322,59 +436,110 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
    * result on real applications: lifting the largest gate on the board moved the useful count from zero to
    * zero.
    *
-   * WHAT THIS TEST ASSERTS, and why it is a subset. The twelve figure is the probe's, recorded above.
-   * `MarketplaceV1/V2/V3.sol` and `EACCToken.sol` take minutes each to compile twice, so the live subjects are
-   * chosen by a SIZE RULE rather than by hand - every application row whose census redeem script is under
-   * 8,000 bytes - and the assertion on them is the same one the headline makes.
+   * WHAT THIS TEST ASSERTS, AND IT IS NO LONGER A SUBSET (X113). Every one of the twelve recorded application
+   * rows is compiled here. The `redeemBytes < 8_000` rule that used to select the subjects is gone: see
+   * `APPLICATION_COMPILES` for why it had to go and for the measured compile budget that lets the whole
+   * population be the subject.
+   *
+   * AND THE HEADLINE IT USED TO ASSERT IS RETIRED, by measurement rather than by argument. Over the full
+   * population 2 of 12 contracts admit 4 state-changing handlers; over the size-selected 6 the figure was 0,
+   * because both write-admitting contracts are above 8,000 bytes. The assertion states the current figure and
+   * names the contracts, so a change in either direction has to be re-read rather than absorbed.
    */
-  it('MEASURED: X73 lifted the visibility gate and the application read-only surface still holds', () => {
-    const applications = F3_CENSUS_ELIGIBLE
-      .filter((row) => row.corpus === 'mistswap' || row.corpus === 'eacc');
-    expect(applications, 'the census records no application-corpus contract').not.toEqual([]);
-    const subjects = applications.filter((row) => (row.redeemBytes ?? Number.POSITIVE_INFINITY) < 8_000);
-    expect(subjects.length, 'the size rule selected no subject').toBeGreaterThan(0);
+  it('MEASURED: X73 lifted the visibility gate, and the FULL application write surface is 2 of 12', () => {
+    expect(applicationRows, 'the census records no application-corpus contract').not.toEqual([]);
+    // The population is PINNED, so a row cannot silently leave the subject set the way the size rule let it.
+    expect(applicationRows, 'the recorded application population changed size; re-read X113 before re-pinning')
+      .toHaveLength(12);
 
     let admittedWrites = 0;
     let admitted = 0;
     let visibility = 0;
-    for (const row of subjects) {
-      const file = `${CORPUS_ROOTS[row.corpus]}/${row.rel}`;
-      const options = {
-        solidityImportCompat: true,
-        ecrecover: 'p2pkh',
-        forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
-      };
-      const artifact = compileFile(file, options as never);
+    const failed: string[] = [];
+    const stateChangers: string[] = [];
+    const drift: string[] = [];
+    const examined: CensusRow[] = [];
+    for (const row of applicationRows) {
+      const compiled = compileApplicationRow(row);
+      if (compiled.artifact === undefined) {
+        failed.push(row.contractName!);
+        console.log(`[F3] X73 ${row.corpus}/${row.contractName}: DOES NOT COMPILE in bus mode `
+          + `(${compiled.seconds.toFixed(1)}s) - ${compiled.error}`);
+        continue;
+      }
+      examined.push(row);
+      const { artifact } = compiled;
       const handlers = artifact.hiddenBatch?.handlers ?? [];
       // `writesState: false` is the compiler's own proof of read-only. Read off the bus-mode artifact's own
       // ABI, which is the artifact whose handlers are being classified; measured to agree with the direct-mode
       // ABI on the subject where both were compiled, and `forceStateful` means the flag is never absent.
       const writes = (name: string): boolean =>
-        artifact.abi?.find((entry) => entry.name === name)?.writesState !== false;
-      const eligibleNames = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
+        artifact.abi?.find((entry: any) => entry.name === name)?.writesState !== false;
+      const eligibleNames = handlers.filter((handler: any) => handler.eligible)
+        .map((handler: any) => handler.name);
       const writingNames = eligibleNames.filter(writes);
-      const reasons = [...new Set(handlers.filter((handler) => !handler.eligible)
-        .map((handler) => handler.rejectionReason ?? 'unnamed'))];
-      visibility += handlers
-        .filter((handler) => handler.rejectionReason === 'initial-v1-route-requires-public-visibility').length;
+      const reasons = [...new Set(handlers.filter((handler: any) => !handler.eligible)
+        .map((handler: any) => handler.rejectionReason ?? 'unnamed'))];
+      visibility += handlers.filter((handler: any) =>
+        handler.rejectionReason === 'initial-v1-route-requires-public-visibility').length;
       admitted += eligibleNames.length;
       admittedWrites += writingNames.length;
+      if (writingNames.length > 0) stateChangers.push(row.contractName!);
+      // R3-4. THE DRIFT CHECK, ON A POPULATION THAT CAN CONTAIN DRIFT. The only drift report in this file ran
+      // inside `measureSubject`, which is reached only by ONE-SLOT candidates, and every application row has a
+      // block wider than one slot - so it printed "drifted: 0" truthfully and uselessly. It is folded in here,
+      // where twelve real contracts are already being compiled, at no extra compile cost.
+      const args = (artifact.constructorInputs ?? []).map((input: any) => placeholder(String(input.type)));
+      const provider = new MockNetworkProvider();
+      const compiledRedeemBytes = new Contract(artifact, args as never[], { provider }).bytecode.length / 2;
+      if (compiledRedeemBytes !== row.redeemBytes) {
+        drift.push(`${row.corpus}/${row.contractName} blockSize=${row.blockSize}: census ${row.redeemBytes} B, `
+          + `compiled ${compiledRedeemBytes} B (${compiledRedeemBytes - row.redeemBytes! >= 0 ? '+' : ''}`
+          + `${compiledRedeemBytes - row.redeemBytes!})`);
+      }
       console.log(`[F3] X73 ${row.corpus}/${row.contractName}: admitted ${eligibleNames.length}`
         + ` [${eligibleNames.join(', ')}] | state-changing among them ${writingNames.length}`
-        + ` | refusals ${JSON.stringify(reasons)}`);
+        + ` [${writingNames.join(', ')}] | redeem ${compiledRedeemBytes} B`
+        + ` | ${compiled.seconds.toFixed(1)}s | refusals ${JSON.stringify(reasons)}`);
     }
-    console.log(`[F3] X73 live subset: ${subjects.length} application contracts, ${admitted} admitted handlers,`
-      + ` ${admittedWrites} of them state-changing, ${visibility} visibility refusals`);
-    // THE HEADLINE, on the live subset. Not weakened to a band: the claim is exactly zero.
-    expect(admittedWrites, 'an application contract now admits a state-changing handler - the report headline '
-      + 'has to be retired, and the number stated').toBe(0);
-    // X73's own claim, checked where it is cheap to check: the gate is gone, not merely rarer.
+    console.log(`[F3] X73 FULL application population: ${applicationRows.length} contracts, `
+      + `${examined.length} compiled, ${failed.length} refused by the compiler, ${admitted} admitted handlers, `
+      + `${admittedWrites} of them state-changing, ${visibility} visibility refusals`);
+    console.log(`[F3] X73 state-changing surface on: ${stateChangers.join(', ') || 'nothing'}`);
+    console.log(`[F3] R3-4 census rows whose recorded redeem length has drifted: ${drift.length} `
+      + `of ${examined.length} examined`);
+    for (const row of drift) console.log(`[F3]   DRIFT ${row}`);
+
+    // THE COMPILE FAILURES ARE PINNED, not skipped. Each is recorded `bus: 'OK'` at census commit `b4d33fc1`,
+    // so each is a regression between that commit and this one. A NEW failure and a REPAIRED one both fail
+    // this line, which is the point: neither may pass unnoticed.
+    expect([...failed].sort(), 'the set of application rows the compiler refuses in bus mode has changed - '
+      + 'a new regression or a repair, either way re-measure and re-pin')
+      .toEqual([...APPLICATION_COMPILE_FAILURES].sort());
+    // X73's own claim, checked at FULL application scale rather than on the cheap half: the gate is gone.
     expect(visibility, 'X73 is recorded as lifting the visibility gate entirely').toBe(0);
-    // And the subset has to be doing work: a run that admitted nothing at all would satisfy the line above.
-    expect(admitted, 'the live subset admits no handler, so it proves nothing').toBeGreaterThan(0);
+    // The population has to be doing work: a run that admitted nothing would satisfy every line below.
+    expect(admitted, 'the application population admits no handler at all, so it proves nothing')
+      .toBeGreaterThan(0);
+    // THE RETIRED HEADLINE, replaced by the figure and the names. This is NOT weakened to a band: it is the
+    // exact reading, and both directions fail it.
+    expect([...stateChangers].sort(), 'the set of application contracts admitting a state-changing handler has '
+      + 'changed; the report headline is a figure, not a zero, and it has to be restated')
+      .toEqual([...APPLICATION_STATE_CHANGERS].sort());
+    expect(admittedWrites, 'the number of admitted state-changing handlers has changed; restate it')
+      .toBe(APPLICATION_STATE_CHANGING_HANDLERS);
+    // R3-4's LIVENESS LINE. The drift check must run over a population that can contain drift at all: every
+    // row that actually drifted has a block wider than one slot, which is exactly what the old one-slot-only
+    // check could not see.
+    expect(examined.filter((row) => (row.blockSize ?? 1) > 1),
+      'the drift check examined no row with a block wider than one slot, which is the whole population that '
+      + 'drifted - it cannot see its subject').not.toEqual([]);
+    // AND THE STALENESS IS THE ASSERTION, the same way the frozen F2 basis is. The census is a recording taken
+    // at `b4d33fc1`; every application row that compiles has since moved. A ZERO here would mean the census
+    // was re-taken at this compiler, in which case this line is what says so and has to be re-read.
+    expect(drift, 'no application row disagrees with the recorded census any more - if the census was re-taken '
+      + 'at this commit, re-read R3-4 and re-pin; if it was not, the drift check has stopped working')
+      .not.toEqual([]);
   }, 900_000);
 
   /**
@@ -684,6 +849,9 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
         + `= ${(share * 100).toFixed(1)}% of the per-input limit, blockSize=${row.blockSize}, `
         + `handlers=${row.eligibleHandlers?.length}`);
     }
+    // R3-10 class, found sideways: `every` over an empty census is `true`. The non-emptiness of `eligible` is
+    // asserted in a DIFFERENT test, which is not this test's precondition.
+    expect(rows, 'the census carries no bus-reachable row, so the headroom table is empty').not.toEqual([]);
     expect(rows.every((row) => row.redeemBytes! > 0)).toBe(true);
     expect(BCH_2026_STANDARD.maximumTransactionSize).toBe(100_000);
   });
@@ -747,7 +915,11 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     // equal to the built participant inside this loop's catch, so three solc-corpus rows whose script the
     // compiler had since changed were being counted with the nineteen contracts whose `require` a placeholder
     // argument cannot satisfy. The descriptor is built from this run's compile, so the row is still measured.
-    console.log(`[F3] census rows whose recorded redeem length has drifted: ${censusDrift.length}`);
+    // R3-4. THIS FIGURE IS ONE-SLOT-ONLY, and saying so where it is printed is the point: `measureSubject` is
+    // reached only by candidates whose block is a single slot, and every row measured to have drifted has a
+    // wider block. A `0` here says nothing about the census. The population-wide check is in the X73 test.
+    console.log(`[F3] ONE-SLOT census rows whose recorded redeem length has drifted: ${censusDrift.length} `
+      + '(the wider-block population is checked by the X73 test, not here)');
     for (const drift of censusDrift) console.log(`[F3]   DRIFT ${drift}`);
     console.log(`[F3] measured ${measured} of ${candidates.length} one-slot candidates `
       + `(${(measured * 100 / candidates.length).toFixed(1)}%)`);

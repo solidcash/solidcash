@@ -8,6 +8,7 @@ import {
   Contract, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
+import { readEventsFromChain } from '../../src/stateful/StateReader.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -758,6 +759,9 @@ async function buildDivergentTransferBatch(forgeAt: 'none' | 'settled' | 'reserv
   };
 }
 
+const show = (value: unknown): string =>
+  JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item));
+
 const outcomeOf = (builder: TransactionBuilder): string => {
   try {
     layer3.preflightLayer3Transaction(builder);
@@ -827,11 +831,74 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
-  /** What the forgery used to buy: the SDK's own reader returned it as a genuine `Fired` log. It no longer
-   * reaches the chain, so the reader sees only the honest emit. */
+  /**
+   * What the forgery used to buy: the SDK's own reader returned it as a genuine `Fired` log. It no longer
+   * reaches the chain, so the reader sees only the honest emit.
+   *
+   * R3-12. THIS TEST NAMED A READ-BACK AND READ NOTHING. Its body was a byte-for-byte duplicate of the test
+   * six lines above, minus that test's `expect(outcomeOf(...))` line, with a bare `rejects.toThrow()` and no
+   * mention anywhere in the file of `readEventsFromChain` - the reader whose answer the title is about. It was
+   * strictly weaker than its own neighbour and was not a second data point.
+   *
+   * It is now the read-back, and it is built so neither half can pass vacuously:
+   *
+   *  1. the NOT-TAKEN row settled honestly, read back through `readEventsFromChain`: EXACTLY ONE genuine log,
+   *     the unconditional `emit Fired(credited)`, and not the forged value. A count rather than an absence,
+   *     because the reader returns `[]` on any failure and `'[]'` contains no forged value either (R3-9);
+   *  2. a READER-CAPABILITY control: the forged event NFT, the same shape the refused build would have created,
+   *     is placed at the same event address on that same provider and the reader DOES return it. So what keeps
+   *     the forgery out of the reader's answer is the covenant's refusal and not some unrelated property of the
+   *     reader's filter - which is the difference between the impact claim and a coincidence;
+   *  3. the forged build refused at the CALLER'S OWN input, matched rather than merely thrown. The opcode is
+   *     deliberately not pinned: R3-7 measured that which OP_VERIFY fails first is not stable, while the input
+   *     index is the load-bearing part here.
+   *
+   * The guard negative control is in the same test and differs in exactly one field: whether the reserved slot
+   * of the not-taken branch carries the forged event NFT or a plain funding output.
+   */
   it('SEC-10 impact: the forged NFT no longer reaches the chain to be read back', async () => {
-    const built = await buildConditionalEmitBatch({ value: 4n, second: 'forge' });
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    // (1) The honest not-taken row settles, and its ONE genuine log is readable.
+    const honest = await buildConditionalEmitBatch({ value: 4n, second: 'honest' });
+    expect(outcomeOf(honest.builder)).toBe('ACCEPTED');
+    await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeTypeOf('string');
+    const settled = await readEventsFromChain(
+      honest.provider as any, honest.eventAddress, honest.categoryId, honest.eventDef,
+    );
+    console.log('SEC-10 impact, honest not-taken logs:', show(settled));
+    expect(settled, 'the reader returned the wrong number of GENUINE logs, so its silence about the forgery '
+      + 'says nothing').toHaveLength(1);
+    expect(show(settled)).toContain('"4"');
+    expect(show(settled)).not.toContain('999999');
+
+    // (2) READER-CAPABILITY CONTROL. The forged NFT is exactly what this reader accepts, so the covenant is
+    // what keeps it out of the answer above. Placed on the chain directly rather than through the covenant,
+    // which is the whole point: no route admits it.
+    await honest.provider.addUtxo(honest.eventAddress, randomUtxo({
+      satoshis: 1000n,
+      token: {
+        category: honest.categoryId,
+        amount: 0n,
+        nft: { capability: 'none', commitment: binToHex(packed(999_999n)) },
+      },
+    }) as never);
+    const withForgery = await readEventsFromChain(
+      honest.provider as any, honest.eventAddress, honest.categoryId, honest.eventDef,
+    );
+    console.log('SEC-10 impact, reader capability control:', show(withForgery));
+    expect(withForgery, 'the reader cannot see the forged shape at all, so its absence above is a coincidence '
+      + 'rather than the repair').toHaveLength(2);
+    expect(show(withForgery)).toContain('999999');
+
+    // (3) And the build that would have put it there is refused at the caller's own input.
+    const forged = await buildConditionalEmitBatch({ value: 4n, second: 'forge' });
+    expect(outcomeOf(forged.builder)).toContain(at(forged.callerInput));
+    const verdict = await forged.provider.sendRawTransaction(forged.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    console.log('SEC-10 impact, forged verdict:', verdict);
+    expect(verdict).toContain(`error in evaluating input index ${forged.callerInput}`);
+    expect(await readEventsFromChain(
+      forged.provider as any, forged.eventAddress, forged.categoryId, forged.eventDef,
+    ), 'the refused transaction settled an event anyway').toEqual([]);
   }, 600_000);
 
   // The minimal shape: one handler, one emit, that emit one-armed. Frame width 1, no sibling, no divergence.
@@ -925,6 +992,10 @@ contract ArmHub() {
       experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
       experimentalMessageBusControllerCategory: 'cd'.repeat(32),
     });
+    // R3-10 class, found sideways: `every` over an empty handler list is `true`, so a route that published no
+    // handler at all would satisfy "all admitted".
+    expect(artifact.hiddenBatch!.handlers, 'the route published no handler, so "all eligible" is vacuous')
+      .not.toEqual([]);
     expect(artifact.hiddenBatch!.handlers.every((h: any) => h.eligible)).toBe(true);
     // 8 sites x transferWidth 2, while `narrow` settles one slot per site.
     expect(artifact.hiddenBatch!.route.blockLayout!.slots
@@ -946,16 +1017,26 @@ contract ArmHub() {
     await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
   }, 600_000);
 
-  // The measurement: one variable, which of the reached site's two transfer slots carries the forgery.
-  // REPAIRED by emitOwnCategoryImmutableNftOutputPin: a transfer offset is not an event offset.
+  /**
+   * The measurement: one variable, which of the reached site's two transfer slots carries the forgery.
+   * REPAIRED by emitOwnCategoryImmutableNftOutputPin: a transfer offset is not an event offset.
+   *
+   * R3-12, SAME CLASS AND NOT ON THE REPORT'S LIST. `SEC-9 gap impact: the transfer-slot forgery no longer
+   * reaches the chain` stood here as a separate test and was a byte-for-byte duplicate of this one minus the
+   * `expect(outcomeOf(...))` line - strictly weaker than its neighbour, with a bare `rejects.toThrow()`, and
+   * counted as a second data point in the tally. Unlike the SEC-10 pair it had nothing to be repaired INTO: a
+   * transfer slot carries no log, so `readEventsFromChain` has nothing to say about it, and "reaches the chain"
+   * for a transfer slot is exactly the refusal this test already measures. It is folded in here, and what it
+   * was reaching for is now asserted properly: the node-level refusal is MATCHED at the caller's own input
+   * rather than merely thrown. Per R3-7, the flag and the input index are pinned and the opcode is not.
+   */
   it('SEC-9 gap: rejects a forged NFT in the RESERVED transfer slot', async () => {
     const built = await buildDivergentTransferBatch('reserved');
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
-  }, 600_000);
-
-  it('SEC-9 gap impact: the transfer-slot forgery no longer reaches the chain', async () => {
-    const built = await buildDivergentTransferBatch('reserved');
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    const verdict = await built.provider.sendRawTransaction(built.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    console.log('SEC-9 gap, reserved transfer slot:', verdict);
+    expect(verdict).toContain('mandatory-script-verify-flag-failed');
+    expect(verdict).toContain(`error in evaluating input index ${built.callerInput}`);
   }, 600_000);
 });

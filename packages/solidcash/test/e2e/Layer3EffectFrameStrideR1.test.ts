@@ -584,6 +584,13 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
       honest.provider as any, honest.eventAddress, honest.hubCategory, honest.eventDef,
     );
     console.log('R1 honest logs:', show(honestLogs.map((e: any) => e.args ?? e)));
+    // R3-9. THE COUNT FIRST, then the absence. `readEventsFromChain` is a `getUtxos().filter()` that
+    // returns `[]` on any failure and never throws, and `JSON.stringify([])` is `'[]'`, which contains no
+    // `999999` - so the absence assertion alone was satisfied by a reader that saw nothing at all. The two
+    // genuine logs are what make the absence mean something: this batch emits once per row, so the reader
+    // must return exactly two and neither of them may be the forgery. MEASURED green with the reader
+    // broken by a bogus category, before this line existed.
+    expect(honestLogs, 'the event reader returned the wrong number of GENUINE logs').toHaveLength(2);
     expect(show(honestLogs)).not.toContain('999999');
 
     // The SETTLED slots are bound: forging over the reached site, or over the flattened row-0 site, rejects.
@@ -613,7 +620,21 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
    * tokens there, and the credit for the rejections above belongs to it rather than to SEC-11's offset pin -
    * which cannot discriminate, because an `event` offset is exactly what it admits. One field changes: the
    * forged own-category immutable NFT keeps its address, category, 'none' capability and value, and carries an
-   * EMPTY commitment. It must settle, and it must read back as nothing.
+   * EMPTY commitment. It must settle, and it must contribute NO log.
+   *
+   * R3-9, AND THIS IS THE LOAD-BEARING ONE, so the discriminator is stated. The old assertion was
+   * `not.toContain('999999')` over `JSON.stringify(logs)`, and the docstring asked for "read back as
+   * nothing" - which is exactly what a BROKEN reader returns. `readEventsFromChain` filters a `getUtxos`
+   * result and returns `[]` silently on any failure, so this control credited SEC-15's commitment binding
+   * on evidence a dead reader would have produced identically. Measured: with the category argument
+   * corrupted the old form stayed GREEN.
+   *
+   * WHAT DISCRIMINATES, and why this construction rather than a sibling honest case: the two GENUINE logs
+   * of this same assembly are read back by the same call. The empty-commitment NFT sits at unreached
+   * ordinal 5 of that transaction, so one `readEventsFromChain` result has to show the reader working
+   * (exactly two logs, both `value: 4`) and the forgery contributing nothing (no third row, no `999999`).
+   * A sibling honest case would only prove the reader works on OTHER bytes; a count on THESE bytes cannot
+   * be satisfied by a reader that sees nothing.
    */
   it('the same NFT at the same unreached slot with an EMPTY commitment still settles', async () => {
     const guard = await buildStrideCase({
@@ -627,6 +648,10 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
       guard.provider as any, guard.eventAddress, guard.hubCategory, guard.eventDef,
     );
     console.log('R1 GUARD logs:', show(logs.map((e: any) => e.args ?? e)));
+    // The reader is ALIVE on these exact bytes: the batch's two genuine logs come back.
+    expect(logs, 'the event reader returned no genuine log, so "read back as nothing" proves nothing')
+      .toHaveLength(2);
+    // And the empty-commitment NFT contributed neither of them, nor a third.
     expect(show(logs)).not.toContain('999999');
   }, 900_000);
 
@@ -677,6 +702,10 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
     const honestLogs = await readEventsFromChain(
       honest.provider as any, honest.eventAddress, honest.hubCategory, honest.eventDef,
     );
+    // R3-9. The count first: this shape has ONE hub row, so the reader must return exactly one genuine
+    // log before its silence about `999999` is worth anything.
+    console.log('R1 single-row honest logs:', show(honestLogs.map((e: any) => e.args ?? e)));
+    expect(honestLogs, 'the event reader returned the wrong number of GENUINE logs').toHaveLength(1);
     expect(show(honestLogs)).not.toContain('999999');
     const forged = await buildStrideCase({
       mode: 'single', effectOrdinals: [0], emitting: true, forgedEventOrdinal: 3,

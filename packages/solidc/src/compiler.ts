@@ -7,7 +7,7 @@ import {
   ExpressionNode,
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
@@ -358,10 +358,13 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
     + 'the wrapper and leaves its returning edge with no slot to bind - move the effect into a second handler '
     + 'that consumes no result, or drop the result and make the call a void tail call',
   'mixed-scalar-and-collection-route-not-enabled':
-    'this route allocates a ROW-LOCAL entry slot per row, and those slots are bound by the entry handler\'s own '
-    + 'row: a row that addresses no entry leaves its slot with no witness to bind and no way to gate it off, so '
-    + 'every handler on such a route must address a collection entry - split the scalar-only handlers out, or '
-    + 'give the entry handler a single key alternative so the route\'s entry slots become shared',
+    'a handler that addresses no collection entry is refused on two route shapes. On a route that allocates a '
+    + 'ROW-LOCAL entry slot per row, those slots are bound by the entry handler\'s own row, so a row that '
+    + 'addresses no entry leaves its slot with no witness to bind and no way to gate it off - give the entry '
+    + 'handler a single key alternative so the route\'s entry slots become shared. On any route, a scalar '
+    + 'handler is also refused when admitting it would make the route returning or event-shaped and thereby '
+    + 'refuse MORE handlers than it adds. Either way, splitting the scalar-only handlers out gives them a '
+    + 'route of their own',
 };
 
 /**
@@ -601,7 +604,23 @@ function synthesizeHiddenBatchRoute(
       source?: 'argument' | 'msgSender';
       perRow?: boolean;
     }[] = [];
-    if ([...footprint.reads, ...footprint.writes].some((resource) =>
+    // X89. A collection ITERATION - `for (k, v of this.m.entries)`, `for (k in this.m)` - reads every entry of
+    // `m`, but `CollectionIterationNode` carries `collectionName` where the footprint walker reads `name`, so
+    // the read never entered the footprint at all and the branch below could not fire. Same class as X26's bare
+    // read, one node kind further out, and NOT harmless: the route's collection-eligibility branch is gated on
+    // this, so an iteration handler was treated as scalar. It reached the route only because X88 stopped it
+    // compiling - the enumerable-iteration lowering gives the handler extra parameters after the wrapper's
+    // dispatch call has already been generated from the pre-lowering signature, which fails as
+    // `Found parameters () in call to function '<name>' where parameters (bigint,bytes) were expected`.
+    // Recovering the read here makes the route refuse the handler BY NAME instead, which is the fail-closed
+    // half of the pair: fixing the arity alone would have admitted a handler whose entry reads reserve nothing.
+    let iteratesCollection = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof CollectionIterationNode && collectionByName.has(node.collectionName)) {
+        iteratesCollection = true;
+      }
+    });
+    if (iteratesCollection || [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('collection:'))) {
       // X19: a BARE `m[k] = v` / `m[k]` is an ArrayAssign / ArrayAccess until symbol resolution decides
       // state-vs-local; only the `this.`-prefixed spelling reaches here as a Mapping* node. Walking the
@@ -667,8 +686,16 @@ function synthesizeHiddenBatchRoute(
       walkInvocationAst(fn.body, (node) => {
         if (node instanceof ArrayDeleteNode && !locallyBound.has(node.name)
           && collectionByName.has(node.name)) bareShapeIsNormalizable = false;
+        // X95. This clause exists for the bare index the NORMALIZER declines while the widened key set would
+        // still have needed it - which is a COLLECTION name resolution sends elsewhere (a packed or dynamic
+        // array state variable becomes `StateArrayAssignNode`, a form with no entry NFT). A bare index of a
+        // name that is not a collection at all reserves no entry either way, so refusing the whole handler for
+        // one gave up the bare admission for nothing. Narrowed to collection names, which keeps every case
+        // where a key could go unreserved: the widened set can only grow, never shrink, so no route reserves
+        // FEWER entries than it did.
+        const bare = bareAccessOf(node);
         if ((node instanceof ArrayAssignNode || node instanceof ArrayAccessNode)
-          && bareAccessOf(node) !== undefined
+          && bare !== undefined && collectionByName.has(bare.name)
           && bareEntryAccessOf(node, locallyBound) === undefined) bareShapeIsNormalizable = false;
       });
       const directKeys = bareShapeIsSelfReached
@@ -892,7 +919,9 @@ function synthesizeHiddenBatchRoute(
    * admitted. Extracted so the set can be chosen (see the X73 note at the call site) rather than assumed.
    * Mutates the per-handler verdict fields, which the caller snapshots and restores between runs.
    */
-  const applyRouteUniformity = (candidates: FunctionDefinitionNode[]): {
+  const applyRouteUniformity = (
+    candidates: FunctionDefinitionNode[], dropMixedScalars: boolean,
+  ): {
     survivors: FunctionDefinitionNode[];
     eventMode: boolean; resultMode: boolean; valueEffectMode: boolean;
     nestedCollectionMode: boolean; fixedArrayMode: boolean; tokenContainerMode: boolean;
@@ -918,7 +947,7 @@ function synthesizeHiddenBatchRoute(
     // NFT twice. Both are measured, and neither is reachable by widening this predicate.
     const perRowEntryRoute = survivors.some((fn) =>
       fn.hiddenBatchKeyWitnesses?.some((binding) => binding.perRow));
-    if ((!admitMixedScalarHandlers || perRowEntryRoute)
+    if ((dropMixedScalars || !admitMixedScalarHandlers || perRowEntryRoute)
       && survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
       for (const fn of survivors) {
         if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
@@ -1063,12 +1092,35 @@ function synthesizeHiddenBatchRoute(
       fn.hiddenBatchRejectionReason = state.reason;
     }
   };
+  /**
+   * X94 NEVER SHRINK, and it is X73's guard applied to the other admission on this path. A scalar handler that
+   * RETURNS makes the route result-shaped and an emitting one makes it event-shaped, and both of those refuse
+   * handlers that were already admitted - so admitting a scalar handler can cost a contract more handlers than
+   * it gains, exactly as admitting an `external` one could. Run the rules over both sets, keep the wider, and
+   * refuse the scalar handlers by name when the narrower answer is strictly better.
+   */
+  const applyBestUniformity = (candidates: FunctionDefinitionNode[]): ReturnType<typeof applyRouteUniformity> => {
+    const wide = applyRouteUniformity(candidates, false);
+    if (!admitMixedScalarHandlers) return wide;
+    const wideReasons = new Map(candidates.map((fn) => [fn, fn.hiddenBatchRejectionReason]));
+    const wideCount = wide.survivors.length;
+    restoreVerdicts();
+    const narrow = applyRouteUniformity(candidates, true);
+    if (narrow.survivors.length > wideCount) return narrow;
+    restoreVerdicts();
+    for (const [fn, reason] of wideReasons) {
+      if (reason === undefined) continue;
+      fn.hiddenBatchEligible = false;
+      fn.hiddenBatchRejectionReason = reason;
+    }
+    return wide;
+  };
   const publicCandidates = eligible.filter((fn) => fn.visibility !== 'external');
-  let selection = applyRouteUniformity(eligible);
+  let selection = applyBestUniformity(eligible);
   if (publicCandidates.length !== eligible.length) {
     const wide = { ...selection, reasons: new Map(eligible.map((fn) => [fn, fn.hiddenBatchRejectionReason])) };
     restoreVerdicts();
-    const narrow = applyRouteUniformity(publicCandidates);
+    const narrow = applyBestUniformity(publicCandidates);
     if (narrow.survivors.length > wide.survivors.length) {
       for (const fn of eligible) {
         if (fn.visibility === 'external') fn.hiddenBatchRejectionReason ??= 'external-handler-would-shrink-the-route';

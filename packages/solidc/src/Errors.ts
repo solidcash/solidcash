@@ -120,6 +120,23 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
   }
 }
 
+/**
+ * X119. A graph handler whose call shape route synthesis cannot lower.
+ *
+ * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
+ * SYNTHESIZED handler (`__scb_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
+ * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
+ * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
+ * caveats the same way every other diagnostic here does.
+ *
+ * Only in bus/participant mode. Measured over the 152 solidity-by-example files at `0103ce9d`: 3 firings in bus
+ * mode, ZERO in direct mode.
+ */
+export class GraphHandlerShapeError extends SolidCashError {
+  // Inherits `SolidCashError(node, message)`: the six sites already compose their own message, and the value this
+  // class adds is the position, the two file caveats and a name that is not `Error`.
+}
+
 export class ParseError extends Error {
   constructor(
     message: string,

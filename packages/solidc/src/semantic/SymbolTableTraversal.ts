@@ -120,6 +120,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { cloneNode } from '../ast/clone.js';
+import { generatedOriginOf } from '../ast/Location.js';
 import { computeBranchOps, countBranchOps } from './branchOps.js';
 import {
   FunctionRedefinitionError,
@@ -404,10 +405,19 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled.
    * Built lazily: a compilation whose diagnostics all point into the user's own file pays nothing.
+   *
+   * X92. A position can be both generated and imported-looking, and GENERATED WINS. The imported label asserts
+   * "line N is real in file F on disk"; a generated position is in a string that exists only inside the
+   * compiler, so no file holds it and the imported label would be a SPECIFIC FALSE label naming a real file -
+   * the failure X93 already refused. The mark is also the stronger evidence: it is stamped on the Location
+   * instance by the parse that built it, whereas the imported map is inferred from reachability, which a
+   * lowering pass can perturb by re-parenting a generated node under an imported declaration root.
    */
   private diagLine(location?: LocationI): string {
     const line = location?.start?.line;
     if (line === undefined) return '';
+    const generated = generatedOriginOf(location);
+    if (generated) return ` at line ${line} of ${generated}, not of your file`;
     if (!this.sourceFile?.imports?.length) return ` at line ${line}`;
     this.importedLocations ??= this.buildImportedLocations();
     const file = this.importedLocations.get(location as unknown as object);

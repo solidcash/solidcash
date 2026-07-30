@@ -17,7 +17,8 @@ import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   ROW_COMPARISON_EXEMPTIONS, SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE,
-  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_INLINE_SOURCE,
+  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE,
+  SYNTHETIC_ROW_SCALAR_INLINE_SOURCE, SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE,
   SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
   injectPairwiseComparison, scanComparisons,
 } from './layer3-pairwise-guard.js';
@@ -1402,7 +1403,13 @@ describe('C3 hostile cases', () => {
     expect(scanComparisons(SYNTHETIC_ROW_SCALAR_INLINE_SOURCE).rowPairwise,
       'the inline scalar decode names both rows in one clause and must still be flagged').toHaveLength(1);
     expect(scanComparisons(SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE).rowPairwise,
-      'the scalar-via-locals form is now caught, so this recorded boundary is stale and the header measurement '
+      'the scalar-via-locals form is X140\'s subject and is no longer caught, so the widening has been undone')
+      .toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE).rowPairwise,
+      'the frameless decode is why the "only via a frame" variant was rejected; it must stay flagged')
+      .toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE).rowPairwise,
+      'the two-hop scalar form is now caught, so this recorded boundary is stale and the header measurement '
       + 'in layer3-pairwise-guard.ts should be rewritten rather than this assertion relaxed').toEqual([]);
     for (const source of [
       layer3.generateGraphProjectionVerifier(), layer3.generateGraphRootController('51'),
@@ -1436,12 +1443,15 @@ describe('C3 hostile cases', () => {
     // projection verifier, all four names asserted at their EXACT count - a floor would let a sixth be
     // absorbed silently, which is the whole failure mode this guard is here for.
     const projectionScan = scanComparisons(layer3.generateGraphProjectionVerifier());
-    expect(projectionScan.rowBothSides).toHaveLength(5);
-    expect(scanComparisons(layer3.generateGraphRootController('51')).rowBothSides).toEqual([]);
+    const controllerScan = scanComparisons(layer3.generateGraphRootController('51'));
+    expect(projectionScan.rowBothSides).toHaveLength(6);
+    expect(controllerScan.rowBothSides).toHaveLength(2);
     for (const exemption of ROW_COMPARISON_EXEMPTIONS) {
-      expect(projectionScan.rowExempted[exemption.name],
+      expect(projectionScan.rowExempted[exemption.name] + controllerScan.rowExempted[exemption.name],
         `the row exemption "${exemption.name}" matches nothing now, so it should be deleted`)
-        .toBe(exemption.count);
+        .toBe(exemption.count + (exemption.controllerCount ?? 0));
+      expect(projectionScan.rowExempted[exemption.name],
+        `the row exemption "${exemption.name}" moved covenant`).toBe(exemption.count);
     }
 
     // The SDK planner is where uniqueness actually lives: it refuses the construction before any transcript.

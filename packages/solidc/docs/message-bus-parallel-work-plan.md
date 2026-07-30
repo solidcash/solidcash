@@ -181,8 +181,9 @@ task-specific report, not in this table.
 | X89 | A collection ITERATION read never enters the footprint | — | X88 | **TODO** | `CollectionIterationNode` carries `collectionName`, not `name`; harmless only because X88 stops it compiling |
 | X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
 | X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | E2 | X71 | **INTEGRATED** | origin is a WHOLE-FUNCTION flag, not the lookup; corpus enumerated (78 files), 1 row changed - see 4.87 |
-| X90 | The same root cause has a SECOND FACE that does NOT crash | — | X83 | **TODO (reported, not acted on)** | a stateless mixed shape produces an artifact reading two covenant kinds at overlapping indices; satisfiability unproven either way |
-| X91 | X42's `blockhash` guard escapes on `Multicall2.sol` | — | X42 | **TODO** | still dies on `__internal__blockhashInputIndex` under `+hiddenBatch`, outside the graph-emission-handler gate |
+| X90 | The keccak second face: satisfiable or not? | F1 | X83 | **SETTLED - satisfiable AND sound** | X83's belief was wrong but its refusal to act was right; the real defect is the builder - see 4.89 |
+| X97 | `TransactionBuilder.ts:258` never reaches the stateless keccak co-spend path | — | X90 | **TODO** | early `continue` splices only stateful side-cars, so `send()` always fails on a satisfiable shape |
+| X91 | X42's `blockhash` guard escapes | F1 | X42 | **INTEGRATED** | the briefed option set was wrong AND that IS the gap; it is a call EDGE, and it reaches the DIRECT route too - see 4.90 |
 | X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **TODO** | likely a missing `compileFile` fallback for FAIL rows; reconcile before quoting those numbers |
 | X72 | 20 refusals published with NO `rejectionReason` | D6 | F3 | **INTEGRATED** | an ORDERING defect: the oracle pass appends an entry point after route synthesis names reasons; 16 -> 0 |
 | F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
@@ -264,6 +265,64 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.89 X90 is SATISFIABLE and SOUND - both halves of X83's sentence were wrong, oppositely
+
+Merged at `8f05bc0c`.
+
+**X90 - X83 believed the mixed stateless shape unsatisfiable and said it had not proved it. It is satisfiable, and
+X83 was right to refuse to act.** F1 confirmed the premise **from emitted ASM** rather than from the description:
+straight-line reads `OP_TXINPUTCOUNT OP_2 OP_SUB` against the **stateless** hash, the loop reads
+`OP_INPUTINDEX OP_1ADD OP_2 OP_PICK OP_ADD` with the 2,390-byte **stateful** covenant byte-compared inline.
+
+**Satisfiable**: `NI`/`NO` are free, so the two families need not collide. A **positive control passes on the 2026
+VM** at pinned indices - contract 0, stateful side-car 1, stateless side-car **2** (`NI-2` with `NI=4`), funder 3.
+
+**And sound, so satisfying it is not an attack.** Each read binds `preimage == its own argument`, then reads the
+commitment at the index that covenant kind's **own self-preservation tail provably writes**: stateless
+`(NI-2)+NO-NI = NO-2`, stateful `I+1+counter`. Both agree with the master. The **hostile confirms** it: a side-car
+honestly committing `keccak256(y)` for `y != x` at the pinned index is rejected by the master's `OP_VERIFY`.
+
+**The real defect is the builder, and that is where X83's intuition came from.**
+`TransactionBuilder.ts:258` takes an early `continue` on `keccakLoopReads` into
+`addStatelessKeccakLoopCoSpends`, which splices **only stateful** side-cars and never reaches the straight-line
+stateless path below - so `send()` always fails with *"no side-car read found in the probe trace"*. The guard
+negative control reproduces exactly that: the SDK's natural `NI=3` forces `NI-2 == I+1+0 == 1` and fails closed.
+Opened as **X97**; outside F1's lease, reported not touched.
+
+**NOT refused, per the standing rule.** It compiles today, a satisfying spend exists, nothing is forgeable - so a
+refusal would remove a working artifact for **zero** soundness gain. **Zero compiler change for this row.**
+
+### 4.90 X91 did not reproduce as briefed, and the class is wider than filed
+
+**The briefed option set was wrong, and the reason it was wrong IS the gap.** `Multicall2.sol` with the
+**controller** dies earlier on an unrelated named refusal. The crash reproduces on `+hiddenBatch` **without** the
+controller - and *no controller means no graph route, so nothing is a `graphEmissionHandler` and X42's gate never
+runs at all.*
+
+**The origin is a call EDGE, not an effect**, traced in four steps: `SymbolTableTraversal.ts:1475` appends
+`__internal__blockhashInputIndex` to any `usesBlockhash` function **unconditionally** - unlike
+`__internal__msgSenderCategory` twelve lines earlier, which **is** skipped for a route handler; the type checker
+auto-forwards it as an identifier naming the caller's own same-named param; `__scb1` declares no such param; codegen
+evaluates it and throws bare. **X42 guarded the callee's effects; this belongs to the edge**, so the guard sits in
+`visitUserFunctionCall`, checked against the caller's own stack - the exact condition the argument loop aborts on.
+
+**Wider than filed, found by enumerating shapes rather than sampling**: it also fires on the **plain direct
+route**, no hidden batch involved - an ordinary function that never reads `blockhash` calling one that does. Two
+reasons with **empirically verified different remedies**, and the message states the remedy that does **not** work
+(a void callee still becomes a subroutine).
+
+**The deploy half has no escape, measured**: `new C(..)` injects no synthetic witness, and `spawn` compiles at
+4,169 / 4,837 bytes.
+
+**Census enumerated with the discriminating set derived, not guessed**: every file containing `blockhash` **or**
+`msg.sender` - the two **forwardable** witnesses - since a contract with neither cannot forward one. **209 files:
+0 byte drift, 0 status flips, 72 identical FAIL heads, exactly 1 row changed.** +0 bytes across a pinned 13-row
+table.
+
+**And it corrected X76 in passing.** Multicall2's forwarded identifier reported **Line 63 of a 74-line file**,
+inside an unrelated function - a position that exists but names the wrong thing. It now blames the real
+`blockhash(blockNumber)` at **Line 34, Column 20**, asserted by parsing the line back out of the message.
 
 ### 4.88 TWO gates lifted, and the byte table IS the soundness argument
 

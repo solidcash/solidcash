@@ -25,6 +25,34 @@ import { assessFinalizedTransactionBytes } from '../../src/layer3/preflight.js';
  * project glob does not match, so an ordinary `yarn test` never loads it:
  *
  *   L3_GATESITE_OUT=/tmp/sites.jsonl npx vitest run -c vitest.gatesite.config.ts test/e2e/Layer3Cycle.test.ts
+ *
+ * THE MEASUREMENT, over the whole SDK e2e population (`test/e2e`, 422 files / 3,604 passing tests, all green,
+ * 5,370 broadcasts, 2026-07-30). "newly refuses" counts only sends the MOCK ACCEPTED that the gate would
+ * refuse - a send both refuse is not a change, and only the first kind is a regression.
+ *
+ *   site                                            sends  net-ok  newly refuses  tests  tests hit
+ *   StatefulTransactionBuilder.ts:2925 submit        2535    2315       1 (0.04%)  1110    1 (0.1%)
+ *   TransactionBuilder.ts:1147 send                  1170    1159       0 (0.00%)  1030    0 (0.0%)
+ *   StatefulContract.ts:3061 destroy                    8       7       0 (0.00%)     5    0 (0.0%)
+ *   StatefulContract.ts:10105 split                     3       3       0 (0.00%)     3    0 (0.0%)
+ *   StatefulContract.ts:11133 _sendRawBuilder            2       2       0 (0.00%)     2    0 (0.0%)
+ *   StatefulContract.ts:10245 merge                      1       1       0 (0.00%)     1    0 (0.0%)
+ *   layer3/preflight.ts:667 (ALREADY GATED)             3       3       0 (0.00%)     3    0 (0.0%)
+ *   StatefulContract.ts:3244 _sendBuilderWith...         -       -           DEAD      -          -
+ *   (not a site) fixtures broadcasting directly       1648    1178       6 (0.51%)   694    6 (0.9%)
+ *
+ * VERDICT: NOT LANDED, at the one site this worker's lease could land it. Gating
+ * `StatefulTransactionBuilder.send` costs exactly TWO tests, both in `HiddenBatchRelease4.test.ts`, MEASURED
+ * by applying the hunk rather than predicted: that fixture transfers 100/200/300 satoshis to a one-byte
+ * `OP_1` recipient, and the gate answers `100 satoshis is 374 short of the 474-satoshi dust threshold for a
+ * 10-byte output (3 * (10 + 148))`. 474 is the same threshold BCHN used to refuse C1 `64: dust`, so the gate
+ * is node-correct here and the fixture is the unrealistic half - but a gate that turns a green test red is a
+ * regression to report, not a win to land.
+ *
+ * THE PROBE UNDERCOUNTS, and by how much is known. It patches the PROTOTYPE, so a fixture that replaces
+ * `provider.sendRawTransaction` on the INSTANCE is invisible to it - 13 e2e files do that, and the second
+ * `HiddenBatchRelease4` failure is exactly one of them. All 13 were re-run with the hunk applied: 12 pass,
+ * only `HiddenBatchRelease4` fails. No fixture uses `vi.spyOn` or subclasses the provider, so that closes it.
  */
 
 const OUT = process.env.L3_GATESITE_OUT;

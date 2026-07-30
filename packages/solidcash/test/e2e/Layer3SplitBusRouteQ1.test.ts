@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringSplit } from 'solidc';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import { Contract, SplitContractBundle, StatefulContract, Signer } from '../../src/index.js';
 import type { ConnectedStatefulContract } from '../../src/stateful/StatefulContract.js';
 import { addressToLockScript } from '../../src/utils.js';

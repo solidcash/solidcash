@@ -1774,26 +1774,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
     // the route's own call closure: a contract with no `__scb1` produces the same map as before, and a
     // read-only function outside the route keeps its established covenant path.
-    // A graph EMISSION clone is excluded, and not as a convenience: its frame is owned by the graph
-    // effect-frame protocol, which already pushes hidden context of its own (see the arity note in
-    // visitFunctionDefinition), and adding journal slots to it leaves the frame one item deeper than the
-    // caller pushes. C2's read-only `__scb_graph_fireAll` is exactly that shape and its honest cycle stops
-    // settling. A read-only clone which also emits or transfers therefore still reads the pre-state.
+    // X111. A graph EMISSION clone used to be dropped from this widening entirely, so a clone which reads a
+    // scalar slot and writes none still re-read the pre-transaction commitment while an earlier row's write
+    // was live. That was exploitable at CONSENSUS - a router body emitting `withdraw(80)` then
+    // `assertFloor(50)` on an opening 100 settled a guard true of the pre-balance and false of the 20 the same
+    // transaction committed - and no witness-side refusal can close it, because the bytes settle whoever
+    // builds them. A clone is now admitted here, on its own terms:
+    //   - it is admitted but NOT DESCENDED THROUGH, so its own callees keep the closure they had. The clone's
+    //     slot map already contains theirs through the fixpoint above, which is what it needs to hold.
+    //   - it carries its PLAIN SCALAR slots only. A DYNAMIC slot's journal replaces a chunk read with a
+    //     threaded (header, value) pair, and a pure reader holds only the slots it names: C2's
+    //     `__scb_graph_fireAll` reads `state:legs` plus `collection:legs:i` and `collection:__fnsel_legs:i`,
+    //     so journalling the header while the elements still come from the chunk loop mixes two sources for
+    //     one array and the honest A -> B -> A cycle stops settling at input 0. Measured, not assumed.
+    // The residual is therefore exact and named: a clone whose stale read is on a DYNAMIC slot still reads the
+    // pre-state, and `layer3/graph.ts`'s planning-time gate is the only thing standing in front of it.
     const routeFunctionId = functions.find((fn) => fn.hiddenBatchRoute)?.functionId;
     const emissionClones = new Set(functions
       .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
       .map((fn) => fn.functionId!));
     const routeReachable = new Set<number>();
+    const widenedClones = new Set<number>();
     if (routeFunctionId !== undefined) {
       const pending = [routeFunctionId];
       while (pending.length > 0) {
         for (const calleeId of callsById.get(pending.pop()!) ?? []) {
-          if (routeReachable.has(calleeId) || emissionClones.has(calleeId)) continue;
+          if (routeReachable.has(calleeId) || widenedClones.has(calleeId)) continue;
+          if (emissionClones.has(calleeId)) {
+            widenedClones.add(calleeId);
+            continue;
+          }
           routeReachable.add(calleeId);
           pending.push(calleeId);
         }
       }
     }
+    // The dynamic exclusion applies only to a clone admitted BY the widening. A clone which also writes, or
+    // one reached as an ordinary route callee, keeps the full slot list it already had.
+    const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
+      [...slots.values()].filter((sv) =>
+        !sv.isDynamic || writerIds.has(id) || routeReachable.has(id));
     // L2-F2. The route must HOLD the journal its rows load through. The walk above admits the route's
     // callees and never the route itself, so a route with no writer among them - a pure-reader resource
     // route, or the `_self_alias` clone the resource shape emits - was filtered out while its callees were
@@ -1803,14 +1823,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // and no remedy. Admitting the route is not a widening of what loads live - it is the holder of the very
     // context those callees were already admitted to read, so no shape that compiles today can move.
     const admitted = (id: number): boolean =>
-      (writerIds.has(id) || routeReachable.has(id)) && (slotsById.get(id)?.size ?? 0) > 0;
-    if (routeFunctionId !== undefined && [...routeReachable].some(admitted)) {
+      (writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id))
+      && journalSlotsOf(id, slotsById.get(id) ?? new Map()).length > 0;
+    if (routeFunctionId !== undefined && [...routeReachable, ...widenedClones].some(admitted)) {
       routeReachable.add(routeFunctionId);
     }
     this.journalWriterFunctionIds = writerIds;
     this.journalSlotsByFunctionId = new Map([...slotsById]
-      .filter(([id, slots]) => (writerIds.has(id) || routeReachable.has(id)) && slots.size > 0)
-      .map(([id, slots]) => [id, [...slots.values()]
+      .map(([id, slots]) => [id, journalSlotsOf(id, slots)] as const)
+      .filter(([id, slots]) =>
+        (writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id)) && slots.length > 0)
+      .map(([id, slots]) => [id, slots
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
   }
 

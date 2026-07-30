@@ -126,8 +126,9 @@ measured, or independently verified:
    (225 under the 10,000 limit); a general graph covenant is far larger and hits the deploy wall.
 
    **This prediction was wrong, and the correction is measured.** The general graph covenants that shipped
-   are *smaller* than the ERC-20 route this point was worried about, not far larger: measured at `1591e87f`,
-   the graph projection verifier compiles to **4,542 bytes** and the graph root controller to **1,493 bytes**
+   are *smaller* than the ERC-20 route this point was worried about, not far larger: re-measured at
+   `77cd1e8c`, the graph projection verifier compiles to **4,098 bytes** (4,542 at `1591e87f`, before X65
+   replaced its 8-way dispatch with an input-index table) and the graph root controller to **1,493 bytes**
    with a 35-byte p2sh32 target (1,459 with a 1-byte placeholder). Both are well inside the 10,000-byte
    per-input limit and neither hits a deploy wall. The 9,775-byte ERC-20 figure is left as recorded and is
    **not** re-measured here; cross-function outlining has landed since and moves it, so do not carry it

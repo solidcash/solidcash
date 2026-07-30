@@ -1211,8 +1211,33 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     // never ruled out: naming density first while the truth is script bytes is a resolution failure the model
     // declares, where F2 asserted the wrong answer with no qualification at all.
     expect(inUnresolved).toBe(rows.length);
-    // The before column is kept as an assertion too, so this row cannot quietly stop demonstrating anything:
-    // the model it replaced must still be visibly wrong on this population.
-    expect(before.filter((error) => error < 0).length).toBeGreaterThanOrEqual(before.length - 1);
+    // THE BEFORE/AFTER CONTROL HAS COLLAPSED, AND SAYING SO IS THE REPAIR. This line asserted that at least
+    // `before.length - 1` rows are still under-predicted by the model X70 replaced - X70 measured 45 of 45 -
+    // and at `77cd1e8c` it FAILS: `expected 1 to be greater than or equal to 42`. Reproduced with every change
+    // in this round reverted, so it is pre-existing drift and not a regression.
+    //
+    // WHY, and it is not a measurement error. The legacy fitted line returns 4,441 bytes for a two-row shape.
+    // At the census commit the measured projection input was about 4,780, so the line sat below it on every row
+    // and the demonstration was total. X65 then cut the projection verifier 4,542 -> 4,098, which takes 444
+    // bytes off the MEASURED input of every one of these one-participant shapes and off nothing in the legacy
+    // line, so the same 4,441 is now ABOVE almost all of them. The old model stopped being visibly wrong on
+    // this population by getting luckier, not by getting better.
+    //
+    // WHAT SURVIVES. X70's finding is that a fitted line can predict a P2SH input SHORTER THAN THE SCRIPT IT
+    // REDEEMS, which is a statement about model FORM, and the intercept is still below the floor: 4,095
+    // against a 4,098-byte covenant. But the margin has gone from 447 bytes to THREE, so the next byte off
+    // this covenant makes even the structural argument stop reproducing. That is worth knowing before anyone
+    // cites "all forty-five were under-predicted" again.
+    //
+    // So the assertion is replaced by the two that are true and still load-bearing - the legacy model is not
+    // conservative on this population, and the repaired one is - plus a printed count, so a reader cannot
+    // mistake the surviving check for the original claim.
+    const legacyUnder = before.filter((error) => error < 0).length;
+    console.log(`[F2/X70] the legacy model under-predicts ${legacyUnder}/${before.length} of this population; `
+      + 'X70 measured 45/45, and X65\'s -444 per projection is what moved it. Intercept 4,095 against a '
+      + `${calibration.projectionRedeemBytes}-byte covenant in this calibration.`);
+    expect(legacyUnder, 'the legacy model is now conservative on every row, so this row demonstrates nothing '
+      + 'about the repair and its claim must be restated rather than re-asserted').toBeGreaterThan(0);
+    expect(after.filter((error) => error < 0)).toEqual([]);
   }, 1_800_000);
 });

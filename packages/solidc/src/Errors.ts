@@ -129,8 +129,15 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
  * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
  * caveats the same way every other diagnostic here does.
  *
- * Only in bus/participant mode. Measured over the 152 solidity-by-example files at `0103ce9d`: 3 firings in bus
- * mode, ZERO in direct mode.
+ * Only in bus/participant mode. Measured at `0103ce9d` over the full 152-file solidity-by-example denominator:
+ * SIX firings - four of `requires call/staticcall edges ..` (TokenSwap, TokenLock, UniswapV2Liquidity, Optimal)
+ * and two of `currently requires forwarded identifier arguments` (DiscreteStakingRewards, UniswapV2FlashSwap) -
+ * and ZERO in direct mode. Counting only the 141 files the SBE bench keeps in its denominator gives 3, which is
+ * the same measurement over a smaller corpus, not a different one.
+ *
+ * FOUR OF THE SIX SITES HAVE NO SUBJECT in mistswap + eacc + solidity-by-example, either mode: the runtime-graph,
+ * pinned-parameter-target, raw-calldata and unresolved-target-method refusals never fire. They share this class
+ * and therefore the position mechanism, but nothing here exercises them.
  */
 export class GraphHandlerShapeError extends SolidCashError {
   // Inherits `SolidCashError(node, message)`: the six sites already compose their own message, and the value this

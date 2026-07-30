@@ -35,6 +35,15 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * The pair that isolates the cause differs in ONE predicate. `VAULT_PLAIN.assertFloor` closes its body with a
  * tautology over its second parameter; `VAULT_SENDER.assertFloor` closes it with `msg.sender == expectedSender`.
  * Same signature, same balance read, same route. The second is an emission clone; the first is not.
+ *
+ * WHAT THIS IS NOT. The refusal below is a WITNESS-CONSTRUCTION refusal, not a soundness repair. H1's exact
+ * transaction bytes settled at base and the covenants are unchanged, so those same bytes still settle if any
+ * other constructor produces them - and nothing about the hostile order is a spender's choice to begin with: it
+ * is the order the caller contract's own body emits, which the projection verifier then enforces. So the
+ * composition an honest contract author writes is the one refused here. Closing X111 at the level of consensus
+ * needs the emission clone threaded into the journal through the graph effect-frame protocol, which is
+ * `GenerateTargetTraversal`'s `computeScalarJournalClosures` plus the frame arity it warns about, and is not
+ * attempted here.
  */
 
 const raw = (builder: TransactionBuilder): string =>
@@ -327,6 +336,43 @@ describe('X111 - a read-only graph emission clone must not read the pre-state', 
     expect(failingInput(built.builder)).toBe(null);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
+
+  /**
+   * The gate keys on the published clone, not on `msg.sender`, so the class is wider than the four rows above.
+   * `compiler.ts` also clones a handler that makes an outgoing call (`graphTailCallEligible`), and this pins that
+   * such a handler publishes the SAME shape the gate reads: a `__scb_graph_*` summary that reads a scalar slot
+   * and writes none. COMPILE LEVEL ONLY - no settlement is claimed for this trigger, because it needs a third
+   * participant to receive the call and that fixture is not built here.
+   */
+  it('the outgoing-call trigger publishes the same read-only clone shape', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ISink { function ping(bigint v); }
+      contract Vault(address sink) {
+        bigint balance;
+        function withdraw(bigint amount) public {
+          this.balance = this.balance - amount;
+          require(amount >= 0);
+        }
+        function assertFloor(bigint floor) public {
+          require(this.balance >= floor);
+          ISink(sink).ping(floor);
+          require(true);
+        }
+      }`, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    });
+    const clone = artifact.invocationAnalysis!.functions
+      .find((entry) => entry.name === '__scb_graph_assertFloor');
+    expect(clone).toBeDefined();
+    expect(clone!.reads.filter((resource) => resource.startsWith('state:'))).toEqual(['state:balance']);
+    expect(clone!.writes.filter((resource) => resource.startsWith('state:'))).toEqual([]);
+    // The control: the writer of that slot is an ordinary handler, so it publishes no clone of its own.
+    expect(artifact.invocationAnalysis!.functions
+      .some((entry) => entry.name === '__scb_graph_withdraw')).toBe(false);
+  });
 
   it('N3 liveness: the admitted reader-first guard is still refused on a false expectation', async () => {
     // Proves P1 does not settle because the require went vacuous: 150 > the opening 100.

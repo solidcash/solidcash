@@ -2659,6 +2659,12 @@ export class StatefulTransactionBuilder {
       }
       return;
     }
+    // X109: reading `this.builderOptions.provider` here was proposed and MEASURED WRONG. The gate above is
+    // `> 10_000`, so a provider AT 10,000 reaches this bare VM - but `@mem-cash/validation`'s `createTxVerifier`
+    // never applies the `consensus` overrides MockNetworkProvider hands it (`createVmFacade` calls libauth's
+    // `createVirtualMachineBch2026(standard)`; nothing in that package reads `config.consensus`). So the
+    // published limits are not the rules anything enforces, and a VM built from them names causes the verifier
+    // never charged. Pinned in `X109ProviderFaithfulVm.test.ts`. This path only prints, so it decides nothing.
     const vm = createVirtualMachineBch2026();
     for (const idx of candidates) {
       if (idx < 0 || idx >= transaction.inputs.length) continue;
@@ -2688,6 +2694,16 @@ export class StatefulTransactionBuilder {
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    // X109: unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and it has no relaxed-limits gate
+    // at all - the bare VM is built for every provider. Reading the provider's published limits here was
+    // measured as a REGRESSION rather than a repair: at `operationCostBudgetPerByte: 150` it refuses a
+    // `recursiveStateHandler` send that settles at base and that the provider still accepts, on operation-cost
+    // density the deciding verifier never applied. Pinned in `X109ProviderFaithfulVm.test.ts`.
+    //
+    // One divergence here IS real and is left open: MockNetworkProvider builds its verifier with
+    // `standard: policy.enforceDust`, so a dust-disabled profile decides in the consensus regime while this VM
+    // evaluates in the standard one. No shape was found where that changes an outcome, so it is recorded here
+    // rather than repaired blind.
     const vm = createVirtualMachineBch2026();
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };

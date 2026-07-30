@@ -35,6 +35,65 @@ Artifact invariance is pinned by existing tests:
 Milestone 2 must not modify those fixtures except through an explicit, separately reviewed baseline
 change. It must not advertise a layer-3 selector, version, controller prefix, or default capability.
 
+### 1.1 External corpus checkouts are pinned (row R3-16)
+
+The F3 census reads four repository checkouts that live OUTSIDE this repo and were pinned to nothing.
+That made the census irreproducible in the way that matters: re-running it later against drifted
+upstream sources silently changes the denominator of every percentage the board quotes over real
+contracts, and nothing distinguishes "the compiler changed" from "the corpus changed".
+
+Identity is now recorded in `packages/solidcash/test/e2e/layer3-corpus-pins.json` and verified by
+`layer3-corpus-pins.ts`. The sources are not vendored: the manifest records identity, not content. It
+follows the pattern `examples/solidity-by-example/SBE_SOURCE.md` already set and the census had not
+adopted.
+
+| corpus | env var | default root | pinned commit | files / in-scope |
+|---|---|---|---|---:|
+| mistswap | `MISTSWAP_ROOT` | `/Code/mistswap/mistswap/contracts` | `2cc297c7` | 16 / 16 |
+| eacc | `EACC_CONTRACTS_DIR` | `/Code/effectiveacceleration.ai/contract/contracts` | `cea03ed0` | 22 / 22 |
+| solidity-by-example | `SBE_ROOT` | `/Code/solidity-by-example` | `5bcdca02` | 152 / 141 |
+| solc-corpus | `SOLC_CORPUS` | `/Code/solidity` | `816d9b2a` | 7,343 / 4,876 |
+
+Measured at the time of pinning: all four checkouts ARE at these commits, and all four census
+subdirectories are clean, so the corpus has not drifted. Two independent corroborations that these are
+the states the recorded figures were taken against: solc-corpus in-scope 4,876 and total 7,343 both
+match the denominators `examples/solidity-corpus` quotes, and every per-corpus `files` count in
+`layer3-corpus-census-f3.ts` reconciles with these populations.
+
+Verification is three-layered because no single layer suffices:
+
+1. **commit** - the upstream identity;
+2. **counts** - the census's actual denominators, which a commit does NOT pin. The harness's own
+   exclusion sets move them too: solidity-by-example went from 139 to 141 in-scope while its pinned
+   commit never changed, because exclusions were removed from the harness;
+3. **digest** - sha256 over exactly the files the census reads, which catches a dirty working tree at a
+   matching commit and a checkout with no git metadata at all.
+
+An unverifiable corpus is a NAMED REFUSAL, never a silent partial census. This is load-bearing because
+the probe's own file discovery degrades quietly in two ways: `findSol` returns an empty list when its
+root is missing, so an absent corpus contributes zero files while the census still reports a total; and
+the mistswap target list is filtered by `existsSync`, so a renamed target silently shrinks the
+denominator. `assertCorpusPinsOrRefuse()` is what a censusing run must call so both become refusals
+naming the corpus.
+
+TWO FINDINGS THAT PINNING SURFACED, both recorded rather than papered over:
+
+- **mistswap is not reproducible from upstream.** Its checkout sits on a local unpushed commit ("old
+  wip") that no remote branch contains. 15 of the 16 census targets are byte-identical to the nearest
+  public ancestor `1f8622bb`; exactly one differs, `contracts/bentobox/BentoBoxV1.sol`, and it is one
+  of the two load-bearing corpus anchors cited in section 2. The divergence is cosmetic rebranding (a
+  domain separator `BentoBox V1` -> `Mirror V1`, two approval strings, a trailing space in a revert
+  reason, `STRATEGY_DELAY` 2 weeks -> 2 minutes) and does not touch the deposit path section 2 cites,
+  so it is immaterial to what the census measures. The corpus is still not publicly recreatable and
+  must not be described as if it were.
+- **The recorded solc-corpus row is a sample, not a census.** It reports 407 files against an in-scope
+  population of 4,876: a 1-in-12 systematic stride sample. The stride was not recorded anywhere, so a
+  re-take at a different stride would move every solc-corpus percentage with nothing to distinguish it
+  from a compiler or corpus change. It is now recorded in the manifest, and marked as INFERRED
+  (`ceil(4876 / 12) = 407` exactly, corroborated by the probe's own note that a full four-corpus
+  re-take at stride 12 costs 29 minutes) rather than read from the census. A solc-corpus percentage has
+  a denominator of 407 sampled files and must not be quoted as if the whole corpus were censused.
+
 ## 2. Selected real workload
 
 The smallest surveyed real acyclic target is Kashi's `depositCollateral(amount)` helper:

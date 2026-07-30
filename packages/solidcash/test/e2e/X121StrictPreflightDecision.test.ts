@@ -345,20 +345,24 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     expect(await submit(9_960)).toMatch(/unexpected number of items on the stack/);
   });
 
-  it('6. debugging.ts is still FAIL-OPEN at a strict profile - BLOCKED on LibauthTemplate.ts', async () => {
-    // `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows, so `debugging.ts`'s
-    // bare VM decides ACCEPT/REJECT for `.build()`. It cannot see the provider: threading one in needs
-    // `debugLibauthTemplate` -> `debugTemplate` -> `createProgram` to carry it, and LibauthTemplate.ts is
-    // outside this worker's lease. Pinned as a known gap, NOT as correct behaviour.
+  it('6. the debugging.ts fail-open is CLOSED (X130): .build() reads the limits too', async () => {
+    // INVERTED WHEN X130 LANDED. This pinned a KNOWN GAP rather than correct behaviour, and it was the only
+    // test that noticed the closure - the throw census over 8,026 calls found exactly one newly-refused row,
+    // and it was this one. `_preflightRecursiveBuilder` calls `builder.debug()` and rethrows, so this VM
+    // DECIDES for `.build()`; it now reads the provider through `LibauthTemplate` -> `debugTemplate` ->
+    // `createProgram`, both halves landed together so an optional parameter nobody supplies could not read as
+    // provider-aware while behaving bare.
     const provider = costProfile(150, false);
-    // `.build()` ADMITS it, because the bare debug VM never sees `operationCostBudgetPerByte: 150`.
-    await expect((await recursionContract(provider) as unknown as Recursor).decrement(3n).build())
-      .resolves.toBeDefined();
-    // The decider refuses that very shape - measured here on the funded bytes, so this is not a claim
-    // inherited from row 2.
+    let buildError: string | undefined;
+    try {
+      await (await recursionContract(provider) as unknown as Recursor).decrement(3n).build();
+    } catch (error) { buildError = (error as Error).message; }
+    expect(buildError, '.build() still admits a shape the decider refuses').toBeDefined();
+    // Pinned as budget x density, never as a literal, so it measures the PUBLISHED value.
+    assertDensityCeiling(buildError!, 150);
+    // And the decider refuses the same shape, measured on the funded bytes rather than inherited from row 2.
     const { error } = await sendCapturingPreflightInput(await recursionContract(provider), 3n);
     assertDensityCeiling(error!, 150);
-    // `.send()` is covered because the repaired `_strictRecursiveVmPreflight` catches it; only `.build()` leaks.
   });
 
   it('6b. GUARD: the .build() gate still refuses a structurally unbounded recursion', async () => {

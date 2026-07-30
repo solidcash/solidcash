@@ -2659,12 +2659,12 @@ export class StatefulTransactionBuilder {
       }
       return;
     }
-    // X109: reading `this.builderOptions.provider` here was proposed and MEASURED WRONG. The gate above is
-    // `> 10_000`, so a provider AT 10,000 reaches this bare VM - but `@mem-cash/validation`'s `createTxVerifier`
-    // never applies the `consensus` overrides MockNetworkProvider hands it (`createVmFacade` calls libauth's
-    // `createVirtualMachineBch2026(standard)`; nothing in that package reads `config.consensus`). So the
-    // published limits are not the rules anything enforces, and a VM built from them names causes the verifier
-    // never charged. Pinned in `X109ProviderFaithfulVm.test.ts`. This path only prints, so it decides nothing.
+    // X109, OPEN: reading `this.builderOptions.provider` here is proposed and not yet settled. The gate above is
+    // `> 10_000`, so a provider AT 10,000 reaches this bare VM. The argument for leaving it - that the published
+    // limits are rules nothing enforces - was FALSIFIED: MockNetworkProvider's submit path refuses both a
+    // strict `maximumStackItemBytes` and a strict `operationCostBudgetPerByte`, the latter at exactly the
+    // published value x density bytes. See `X109ProviderFaithfulVm.test.ts` rows 2 and 2b. This path only
+    // prints, so it decides nothing and is low risk either way; the deciding twin below is the one that matters.
     const vm = createVirtualMachineBch2026();
     for (const idx of candidates) {
       if (idx < 0 || idx >= transaction.inputs.length) continue;
@@ -2694,11 +2694,16 @@ export class StatefulTransactionBuilder {
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    // X109: unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and it has no relaxed-limits gate
-    // at all - the bare VM is built for every provider. Reading the provider's published limits here was
-    // measured as a REGRESSION rather than a repair: at `operationCostBudgetPerByte: 150` it refuses a
-    // `recursiveStateHandler` send that settles at base and that the provider still accepts, on operation-cost
-    // density the deciding verifier never applied. Pinned in `X109ProviderFaithfulVm.test.ts`.
+    // X109 / X121, OPEN - do not change this without resolving the contradiction below. Unlike the tracer above
+    // this THROWS, so it decides ACCEPT/REJECT, and it has no relaxed-limits gate at all: the bare VM is built
+    // for every provider.
+    //
+    // Two measurements disagree. (a) Reading the published limits here was reported as a REGRESSION: at
+    // `operationCostBudgetPerByte: 150` it refuses a `recursiveStateHandler` send that settles at base and that
+    // the provider still accepts. (b) But the provider DOES enforce that budget - `X109ProviderFaithfulVm`
+    // row 2 shows a plain P2PKH spend refused at exactly 150 x 167 = 25,050. Both cannot hold for one profile,
+    // so one of them compares two different provider configurations. Until that is resolved, leaving the bare VM
+    // is the conservative choice only because it is the status quo, NOT because it was shown correct.
     //
     // One divergence here IS real and is left open: MockNetworkProvider builds its verifier with
     // `standard: policy.enforceDust`, so a dust-disabled profile decides in the consensus regime while this VM

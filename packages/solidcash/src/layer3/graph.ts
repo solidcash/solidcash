@@ -138,6 +138,27 @@ export interface FinalizedCompiledGraph {
   participantCallersHex: readonly string[];
 }
 
+/**
+ * One participant's bounded runtime-resource region, in ABSOLUTE transaction slots.
+ *
+ * The compiler reserves this region inside the participant's balanced block for resources whose count is
+ * only known at run time: dynamic-storage chunks, loop entries and loop sidecars. Its size is fixed at
+ * compile time and is part of `blockSize`, so every later participant is already placed past it - the region
+ * is not an extension of the block, it is part of it.
+ *
+ * Published because the composer cannot derive it: `blockLayout.trailingBase` is LOCAL to the block, and only
+ * this layout knows where the block starts. Without it, S3's transaction is assembled by adding the two by
+ * hand at every call site, which is exactly the global-index dependency L1 exists to remove.
+ */
+export interface GraphTrailingRegion {
+  /** Index into `CompiledGraphPlan.participants`. */
+  participant: number;
+  /** First absolute input/output slot of the region. */
+  base: number;
+  /** Slots reserved. A longer run cannot be described by the balanced model at all. */
+  capacity: number;
+}
+
 export interface CompiledGraphPhysicalLayout {
   /** Physical master input of each participant, by participant index. */
   participantInputs: readonly number[];
@@ -154,6 +175,11 @@ export interface CompiledGraphPhysicalLayout {
    * The corresponding expected full NFT commitment is supplied in `resultCommitmentsHex`.
    */
   returnOutputs?: readonly (number | null)[];
+  /**
+   * Absolute runtime-resource regions, in participant order. A participant whose block declares none - every
+   * participant with no dynamic state, no loop entry write and no loop sidecar - contributes no entry.
+   */
+  trailingRegions: readonly GraphTrailingRegion[];
 }
 
 /**
@@ -166,6 +192,7 @@ export interface CompiledGraphPhysicalLayout {
 export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGraphPhysicalLayout {
   const participantInputs: number[] = [];
   const returnOutputs: (number | null)[] = [];
+  const trailingRegions: GraphTrailingRegion[] = [];
   let cursor = 0;
   for (const participant of plan.participants) {
     const layout = participant.blockLayout;
@@ -200,6 +227,13 @@ export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGr
       }
     }
     participantInputs.push(cursor);
+    if (layout.trailingBase !== undefined) {
+      trailingRegions.push(Object.freeze({
+        participant: participant.participant,
+        base: cursor + layout.trailingBase,
+        capacity: layout.trailingCapacity!,
+      }));
+    }
     const returnSlots = layout.slots.filter((slot) => slot.kind === 'returnEvent');
     if (returnSlots.length > 1) {
       throw new Error(`layer3: participant ${participant.participant} has multiple return-event slots`);
@@ -220,7 +254,53 @@ export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGr
     feeInput,
     totalSlots: cursor,
     returnOutputs: Object.freeze(returnOutputs),
+    trailingRegions: Object.freeze(trailingRegions),
   });
+}
+
+/**
+ * Refuse a runtime-resource run the balanced model cannot describe, BEFORE anything is signed.
+ *
+ * `runs` names, per participant, how many trailing slots that owner's handlers actually claim: one per
+ * dynamic-storage chunk output, loop entry or loop sidecar. The direct route already refuses this shape
+ * (`StatefulTransactionBuilder`, "Runtime resource outputs exceed balanced trailing capacity"); the graph
+ * route had no analogue, and the difference is measurable. A 65-chunk write against a 64-slot region was
+ * built, funded and signed, and then refused by the VM at the FIRST PROJECTION INPUT - a slot that names
+ * nothing about the cause, because the overflowing block simply runs into the proof region. This states the
+ * refusal where the composer can act on it, at zero signature requests.
+ *
+ * It is a describability rule, not a covenant: the covenant is what actually authenticates the chunk run, and
+ * nothing here relaxes it. A run WITHIN capacity is accepted by this check and still has to satisfy the
+ * count, order, category, capability and commitment checks in the participant's own route.
+ */
+export function assertGraphTrailingCapacity(
+  layout: CompiledGraphPhysicalLayout,
+  runs: Readonly<Record<number, number>>,
+): void {
+  for (const [key, run] of Object.entries(runs)) {
+    const participant = Number(key);
+    if (!Number.isInteger(participant) || participant < 0
+      || participant >= layout.participantInputs.length) {
+      throw new Error(`layer3: trailing run names participant ${key}, which this graph does not have`);
+    }
+    if (!Number.isInteger(run) || run < 0) {
+      throw new Error(`layer3: participant ${participant} has a non-integer runtime-resource run`);
+    }
+    if (run === 0) continue;
+    const region = layout.trailingRegions.find((entry) => entry.participant === participant);
+    if (region === undefined) {
+      throw new Error(
+        `layer3: participant ${participant} claims ${run} runtime-resource slots but its block declares no `
+        + 'trailing region',
+      );
+    }
+    if (run > region.capacity) {
+      throw new Error(
+        `layer3: participant ${participant} runtime-resource run exceeds its balanced trailing capacity `
+        + `(${run} > ${region.capacity})`,
+      );
+    }
+  }
 }
 
 const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');

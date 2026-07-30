@@ -51,6 +51,38 @@ const VAULT_SENDER = `pragma solidcash >=0.8.0;
       }
     }`;
 
+/**
+ * SEC-18 closure gap. Same three handlers, but the guard reaches the journalled slot through a
+ * FUNCTION POINTER. `computeScalarJournalClosures`'s `scan` records a callee only from
+ * `FunctionCallNode.resolvedFunction.functionId` (`GenerateTargetTraversal.ts:1685`) and explicitly
+ * skips the `functionReference` key (`:1689`), so neither `checkFloor` nor its caller enters the
+ * widened closure. No `msg.sender`, so this is NOT an emission clone and X111's gate is silent.
+ *
+ * Measured against 1cd218c9^: the plain-read spelling costs +15 B and the pointer spelling costs
+ * +0 B, i.e. is byte-identical to the pre-SEC-18 build.
+ */
+const VAULT_POINTER = `pragma solidcash >=0.8.0;
+    contract Vault() {
+      bigint balance;
+      bigint other;
+      function checkFloor(bigint floor) internal {
+        require(this.balance >= floor);
+      }
+      function withdraw(bigint amount) public {
+        this.balance = this.balance - amount;
+        require(amount >= 0);
+      }
+      function bumpOther(bigint n) public {
+        this.other = this.other + n;
+        require(n >= 0);
+      }
+      function assertFloor(bigint floor, address expectedSender) public {
+        function(bigint) internal probe = checkFloor;
+        probe(floor);
+        require(expectedSender.length >= 0);
+      }
+    }`;
+
 type Handler = 'withdraw' | 'bumpOther' | 'assertFloor';
 interface Row { fn: Handler; value: bigint }
 
@@ -67,6 +99,11 @@ interface Spec {
   rows: Row[];
   opening: bigint;
   constructor: Constructor;
+  /**
+   * Which vault source. `sender` is X111's emission-clone subject, `pointer` is SEC-18's closure gap,
+   * `plainRead` is the same guard spelled as a direct read, which SEC-18 does journal.
+   */
+  vault?: 'sender' | 'pointer' | 'plainRead';
 }
 
 interface Built {
@@ -185,7 +222,14 @@ async function buildGuardGraph(spec: Spec): Promise<Built> {
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const vaultArtifact = compileString(VAULT_SENDER, options);
+  const VAULT_SOURCES = {
+    sender: VAULT_SENDER,
+    pointer: VAULT_POINTER,
+    // `VAULT_POINTER` with the pointer hop removed. One differing construct, same read, same rows.
+    plainRead: VAULT_POINTER
+      .replace('function(bigint) internal probe = checkFloor;\n        probe(floor);', 'checkFloor(floor);'),
+  } as const;
+  const vaultArtifact = compileString(VAULT_SOURCES[spec.vault ?? 'sender'], options);
   const vaultBase = new Contract(vaultArtifact, [], { provider });
   const vaultSetup = await setupStatefulUtxos(
     provider, vaultBase, vaultArtifact.stateLayout!, { balance: spec.opening, other: 0n },
@@ -424,6 +468,39 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
 
+  it('L2-F3 HOSTILE: SEC-18 misses a reader reached through a FUNCTION POINTER, and it SETTLES', async () => {
+    // No bypass, no tampering: the GUARDED planner admits this, because the guard is not an emission
+    // clone. `withdraw(80)` on an opening 100 then `assertFloor(50)`: 50 is true of 100 and false of
+    // the 20 this transaction commits. Byte-identical to 1cd218c9^, so the widening never reached it.
+    const built = await buildGuardGraph({
+      constructor: 'planner', vault: 'pointer', opening: 100n, rows: HOSTILE,
+    });
+    expect(built.closing).toBe(20n);
+    expect(failingInput(built.builder)).toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
+
+  it('L2-F3p POSITIVE CONTROL: the SAME guard spelled as a direct read is refused at the vault', async () => {
+    // `VAULT_PLAIN`-style direct read is what SEC-18 fixed, so the identical row set against the
+    // direct spelling must NOT settle. This is the pair that makes L2-F3 a closure gap rather than a
+    // claim that the guard was always vacuous. Differs from L2-F3 only in how the read is reached.
+    const built = await buildGuardGraph({
+      constructor: 'planner', vault: 'plainRead', opening: 100n, rows: HOSTILE,
+    } as Spec & { vault: 'plainRead' });
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+  }, 300_000);
+
+  it('L2-F3L LIVENESS: the pointer guard is refused on a floor false of BOTH balances', async () => {
+    // 150 is false of the opening 100 too, so L2-F3 is a stale READ and not a dead require.
+    const built = await buildGuardGraph({
+      constructor: 'planner',
+      vault: 'pointer',
+      opening: 100n,
+      rows: [{ fn: 'withdraw', value: 80n }, { fn: 'assertFloor', value: 150n }],
+    });
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+  }, 300_000);
+
   it('L2-A3 both bypass constructors produce ONE transcript root from one fixture', async () => {
     // If the roots agree, the two constructors are producing the same transaction, so neither is an artefact
     // of its own encoder. Compared inside one build because each build randomises its token categories.
@@ -431,4 +508,205 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
     expect(built.rootsByConstructor.handAssembled).toBe(built.rootsByConstructor.decoyAnalysis);
     expect(built.root).toBe(built.rootsByConstructor.handAssembled);
   }, 300_000);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Planner-level attacks. `planCompiledGraph` needs no provider, so the gate can be attacked directly
+// with synthetic locking bytecodes. Nothing here claims settlement; each case reports the gate's answer.
+// ---------------------------------------------------------------------------------------------------
+
+const BUS_OPTIONS = {
+  forceStateful: true,
+  experimentalHiddenBatch: true,
+  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+  experimentalMessageBusControllerCategory: '22'.repeat(32),
+} as const;
+
+const ROUTER_LBC = `aa20${'33'.repeat(32)}87`;
+const VAULT_LBC = `aa20${'44'.repeat(32)}87`;
+const lbc = (hex: string): Uint8Array => hexToBin(hex);
+
+/** Compile a router whose own body emits `rows` in order against one vault interface. */
+function routerFor(rows: readonly Handler[], signatures: Readonly<Record<string, string>>): any {
+  const calls = rows.map((fn, index) => (fn === 'assertFloor'
+    ? `IVault(vault).assertFloor(a${index}, sender);`
+    : `IVault(vault).${fn}(a${index});`)).join('\n      ');
+  const params = [...rows.map((_fn, index) => `bigint a${index}`), 'address sender'].join(', ');
+  const iface = [...new Set(rows)].map((fn) => signatures[fn]).join(' ');
+  return compileString(`pragma solidcash >=0.8.0;
+    interface IVault { ${iface} }
+    contract GuardRouter(int brand, address vault) {
+      function route(${params}) public {
+      ${calls}
+        require(true);
+      }
+    }`, BUS_OPTIONS);
+}
+
+/** Plan `rows` against one vault artifact and report the gate's answer as a string. */
+function planAnswer(
+  vaultArtifact: any, rows: readonly Handler[],
+  signatures: Readonly<Record<string, string>> = SIGNATURES,
+  unboundRouteWitnesses?: Record<string, any>,
+): string {
+  const participants = [
+    { artifact: routerFor(rows, signatures), lockingBytecode: ROUTER_LBC },
+    { artifact: vaultArtifact, lockingBytecode: VAULT_LBC, ...(unboundRouteWitnesses && { unboundRouteWitnesses }) },
+  ];
+  const invocations = [
+    {
+      parent: null,
+      callee: 0,
+      function: 'route',
+      args: [...rows.map((_fn, index) => BigInt(10 * (index + 1))), lbc(ROUTER_LBC)],
+    },
+    ...rows.map((fn, index) => ({
+      parent: 0,
+      callee: 1,
+      function: fn,
+      args: fn === 'assertFloor' ? [BigInt(10 * (index + 1)), lbc(ROUTER_LBC)] : [BigInt(10 * (index + 1))],
+    })),
+  ];
+  try {
+    layer3.planCompiledGraph(participants as any, invocations as any);
+    return 'ADMITTED';
+  } catch (error) {
+    return `REFUSED: ${(error as Error).message}`;
+  }
+}
+
+/** Deep-copy an artifact so a footprint mutation cannot leak into another case. */
+const copy = (artifact: any): any => JSON.parse(JSON.stringify(artifact));
+
+describe('L2 review of X111 - the gate as a decision procedure', () => {
+  it('L2-F1b HOSTILE: a __scb_resource_ emission clone is invisible to the gate', () => {
+    // `compiler.ts:1465` sets `graphEmissionHandler` on the RESOURCE-shaped clone too when its source
+    // handler is a graphTailHandler, so `GenerateTargetTraversal.ts:1773` excludes it from SEC-18's
+    // journal exactly as it excludes a `__scb_graph_` clone. The gate's lookup key is only the
+    // `__scb_graph_` prefix, so it never finds this one and stays silent on the hostile order.
+    const vaultArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Vault() {
+        bigint balance;
+        mapping(address => bigint) ledger;
+        function withdraw(bigint amount, address who) public {
+          require(this.ledger[who] >= 0);
+          this.balance = this.balance - amount;
+          require(amount >= 0);
+        }
+        function assertFloor(bigint floor, address who, address other) public {
+          require(this.ledger[who] >= 0);
+          require(this.ledger[other] >= 0);
+          require(this.balance >= floor);
+          require(msg.sender == who);
+        }
+      }`, BUS_OPTIONS);
+    const names = vaultArtifact.invocationAnalysis!.functions.map((entry: any) => entry.name);
+    expect(names).toContain('__scb_resource_assertFloor');
+    expect(names).not.toContain('__scb_graph_assertFloor');
+
+    const signatures = {
+      withdraw: 'function withdraw(bigint v, address w);',
+      assertFloor: 'function assertFloor(bigint v, address s, address o);',
+    };
+    const participants = [
+      { artifact: routerFor(['withdraw', 'assertFloor'], signatures), lockingBytecode: ROUTER_LBC },
+      {
+        artifact: vaultArtifact,
+        lockingBytecode: VAULT_LBC,
+        unboundRouteWitnesses: { __scb_key_ledger_0_row_r0: lbc(ROUTER_LBC) },
+      },
+    ];
+    const rowsOf = (artifact: any): readonly any[] => [
+      { parent: null, callee: 0, function: 'route', args: [10n, 20n, lbc(ROUTER_LBC)] },
+      { parent: 0, callee: 1, function: 'withdraw', args: [10n, lbc(ROUTER_LBC)] },
+      { parent: 0, callee: 1, function: 'assertFloor', args: [20n, lbc(ROUTER_LBC), lbc(ROUTER_LBC)] },
+    ].map((row) => ({ ...row, __artifact: artifact }));
+    // Hostile: writer of `balance` at local row 0, excluded clone reading `balance` at local row 1.
+    expect(() => layer3.planCompiledGraph(participants as any, rowsOf(vaultArtifact) as any)).not.toThrow();
+
+    // GUARD on the ATTACKED FIELD. The only thing changed is the clone's published NAME - same reads,
+    // same writes, same rows, same order. The gate fires, which isolates the PREFIX as the blind spot
+    // rather than anything about this contract's footprint.
+    const renamed = copy(vaultArtifact);
+    renamed.invocationAnalysis.functions
+      .find((entry: any) => entry.name === '__scb_resource_assertFloor').name = '__scb_graph_assertFloor';
+    expect(() => layer3.planCompiledGraph(
+      [participants[0], { ...participants[1], artifact: renamed }] as any, rowsOf(renamed) as any,
+    )).toThrow(STALE);
+  }, 120_000);
+
+  it('L2-A4 the unknown-footprint arm fails CLOSED, and no compiler output reaches it', () => {
+    const vaultArtifact = compileString(VAULT_SENDER, BUS_OPTIONS);
+    // The arm is unreachable from the compiler: `footprint.unknown` refuses the handler before it can
+    // be cloned (`compiler.ts:1464`), so nothing the compiler publishes carries `unknown: true`.
+    expect(vaultArtifact.invocationAnalysis!.functions.filter((entry: any) => entry.unknown)).toEqual([]);
+
+    // Reached through the data instead. An unknown clone has no enumerable read set, so ANY earlier
+    // writer refuses it - including a writer of a slot it never names. Fail closed.
+    const unknown = copy(vaultArtifact);
+    Object.assign(
+      unknown.invocationAnalysis.functions.find((entry: any) => entry.name === '__scb_graph_assertFloor'),
+      { unknown: true, reads: [], writes: [] },
+    );
+    expect(planAnswer(unknown, ['bumpOther', 'assertFloor'])).toMatch(/read-only graph emission clone/);
+    // GUARD on ORDER: the same unknown clone with no earlier writer is admitted, so the arm is not a
+    // blanket refusal of every unknown clone.
+    expect(planAnswer(unknown, ['assertFloor', 'bumpOther'])).toBe('ADMITTED');
+  }, 120_000);
+
+  it('L2-A4w an unknown clone escapes the conservative arm by publishing ANY write', () => {
+    // `writtenVariablesOf(clone).length > 0` is tested BEFORE `clone.unknown` (graph.ts:1327-1330), so
+    // an unknown footprint that names one unrelated write short-circuits out of the conservative arm.
+    // The published write is the spender's data, not the compiler's `writerIds`, so it is not evidence
+    // the clone joined the journal. Same rows and order as L2-A4's refused case.
+    const vaultArtifact = compileString(VAULT_SENDER, BUS_OPTIONS);
+    const escape = copy(vaultArtifact);
+    Object.assign(
+      escape.invocationAnalysis.functions.find((entry: any) => entry.name === '__scb_graph_assertFloor'),
+      { unknown: true, reads: [], writes: ['state:nosuchslot'] },
+    );
+    expect(planAnswer(escape, ['withdraw', 'assertFloor'])).toBe('ADMITTED');
+  }, 120_000);
+
+  it('L2-A5 the gate refuses every writer-then-guard order, which is the honest one', () => {
+    // Cost of the refusal, enumerated rather than asserted. Row set: one writer of `balance`, one
+    // writer of a DIFFERENT slot, one emission clone reading `balance`. Of the six orders, the three
+    // refused are exactly those where the `balance` writer precedes the guard - i.e. every
+    // "act, then assert the post-condition" composition. The three admitted ones all read the guard
+    // before the write it is meant to check.
+    const vaultArtifact = compileString(VAULT_SENDER, BUS_OPTIONS);
+    const orders: Handler[][] = [
+      ['withdraw', 'bumpOther', 'assertFloor'],
+      ['withdraw', 'assertFloor', 'bumpOther'],
+      ['bumpOther', 'withdraw', 'assertFloor'],
+      ['bumpOther', 'assertFloor', 'withdraw'],
+      ['assertFloor', 'withdraw', 'bumpOther'],
+      ['assertFloor', 'bumpOther', 'withdraw'],
+    ];
+    const answers = orders.map((order) => planAnswer(vaultArtifact, order));
+    const refused = orders.filter((order, index) => answers[index] !== 'ADMITTED');
+    expect(refused.map((order) => order.join('>'))).toEqual([
+      'withdraw>bumpOther>assertFloor', 'withdraw>assertFloor>bumpOther', 'bumpOther>withdraw>assertFloor',
+    ]);
+    // Every refused order has the balance writer before the guard; every admitted one does not.
+    orders.forEach((order, index) => {
+      const writerFirst = order.indexOf('withdraw') < order.indexOf('assertFloor');
+      expect(answers[index] !== 'ADMITTED').toBe(writerFirst);
+    });
+  }, 180_000);
+
+  it('L2-A6 two writers of the same slot: the gate names the EARLIEST, not the nearest', () => {
+    // Attack angle: more than one writer of one slot on one route. The rule keys on the earliest
+    // writer, which is the correct choice - a clone after two writes is stale with respect to both.
+    const vaultArtifact = compileString(VAULT_SENDER, BUS_OPTIONS);
+    expect(planAnswer(vaultArtifact, ['withdraw', 'withdraw', 'assertFloor']))
+      .toMatch(/row 2 'assertFloor'.*which row 0 'withdraw'/);
+  }, 120_000);
+
+  it('L2-A7 a clone reading a slot NO row writes is admitted', () => {
+    // `bumpOther` writes `other`; the clone reads `balance`. Nothing on this route writes `balance`,
+    // so there is no earlier write to have missed and refusing would be a false refusal.
+    const vaultArtifact = compileString(VAULT_SENDER, BUS_OPTIONS);
+    expect(planAnswer(vaultArtifact, ['bumpOther', 'assertFloor'])).toBe('ADMITTED');
+  }, 120_000);
 });

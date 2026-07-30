@@ -90,7 +90,7 @@ import expandInheritance from './semantic/InheritanceExpansionTransformation.js'
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
-import { generatedOriginOf, Location, Point, withGeneratedSource } from './ast/Location.js';
+import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
@@ -3407,26 +3407,37 @@ export function parseCode(
     },
   );
 
-  const syntaxErrorListener = new ForwardingErrorListener(errorListener);
+  // X120. The file stamp has to cover LEXING AND PARSING, not only the AST build. An ANTLR error listener builds
+  // its own `Location` from the offending token while the parse is still running, i.e. before
+  // `AstBuilder.build()` opens the stamped scope, so every SYNTAX error in an imported file printed a bare
+  // Line/Column that belongs to that file: `IERC5805.sol` (10 lines) reported `Mismatched input 'delegate' ... at
+  // Line 63`, which is line 63 of the `IVotes.sol` it re-exports.
+  //
+  // `withSourceFile(undefined, ..)` for a root parse CLEARS an ambient stamp rather than inheriting one, so a
+  // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
+  // wins over any file label anyway (`importedFileCaveat`).
+  return withSourceFile(importedFileId, () => {
+    const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 
-  // Lexing (throwing on errors)
-  const inputStream = new CharStream(code);
-  const lexer = new SolidCashLexer(inputStream);
-  lexer.removeErrorListeners();
-  lexer.addErrorListener(syntaxErrorListener);
-  const tokenStream = new CommonTokenStream(lexer);
+    // Lexing (throwing on errors)
+    const inputStream = new CharStream(code);
+    const lexer = new SolidCashLexer(inputStream);
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(syntaxErrorListener);
+    const tokenStream = new CommonTokenStream(lexer);
 
-  // Parsing (throwing on errors)
-  const parser = new SolidCashParser(tokenStream);
-  parser.removeErrorListeners();
-  parser.addErrorListener(syntaxErrorListener);
-  const parseTree = parser.sourceFile();
-  syntaxErrorListener.throwFirstError();
+    // Parsing (throwing on errors)
+    const parser = new SolidCashParser(tokenStream);
+    parser.removeErrorListeners();
+    parser.addErrorListener(syntaxErrorListener);
+    const parseTree = parser.sourceFile();
+    syntaxErrorListener.throwFirstError();
 
-  // AST building
-  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, importedFileId).build() as Ast;
+    // AST building
+    const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, importedFileId).build() as Ast;
 
-  return ast;
+    return ast;
+  });
 }
 
 // Re-resolve array element types that parsed to a named AddressType placeholder (an imported struct not yet

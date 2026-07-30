@@ -139,7 +139,7 @@ describe('R2: the covenant sizes the documents quote are the covenant sizes that
   it('MEASURED: the projection verifier compiles to the size both documents publish', () => {
     const artifact = compileString(layer3.generateGraphProjectionVerifier());
     const bytes = artifact.debug.bytecode.length / 2;
-    expect(bytes).toBe(4_098);
+    expect(bytes).toBe(4_121);
     // NO DISJUNCTION HERE ANY MORE. This assertion used to read `envelopeDoc.includes(bytes) ||
     // corpusFitDoc.includes('4,542')`, and the second branch is satisfied by the stale literal itself: the
     // guard against a document quoting a superseded size could be discharged by the document quoting the

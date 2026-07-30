@@ -2329,7 +2329,7 @@ function compileResolvedAst(
         .map((prior) => prior.slotIndex);
     }
   }
-  ast = ast.accept(new TypeCheckTraversal()) as Ast;
+  ast = ast.accept(new TypeCheckTraversal(true, mergedCompilerOptions.rootFileId)) as Ast;
   ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.enforceFinalRequire)) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
@@ -3048,7 +3048,7 @@ function compileReferencedContracts(
       if (col.type instanceof MappingType) col.sorted = true;
     }
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
-    singleAst = singleAst.accept(new TypeCheckTraversal()) as Ast;
+    singleAst = singleAst.accept(new TypeCheckTraversal(true, compilerOptions.rootFileId)) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
@@ -3219,6 +3219,7 @@ export function parseCode(
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
   solidityImportCompat = false,
   chunkedArrays = true,
+  importedFileId?: string,
 ): Ast {
   // Solidity's storage-layout specifier `contract C [is ..] layout at <expr> { }` sets an EVM storage base slot;
   // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
@@ -3253,7 +3254,7 @@ export function parseCode(
   syntaxErrorListener.throwFirstError();
 
   // AST building
-  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays).build() as Ast;
+  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays, importedFileId).build() as Ast;
 
   return ast;
 }

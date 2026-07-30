@@ -170,13 +170,14 @@ task-specific report, not in this table.
 | X76b | Lift `result-route` and normalize the bare entry spelling | E1 | X79 | **INTEGRATED** | 2 of 3 stacked gates; every bare shape lands on its DOTTED TWIN'S byte count; +2 state-changing, 0 lost - see 4.88 |
 | X94 | `mixed-scalar` needs its own mixed-route VM settle | — | X76b | **TODO** | the only gate whose relaxation puts a row with NO physical entry into a route sized for per-row entry slots; 139/88 firings |
 | X95 | `bareShapeIsNormalizable` is over-conservative | — | X76b | **TODO** | blocks on any bare index of a non-collection name; narrowing to collection names is sound but was not shipped |
-| X96 | X73's never-shrink guard may no longer have a subject | — | X76b | **TODO** | its ERC-20 scenario no longer shrinks and firings fell 22 -> 5; third vacuous-guard instance on this board |
+| X96 | X73's never-shrink guard may no longer have a subject | F2 | X76b | **INTEGRATED** | it HAD lost it and is not unreachable; re-pointed at a fresh arithmetic subject, old one kept as a collapse record |
 | X80 | F3's 455 is a ~2.2x undercount of gate reach | D2 | F3 | **MEASURED** | 419 firings, 226 on contracts that DO get a route and are invisible to the route-absent channel |
 | X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | D4 | F3,F2 | **INTEGRATED** | 44/45 under -> **0/45 under**; one defect was an IMPOSSIBILITY (intercept below the redeem it pushes) - see 4.83 |
 | X78 | The estimator names DENSITY as the binder on all 45 | E3 | X70 | **INTEGRATED** | de-bias each coefficient before comparing: 0/43 -> **43/43**, census 22/367 -> **367/367** |
-| X85 | `replicaSpec` drops 444 B of every corpus prediction | — | X78 | **TODO** | defaults to the recorded basis (4,542/1,514) where HEAD generates 4,098/1,493 |
-| X86 | The F3 census has DRIFTED and needs re-taking | — | X78 | **TODO** | 3 rows fail "census redeem length disagrees with the built participant"; population is 43, not 45 |
-| X87 | `Layer3CorpusFitF3.test.ts:183` stale after X73 | — | X73 | **TODO** | SushiRoll now has zero unnamed refusals; reproduces with E3's change reverted |
+| X85 | `replicaSpec` drops 444 B of every corpus prediction | F2 | X78 | **INTEGRATED** | the fields mean DEPLOYED length; the stale default answered OVER on 23 of 1,712 rows that FIT - see 4.92 |
+| X86 | The F3 census has DRIFTED and needs re-taking | F2 | X78 | **INTEGRATED** | "hours" was 29 MINUTES; re-taken in full; refusals 455 -> 280 and route-scope 80% -> **53%** |
+| X99 | The plan and ledger still cite 455 / 364 / 367 / 45 | — | X86 | **TODO** | superseded by the full re-take; the integration owner quoted 80% in three briefs |
+| X87 | `Layer3CorpusFitF3.test.ts:183` stale after X73 | F2 | X73 | **DOES NOT REPRODUCE** | the assertion is not in the tree; three reports were against a pre-baseline file. The real one was the X84 test |
 | X88 | Route-synthesis arity bug on collection-iteration handlers | — | — | **TODO** | `Found parameters () ... where parameters (bigint) were expected` in the generated wrapper |
 | X89 | A collection ITERATION read never enters the footprint | — | X88 | **TODO** | `CollectionIterationNode` carries `collectionName`, not `name`; harmless only because X88 stops it compiling |
 | X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
@@ -266,6 +267,77 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.92 The census re-taken in FULL: the 80% figure is 53%, and "hours" was 29 minutes
+
+Merged at `775da681`. This section retires several figures the board has been quoting, including one of its most
+repeated.
+
+**"Re-taking the census is hours" was wrong: it is 29 minutes.** So F2 re-took **all four corpora**, not a
+scoped subset, and stamped it. The movement is large:
+
+| | before | after |
+| --- | --- | --- |
+| routed / eligible | 367 | **428** |
+| one-slot candidates | 71 | **86** |
+| **total refusals** | **455** | **280** |
+| bus-failure rows naming NO cause | 15 | **0** |
+| visibility gate | 172 | **0** |
+| `external-handler-route-generation-unsupported` | 0 | **29** |
+
+**THE 80% CLAIM IS RETIRED.** Route-scope re-derives under the report's own grouping to **148/280 = 53%**, or
+**177/280 = 63%** counting the new route-generation gap. The denominator shrank around a **fixed floor of 56
+`no-entry-point-declared`**. The integration owner had quoted 80% in three briefs; it is 53%.
+
+**And the "37 handlers" frontier is 29** on a full-corpus census, against 37 from the visibility-gate worker's own
+delta measurement. Two different samples; the in-flight survey was told to enumerate from the committed census
+rather than inherit either.
+
+**X85 - F2 got it wrong first, and its own new assertion caught it.** The override fields mean the **DEPLOYED**
+redeem length, not the compiled one. The projection takes no constructor args, so 4,098 either way against the
+basis's 4,542 - **444 B of real staleness per participant**. But the controller takes a `bytes20 initializer`:
+**compiles to 1,493 and deploys at 1,514**, which is the calibration's figure exactly. F2's first pass read 1,493
+off `debug.bytecode` and passed a controller input **21 bytes shorter than the script the transaction pushes** -
+**anti-conservative**, in a row whose entire purpose is conservatism. Caught by the assertion it added in the same
+change (`expected 1514 to be 1493`). So the dead covenant is **444 x N + 0**, not 444 x N + 21.
+
+**The stale default was giving WRONG CAPACITY ANSWERS, not just a loose band**: it answered **OVER on 23 of 1,712
+rows that actually fit**. Band 15.0-18.9% -> **4.8-8.3%**; population 43 -> **50 of 86**. And X85's own filed
+claim was slightly wrong too - it returns to **+4.8%..+8.3%**, not the "+4.3%..+7.5% originally published".
+
+**X86's drift was not where it was filed.** All 71 one-slot rows probed: exactly **3 drifted, all solc-corpus,
+none an application contract - and no application contract is a one-slot candidate at all.** So *"re-taking
+mistswap+eacc could not have moved the population by one row"*, which is precisely what the row asked for.
+
+**The structural half is the better fix.** Built-graph rows took redeem length **from the record** and asserted
+equality **inside the caller's try/catch**, so stale rows joined the `require` failures and the population fell
+45 -> 43 **silently**. Both rows now take the length from their **own compile** and assert that the compiled
+participant **is** the script the master input pushes - a within-run property **that cannot go stale**.
+
+**X87 does not reproduce, and three reports of it were against a file that no longer exists.** The assertion is
+**not in the tree** - replaced in an ancestor of the baseline. F2 verified it passing twice, then hardened it
+anyway (subject found by **walking** rather than pinned to one census row) because the guard was one row from
+going red.
+
+**The real `expected 0 to be greater than 0` was somewhere else entirely**, and only running the whole file found
+it: the **X84** test asserts over the unattributed bus-failure head, and F2's re-take took that to **0 of 88** -
+so the test was asserting **X84's repair had NOT landed**. Inverted to assert the closure, with the mechanism
+measured live so the new assertion is not vacuous.
+
+**The never-shrink guard HAD lost its subject - and is not unreachable.** X76 refuses `approve` in **both**
+spellings, byte-identically, and the public control now has a route. F2 re-pinned it on a fresh arithmetic subject
+(two public scalars plus one external collection handler: public admits 1, external admits 2), reproducing in
+graph-controller mode too, and **kept the old subject as its own test recording the collapse**. That is the fourth
+vacuous-guard instance on this board and the first to be re-pointed rather than deleted.
+
+**F3's application headline holds at a FOURTH commit**: **12 bus-reachable, 0 admitting a state-changing handler,
+134 refused** - identical at `6a685f33`, `6183cf12` and `b4d33fc1`. What moved is the census's **admitted** count,
+38 -> **26**, because the 38 was stale.
+
+**A dependency flagged for an in-flight sibling**: X81 would move the projection verifier 4,098 -> 4,117, which
+moves `MEASURED_COVENANTS` and the 444 with it. Relayed, so the board does not ship a third stale number.
+
+**Still to correct, outside F2's lease**: the plan and ledger cite **455 / 364 / 367 / 45**. Opened as **X99**.
 
 ### 4.91 X93 fixed by keying on CLONE IDENTITY; X69 refused, and one half has no term to relax
 

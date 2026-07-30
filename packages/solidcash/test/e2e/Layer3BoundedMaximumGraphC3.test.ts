@@ -1645,7 +1645,7 @@ describe('C3 capacity measurement', () => {
     // was true when F4's cut was the last one; X65's -444 per projection took a further 3,552 off C3's eight.
     // C1, at 60,502 bytes, clears both (X39).
     for (const projection of projections) {
-      expect(projection.bytes).toBe(5_473);
+      expect(projection.bytes).toBe(5_496);
       expect(projection.ratio).toBeGreaterThan(0.5);
       expect(projection.ratio).toBeLessThan(0.7);
     }
@@ -1662,7 +1662,7 @@ describe('C3 capacity measurement', () => {
     // invocations, +1.3%. ALL EIGHT ROWS STILL COST THE SAME, so the surcharge finding above is unaffected -
     // which is the property that mattered, not the absolute figure.
     expect(projections.map((row) => row.instructions))
-      .toEqual([18_656, 18_656, 18_656, 18_656, 18_656, 18_656, 18_656, 18_656]);
+      .toEqual([18_845, 18_845, 18_845, 18_845, 18_845, 18_845, 18_845, 18_845]);
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.75);

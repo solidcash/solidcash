@@ -373,8 +373,19 @@ export default class AstBuilder
   // rerouted to a baked constant (see visitStateVariableDeclaration).
   private inLibraryDecl = false;
 
-  constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
+  // Import path of the file being parsed, when the caller knows it. A parse-time diagnostic printing a bare
+  // `at line N` otherwise cites a line that is real in an IMPORTED file and impossible in the file the user
+  // named. Unlike the post-merge traversals, this builder handles ONE file at a time, so its own id is the whole
+  // answer - no Location map is needed. Undefined for the root file, whose bare line number is already correct.
+  constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true,
+    private importedFileId?: string) {
     super();
+  }
+
+  /** ` at line N` for a parse-time diagnostic, naming the imported file when this is not the root file. */
+  private diagLine(line: number | undefined): string {
+    if (line === undefined) return '';
+    return this.importedFileId ? ` at line ${line} of imported "${this.importedFileId}"` : ` at line ${line}`;
   }
 
   defaultResult(): Node {
@@ -2985,7 +2996,7 @@ export default class AstBuilder
     const hexContent = hexString.substring(2);
     if (hexContent.length % 2 !== 0) {
       const loc = Location.fromCtx(ctx);
-      const line = loc.start ? ` at line ${loc.start.line}` : '';
+      const line = this.diagLine(loc.start?.line);
       // Correct the message to match the actual behaviour: the trailing nibble is ZERO-EXTENDED into a full byte
       // (0xabc -> 0xab0c), not dropped. Kept as a warning (not an error) since existing contracts rely on it.
       console.log(
@@ -4375,7 +4386,7 @@ export default class AstBuilder
         options.salt = expr;
       } else if (name === 'gas') {
         options.gas = expr;
-        const line = opt.start ? ` at line ${opt.start.line}` : '';
+        const line = this.diagLine(opt.start?.line);
         console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
       } else {
         throw new ParseError(
@@ -4406,7 +4417,7 @@ export default class AstBuilder
       callOpts.value = optExpr;
     } else if (optName === 'gas') {
       callOpts.gas = optExpr;
-      const line = ctx.start ? ` at line ${ctx.start.line}` : '';
+      const line = this.diagLine(ctx.start?.line);
       console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
     } else {
       throw new ParseError(

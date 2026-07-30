@@ -92,6 +92,79 @@ describe('large-contract state-local splitting', () => {
       .toThrow(/Cannot split 'SplitCounter'.*(facet|root)/);
   });
 
+  /**
+   * A call edge between two planned entries was ATOMIC: `hardClosureGroups` unioned them and nothing could
+   * divide the result, so a union over the limit was a refusal with no remaining move. It is not atomic. The
+   * caller's facet needs the callee's BODY, not its entry-point arm, and the arm is the expensive half once
+   * the callee takes dynamic parameters - measured at 1,454 B of arm against 758 B of body for one
+   * `(uint256, address[], address[])` callee. `compileFacet` now demotes a movable entry it did not receive
+   * to a plain internal helper, so an oversized union can be dissolved into per-entry groups.
+   *
+   * The limit here is chosen from the two MEASURED sizes below, not guessed: it admits the caller's divided
+   * facet and refuses the union. The control in the next test pins that a union which fits does not move.
+   */
+  it('divides a call-edge union that does not fit, and keeps the callee body in the caller facet', () => {
+    const source = `pragma solidity ^0.8.7;
+      contract Pair {
+        uint total;
+        uint count;
+        uint other;
+        mapping(uint256 => mapping(address => bool)) whitelist;
+        function publish(uint256 jobId_, address[] calldata allowed_) public {
+          other = jobId_;
+          updateWhitelist(jobId_, allowed_, allowed_);
+          require(jobId_ >= 0, "neg");
+        }
+        function updateWhitelist(uint256 jobId_, address[] calldata a_, address[] calldata d_) public {
+          for (uint256 i = 0; i < a_.length; i++) { whitelist[jobId_][a_[i]] = true; count = count + 1; }
+          for (uint256 i = 0; i < d_.length; i++) { whitelist[jobId_][d_[i]] = false; total = total + 1; }
+          require(jobId_ >= 0, "neg");
+        }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true };
+    const union = compileStringSplit(source, options);
+    const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
+    expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateWhitelist']);
+
+    const divided = compileStringSplit(source, { ...options, maxShardBytes: unionBytes - 1 });
+    const groups = divided.manifest.facets.map((facet) => [...facet.functions].sort()).sort();
+    expect(groups).toEqual([['publish'], ['updateWhitelist']]);
+
+    // The caller's facet still carries the callee body - it must, the call is unconditional - but no longer
+    // its selector arm, which is the whole saving. Both facts are asserted, so a dropped body cannot pass.
+    const publishFacet = divided.manifest.facets.find((facet) => facet.functions.includes('publish'))!;
+    expect(divided.facets[publishFacet.name].abi.some((fn) => fn.name === 'updateWhitelist')).toBe(false);
+    const absent = compileStringSplit(`pragma solidity ^0.8.7;
+      contract Pair {
+        uint other;
+        function publish(uint256 jobId_, address[] calldata allowed_) public {
+          other = jobId_ + allowed_.length; require(jobId_ >= 0, "neg");
+        }
+        function second(uint256 v) public { other = v + 1; require(v >= 0, "neg"); }
+      }`, options);
+    const absentBytes = Math.max(...absent.manifest.facets.map((facet) => facet.estimatedRedeemBytes));
+    expect(publishFacet.estimatedRedeemBytes).toBeGreaterThan(absentBytes);
+    expect(publishFacet.estimatedRedeemBytes).toBeLessThan(unionBytes);
+    // Each divided route still resolves, and to DIFFERENT facets.
+    const publishRoute = divided.manifest.routes.find((route) => route.function === 'publish')!;
+    const updateRoute = divided.manifest.routes.find((route) => route.function === 'updateWhitelist')!;
+    expect(publishRoute.target).not.toBe('root');
+    expect(updateRoute.target).not.toBe('root');
+    expect(publishRoute.target).not.toBe(updateRoute.target);
+  });
+
+  it('CONTROL: a call-edge union that fits is not divided and keeps both entries in one facet', () => {
+    const bundle = compileStringSplit(`pragma solidity ^0.8.7;
+      contract Closure {
+        uint x;
+        function set(uint value) public { reset(); x = value; require(value >= 0, "n"); }
+        function reset() public { x = 0; require(true, "n"); }
+      }`, { solidityImportCompat: true, forceSplit: true });
+    expect(bundle.manifest.facets).toHaveLength(1);
+    expect([...bundle.manifest.facets[0].functions].sort()).toEqual(['reset', 'set']);
+    expect(bundle.facets[bundle.manifest.facets[0].name].abi.some((fn) => fn.name === 'reset')).toBe(true);
+  });
+
   it('uses constant mapping keys as disjoint regions and dynamic keys as wildcard aliases', () => {
     const constants = compileStringSplit(`
       contract Regions() {

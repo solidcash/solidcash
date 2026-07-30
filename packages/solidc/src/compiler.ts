@@ -2575,7 +2575,12 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
-  const artifactBytes = debug.bytecode.length / 2;
+  // X136: measure the LONGER of the debug script and the published one. `debug.bytecode` is the shorter of
+  // the two on every row measured - 498.5 B on FakeToken up to 1,448 B on MarketplaceV1 - so gating on it
+  // alone left a silent band above the limit where a contract is over and nothing says so. The census, the
+  // fit rows and `Contract.bytecode` all measure the published script, and that band is a lower bound because
+  // the deployed redeem adds constructor argument pushes on top.
+  const artifactBytes = Math.max(debug.bytecode.length, artifact.bytecode.length) / 2;
   if (artifactBytes > MAX_INPUT_BYTESIZE) {
     artifact.diagnostics = [{
       severity: 'error',

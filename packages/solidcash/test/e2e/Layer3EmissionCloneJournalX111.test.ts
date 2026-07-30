@@ -597,11 +597,19 @@ describe('X111 residual - the dynamic half, and what is left in front of it', ()
     expect(planAnswer(renamed, rows, signatures, witnesses)).toMatch(STALE);
   }, 180_000);
 
-  it('R3 L2-F1c is STILL REACHABLE, and now sits in front of the only remaining exposure', () => {
-    // `writtenVariablesOf(clone).length > 0` is tested before `clone.unknown` and before anything else, so a
-    // footprint publishing ONE nonexistent write short-circuits the whole rule. The published write is the
-    // spender's data, not the compiler's `writerIds`. Before the repair this bought a scalar stale read;
-    // now it buys the dynamic one, which nothing else covers.
+  it('R3 L2-F1c can no longer ADMIT on a dynamic slot, which is where it was load-bearing', () => {
+    // INVERTED BY X138. The published write is the SPENDER's data, not the compiler's `writerIds`, so
+    // publishing one nonexistent write used to short-circuit the whole rule and buy the dynamic stale read.
+    // The claim is now honoured only for a plain scalar slot - where it is not load-bearing, since the
+    // compiler journals a clone's scalars regardless and the covenant refuses the stale scalar composition
+    // itself - and refused outright on a slot `stateLayout` declares dynamic.
+    //
+    // Why `stateLayout` and not `invocationAnalysis`: the participant's own covenant rebuilds and compares
+    // the state commitment, so a lie about dynamism cannot settle. Nothing commits to `invocationAnalysis`,
+    // which X138-V1c proves byte-for-byte - the honest and escaped artifacts share a script and an address.
+    //
+    // This does NOT close X138. A spender who never calls the planner is bound by no witness-side rule, and
+    // X138's own settlement half still settles through a hand-assembled constructor.
     const hub = compileString(DYNAMIC_HUB, BUS_OPTIONS);
     const signatures = {
       registerCredit: 'function registerCredit(address t);', fireAll: 'function fireAll(uint v);',
@@ -617,6 +625,6 @@ describe('X111 residual - the dynamic half, and what is left in front of it', ()
       escaped.invocationAnalysis.functions.find((entry: any) => entry.name === '__scb_graph_fireAll'),
       { writes: ['state:nosuchslot'] },
     );
-    expect(planAnswer(escaped, rows, signatures)).toBe('ADMITTED');
+    expect(planAnswer(escaped, rows, signatures)).toMatch(STALE);
   }, 180_000);
 });

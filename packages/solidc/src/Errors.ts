@@ -48,8 +48,24 @@ import {
   RevertNode,
 } from './ast/AST.js';
 import { Symbol, SymbolType } from './ast/SymbolTable.js';
-import { Location } from './ast/Location.js';
+import { Location, generatedOriginOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
+
+/**
+ * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
+ *
+ * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
+ * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
+ * Measured on `SushiMakerKashi.sol` (169 lines) under `+controller`:
+ * `Undefined reference to symbol __scb_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
+ * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
+ */
+export function generatedSourceCaveat(location?: Location): string {
+  const origin = generatedOriginOf(location);
+  if (!origin) return '';
+  return ` - a position in ${origin}, NOT in your file. It shifts when an unrelated compile option changes the`
+    + ' generated preamble, and no edit to the contract can name it. This is a compiler defect';
+}
 
 export class SolidCashError extends Error {
   node: Node;
@@ -60,6 +76,7 @@ export class SolidCashError extends Error {
   ) {
     if (node.location) {
       message += ` at ${node.location.start}`;
+      message += generatedSourceCaveat(node.location);
     }
 
     super(message);

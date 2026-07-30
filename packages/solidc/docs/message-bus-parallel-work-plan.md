@@ -267,6 +267,17 @@ task-specific report, not in this table.
 | X112 | The F3 census probe CLOBBERS a leased file on every run | J4 | F3 | **TODO (process)** | `layer3-corpus-probe-f3.mjs` overwrites `layer3-corpus-census-f3.ts` as a side effect; J4 restored and re-pinned it, but the next re-take will do it silently |
 | R3-4 | The live drift detector cannot see redeem-length drift | J4 | R3 | **CONFIRMED from a THIRD direction** | reports "drifted: 0" truthfully and uselessly - it checks one-slot candidates only, and all 21 drifted rows have `blockSize > 1` |
 | X113 | The size rule that hides the application headline is UNSTABLE | J4 | F3 | **TODO** | `redeemBytes < 8000` selects 6 rows at recorded bytes and **3** at measured ones; re-taking the census makes the guard weaker, not stronger |
+| X100 | The route refusal is stamped on every external entry point, not the thrower | J1 | X81 | **INTEGRATED** | attribution by NAME (longest match, so `transfer` is not blamed for `transferFrom`) and POSITION; +3 routes, +4 handlers, **0 WORSE / 4 better**, solc slice 117/117 identical - see 4.102 |
+| M3 | Share a clone's layout after unioning its entry operations | J1 | X100 | **IMPLEMENTED, MEASURED, WITHHELD** | reproduced my figure to the byte and is corpus-safe, but would admit a state-changing handler onto a **DEAD route** (see X115). `git revert 1163ec7a` restores it - see 4.102 |
+| M4 | Widen the two escape axes on the result-route rule | J1 | X76b | **NOT WIDENED: the axis INVERTED** | since X29, edge-carrying clones are kept behind OP_INVOKE, so the rule is potentially OVER-strict; widening would have refused a shape that currently compiles |
+| X107 | Diagnostic positions that name nothing or name the wrong file | J3 | X92 | **INTEGRATED** | construction-time stamp beats a reachability walk: the parse KNOWS the file. Wrong-file hard positions **21 -> 4**, labelled hard errors **0 -> 29**, +0 bytes - see 4.103 |
+| X114 | The never-shrink guard has lost its subject TWICE | — | X94 | **SUBJECT RETIRED, rule still live** | 3 candidate replacements probed, none shrinks; the rule fires on **3 corpus rows** (J4), so the fix is a real subject, not a synthetic one |
+| X115 | A constant-keyed `__evm_storage` SCB1 route has NEVER settled a row | J1 | M3 | **TODO (blocks M3)** | not the write, not the visibility, not the metadata: a **READ-ONLY** row fails identically at input 0 on OP_VERIFY, and graph mode cannot even build the batch. Caveats 2 of X100's 4 gained rows |
+| X116 | The `public` spelling publishes `writesState:false` for a slot it writes | J1 | M3 | **TODO** | `Slot.sol`, pre-existing; M3's union covers clones only. Belongs to whoever owns the route's `entryAccesses` derivation |
+| X117 | An `address`-typed storage-slot write does not settle on the DIRECT path | J1 | — | **TODO** | `OP_SPLIT out of range`, reproduced with `solidityImportCompat` alone, `+forceStateful` and `+bus`. Nothing to do with the bus |
+| X118 | `discarded-result+emit` throws a BARE internal Error, no name or position | J1 | M4 | **TODO** | `GenerateTargetTraversal.ts:1723` / `InlineReturningStateHelpers`; the `external` spelling is fail-closed by X100, the `public` spelling still throws |
+| X119 | Six positionless graph-handler aborts, and they reproduce at 6 not 14 | J3 | X107 | **TODO** | plain `throw new Error` at `SymbolTableTraversal.ts:1948,1958,1964,1972,1987,1995`; they need a node, and a DIRECT sweep sees zero of them |
+| X120 | Four ANTLR error-listener positions still name the wrong file | J3 | X107 | **TODO** | the listener builds its `Location` during lexing, before `AstBuilder` opens the stamped scope; move the scope up in `compiler.ts:parseCode` |
 | X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
 | X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | B6 | — | **INTEGRATED** | the overrides were HALVING a later package-wide fix; removing them restores 30,000 ms |
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
@@ -290,6 +301,84 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.102 J1: the biggest structural fix of the iteration, and the best result was a change WITHHELD
+
+**X100 shipped.** The route-generation refusal was stamped on every external entry point that reached the
+fallback's visibility arm, so one unsupported handler cost a contract its entire route - 10 of 12 contracts in
+the earlier measurement. Attribution now runs on two channels: NAME, where the message contains a clone name
+and the LONGEST matching handler wins (so `transfer` is not blamed for `transferFrom`), and POSITION, where a
+`SolidCashError`'s `node.location` falls inside exactly one recorded external span - which works only because
+`cloneNode` shares `Location` objects by reference. Only external spans are recorded, so `public` keeps
+hard-throwing; J1 preserved that asymmetry deliberately and said so rather than smoothing it.
+
+Adoption is gated on never-worse **as a rule, not an expectation**:
+`admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll)`. And the corpus was measured BOTH WAYS
+with the same probe against both builds: eacc+SBE routes 124 -> **127**, handlers 404 -> **408**, refusals
+272 -> **268**, 0 rows lost, 0 gained, **0 WORSE, 4 better**; the solc slice is **117/117 identical**, same
+reason histogram. J1 also flagged that its absolute totals use a different stride than the quoted headline, so
+only the delta is comparable - the kind of caveat that stops a figure being mis-cited later.
+
+**M3 is the most valuable row in the packet, and nothing shipped.** J1 implemented it exactly as handed over,
+reproduced my costed figure **to the byte** (+1,689.0 B, both handlers admitted), and confirmed it corpus-safe
+(only two `__evm_storage` rows move; the solc slice stays 117/117). Then it withheld it on evidence the
+handover did not have: **an SCB1 route over a constant-keyed `__evm_storage` entry cannot settle any row at
+all.** Not the write, not the visibility, not the metadata - a READ-ONLY row fails identically at input 0 on
+OP_VERIFY, and in graph mode the SDK refuses to build the batch. M3 would therefore have admitted a
+state-changing handler onto a dead route, which is precisely the worse-than-the-refusal hazard the row was
+scoped to avoid. Filed as X115; `git revert 1163ec7a` restores M3 the day such a route verifies.
+
+**M4 was not widened because the measurement inverted the axis I briefed.** Since X29, an effect-carrying clone
+WITH an outgoing edge is kept behind `OP_INVOKE` rather than flattened, so the premise
+`result-route-requires-effect-free-handlers` rests on no longer holds for edge-carrying clones. Measured:
+`bound-result+transfer` is refused in both spellings, while `discarded-result+transfer` is **eligible and
+compiles** in both. The rule is potentially OVER-strict - the opposite direction from my expectation - and
+widening `graphResultStatement` would have refused a shape that currently compiles.
+
+**Reported rather than fixed, all outside J1's lease**: X115 above, X116 (the `public` spelling publishes
+`writesState:false` for a slot it writes), X117 (an `address`-typed storage-slot write does not settle even on
+the DIRECT path, `OP_SPLIT out of range`, nothing to do with the bus), X118 (`discarded-result+emit` throws a
+BARE internal `Error` with no name, position or remedy). And the caveat it volunteered: two of X100's four
+gained rows gain a **published** route whose settlement is broken upstream by X115.
+
+**My error, recorded here rather than quietly:** I deleted J1's baseline worktree `.worktrees/j1-i6-base`
+during housekeeping while J1 was still using it. Every baseline measurement had already been captured to JSON,
+so nothing was lost - but that was luck, not sequencing. Worktree cleanup must check the live-agent list.
+
+### 4.103 X107: the parse already knew the answer
+
+J3 was briefed to walk reachability and install a root. It did something stronger: `AstBuilder` already
+receives the id of the file it is parsing, so the parse **knows** which file it is reading. Stamping that on
+every `Location` at construction time - the same mechanism as X92's generated-source mark - means the label
+structurally cannot name a re-exporting intermediate, needs no import list present, and has no ordering rule
+to get wrong.
+
+Proven on a real three-level case: `UniswapV2Factory` -> `UniswapV2Pair` -> `UniswapV2ERC20` labels ERC20 line
+91 column 35, landing exactly on `ecrecover` - the holder, not the intermediate. The headline resolves:
+`ERC20Mock.sol` (15 lines) reporting `at Line 16` now reads `at Line 16, Column 4 of imported .../Context.sol`,
+which is 24 lines long and whose line 16 is the declaration the error is about.
+
+Measured: wrong-file hard positions **21 -> 4**; hard errors labelled with the holding file **0 -> 29**; zero
+diagnostics anywhere name a file that does not exist. Six previously "plausible" bare positions were imported
+lines that happened to FIT the root file - silently wrong rather than obviously wrong.
+
+**+0 bytes, and the determinism trap was handled BEFORE the claim**: two compiles of one file from one dist
+give different whole-artifact hashes and identical stripped hashes, because `updatedAt` moves. With that
+established, base vs after is 206 artifacts byte-identical. J3 also declined to manufacture a VM case,
+correctly - this is diagnostics only, nothing reaches the VM - and stated where its own change is INERT rather
+than reporting sweep counts alone.
+
+It disproved one of my briefed figures: the positionless-abort family reproduces at **6, not 14**, and only in
+bus mode over the sbe corpus. A direct sweep sees zero, which is presumably why 14 never reproduced.
+
+**Integration half (mine)**: the three sibling-owned call sites. `SymbolTableTraversal.diagLine` now prefers
+the stamp over the map, resolving all 39 warn-side false labels; the second warn site never called `diagLine`
+at all - it inlined its own `at line ${line}` - which is exactly why it was unlabelled. And
+`GenerateTargetTraversal` interpolated a whole `Location`, printing **`at [object Object]`**, which the F3
+census had recorded as a real corpus outcome, so it was reaching users. The regression test J3 could not land
+(tests were outside its lease) is in, and its guards were demonstrated able to FAIL: stubbing `sourceFileOf`
+turns the holding-file assertion red while leaving the three negative controls green, which is the correct
+signature since those controls assert the ABSENCE of a label.
 
 ### 4.101 J4 re-measured everything: the envelope held, and SEVEN citations did not
 

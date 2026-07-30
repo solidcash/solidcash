@@ -165,7 +165,9 @@ mempool and then **accepted in a hand-assembled block** (citation, X49, BCHN v29
 **Cost of this choice across the current corpus: nothing.** When this section was written it cost exactly one
 shape by 0.65% - C3, then 100,650 bytes. F4's 129-byte cut to the projection verifier is worth 129 bytes per
 participant and C3 has eight, so C3 came down to **99,670 bytes** as executed, accepted and mined
-(citation, X59/X60). No shape in the corpus is now outside a policy limit and inside consensus, so choosing
+(citation, X59/X60); X65 cut a further 444 from the same covenant and C3 **re-measures 96,118 bytes at
+`77cd1e8c`**, which is a mock build and not a second node run. No shape in the corpus is now outside a policy
+limit and inside consensus, so choosing
 relay over mining refuses nothing that has been built. That is a fact about today's corpus and not an
 argument for a wider envelope: the 101,513-byte transaction is what the distinction is *for*, and the next
 graph that grows past 100,000 bytes meets it again.

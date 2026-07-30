@@ -79,7 +79,11 @@ import {
  *      `check`, which now reports both ends.
  *   8. A FITTED LINE CAN PREDICT A P2SH INPUT SHORTER THAN THE SCRIPT IT REDEEMS. F2's projection coefficient
  *      had an intercept of 4,095 for a 4,542-byte covenant. Fixed structurally - the covenant redeem is a
- *      descriptor constant and only the argument blob is fitted - and backstopped arithmetically.
+ *      descriptor constant and only the argument blob is fitted - and backstopped arithmetically. THE MARGIN
+ *      HAS SINCE NARROWED FROM 447 BYTES TO THREE: X65 cut the covenant to 4,098, so 4,095 is still below the
+ *      floor but only just, and the EMPIRICAL half of this finding has already stopped reproducing - see the
+ *      collapsed before/after control in `Layer3EstimatorF2.test.ts`. The structural claim stands; "all
+ *      forty-five were under-predicted" is history and must not be re-quoted as current.
  *   9. RANKING UPPER BOUNDS OF DIFFERENT TIGHTNESS DOES NOT RANK LIMITS. The master-density coefficient
  *      over-predicts its own calibration points by up to 284% and the corpus by up to 601%, because nothing
  *      in the descriptor separates contract bodies; the script-byte coefficient over-predicts by at most 10%.

@@ -72,7 +72,23 @@ export interface CensusRow {
  * its smallest, because every per-class coefficient here is monotone in block size and redeem bytes. The report
  * states the replica figure and that bracket, never a heterogeneous number the census cannot support.
  */
-export function replicaSpec(row: CensusRow, participants: number): GraphShapeSpec {
+/**
+ * The two generated covenants' redeem lengths AT THE COMMIT BEING REPORTED.
+ *
+ * These are `GraphShapeSpec` override fields, and leaving them out is not neutral: `estimate` then defaults
+ * them from the CALIBRATION, which carries whatever the basis commit measured. That default was silently
+ * adding 444 bytes to every projection input of every corpus prediction, because the basis holds the
+ * pre-X65 projection verifier and the covenant has since been cut. Both are one compile away, so a caller
+ * reporting any commit other than the calibration's has no excuse for the stale default.
+ */
+export interface ReplicaCovenants {
+  projectionRedeemBytes: number;
+  controllerRedeemBytes: number;
+}
+
+export function replicaSpec(
+  row: CensusRow, participants: number, covenants?: ReplicaCovenants,
+): GraphShapeSpec {
   if (row.blockSize === undefined || row.redeemBytes === undefined) {
     throw new Error(`F3: ${row.contractName ?? row.rel} has no measured block size or redeem length`);
   }
@@ -83,6 +99,7 @@ export function replicaSpec(row: CensusRow, participants: number): GraphShapeSpe
     invocations: participants,
     blockSizes: Array.from({ length: participants }, () => row.blockSize!),
     redeemBytes: Array.from({ length: participants }, () => row.redeemBytes!),
+    ...(covenants === undefined ? {} : covenants),
   };
 }
 
@@ -95,14 +112,16 @@ export interface FitRow {
   prediction: Estimate;
 }
 
-export function fitAt(row: CensusRow, participants: number, calibration: Calibration): FitRow {
+export function fitAt(
+  row: CensusRow, participants: number, calibration: Calibration, covenants?: ReplicaCovenants,
+): FitRow {
   return {
     contract: row.contractName ?? row.rel,
     corpus: row.corpus,
     participants,
     blockSize: row.blockSize!,
     redeemBytes: row.redeemBytes!,
-    prediction: estimate(replicaSpec(row, participants), calibration),
+    prediction: estimate(replicaSpec(row, participants, covenants), calibration),
   };
 }
 

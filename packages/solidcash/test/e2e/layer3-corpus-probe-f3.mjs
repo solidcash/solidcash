@@ -194,6 +194,12 @@ const errorHead = (error) => `${error?.name || 'Error'}: ${String(error?.message
  *
  * This is deliberately not what the solc-corpus and solidity-by-example benches measure (`compileFile` alone,
  * counted per file), so nothing here is that scorecard and it must not be read as one.
+ *
+ * WHAT THE FALLBACK COSTS, because it is not free and the recorded census does not say so. When it is taken,
+ * the file contributes ONE contract instead of all of its top-level declarations, so the `contracts`
+ * denominator shrinks by the siblings, and in bus mode those siblings are recorded as failures. The error is
+ * kept as `siblingError` and both paths now attribute it (X84); before that, only the direct path did.
+ * Measured at `77cd1e8c` on the two application corpora: 6 rows took the direct fallback and 5 the bus one.
  */
 function tryCompile(file, options) {
   mute();
@@ -280,7 +286,20 @@ function probeOne(file, rel, corpus) {
     const artifact = busArtifacts.get(name);
     if (artifact === undefined) {
       row.bus = 'FAIL';
-      row.busError = 'Error: contract absent from the bus-mode artifact map';
+      // X84. NAME THE CAUSE INSTEAD OF THE SYMPTOM. `tryCompile` falls back from `compileFileMulti` to
+      // `compileFile`, and it records the multi error as `siblingError`. The direct path keeps it; this path
+      // used to throw it away and stamp every OTHER contract in the file with a head that names no cause at
+      // all, which is why the recorded census attributes 15 of its 96 bus-failure rows to nothing. Measured at
+      // `77cd1e8c`, all five EA rows are ONE `InvalidParameterTypeError` on `meceTags` at
+      // MarketplaceDataV1.sol:126, reached only in bus mode, and none of it is in the census.
+      //
+      // The distinction the old head carried is kept on the row rather than in the head: `busAbsentFromMap`
+      // records the mechanism, and the head names the error, because a histogram of heads is a histogram of
+      // CAUSES. A contract genuinely absent from a successful map - an interface, a declaration the bus mode
+      // does not emit - has no sibling error and still reads as absent.
+      row.busAbsentFromMap = true;
+      row.busError = bus.siblingError ?? 'Error: contract absent from the bus-mode artifact map';
+      if (bus.siblingError) row.busSiblingError = bus.siblingError;
       return row;
     }
     row.bus = 'OK';

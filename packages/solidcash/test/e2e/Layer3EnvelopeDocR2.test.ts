@@ -10,9 +10,13 @@ import {
 /**
  * R2. THE DOCUMENTATION GUARD.
  *
- * WHY THIS FILE EXISTS. This board has recorded a wrong number five separate times, and every one misled a
+ * WHY THIS FILE EXISTS. This board has recorded a wrong number six separate times, and every one misled a
  * later worker - most sharply when a costed fix for C3 was priced against a figure that had already moved and
- * nobody re-derived the consequence. The single largest instance was structural rather than arithmetic:
+ * nobody re-derived the consequence. The sixth was this file's own subject: X65 cut the projection verifier
+ * 4,542 -> 4,098 and the assertion below went red, while the document guard beside it stayed green because it
+ * was written as a disjunction the stale literal could satisfy. A guard that can be discharged by the defect
+ * it guards against is not a guard; see the comment on that assertion. The single largest instance was
+ * structural rather than arithmetic:
  * `docs/layer3-production-envelope.md` published a TWELVE-rule envelope for two rounds after X64 measured the
  * twelfth rule out of existence and it was deleted from the harness at `6ab3bc12`. Nothing failed. A document
  * and a source file drifted apart and the only instrument that could have noticed was a human re-reading both.
@@ -135,10 +139,18 @@ describe('R2: the covenant sizes the documents quote are the covenant sizes that
   it('MEASURED: the projection verifier compiles to the size both documents publish', () => {
     const artifact = compileString(layer3.generateGraphProjectionVerifier());
     const bytes = artifact.debug.bytecode.length / 2;
-    expect(bytes).toBe(4_542);
-    expect(envelopeDoc.includes(`${bytes}`) || corpusFitDoc.includes('4,542')).toBe(true);
-    expect(corpusFitDoc).toContain('**4,542 bytes**');
-    console.log(`[R2] projection verifier redeem script = ${bytes} B, quoted as 4,542 in layer3-corpus-fit-f3.md`);
+    expect(bytes).toBe(4_098);
+    // NO DISJUNCTION HERE ANY MORE. This assertion used to read `envelopeDoc.includes(bytes) ||
+    // corpusFitDoc.includes('4,542')`, and the second branch is satisfied by the stale literal itself: the
+    // guard against a document quoting a superseded size could be discharged by the document quoting the
+    // superseded size. X65 cut the verifier 4,542 -> 4,098 and this file went red on the line above while the
+    // line below stayed green, which is the wrong way round for a guard. The document must now contain the
+    // size that compiles, rendered the way the document renders it.
+    const quoted = String(bytes).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    expect(corpusFitDoc, 'layer3-corpus-fit-f3.md must quote the projection verifier size that compiles')
+      .toContain(`**${quoted} bytes**`);
+    console.log(`[R2] projection verifier redeem script = ${bytes} B, `
+      + `quoted as ${quoted} in layer3-corpus-fit-f3.md`);
   });
 
   /**

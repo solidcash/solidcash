@@ -45,6 +45,21 @@ import type { CensusRow } from './layer3-corpus-fit-f3.js';
 
 const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
 
+/**
+ * THE TWO GENERATED COVENANTS, COMPILED HERE RATHER THAN DEFAULTED FROM THE CALIBRATION.
+ *
+ * `GraphShapeSpec` lets a caller pass these and defaults them from the calibration when it does not. The
+ * default is stale the moment either covenant moves, and it had moved: the F2 basis carries the pre-X65
+ * projection verifier, so every corpus prediction in this file was carrying 444 bytes per participant that
+ * HEAD does not generate. Two compiles - no UTXO, no builder, no VM - remove the whole class of error, and
+ * they are the same two figures `Layer3EnvelopeDocR2.test.ts` guards the documents against.
+ */
+const MEASURED_COVENANTS = {
+  projectionRedeemBytes: compileString(layer3.generateGraphProjectionVerifier()).debug.bytecode.length / 2,
+  controllerRedeemBytes: compileString(layer3.generateGraphRootController(`aa20${'ab'.repeat(32)}87`))
+    .debug.bytecode.length / 2,
+};
+
 const corpora = Object.keys(F3_CENSUS_GATES);
 const eligible = F3_CENSUS_ELIGIBLE.filter((row) => typeof row.redeemBytes === 'number');
 
@@ -154,21 +169,27 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
   });
 
   /**
-   * WHAT THE UNNAMED REFUSAL ACTUALLY IS, pinned rather than inferred from a histogram.
+   * WHAT THE UNNAMED REFUSAL ACTUALLY IS, pinned rather than inferred from a histogram - AND THE HOLE IS NOW
+   * CLOSED, which is why this test asserts the closure instead of the hole.
    *
    * Route synthesis is documented to record "one stable reason per entry point", and `hiddenBatch.handlers`
-   * publishes `eligible` and `rejectionReason` together. A handler that arrives `eligible: false` with no
-   * reason is therefore a gap, and it turns out to be a COMPILER-SYNTHESIZED entry point - the block-oracle
-   * updater a contract reading `block.*` gets for free - not anything a user wrote. It is worth one line in
-   * the report and nothing more, but it should be a measured line.
+   * publishes `eligible` and `rejectionReason` together. A handler that arrived `eligible: false` with no
+   * reason was therefore a gap, and it turned out to be a COMPILER-SYNTHESIZED entry point - the block-oracle
+   * updater a contract reading `block.*` gets for free - not anything a user wrote.
+   *
+   * X72 gave it a name. Recompiled at `77cd1e8c`, the census's own flagged subject has ZERO unnamed refusals
+   * and reports `not-examined-by-route-synthesis` in their place, which is why `expect(unnamed.length)
+   * .toBeGreaterThan(0)` was FAILING on this line. The repair is not to drop the assertion: the property that
+   * mattered was never "some refusal is unnamed", it was "no refusal on a handler the user wrote is unnamed",
+   * and closing the hole satisfies that strictly better. So the test now asserts the invariant directly and
+   * additionally requires EVERY refused handler on the subject to carry a name, which is the stronger claim
+   * the tree now supports and which would fail again if the channel regressed.
    */
-  it('MEASURED: the unnamed refusal is a compiler-synthesized entry point, not a user handler', () => {
-    const subject = F3_CENSUS_ELIGIBLE.find((row) => (row.rejectionReasons ?? []).includes('unnamed'));
-    if (subject === undefined) {
-      console.log('[F3] no census row carries an unnamed refusal');
-      return;
-    }
-    const artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
+  it('MEASURED: no route refusal is unnamed on a handler the user wrote', () => {
+    const subject = F3_CENSUS_ELIGIBLE.find((row) => (row.rejectionReasons ?? []).includes('unnamed'))
+      ?? F3_CENSUS_ELIGIBLE.find((row) => (row.rejectionReasons ?? []).length > 0);
+    expect(subject, 'the census records no refused entry point to recompile').toBeDefined();
+    const artifact = compileFile(`${CORPUS_ROOTS[subject!.corpus]}/${subject!.rel}`, {
       solidityImportCompat: true,
       ecrecover: 'p2pkh',
       forceStateful: true,
@@ -176,13 +197,21 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
       experimentalMessageBusControllerCategory: '22'.repeat(32),
     } as never);
-    const unnamed = artifact.hiddenBatch!.handlers
-      .filter((handler) => !handler.eligible && handler.rejectionReason === undefined);
-    console.log(`[F3] ${subject.contractName}: unnamed refusals = `
-      + `${unnamed.map((handler) => handler.name).join(', ')}`);
-    expect(unnamed.length).toBeGreaterThan(0);
+    const refused = artifact.hiddenBatch!.handlers.filter((handler) => !handler.eligible);
+    const unnamed = refused.filter((handler) => handler.rejectionReason === undefined);
+    console.log(`[F3] ${subject!.contractName}: census recorded reasons `
+      + `${JSON.stringify(subject!.rejectionReasons)}`);
+    console.log(`[F3] ${subject!.contractName}: recompiled reasons `
+      + `${JSON.stringify([...new Set(refused.map((handler) => handler.rejectionReason ?? 'unnamed'))])}`);
+    console.log(`[F3] ${subject!.contractName}: unnamed refusals = ${unnamed.length}`
+      + `${unnamed.length > 0 ? ` (${unnamed.map((handler) => handler.name).join(', ')})` : ''}`);
+    // THE INVARIANT, which held before X72 and holds after it: whatever arrives without a reason is
+    // compiler-synthesized. Vacuously true when the hole is closed, and that is the correct semantics.
     expect(unnamed.every((handler) => handler.name.startsWith('__')),
       'an unnamed refusal fell on a handler the user wrote').toBe(true);
+    // THE CLOSURE, asserted because the tree supports it: every refusal on this subject carries a name.
+    expect(unnamed, 'a refused entry point is published with no reason').toEqual([]);
+    expect(refused.length, 'the recompiled subject refuses nothing, so it proves nothing').toBeGreaterThan(0);
   }, 120_000);
 
   /**
@@ -211,6 +240,82 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     }
     expect(writing.length).toBeLessThanOrEqual(classified.length);
   });
+
+  /**
+   * THE HEADLINE, RE-DERIVED AFTER X73 REMOVED THE GATE THAT WAS SUPPOSED TO EXPLAIN IT.
+   *
+   * "All twelve bus-reachable application contracts admit a read-only surface and nothing else" is the most
+   * quoted sentence in this report, and it was measured at `6a685f33`, BEFORE X73 lifted
+   * `initial-v1-route-requires-public-visibility` - which section 3.1 names as the largest single reason for
+   * refusal, 172 of 455. A claim whose stated cause has been removed has to be re-measured, not re-reasoned.
+   *
+   * IT STILL HOLDS. Re-run over both application corpora at `77cd1e8c` with `layer3-corpus-probe-f3.mjs`,
+   * same options and same denominators: 12 bus-reachable, **0** admitting a state-changing handler, 12
+   * read-only only, 134 state-changing handlers refused (MistSwap 18, EA 116). Every figure reproduces, and so
+   * does every gate count.
+   *
+   * WHAT MOVED IS THE REASON. The visibility gate is at 0 on both corpora, down from 2 and 14, and every
+   * handler it freed landed on a different gate: EA gained `external-handler-route-generation-unsupported` (6)
+   * and `external-handler-would-shrink-the-route` (4), its `mixed-scalar-and-collection` count went 4 -> 7, and
+   * `unnamed` went to 0 on both because X72 renamed it `not-examined-by-route-synthesis` one-for-one. Admitted
+   * handlers rose to 6 on MistSwap and 17 on EA and ALL of them are still read-only. That is D2's stacked-gates
+   * result on real applications: lifting the largest gate on the board moved the useful count from zero to
+   * zero.
+   *
+   * WHAT THIS TEST ASSERTS, and why it is a subset. The twelve figure is the probe's, recorded above.
+   * `MarketplaceV1/V2/V3.sol` and `EACCToken.sol` take minutes each to compile twice, so the live subjects are
+   * chosen by a SIZE RULE rather than by hand - every application row whose census redeem script is under
+   * 8,000 bytes - and the assertion on them is the same one the headline makes.
+   */
+  it('MEASURED: X73 lifted the visibility gate and the application read-only surface still holds', () => {
+    const applications = F3_CENSUS_ELIGIBLE
+      .filter((row) => row.corpus === 'mistswap' || row.corpus === 'eacc');
+    expect(applications, 'the census records no application-corpus contract').not.toEqual([]);
+    const subjects = applications.filter((row) => (row.redeemBytes ?? Number.POSITIVE_INFINITY) < 8_000);
+    expect(subjects.length, 'the size rule selected no subject').toBeGreaterThan(0);
+
+    let admittedWrites = 0;
+    let admitted = 0;
+    let visibility = 0;
+    for (const row of subjects) {
+      const file = `${CORPUS_ROOTS[row.corpus]}/${row.rel}`;
+      const options = {
+        solidityImportCompat: true,
+        ecrecover: 'p2pkh',
+        forceStateful: true,
+        experimentalHiddenBatch: true,
+        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+        experimentalMessageBusControllerCategory: '22'.repeat(32),
+      };
+      const artifact = compileFile(file, options as never);
+      const handlers = artifact.hiddenBatch?.handlers ?? [];
+      // `writesState: false` is the compiler's own proof of read-only. Read off the bus-mode artifact's own
+      // ABI, which is the artifact whose handlers are being classified; measured to agree with the direct-mode
+      // ABI on the subject where both were compiled, and `forceStateful` means the flag is never absent.
+      const writes = (name: string): boolean =>
+        artifact.abi?.find((entry) => entry.name === name)?.writesState !== false;
+      const eligibleNames = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
+      const writingNames = eligibleNames.filter(writes);
+      const reasons = [...new Set(handlers.filter((handler) => !handler.eligible)
+        .map((handler) => handler.rejectionReason ?? 'unnamed'))];
+      visibility += handlers
+        .filter((handler) => handler.rejectionReason === 'initial-v1-route-requires-public-visibility').length;
+      admitted += eligibleNames.length;
+      admittedWrites += writingNames.length;
+      console.log(`[F3] X73 ${row.corpus}/${row.contractName}: admitted ${eligibleNames.length}`
+        + ` [${eligibleNames.join(', ')}] | state-changing among them ${writingNames.length}`
+        + ` | refusals ${JSON.stringify(reasons)}`);
+    }
+    console.log(`[F3] X73 live subset: ${subjects.length} application contracts, ${admitted} admitted handlers,`
+      + ` ${admittedWrites} of them state-changing, ${visibility} visibility refusals`);
+    // THE HEADLINE, on the live subset. Not weakened to a band: the claim is exactly zero.
+    expect(admittedWrites, 'an application contract now admits a state-changing handler - the report headline '
+      + 'has to be retired, and the number stated').toBe(0);
+    // X73's own claim, checked where it is cheap to check: the gate is gone, not merely rarer.
+    expect(visibility, 'X73 is recorded as lifting the visibility gate entirely').toBe(0);
+    // And the subset has to be doing work: a run that admitted nothing at all would satisfy the line above.
+    expect(admitted, 'the live subset admits no handler, so it proves nothing').toBeGreaterThan(0);
+  }, 900_000);
 
   /**
    * THE SAME FACT AT FULL RESOLUTION on two contracts everybody recognises, because a histogram of refusal
@@ -281,6 +386,99 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     console.log(`[F3] of the four hand-named MistSwap/Kashi targets, ${reached} reach the bus`);
   }, 900_000);
 
+  /**
+   * X84. THE CENSUS DISCREPANCY, RECONCILED - AND IT IS NOT THE DEFECT IT WAS REPORTED AS.
+   *
+   * The report: `F3_CENSUS_BUS_FAILURES` lists no `ParseError` for solidity-by-example, but `MerkleTree.sol`
+   * produces one under the census's own bus options; suspected cause, a missing `compileFile` fallback for FAIL
+   * rows. Both halves are wrong, and the second is inverted.
+   *
+   * FIRST, MerkleTree.sol is not a bus failure at all. Measured at `77cd1e8c` under the census's own DIRECT
+   * options it already fails, on `Error: Block slot not found: keccakSideCar[0]`, and `probeOne` returns on a
+   * direct failure before bus mode is reached. The recorded census puts it in `F3_CENSUS_DIRECT_FAILURES`
+   * exactly there. Whoever saw the ParseError compiled with bus options without checking that direct mode
+   * fails first, and X71 has since made both modes land on the same error. There is no ParseError to
+   * reconcile, and `F3_CENSUS_BUS_FAILURES` is right to list none.
+   *
+   * SECOND, `tryCompile` HAS a `compileFile` fallback, and the fallback is the actual gap: it is what ERASES
+   * the cause. When `compileFileMulti` throws in bus mode and `compileFile` succeeds, every other contract in
+   * the file is absent from the one-entry map, and `probeOne` used to stamp all of them
+   * `Error: contract absent from the bus-mode artifact map` while discarding the sibling error it was handed -
+   * which the DIRECT path keeps as `directSiblingError`. That head accounts for 15 of the recorded census's 96
+   * bus-failure rows, and it names no cause for any of them.
+   *
+   * THIRD, AND THIS IS THE PART THAT MATTERS FOR THE BOARD: it does NOT touch the 80% route-scope figure. The
+   * refusal histogram is tallied only over rows with `bus === 'OK'` - routed plus route-ABSENT - so a bus-FAIL
+   * row contributes nothing to the 455 refusals or to the 364/455. Nor does it move a gate count: the fallback
+   * exists precisely to widen `busOk`, which is the documented intent. What it corrupts is the ATTRIBUTION in
+   * one table, and `layer3-corpus-probe-f3.mjs` now carries the sibling error through so a re-taken census
+   * names the cause.
+   */
+  it('MEASURED: X84 - the bus-mode fallback erased the cause, and MerkleTree is a DIRECT failure', () => {
+    const busOptions = {
+      solidityImportCompat: true,
+      ecrecover: 'p2pkh',
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    };
+    const directOptions = { solidityImportCompat: true, ecrecover: 'p2pkh' };
+    const headOf = (error: unknown): string =>
+      `${(error as Error).name}: ${(error as Error).message.split('\n')[0]}`;
+    const attempt = (file: string, options: unknown): string | undefined => {
+      try {
+        compileFile(file, options as never);
+        return undefined;
+      } catch (error) {
+        return headOf(error);
+      }
+    };
+
+    // (1) MerkleTree.sol fails in DIRECT mode, so it can never contribute a bus-failure head.
+    const merkle = `${CORPUS_ROOTS['solidity-by-example']}/app/merkle-tree/MerkleTree.sol`;
+    const merkleDirect = attempt(merkle, directOptions);
+    const merkleBus = attempt(merkle, busOptions);
+    console.log(`[F3] X84 MerkleTree.sol direct: ${merkleDirect ?? 'OK'}`);
+    console.log(`[F3] X84 MerkleTree.sol bus:    ${merkleBus ?? 'OK'}`);
+    expect(merkleDirect, 'MerkleTree.sol now compiles directly, so the X84 reconciliation needs re-reading')
+      .toBeDefined();
+    // ASSERTED ON THE GATE, NOT ON ITS WORDING. X83 renames this refusal - the unnamed `Block slot not found:
+    // keccakSideCar[0]` becomes `keccak-loop-and-straight-line-mix-not-enabled` with a real position - and the
+    // reconciliation does not depend on which spelling is current: what matters is that MerkleTree.sol is
+    // refused in DIRECT mode over the keccak side-car slot, so it can never reach the bus-failure table, and
+    // that it is not a ParseError. Both spellings are accepted so this does not go red on that rename.
+    const keccakGate = /Block slot not found: keccakSideCar|keccak-loop-and-straight-line-mix-not-enabled/;
+    expect(merkleDirect).toMatch(keccakGate);
+    expect(merkleBus, 'bus mode no longer stops at the same gate as direct mode').toMatch(keccakGate);
+    expect(merkleDirect, 'a ParseError in DIRECT mode would put this row somewhere else entirely')
+      .not.toContain('ParseError');
+    expect(merkleBus, 'the bus-mode ParseError this row was filed over is back').not.toContain('ParseError');
+
+    // (2) The fallback erases a real cause. MarketplaceV1.sol compiles as a whole in direct mode and does NOT
+    // in bus mode, and the error the census used to discard names a sibling in another file.
+    const marketplace = `${CORPUS_ROOTS.eacc}/MarketplaceV1.sol`;
+    const marketplaceDirect = attempt(marketplace, directOptions);
+    const marketplaceBus = attempt(marketplace, busOptions);
+    console.log(`[F3] X84 MarketplaceV1.sol primary direct: ${marketplaceDirect ?? 'OK'}`);
+    console.log(`[F3] X84 MarketplaceV1.sol primary bus:    ${marketplaceBus ?? 'OK'}`);
+    // The primary contract compiles in BOTH modes, which is why the fallback is taken and why the siblings -
+    // recorded as five rows across MarketplaceV1/V2/V3.sol - are the ones that carry the empty head.
+    expect(marketplaceDirect, 'MarketplaceV1 no longer compiles directly').toBeUndefined();
+    expect(marketplaceBus, 'MarketplaceV1 no longer compiles in bus mode either').toBeUndefined();
+    const absent = 'Error: contract absent from the bus-mode artifact map';
+    const carriers = corpora.filter((corpus) => (F3_CENSUS_BUS_FAILURES[corpus] ?? {})[absent] !== undefined);
+    const total = carriers.reduce((sum, corpus) => sum + F3_CENSUS_BUS_FAILURES[corpus][absent], 0);
+    const allBusRows = corpora.reduce((sum, corpus) => sum
+      + Object.values(F3_CENSUS_BUS_FAILURES[corpus] ?? {}).reduce((a, b) => a + b, 0), 0);
+    console.log(`[F3] X84 bus-failure rows whose head names no cause: ${total} of ${allBusRows}`);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThan(allBusRows);
+    // (3) The 80% route-scope figure cannot be affected: it is tallied over bus-OK rows only. Asserted on the
+    // census structure rather than on prose - no eligible row is a bus failure.
+    expect(F3_CENSUS_ELIGIBLE.filter((row) => row.bus !== 'OK')).toEqual([]);
+  }, 900_000);
+
   it('MEASURED: the compile-failure heads are published, direct mode and bus mode separately', () => {
     for (const corpus of corpora) {
       const direct = Object.entries(F3_CENSUS_DIRECT_FAILURES[corpus] ?? {}).slice(0, 8);
@@ -304,6 +502,10 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
   it('ESTIMATED: every bus-reachable contract, at 1, 2, 4 and 8 participants', () => {
     expect(eligible.length, 'no bus-reachable corpus contract has a measured redeem length').toBeGreaterThan(0);
     console.log(`[F3] ESTIMATED from the F2 calibration at ${F2_BASIS_COMMIT}; census at ${F3_CENSUS_COMMIT}`);
+    console.log('[F3] covenant sizes passed through rather than defaulted from the calibration: projection '
+      + `${MEASURED_COVENANTS.projectionRedeemBytes} B, controller `
+      + `${MEASURED_COVENANTS.controllerRedeemBytes} B (calibration holds `
+      + `${calibration.projectionRedeemBytes} / ${calibration.controllerRedeemBytes})`);
     const binding: Record<string, number> = {};
     const verdicts: Record<string, { fits: number; over: number; outOfRange: number }> = {};
     // Printed in full for the application corpora and for the widest and narrowest of each other corpus; the
@@ -532,8 +734,10 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     expect(control, `the operation-cost knob does not bite at ${budget}/byte`).toBeDefined();
     expect(String(control)).toMatch(/density|operation cost/i);
 
-    // And what the estimator said about this exact shape, before it existed.
-    const prediction = estimate(replicaSpec(subject, 1), calibration);
+    // And what the estimator said about this exact shape, before it existed. With the covenant sizes compiled
+    // at this commit rather than defaulted from the calibration, so the prediction is not carrying 444 bytes of
+    // a projection verifier that the transaction measured beside it does not contain.
+    const prediction = estimate(replicaSpec(subject, 1, MEASURED_COVENANTS), calibration);
     console.log(`[F3] PREDICTED ${formatEstimate(prediction)}`);
     const comparison: [string, number, number][] = [
       ['serialized bytes', prediction.serializedBytes, envelope.serializedBytes],

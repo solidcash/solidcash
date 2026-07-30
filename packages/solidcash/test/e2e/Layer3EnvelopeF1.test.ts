@@ -22,7 +22,7 @@ import {
  * shape at one commit. Promotion is the board's to make, and needs the full shape, not one sweep.
  *
  * MEASURED ENVELOPE, THE SWEEP ROWS AT `5e03daee` (X48, the two hash regimes split and each evaluated by the
- * instruction set that implements it) AND THE FOUR CAPSTONE ROWS RE-MEASURED AT `1591e87f` (X66). Every figure
+ * instruction set that implements it) AND THE FOUR CAPSTONE ROWS RE-MEASURED AT `77cd1e8c`. Every figure
  * below was read run-to-completion through this harness, and every shape was ALSO re-evaluated with nothing
  * relaxed - zero inputs refused, at the real consensus allowance AND the real standard one - with
  * knob-liveness controls that bite on the same bytes. The three sweep rows are asserted by this file; the four
@@ -33,16 +33,24 @@ import {
  *   N=2             2       3       2,429B     2.4%   0.2177x @ input 2    SigChecks  0.2500x   0.1078x std
  *   N=4             4       5       4,977B     5.0%   0.2570x @ input 1    op-cost    0.2570x   0.1078x std
  *   N=8             8       9      10,661B    10.7%   0.3630x @ input 1    op-cost    0.3630x   0.1078x std
- *   A13 graph       3       8      23,458B    23.5%   0.4067x @ input 6    script B   0.5002x   0.1078x std
- *   C2 cycle        4      79      52,733B    52.7%   0.6491x @ input 77   op-cost    0.6491x   0.1078x std
- *   C1 DeFi         5      38      62,722B    62.7%   0.6183x @ input 36   script B   0.7451x   0.1078x std
- *   C3 max graph    8     108      99,670B    99.7%   0.9218x @ input 106  RELAY SIZE 0.9967x   0.1078x std
+ *   A13 graph       3       8      22,126B    22.1%   0.4067x @ input 6    script B   0.4558x   0.1078x std
+ *   C2 cycle        4      79      50,957B    51.0%   0.6491x @ input 77   op-cost    0.6491x   0.1078x std
+ *   C1 DeFi         5      38      60,502B    60.5%   0.6183x @ input 36   script B   0.7451x   0.1078x std
+ *   C3 max graph    8     108      96,118B    96.1%   0.9218x @ input 106  RELAY SIZE 0.9612x   0.1078x std
+ *
+ * THE FOUR CAPSTONE ROWS MOVED AGAIN, and the whole move is one covenant. X65 cut the projection verifier
+ * 4,542 -> 4,098, and it is instantiated once per PARTICIPANT with each proof slot pushing the whole redeem
+ * script, so each shape paid 444 x N: A13 -1,332, C2 -1,776, C1 -2,220, C3 -3,552. The 23,458 / 52,733 /
+ * 62,722 / 99,670 this table published were the post-F4, pre-X65 readings at `1591e87f`. TWO ratios moved with
+ * them and are re-derived here rather than carried: A13's binding ratio 0.5002x -> 0.4558x and C3's 0.9967x ->
+ * 0.9612x. C2's 0.6491x and C1's 0.7451x reproduce exactly, and so does every worst-DENSITY ratio, because the
+ * worst-cost input of each capstone is a controller or a participant and never a projection.
  *
  * THE BINDING LIMIT IS NOT THE SAME ONE TWICE, and it is not always density. C1 and A13 bind on the
  * 10,000-byte per-input script limit, C2 and the sweep on operation-cost density, N=2 on per-input SigChecks,
- * C3 on the 100,000-byte standard relay ceiling. NOTHING IN THIS TABLE IS OVER ANY LIMIT ANY MORE. That is
- * the X66 change and it is a change of verdict, not of digits: C3 was 650 bytes over the relay ceiling and is
- * now 330 bytes under it, at 0.9967x, with all 108 slots intact.
+ * C3 on the 100,000-byte standard relay ceiling. NOTHING IN THIS TABLE IS OVER ANY LIMIT. That was the X66
+ * change and it was a change of verdict, not of digits: C3 was 650 bytes over the relay ceiling, then 330
+ * under it, and is now 3,882 under, with all 108 slots intact. C3's margin has stopped being a near miss.
  *
  * THE CORRECTED HASH REGIME MOVES NOTHING, and that is now measured rather than assumed. Every shape binds on
  * the same limit it bound on at `4ac40b82`, at the same ratio.
@@ -54,26 +62,34 @@ import {
  * A shape could only be masked by the other fixtures' 3-per-byte knob if it landed between 1.0x and 6.0x of the
  * standard allowance; the envelope is 9.3x below the bottom of that window.
  *
- * THE SIZES MOVED TWICE, AND BOTH MOVES ARE ATTRIBUTABLE TO ONE COVENANT. The projection verifier is ONE
- * generated covenant instantiated once per PARTICIPANT, and each proof slot's unlocking script pushes the
- * whole redeem script, so one verifier byte is worth N transaction bytes. X5 added 37 (A13 23,734 -> 23,845,
- * C2 53,101 -> 53,249, C1 63,130 -> 63,315, C3 100,354 -> 100,650, each exactly 37 x N). F4 then removed 129
- * (A13 -> 23,458, C2 -> 52,733, C1 -> 62,722, C3 -> 99,670). A13 and C2 moved by exactly 129 x N; C1 and C3
- * moved by 129 x N less 52, which is one participant's compiled script growing 28 bytes in each plus 24 bytes
- * of output set in each. These are properties of the BUILT TRANSACTION, which no VM knob can reach.
+ * THE SIZES HAVE NOW MOVED THREE TIMES, AND EVERY MOVE IS ATTRIBUTABLE TO ONE COVENANT. The projection
+ * verifier is ONE generated covenant instantiated once per PARTICIPANT, and each proof slot's unlocking script
+ * pushes the whole redeem script, so one verifier byte is worth N transaction bytes.
  *
- * Every worst-DENSITY ratio reproduces, because the worst-cost input of each capstone is a controller or a
- * participant and never a projection: C2 to ten decimals and A13 to ten, C1 and C3 to four, the difference
- * being the one master whose script grew. The 2/4/8 synthetic sweep is untouched and reproduces exactly,
- * 10,661 B and 0.3630x at N=8.
+ *   X5,  +37  per participant: A13 23,734 -> 23,845, C2 53,101 -> 53,249, C1 63,130 -> 63,315,
+ *                              C3 100,354 -> 100,650. Exactly 37 x N on all four.
+ *   F4,  -129 per participant: A13 -> 23,458, C2 -> 52,733, C1 -> 62,722, C3 -> 99,670. Exactly 129 x N on
+ *                              A13 and C2; C1 and C3 moved by 129 x N LESS 52, one participant's compiled
+ *                              script growing 28 bytes in each plus 24 bytes of output set in each.
+ *   X65, -444 per participant: A13 -> 22,126, C2 -> 50,957, C1 -> 60,502, C3 -> 96,118. Exactly 444 x N on
+ *                              ALL FOUR - no residue this time, re-measured at `77cd1e8c`.
  *
- * C3 IS NOW UNDER THE STANDARD RELAY CEILING, BY 330 BYTES - AND THAT OVERTURNS A CONCLUSION rather than
- * merely restating a figure. THREE TIMES OVER, which is the reason this paragraph is kept rather than
- * deleted. F1 costed a C3 fix against the pre-X5 100,354 - remove the two cheapest slot pairs, free 388, land
- * at 99,966 - and X5 made that arithmetic wrong (100,650 - 388 = 100,262). This note then costed the four-pair
- * fix at 99,840 and the 62-slot Ledger reclaim at 87,602. F4 cleared the overrun with NO slot removed at all,
- * so every one of those options is headroom rather than a plan, and the reclaim now lands at 86,622. A dated
- * table needs its consequences re-derived, not just its numbers refreshed.
+ * These are properties of the BUILT TRANSACTION, which no VM knob can reach.
+ *
+ * Every worst-DENSITY ratio reproduces across all three moves, because the worst-cost input of each capstone is
+ * a controller or a participant and never a projection. The 2/4/8 synthetic sweep is untouched and reproduces
+ * exactly, 10,661 B and 0.3630x at N=8. The two BINDING ratios that are functions of size did move, and are
+ * re-derived above rather than carried: A13 0.5002x -> 0.4558x, C3 0.9967x -> 0.9612x.
+ *
+ * C3 IS NOW 3,882 BYTES UNDER THE STANDARD RELAY CEILING - AND THAT OVERTURNS A CONCLUSION rather than merely
+ * restating a figure. FOUR TIMES OVER, which is the reason this paragraph is kept rather than deleted. F1
+ * costed a C3 fix against the pre-X5 100,354 - remove the two cheapest slot pairs, free 388, land at 99,966 -
+ * and X5 made that arithmetic wrong (100,650 - 388 = 100,262). This note then costed the four-pair fix at
+ * 99,840 and the 62-slot Ledger reclaim at 87,602. F4 cleared the overrun with NO slot removed at all, so
+ * every one of those options became headroom rather than a plan, and the reclaim then landed at 86,622. X65
+ * moved it AGAIN, to 83,070 on the same arithmetic - which is the point: a costed option whose input keeps
+ * moving is not a plan, and none of these has ever been needed. A dated table needs its consequences
+ * re-derived, not just its numbers refreshed.
  *
  * WHERE THE RE-DERIVATION STILL HAS TO LAND, reported rather than done here because the file is not this
  * row's: `Layer3ProductionEnvelopeR1.test.ts` asserts "C3 is the one shape in the basis that is actually

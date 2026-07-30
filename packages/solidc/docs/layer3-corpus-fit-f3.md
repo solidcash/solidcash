@@ -8,12 +8,15 @@ against the measured envelope.**
 Base commit `6a685f33`. The census, every estimate, and all 45 built transactions were produced at that
 commit. No figure here is carried forward from an earlier bench run or from the F1 table.
 
-**R2 reconciliation at `1591e87f`.** Two figures in this report were about shapes measured *elsewhere* rather
-than by the F3 probe, and both moved after `6a685f33` when F4 cut the projection verifier by 129 bytes: C3's
-position against the relay ceiling (section 6, real limit 2) and the size of the projection proof (sections 5
-and 6). Both are corrected in place, with the consequence re-derived rather than the number swapped. **No F3
-measurement is restated**: the census, the verdict counts, the binding-limit table and the 45 built
-transactions are all still the `6a685f33` run and are not re-derived here.
+**R2 reconciliation at `1591e87f`, re-done at `77cd1e8c`.** Two figures in this report were about shapes
+measured *elsewhere* rather than by the F3 probe, and both moved after `6a685f33` when F4 cut the projection
+verifier by 129 bytes: C3's position against the relay ceiling (section 6, real limit 2) and the size of the
+projection proof (sections 5 and 6). X65 then cut the same covenant by a further 444 bytes and moved both
+again, so both are re-measured at `77cd1e8c` rather than carried: the verifier's redeem script is **4,098
+bytes** and C3's build is **96,118 bytes**. Each correction re-derives its consequence rather than swapping
+its number. **No F3 measurement is restated**: the census, the verdict counts, the binding-limit table and
+the 45 built transactions are all still the `6a685f33` run and are not re-derived here - except section 3.2's
+write classification, which X73 invalidated outright and which is re-measured in place, in that section.
 
 ## 0. What is measured and what is estimated
 
@@ -129,6 +132,56 @@ The contrast with the solc corpus (190 of 264 admit a write) is the diagnosis: t
 contracts that have both mappings and `external` entry points, which is what an application is and what a
 conformance test is not.
 
+#### 3.2.1 Re-measured at `77cd1e8c`, after X73 lifted the visibility gate: THE HEADLINE STILL HOLDS
+
+X73 removed `initial-v1-route-requires-public-visibility` entirely - the 172 refusals that were 38% of the
+total, and the single largest reason in section 3.1's table. That is the gate this report named as the thing
+standing between the application corpora and a useful surface, so the sentence above was re-measured rather
+than reasoned about: `layer3-corpus-probe-f3.mjs` was re-run over both application corpora at `77cd1e8c`,
+same options, same denominators.
+
+**The verdict does not move. Not one of the twelve admits a state-changing handler, and the refused-write
+counts reproduce exactly.**
+
+| corpus | bus-reachable | admit >= 1 state-changing handler | read-only surface only | state-changing handlers refused |
+| --- | --- | --- | --- | --- |
+| MistSwap | 3 | **0** | 3 | 18 |
+| Effective Acceleration | 9 | **0** | 9 | 116 |
+| total | 12 | **0** | 12 | 134 |
+
+Every gate count reproduces too: MistSwap 16 files / 16 contracts / 7 direct-OK / 3 bus-OK / 3 routed, EA 22
+files / 28 contracts / 28 direct-OK / 10 bus-OK / 9 routed.
+
+**What DID move is the reason, and that is the finding.** The visibility gate is gone from both corpora - 0
+refusals, down from 2 and 14 - and every handler it used to refuse landed on a different gate rather than
+becoming eligible:
+
+| refusal | MistSwap: census -> `77cd1e8c` | EA: census -> `77cd1e8c` |
+| --- | --- | --- |
+| `initial-v1-route-requires-public-visibility` | 2 -> **0** | 14 -> **0** |
+| `unnamed` | 2 -> **0** | 7 -> **0** |
+| `not-examined-by-route-synthesis` | 0 -> 2 | 0 -> 7 |
+| `mixed-scalar-and-collection-route-not-enabled` | 2 -> 2 | 4 -> **7** |
+| `collection-helper-route-not-enabled` | 1 -> 1 | 7 -> 7 |
+| `external-handler-route-generation-unsupported` | - | 0 -> **6** |
+| `external-handler-would-shrink-the-route` | - | 0 -> **4** |
+| `lifecycle-or-unsafe-handler` | - | 3 -> 3 |
+| `batched-handler-forward-call-not-enabled` | 1 -> 2 | - |
+| `collection-route-requires-one-parameter-keyed-entry-per-collection` | 1 -> 1 | - |
+
+Two things follow, and neither is a restatement. First, **`unnamed` is no longer a hole**: X72 named it
+`not-examined-by-route-synthesis`, one-for-one on both corpora, so section 3.1's "20 are the unnamed hole in
+the diagnostic channel" is a property of the census run and not of the compiler. Second, **admitting external
+entry points bought reach without buying usefulness**: EA gained two new named refusals worth ten entry
+points, its `mixed-scalar-and-collection` count grew from 4 to 7, and its admitted-handler total rose to 17
+against MistSwap's 6 - all of them still read-only. This is D2's stacked-gates result reproduced on real
+applications: **no single lift admits anything**, and lifting the largest gate on the board moved the useful
+count for the application corpora from zero to zero.
+
+That makes the headline sentence *more* durable than when it was written, not less: it now survives the
+removal of the gate that was supposed to be the explanation for it. It is still a `6a685f33` measurement for
+the solidity-by-example and solc rows, which were not re-taken here.
+
 At full resolution on two contracts everybody recognises, recompiled by the test that prints the table:
 
 ```
@@ -183,24 +236,75 @@ message-bus low-level-call shape gate.
 | 2 | `Error: Graph handler requires call/staticcall edges and at most one returning call` |
 | 1 | `ParseError: Unexpected token '[' at Line N, Column N` |
 
-Two deserve naming.
+Three deserve naming.
+
+**`contract absent from the bus-mode artifact map` names no cause, and that is a probe defect (X84).** The
+probe compiles each file with `compileFileMulti` and falls back to `compileFile` when that throws, so a file
+whose primary contract still compiles contributes one row instead of all of its declarations, and the rest are
+recorded absent. The fallback hands back the error it swallowed; the direct path keeps it as
+`directSiblingError` and the bus path used to discard it. Measured at `77cd1e8c`, all five EA rows -
+`MarketplaceDataV1` and `MarketplaceV1` under `MarketplaceV1/V2/V3.sol` - are one and the same
+`InvalidParameterTypeError: Found parameters (string) in call to function 'meceTags'` at
+`MarketplaceDataV1.sol:126`, reached only in bus mode, and the census records none of it. The probe now
+carries the sibling error through.
+
+**This does not touch section 3.1's 80%.** The refusal histogram is tallied over rows that compiled in bus
+mode - routed plus route-absent - so a bus-failure row contributes nothing to the 455 refusals. Nor does it
+move a gate count: widening `busOk` is what the fallback is for. What it corrupted is the attribution in this
+one table.
 
 **`Unbound return call in __scbN; graph=undefined`** is an internal abort, not a named refusal - the class of
 defect X22 already closed one instance of. Five contracts reach it.
 
-**The `ParseError` is a bus-mode-only failure whose reported position is not in the user's file.**
-`UniswapV2Router02.sol` compiles in direct mode and with `forceStateful`, and fails the moment
-`experimentalHiddenBatch` is added:
+**A REPORT THIS SECTION HAS NOW ABSORBED.** It was reported that `MerkleTree.sol` produces a `ParseError`
+under the census's own bus options while this table lists none for solidity-by-example, suspected to be a
+missing `compileFile` fallback. Measured at `77cd1e8c`, that is not a discrepancy: `MerkleTree.sol` fails in
+**direct** mode, on `Error: Block slot not found: keccakSideCar[0]`, and the probe returns on a direct failure
+before bus mode is reached, so the row belongs in section 3.3 and is there. X71 has since made both modes
+report the same error. The fallback exists; the real gap was what it discards, above.
+
+**The `ParseError` was a bus-mode-only failure whose reported position was not in the user's file - AND IT IS
+GONE (X71).** As this report recorded it, `UniswapV2Router02.sol` compiled in direct mode and with
+`forceStateful` and failed the moment `experimentalHiddenBatch` was added, at `Line 68, Column 82` under
+`+hiddenBatch` and `Line 119, Column 82` under `+controller`. **Neither position exists in that file**, and the
+reported line moving by 51 when an unrelated option is added was the proof: it was a position in whatever the
+compiler assembled. A user handed that could not act on it.
+
+Re-measured at `77cd1e8c`, the ParseError is not reachable and the positions above cannot be reproduced:
 
 ```
 direct           -> OK
 +forceStateful   -> OK
-+hiddenBatch     -> ParseError: Unexpected token '[' at Line 68, Column 82
-+controller      -> ParseError: Unexpected token '[' at Line 119, Column 82
++hiddenBatch     -> OK, route present, 25 handlers, 7 eligible
++controller      -> Error: Graph handler '__scb_graph_removeLiquidity' requires call/staticcall edges
+                    and at most one returning call
 ```
 
-The reported line moves by 51 when an unrelated option is added, so it is a position in whatever the
-compiler assembled, not in `UniswapV2Router02.sol`. A user handed this cannot act on it.
+Two things follow, and the second is a correction to a claim made in passing elsewhere. First, Router02 now
+synthesizes a route under `+hiddenBatch`, but it still does NOT reach the bus under `+controller` - F3's actual
+configuration - so it is **not** added to the bus-reachable set here; it fails on a pre-existing *named*
+refusal instead of on a position that does not exist, which is a diagnostic improvement and not an admission.
+
+Second, **the seven handlers it admits under `+hiddenBatch` are not all read-only by this report's own test,
+and the claim that they are should not be repeated.** Measured at `77cd1e8c`:
+
+| admitted handler | `writesState` |
+| --- | --- |
+| `quote`, `getAmountOut`, `getAmountIn`, `factory`, `WETH` | `false` |
+| `getAmountsOut`, `getAmountsIn` | **`true`** |
+
+All seven are `view` in Solidity, which is presumably where "all seven are `view`/`pure`" came from - but
+section 3.2 classifies on the compiler's `writesState`, not on the annotation, and the compiler sets it from
+whether the function makes an external call. So **if Router02 ever cleared `+controller`, it would be the first
+application contract in this corpus to admit a handler this report counts as state-changing, and section 3.2's
+headline would have to be retired with it.** That is the precise condition under which the headline falls, and
+it is not met today.
+
+The impossible positions are kept above, quoted as history and labelled as impossible, because that class of
+defect is still live elsewhere: a corpus scan found 161 files emitting a warning that cites a line beyond the
+file, 138 of them naming a generated `__scb_*` symbol, plus 13 reporting an unlabelled position inside an
+IMPORTED file. Those are compiler-side and outside this report; nothing in this document reproduces a
+position that cannot exist as though it were current.
 
 ## 4. Where the bus-reachable contracts land
 
@@ -348,9 +452,10 @@ fitted over.
 
 That 4,780 is unlocking bytecode - the covenant's redeem script plus the transcript and proof arguments it
 carries - and it was measured at this report's base commit `6a685f33`, which is **before F4**. F4 then cut
-the projection verifier's redeem script by 129 bytes. Measured at `1591e87f`, that redeem script is **4,542
-bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did not
-re-measure, and is not restated here as a number.
+the projection verifier's redeem script by 129 bytes (4,542 at `1591e87f`), and X65 then cut a further 444
+by replacing its 8-way dispatch with an input-index table. Re-measured at `77cd1e8c`, that redeem script is
+**4,098 bytes**. The unlocking figure on these 45 shapes is smaller than 4,780 by an amount this report did
+not re-measure, and is not restated here as a number.
 
 What is new here is the scale and the sign consistency. F2 recorded that blind spot as a 1.8% miss on one
 held-out six-participant graph. On real corpus contracts at **one** participant it is a 7% systematic miss,
@@ -377,11 +482,14 @@ machinery pointed at it, that machinery is named.
    transactions. A consensus limit; no graph design moves it.
 2. **The 100,000-byte standard relay ceiling.** It takes over at N=8 for 317 of 367 rows, so this is the wall
    F1 found, reached earlier by larger contracts. This report originally added *"C3 already sat at 1.0065x of
-   it"*; that is no longer true and the correction does not weaken the point. F4 cut the projection verifier
-   by 129 bytes, which is worth 129 bytes per participant, and C3 has eight, so C3 was executed, accepted and
-   mined at **99,670 bytes**, 0.9967x of the ceiling (citation, X59/X60 at `1591e87f`, not re-measured here).
+   it"*; that is no longer true and the correction does not weaken the point. C3 was executed, accepted and
+   mined at **99,670 bytes**, 0.9967x of the ceiling (citation, X59/X60 at `1591e87f`) after F4's 129-byte
+   cut to the projection verifier, worth 129 bytes per participant across C3's eight. **Re-measured at
+   `77cd1e8c` the same build is 96,118 bytes, 0.9612x**, after X65 cut a further 444 from the same covenant -
+   a re-measurement of the mock-built bytes, NOT a second node run: the node-mined figure is still 99,670.
    The ceiling is still where the corpus meets it at N=8; what changed is that the largest fixture ever built
-   now sits just inside rather than just outside, which is a 330-byte margin and not headroom.
+   went from just outside it to 3,882 bytes inside, and that margin is now wide enough to be headroom rather
+   than a near miss - which retires, rather than re-prices, every C3 slot-removal option this board costed.
 
    **This one is POLICY, not consensus, and it is the only entry in this section that is.** X49 got the same
    101,513 bytes refused `64: tx-size` through the mempool and then accepted in a hand-assembled block; the
@@ -403,11 +511,13 @@ the measurement the production-envelope decision actually needs.
 
 A second observation in the same category: the projection proof is a fixed overhead on every participant,
 which at these sizes is a large share of a limit that real contracts are already close to. It is a generated
-covenant, so it is a compiler artifact rather than a limit - and F4 has since demonstrated exactly that by
-cutting its redeem script to **4,542 bytes** (measured at `1591e87f`) with no require removed, weakened or
-reordered. Because the covenant is instantiated once per participant and each proof slot pushes the whole
-redeem script, **a verifier byte is worth N transaction bytes**, and F4's 129-byte cut was measured landing
-at exactly that multiplier on all four capstones (citation, F4).
+covenant, so it is a compiler artifact rather than a limit - and two rounds have since demonstrated exactly
+that, cutting its redeem script to **4,098 bytes** (re-measured at `77cd1e8c`) with no require removed,
+weakened or reordered: F4's -129 to 4,542, then X65's -444. Because the covenant is instantiated once per
+participant and each proof slot pushes the whole redeem script, **a verifier byte is worth N transaction
+bytes**, and both cuts were measured landing at exactly that multiplier on all four capstones: F4's 129 x N
+(citation, F4), and X65's 444 x N re-measured here as A13 23,458 -> 22,126, C2 52,733 -> 50,957, C1
+62,722 -> 60,502, C3 99,670 -> 96,118.
 
 ### Incidental walls - scope decisions and defects, not limits
 

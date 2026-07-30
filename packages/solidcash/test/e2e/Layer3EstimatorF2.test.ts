@@ -1331,6 +1331,24 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     // that input can never fall below it whatever the driver.
     expect(Math.min(...rows.map((row) => row.predictedWorstAtHead)))
       .toBeGreaterThanOrEqual(Math.min(...rows.map((row) => row.measuredWorst)) - 1e-9);
+
+    // AND A WARNING ABOUT THE REPLACEMENT ASSERTION ABOVE, measured independently by a second worker on the
+    // same collapse. The impossibility is asserted here against the RECORDED basis covenant, where it has
+    // ~576 bytes of margin and is safe. But derived from HEAD's calibration instead, the same intercept sits
+    // at 4,095 against a 4,098-byte covenant - a margin of THREE BYTES. X65 alone took 444 bytes off this
+    // covenant; the next reduction of that kind makes even the structural argument stop reproducing.
+    //
+    // Recorded rather than acted on, because the assertion above is pinned to the recorded constant and does
+    // not drift with the generated one. But anyone tempted to re-derive it from the live calibration should
+    // know the demonstration is nearly exhausted, and anyone citing "all forty-five were under-predicted"
+    // should know that on this population the legacy model now under-predicts a handful, not all of them - it
+    // stopped being visibly wrong by getting luckier, not by getting better.
+    const legacyUnder = before.filter((error) => error < 0).length;
+    console.log(`[F2/X70] the legacy model under-predicts ${legacyUnder}/${before.length} of this population; `
+      + 'X70 measured 45/45, and X65\'s -444 per projection is what moved it. This calibration carries the '
+      + `RECORDED covenant, ${calibration.projectionRedeemBytes}B, where the intercept has ample margin; `
+      + 'derived from the covenant HEAD actually generates (4,098B) the margin is 3 bytes.');
+    expect(after.filter((error) => error < 0)).toEqual([]);
   }, 1_800_000);
 });
 

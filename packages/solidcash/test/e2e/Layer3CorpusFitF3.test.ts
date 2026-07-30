@@ -165,12 +165,13 @@ function compileApplicationRow(row: CensusRow): { artifact?: any; error?: string
  * never the route itself, so `invokesJournalHandler` was true against an empty slot set and code generation
  * hit `Missing journal context`. TreasurySplit and SushiRoll were named as fixed by that change.
  *
- * UnicrowClaim needs a caveat, because two measurements of it disagree and the difference is the option set.
- * Under THIS walk's options - which include `ecrecover: 'p2pkh'` - it compiles, and that is what the empty
- * pin below records. The worker that fixed the other two reported it still failing, with its bare
- * `Expected variable '__extaddr_unicrow' does not exist on the stack` replaced by a NAMED
- * `LowLevelCallShapeError` on `refund`. Both can be true: a named refusal raised under a narrower option set
- * is invisible here. Do not read the empty pin as "UnicrowClaim is bus-compilable in general".
+ * X132: the two disagreeing UnicrowClaim measurements have DIFFERENT SUBJECTS, not different options.
+ * `UnicrowClaim.sol` compiles in bus mode under every option set that parses and has no `refund` at all;
+ * `refund` is `Unicrow.sol:218`, whose `call{value:}` at `:262` raises the refusal. `ecrecover: 'p2pkh'`
+ * decides neither - identical outcome both ways, same 6,728 bytes. `Unicrow.sol` cannot appear in the pin
+ * below because that lists APPLICATION rows and a bus-compile failure never becomes one; it is the single
+ * `LowLevelCallShapeError` in the eacc column of `F3_CENSUS_BUS_FAILURES`. Pinned in
+ * `packages/solidc/test/LowLevelCallShapes.test.ts`.
  */
 const APPLICATION_COMPILE_FAILURES: string[] = [];
 
@@ -185,21 +186,40 @@ const APPLICATION_COMPILE_FAILURES: string[] = [];
  * assert exactly zero and stay green.
  */
 /**
- * MOVED 2 -> 3 by the L2-F2 repair, and the third entry is FLAGGED, not endorsed.
+ * X135 ANSWERED IT, AND THE FIGURE COMES BACK TO 2. THE CLASSIFICATION WAS WRONG; NOTHING WAS WRITING.
  *
- * The repair let the widest admission rung succeed where a code-generation crash had silently demoted
- * contracts to a narrower one, which made roughly NINETY handlers newly buildable across the corpus. None of
- * them has been VM-proved. `FakeToken` arrives here admitting `name` and `symbol` as state-changing - those
- * are ERC-20 METADATA GETTERS, so either the `writesState` classification is wrong for a `string` storage
- * read, or these are genuinely writing and that is worse. Filed as X135.
+ * The L2-F2 repair moved this pin to 3 by adding `FakeToken`, on the strength of `name` and `symbol` being
+ * published `writesState: true`. Both are ERC-20 metadata getters whose entire body is `return _name;`. The
+ * two candidate explanations were "the classification is wrong for a `string` storage read" and "they
+ * genuinely write, which is worse". It is the FIRST, and the discriminating measurement is one compile pair
+ * on the same file with the same options, the route being the only difference:
  *
- * This pin therefore records what is MEASURED, not what is believed correct. Do not cite the 3 as a capability
- * figure until X135 says which of the two it is.
+ *   DIRECT  name  writesState=false  dynamicWrites=[]         dynamicReads=["_name"]
+ *   BUS     name  writesState=true   dynamicWrites=["_name"]  dynamicReads=["_name"]
+ *
+ * MECHANISM. `GenerateTargetTraversal` pre-allocates one chunk slot for every dynamic journal slot a handler
+ * HOLDS, and after SEC-18's widening a handler holds a slot it only READS. For a dynamic slot that
+ * pre-allocation appended to `dynamicWrites` with no writer test, and `Artifact.ts` read a non-empty
+ * `dynamicWrites` as a write. The epilogue writes the pre-state value back unchanged - the chunk UTXOs are
+ * genuinely co-spent and recreated, and nothing changes. X105 had already gated the SCALAR sibling of exactly
+ * this leak, which is why `decimals` and `totalSupply` on the same contract never moved.
+ *
+ * FIXED IN THE PUBLISHED FLAG, not in `dynamicWrites` - codegen and the SDK both read that list to place the
+ * chunk outputs, so clearing it would make the covenant count `_name` as a preserved read AND write it.
+ * Cross-checked over all three real corpora, 96 contracts and 631 ABI entries: after the fix the bus-mode
+ * `writesState` equals the direct-mode `writesState` on EVERY entry - zero handlers where direct writes and
+ * the bus says read-only (which would be a fail-open) and zero remaining leaks in the other direction.
+ *
+ * So the headline does not move a fourth time: it moves BACK to the 2 of 12 / 4 handlers measured at
+ * `1b7086da`, and `FakeToken`'s whole admitted surface - `allowance`, `balanceOf`, `decimals`, `name`,
+ * `symbol`, `totalSupply` - is read-only. Its three writers (`transfer`, `approve`, `transferFrom`) are
+ * REFUSED from the route, which is why it never belonged here.
  */
-const APPLICATION_STATE_CHANGERS = ['UniswapV2Pair', 'UniswapV2Factory', 'FakeToken'];
-// 4 -> 6 with the L2-F2 repair: FakeToken adds `name` and `symbol`. Both are ERC-20 metadata getters, so this
-// count is MEASURED and not endorsed - see the APPLICATION_STATE_CHANGERS docblock and X135.
-const APPLICATION_STATE_CHANGING_HANDLERS = 6;
+const APPLICATION_STATE_CHANGERS = ['UniswapV2Pair', 'UniswapV2Factory'];
+// `UniswapV2Pair.initialize`, and `UniswapV2Factory.setFeeTo` / `setMigrator` / `setFeeToSetter`. The L2-F2
+// repair raised this to 6 by admitting FakeToken's `name` and `symbol`; X135 established that both readings
+// were a misclassification, so the count returns to the four handlers that really do write.
+const APPLICATION_STATE_CHANGING_HANDLERS = 4;
 
 /** Corpus roots, so a census row can be recompiled. Same defaults the probe uses. */
 const CORPUS_ROOTS: Record<string, string> = {
@@ -472,7 +492,7 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
    * because both write-admitting contracts are above 8,000 bytes. The assertion states the current figure and
    * names the contracts, so a change in either direction has to be re-read rather than absorbed.
    */
-  it('MEASURED: X73 lifted the visibility gate, and the FULL application write surface is 3 of 12', () => {
+  it('MEASURED: X73 lifted the visibility gate, and the FULL application write surface is 2 of 12', () => {
     expect(applicationRows, 'the census records no application-corpus contract').not.toEqual([]);
     // The population is PINNED, so a row cannot silently leave the subject set the way the size rule let it.
     expect(applicationRows, 'the recorded application population changed size; re-read X113 before re-pinning')

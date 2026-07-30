@@ -243,6 +243,29 @@ const transferEffects = (
 };
 
 /**
+ * X135. True when every dynamic (chunk-backed) write this function publishes was RESERVED by the route's
+ * journal rather than performed by the function.
+ *
+ * `GenerateTargetTraversal` pre-allocates one chunk slot per dynamic journal slot a handler HOLDS, and a
+ * handler holds a slot it only READS: the epilogue then writes the pre-state value back unchanged, which is a
+ * real co-spend of the chunk UTXOs and no state change at all. `dynamicWrites` stays published because the
+ * build shape needs it - the SDK consumes and recreates those chunks - but a write-back is not a mutation,
+ * and `writesState` is the flag that answers "output state == input state".
+ *
+ * Measured: ERC-20 `name()` / `symbol()` are `writesState: false` compiled DIRECT and were `true` compiled in
+ * bus mode, from the same unchanged body. `decimals()` / `totalSupply()` never moved, because their journal
+ * slots are scalar and X105 already gated the scalar sibling of this leak.
+ *
+ * SOUNDNESS. `scalarJournal` is set at GTT:2711 exactly when journal context is live AND the writer closure
+ * reached this function, and that closure is transitive over internal calls (GTT:1745-1755) and over function
+ * pointers (L2-F3), so a false answer cannot hide a write behind a helper. `journalContextArity` is set only
+ * for a handler carrying live journal context, so DIRECT-mode dynamic writes - which carry none - are never
+ * gated. The caller has already returned true for `scalarJournal`, so reaching here means "not a writer".
+ */
+const journalReservedDynamicWritesOnly = (func: FunctionDefinitionNode): boolean =>
+  (func.journalContextArity ?? 0) > 0 && func.scalarJournal !== true;
+
+/**
  * Conservatively decide whether a function mutates any covenant-derived state. Returns false ONLY when the body
  * has no stateful statement (state/array/mapping write, delete, emit, transfer, low-level/token-container op)
  * AND the function has no external call, child deploy, library delegate, dynamic-storage write, split/merge, or
@@ -254,7 +277,7 @@ function computeWritesState(func: FunctionDefinitionNode): boolean {
   if ((func.externalCalls?.length ?? 0) > 0) return true;
   if ((func.deployTargets?.length ?? 0) > 0) return true;
   if ((func.libraryDelegateCalls?.length ?? 0) > 0) return true;
-  if ((func.dynamicWrites?.length ?? 0) > 0) return true;
+  if ((func.dynamicWrites?.length ?? 0) > 0 && !journalReservedDynamicWritesOnly(func)) return true;
   if ((func.lowLevelCalls?.length ?? 0) > 0) return true;
   if (func.splitCountParam !== undefined || func.mergeCountParam !== undefined) return true;
   if (func.modifiers.some((m) => STATE_WRITING_MODIFIERS.includes(m))) return true;

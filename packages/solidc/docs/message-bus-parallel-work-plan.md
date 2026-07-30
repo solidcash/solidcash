@@ -217,7 +217,8 @@ task-specific report, not in this table.
 | X7 | Assert the projection result cursor is exhausted | B | E1 | INTEGRATED | Closed a LIVE root-result forgery, not defence-in-depth |
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
-| X10 | Grow the trailing chunk region past one output beside an entry mint | C5 | X8 | **BLOCKED (pin REFINED)** | the region DOES grow in general; it fails only beside a C2 mint, where the NEW node commitment is written TWICE |
+| X10 | Grow the trailing chunk region past one output beside an entry mint | H3 | X8 | **SDK HALF INTEGRATED** | the pin was wrong IN KIND - the region grew and filled wrong; positional trace attribution - see 4.94 |
+| X101 | Speculative chunk growth handles a single chunk var only | — | X10 | **TODO** | multi-var + mint + multi-chunk needs a real search, not a linear grow; inert until the covenant half lands |
 | X11 | Delegate C2 sorted writes have no settling instance | A2 | — | **INTEGRATED** | premise stale; chasing it found a LIVE forgery - reader returned `[5n, 99n]` - see 4.64 |
 | X12 | `emit`-funder delegate class does not settle | A2 | — | **INTEGRATED** | cause was split-facet data-NFT offsets, not a graft position; -6 bytes |
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |
@@ -268,6 +269,48 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.94 X10's pin was wrong IN KIND: the region grew, and filled itself wrong
+
+Merged at `ac95f239`.
+
+**The recorded pin said the region does not grow past one output. It grows - and fills the outputs wrong.** The
+root cause is that `extractCommitmentsFromTrace` is **positional**: the covenant's NEW-node check lands inside
+the chunk window, and its single observation was credited to chunk **0**. **The count was never the problem.**
+
+Measured on the base tree, `MINT` being a dynamic write plus a C2 entry mint:
+
+| shape | outcome | outputs 3 / 4 / 5 |
+| --- | --- | --- |
+| MINT 120 | ACCEPTED | chunk (123 B) / NEW (65 B) / change |
+| MINT 121, 200 | rejected at input 0 | **NEW commitment** / `00` / **the SAME NEW commitment** |
+| READ 200 | ACCEPTED | chunk0 (123 B) / chunk1 (83 B) / change |
+
+The fix keys chunk commitments by **their own output index** - which the loop-entry and value-chunk derivations
+already did - **refuses an underived region by name before signing**, and grows speculatively by one output per
+zero-progress probe to break the ordering cycle a trailing mint creates.
+
+**The shape that must not survive is gone, in bytes**: 121 B goes **2,537 -> 0 broadcast**, 200 B goes
+**2,617 -> 0**. No broadcast contains `00` at a chunk output, and no commitment appears at two outputs of one
+transaction - asserted directly rather than inferred.
+
+**It re-verified the claim its predecessor explicitly could not.** The earlier worker reported the `+1` vs `+6`
+PICK-depth figure **as someone else's measurement rather than its own**, having failed to separate the causes
+from outside the file. H3 separated them from the VM trace: at `+6` the PICK lands on the 200-byte value,
+`OP_SIZE` reads `c800`, `+119 / 120` yields `02`, and the NEW index becomes 5.
+
+**And the joint measurement is the finding.** `+6` **alone is WORSE than the SDK half alone** - it aborts probe 1
+before the data NFT, so `A$len` is never learned and an **all-`00` transaction is broadcast**. `+6` **plus** the
+merged growth: 121 and 200 both **ACCEPT**. So the long-standing *"necessary and not sufficient"* verdict stands,
+and **the missing sufficiency is what shipped**. The covenant line is handed to the agent holding that file.
+
+**Discriminating power verified by reverting the source**: **2 of 6** new tests fail on base and pass with the
+change; the other 4 - positive, two guards, hostile - **pass on both, as they must**. The three guards are what
+stop the result being credited to "multi-chunk writes" or to "a C2 mint".
+
+**Residual stated**: speculative growth is restricted to a **single** chunk var, so multi-var plus mint plus
+multi-chunk needs a real search rather than a linear grow. Inert in this tree, so it carries no test of its own
+until the covenant half lands. Opened as **X101**.
 
 ### 4.93 X81 taken for a better reason than the board's, and X97 closed by a fixpoint
 

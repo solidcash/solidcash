@@ -2873,6 +2873,16 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     measuredBytes.set(key, bytes);
     return bytes;
   };
+  // A hard-closure union is not the only way to satisfy a call edge between two planned entries. The caller's
+  // facet needs the callee's BODY, not its entry-point arm - and the arm is the expensive half when the callee
+  // takes dynamic parameters, because it carries selector dispatch and ABI decoding on top of the covenant.
+  // `compileFacet` demotes a planned entry it did not receive to a plain internal helper, so dissolving an
+  // oversized union into singletons keeps every call satisfiable while charging each facet only what it uses.
+  // Only unions that DO NOT FIT are dissolved: a union that fits keeps its exact previous grouping and bytes,
+  // and phase one immediately re-merges any dissolved pair that turns out to fit anyway.
+  groups = groups.flatMap((group) => (
+    group.length > 1 && measure(group) > maxShardBytes ? group.map((plan) => [plan]) : [group]
+  ));
   // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
   // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
   let mergedAffinity = true;
@@ -2946,6 +2956,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     throw new Error(`Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`);
   }
 
+  assertSplitLayoutsAgree(logicalName, root, facetRecords, baseline);
+
   const routes = (baseline.abi as readonly any[]).filter((fn) => fn.type === 'function' || fn.name).map((abiFn) => {
     const plan = plans.find((p) => p.name === abiFn.name);
     const target = routeByName.get(abiFn.name)?.facet ?? 'root';
@@ -2979,6 +2991,45 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
  * changes; it is now measuring what it always meant to.
  */
 function byteSize(artifact: Artifact): number { return asmToBytecode(artifact.bytecode).length; }
+
+/**
+ * A SHARD IS ONLY A SHARD IF IT AGREES ABOUT WHAT A SLOT MEANS. Nothing here compared the root's storage
+ * layout against its facets': the manifest fingerprint was taken from the unsplit BASELINE and never checked
+ * against anything the bundle actually contains. Two orderings in the split path are shard-dependent -
+ * `LowerStorageSlotPointers` appends one hidden state variable per ERC-7201 namespace in the order the
+ * SURVIVING functions first reach it, and `prepareSplitAst` runs `SynthesizeBlockOracle` earlier than the
+ * ordinary pipeline does - so a real OZ-upgradeable contract produces a root, six facets and a manifest with
+ * THREE different layouts, where facet slot 2.0 is `PausableStorage___paused` and root slot 2.0 is
+ * `OwnableStorage___owner`. That bundle compiles clean and every shard fits; a spend of it would write the
+ * wrong variable. The SDK refuses it at load, but a compiler that emits it has already shipped the defect, so
+ * it is refused here, by name, with the first disagreeing slot quoted.
+ */
+function assertSplitLayoutsAgree(
+  name: string, root: Artifact, facets: Array<{ name: string; artifact: Artifact }>, baseline: Artifact,
+): void {
+  const slots = (artifact: Artifact): string[] =>
+    (artifact.stateLayout?.variables ?? []).map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
+  const rootSlots = slots(root);
+  const firstDivergence = (other: string[]): string | undefined => {
+    const width = Math.max(rootSlots.length, other.length);
+    for (let i = 0; i < width; i++) if (rootSlots[i] !== other[i]) return `root has ${rootSlots[i] ?? '(none)'}, `
+      + `it has ${other[i] ?? '(none)'}`;
+    return undefined;
+  };
+  for (const facet of facets) {
+    const divergence = firstDivergence(slots(facet.artifact));
+    if (divergence) {
+      throw new Error(`Cannot split '${name}': facet '${facet.name}' does not share the root's storage layout `
+        + `(${divergence}). A delegate facet writes the root's state through physical slots, so a spend would `
+        + 'write the wrong variable.');
+    }
+  }
+  const baselineDivergence = firstDivergence(slots(baseline));
+  if (baselineDivergence) {
+    throw new Error(`Cannot split '${name}': the generated root does not share the unsplit contract's storage `
+      + `layout (${baselineDivergence}). The published state layout would not describe the deployed bundle.`);
+  }
+}
 function emptyFootprint(): SplitStateFootprint { return { reads: [], writes: [], effects: [], unknown: false }; }
 function splitStateLayoutFingerprint(layout: Artifact['stateLayout']): string {
   if (!layout) return '{}';
@@ -3096,12 +3147,22 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   for (const resolved of [contract, ...ast.importedContracts]) {
     for (const fn of resolved.functions) fn.overrideBases = [];
   }
-  for (const fn of contract.functions) if (plans.some((p) => p.name === fn.name)) {
+  const planned = new Set(plans.map((p) => p.name));
+  for (const fn of contract.functions) if (planned.has(fn.name)) {
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.INTERNAL, FunctionModifier.PRIVATE, FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC,
       FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.DELEGATE);
+  } else if (isMovableSplitEntry(fn)) {
+    // A movable entry that is only KEPT here - it is routed to some other facet - is reachable in this facet
+    // solely through an internal call from one of `plans`. Emitting its entry-point arm as well would charge
+    // this facet for selector dispatch and parameter decoding it can never be entered through. Demote it to a
+    // plain internal helper; the body, and every modifier already expanded into it, is untouched.
+    fn.modifiers = fn.modifiers.filter((m) => ![
+      FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC, FunctionModifier.DELEGATE,
+    ].includes(m));
+    fn.modifiers.push(FunctionModifier.INTERNAL);
   }
   if (contract.functions.filter((fn) => fn.isEntryPoint).length < 2) {
     const truth = new BoolLiteralNode(true); truth.location = contract.location;

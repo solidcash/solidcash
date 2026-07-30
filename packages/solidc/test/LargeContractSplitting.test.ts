@@ -92,6 +92,132 @@ describe('large-contract state-local splitting', () => {
       .toThrow(/Cannot split 'SplitCounter'.*(facet|root)/);
   });
 
+  /**
+   * A call edge between two planned entries was ATOMIC: `hardClosureGroups` unioned them and nothing could
+   * divide the result, so a union over the limit was a refusal with no remaining move. It is not atomic. The
+   * caller's facet needs the callee's BODY, not its entry-point arm, and the arm is the expensive half once
+   * the callee takes dynamic parameters - measured at 1,454 B of arm against 758 B of body for one
+   * `(uint256, address[], address[])` callee. `compileFacet` now demotes a movable entry it did not receive
+   * to a plain internal helper, so an oversized union can be dissolved into per-entry groups.
+   *
+   * The limit here is chosen from the two MEASURED sizes below, not guessed: it admits the caller's divided
+   * facet and refuses the union. The control in the next test pins that a union which fits does not move.
+   */
+  it('divides a call-edge union that does not fit, and keeps the callee body in the caller facet', () => {
+    const source = `pragma solidity ^0.8.7;
+      contract Pair {
+        uint total;
+        uint count;
+        uint other;
+        mapping(uint256 => mapping(address => bool)) whitelist;
+        function publish(uint256 jobId_, address[] calldata allowed_) public {
+          other = jobId_;
+          updateWhitelist(jobId_, allowed_, allowed_);
+          require(jobId_ >= 0, "neg");
+        }
+        function updateWhitelist(uint256 jobId_, address[] calldata a_, address[] calldata d_) public {
+          for (uint256 i = 0; i < a_.length; i++) { whitelist[jobId_][a_[i]] = true; count = count + 1; }
+          for (uint256 i = 0; i < d_.length; i++) { whitelist[jobId_][d_[i]] = false; total = total + 1; }
+          require(jobId_ >= 0, "neg");
+        }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true };
+    const union = compileStringSplit(source, options);
+    const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
+    expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateWhitelist']);
+
+    const divided = compileStringSplit(source, { ...options, maxShardBytes: unionBytes - 1 });
+    const groups = divided.manifest.facets.map((facet) => [...facet.functions].sort()).sort();
+    expect(groups).toEqual([['publish'], ['updateWhitelist']]);
+
+    // The caller's facet still carries the callee body - it must, the call is unconditional - but no longer
+    // its selector arm, which is the whole saving. Both facts are asserted, so a dropped body cannot pass.
+    const publishFacet = divided.manifest.facets.find((facet) => facet.functions.includes('publish'))!;
+    expect(divided.facets[publishFacet.name].abi.some((fn) => fn.name === 'updateWhitelist')).toBe(false);
+    const absent = compileStringSplit(`pragma solidity ^0.8.7;
+      contract Pair {
+        uint other;
+        function publish(uint256 jobId_, address[] calldata allowed_) public {
+          other = jobId_ + allowed_.length; require(jobId_ >= 0, "neg");
+        }
+        function second(uint256 v) public { other = v + 1; require(v >= 0, "neg"); }
+      }`, options);
+    const absentBytes = Math.max(...absent.manifest.facets.map((facet) => facet.estimatedRedeemBytes));
+    expect(publishFacet.estimatedRedeemBytes).toBeGreaterThan(absentBytes);
+    expect(publishFacet.estimatedRedeemBytes).toBeLessThan(unionBytes);
+    // Each divided route still resolves, and to DIFFERENT facets.
+    const publishRoute = divided.manifest.routes.find((route) => route.function === 'publish')!;
+    const updateRoute = divided.manifest.routes.find((route) => route.function === 'updateWhitelist')!;
+    expect(publishRoute.target).not.toBe('root');
+    expect(updateRoute.target).not.toBe('root');
+    expect(publishRoute.target).not.toBe(updateRoute.target);
+  });
+
+  /**
+   * The split planner never compared the root's storage layout against its facets'. The manifest fingerprint
+   * was taken from the unsplit BASELINE and checked against nothing the bundle contains, and two orderings in
+   * the split path are shard-dependent: `LowerStorageSlotPointers` appends one hidden state variable per
+   * ERC-7201 namespace in the order the SURVIVING functions first reach it, and `prepareSplitAst` runs
+   * `SynthesizeBlockOracle` earlier than the ordinary pipeline. Measured on the corpus MarketplaceV1: root,
+   * six facets and the manifest carry THREE layouts - root slot 2.0 is `OwnableStorage___owner` while five of
+   * six facets put `PausableStorage___paused` there. Every shard fits and the bundle compiles clean.
+   *
+   * Reproduced here without the corpus. A delegate facet writes the ROOT's state through physical slots, so
+   * the disagreement is a wrong-variable write, not a metadata nit.
+   */
+  it('refuses a bundle whose facets do not share the root storage layout', () => {
+    const source = `pragma solidity ^0.8.7;
+      abstract contract AMod {
+        struct AStorage { uint256 a; }
+        bytes32 private constant ALoc = 0x9016d09d72d40fdae2fd8ceac6b6234c7706214fd39c1cd1e609a0528c199300;
+        function _a() private pure returns (AStorage storage $) { assembly { $.slot := ALoc } }
+        function _setA(uint256 v) internal { AStorage storage $ = _a(); $.a = v; }
+      }
+      abstract contract BMod {
+        struct BStorage { uint256 b; }
+        bytes32 private constant BLoc = 0xcd5ed15c6e187e77e9aee88184c21f4f2182ab5827cb3b7e07fbedcd63f03300;
+        function _b() private pure returns (BStorage storage $) { assembly { $.slot := BLoc } }
+        function _setB(uint256 v) internal { BStorage storage $ = _b(); $.b = v; }
+      }
+      abstract contract CMod {
+        struct CStorage { uint256 c; }
+        bytes32 private constant CLoc = 0x237e158222e3e6968b72b9db0d8043aacf074ad9f650f0d1606b4d82ee432c00;
+        function _c() private pure returns (CStorage storage $) { assembly { $.slot := CLoc } }
+        function _setC(uint256 v) internal { CStorage storage $ = _c(); $.c = v; }
+      }
+      contract Multi is AMod, BMod, CMod {
+        uint256 own;
+        function touchC(uint256 v) public { _setC(v); own = v; require(v >= 0, "n"); }
+        function touchA(uint256 v) public { _setA(v); own = v + 1; require(v >= 0, "n"); }
+        function touchB(uint256 v) public { _setB(v); own = v + 2; require(v >= 0, "n"); }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true };
+    // GUARD NEGATIVE CONTROL, differing ONLY in the shard limit: one facet holds every entry, every shard
+    // promotes the namespaces in the same order, and the bundle is admitted.
+    const together = compileStringSplit(source, { ...options, maxShardBytes: 10_000 });
+    expect(together.manifest.facets).toHaveLength(1);
+    const slots = (layout: any): string[] => (layout?.variables ?? [])
+      .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
+    expect(slots(together.facets[together.manifest.facets[0].name].stateLayout))
+      .toEqual(slots(together.root.stateLayout));
+
+    // The same source at a limit that forces separate facets: refused, naming the first disagreeing slot.
+    expect(() => compileStringSplit(source, { ...options, maxShardBytes: 1100 }))
+      .toThrow(/does not share the root's storage layout \(root has AStorage__a@0\.1, it has CStorage__c@0\.1\)/);
+  });
+
+  it('CONTROL: a call-edge union that fits is not divided and keeps both entries in one facet', () => {
+    const bundle = compileStringSplit(`pragma solidity ^0.8.7;
+      contract Closure {
+        uint x;
+        function set(uint value) public { reset(); x = value; require(value >= 0, "n"); }
+        function reset() public { x = 0; require(true, "n"); }
+      }`, { solidityImportCompat: true, forceSplit: true });
+    expect(bundle.manifest.facets).toHaveLength(1);
+    expect([...bundle.manifest.facets[0].functions].sort()).toEqual(['reset', 'set']);
+    expect(bundle.facets[bundle.manifest.facets[0].name].abi.some((fn) => fn.name === 'reset')).toBe(true);
+  });
+
   it('uses constant mapping keys as disjoint regions and dynamic keys as wildcard aliases', () => {
     const constants = compileStringSplit(`
       contract Regions() {

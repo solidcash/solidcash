@@ -1,4 +1,4 @@
-import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin, isHex } from '@bitauth/libauth';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
@@ -40,6 +40,173 @@ export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
 export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
 
+/* ------------------------------------------------------------------------------------------------------ */
+/* The consensus-override probe                                                                             */
+/* ------------------------------------------------------------------------------------------------------ */
+
+/**
+ * WHY THIS EXISTS. This provider publishes `consensusLimits` and then depends on the installed
+ * `@mem-cash/validation` applying them. `_strictRecursiveVmPreflight` reads the SAME limits, so the build-time
+ * gate and the broadcast-time decider agree only while that override channel works.
+ *
+ * `@mem-cash/validation` 0.0.8 declares `TxVerifierConfig.consensus` and threads it into every VM it builds.
+ * 0.0.7 has neither the field nor any read of it: `createVmFacade(version, standard)` takes no third argument
+ * and the whole object is dropped. On 0.0.7 the decider therefore runs libauth's stock limits while the
+ * preflight reads the published ones, and the gate is FAIL-OPEN in the direction that matters - `decrement(24)`
+ * builds against a published 10,000,000 and is then refused at broadcast by a stock 800.
+ *
+ * `packages/solidcash/package.json` declares `^0.0.8`, which for a `0.0.x` range means exactly 0.0.8, and
+ * `yarn.lock` resolves it. A stale `node_modules` is the only way to reach 0.0.7 - and a failing test is not a
+ * runtime guard. This measures the behaviour once and refuses to construct a provider that cannot decide.
+ *
+ * BEHAVIOURAL, NOT A VERSION STRING. A version string can be right while the build on disk is not (a patched
+ * tarball, a linked working copy, a renamed channel), and a future 0.0.9 would fail a `=== '0.0.8'` check while
+ * honouring overrides perfectly. This measures the only thing that matters: hand the real `createTxVerifier` a
+ * limit and see whether its verdict moves.
+ *
+ * CONTROLLED AND MULTI-FIELD, both deliberate.
+ *  - A single strict point cannot distinguish "the override was applied" from "the probe transaction is
+ *    broken", so a RELAXED control that must ACCEPT runs first. If the control fails, the message says the
+ *    probe is inconclusive rather than blaming the install.
+ *  - The strict points cover the channels this provider actually depends on, including
+ *    `operationCostBudgetPerByte`, which 0.0.8 does not even declare in `ConsensusOverrides` and which is the
+ *    field the recursive-preflight decision turns on.
+ *
+ * SCOPE. It establishes that the installed build applies published consensus overrides, demonstrated on two or
+ * three fields depending on the VM version. It is not a claim that every field in `MOCK_CONSENSUS_LIMITS` is
+ * honoured individually.
+ */
+
+/** The probe's source output: `OP_DROP OP_1`, so the input's pushed item is consumed and one truthy item remains. */
+export const CONSENSUS_PROBE_SOURCE_OUTPUT = {
+  lockingBytecode: Uint8Array.from([0x75, 0x51]), valueSatoshis: 100_000n,
+};
+
+/**
+ * A 69-byte 1-in 1-out transaction, deliberately the smallest shape that clears every pre-VM rule: a non-null
+ * prevout, 69 bytes against the 65-byte minimum, a 100,000-satoshi fee against the default caps, and an
+ * OP_RETURN output so no dust rule applies in either regime. Its only script work is one 2-byte push.
+ */
+export const consensusProbeTransactionHex = (): string => binToHex(encodeTransaction({
+  inputs: [{
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(0x11),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: Uint8Array.from([0x02, 0xaa, 0xbb]),
+  }],
+  locktime: 0,
+  outputs: [{ lockingBytecode: Uint8Array.from([0x6a, 0x04, 0, 0, 0, 0]), valueSatoshis: 0n }],
+  version: 2,
+}));
+
+/**
+ * The strict points, each paired with the arithmetic that makes its refusal attributable, and each restricted
+ * to the VM versions where it was MEASURED to be a rule.
+ *
+ * `versions: undefined` means every version. `operationCostBudgetPerByte` is the exception and the restriction
+ * is not cosmetic: BCH_2023 and BCH_SPEC IGNORE it - their instruction sets have no operation-cost-density
+ * rule - while `ConsensusBch2023.operationCostBudgetPerByte` and `ConsensusBchSpec.operationCostBudgetPerByte`
+ * are both published as 800. Keying applicability off the presence of the constant would therefore have made
+ * the probe refuse two good installs. Measured, not inferred.
+ *
+ * Every version keeps at least two independent channels, so no version rests on a single field.
+ */
+const CONSENSUS_PROBE_POINTS: readonly {
+  field: string; strict: number; expect: RegExp; versions?: readonly string[];
+}[] = [
+  {
+    // 41 + 3 unlocking bytes = 44 density control length, so `1` yields a 44-unit ceiling that one 2-byte
+    // push (cost 102) cannot clear. THE field the recursive-preflight decision turns on.
+    field: 'operationCostBudgetPerByte',
+    strict: 1,
+    expect: /operation cost density limit\. Maximum operation cost: 44 \(density control length: 44\)/,
+    versions: [VmTarget.BCH_2025_05, VmTarget.BCH_2026_05],
+  },
+  {
+    field: 'maximumStackItemLength',
+    strict: 1,
+    expect: /maximum stack item length\. Maximum stack item length: 1 bytes\. Item length: 2 bytes/,
+  },
+  {
+    field: 'maximumBytecodeLength',
+    strict: 1,
+    expect: /maximum bytecode length\. Maximum bytecode length: 1 bytes\. Unlocking bytecode length: 3 bytes/,
+  },
+];
+
+/** Relaxed enough that no rule below can bind, so an ACCEPT here means the probe transaction itself is sound. */
+const CONSENSUS_PROBE_RELAXED = {
+  operationCostBudgetPerByte: 800, maximumStackItemLength: 520, maximumBytecodeLength: 10_000,
+};
+
+/** Cached verdict per VM version: `undefined` = honoured, a string = the refusal to re-throw. */
+const consensusProbeVerdicts = new Map<string, string | undefined>();
+
+/** The one dependency the probe has on the outside world, injectable so a test can drive a real 0.0.7 build. */
+export type TxVerifierFactory = typeof createTxVerifier;
+
+/**
+ * Run the probe and return the refusal message, or `undefined` when the installed build honours overrides.
+ * Pure and uncached: `assertConsensusOverridesHonoured` is the caching wrapper the constructor uses.
+ */
+export const probeConsensusOverrides = (
+  vmVersion: string, factory: TxVerifierFactory = createTxVerifier,
+): string | undefined => {
+  const rawHex = consensusProbeTransactionHex();
+  const chainState = { height: 1, medianTimePast: 0 };
+  const decide = (consensus: Record<string, number>): { ok: boolean; reason: string } => {
+    try {
+      const verifier = factory({
+        vmVersion, standard: false, consensus,
+      } as Parameters<typeof createTxVerifier>[0] & { consensus: Record<string, number> });
+      const result = verifier.verify(rawHex, [CONSENSUS_PROBE_SOURCE_OUTPUT], chainState);
+      return result.success
+        ? { ok: true, reason: 'ACCEPT' }
+        : { ok: false, reason: `${result.error}${result.debugMessage ? `: ${result.debugMessage}` : ''}` };
+    } catch (error) {
+      return { ok: false, reason: `threw ${(error as Error).message}` };
+    }
+  };
+
+  const control = decide(CONSENSUS_PROBE_RELAXED);
+  if (!control.ok) {
+    return 'MockNetworkProvider: the @mem-cash/validation consensus-override probe is INCONCLUSIVE - its own '
+      + `control transaction was refused on ${vmVersion} with relaxed limits (${control.reason}). This is a `
+      + 'defect in the probe or a libauth change, NOT evidence about the installed validation package.';
+  }
+  for (const point of CONSENSUS_PROBE_POINTS) {
+    if (point.versions !== undefined && !point.versions.includes(vmVersion)) continue;
+    const strict = decide({ ...CONSENSUS_PROBE_RELAXED, [point.field]: point.strict });
+    if (strict.ok || !point.expect.test(strict.reason)) {
+      return 'MockNetworkProvider: the installed @mem-cash/validation does NOT honour published consensus '
+        + `limits. Probed on ${vmVersion}: the identical transaction is accepted at the relaxed limits and `
+        + `must be refused at \`${point.field}: ${point.strict}\`, but the decider answered `
+        + `"${strict.reason}". Run \`yarn install\` - packages/solidcash/package.json requires exactly 0.0.8 `
+        + '(`^0.0.8` on a 0.0.x range) and 0.0.7 silently ignores published consensus limits, which makes '
+        + '`consensusLimits` on this provider decorative: the build-time preflight would read them while the '
+        + 'broadcast-time decider ran libauth stock values, so shapes would pass `.build()` and fail `.send()`.';
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Probe ONCE per VM version and cache the verdict, including a failing one - so a bad install refuses every
+ * construction, not just the first, without paying for the measurement again.
+ */
+export const assertConsensusOverridesHonoured = (
+  vmVersion: string, factory?: TxVerifierFactory,
+): void => {
+  if (!consensusProbeVerdicts.has(vmVersion)) {
+    consensusProbeVerdicts.set(vmVersion, probeConsensusOverrides(vmVersion, factory));
+  }
+  const verdict = consensusProbeVerdicts.get(vmVersion);
+  if (verdict !== undefined) throw new Error(verdict);
+};
+
+/** Testing seam: drop the cached verdicts so a probe can be re-measured. Not part of the provider contract. */
+export const resetConsensusProbeCacheForTests = (): void => consensusProbeVerdicts.clear();
+
 /** An opaque snapshot handle mirroring hardhat's SnapshotRestorer. */
 export interface SnapshotRestorer {
   /** Restore the chain to the state captured when this snapshot was taken. Repeatable. */
@@ -76,6 +243,10 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
     this.consensusLimits = this.options.consensusLimits;
     this.policy = this.options.policy;
+
+    // Fail closed: every limit published below is only real if the installed decider reads it. Cached per VM
+    // version, so this costs one measurement per process rather than one per provider.
+    assertConsensusOverridesHonoured(this.vmTarget);
 
     const overrides = {
       maximumBytecodeLength: this.consensusLimits.maximumInputBytes,

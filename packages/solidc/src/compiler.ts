@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
@@ -391,7 +391,6 @@ function setPrimaryContract(ast: Ast, name: string): void {
 const SCB1_SELECTOR_HEX = '53434231';
 const MAX_HIDDEN_BATCH_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
-const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
 

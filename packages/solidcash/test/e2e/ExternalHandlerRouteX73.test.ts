@@ -173,7 +173,14 @@ describe('X73 external entry points reach the SCB1 route', () => {
    * The route still exists and is still fail-closed; what changed is WHICH handler it carries. A contract in
    * this shape gains a batchable `credit` and loses a batchable `bump`.
    */
-  it('lets a newly admitted external collection handler displace a public scalar one', () => {
+  /**
+   * X94's MIXED-SCALAR LIFT RETIRED THIS SUBJECT. It used to measure a newly admitted external collection
+   * handler DISPLACING a public scalar one, because the route chose one shape for the whole set and the scalar
+   * lost. X94 admits the mixed shape, so there is no displacement left to observe: both handlers are eligible.
+   * Recorded as the parity it has become rather than deleted, because the pair is still worth pinning - a
+   * regression that re-introduced the uniformity conflict would turn this red.
+   */
+  it('admits a scalar and a collection handler together, so neither displaces the other', () => {
     const mixed = `pragma solidcash >=0.8.0;
 contract X73Mixed() {
   bigint total;
@@ -185,9 +192,7 @@ contract X73Mixed() {
   }
 }`;
     expect(compileString(mixed, BATCH).hiddenBatch?.handlers).toEqual([
-      expect.objectContaining({
-        name: 'bump', eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
-      }),
+      expect.objectContaining({ name: 'bump', eligible: true }),
       expect.objectContaining({ name: 'credit', eligible: true }),
     ]);
   });
@@ -212,7 +217,7 @@ contract X73Mixed() {
    * boundary is sharp and the other side of it is already pinned above: with ONE public scalar the counts are
    * 1 against 1, no shrink, and `X73Mixed` shows the external collection handler displacing it.
    */
-  it('keeps the public-only route when an external handler would cost the contract its handlers', () => {
+  it('X114: the never-shrink subject is retired by X94; both spellings now admit the same set', () => {
     const shrink = (visibility: string): string => `pragma solidcash >=0.8.0;
 contract X73Shrink() {
   bigint total;
@@ -225,33 +230,30 @@ contract X73Shrink() {
     require(n >= 0);
   }
 }`;
-    // CONTROL FIRST, because it is what establishes that there is something to lose: as `public` the route is
-    // collection-shaped and admits exactly one handler.
+    // THIS GUARD HAS NOW LOST ITS SUBJECT TWICE, and the second loss is X94's mixed-scalar lift. The shape
+    // below depended on the public arm being collection-shaped and admitting exactly ONE handler, so that
+    // admitting `external` had two handlers to take away. X94 admits the mixed shape, so the public arm now
+    // admits all THREE and there is nothing to lose: both spellings admit 3 and the visibility keyword makes
+    // no difference at all. Three further candidate shapes were probed for a replacement subject - two
+    // distinct mappings, an expression key against an argument key, and an array-iterating external handler -
+    // and NONE shrinks; in the last two the external handler is refused by its own gate in BOTH spellings,
+    // which is the same collapse X76 caused here.
+    //
+    // The RULE is not dead: J4's re-measurement records `external-handler-would-shrink-the-route` firing on 3
+    // corpus rows, up from 1. So this file needs a subject drawn from those rows rather than a synthetic one.
+    // Filed as X114. Until then this records parity, which is what is actually true, instead of asserting a
+    // refusal that no longer happens.
     const asPublic = compileString(shrink('public'), BATCH);
-    expect(asPublic.hiddenBatch?.handlers).toEqual([
-      expect.objectContaining({
-        name: 'bump', eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
-      }),
-      expect.objectContaining({
-        name: 'bump2', eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
-      }),
-      expect.objectContaining({ name: 'credit', eligible: true }),
-    ]);
-
     const asExternal = compileString(shrink('external'), BATCH);
-    expect(asExternal.hiddenBatch?.handlers).toEqual([
-      expect.objectContaining({ name: 'bump', eligible: true }),
-      expect.objectContaining({ name: 'bump2', eligible: true }),
-      expect.objectContaining({
-        name: 'credit', eligible: false, rejectionReason: 'external-handler-would-shrink-the-route',
-      }),
-    ]);
-    // THE PROPERTY, as the arithmetic the guard exists to enforce rather than as a list of names.
     const admitted = (artifact: ReturnType<typeof compileString>): number =>
       (artifact.hiddenBatch?.handlers ?? []).filter((handler) => handler.eligible).length;
-    expect(admitted(asExternal)).toBeGreaterThan(admitted(asPublic));
-    expect(admitted(asExternal)).toBe(2);
-    expect(admitted(asPublic)).toBe(1);
+    expect(admitted(asPublic)).toBe(3);
+    expect(admitted(asExternal)).toBe(3);
+    // The never-shrink property, stated as the inequality it really is. It holds vacuously on this subject
+    // now, and that is exactly why X114 exists - do not read a green tick here as the guard being exercised.
+    expect(admitted(asExternal)).toBeGreaterThanOrEqual(admitted(asPublic));
+    // Parity is itself worth pinning: the two spellings must agree handler for handler, including reasons.
+    expect(asExternal.hiddenBatch?.handlers).toEqual(asPublic.hiddenBatch?.handlers);
   });
 
   /**

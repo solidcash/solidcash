@@ -760,6 +760,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private pendingStateWrites: Map<string, string> = new Map(); // "nftIndex:fieldIndex" -> stack name
   private hasStateAccess: boolean = false;
   private journalSlotsByFunctionId: Map<number, StateVariableNode[]> = new Map();
+  // X105. Which of those ids actually WRITE a slot. A route-reachable pure reader is journalled so it
+  // loads through the live frame, but it still writes nothing, so it must not be reclassified as a
+  // state writer in the ABI.
+  private journalWriterFunctionIds: Set<number> = new Set();
   // Per-traversal settlement state. FunctionDefinitionNode instances are shared by the
   // physical entrypoint and OP_DEFINE traversals, so mutable AST metadata cannot safely
   // decide which epilogue must flush a journal.
@@ -1752,8 +1756,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         fn.scalarJournalRecursive = true;
       }
     }
+    // X105. A handler which only READS a journalled slot was dropped from the closure entirely. Reached from
+    // the hidden-batch route as an OP_INVOKE subroutine it therefore re-read the authenticated PRE-state
+    // commitment while an earlier row's write was live in the wrapper's frame - a stale read that settled.
+    // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
+    // the route's own call closure: a contract with no `__scb1` produces the same map as before, and a
+    // read-only function outside the route keeps its established covenant path.
+    // A graph EMISSION clone is excluded, and not as a convenience: its frame is owned by the graph
+    // effect-frame protocol, which already pushes hidden context of its own (see the arity note in
+    // visitFunctionDefinition), and adding journal slots to it leaves the frame one item deeper than the
+    // caller pushes. C2's read-only `__scb_graph_fireAll` is exactly that shape and its honest cycle stops
+    // settling. A read-only clone which also emits or transfers therefore still reads the pre-state.
+    const routeFunctionId = functions.find((fn) => fn.hiddenBatchRoute)?.functionId;
+    const emissionClones = new Set(functions
+      .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
+      .map((fn) => fn.functionId!));
+    const routeReachable = new Set<number>();
+    if (routeFunctionId !== undefined) {
+      const pending = [routeFunctionId];
+      while (pending.length > 0) {
+        for (const calleeId of callsById.get(pending.pop()!) ?? []) {
+          if (routeReachable.has(calleeId) || emissionClones.has(calleeId)) continue;
+          routeReachable.add(calleeId);
+          pending.push(calleeId);
+        }
+      }
+    }
+    this.journalWriterFunctionIds = writerIds;
     this.journalSlotsByFunctionId = new Map([...slotsById]
-      .filter(([id, slots]) => writerIds.has(id) && slots.size > 0)
+      .filter(([id, slots]) => (writerIds.has(id) || routeReachable.has(id)) && slots.size > 0)
       .map(([id, slots]) => [id, [...slots.values()]
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
   }
@@ -2148,6 +2179,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.isDefineSubTraversal = true;
     subTraversal.forceFullStateLayout = true;
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
+    subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     // Compiled child bytecodes (for `type(C).creationCode` / `new C()` inside an extracted function body).
     subTraversal.compiledBytecodes = this.compiledBytecodes;
@@ -2401,6 +2433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
+    subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
@@ -2651,7 +2684,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The AST node is shared by several codegen traversals. Preserve a positive result
     // so ABI generation conservatively classifies an entrypoint that settles a journal
     // as state-writing even if a later analysis-only traversal visits the same node.
-    node.scalarJournal = node.scalarJournal === true || activeJournalSlots.length > 0;
+    // X105. A route-reachable pure reader now carries journal context, but it still mutates nothing.
+    // Only a function the closure classified as a WRITER may set the ABI's state-writing flag.
+    node.scalarJournal = node.scalarJournal === true
+      || (activeJournalSlots.length > 0 && node.functionId !== undefined
+        && this.journalWriterFunctionIds.has(node.functionId));
     this.functionHasReturnInLoop = node.body ? this.hasReturnInLoop(node.body, false) : false;
     // Rebuilt fresh each codegen pass (this node is revisited across derivation/subroutine sub-traversals);
     // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its per-call slot index).

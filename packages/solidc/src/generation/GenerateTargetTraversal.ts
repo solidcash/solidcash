@@ -1794,6 +1794,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    // L2-F2. The route must HOLD the journal its rows load through. The walk above admits the route's
+    // callees and never the route itself, so a route with no writer among them - a pure-reader resource
+    // route, or the `_self_alias` clone the resource shape emits - was filtered out while its callees were
+    // kept. `visitFunctionDefinition` then computed `invokesJournalHandler` true against an EMPTY
+    // `candidateJournalSlots`, and the first invoke aborted with a bare `Missing journal context '...' while
+    // invoking '...'`: fail-closed, but an availability regression on honest input with no name, no position
+    // and no remedy. Admitting the route is not a widening of what loads live - it is the holder of the very
+    // context those callees were already admitted to read, so no shape that compiles today can move.
+    const admitted = (id: number): boolean =>
+      (writerIds.has(id) || routeReachable.has(id)) && (slotsById.get(id)?.size ?? 0) > 0;
+    if (routeFunctionId !== undefined && [...routeReachable].some(admitted)) {
+      routeReachable.add(routeFunctionId);
+    }
     this.journalWriterFunctionIds = writerIds;
     this.journalSlotsByFunctionId = new Map([...slotsById]
       .filter(([id, slots]) => (writerIds.has(id) || routeReachable.has(id)) && slots.size > 0)

@@ -723,10 +723,11 @@ export const preflightLayer3Transaction = (
  * unlike the general TransactionBuilder send path, this function never mutates the shape
  * between preflight and broadcast.
  *
- * SCOPE. TWO of the eight broadcast sites in `src/` now carry the byte gate: this one and
- * `StatefulTransactionBuilder`'s submit phase, which is the one a Layer-3-shaped composition assembled
- * through the stateful builder actually reaches. The remaining six - `TransactionBuilder.send` and five in
- * `StatefulContract` - do not.
+ * SCOPE. EVERY LIVE BROADCAST SITE IN `src/` NOW CARRIES THE BYTE GATE. There were eight; the eighth,
+ * `StatefulContract._sendBuilderWithCustomUnlockers`, had no caller anywhere and is deleted rather than gated
+ * (see the note at its former position). The seven live ones are this function,
+ * `StatefulTransactionBuilder`'s submit phase, `TransactionBuilder.send`, and the four `StatefulContract`
+ * lifecycle-admin sites - destroy, split, merge and `_sendRawBuilder`.
  *
  * THE BLAST RADIUS IS MEASURED, NOT ASSUMED (X126). Every broadcast of the whole SDK e2e population was first
  * assessed against these rules without enforcing them - 5,370 sends across 422 green files - and the per-site
@@ -736,12 +737,16 @@ export const preflightLayer3Transaction = (
  * refuse C1. The gate was node-correct and the fixture was building a transaction the network rejects, so the
  * fixture was corrected (amounts are incidental to what it asserts) and the gate landed there.
  *
- * WHY THE OTHER SIX STAY OFF. `TransactionBuilder.send` was outside the lease that landed this. The five
- * `StatefulContract` sites are lifecycle admin - destroy, split, merge, and one raw-builder helper - which
- * never assemble a Layer-3 block, and the whole e2e population exercises them a combined 14 times across 11
- * tests. A 0% blast radius over 14 sends is not the evidence 2,315 sends gave for the submit path; it is an
- * unmeasured site with a small number attached. The sixth, `_sendBuilderWithCustomUnlockers`, has no caller
- * anywhere in the repo and must not be gated at all: a guard on dead code cannot fire on its own subject.
+ * WHY THE FOUR ADMIN SITES LANDED ANYWAY, ON 0% (X163). The population reaches them 14 times across 11 tests,
+ * and 0% over 13 net-ok sends is not evidence - at that sample size the one real defect the submit-path
+ * measurement found would have been invisible. The population coverage was not the evidence; CONSTRUCTED
+ * coverage was. All four compute a payout arithmetically with no floor - destroy's `totalInputSats - fee`,
+ * split's `totalFunding - newMintingAmount * splitCount - fee`, merge's `consumedSatoshis + totalFunding - fee`
+ * - and all four then write it over a placeholder BY INDEX on `builder.outputs`, the one path into an output
+ * that `addOutput`'s policy check never sees. Each was driven to a 100-satoshi output against a 576-satoshi
+ * threshold, and `MockNetworkProvider` accepted every one, because its default policy is `enforceDust: false`.
+ * That is the C1 blind spot exactly, on four paths the population happened never to steer into.
+ * `test/e2e/L4StatefulAdminSiteGate.test.ts` is the constructed set.
  */
 export async function sendPreflightedLayer3Transaction(
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,

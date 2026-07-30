@@ -345,8 +345,18 @@ describe('L4 finalized-bytes gate: every rule, at its boundary, in both directio
     expect(layer3.isPushOnlyBytecode(hexToBin('4effffffffaa'))).toBe(false); // PUSHDATA4, absurd length
     expect(layer3.isPushOnlyBytecode(hexToBin('4f'))).toBe(true); // OP_1NEGATE
     expect(layer3.isPushOnlyBytecode(hexToBin('60'))).toBe(true); // OP_16
-    expect(layer3.isPushOnlyBytecode(hexToBin('61'))).toBe(false); // OP_NOP
-    expect(layer3.isPushOnlyBytecode(hexToBin('50'))).toBe(false); // OP_RESERVED
+    expect(layer3.isPushOnlyBytecode(hexToBin('61'))).toBe(false); // OP_NOP, the first non-push opcode
+    /*
+     * OP_RESERVED. `CScript::IsPushOnly` is `if (opcode > OP_16) return false`, and its own comment records
+     * that this DOES make OP_RESERVED push-only even though executing it fails. This test asserted `false`
+     * first, which encoded a rule stricter than the node - a scriptSig BCHN accepts and this gate refused. The
+     * boundary is 0x60/0x61 and nowhere else.
+     */
+    expect(layer3.isPushOnlyBytecode(hexToBin('50'))).toBe(true);
+    expect(layer3.isPushOnlyBytecode(hexToBin('5150'))).toBe(true);
+    // And admitting it widens nothing: the VM refuses OP_RESERVED, so the byte gate is not the only decider.
+    const reserved = transactionOf([inputOf(hexToBin('5150'))], [outputOf(p2pkhLock(), 1_000n)]);
+    expectAdmits(reserved);
   });
 
   it('both send paths measure the same locking length on a token output', () => {

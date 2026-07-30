@@ -258,9 +258,10 @@ export const FINALIZED_BYTE_RULES: readonly FinalizedByteRule[] = Object.freeze(
     id: 'scriptsig-push-only',
     regime: 'policy',
     scope: 'input',
-    threshold: 'unlocking bytecode must be a pure push sequence',
+    threshold: 'unlocking bytecode must be a pure push sequence: every opcode <= OP_16 (0x60)',
     source: 'NODE MEASURED. BCHN refuses `64: scriptsig-not-pushonly`; a non-push-only scriptSig was put in '
-      + 'front of the node and refused with exactly that.',
+      + 'front of the node and refused with exactly that. The predicate matches `CScript::IsPushOnly` to the '
+      + 'opcode, OP_RESERVED included - see `isPushOnlyBytecode`.',
   },
   {
     id: 'consensus-unlocking-bytes',
@@ -378,6 +379,14 @@ const isOpReturnOutput = (output: Output): boolean =>
 /**
  * A pure push sequence, which is what `scriptsig-not-pushonly` requires.
  *
+ * MATCHES `CScript::IsPushOnly` EXACTLY, INCLUDING ITS ONE SURPRISE: every opcode up to and including OP_16
+ * (0x60) is push-only, so OP_RESERVED (0x50) IS push-only even though executing it fails. The node's own
+ * comment says so. This function first refused 0x50, which would have refused a scriptSig BCHN accepts - the
+ * wrong direction, and not made right by 0x50 being useless. Nothing is widened by admitting it either: the
+ * VM evaluation runs first on both send paths and refuses OP_RESERVED on its own.
+ *
+ * A truncated push is NOT push-only, matching `GetOp` failing.
+ *
  * Deliberately not shared with any "redeem script length" helper: those return 0 both for "not push-only" and
  * for "an empty final push", which would conflate a refusal with a legal shape.
  */
@@ -398,7 +407,7 @@ export function isPushOnlyBytecode(bytecode: Uint8Array): boolean {
       length = bytecode[cursor] | (bytecode[cursor + 1] << 8)
         | (bytecode[cursor + 2] << 16) | (bytecode[cursor + 3] << 24);
       cursor += 4;
-    } else if (opcode === 0x4f || (opcode >= 0x51 && opcode <= 0x60)) length = 0;
+    } else if (opcode <= 0x60) length = 0; // OP_1NEGATE, OP_RESERVED and OP_1..OP_16
     else return false;
     if (!Number.isFinite(length) || length < 0 || cursor + length > bytecode.length) return false;
     cursor += length;

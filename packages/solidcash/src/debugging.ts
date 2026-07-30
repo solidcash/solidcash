@@ -1,9 +1,11 @@
-import { AuthenticationErrorCommon, AuthenticationInstruction, AuthenticationProgramCommon, AuthenticationProgramStateCommon, AuthenticationVirtualMachine, ResolvedTransactionCommon, WalletTemplate, WalletTemplateScriptUnlocking, binToHex, createCompiler, createVirtualMachineBch2023, createVirtualMachineBch2025, createVirtualMachineBch2026, createVirtualMachineBchSpec, decodeAuthenticationInstructions, encodeAuthenticationInstruction, walletTemplateToCompilerConfiguration } from '@bitauth/libauth';
+import { AuthenticationErrorCommon, AuthenticationInstruction, AuthenticationProgramCommon, AuthenticationProgramStateCommon, AuthenticationVirtualMachine, ResolvedTransactionCommon, WalletTemplate, WalletTemplateScriptUnlocking, binToHex, createCompiler, createVirtualMachineBch2023, createVirtualMachineBch2025, createVirtualMachineBchSpec, decodeAuthenticationInstructions, encodeAuthenticationInstruction, walletTemplateToCompilerConfiguration } from '@bitauth/libauth';
 import { Artifact, LogData, LogEntry, Op, PrimitiveType, RequireStatement, StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
 import { findLastIndex, toRegExp } from './utils.js';
 import { FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError } from './Errors.js';
 import { getBitauthUri } from './libauth-template/LibauthTemplate.js';
+import { createVirtualMachineBch2026ForProvider } from './network/createVirtualMachine.js';
 import { VmTarget } from './interfaces.js';
+import type NetworkProvider from './network/NetworkProvider.js';
 
 export type DebugResult = AuthenticationProgramStateCommon[];
 export type DebugResults = Record<string, DebugResult>;
@@ -17,34 +19,37 @@ type VM = AuthenticationVirtualMachine<
 /* eslint-enable @typescript-eslint/indent */
 
 /**
- * X121, KNOWN GAP: this VM SHOULD read the network provider's consensus limits and cannot yet.
+ * X130: this VM reads the network provider's consensus limits, because it DECIDES.
  *
- * This is a third caller of the same class as `StatefulTransactionBuilder`'s two, and it DECIDES:
  * `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows, so this VM is the
  * accept/reject gate for `.build()` on a `recursiveStateHandler` function, and `TransactionBuilder.send()`
  * propagates it for a standard non-covenant transaction.
  *
  * At `@mem-cash/validation` 0.0.8 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
- * `consensusLimits` reach the decider, so a bare VM here is wrong in both directions. Measured:
+ * `consensusLimits` reach the decider, so a bare VM here was wrong in BOTH directions. Measured:
  *
- * - FAIL-OPEN: `decrement(3).build()` is ADMITTED under `operationCostBudgetPerByte: 150` while the decider
- *   refuses that shape at 150 x density. This is the direction that matters and it is still open.
- * - FAIL-CLOSED: `decrement(24)/(40).build()` are REFUSED at the stock 800 x density on the relaxed default
- *   profile, which the decider accepts. Confirmed by temporarily rebuilding this switch from
- *   `MOCK_CONSENSUS_LIMITS`, which flipped both to ACCEPT; that instrumentation was reverted.
+ * - FAIL-OPEN: `decrement(3).build()` was ADMITTED under `operationCostBudgetPerByte: 150` while the decider
+ *   refuses that shape at 150 x density. This is the direction that mattered.
+ * - FAIL-CLOSED: `decrement(24)/(40).build()` were REFUSED at the stock 800 x density on the relaxed default
+ *   profile, which the decider accepts.
  *
- * The fix needs a provider threaded through `debugLibauthTemplate` -> `debugTemplate` -> `createProgram`, which
- * touches `libauth-template/LibauthTemplate.ts`. `.send()` is already covered: `_strictRecursiveVmPreflight`
- * reads the provider, so only `.build()` is exposed. `X121StrictPreflightDecision` rows 2, 4, 6 and 6b.
+ * BOTH HALVES LANDED TOGETHER, deliberately. `debugTemplate` takes a provider and `LibauthTemplate.ts` supplies
+ * `transaction.provider`; an optional parameter nobody supplies would read as provider-aware while behaving
+ * bare, so the parameter and its only call site move as one. `X130DebugVmProviderFaithful` carries the
+ * verdicts; `X121StrictPreflightDecision` rows 2, 4 and 6 carry the history.
+ *
+ * NOT WIDENED: a provider that publishes no `consensusLimits` - which is every live network - takes
+ * `createVirtualMachineBch2026ForProvider`'s early return and gets byte-identically the VM this built before.
+ * Only the mock's declared profile changes anything, and changing it is the point.
  */
-const createVirtualMachine = (vmTarget: VmTarget): VM => {
+const createVirtualMachine = (vmTarget: VmTarget, provider?: NetworkProvider): VM => {
   switch (vmTarget) {
     case 'BCH_2023_05':
       return createVirtualMachineBch2023();
     case 'BCH_2025_05':
       return createVirtualMachineBch2025();
     case 'BCH_2026_05':
-      return createVirtualMachineBch2026();
+      return createVirtualMachineBch2026ForProvider(provider);
     case 'BCH_SPEC':
       // TODO: This typecast is shitty, but it's hard to fix
       return createVirtualMachineBchSpec() as unknown as VM;
@@ -58,6 +63,7 @@ export const debugTemplate = (
   template: WalletTemplate,
   artifacts: Artifact[],
   verifyTransaction: boolean = true,
+  provider?: NetworkProvider,
 ): DebugResults => {
   const unlockingScriptIds = Object.keys(template.scripts).filter((key) =>
     'unlocks' in template.scripts[key] && !key.includes('_body_'),
@@ -99,7 +105,7 @@ export const debugTemplate = (
     for (const scenarioId of scenarioIds) {
       try {
         results[`${unlockingScriptId}.${scenarioId}`] = debugSingleScenario(
-          template, matchingArtifact, unlockingScriptId, scenarioId,
+          template, matchingArtifact, unlockingScriptId, scenarioId, provider,
         );
       } catch (error) {
         // A composed transaction can fail at both a wrapper/proxy input and its delegated implementation input.
@@ -117,15 +123,16 @@ export const debugTemplate = (
       ?? evaluationErrors[0];
   }
 
-  if (verifyTransaction) verifyFullTransaction(template);
+  if (verifyTransaction) verifyFullTransaction(template, provider);
 
   return results;
 };
 
 const debugSingleScenario = (
   template: WalletTemplate, artifact: Artifact | undefined, unlockingScriptId: string, scenarioId: string,
+  provider?: NetworkProvider,
 ): DebugResult => {
-  const { vm, program } = createProgram(template, unlockingScriptId, scenarioId);
+  const { vm, program } = createProgram(template, unlockingScriptId, scenarioId, provider);
 
   const fullDebugSteps = vm.debug(program);
 
@@ -312,9 +319,11 @@ type Program = AuthenticationProgramCommon;
 type CreateProgramResult = { vm: VM, program: Program };
 
 // internal util. instantiates the virtual machine and compiles the template into a program
-const createProgram = (template: WalletTemplate, unlockingScriptId: string, scenarioId: string): CreateProgramResult => {
+const createProgram = (
+  template: WalletTemplate, unlockingScriptId: string, scenarioId: string, provider?: NetworkProvider,
+): CreateProgramResult => {
   const configuration = walletTemplateToCompilerConfiguration(template);
-  const vm = createVirtualMachine(template.supported[0] as VmTarget);
+  const vm = createVirtualMachine(template.supported[0] as VmTarget, provider);
   const compiler = createCompiler(configuration);
 
   if (!template.scripts[unlockingScriptId]) {
@@ -528,7 +537,7 @@ const getFunctionSourceMap = (
 
 // After debugging, we want to verify the full transaction to ensure it is valid (this catches any errors that are not
 // necessarily script errors)
-const verifyFullTransaction = (template: WalletTemplate): void => {
+const verifyFullTransaction = (template: WalletTemplate, provider?: NetworkProvider): void => {
   const placeholderScriptId = Object.keys(template.scripts).find((key) =>
     'unlocks' in template.scripts[key] && !key.includes('_body_'),
   );
@@ -538,7 +547,7 @@ const verifyFullTransaction = (template: WalletTemplate): void => {
     throw new Error('No placeholder scenario ID or script ID found');
   }
 
-  const { vm, program } = createProgram(template, placeholderScriptId, placeholderScenarioId);
+  const { vm, program } = createProgram(template, placeholderScriptId, placeholderScenarioId, provider);
 
   const verificationResult = vm.verify({
     sourceOutputs: program.sourceOutputs,

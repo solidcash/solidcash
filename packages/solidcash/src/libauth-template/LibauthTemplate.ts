@@ -150,7 +150,10 @@ export const debugLibauthTemplate = (template: WalletTemplate, transaction: Tran
   // here would reject transactions the selected mock policy intentionally accepts. Script scenarios above are
   // still debugged; only the duplicate production-policy check is skipped.
   const verifyTransaction = transaction.provider.policy?.enforceDust !== false;
-  return debugTemplate(template, allArtifacts, verifyTransaction);
+  // X130: the debug VM DECIDES `.build()` for a recursive state invocation, so it must evaluate under the same
+  // consensus limits the provider publishes to its decider. Supplied here rather than defaulted in
+  // `debugTemplate`, because an optional parameter nobody passes reads as provider-aware while behaving bare.
+  return debugTemplate(template, allArtifacts, verifyTransaction, transaction.provider);
 };
 
 export const getBitauthUri = (template: WalletTemplate): string => {

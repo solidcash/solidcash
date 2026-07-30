@@ -1230,8 +1230,10 @@ const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
  * the covenant itself refuses the stale composition - proven by bypass constructors in
  * `Layer3EmissionCloneJournalX111.test.ts`. What survives is the DYNAMIC half: a clone whose stale read is on
  * a chunk-backed slot is still not journalled, because journalling only the header would mix two sources for
- * one array. So the gate below now over-refuses on the scalar half and is load-bearing only on the dynamic
- * half. Narrowing or removing it is an integration decision, not a local one.
+ * one array. So the gate below now over-refuses on the scalar half, and on the dynamic half it refuses an
+ * HONEST constructor only - `writtenVariablesOf(clone)` is the spender's own data, so one published write on
+ * a footprint turns the whole rule off (R3). It is a diagnostic, not a boundary. Narrowing or removing it is
+ * an integration decision, not a local one.
  */
 const GRAPH_EMISSION_CLONE_PREFIX = '__scb_graph_';
 

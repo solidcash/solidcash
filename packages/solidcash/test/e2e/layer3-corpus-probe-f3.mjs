@@ -7,11 +7,19 @@
 // `layer3-corpus-census-f3.ts` records and `Layer3CorpusFitF3.test.ts` consumes, so that the fit report rests
 // on compile outputs taken at one named commit rather than on figures copied forward from an older run.
 //
-//   node packages/solidcash/test/e2e/layer3-corpus-probe-f3.mjs            # every corpus
+//   node packages/solidcash/test/e2e/layer3-corpus-probe-f3.mjs            # every corpus, DRY RUN
 //   F3_CORPORA=mistswap,eacc node .../layer3-corpus-probe-f3.mjs           # a subset
 //   F3_LIMIT=200 node .../layer3-corpus-probe-f3.mjs                       # smoke run
+//   F3_WRITE_CENSUS=1 F3_COMMIT=<sha> node .../layer3-corpus-probe-f3.mjs  # RE-TAKE the committed census
 //
 // Writes JSON to F3_OUT (default: the scratchpad path below).
+//
+// X112. RUNNING THIS SCRIPT USED TO OVERWRITE `layer3-corpus-census-f3.ts` AS A SIDE EFFECT, every time,
+// including a `F3_LIMIT=200` smoke run and a single-corpus run. The census is a committed 11,476-line record
+// that four tests assert against and that is stamped with the compiler commit it was taken at, so a probe run
+// intended to look at one corpus silently replaced it with a partial one under an `UNSTAMPED` commit. Writing
+// it is now OPT-IN (`F3_WRITE_CENSUS=1`), and a partial run refuses to write it at all - the census's own test
+// exists to catch rows from two compilers under one stamp, and this is the mechanism that produced them.
 
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
@@ -482,8 +490,11 @@ const module = `import type { CensusGates, CensusRow } from './layer3-corpus-fit
  * named-refusal histogram and the compile-failure heads are recorded in full, and the complete row is kept for
  * every contract that reaches the bus. Regenerate with:
  *
- *   node packages/solidcash/test/e2e/layer3-corpus-probe-f3.mjs
+ *   F3_WRITE_CENSUS=1 F3_COMMIT=<sha> node packages/solidcash/test/e2e/layer3-corpus-probe-f3.mjs
  *   npx eslint --fix packages/solidcash/test/e2e/layer3-corpus-census-f3.ts
+ *
+ * X112: without \`F3_WRITE_CENSUS\`, the probe writes its module to a scratch path and leaves this file alone.
+ * It used to overwrite this file on EVERY run, a partial one included.
  *
  * The second line is not optional: the module is emitted with \`JSON.stringify\`, whose double quotes this
  * repository's lint rejects. Measured cost of a full four-corpus re-take at stride 12: 29 minutes.
@@ -516,9 +527,29 @@ export const F3_CENSUS_BUS_FAILURES: Record<string, Record<string, number>> = ${
 /** Every contract with at least one eligible SCB1 handler, in full. This is the bus-reachable corpus. */
 export const F3_CENSUS_ELIGIBLE: CensusRow[] = ${JSON.stringify(eligibleRows, null, 2)};
 `;
-const moduleOut = process.env.F3_MODULE_OUT || join(here, 'layer3-corpus-census-f3.ts');
+// X112. The committed census is written only when asked for it by name, and never from a partial run.
+const committedCensus = join(here, 'layer3-corpus-census-f3.ts');
+const scratchCensus = `${out.replace(/\.json$/, '')}-census-f3.ts`;
+const wantsCommitted = process.env.F3_MODULE_OUT === committedCensus
+  || (process.env.F3_MODULE_OUT === undefined && process.env.F3_WRITE_CENSUS !== undefined);
+const partial = process.env.F3_LIMIT !== undefined
+  || process.env.F3_CORPORA !== undefined
+  || process.env.F3_MERGE !== undefined;
+if (wantsCommitted && partial) {
+  throw new Error('refusing to overwrite the committed census from a PARTIAL run: F3_LIMIT / F3_CORPORA / '
+    + 'F3_MERGE is set, and a partial re-take leaves rows from two compilers under one commit stamp. Take the '
+    + 'full four-corpus run, or set F3_MODULE_OUT to a scratch path.');
+}
+if (wantsCommitted && process.env.F3_COMMIT === undefined) {
+  throw new Error('refusing to overwrite the committed census without F3_COMMIT: the stamp is what makes every '
+    + 'recorded figure attributable to a compiler, and UNSTAMPED silently detaches all of them.');
+}
+const moduleOut = process.env.F3_MODULE_OUT ?? (wantsCommitted ? committedCensus : scratchCensus);
 writeFileSync(moduleOut, module);
 process.stderr.write(`wrote recorded census module to ${moduleOut}\n`);
+if (!wantsCommitted) {
+  process.stderr.write('the COMMITTED census was not touched; re-take it with F3_WRITE_CENSUS=1 F3_COMMIT=<sha>\n');
+}
 
 for (const corpus of [...new Set(rows.map((row) => row.corpus))]) {
   const subset = rows.filter((row) => row.corpus === corpus);

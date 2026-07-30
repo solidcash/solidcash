@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
+  bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin, sha256,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
@@ -1015,6 +1015,16 @@ function preflightOutcome(built: BuiltC3): string {
   }
 }
 
+/**
+ * X152. Which byte rules a hostile shape's finalized bytes break, if any. The two injection cases below run
+ * 101,750 and 101,680 serialized bytes against the 100,000-byte relay ceiling, so the byte gate has an
+ * objection to them - and it is not the one either test asserts. Pinning both halves keeps a future reordering
+ * of `preflightLayer3Transaction` from turning a hostile assertion into a size assertion silently.
+ */
+const byteRefusals = (rawTx: string): string[] => layer3.assessFinalizedTransactionBytes(
+  decodeTransactionUnsafe(hexToBin(rawTx)),
+).refusals.map((row) => row.rule).sort();
+
 /** The honest control every hostile case is measured against, asserted before the attack is built. */
 async function honestControl(): Promise<BuiltC3> {
   const control = await buildC3();
@@ -1239,6 +1249,11 @@ describe('C3 hostile cases', () => {
     // following test isolates the covenant refusal by removing the SDK gate's objection.
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('carries a token outside every participant block (region ends at 98)');
+    // X152. 101,750 serialized bytes is 1,750 over the relay ceiling, so these bytes ALSO break a byte rule.
+    // The structural block-assembly gate runs first in `preflightLayer3Transaction` and the byte rules run
+    // last, so the refusal above is the SDK's structural one and not the gate's.
+    expect(byteRefusals(attacked.transaction)).toEqual(['relay-transaction-size']);
+    expect(outcome, 'the byte gate spoke first').not.toMatch(/finalized transaction refused by/);
     // And the covenant refuses it independently, at input 106 - the graph-root controller, whose
     // `tx.inputs.length == this.activeInputIndex + 2` rule makes the participant table exhaustive over the
     // WHOLE transaction. 106 is strictly before the injected block at 108/109, so what rejects here is the
@@ -1260,7 +1275,13 @@ describe('C3 hostile cases', () => {
     expect(attacked.layout.controllerInput).toBe(106);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 106');
-    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+    // X152. 101,680 serialized bytes is 1,680 over the relay ceiling. The VM speaks first here (byte rules
+    // are last), and the bare `rejects.toThrow()` this replaces would have absorbed a gate refusal without
+    // going red if that order ever changed or this shape moved onto a gate-bearing send path.
+    expect(byteRefusals(attacked.transaction)).toEqual(['relay-transaction-size']);
+    expect(outcome, 'the byte gate spoke first').not.toMatch(/finalized transaction refused by/);
+    await expect(attacked.provider.sendRawTransaction(attacked.transaction))
+      .rejects.toThrow(/evaluating input index 106/);
   }, 900_000);
 
   it('HOSTILE: omitting one participant\'s block while the table still names it is refused at input 98',

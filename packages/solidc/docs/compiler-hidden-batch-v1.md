@@ -46,36 +46,83 @@ Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `pi
 
 | covenant | direct bytes | batch bytes | batch delta |
 |---|---:|---:|---:|
-| B parser/dispatcher | 369 | 1,477 | +1,108 |
+| B parser/dispatcher | 369 | 1,037 | +668 |
 | A, 2 rows | 407 | 518 | +111 |
 | A, 3 rows | 426 | 542 | +116 |
 | A, 8 rows | 518 | 662 | +144 |
-| parameter-authorized `transferFrom`, exact 2-row route | 3,047 | 9,775 | +6,728 |
+| parameter-authorized `transferFrom`, exact 2-row route | 3,157 | 4,814 | +1,657 |
 
-`BatchCostRegression.test.ts` freezes these deployed-byte measurements, the 1,020-byte scalar
-hidden route body, and the 6,532-byte multi-entry route body. The fixture has only 225 bytes of
-headroom below the 10,000-byte P2SH limit, so any growth is release-significant. These are compiler
+RE-PINNED AT X108 from `BatchCostRegression.test.ts` at HEAD, which is the authority for every figure
+in this table. It had been frozen at `99abfbe2` and never re-derived. Old -> new, with the three
+unchanged A rows as the control that this is the same fixture and not a substituted one:
+
+| figure | was (99abfbe2) | is (HEAD) | moved by |
+|---|---:|---:|---|
+| B parser/dispatcher batch bytes | 1,477 | 1,037 | `67342f24` outlining, then `c355628d` |
+| B parser/dispatcher delta | +1,108 | +668 | consequence of the row above |
+| `transferFrom` direct bytes | 3,047 | 3,157 | `c355628d`, then `373f4f10` (X19 spelling convergence) |
+| `transferFrom` batch bytes | 9,775 | 4,814 | `67342f24` outlining, then X19/X24 re-pins |
+| `transferFrom` delta | +6,728 | +1,657 | consequence of the two rows above |
+| scalar hidden route body | 1,020 | 325 | `67342f24`, `c355628d` |
+| multi-entry route body | 6,532 | 1,554 | `67342f24`, then `b6439ccf` (X24) |
+
+`BatchCostRegression.test.ts` freezes these deployed-byte measurements, the 325-byte scalar
+hidden route body, and the 1,554-byte multi-entry route body.
+
+The headroom consequence is re-derived, not merely refreshed. This fixture used to sit 225 bytes below
+the 10,000-byte P2SH limit, and that margin was the stated reason "any growth is release-significant"
+and a named attention item for the pre-enablement review. At 4,814 bytes it now has 5,186 bytes of
+headroom, so that reasoning no longer holds and must not be cited: size is no longer this route's
+binding constraint. The 10,000-byte limit is still enforced, and `BatchCostRegression.test.ts` still
+proves the `contract-size-limit` diagnostic fires above it, but on a deliberately oversized fixture
+rather than on this route.
+
+These are compiler
 footprint evidence, not a substitute for transaction-specific VM metrics:
 the final Release 0 gate still records evaluated instruction cost, pushed bytes, stack/memory peaks,
 unlocking sizes, and complete transaction sizes from constructed 2/3/8-row transactions.
 
-Constructed Release 5 transactions are pinned under `BCH_2026_05`. UNVERIFIED AT HEAD (row X108): the B
-figures below match neither the pre-X105 nor the post-X105 values that
-`RepeatedExternalBatchRelease5.test.ts` measures (2 rows: 2,492 instructions / 273,265 op cost there versus
-2,743 / 316,607 here), and the transaction sizes differ too, so this is a different fixture stale by an
-unattributed amount. It has not been re-measured and must not be cited as current.
+Constructed Release 5 transactions are pinned under `BCH_2026_05`. A is input 0 and B is input 2 of the
+same transaction; inputs 1 and 3 are the two entry/fee inputs and are identical across all three rows.
 
 | rows | tx bytes | A instructions | A op cost / budget | A peak items/bytes | A unlock | B instructions | B op cost / budget | B peak items/bytes | B unlock |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | 5,915 | 1,079 | 138,080 / 1,636,800 | 12 / 3,022 | 2,005 | 2,743 | 316,607 / 2,338,400 | 20 / 5,834 | 2,882 |
-| 3 | 5,943 | 1,202 | 150,798 / 1,637,600 | 13 / 3,088 | 2,006 | 3,424 | 386,913 / 2,359,200 | 20 / 5,912 | 2,908 |
-| 8 | 6,055 | 952 | 127,276 / 1,635,200 | 10 / 3,374 | 2,003 | 5,461 | 610,442 / 2,452,000 | 17 / 6,259 | 3,024 |
+| 2 | 3,575 | 1,118 | 128,876 / 910,400 | 12 / 1,590 | 1,097 | 2,492 | 273,265 / 1,192,800 | 22 / 2,970 | 1,450 |
+| 3 | 3,603 | 1,245 | 141,996 / 911,200 | 13 / 1,656 | 1,098 | 3,170 | 343,506 / 1,213,600 | 22 / 3,048 | 1,476 |
+| 8 | 3,715 | 995 | 118,474 / 908,800 | 10 / 1,942 | 1,095 | 4,884 | 533,636 / 1,306,400 | 22 / 3,395 | 1,592 |
+
+RE-PINNED AT X108 to `RepeatedExternalBatchRelease5.test.ts` at HEAD, which measures every figure above
+from constructed transactions under `BCH_2026_05`.
+
+X108 was opened on the reading that these figures described "a different fixture". That reading is
+withdrawn: it was arithmetic, not judgement, that settled it. The table is the SAME fixture
+(`Counter`/`Caller` with `run`, `runTriple`, `runEight`), frozen from that file's own pinned values at
+`99abfbe2` and written here two minutes later at `47c660f9`, then never re-derived through seven
+subsequent commits. Three independent facts identify it:
+
+1. every one of the nine columns matched that file exactly at `99abfbe2`;
+2. the stale-minus-current unlocking deltas are CONSTANT across 2, 3 and 8 rows (A -908 bytes,
+   B -1,432 bytes), which a substituted fixture would not produce; and
+3. the transaction-size delta is exactly their sum (-2,340 bytes) in all three rows, so the input and
+   output counts never changed. Only A's and B's covenants shrank.
+
+Both columns of budget figures are self-consistent under the section 3 formula
+`800 * (41 + |own unlocking bytecode|)` in the stale table and in this one, which is why the stale table
+looked internally credible for seven commits. Self-consistency is not currency: the whole table moved
+together because its inputs moved together.
+
+The two moves, with the 2-row B instruction count as the tracer: `67342f24` cross-function outlining
+(2,743 -> 2,416), then `aa9e9f27` budget refresh (-> 2,535), then `c7ceb671` X105 read-your-writes
+(-> 2,492). The op-cost column tracks it: 316,607 -> 264,940 -> 277,566 -> 273,265.
 
 The VM tests additionally freeze pushed bytes, hash iterations, and both data-NFT input projections.
 Peak figures combine the main and alternate stacks and sum resident item bytes at every debug-trace
 step; this closes the Release 0 stack/memory measurement requirement for the frozen fixtures.
 The caller cost is not monotonic because the eight-row zero-argument fixture is simpler than the
-two/three-row argument-bearing handlers.
+two/three-row argument-bearing handlers. This is the one conclusion drawn from the table, so X108
+re-derived it rather than assuming it survived the re-pin: it does. A instructions run 1,118 (2 rows),
+1,245 (3 rows), 995 (8 rows), so the eight-row case is still the cheapest caller despite having the most
+rows. B remains monotonic in rows, as it was before.
 
 This is the first deployable composition protocol. It covers:
 
@@ -388,11 +435,27 @@ could later be supported by separately advertised shapes which collapse the alia
 journal; cold inserts require authenticated predecessor planning. Neither may be inferred from the
 current route.
 
-The stripped resource-route fixture is 9,775 bytes; the corpus token with mint, approve, and check
-helpers is 10,600 bytes and is not deployable without reduction or splitting. The library compiler
+The stripped resource-route fixture is 4,814 bytes. The corpus token with mint, approve, and check
+helpers is 6,032 bytes and now compiles inside the limit; `RepeatedExternalBatchCorpus.test.ts` asserts
+it carries no `contract-size-limit` diagnostic. The library compiler
 emits a `contract-size-limit` error diagnostic for artifacts above 10,000 bytes. Independent review remains required before
 default enablement, with particular attention to key classification, global/per-row witness
-binding, alias rejection, iterative output derivation, and the 225-byte size margin.
+binding, alias rejection, and iterative output derivation.
+
+RE-PINNED AT X108. Size is deliberately no longer on that attention list, and this is a reversal rather
+than a refresh. The stripped fixture was 9,775 bytes (225 below the limit) and the corpus token was
+10,600 bytes, over the limit, carrying the error diagnostic and documented as non-deployable test
+evidence. Both figures were frozen at `99abfbe2` and moved when cross-function outlining landed at
+`67342f24`. The corpus token's claim had inverted outright: the assertion in
+`RepeatedExternalBatchCorpus.test.ts` at HEAD is that the diagnostic is ABSENT and the artifact is under
+10,000 bytes, which is the opposite of what this section stated. Measured at HEAD the token has 3,968
+bytes of headroom and the stripped route has 5,186.
+
+One figure here is weaker than the rest and is labelled so deliberately. The token's exact 6,032 bytes is
+a point measurement taken at X108; no test freezes it. `RepeatedExternalBatchCorpus.test.ts` asserts only
+the bound (`< 10,000`, no diagnostic), so the exact byte count can drift silently while that test stays
+green. The stripped route's 4,814 does not have this weakness: it is pinned exactly by
+`BatchCostRegression.test.ts`.
 
 ## 8. Split contracts
 

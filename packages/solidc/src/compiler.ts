@@ -4,7 +4,7 @@ import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptio
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
-  ExpressionNode,
+  EntryAccessInfo, ExpressionNode,
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
@@ -2483,6 +2483,37 @@ function compileResolvedAst(
   if (hiddenBatchRoute?.blockLayout) {
     for (const fn of ast.contract.functions) {
       if (fn.graphEmissionHandler) fn.blockLayout = hiddenBatchRoute.blockLayout;
+    }
+  }
+  // M3. The OTHER clones route synthesis dispatches through - `__scb_external_*` and its siblings - are internal
+  // functions too, so they own no independently inferred block layout either, and a C2 entry write inside one
+  // reaches code generation as `Block layout not available while compiling '__scb_external_write'`. That refusal
+  // costs the contract its whole route, not just the handler.
+  //
+  // Sharing the route's layout is necessary and is NOT sufficient, and must not be done alone: `collectEntryAccesses`
+  // walks only a function's OWN body, so the route publishes the operations of what IT contains while the clone
+  // upserts the slot. A route reporting `operations ['read']` and `writesState=false` for a slot it writes is worse
+  // than the refusal - the spender chooses which entry to use, and an unpublished write surface is one the SDK does
+  // not fund or authenticate. So UNION the clone's operations into the route's matching access first, matched by the
+  // entry's identity - collection, key parameters, slot index - and share the layout only when every one of the
+  // clone's accesses has exactly one such match. A mismatch is not a naming difference: it means the two are
+  // describing different physical entries, and then nothing is shared and the pre-existing refusal stands.
+  if (hiddenBatchRoute?.blockLayout && hiddenBatchRoute.entryAccesses?.length) {
+    const routeAccesses = hiddenBatchRoute.entryAccesses;
+    const identity = (access: EntryAccessInfo): string =>
+      `${access.collection}|${access.keyParams.join(',')}|${access.slotIndex}`;
+    for (const fn of ast.contract.functions) {
+      if (fn.blockLayout || fn.graphEmissionHandler || !fn.entryAccesses?.length) continue;
+      if (!HIDDEN_BATCH_CLONE_PREFIXES.some((prefix) => fn.name.startsWith(prefix))) continue;
+      const matches = fn.entryAccesses.map((access) =>
+        routeAccesses.filter((candidate) => identity(candidate) === identity(access)));
+      if (matches.some((candidates) => candidates.length !== 1)) continue;
+      fn.entryAccesses.forEach((access, index) => {
+        for (const operation of access.operations) {
+          if (!matches[index][0].operations.includes(operation)) matches[index][0].operations.push(operation);
+        }
+      });
+      fn.blockLayout = hiddenBatchRoute.blockLayout;
     }
   }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.

@@ -137,6 +137,27 @@ export class GraphHandlerShapeError extends SolidCashError {
   // class adds is the position, the two file caveats and a name that is not `Error`.
 }
 
+/**
+ * X118. A value-returning, internally-invoked helper that emits an event.
+ *
+ * Such a helper compiles to an OP_INVOKE subroutine whose epilogue returns before emit settlement, so the event
+ * would be silently dropped; code generation refuses it. It refused with a bare internal `Error` carrying no class
+ * name, no position and no remedy, which is what the user saw on the canonical solidity-by-example `ERC20.sol` in
+ * PLAIN direct-mode compilation. `_mint` there is VOID as written - `LowerCollectionJournalHelpers` is what makes
+ * it returning - so `collectionJournal` is reported when that is the cause, because otherwise the message names a
+ * return value the source does not have.
+ */
+export class EmittingStateHelperEventError extends SolidCashError {
+  constructor(node: Node, name: string, viaCollectionJournal: boolean) {
+    super(node, `Helper '${name}' emits an event and is invoked internally as a value-returning subroutine, whose `
+      + 'event would be dropped at its exit'
+      + (viaCollectionJournal
+        ? ' (it is void as written; its single mapping entry made it a value-threaded collection-journal handler)'
+        : '')
+      + '. Move the emit into the calling entry point, or split the emit and the state write into separate helpers');
+  }
+}
+
 export class ParseError extends Error {
   constructor(
     message: string,

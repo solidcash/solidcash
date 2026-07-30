@@ -77,6 +77,34 @@ contract X167DeleteOnly() {
   }
 }`;
 
+/** A chunk-backed dynamic SCALAR, deleted and then READ in the same function. */
+const DELETE_SCALAR = `pragma solidcash >=0.8.0;
+contract X167Scalar() {
+  bytes head;
+  function seed(bytes a) public {
+    this.head = a;
+    require(true);
+  }
+  function clearAndRead() public {
+    delete this.head;
+    require(this.head.length == 0);
+  }
+}`;
+
+/** A whole-array delete inside a BRANCH: the delete now registers a dynamic write, so both paths matter. */
+const DELETE_IN_BRANCH = `pragma solidcash >=0.8.0;
+contract X167Branch() {
+  bytes8[] d;
+  function push(bytes8 x) public {
+    d.push(x);
+    require(true);
+  }
+  function clearIf(bool c) public {
+    if (c) { delete d; }
+    require(true);
+  }
+}`;
+
 const b8 = (n: number): Uint8Array => new Uint8Array(8).fill(n);
 const b10 = (n: number): Uint8Array => new Uint8Array(10).fill(n);
 /** bytes8 -> bytes10 widens by right-padding two zero bytes. */
@@ -161,6 +189,34 @@ describe('X167 - a whole-array copy must replace the destination, not append to 
 
   it('X167-Q DESTINATION EQUAL LENGTH', async () => {
     expect(await copyWith(2, 2)).toEqual([widened(0x11), widened(0x22)]);
+  }, 300_000);
+
+  it('X167-B DYNAMIC SCALAR: a delete must be visible to a read LATER IN THE SAME FUNCTION', async () => {
+    // The read-after-write half of the fix, on the shape that is not an array. `delete this.head` then
+    // `this.head.length == 0` in the same body: the require can only pass if the read carries the delete.
+    // This shape moved 794 -> 710 bytes, so it needs VM proof and not just compiler admission.
+    const { sc } = await deploy(DELETE_SCALAR, {});
+    await sc.seed(new Uint8Array(120).fill(0xaa)).send();
+    expect((await sc.getState()).head.length).toBe(120);
+    await sc.clearAndRead().send();
+    expect((await sc.getState()).head).toEqual(new Uint8Array(0));
+  }, 300_000);
+
+  it('X167-C BRANCH: a whole-array delete inside a branch clears on the taken path only', async () => {
+    // A dynamic delete now registers a dynamic write, which is the machinery that has to survive being
+    // emitted under a branch. The not-taken call is the guard negative control - it differs from the taken
+    // one in the condition alone and must PRESERVE.
+    const taken = await deploy(DELETE_IN_BRANCH, { d: [] });
+    await taken.sc.push(b8(0x11)).send();
+    await taken.sc.push(b8(0x22)).send();
+    await taken.sc.clearIf(true).send();
+    expect((await taken.sc.getState()).d).toEqual([]);
+
+    const notTaken = await deploy(DELETE_IN_BRANCH, { d: [] });
+    await notTaken.sc.push(b8(0x11)).send();
+    await notTaken.sc.push(b8(0x22)).send();
+    await notTaken.sc.clearIf(false).send();
+    expect((await notTaken.sc.getState()).d).toEqual([b8(0x11), b8(0x22)]);
   }, 300_000);
 
   it('X167-R X151-R RE-RUN: the same copy TWICE must leave two elements, not four', async () => {

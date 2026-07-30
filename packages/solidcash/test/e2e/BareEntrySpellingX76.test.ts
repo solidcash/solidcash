@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { encodeHiddenBatch } from '../../src/layer3/hidden-batch.js';
@@ -195,6 +196,69 @@ describe('X76 the bare spelling of an ERC-20 entry write reaches the SCB1 route'
     // and nothing moved
     await attacked.getFunction('checkBalance')(alicePkh, 100n).send();
     await attacked.getFunction('checkBalance')(carolPkh, 0n).send();
+  }, 240_000);
+});
+
+/* ------------------------------------------------------------------------------------------------ */
+/* The other gate: the result route refused the whole route because ONE sibling emitted                */
+/* ------------------------------------------------------------------------------------------------ */
+
+const RESULT_ROUTE = `pragma solidcash >=0.8.0;
+contract X76ResultRoute() {
+  event Moved(int amount);
+  mapping(bytes20 => bigint) shares;
+  function peek(bytes20 who) public returns (bigint) {
+    require(this.shares[who] >= 0);
+    return this.shares[who];
+  }
+  function bump(bytes20 who, bigint amount) public {
+    this.shares[who] = this.shares[who] + amount;
+    emit Moved(1);
+    require(amount >= 0);
+  }
+}`;
+
+describe('X76 the result route survives an emitting sibling', () => {
+  it('settles a two-row batch on a route that did not exist before, and still refuses the emitter', async () => {
+    const artifact = compileString(RESULT_ROUTE, BATCH);
+    expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+      .toEqual([['peek', true], ['bump', false]]);
+
+    const provider = createTestProvider();
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.getFunction('bump')(alicePkh, 7n).send();
+    await contract.getFunction('bump')(bobPkh, 9n).send();
+    // Both rows address the one physical entry the route sizes for `shares` - a non-per-row witness means the
+    // rows must agree on the key, which is a property of the route shape and not of this change.
+    const honest = encodeHiddenBatch(artifact, [
+      { function: 'peek', args: [alicePkh] },
+      { function: 'peek', args: [alicePkh] },
+    ]);
+    expect(await failingInput(() => contract._batchRaw(honest.blob, honest.routeWitnesses).send())).toBe(null);
+
+    /**
+     * GUARD, and it is the half of the rule that must NOT have moved. `bump` carries an effect on a
+     * result-shaped route and is still refused, so its selector must not dispatch. Substituting it into the blob
+     * where the honest one verified has to be rejected by the CONTRACT's input, not by an SDK check.
+     */
+    const emitter = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'bump')!;
+    expect(emitter.rejectionReason).toBe('result-route-requires-effect-free-handlers');
+    const forged = encodeHiddenBatch(artifact, [
+      { function: 'peek', args: [alicePkh] },
+      { function: 'peek', args: [alicePkh] },
+    ]);
+    const blob = Uint8Array.from(forged.blob);
+    const getterSelector = hexToBin(
+      artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'peek')!.selector,
+    );
+    const at = indexOfBytes(blob, getterSelector);
+    expect(at).toBeGreaterThan(0);
+    blob.set(hexToBin(emitter.selector), at);
+    expect(await failingInput(() => contract._batchRaw(blob, forged.routeWitnesses).send())).toBe(0);
   }, 240_000);
 });
 

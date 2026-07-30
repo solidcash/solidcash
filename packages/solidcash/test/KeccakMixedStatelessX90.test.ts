@@ -38,11 +38,13 @@ import { alicePriv, aliceAddress } from './fixture/vars.js';
  *        STATEFUL  tail `c0`            = INPUTINDEX = I + 1 + counter, exactly what the master reads.
  *     So neither read can return a hash of anything but its own bound argument. The hostile below confirms it.
  *
- * The real defect the row was circling is neither: the SDK cannot build the satisfying transaction. On
- * `keccakLoopReads` TransactionBuilder takes an early `continue` (TransactionBuilder.ts:258) into
- * addStatelessKeccakLoopCoSpends, which splices ONLY STATEFUL side-cars at [contractIdx+1 ..] and never runs
- * the straight-line STATELESS co-spend path below it. So `send()` always fails on this artifact. That is a
- * builder gap, not a soundness hole, and it is why the shape reads as "unsatisfiable" from the SDK.
+ * The real defect the row was circling is neither: the SDK could not build the satisfying transaction. On
+ * `keccakLoopReads` TransactionBuilder took an early `continue` into addStatelessKeccakLoopCoSpends, which
+ * splices ONLY STATEFUL side-cars at [contractIdx+1 ..] and never ran the straight-line STATELESS co-spend path
+ * below it. So `send()` always failed on this artifact. That was a builder gap, not a soundness hole, and it is
+ * why the shape read as "unsatisfiable" from the SDK. X97 closed it (see KeccakMixedBuilderX97.test.ts): the
+ * builder now funds both families in one probe, and on the funded layout it reproduces the very assignment
+ * pinned below. The negative control here is kept, re-pinned to the fail-closed boundary that replaced it.
  *
  * NOT refused. It compiles today (packages/solidc/test/KeccakCompute.test.ts:61 asserts the artifact), a
  * satisfying spend exists, and nothing is forgeable - so a refusal would remove a working artifact for no
@@ -147,26 +149,44 @@ describe('X90: X83 second face - a STATELESS mixed keccak256 shape, satisfiabili
     expect(txid).toBeDefined();
   });
 
-  it('NEGATIVE CONTROL: the SDK cannot build it - send() never co-spends the straight-line side-car', async () => {
+  it('X97: given side-cars of BOTH kinds the SDK now builds it, and the VM accepts (was the negative control)', async () => {
     const provider = new MockNetworkProvider();
     const contract = new Contract(MIXED, [], { provider });
     const x = new Uint8Array(32).map((_, i) => (i * 5 + 1) & 0xff);
 
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    // Give the SDK everything it could want of BOTH kinds, so the failure is the routing and not scarcity.
+    // Give the SDK everything it could want of BOTH kinds. This used to fail on the routing, not on scarcity:
+    // the loop probe never saw the straight-line side-car read because that co-spend was never spliced in.
     await deploySidecar(provider, true, 0x31);
     await deploySidecar(provider, true, 0x32);
     await deploySidecar(provider, false, 0x33);
     await deploySidecar(provider, false, 0x34);
 
-    // Pinned to the builder's OWN failure, not a VM rejection: the loop probe never sees the straight-line
-    // side-car read because that co-spend was never spliced in.
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.f(x, 1n))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('NEGATIVE CONTROL: without the side-cars to separate the families, send() still fails CLOSED', async () => {
+    const provider = new MockNetworkProvider();
+    const contract = new Contract(MIXED, [], { provider });
+    const x = new Uint8Array(32).map((_, i) => (i * 5 + 1) & 0xff);
+
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    // ONE stateless side-car and no funder: appending just that one gives NI = 3, which forces
+    // NI - 2 == I + 1 + 0 == 1 - the collision the guard control below proves the VM rejects. The builder
+    // refuses BY NAME rather than emitting it.
+    await deploySidecar(provider, true, 0x35);
+    await deploySidecar(provider, false, 0x36);
+
     await expect(
       new TransactionBuilder({ provider })
         .addInputs(await contract.getUtxos(), contract.unlock.f(x, 1n))
         .addOutput({ to: contract.address, amount: 800_000n })
         .send(),
-    ).rejects.toThrow('keccak256 preimage extraction: no side-car read found in the probe trace.');
+    ).rejects.toThrow(/mixed keccak256 shape .* needs 2 STATELESS compute side-car UTXO/);
   });
 
   it('HOSTILE: the straight-line read cannot be pointed at a side-car for a DIFFERENT preimage (VM)', async () => {

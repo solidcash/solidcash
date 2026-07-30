@@ -1143,7 +1143,8 @@ export class TransactionBuilder {
     this.checkMaxFee(transaction);
     const tx = binToHex(encodeTransaction(transaction));
 
-    // X131, the finalized-bytes gate at site 2 of 8. It reads the DECODED broadcast bytes rather than a
+    // X131, the finalized-bytes gate at `TransactionBuilder.send`, one of the seven live broadcast sites in
+    // `src/`. It reads the DECODED broadcast bytes rather than a
     // re-derived shape, so it judges exactly what `sendRawTransaction` is about to receive.
     //
     // IT SPEAKS LAST, deliberately. `debug()` above already refused every script-level failure it can see, so a

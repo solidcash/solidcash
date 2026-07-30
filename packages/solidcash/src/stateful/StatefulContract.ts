@@ -3061,7 +3061,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let totalReclaimed = 0n;
     const { decodeTransaction, hash256 } = await import('@bitauth/libauth');
 
-    // X163, the finalized-bytes gate at site 3 of 8. Destroy sweeps EVERY remaining UTXO into one reclaim
+    // X163, the finalized-bytes gate at the `destroy` sweep. Destroy sweeps EVERY remaining UTXO into one reclaim
     // output whose amount is `totalInputSats - fee` - arithmetic, never checked against a floor - so a contract
     // holding little more than its fee reclaims a below-dust amount and a node refuses the whole sweep
     // `64: dust`. MEASURED: a 2,400-satoshi contract swept at a 2,300-satoshi fee produces a 100-satoshi
@@ -10115,7 +10115,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const rawTxBin = localHexToBin(rawTx);
     const decoded = decodeTransactionUnsafe(rawTxBin);
 
-    // X163, the finalized-bytes gate at site 4 of 8. `changeAmount` above is pure arithmetic -
+    // X163, the finalized-bytes gate at the static `split` site. `changeAmount` above is pure arithmetic -
     // `totalFunding - newMintingAmount * splitCount - fee` - and the only floor on it is zero, so any funding
     // that leaves a small positive remainder produces a below-dust change output. MEASURED: funding of exactly
     // `2 * 1200 + 2000 + 100` leaves 100 satoshis against a 576-satoshi threshold for a 44-byte output, and the
@@ -10273,7 +10273,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const rawTxBin = localHexToBin(rawTx);
     const decoded = decodeTransactionUnsafe(rawTxBin);
 
-    // X163, the finalized-bytes gate at site 5 of 8. Same arithmetic hazard as split, from the other
+    // X163, the finalized-bytes gate at the static `merge` site. Same arithmetic hazard as split, from the other
     // direction: `changeAmount` is `consumedSatoshis + totalFunding - fee`, and merge's whole purpose is to
     // reclaim the satoshis the consumed masters were holding. Those are typically 1,200 each - a few hundred
     // above the dust floor - so a fee that eats most of the reclaim leaves a change output under it. MEASURED
@@ -11169,7 +11169,8 @@ export class StatefulFunctionCall {
       );
     }
 
-    // X163, the finalized-bytes gate at site 6 of 8. This is the `sc.call.fork(...)` / `sc.call.consolidate(...)`
+    // X163, the finalized-bytes gate at `_sendRawBuilder`. This is the `sc.call.fork(...)` /
+    // `sc.call.consolidate(...)`
     // route into the SAME two builders the static `split`/`merge` use, so it inherits their change arithmetic
     // exactly: measured at 100 satoshis of change against a 576-satoshi threshold through
     // `withSplitFunding(...).withSplitFee(...)`, accepted by the mock.

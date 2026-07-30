@@ -47,6 +47,31 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * dust reports the dust. Row 5 measures exactly that, in both directions, so nobody discovers it by writing a
  * hostile test that passes for the wrong reason.
  *
+ * THE THROW CENSUS, because a green suite proves nothing went RED and only a census proves nothing went
+ * VACUOUS. `assertFinalizedTransactionBytes` was temporarily instrumented to append every call - throwing or
+ * not - with its calling `src/` frame, and the whole at-risk population was run twice: once at the pre-gate
+ * source, once with the four sites gated. Thirteen files, 212 passing tests both times, diffed by
+ * `file::test::caller::occurrence`.
+ *
+ *   BEFORE   266 gate calls, 28 throws, 122 tests reaching the gate
+ *   AFTER    280 gate calls, 28 throws, 128 tests reaching the gate
+ *   newly reached       14   destroy 8, split 3, `_sendRawBuilder` 2, merge 1 - exactly the per-site counts
+ *                            the X126 probe attributed to these four sites, and ALL 14 ADMITTED
+ *   newly throwing       0
+ *   disappeared          0
+ *   changed verdict      0
+ *
+ * The 14 are what makes these four guards non-vacuous: each new call site has a live subject in the
+ * pre-existing population, so none of them is a guard that can only ever fire on its own test. The 0 is the
+ * blast radius. Note which of the two numbers is the evidence - 0% was already known and was correctly
+ * refused as grounds for landing.
+ *
+ * A NARROWING THIS DOES CAUSE, stated rather than discovered: a contract whose MASTER output sits below the
+ * token-output dust floor can no longer be destroyed through the SDK, because destroy recreates that output at
+ * its own satoshi value. Such a master cannot be created on a real network in the first place - the node that
+ * refuses it here is the node that would have refused its creation - but a mock-only fixture could hold one.
+ * None in this repository does.
+ *
  * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor and an attacker does not call
  * `StatefulContract.split`. This is a correctness aid: the composer reads the arithmetic here instead of
  * building, funding, signing and broadcasting a sweep the network will not relay.
@@ -158,7 +183,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   beforeAll(() => { artifact = compileString(SRC); });
 
   /* ---------------------------------------------------------------------------------------------------- */
-  /* Site 3 of 8: StatefulContract.destroy                                                                  */
+  /* StatefulContract.destroy                                                                             */
   /* ---------------------------------------------------------------------------------------------------- */
 
   it('1. destroy REFUSES a below-dust reclaim, quoting the arithmetic that produced the threshold', async () => {
@@ -257,7 +282,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   }, 300_000);
 
   /* ---------------------------------------------------------------------------------------------------- */
-  /* Site 4 of 8: StatefulContract.split                                                                    */
+  /* StatefulContract.split                                                                               */
   /* ---------------------------------------------------------------------------------------------------- */
 
   it('2. split REFUSES a below-dust change output, quoting the arithmetic', async () => {
@@ -304,7 +329,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   }, 300_000);
 
   /* ---------------------------------------------------------------------------------------------------- */
-  /* Site 5 of 8: StatefulContract.merge                                                                    */
+  /* StatefulContract.merge                                                                               */
   /* ---------------------------------------------------------------------------------------------------- */
 
   it('3. merge REFUSES a below-dust change output, quoting the arithmetic', async () => {
@@ -365,7 +390,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   }, 300_000);
 
   /* ---------------------------------------------------------------------------------------------------- */
-  /* Site 6 of 8: StatefulFunctionCall._sendRawBuilder                                                       */
+  /* StatefulFunctionCall._sendRawBuilder                                                                  */
   /* ---------------------------------------------------------------------------------------------------- */
 
   it('4. _sendRawBuilder REFUSES a below-dust change on the `sc.call` split route', async () => {

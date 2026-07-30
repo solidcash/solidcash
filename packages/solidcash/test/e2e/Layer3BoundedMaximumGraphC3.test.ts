@@ -1804,6 +1804,13 @@ describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C3 on a real BCHN node', () 
   /** The control: a transaction the covenants should refuse, refused by the node, same chain, same run. */
   it('CONSENSUS: BCHN refuses the disjoint-root transcript', async () => {
     const built = await buildC3('disjoint-root', DEFAULT_ORDER, createTestProvider);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    // R3. NAME THE CAUSE, and here it matters most: C3 spent four rounds being refused `64: tx-size` before
+    // it ever reached a script, so a bare `rejects.toThrow()` on this shape would have passed for the whole
+    // period the covenants were never executed at all. Measured at `abb3f13b`, with C3 at 96,302 B and
+    // inside the ceiling: OP_VERIFY, code 16. The opcode is not pinned; the script-verify flag is.
+    const refusal = await built.provider.sendRawTransaction(built.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    console.log(`X59 C3 node refusal: ${refusal}`);
+    expect(refusal).toMatch(/mandatory-script-verify-flag-failed/);
   }, 900_000);
 });

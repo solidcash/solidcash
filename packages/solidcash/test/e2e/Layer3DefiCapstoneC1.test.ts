@@ -1186,6 +1186,13 @@ describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C1 on a real BCHN node', () 
    */
   it('CONSENSUS: BCHN refuses the forged graph caller', async () => {
     const built = await buildC1('caller', createTestProvider);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    // R3. NAME THE CAUSE. C1 has been refused by this node for `64: dust` and for mis-seeded categories in
+    // earlier rounds, and a bare `rejects.toThrow()` cannot tell either of those from the forgery this test
+    // is about - nor from `missing-inputs`, where the node never executed a script at all. Measured at
+    // `abb3f13b`: OP_EQUALVERIFY, code 16. The opcode is not pinned; the script-verify flag is.
+    const refusal = await built.provider.sendRawTransaction(built.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    console.log(`X59 C1 node refusal: ${refusal}`);
+    expect(refusal).toMatch(/mandatory-script-verify-flag-failed/);
   }, 900_000);
 });

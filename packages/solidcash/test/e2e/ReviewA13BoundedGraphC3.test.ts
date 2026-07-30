@@ -459,6 +459,16 @@ describe.runIf(process.env.TESTS_USE_REGTEST)('X59: A13 on a real BCHN node', ()
     }, createTestProvider);
     // A13-7a's own reading, reproduced against the node's chain: three projection proofs and the controller.
     expect(refusingInputs(built.builder)).toEqual([3, 4, 5, 6]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    // R3. NAME THE CAUSE. This read `rejects.toThrow()` with no matcher, which passes on `64: dust`,
+    // `64: tx-size`, `missing-inputs` - where the node stopped BEFORE executing anything - a mempool
+    // conflict, or an RPC error, none of which is evidence that a covenant refused. The whole point of the
+    // block is that the node EXECUTED these scripts, so the refusal must be a script-verify failure.
+    // Measured at `abb3f13b`: OP_VERIFY, code 16. The opcode is deliberately NOT pinned - C1's sibling control
+    // came back OP_EQUALVERIFY in one run and OP_VERIFY in another at this commit, so which verify fails first
+    // is not a property of the covenant. The flag is what separates "the scripts ran and refused" from the rest.
+    const refusal = await built.provider.sendRawTransaction(built.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    console.log(`X59 A13 node refusal: ${refusal}`);
+    expect(refusal).toMatch(/mandatory-script-verify-flag-failed/);
   }, 900_000);
 });

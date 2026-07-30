@@ -1196,6 +1196,13 @@ describe.runIf(process.env.TESTS_USE_REGTEST)('X59: C2 on a real BCHN node', () 
    */
   it('CONSENSUS: BCHN refuses a substituted dispatch target', async () => {
     const built = await buildCycleGraph('target', createTestProvider);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    // R3. NAME THE CAUSE. A bare `rejects.toThrow()` passes on `64: dust`, `64: tx-size`, `missing-inputs`
+    // - where the node stopped BEFORE executing anything - a mempool conflict, or an RPC error. This block
+    // claims the node EXECUTED the covenants and they refused, so the verdict must say so. Measured at
+    // `abb3f13b`: OP_EQUALVERIFY, code 16. The opcode is not pinned; the script-verify flag is.
+    const refusal = await built.provider.sendRawTransaction(built.transaction)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    console.log(`X59 C2 node refusal: ${refusal}`);
+    expect(refusal).toMatch(/mandatory-script-verify-flag-failed/);
   }, 900_000);
 });

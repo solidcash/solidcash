@@ -61,6 +61,26 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * measured floor under-predicted real corpus masters 34 times out of 45, because density is a property of a
  * contract body and not of any driver in the descriptor.
  *
+ * RE-MEASURED AT THIS COMMIT, and TWO of X70's figures above no longer reproduce. Both are staleness, not
+ * regression, and neither is caused by the X78 ranking change - the whole row was re-run with both estimator
+ * files reverted to the baseline and produced the same numbers.
+ *
+ *   - THE POPULATION IS 43, NOT 45. Seventy-one one-slot bus-reachable census rows are attempted and 28 skip;
+ *     three of the new skips are `census redeem length disagrees with the built participant`, i.e. the census
+ *     itself has drifted from what the compiler now emits and needs re-taking.
+ *   - THE BAND IS +15.0% TO +18.9%, MEAN +18.7%, still 0/43 under-predicted, and 444 bytes of that is a STALE
+ *     CONSTANT rather than model looseness. `estimate` defaults the two generated covenant lengths to the
+ *     recorded basis - projection 4,542, controller 1,514 - and this commit generates 4,098 and 1,493.
+ *     `GraphShapeSpec` carries override fields for exactly this and `replicaSpec` does not fill them in. With
+ *     this commit's sizes in the descriptor the band is +4.8% to +8.3%, mean +8.2%, which is X70's published
+ *     +4.3% to +7.5% back again. Serialized is +15.2% to +24.3% and carries the same 444-byte inflation.
+ *     THE FIX BELONGS IN `replicaSpec` (`layer3-corpus-fit-f3.ts`), which is not this file.
+ *   - The legacy `before` column consequently reads -0.9% to +13.1%, mean +2.6%, 1/43 under-predicted, where
+ *     X70 measured 44/45 under. The defect has not healed: the legacy fit returns 4,441 bytes for an input
+ *     whose covenant WAS 4,542 and is now 4,098, so an impossibility became mere looseness. The corpus count
+ *     is therefore no longer asserted; the impossibility is asserted on the calibration instead, where it
+ *     does not drift - 3,966-byte intercept against the 4,542-byte covenant every proof input pushes.
+ *
  * X78: THE BINDING-LIMIT PREDICTION, WHICH X70 REPORTED RATHER THAN FIXED. Density was named first at
  * 0.5758x against a script prediction of 0.5002x on a population measuring 0.2177x and 0.4651x, because the
  * master-density coefficient over-predicts by up to 284% in-sample and 601% on the corpus while the script
@@ -79,13 +99,16 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  *     term they are TIGHT - 3.3% over on C1, 10.0% on C3 - and ranking them as loose is as wrong as ranking
  *     density as tight.
  *
- * MEASURED AFTER, off the training data and on it: the ranked leader names the measured binder on 45/45 of
- * the corpus (was 0/45), on 4/4 capstones (was 3/4), and misses the held-out E1 graph exactly as it did
- * before - 49/50 against 3/50 over the whole population. The measured binder remains inside
- * `bindingUnresolved` on every row, and that set shrinks from 3 limits to 2 on the corpus and to ONE on C2
- * and C3, where the one is the measured binder. Not one predicted magnitude moves: `ratio`, `predicted`,
- * `serializedBytes`, `worstUnlockingBytes` and the FITS/OVER verdict are the same upper bounds, which is why
- * the conservatism table below is unchanged to the byte.
+ * MEASURED AFTER, off the training data and on it, at THIS commit: the ranked leader names the measured
+ * binder on 43/43 built corpus graphs (was 0/43 - see the re-measurement note below for why the population is
+ * 43 here and 45 at X70's commit), on 4/4 capstones (was 3/4), and misses the held-out E1 graph exactly as it
+ * did before, for 47/48 against 3/48. The measured binder remains inside `bindingUnresolved` on every row,
+ * and that set shrinks from 3 limits to 2 on the corpus and to ONE on C2 and C3, where the one is the
+ * measured binder. Not one predicted magnitude moves: `ratio`, `predicted`, `serializedBytes`,
+ * `worstUnlockingBytes` and the FITS/OVER verdict are the same upper bounds. That is not an argument - the
+ * whole corpus row was re-run with these two files reverted to the baseline commit and every band came back
+ * IDENTICAL (+15.0% to +18.9% script, +15.2% to +24.3% serialized, +56.9% to +164.4% density, 0/43
+ * under-predicted on each); the only line that differed was the ranking, at 0/43 against 43/43.
  *
  * WHAT IS STILL WRONG. E1, the one real held-out graph, is still named density 0.8049x where relay size
  * 0.7129x binds at 0.6813x measured; the de-biased density floor lands at 0.6846x against 0.6368x measured,
@@ -1109,6 +1132,15 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       name: string;
       measuredWorst: number;
       predictedWorst: number;
+      /**
+       * X78: the same prediction with the descriptor carrying THIS COMMIT'S generated covenant sizes instead
+       * of the recorded calibration's. `replicaSpec` leaves `projectionRedeemBytes`/`controllerRedeemBytes`
+       * unset, so `estimate` defaults them to the basis measurement - 4,542 and 1,514 - which the estimator's
+       * own doc calls a STALE default the moment either covenant moves. Both moved: F4 and its successors cut
+       * the verifier to 4,098 and the controller to 1,493. Reported so the board can see how much of the
+       * over-prediction band is model looseness and how much is a 444-byte stale constant.
+       */
+      predictedWorstAtHead: number;
       legacyWorst: number;
       measuredBinds: string;
       predictedBinds: string;
@@ -1133,12 +1165,20 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       controlled += 1;
       const spec = replicaSpec(subject, 1);
       const prediction = estimate(spec, calibration);
+      // The two generated covenant lengths recovered from the built transaction, which is the same number the
+      // compile the descriptor already needs would report - a length, never a cost or a transaction size.
+      const atHead = estimate({
+        ...spec,
+        projectionRedeemBytes: measurement.classification.projectionRedeemBytes,
+        controllerRedeemBytes: measurement.classification.controllerRedeemBytes,
+      }, calibration);
       const { envelope } = measurement;
       const measured = measuredClasses(measurement);
       rows.push({
         name: `${subject.corpus}/${subject.contractName}`,
         measuredWorst: envelope.worstUnlockingInput.unlockingBytes,
         predictedWorst: prediction.worstUnlockingBytes,
+        predictedWorstAtHead: atHead.worstUnlockingBytes,
         legacyWorst: legacyWorstUnlockingBytes(spec, F2_BASIS),
         measuredBinds: envelope.binding[0].limit,
         predictedBinds: prediction.limits[0].limit,
@@ -1184,6 +1224,14 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       + `${before.filter((error) => error < 0).length}/${before.length} UNDER-PREDICTED`);
     console.log(`[F2/X70] unlocking bytecode length, AFTER  the repair: ${band(after)}; `
       + `${after.filter((error) => error < 0).length}/${after.length} UNDER-PREDICTED`);
+    // X78: HOW MUCH OF THAT BAND IS A STALE CONSTANT RATHER THAN MODEL LOOSENESS. The descriptor the board's
+    // table builds does not carry this commit's covenant sizes, so the prediction pays for 444 bytes of
+    // covenant that no longer exists. Reported next to the band it inflates.
+    const atHeadErrors = rows.map((row) => errorOf(row.predictedWorstAtHead, row.measuredWorst));
+    const covenants = new Set(rows.map((row) => `${row.predictedWorst - row.predictedWorstAtHead}`));
+    console.log('[F2/X70] unlocking bytecode length, AFTER, with the covenant sizes THIS COMMIT generates in '
+      + `the descriptor: ${band(atHeadErrors)}; ${atHeadErrors.filter((error) => error < 0).length}/`
+      + `${atHeadErrors.length} UNDER-PREDICTED (stale-constant share, in bytes: ${[...covenants].join(', ')})`);
     for (const limit of ['serialized bytes', 'worst density ratio', 'worst SigChecks ratio']) {
       const errors = rows.map((row) => row.limitErrors.find((entry) => entry.limit === limit)!.error);
       console.log(`[F2/X70] ${limit.padEnd(22)}: ${band(errors)}; `
@@ -1252,9 +1300,37 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     const unresolvedSizes = rows.map((row) => row.unresolved.length);
     console.log(`[F2/X70] unresolved set size ${Math.min(...unresolvedSizes)}..${Math.max(...unresolvedSizes)}`);
     expect(Math.max(...unresolvedSizes)).toBeLessThanOrEqual(2);
-    // The before column is kept as an assertion too, so this row cannot quietly stop demonstrating anything:
-    // the model it replaced must still be visibly wrong on this population.
-    expect(before.filter((error) => error < 0).length).toBeGreaterThanOrEqual(before.length - 1);
+    // X78 also holds with the stale constant taken out, which is what makes the conservatism claim about the
+    // MODEL rather than about a 444-byte accident.
+    expect(atHeadErrors.filter((error) => error < 0)).toEqual([]);
+    // THE BEFORE COLUMN, AND WHY IT IS NO LONGER PINNED AT A COUNT. X70 asserted that the model it replaced
+    // still under-predicts at least 44 of 45 rows here. At this commit it under-predicts 1 of 43, and that is
+    // not the defect healing: the legacy line returns 4,441 bytes for the projection input, which was an
+    // arithmetic impossibility against a 4,542-byte covenant and is merely loose against the 4,098-byte one
+    // this commit generates. A corpus count cannot pin a defect whose visibility depends on a covenant size,
+    // so what is pinned instead is the defect itself, on the CALIBRATION, where it does not drift: fitting
+    // the projection input end to end produces an intercept BELOW the redeem script every one of those inputs
+    // pushes. No P2SH input can be shorter than the script it redeems, at any driver, ever.
+    const projectionTotals = F2_BASIS
+      .filter((sample) => sample.projections !== undefined)
+      .map((sample) => ({
+        x: sample.spec.participants + sample.spec.invocations,
+        y: sample.projections!.unlockingBytes,
+        label: sample.name,
+      }));
+    const legacyProjection = fitUpperEnvelope(projectionTotals);
+    const recordedRedeem = Math.max(...F2_BASIS
+      .filter((sample) => sample.projections !== undefined)
+      .map((sample) => sample.projections!.redeemBytes));
+    console.log(`[F2/X70] the legacy projection fit: intercept ${legacyProjection.intercept.toFixed(0)}B `
+      + `against a ${recordedRedeem}B covenant that every proof input pushes; the corpus band it produced is `
+      + `${band(before)} with ${before.filter((error) => error < 0).length}/${before.length} under-predicted `
+      + 'at this commit');
+    expect(legacyProjection.intercept).toBeLessThan(recordedRedeem);
+    // And the repair is what removes it: the current model carries the covenant exactly, so its prediction for
+    // that input can never fall below it whatever the driver.
+    expect(Math.min(...rows.map((row) => row.predictedWorstAtHead)))
+      .toBeGreaterThanOrEqual(Math.min(...rows.map((row) => row.measuredWorst)) - 1e-9);
   }, 1_800_000);
 });
 

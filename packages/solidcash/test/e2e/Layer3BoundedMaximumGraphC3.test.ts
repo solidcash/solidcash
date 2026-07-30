@@ -16,7 +16,10 @@ import {
 import { alicePkh, alicePriv, alicePub, bobPkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
-  SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE, scanComparisons,
+  ROW_COMPARISON_EXEMPTIONS, SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE,
+  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_INLINE_SOURCE,
+  SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
+  injectPairwiseComparison, scanComparisons,
 } from './layer3-pairwise-guard.js';
 import {
   createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
@@ -1358,6 +1361,28 @@ describe('C3 hostile cases', () => {
       .toHaveLength(1);
     expect(scanComparisons(SYNTHETIC_BASE_BINDING_SOURCE).pairwise,
       'the detector flags the HONEST base binding as pairwise, so it over-reports').toEqual([]);
+    // X134, THE THIRD BLIND SPOT AND THE ONE THAT WAS LEFT OPEN DELIBERATELY. The detector's whole vocabulary
+    // was `lockingBytecode|participantLbc`, so two table rows compared to each other with NEITHER side naming
+    // a locking bytecode were invisible. Both halves are asserted - the old rule silent, the row rule seeing
+    // it - so the hole stays REPRODUCED, not merely patched.
+    for (const hostile of [SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE]) {
+      expect(scanComparisons(hostile).pairwise,
+        'the locking-bytecode rule now sees the row-to-row shape, so X134 is no longer the hole it was and '
+        + 'this reproduction has stopped reproducing').toEqual([]);
+      expect(scanComparisons(hostile).rowPairwise,
+        'the row rule cannot see a row-to-row comparison, so its verdict below is worthless').toHaveLength(1);
+    }
+    expect(scanComparisons(SYNTHETIC_ROW_NEAR_MISS_SOURCE).rowPairwise,
+      'the row rule flags a legitimate row comparison, so it over-reports').toEqual([]);
+    // X134's RECORDED BOUNDARY, asserted in both directions so it cannot move silently. The same row-to-row
+    // comparison decoded into scalars is caught when written inline and NOT caught through two `bigint` locals,
+    // because the derivation stops at `bytes`. Propagating through scalars was measured and costs 16 further
+    // named exemptions covering the covenants' own bookkeeping - see the header of `layer3-pairwise-guard.ts`.
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_INLINE_SOURCE).rowPairwise,
+      'the inline scalar decode names both rows in one clause and must still be flagged').toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE).rowPairwise,
+      'the scalar-via-locals form is now caught, so this recorded boundary is stale and the header measurement '
+      + 'in layer3-pairwise-guard.ts should be rewritten rather than this assertion relaxed').toEqual([]);
     for (const source of [
       layer3.generateGraphProjectionVerifier(), layer3.generateGraphRootController('51'),
     ]) {
@@ -1367,6 +1392,18 @@ describe('C3 hostile cases', () => {
       expect(scan.mentioningLbc, 'no comparison mentions a participant locking bytecode, so the both-sides '
         + 'filter is running over a population that cannot contain a hit').not.toEqual([]);
       expect(scan.pairwise, `pairwise participant comparison in:\n${scan.pairwise.join('\n')}`).toEqual([]);
+      // X134 liveness, the same two assertions for the row rule: the derivation propagated past its seed, and
+      // there is a population of comparisons carrying transcript bytes for the both-sides filter to run over.
+      expect(scan.rowDerived.length, 'the derivation found only the seed, so nothing propagated and the row '
+        + 'rule is running over a vocabulary that cannot match').toBeGreaterThan(1);
+      expect(scan.mentioningRow, 'no comparison carries transcript bytes, so the row both-sides filter is '
+        + 'running over a population that cannot contain a hit').not.toEqual([]);
+      expect(scan.rowPairwise, `row-to-row comparison in:\n${scan.rowPairwise.join('\n')}`).toEqual([]);
+      // MUTATION CONTROL ON THE REAL SOURCE, which a synthetic control cannot give: one row-to-row comparison
+      // added to the GENERATED participant loop and nothing else. The injector throws when its anchor is
+      // gone, so this control cannot outlive its subject the way the first two versions of this guard did.
+      expect(scanComparisons(injectPairwiseComparison(source)).rowPairwise,
+        'one row-to-row comparison injected into the REAL covenant is invisible to the detector').toHaveLength(1);
       expect(/participantLbc\d/.test(source)).toBe(false);
     }
     // The ONE both-sides comparison in the tree, which the old line splitter could not see: the controller
@@ -1374,6 +1411,17 @@ describe('C3 hostile cases', () => {
     // PRESENT, so the exemption cannot rot into dead text while a genuine pairwise comparison lands beside it.
     expect(scanComparisons(layer3.generateGraphRootController('51')).exempted,
       'the named self-preservation exemption matches nothing now, so it should be deleted').toHaveLength(1);
+    // X134's exemptions the same way. Five clauses carry transcript bytes on both sides, all five in the
+    // projection verifier, all four names asserted at their EXACT count - a floor would let a sixth be
+    // absorbed silently, which is the whole failure mode this guard is here for.
+    const projectionScan = scanComparisons(layer3.generateGraphProjectionVerifier());
+    expect(projectionScan.rowBothSides).toHaveLength(5);
+    expect(scanComparisons(layer3.generateGraphRootController('51')).rowBothSides).toEqual([]);
+    for (const exemption of ROW_COMPARISON_EXEMPTIONS) {
+      expect(projectionScan.rowExempted[exemption.name],
+        `the row exemption "${exemption.name}" matches nothing now, so it should be deleted`)
+        .toBe(exemption.count);
+    }
 
     // The SDK planner is where uniqueness actually lives: it refuses the construction before any transcript.
     const rows = attacked.plan.participants.map((participant, index) => ({

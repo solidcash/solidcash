@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import type { FunctionArgument } from '../../src/Argument.js';
-import { randomUtxo } from '../../src/utils.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { MOCK_CONSENSUS_LIMITS } from '../../src/network/MockNetworkProvider.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -36,6 +38,14 @@ import {
  * handler argument is capped at 202 bytes, which is two chunks. The same handler computing its value reaches
  * all 64. So "dynamic values across handlers" is bounded by what the transcript can carry into a handler,
  * 32x tighter than the region the compiler reserves for what comes out.
+ *
+ * X127. "EXACTLY THE DECLARED CAPACITY" IS A SLOT COUNT, NOT A VM-CAPACITY CLAIM, and the 64-chunk case is the
+ * one shape in this file that does NOT fit ordinary BCH-2026 capacity. Its dynamic master, input 1, costs
+ * 3,436,663 operation units against the 2,893,600 that 800 units per density byte allows a 3,617-byte density
+ * control length - ratio 1.1877, over by 543,063. It settles here only because `MockNetworkProvider` publishes
+ * `operationCostBudgetPerByte: 10_000_000`. `MEASURED: the 64-chunk shape does not fit` below pins that margin
+ * and is where the number belongs; the case above is SEMANTIC evidence for the chunk mechanism, not evidence
+ * that a 64-chunk handler is deployable at ordinary capacity.
  *
  * The READ direction is pinned separately at the bottom and since X105 it DOES cross the boundary, matching
  * the documented single read-your-writes journal. A handler row that only reads a state variable observes an
@@ -396,6 +406,9 @@ const set = (value: Uint8Array): { fn: string; value: Uint8Array } => ({ fn: 'se
 // Physical slots of the two-participant shape: [router master, dynamic master, dynamic dataNft, 64 trailing].
 const INPUT = { router: 0, dynamic: 1 } as const;
 
+/** `ConsensusBch2026.operationCostBudgetPerByte`. The mock publishes 10,000,000; the network allows this. */
+const ORDINARY_BUDGET_PER_BYTE = 800;
+
 describe('S3 chunk-backed state across graph handlers - honest settlement', () => {
   it('settles one chunk-backed write inside a two-participant graph', async () => {
     const built = await buildDynamicGraph({ rows: [set(bytes(40, 0x41))], targets: [0], dynCount: 1 });
@@ -452,6 +465,81 @@ describe('S3 chunk-backed state across graph handlers - honest settlement', () =
     expect(built.chunkRuns[1]).toBe(64);
     expect(failingInput(built.builder)).toBe(null);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
+
+  /**
+   * X127. THE MARGIN BEHIND THE CASE ABOVE, because "exactly the declared capacity" reads like a capacity
+   * claim and is a slot count.
+   *
+   * The case above was reported red under a 31-file `--maxWorkers=2` run and green in isolation and in a
+   * two-file batch, refused on operation-cost density at `2,893,600 (density control length: 3,617)`. Neither
+   * half of that dichotomy is what it is. The bytes are deterministic - the case is green 5/5 in isolation -
+   * and a BCH-2026 evaluation of fixed bytes has nothing in it that could vary with load. What varies is which
+   * `operationCostBudgetPerByte` reaches the decider, and the two answers are 543,063 units apart:
+   *
+   *   input 1, the dynamic master carrying the SCB1 route
+   *     density control length  3,617 bytes  (41 base + 3,576 unlocking)
+   *     operation cost          3,436,663 standard / 3,429,239 consensus
+   *     allowed at 800/byte     2,893,600                 -> ratio 1.1877, REFUSED
+   *     allowed at 10,000,000/byte  36,170,000            -> ratio 0.0000949, ADMITTED
+   *
+   * So the fixture is not sitting within noise of the limit that it could be moved away from: it is 18.8% past
+   * it, and no chunk count below 64 changes that it is the route body rather than the region that costs. It is
+   * left where it is, with the margin asserted here, because shrinking it would delete the only evidence in
+   * the tree that a handler reaches all 64 chunks. What this test refuses to let happen is that number
+   * drifting silently.
+   */
+  it('MEASURED: the 64-chunk shape does not fit ordinary BCH-2026 operation-cost density', async () => {
+    const built = await buildDynamicGraph({
+      rows: [set(bytes(192, 0x53))], targets: [0], dynCount: 1,
+      source: grownSource(40), finalValue: [bytes(192 * 40, 0x53)],
+    });
+    const transaction = built.builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
+    const vmAt = (operationCostBudgetPerByte: number, standard: boolean): any =>
+      createVirtualMachineBch2026ForProvider(
+        { consensusLimits: { ...MOCK_CONSENSUS_LIMITS, operationCostBudgetPerByte } } as never,
+        undefined, { standard },
+      );
+
+    // Run every input to completion on the relaxed budget, then price it against the ordinary one.
+    const relaxed = vmAt(MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte, true);
+    const rows = transaction.inputs.map((_input, input) => {
+      const state = relaxed.evaluate({ inputIndex: input, sourceOutputs, transaction });
+      expect(state.error, `input ${input} failed on the relaxed budget`).toBeUndefined();
+      const { densityControlLength: densityBytes, operationCost: cost } = state.metrics;
+      return { input, densityBytes, cost, ratio: cost / (densityBytes * ORDINARY_BUDGET_PER_BYTE) };
+    });
+    const over = rows.filter((row) => row.ratio > 1);
+    console.log(`S3 64-chunk at ordinary capacity: ${over.length} of ${rows.length} inputs over budget; `
+      + over.map((row) => `input ${row.input} ${row.densityBytes}B cost ${row.cost} ratio ${row.ratio.toFixed(4)}`)
+        .join('; '));
+
+    // ONE input is over, and it is the dynamic master. Naming it is what makes the refusal attributable.
+    expect(over.map((row) => row.input)).toEqual([INPUT.dynamic]);
+    const worst = over[0];
+    expect(worst.densityBytes).toBe(3617);
+    expect(worst.densityBytes * ORDINARY_BUDGET_PER_BYTE).toBe(2_893_600);
+    expect(worst.ratio).toBeGreaterThan(1.15);
+    expect(worst.ratio).toBeLessThan(1.25);
+
+    for (const standard of [true, false]) {
+      // The refusal, verbatim, at the SAME input the report named.
+      const refused = vmAt(ORDINARY_BUDGET_PER_BYTE, standard)
+        .evaluate({ inputIndex: INPUT.dynamic, sourceOutputs, transaction });
+      expect(refused.error).toMatch(
+        /exceed the operation cost density limit\. Maximum operation cost: 2893600 \(density control length: 3617\)/,
+      );
+      // NEGATIVE CONTROL: identical bytes, identical input, identical regime, ONLY the budget relaxed. This is
+      // what says the refusal is the budget and not the shape having become invalid.
+      const admitted = vmAt(MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte, standard)
+        .evaluate({ inputIndex: INPUT.dynamic, sourceOutputs, transaction });
+      expect(admitted.error).toBeUndefined();
+    }
+
+    // And the transaction the case above broadcasts is this one, so the margin is that case's margin.
+    expect(built.chunkRuns[1]).toBe(64);
+    expect(failingInput(built.builder)).toBe(null);
   }, 300_000);
 });
 

@@ -165,12 +165,13 @@ function compileApplicationRow(row: CensusRow): { artifact?: any; error?: string
  * never the route itself, so `invokesJournalHandler` was true against an empty slot set and code generation
  * hit `Missing journal context`. TreasurySplit and SushiRoll were named as fixed by that change.
  *
- * UnicrowClaim needs a caveat, because two measurements of it disagree and the difference is the option set.
- * Under THIS walk's options - which include `ecrecover: 'p2pkh'` - it compiles, and that is what the empty
- * pin below records. The worker that fixed the other two reported it still failing, with its bare
- * `Expected variable '__extaddr_unicrow' does not exist on the stack` replaced by a NAMED
- * `LowLevelCallShapeError` on `refund`. Both can be true: a named refusal raised under a narrower option set
- * is invisible here. Do not read the empty pin as "UnicrowClaim is bus-compilable in general".
+ * X132: the two disagreeing UnicrowClaim measurements have DIFFERENT SUBJECTS, not different options.
+ * `UnicrowClaim.sol` compiles in bus mode under every option set that parses and has no `refund` at all;
+ * `refund` is `Unicrow.sol:218`, whose `call{value:}` at `:262` raises the refusal. `ecrecover: 'p2pkh'`
+ * decides neither - identical outcome both ways, same 6,728 bytes. `Unicrow.sol` cannot appear in the pin
+ * below because that lists APPLICATION rows and a bus-compile failure never becomes one; it is the single
+ * `LowLevelCallShapeError` in the eacc column of `F3_CENSUS_BUS_FAILURES`. Pinned in
+ * `packages/solidc/test/LowLevelCallShapes.test.ts`.
  */
 const APPLICATION_COMPILE_FAILURES: string[] = [];
 

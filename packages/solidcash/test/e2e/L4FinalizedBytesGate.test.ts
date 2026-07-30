@@ -8,7 +8,7 @@ import { compileString } from 'solidc';
 import {
   Contract, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
+import { calculateDust, randomUtxo } from '../../src/utils.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider, dustOutputs } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -211,9 +211,11 @@ describe('L4 finalized-bytes gate: every rule, at its boundary, in both directio
     expect(refusal.measured).toBe(474);
     expect(refusal.overBy).toBe(464);
     expect(refusedRules(boundary)).toEqual(['output-dust']);
-    // The SDK's own dust helper, and the standing `dustOutputs` check the capstones assert, agree to the
-    // satoshi. Three independent spellings of BCHN's rule, one number.
+    // Three independent spellings of BCHN's rule, one number: this gate, the standing `dustOutputs` check the
+    // capstones assert, and the SDK's own `calculateDust` (`444 + outputSize * 3`, which `validateOutput`
+    // applies only when the provider has not switched dust off).
     expect(layer3.finalizedOutputDustThreshold(refused.outputs[0])).toBe(474);
+    expect(calculateDust({ to: bareOneLock(), amount: 10n })).toBe(474);
     expect(dustOutputs(refused).map((row) => Number(row.threshold))).toEqual([474]);
     expect(dustOutputs(admitted)).toEqual([]);
   });

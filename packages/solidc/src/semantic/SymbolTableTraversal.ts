@@ -194,7 +194,7 @@ import {
   computeFunctionSignature, computeFunctionSelector, computeEvmFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
-  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType,
+  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, LocationI,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -342,6 +342,78 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
 
+  // The source file under compilation, kept so a diagnostic can name the imported file a position belongs to.
+  private sourceFile?: SourceFileNode;
+  // Location instance -> the import path of the file that declares it. A `Location` has no file identity, so a
+  // diagnostic printing a bare `at line N` cites a line that is real in an IMPORTED file and impossible in the
+  // file the user named (`ERC20Mock.sol` is 15 lines and reports `line 170`, which is SafeMath.sol's). Keyed on
+  // the Location INSTANCE, not the node: lowering passes clone nodes but carry the same Location by reference,
+  // so a clone still resolves. Built deepest-import-first and first-write-wins, so the file that actually holds
+  // the line claims it rather than a shallower importer that only re-exports it.
+  private importedLocations?: Map<object, string>;
+
+  private buildImportedLocations(): Map<object, string> {
+    const map = new Map<object, string>();
+    const root = this.sourceFile;
+    if (!root) return map;
+    const seen = new Set<object>();
+    const claim = (n: unknown, path: string): void => {
+      if (!n || typeof n !== 'object' || seen.has(n as object)) return;
+      seen.add(n as object);
+      if (n instanceof Node && n.location && !map.has(n.location)) map.set(n.location, path);
+      for (const value of Object.values(n as Record<string, unknown>)) {
+        if (Array.isArray(value)) { for (const element of value) claim(element, path); } else claim(value, path);
+      }
+    };
+    // Resolve a relative import path against the importing file's directory so the label is usable from the
+    // root file (ERC20.sol's `../../math/SafeMath.sol` prints as `@openzeppelin/contracts/math/SafeMath.sol`).
+    const resolvePath = (parent: string, child: string): string => {
+      if (!child.startsWith('.')) return child;
+      const cut = parent.lastIndexOf('/');
+      const out = (cut > 0 ? parent.slice(0, cut) : '').split('/').filter((s) => s !== '');
+      for (const seg of child.split('/')) {
+        if (seg === '.' || seg === '') continue;
+        if (seg === '..') out.pop();
+        else out.push(seg);
+      }
+      // Reconstructs the resolver's canonical id, which the AST does not carry.
+      return (parent.startsWith('/') ? '/' : '') + out.join('/');
+    };
+    const done = new Set<SourceFileNode>();
+    const walkImports = (file: SourceFileNode, filePath: string, depth: number): void => {
+      if (done.has(file) || depth > 24) return;
+      done.add(file);
+      for (const imported of file.imports ?? []) {
+        if (!imported.resolvedAst) continue;
+        const path = resolvePath(filePath, imported.path);
+        walkImports(imported.resolvedAst, path, depth + 1);
+        // Only the file's own declaration roots: the merged arrays also hold its imports' nodes, which the
+        // recursion above has already claimed under their own paths.
+        const ast = imported.resolvedAst as unknown as Record<string, unknown>;
+        for (const key of ['contract', 'libraryContract', 'constantDefinitions', 'enumDefinitions',
+          'structDefinitions', 'typeDefinitions', 'errorDefinitions', 'eventDefinitions',
+          'interfaceDefinitions', 'freeFunctions', 'usingForDirectives']) {
+          claim(ast[key], path);
+        }
+      }
+    };
+    walkImports(root, this.compilerOptions.rootFileId ?? '', 0);
+    return map;
+  }
+
+  /**
+   * ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled.
+   * Built lazily: a compilation whose diagnostics all point into the user's own file pays nothing.
+   */
+  private diagLine(location?: LocationI): string {
+    const line = location?.start?.line;
+    if (line === undefined) return '';
+    if (!this.sourceFile?.imports?.length) return ` at line ${line}`;
+    this.importedLocations ??= this.buildImportedLocations();
+    const file = this.importedLocations.get(location as unknown as object);
+    return file ? ` at line ${line} of imported "${file}"` : ` at line ${line}`;
+  }
+
   constructor(compilerOptions: CompilerOptions = {}) {
     super();
     this.compilerOptions = compilerOptions;
@@ -358,6 +430,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFile = node;
     // Register imported contracts for cross-contract references
     for (const imported of node.importedContracts) {
       this.contractMap.set(imported.name, imported);
@@ -1052,7 +1125,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -2403,7 +2476,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -2762,7 +2835,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // virtual is a no-op: all inherited functions are implicitly virtual in SolidCash
     if (mods.includes(FunctionModifier.VIRTUAL)) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: 'virtual' function modifier is a no-op in SolidCash${loc}. All inherited functions are implicitly virtual.`);
     }
 
@@ -5433,7 +5506,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -6381,7 +6454,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitNullaryOp(node: NullaryOpNode): Node {
     if (node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(
         `Warning: '${node.operator}' used${loc}. On BCH, prefer checking signatures (checkSig/checkMultiSig)`
         + ' for authentication and authorization, as sender identification is less reliable than on account-based chains.',
@@ -6820,7 +6893,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -9233,6 +9306,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     // subsumed - it can only be set for a name in `dynamicNames`, so the blanket two lines up already covers it.
     // The terms are kept because they state the intent this predicate must regain if the layout ever moves after
     // code generation; they are not, today, a second leg that could be sized independently.
+    //
+    // X69 asked whether the DIRECT route should declare and fund a region here, so the balanced assembly model
+    // could describe its 680 `unbalanced transaction` / 381 `token outside every participant block` rejections.
+    // MEASURED at this commit and REFUSED. Three findings, in order of weight:
+    //
+    // 1. A C2 mapping insert - the whole 381 category - has NO term here that can fire. Measured on
+    //    `mapping(int => int) m; function put(..) { m[k] = v; }`: `stateVars=0, dynamicNames=0, collections=1`.
+    //    Every term above is about dynamic state VARIABLES, loops, keccak or ecrecover, and a mapping is a
+    //    CollectionNode. So that half is not a relaxation of this predicate at all; it needs a NEW reservation
+    //    class keyed on `contract.collections.length`, which puts 64 slots on nearly every stateful contract.
+    // 2. Where the blanket term CAN fire, declaring the region BREAKS SETTLED SENDS. Ungating it for the direct
+    //    route turned 4 of 33 previously-settling sends in DynamicWriteBehavior/ChunkedArrays into
+    //    `Program failed an OP_VERIFY operation` at INPUT INDEX 0. All four are value-returning + dynamic-write.
+    //    That is a soundness regression, not a diagnostic change.
+    // 3. It buys no describability and is arithmetically self-limiting. `arr.push(9)` grew from 2 inputs /
+    //    3 outputs / 1,513 raw bytes to 67 / 66 / 4,938 (+226%) and the model still refused it, only under a
+    //    different category. The returnEvent variant reached `blockSize` 67 against 67 funded inputs, so the
+    //    block consumed the fee/change pair the model requires past every participant block - at capacity 64 the
+    //    funder budget the SDK requests (`capacity + 1`) exactly equals the slack one more fixed slot removes.
+    //
+    // Also: the row is filed as spanning `computeBlockLayout` and `StatefulTransactionBuilder`, and that span is
+    // short. `GenerateTargetTraversal` has two live `blockLayout.trailingBase === undefined` branches (the
+    // returnEvent `-1` adjustment and `emitTrailingBlockBase`) that flip the moment the direct route declares a
+    // region. Both sides moved the chunk consistently from output 2 to 3 in the measurement, so that pairing is
+    // NOT the cause of (2); which covenant check fails was NOT isolated.
     const needsTrailingRegion = node.name === '__scb1' && (touchesDynamicState
       || (node.dynamicReads?.length ?? 0) > 0
       || (node.dynamicWrites?.length ?? 0) > 0

@@ -11149,7 +11149,7 @@ export class StatefulFunctionCall {
    * cannot validate covenant scripts due to mock provider limitations.
    */
   private async _sendRawBuilder(builder: TransactionBuilder): Promise<TransactionDetails> {
-    const { decodeTransactionUnsafe, encodeTransaction, hash256 } = await import('@bitauth/libauth');
+    const { encodeTransaction, hash256 } = await import('@bitauth/libauth');
     const rawTx = builder.build();
     const rawTxBin = hexToBin(rawTx);
 

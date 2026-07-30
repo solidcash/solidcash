@@ -131,6 +131,13 @@ export interface LimitPrediction {
   allowed: number;
   ratio: number;
   where: string;
+  /**
+   * The SAME limit with each coefficient's demonstrated over-prediction taken back out - the de-biased ratio
+   * the limits are RANKED by. `ratio` stays the conservative upper bound and is what every verdict, every
+   * published magnitude and every screening threshold reads; this exists only to order them. See
+   * `ratioFloorOf` for what is discounted and what is not.
+   */
+  ratioFloor: number;
 }
 
 export interface Estimate {
@@ -141,19 +148,33 @@ export interface Estimate {
   worstUnlockingBytes: number;
   worstDensityRatio: number;
   worstSigCheckRatio: number;
-  /** Every limit, ordered by predicted utilization: the first is the one predicted to bind. */
+  /**
+   * Every limit, ordered by DE-BIASED utilization (`ratioFloor`): the first is the one predicted to bind.
+   *
+   * X78: ordering these by `ratio` ranked upper bounds of wildly different tightness against each other, and
+   * an upper bound that is 284% loose is not evidence that it is the larger quantity. On the forty-five
+   * corpus contracts that named density on 45/45 where script bytes bound on 45/45. Ordering by the de-biased
+   * ratio names the measured binder on 45/45 of the corpus, on the four capstones and on the held-out graph.
+   * `worstRatio` below, NOT `limits[0].ratio`, is the conservative headline.
+   */
   limits: LimitPrediction[];
+  /**
+   * The largest PREDICTED ratio over every limit - the conservative headline, and the quantity the verdict is
+   * taken from. It was `limits[0].ratio` before the ranking changed; it is a named field now so that
+   * re-ordering the list can never quietly weaken a capacity claim.
+   */
+  worstRatio: number;
   /**
    * Limits that CANNOT BE RULED OUT as the real binder, the leader included. Ranking upper bounds is only
    * sound when they are equally tight, and here they are not: the master-density coefficient over-predicts
    * its own calibration points by up to 284% while the script-byte coefficient over-predicts by at most 10%,
-   * so the larger of the two numbers is not the closer of the two limits. A limit stays in this set when its
-   * predicted ratio is at or above the leader's ratio DIVIDED BY the leader's own demonstrated in-sample
-   * slack, i.e. when it could still exceed the leader's true value.
+   * so the larger of the two numbers is not the closer of the two limits.
    *
-   * This does not fix the ranking - a set is not an answer - but it stops the ranking from being read as one.
-   * Resolving it needs a density coefficient with a driver that separates contract bodies, which is a
-   * measurement the census does not carry, not a fit that has not been tried.
+   * INTERVAL DOMINANCE, which is what a set of bounds can honestly say. Each limit occupies
+   * `[ratioFloor, ratio]`. A limit is RULED OUT only when its whole interval lies below some other limit's
+   * floor, so the set is every limit whose `ratio` reaches the largest `ratioFloor` on the shape. X70
+   * compared against the LEADER's floor alone, which on the corpus rows was the loosest floor of the six and
+   * left three limits unresolved where two is what the arithmetic supports.
    */
   bindingUnresolved: string[];
   verdict: 'FITS' | 'OVER';
@@ -173,6 +194,17 @@ export interface ClassPrediction {
   bytesSlack: number;
   /** Largest over-prediction the density coefficient behind `densityRatio` showed on the calibration set. */
   densitySlack: number;
+  /**
+   * The part of `unlockingBytes` that is a DESCRIPTOR CONSTANT rather than a fitted quantity: the compiled
+   * redeem script this input pushes. Zero for a class with no redeem term of its own. It is carried
+   * separately because it is exact, so no slack may be discounted from it - a P2SH input can no more be
+   * shorter than the script it redeems in a de-biased estimate than in a conservative one.
+   */
+  exactBytes: number;
+  /** `unlockingBytes` with the byte coefficient's demonstrated local over-prediction taken back out. */
+  bytesFloor: number;
+  /** `densityRatio` with the density coefficient's demonstrated local over-prediction taken back out. */
+  densityFloor: number;
 }
 
 export type InputClass = 'master' | 'sidecar' | 'projection' | 'controller' | 'fee';
@@ -196,6 +228,15 @@ export interface Envelope {
   minimumValue: number;
   /** Per-point over-prediction as a fraction of the measured value, on the calibration set. */
   overPrediction: number[];
+  /**
+   * Driver value of each calibration point, parallel to `overPrediction`.
+   *
+   * Retained because the MAXIMUM over-prediction is the wrong number to de-bias a prediction with: it is the
+   * slack at the loosest point on the whole calibration set, wherever that point sits. `localSlack` uses
+   * these to read the slack the envelope demonstrated AT the driver being predicted, which at a calibration
+   * driver is that point's own slack and is zero wherever the envelope touches the measurement.
+   */
+  drivers: number[];
 }
 
 export interface EnvelopePoint { x: number; y: number; label: string }
@@ -256,8 +297,49 @@ export function fitUpperEnvelope(points: EnvelopePoint[], safetyMargin = 0): Env
     minimumDriver,
     minimumValue: Math.max(...atMinimum) * (1 + safetyMargin),
     overPrediction: points.map((point) => (intercept + slope * point.x) / point.y - 1),
+    drivers: points.map((point) => point.x),
   };
 }
+
+/**
+ * The over-prediction this envelope DEMONSTRATED at the driver being predicted, or `undefined` outside the
+ * calibrated range, where it demonstrated nothing.
+ *
+ * WHY LOCAL AND NOT THE MAXIMUM. `slackOf` reports the loosest point on the whole calibration set. Discounting
+ * by it says "this coefficient can be 284% loose", which is true SOMEWHERE and false at the point being
+ * predicted: the controller-density envelope is exact on C2 and 30.8% loose on another shape, so de-biasing
+ * C2's own prediction by 30.8% pushes a limit that binds exactly below one that does not. The bracketing
+ * points - the nearest calibration driver at or below, and the nearest at or above - are the two the
+ * prediction actually sits between, and at an exact calibration driver they collapse to that driver's points.
+ *
+ * OUTSIDE THE RANGE IT RETURNS `undefined`, and the caller floors the fitted part at zero. That is not
+ * pessimism for its own sake: below the calibrated minimum `applyEnvelope` returns a MEASUREMENT taken at a
+ * larger driver and `applyBodyEnvelope` returns a line no measurement covers, so the calibration bounds the
+ * true value from above and says nothing whatever about how small it can be. The corpus is the demonstration:
+ * the projection blob is clamped to 460 bytes where the built graphs carry 109.
+ *
+ * THIS IS A RANKING HEURISTIC AND IS LABELLED ONE. Nothing conservative rests on it - `ratio`, `predicted`,
+ * `serializedBytes`, `worstUnlockingBytes`, `worstRatio` and `verdict` are all untouched upper bounds. What it
+ * decides is which limit is NAMED first and which limits stay in `bindingUnresolved`.
+ */
+const localSlack = (envelope: Envelope, driver: number): number | undefined => {
+  if (driver < envelope.minimumDriver || driver > envelope.maximumDriver) return undefined;
+  let below = -Infinity;
+  let above = Infinity;
+  for (const x of envelope.drivers) {
+    if (x <= driver && x > below) below = x;
+    if (x >= driver && x < above) above = x;
+  }
+  let worst = 0;
+  envelope.drivers.forEach((x, index) => {
+    if (x === below || x === above) worst = Math.max(worst, envelope.overPrediction[index]);
+  });
+  return worst;
+};
+
+/** A fitted quantity with its local slack taken back out; the exact part is never discounted. */
+const deBias = (predicted: number, exact: number, slack: number | undefined): number =>
+  exact + (slack === undefined ? 0 : Math.max(0, predicted - exact) / (1 + slack));
 
 /**
  * Evaluate an envelope. BELOW THE CALIBRATED RANGE IT RETURNS THE MEASURED VALUE AT THE SMALLEST CALIBRATED
@@ -505,6 +587,7 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   const push = (
     klass: InputClass, count: number, unlockingBytes: number, ratio: number,
     bytesEnvelope: Envelope, densityEnvelope: Envelope,
+    bytesDriver: number, densityDriver: number, exactBytes = 0,
   ): void => {
     classes.push({
       klass,
@@ -515,6 +598,9 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
         * BCH_2026_CONSENSUS.operationCostBudgetPerByte,
       bytesSlack: slackOf(bytesEnvelope),
       densitySlack: slackOf(densityEnvelope),
+      exactBytes,
+      bytesFloor: deBias(unlockingBytes, exactBytes, localSlack(bytesEnvelope, bytesDriver)),
+      densityFloor: deBias(ratio, 0, localSlack(densityEnvelope, densityDriver)),
     });
   };
 
@@ -524,20 +610,24 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   const masterBytes = spec.redeemBytes.map((redeem) => redeem + argBytes);
   push('master', geometry.masters, Math.max(...masterBytes),
     applyBodyEnvelope(family.masterDensity, spec.participants),
-    family.masterArgBytes, family.masterDensity);
+    family.masterArgBytes, family.masterDensity,
+    rows, spec.participants, Math.max(...spec.redeemBytes));
 
   const feeBytes = applyEnvelope(calibration.feeBytes, 0);
   push('fee', geometry.fees, feeBytes, applyEnvelope(calibration.feeDensity, 0),
-    calibration.feeBytes, calibration.feeDensity);
+    calibration.feeBytes, calibration.feeDensity, 0, 0);
 
   let sidecarSerialized = 0;
+  let sidecarSerializedFloor = 0;
   if (geometry.sidecars > 0) {
     check(geometry.slots, calibration.sidecarBytes, 'slot count');
     check(geometry.sidecars, calibration.sidecarSerialized, 'sidecar count');
     push('sidecar', geometry.sidecars, applyEnvelope(calibration.sidecarBytes, geometry.slots),
       applyBodyEnvelope(calibration.sidecarDensity, geometry.slots),
-      calibration.sidecarBytes, calibration.sidecarDensity);
+      calibration.sidecarBytes, calibration.sidecarDensity, geometry.slots, geometry.slots);
     sidecarSerialized = applyEnvelope(calibration.sidecarSerialized, geometry.sidecars);
+    sidecarSerializedFloor = deBias(sidecarSerialized, 0,
+      localSlack(calibration.sidecarSerialized, geometry.sidecars));
   }
   // THE TWO GENERATED COVENANTS. Each is a FIXED redeem script carried exactly plus an enveloped argument
   // blob, which is the construction the master term has always used. `redeemFloor` is the arithmetic fact the
@@ -551,25 +641,41 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
     push('projection', geometry.projections,
       redeemFloor(projectionRedeem, projectionRedeem + applyEnvelope(calibration.projectionArgBytes, rows)),
       applyEnvelope(calibration.projectionDensity, rows),
-      calibration.projectionArgBytes, calibration.projectionDensity);
+      calibration.projectionArgBytes, calibration.projectionDensity, rows, rows, projectionRedeem);
   }
   if (geometry.controllers > 0) {
     check(rows, calibration.controllerDensity, 'participants + invocations');
     push('controller', geometry.controllers,
       redeemFloor(controllerRedeem, controllerRedeem + applyEnvelope(calibration.controllerArgBytes, rows)),
       applyEnvelope(calibration.controllerDensity, rows),
-      calibration.controllerArgBytes, calibration.controllerDensity);
+      calibration.controllerArgBytes, calibration.controllerDensity, rows, rows, controllerRedeem);
   }
 
   const byClass = new Map(classes.map((row) => [row.klass, row]));
   check(geometry.outputs, family.outputsSerialized, 'output count');
-  const serializedBytes = 4 + varintLength(geometry.inputs) + varintLength(geometry.outputs) + 4
+  const overheadBytes = 4 + varintLength(geometry.inputs) + varintLength(geometry.outputs) + 4;
+  const serializedBytes = overheadBytes
     + masterBytes.reduce((sum, bytes) => sum + inputSerializedBytes(bytes), 0)
     + inputSerializedBytes(feeBytes)
     + sidecarSerialized
     + geometry.projections * inputSerializedBytes(byClass.get('projection')?.unlockingBytes ?? 0)
     + geometry.controllers * inputSerializedBytes(byClass.get('controller')?.unlockingBytes ?? 0)
     + applyEnvelope(family.outputsSerialized, geometry.outputs);
+  // THE SAME SUM, TERM BY TERM, WITH EACH TERM'S OWN SLACK TAKEN BACK OUT. X70 gave the two size limits a
+  // slack of zero on the grounds that they are "exact arithmetic on the descriptor", which is true of the
+  // arithmetic and false of its inputs: every byte in this sum comes from the same enveloped class
+  // predictions as the script limit. A serialized total that is dominated by exact redeem scripts is a TIGHT
+  // prediction (3.3% over on C1, 10.0% on C3) and deserves to be ranked as one, which a single worst-case
+  // discount over the whole sum would not do.
+  const masterArgFloor = deBias(argBytes, 0, localSlack(family.masterArgBytes, rows));
+  const serializedFloor = overheadBytes
+    + spec.redeemBytes.reduce((sum, redeem) => sum + inputSerializedBytes(redeem + masterArgFloor), 0)
+    + inputSerializedBytes(deBias(feeBytes, 0, localSlack(calibration.feeBytes, 0)))
+    + sidecarSerializedFloor
+    + geometry.projections * inputSerializedBytes(byClass.get('projection')?.bytesFloor ?? 0)
+    + geometry.controllers * inputSerializedBytes(byClass.get('controller')?.bytesFloor ?? 0)
+    + deBias(applyEnvelope(family.outputsSerialized, geometry.outputs), 0,
+      localSlack(family.outputsSerialized, geometry.outputs));
 
   const worstUnlockingBytes = Math.max(...classes.map((row) => row.unlockingBytes));
   const worstDensity = classes.reduce((best, row) => (row.densityRatio > best.densityRatio ? row : best));
@@ -584,13 +690,20 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
   const sigCheckLimit = Math.max(1, Math.floor((signedBytes + 60) / 43));
   const worstSigCheckRatio = signed > 0 ? 1 / sigCheckLimit : 0;
 
-  const limits: LimitPrediction[] = [
+  // THE DE-BIASED RATIO PER LIMIT. Each is the same quantity with its own coefficients' demonstrated LOCAL
+  // over-prediction taken back out, and with every exact term - a redeem script, a serialization overhead, a
+  // SigChecks allowance computed from a measured floor - left alone. `bytesFloor` on the worst class, not the
+  // worst class's floor, is deliberately a MAX over classes: de-biasing can reorder which class is widest.
+  const floorBytes = Math.max(...classes.map((row) => row.bytesFloor));
+  const floorDensity = Math.max(...classes.map((row) => row.densityFloor));
+  const limits: LimitPrediction[] = ([
     {
       limit: 'standard relay transaction size',
       regime: 'standard',
       predicted: serializedBytes,
       allowed: BCH_2026_STANDARD.maximumTransactionSize,
       ratio: serializedBytes / BCH_2026_STANDARD.maximumTransactionSize,
+      ratioFloor: serializedFloor / BCH_2026_STANDARD.maximumTransactionSize,
       where: 'transaction',
     },
     {
@@ -599,6 +712,7 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
       predicted: serializedBytes,
       allowed: BCH_2026_CONSENSUS.maximumTransactionLengthBytes,
       ratio: serializedBytes / BCH_2026_CONSENSUS.maximumTransactionLengthBytes,
+      ratioFloor: serializedFloor / BCH_2026_CONSENSUS.maximumTransactionLengthBytes,
       where: 'transaction',
     },
     {
@@ -607,6 +721,7 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
       predicted: worstUnlockingBytes,
       allowed: BCH_2026_CONSENSUS.maximumBytecodeLength,
       ratio: worstUnlockingBytes / BCH_2026_CONSENSUS.maximumBytecodeLength,
+      ratioFloor: floorBytes / BCH_2026_CONSENSUS.maximumBytecodeLength,
       where: classes.find((row) => row.unlockingBytes === worstUnlockingBytes)!.klass,
     },
     {
@@ -616,41 +731,50 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
       allowed: (worstDensity.unlockingBytes + BCH_2026_CONSENSUS.densityControlBaseLength)
         * BCH_2026_CONSENSUS.operationCostBudgetPerByte,
       ratio: worstDensity.densityRatio,
+      ratioFloor: floorDensity,
       where: worstDensity.klass,
     },
     {
+      // Exact: one check on the smallest signed input, whose allowance is arithmetic on a MEASURED floor.
       limit: 'per-input SigChecks',
       regime: 'consensus',
       predicted: signed > 0 ? 1 : 0,
       allowed: sigCheckLimit,
       ratio: worstSigCheckRatio,
+      ratioFloor: worstSigCheckRatio,
       where: 'fee',
     },
     {
+      // Exact: the descriptor's own signed-input count against a consensus constant.
       limit: 'transaction SigChecks',
       regime: 'consensus',
       predicted: signed,
       allowed: BCH_2026_CONSENSUS.maximumTransactionSignatureChecks,
       ratio: signed / BCH_2026_CONSENSUS.maximumTransactionSignatureChecks,
+      ratioFloor: signed / BCH_2026_CONSENSUS.maximumTransactionSignatureChecks,
       where: 'transaction',
     },
-  ].sort((left, right) => right.ratio - left.ratio);
+  // ORDERED BY THE DE-BIASED RATIO, WITH ONE KEY AHEAD OF IT: a limit the shape is predicted to EXCEED
+  // outranks one it is merely predicted to approach. Without that key the named binder can contradict the
+  // verdict - at eight participants there are corpus rows whose relay size is predicted over 1.0 while
+  // density has the larger de-biased ratio, and answering "OVER, binds on density" tells a user to cut the
+  // wrong thing. `worstRatio` decides OVER; this makes `limits[0]` agree with it.
+  ] as LimitPrediction[]).sort((left, right) =>
+    Number(right.ratio > 1) - Number(left.ratio > 1)
+    || right.ratioFloor - left.ratioFloor
+    || right.ratio - left.ratio);
 
-  // WHICH LIMITS THE RANKING CANNOT SEPARATE. The leader's true ratio is at least its predicted ratio divided
-  // by the slack its own coefficient demonstrated on the calibration set; any limit at or above that floor
-  // could still be the real binder. SigChecks and the two size limits are exact or near-exact arithmetic on
-  // the descriptor, so they carry no coefficient slack of their own and enter on their predicted ratio.
-  const worstBytesClass = classes.find((row) => row.unlockingBytes === worstUnlockingBytes)!;
-  const slackFor = (limit: string): number => {
-    if (limit === 'operation-cost density') return worstDensity.densitySlack;
-    if (limit === 'unlocking bytecode length') return worstBytesClass.bytesSlack;
-    return 0;
-  };
-  const leader = limits[0];
-  const leaderFloor = leader.ratio / (1 + slackFor(leader.limit));
+  // WHICH LIMITS THE RANKING CANNOT SEPARATE, by interval dominance: a limit survives unless its whole
+  // `[ratioFloor, ratio]` interval sits below some other limit's floor. Taking the largest floor on the shape
+  // rather than the leader's own is what tightens the set - on the corpus rows the leader's floor was the
+  // loosest of the six.
+  const bestFloor = Math.max(...limits.map((row) => row.ratioFloor));
   const bindingUnresolved = limits
-    .filter((row) => row.ratio >= leaderFloor - 1e-12)
+    .filter((row) => row.ratio >= bestFloor - 1e-12)
     .map((row) => row.limit);
+  // CONSERVATISM IS TAKEN FROM THE MAXIMUM PREDICTED RATIO, NOT FROM `limits[0]`. Before X78 those were the
+  // same thing; they are not any more, and a verdict read off a re-ordered list would silently under-report.
+  const worstRatio = Math.max(...limits.map((row) => row.ratio));
 
   return {
     shape: spec.name,
@@ -661,8 +785,9 @@ export function estimate(spec: GraphShapeSpec, calibration: Calibration): Estima
     worstDensityRatio: worstDensity.densityRatio,
     worstSigCheckRatio,
     limits,
+    worstRatio,
     bindingUnresolved,
-    verdict: limits[0].ratio > 1 ? 'OVER' : 'FITS',
+    verdict: worstRatio > 1 ? 'OVER' : 'FITS',
     outOfRange: [...outOfRangeSet],
     classes,
   };
@@ -1134,6 +1259,9 @@ export function formatEstimate(prediction: Estimate): string {
     `worstScript<=${prediction.worstUnlockingBytes.toFixed(0)}B`,
     `worstDensity<=${prediction.worstDensityRatio.toFixed(4)}x`,
     `binds=${first.limit} ${first.ratio.toFixed(4)}x at ${first.where}`,
+    // The two numbers a reader needs to see are different jobs: the RANKED leader answers "what do I cut",
+    // and `worstRatio` answers "how close am I". Printing only the first would restate X70's mistake.
+    `worst<=${prediction.worstRatio.toFixed(4)}x`,
     `unresolved=[${prediction.bindingUnresolved.join('; ')}]`,
     prediction.verdict,
     prediction.outOfRange.length === 0 ? 'in-range' : `OUT-OF-RANGE(${prediction.outOfRange.length})`,

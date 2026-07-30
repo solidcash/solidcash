@@ -133,6 +133,7 @@ contract X151Copy() {
   }
 }`;
 
+
 const MASTER_REFUSAL = /error in evaluating input index 0: Program failed an OP_VERIFY operation/;
 
 const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);

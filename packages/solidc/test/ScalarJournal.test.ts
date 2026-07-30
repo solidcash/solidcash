@@ -71,8 +71,12 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toHaveLength(1);
   });
 
+  // X118 RENAMED THIS REFUSAL. The SUBJECT is unchanged - this shape must still fail closed - and the assertion
+  // is strengthened rather than relaxed: the class name and the presence of a position are asserted too, because
+  // the whole point of the rename was that a bare internal `Error` reached users with no name, position or
+  // remedy. Pinned in full by DiagnosticResidueX118X119X120.test.ts.
   it('rejects an event-bearing returning state helper that cannot be inlined', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+    const source = `pragma solidcash >=0.8.0;
       contract EventReturn() {
         int x;
         event Changed(int value);
@@ -87,16 +91,21 @@ describe('Release 1 scalar journal lowering', () => {
           require(result >= 0);
         }
       }
-    `, { forceStateful: true })).toThrow(
-      /Returning state helper 'update' with an event must be inlined/,
+    `;
+    expect(() => compileString(source, { forceStateful: true })).toThrow(
+      /Helper 'update' emits an event and is invoked internally as a value-returning subroutine/,
     );
+    let raised: Error | undefined;
+    try { compileString(source, { forceStateful: true }); } catch (error) { raised = error as Error; }
+    expect(raised?.name).toBe('EmittingStateHelperEventError');
+    expect(raised?.message).toMatch(/at Line \d+, Column \d+/);
   });
 
   it('rejects a returning emit helper (no direct state write) invoked from a journal handler', () => {
     // Regression for J5: a returning helper that emits but does not itself write state survives as an
     // OP_INVOKE subroutine (void emit helpers are force-inlined; returning ones are not) and its event
     // was silently dropped at the subroutine epilogue. It must now fail closed instead.
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+    const source = `pragma solidcash >=0.8.0;
       contract EmitReturn() {
         int x;
         event Changed(int value);
@@ -115,8 +124,17 @@ describe('Release 1 scalar journal lowering', () => {
           require(result >= 0);
         }
       }
-    `, { forceStateful: true })).toThrow(
-      /Returning state helper 'log' with an event must be inlined/,
+    `;
+    // X118 rename, same reasoning as above.
+    expect(() => compileString(source, { forceStateful: true })).toThrow(
+      /Helper 'log' emits an event and is invoked internally as a value-returning subroutine/,
     );
+    let raised: Error | undefined;
+    try { compileString(source, { forceStateful: true }); } catch (error) { raised = error as Error; }
+    expect(raised?.name).toBe('EmittingStateHelperEventError');
+    // DISCRIMINATING: `log` is DECLARED returning and writes no state, so the collection-journal clause must be
+    // ABSENT here while the `update` case above (void as written, made returning by the journal) carries it.
+    // Without this the message could claim a cause that is not the cause.
+    expect(raised?.message).not.toContain('it is void as written');
   });
 });

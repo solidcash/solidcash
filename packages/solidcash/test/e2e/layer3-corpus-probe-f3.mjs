@@ -400,7 +400,78 @@ if (process.env.F3_MERGE) {
   }
 }
 
-for (const corpus of process.env.F3_MERGE ? [] : corpora()) {
+/**
+ * R3-16: REFUSE TO CENSUS AN UNPINNED CORPUS. Wiring supplied as a BLOCKED hunk by the R3-16 worker, whose
+ * `layer3-corpus-pins.json` manifest and `layer3-corpus-pins.ts` verifier this reads. Before this, four
+ * external checkouts were pinned to nothing, so re-running against drifted sources silently changed the
+ * denominator of every percentage the board quotes.
+ *
+ * Two SILENT-DEGRADATION paths made that invisible, and they are the same shape as X113's eroding size rule
+ * in the consumer: `findSol` returns `[]` for a missing root, so an ABSENT corpus contributed zero files while
+ * the run still reported a total, and the mistswap target list is filtered by `existsSync`, so a RENAMED
+ * target shrank the denominator quietly. A guard whose subject can vanish while it stays green is the defect,
+ * so both are refusals.
+ *
+ * This does NOT import the verifier: the probe is `.mjs` and plain `node` cannot load the `.ts` module. It
+ * does not need to - the probe is already the authority on the file list, so it verifies its OWN `corpora()`
+ * output against the manifest and reimplements no selection logic. The digest layer is left to
+ * `layer3-corpus-pins.ts`: hashing 7,343 files inside a 29-minute run buys little, and commit plus counts are
+ * the two layers that move a denominator.
+ *
+ * Set F3_ALLOW_UNPINNED=1 for a deliberately unpinned exploratory census; the refusal text names what is
+ * given up, and no figure from such a run may be recorded as a census.
+ */
+function verifyCorpusPinsOrRefuse(active) {
+  const manifestPath = join(here, 'layer3-corpus-pins.json');
+  if (!existsSync(manifestPath)) {
+    throw new Error(`corpus-pin refusal: the pin manifest is missing at ${manifestPath}; a census run cannot `
+      + 'report a reproducible denominator without it.');
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const refusals = [];
+  for (const corpus of active) {
+    const pin = manifest.corpora.find((entry) => entry.name === corpus.name);
+    if (!pin) {
+      refusals.push(`corpus-pin refusal: '${corpus.name}' has no entry in layer3-corpus-pins.json.`);
+      continue;
+    }
+    if (!existsSync(corpus.root)) {
+      refusals.push(`corpus-pin refusal: '${corpus.name}' is absent at ${corpus.root}, so its `
+        + `${pin.inScopeCount} in-scope files would contribute nothing while this run still reports a total. `
+        + `Recreate it or set ${pin.envVar}.`);
+      continue;
+    }
+    if (corpus.files.length !== pin.fileCount) {
+      refusals.push(`corpus-pin refusal: '${corpus.name}' file count moved, pinned ${pin.fileCount} and found `
+        + `${corpus.files.length}. Every percentage over this corpus would have a different denominator than `
+        + 'the one it was recorded against.');
+    }
+    let head = '';
+    try {
+      const top = execSync(`git -C ${corpus.root} rev-parse --show-toplevel 2>/dev/null`).toString().trim();
+      head = top ? execSync(`git -C ${top} rev-parse HEAD 2>/dev/null`).toString().trim() : '';
+    } catch { head = ''; }
+    if (!head) {
+      refusals.push(`corpus-pin refusal: '${corpus.name}' at ${corpus.root} is not inside a git checkout, so `
+        + `its identity cannot be confirmed against pinned ${pin.commit}.`);
+    } else if (head !== pin.commit) {
+      refusals.push(`corpus-pin refusal: '${corpus.name}' is at ${head}, pinned ${pin.commit}. Nothing would `
+        + 'distinguish a compiler change from a corpus change in this census.');
+    }
+  }
+  if (refusals.length === 0) return;
+  const message = `corpus-pin refusal: ${refusals.length} finding(s):\n- ${refusals.join('\n- ')}`;
+  if (process.env.F3_ALLOW_UNPINNED) {
+    console.error(`${message}\n\nF3_ALLOW_UNPINNED is set: continuing. This run is NOT a reproducible census.`);
+    return;
+  }
+  throw new Error(message);
+}
+
+const activeCorpora = process.env.F3_MERGE ? [] : corpora();
+if (activeCorpora.length > 0) verifyCorpusPinsOrRefuse(activeCorpora);
+
+for (const corpus of activeCorpora) {
   let seen = 0;
   let inScope = 0;
   const started = Date.now();

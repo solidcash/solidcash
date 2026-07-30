@@ -1,0 +1,152 @@
+{
+  "_": [
+    "PINNED IDENTITY OF THE FOUR EXTERNAL CHECKOUTS THE F3 CORPUS CENSUS READS (row R3-16).",
+    "The census produces the board's headline claims about real contracts. Before this manifest it read four",
+    "unpinned working directories, so re-running it later against drifted upstream sources would silently change",
+    "the denominator of every percentage the board quotes, and nothing would distinguish 'the compiler changed'",
+    "from 'the corpus changed'.",
+    "",
+    "The sources are NOT vendored: this records identity, not content. It follows the pattern already set by",
+    "examples/solidity-by-example/SBE_SOURCE.md, which the census had simply not adopted.",
+    "",
+    "WHY BOTH A COMMIT AND DERIVED COUNTS ARE RECORDED. An upstream commit alone does not pin the denominator,",
+    "because the denominator also depends on the harness's own exclusion sets. The solidity-by-example pin has",
+    "never been bumped, yet its in-scope count moved from 139 to 141 when exclusions were REMOVED from the",
+    "harness. fileCount and inScopeCount therefore pin the census's actual denominators, and fileSetDigest",
+    "catches a dirty working tree that leaves the commit looking correct.",
+    "",
+    "Verify with layer3-corpus-pins.ts (verifyCorpusPins / assertCorpusPinsOrRefuse). A checkout that cannot be",
+    "verified is a NAMED REFUSAL, never a silent partial census."
+  ],
+  "recordedAt": "2026-07-30",
+  "recordedAtRepoCommit": "fac2050bd99eb7a8af4a5314e42a1f76f4576038",
+  "recordedBy": "row R3-16 (X108 worker)",
+  "samplingOfTheRecordedCensus": {
+    "_": [
+      "A SECOND UNPINNED REPRODUCIBILITY PARAMETER, found while pinning the checkouts and recorded here because",
+      "it moves the same denominators. The recorded census reports 'files' per corpus but not the SAMPLING that",
+      "produced them, so a re-take at a different stride changes every solc-corpus percentage with nothing to",
+      "distinguish it from a compiler or corpus change.",
+      "mistswap 16, eacc 22 and solidity-by-example 141 are full in-scope populations (stride 1).",
+      "solc-corpus is NOT: the census records 407 files against an in-scope population of 4,876.",
+      "INFERRED, not read from the census: the probe keeps files where (inScope - 1) % stride == 0, and",
+      "ceil(4876 / 12) = 407 exactly. The probe's own note 'a full four-corpus re-take at stride 12: 29 minutes'",
+      "corroborates it. So the solc-corpus row is a 1-in-12 systematic sample, 407 of 4,876.",
+      "Consequence for any consumer: a solc-corpus percentage has a denominator of 407 sampled files, not the",
+      "4,876 population, and must not be quoted as if the whole corpus were censused."
+    ],
+    "byCorpus": {
+      "solc-corpus": { "stride": 12, "sampled": 407, "population": 4876, "strideIsInferred": true },
+      "mistswap": { "stride": 1, "sampled": 16, "population": 16, "strideIsInferred": false },
+      "eacc": { "stride": 1, "sampled": 22, "population": 22, "strideIsInferred": false },
+      "solidity-by-example": { "stride": 1, "sampled": 141, "population": 141, "strideIsInferred": false }
+    }
+  },
+  "corpora": [
+    {
+      "name": "mistswap",
+      "envVar": "MISTSWAP_ROOT",
+      "defaultRoot": "/Code/mistswap/mistswap/contracts",
+      "censusSubdir": "contracts",
+      "upstream": "https://github.com/mistswapdex/mistswap",
+      "branch": "master",
+      "commit": "2cc297c7fcf9f94fff56b4327a7964d8e2bd9a0f",
+      "commitReachableFromUpstream": false,
+      "nearestUpstreamAncestor": "1f8622bbcc146e052ec83751ab60718f626fd44e",
+      "fileCount": 16,
+      "inScopeCount": 16,
+      "fileSetDigest": "sha256:cdc5486392f8ee215d76c21a3f7d843e8b1506cc628996daa9eda16e3c6b0e7a",
+      "notes": [
+        "NOT REPRODUCIBLE FROM UPSTREAM, and this is the finding rather than a defect in the pin. The checkout",
+        "sits on a local unpushed commit ('old wip', 2026-07-19) that no remote branch contains, so a third",
+        "party cannot recreate this corpus from a public commit.",
+        "Measured scope of the divergence: 15 of the 16 census targets are byte-identical to the nearest public",
+        "ancestor 1f8622bb. Exactly one differs, contracts/bentobox/BentoBoxV1.sol (10 lines), and it is one of",
+        "the two load-bearing corpus anchors in layer3-target-corpus.md section 2.",
+        "The divergence is cosmetic rebranding (a domain-separator string 'BentoBox V1' -> 'Mirror V1', two",
+        "approval strings, a trailing space in a revert reason, STRATEGY_DELAY 2 weeks -> 2 minutes). It does",
+        "not touch the deposit path the corpus cites, so it is immaterial to what the census measures, but the",
+        "corpus is still not publicly recreatable and must not be described as if it were.",
+        "The working tree also carries unrelated dirt (package.json, patches/) outside contracts/."
+      ],
+      "recreate": [
+        "No public commit reproduces this corpus exactly. The closest public state is:",
+        "  git clone https://github.com/mistswapdex/mistswap /Code/mistswap/mistswap",
+        "  git -C /Code/mistswap/mistswap checkout 1f8622bbcc146e052ec83751ab60718f626fd44e",
+        "That yields 15 of 16 targets byte-identical; BentoBoxV1.sol will differ and the fileSetDigest will not",
+        "match. Re-recording the pin against the public ancestor is the way to make this corpus reproducible."
+      ]
+    },
+    {
+      "name": "eacc",
+      "envVar": "EACC_CONTRACTS_DIR",
+      "defaultRoot": "/Code/effectiveacceleration.ai/contract/contracts",
+      "censusSubdir": "contract/contracts",
+      "upstream": "https://github.com/semperai/effectiveacceleration.ai",
+      "branch": "master",
+      "commit": "cea03ed06fc60b256264f1a79020dc5230b0c1a4",
+      "commitReachableFromUpstream": true,
+      "fileCount": 22,
+      "inScopeCount": 22,
+      "fileSetDigest": "sha256:892812f5181ea01aa7c5fa79eefdb3482398476745e7ee4c9d7101d3798c6459",
+      "notes": [
+        "The census counts only the app's own contracts: the probe drops /node_modules/ and any path segment",
+        "starting with '@', which excludes the vendored @openzeppelin tree.",
+        "The working tree carries dirt under subsquid/, outside the census subdirectory."
+      ],
+      "recreate": [
+        "git clone https://github.com/semperai/effectiveacceleration.ai /Code/effectiveacceleration.ai",
+        "git -C /Code/effectiveacceleration.ai checkout cea03ed06fc60b256264f1a79020dc5230b0c1a4"
+      ]
+    },
+    {
+      "name": "solidity-by-example",
+      "envVar": "SBE_ROOT",
+      "defaultRoot": "/Code/solidity-by-example",
+      "censusSubdir": "contracts/src",
+      "upstream": "https://github.com/solidity-by-example/solidity-by-example.github.io",
+      "branch": "gh-pages",
+      "commit": "5bcdca0239409d7336a07b66a6fca8d0bcc710e6",
+      "commitReachableFromUpstream": true,
+      "fileCount": 152,
+      "inScopeCount": 141,
+      "fileSetDigest": "sha256:1d8f9da773c62d27c77ca61859eddc8904f7cd0265a12b0f7d1d18c946ba1672",
+      "notes": [
+        "Already pinned independently by examples/solidity-by-example/SBE_SOURCE.md, and the live checkout",
+        "matches that pin. This manifest records the same commit so the census does not depend on a pin",
+        "documented for a different harness.",
+        "inScopeCount is 141: 152 files less 10 EXCLUDED and 1 NEGATIVE. The board's SBE bench line quotes a",
+        "denominator of 139, which is older than the current exclusion set rather than evidence of drift; the",
+        "pin has never been bumped and the tree is clean at it.",
+        "The env var points at the checkout ROOT; the census reads contracts/src beneath it."
+      ],
+      "recreate": [
+        "git clone -b gh-pages https://github.com/solidity-by-example/solidity-by-example.github.io /Code/solidity-by-example",
+        "git -C /Code/solidity-by-example checkout 5bcdca0239409d7336a07b66a6fca8d0bcc710e6"
+      ]
+    },
+    {
+      "name": "solc-corpus",
+      "envVar": "SOLC_CORPUS",
+      "defaultRoot": "/Code/solidity",
+      "censusSubdir": ".",
+      "upstream": "https://github.com/argotorg/solidity",
+      "branch": "develop",
+      "commit": "816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762",
+      "commitReachableFromUpstream": true,
+      "fileCount": 7343,
+      "inScopeCount": 4876,
+      "fileSetDigest": "sha256:327b248534cdef8fdc3e70b8af1dd268664db65aa5e32874687965f5028a97f6",
+      "notes": [
+        "The whole checkout is the corpus (every .sol anywhere in it), so censusSubdir is the repository root.",
+        "fileCount 7343 and inScopeCount 4876 both match the denominators examples/solidity-corpus quotes,",
+        "which is independent corroboration that this checkout has not drifted since that scorecard was taken.",
+        "in-scope excludes the NEGATIVE and MULTIFILE buckets the probe classifies by file content."
+      ],
+      "recreate": [
+        "git clone https://github.com/argotorg/solidity /Code/solidity",
+        "git -C /Code/solidity checkout 816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762"
+      ]
+    }
+  ]
+}

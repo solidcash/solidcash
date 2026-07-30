@@ -20,6 +20,7 @@ import {
   F3_CENSUS_GATES, F3_CENSUS_REJECTIONS,
 } from './layer3-corpus-census-f3.js';
 import { fitAt, formatFitRow, replicaSpec } from './layer3-corpus-fit-f3.js';
+import { verifyCorpusPins } from './layer3-corpus-pins.js';
 import type { CensusRow } from './layer3-corpus-fit-f3.js';
 
 /**
@@ -218,6 +219,19 @@ function measuredControlCandidates(): CensusRow[] {
 }
 
 describe('F3 census: how much of the real corpora can reach the bus at all', () => {
+  /**
+   * R3-16. THE FIT REPORT QUOTES PERCENTAGES OVER FOUR EXTERNAL CHECKOUTS, so it must not quote them from
+   * unpinned sources. Wiring supplied as a BLOCKED hunk by the R3-16 worker; `layer3-corpus-pins.ts` is the
+   * verifier and `Layer3CorpusPins.test.ts` proves it independently. A checkout that cannot be verified is a
+   * NAMED refusal here rather than a silently different denominator - the same standard X113 applies to the
+   * subject rule below.
+   */
+  it('rests on corpus checkouts at their pinned commits', () => {
+    const verdict = verifyCorpusPins();
+    for (const refusal of verdict.refusals) console.log(`[F3] R3-16 ${refusal}`);
+    expect(verdict.refusals).toEqual([]);
+  });
+
   /**
    * The gate chain, counted. Each gate is a strictly weaker population than the one before it, which is
    * asserted rather than assumed: a census whose "eligible" count exceeded its "compiles" count would be a

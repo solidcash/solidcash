@@ -1,5 +1,6 @@
 import { LocationI } from '@solidcash/utils';
 import { Node, SourceFileNode } from '../ast/AST.js';
+import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 
 /**
  * Labels a diagnostic position with the imported file that actually declares it.
@@ -23,17 +24,31 @@ export class ImportedLocations {
 
   constructor(private root?: SourceFileNode, private rootFileId: string = '') {}
 
-  /** ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled. */
+  /**
+   * ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled.
+   *
+   * X92. A position can be both generated and imported-looking, and GENERATED WINS. The imported label asserts
+   * "line N is real in file F on disk"; a generated position is in a string that exists only inside the compiler,
+   * so no file holds it and the imported label would be a SPECIFIC FALSE label naming a real file.
+   */
   diagLine(location?: LocationI): string {
     const line = location?.start?.line;
     if (line === undefined) return '';
+    const generated = generatedOriginOf(location);
+    if (generated) return ` at line ${line} of ${generated}, not of your file`;
     const file = this.fileOf(location);
     return file ? ` at line ${line} of imported "${file}"` : ` at line ${line}`;
   }
 
   /** The import path declaring `location`, or undefined when it belongs to the root file being compiled. */
   fileOf(location?: LocationI): string | undefined {
-    if (!location || !this.root?.imports?.length) return undefined;
+    if (!location) return undefined;
+    // X107. The parse stamped the file whose text it was reading; that is exact, needs no root and no ordering
+    // rule, and cannot name a re-exporting intermediate. The reachability map below stays as the fallback for
+    // positions built outside a parse.
+    const stamped = sourceFileOf(location);
+    if (stamped) return stamped;
+    if (!this.root?.imports?.length) return undefined;
     this.map ??= this.build();
     return this.map.get(location as unknown as object);
   }

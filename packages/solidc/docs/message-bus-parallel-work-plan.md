@@ -248,6 +248,21 @@ task-specific report, not in this table.
 | X44 | Two reached event-settling sites collapse to one ordinal | H1 | SEC-15 | **RE-CHECKED, still unreachable** | the effect-free control rejects identically, so X41's limit refuses it, not X44's collapse - see 4.95 |
 | X102 | The collection-iteration depth term is CALL-SITE dependent | — | X10 | **TODO** | `+1` is correct at one caller and wrong at the C2 INSERT arm; a shared constant cannot fix it, pass the depth |
 | X103 | A worker cannot merge or check out integration commits into its worktree | — | — | **TODO (process)** | the permission classifier denies both; dispatch from a later base or relay the half as a patch |
+| **SEC-18** | A route-reachable PURE READER read the pre-transaction value | I1 | X105 | **INTEGRATED** | guard bypass, router-enforced row: withdraw(80) then assertFloor(50) SETTLED against the balance it was reducing - see 4.99 |
+| X104 | Persisted chunk read fails closed on the bus route | I1 | S3 | **CLOSED by SEC-18's cause** | my `dynamicReads` lead was FALSIFIED twice (I4, then I1 independently); it was the same classifier - see 4.99 |
+| X105 | Journal divergence: is the spec or the implementation wrong? | I1 | S3 | **ANSWERED: the implementation** | both governing docs already defined `load(slot)` correctly; a direct-route filter was never widened - see 4.99 |
+| X106 | The 223-byte SCB1 blob envelope has two unlinked homes | J2 | X49 | **INTEGRATED (SDK half)** | home is `@solidcash/utils`; compiler half still BLOCKED behind J1's `compiler.ts` lease |
+| X57 | Should the three observer callers gate on relaxed limits? | J2 | — | **ANSWERED: leave all three** | the observer trace is NOT a faithful substitute - it derives PHANTOM state where the full trace correctly derives none - see 4.100 |
+| R3-8 | F3's two soundness rules sat inside the catch that swallowed them | I2 | R3 | **INTEGRATED** | the FIFTH vacuous guard; A/B-proven with the reviewer's own break, and a too-broad break rejected as unfair evidence |
+| R3-15 | The sweep's CONSENSUS_FIT claim never re-ran | I2 | R3 | **INTEGRATED** | 5/5 on the live node twice; a flipped unlocking byte is the direct proof the node EXECUTES rather than accepting on size |
+| R3-13 | 16 present-tense figures left behind by the first sweep | I2 | X99 | **INTEGRATED** | root cause named: the X81 row was never written into the covenant history; residue is 23 x N exactly on all four capstones |
+| R3-5 | Two committed NUL bytes hid the F3 census generator from grep | I2 | R3 | **INTEGRATED** | plain `grep -c` returned nothing at all pre-fix |
+| X92 | Generated-source nodes carry no origin label | I2 | X98 | **INTEGRATED, now pinned** | a 49-line shift, both beyond the file; three subject breaks all red |
+| X83 | The keccak side-car slot pre-check | I2 | — | **INTEGRATED, now pinned** | the index claim now rests on two measured artifacts, not a quoted message the rename deleted |
+| X108 | `compiler-hidden-batch-v1.md`'s Release 5 table matches NEITHER build | — | X105 | **TODO** | 2,743 / 316,607 against a measured 2,492 / 273,265, and different tx sizes: a different fixture, stale by an unattributed amount. Marked UNVERIFIED in place rather than re-pinned |
+| X109 | Two non-relaxed VM callers discard the provider's own limits | — | X57 | **TODO** | gate is `> 10_000`, so a provider AT 10,000 builds a bare VM: measured a program the raw VM ACCEPTS and the provider's verifier REJECTS. `StatefulTransactionBuilder.ts:2662,:2691` |
+| X110 | A shared `refs/stash` entry survived from round s1 | — | — | **TODO (process, hazard live)** | 923 lines of pointer-table files; all five now PRESENT and four LARGER in-tree, so nothing unique - but a `stash pop` would resurrect older copies. Drop was denied by the classifier; needs the user |
+| X111 | Emission-clone readers still read the pre-state, undiagnosable at compile time | I1 | SEC-18 | **BOUNDARY (measured, refusal reverted)** | a per-slot compile-time refusal false-refused C2 **23/23**: route-closure membership is not route-composition membership. Belongs at graph-planning time |
 | X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
 | X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | B6 | — | **INTEGRATED** | the overrides were HALVING a later package-wide fix; removing them restores 30,000 ms |
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
@@ -271,6 +286,93 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.99 SEC-18: one classifier made every pure reader read the PRE-state, and it was exploitable
+
+The largest security finding since SEC-14, and it had been sitting behind a lead I got wrong twice.
+
+**The mechanism is one predicate.** `GenerateTargetTraversal.ts:1756` filtered the journal closure with
+`writerIds.has(id) && slots.size > 0` - a function had to WRITE a slot before it could join. A handler that
+touches a journal slot and writes nothing was dropped entirely, so reached from `__scb1` as an `OP_INVOKE`
+subroutine it had no `pendingStateWrites` and `visitStateAccess` fell through to `emitStateFieldRead`: the
+input NFT commitment, i.e. the pre-transaction value. The filter was added deliberately in `bd593a11` to
+confine scalar journals to mutable owner state, and it is CORRECT in direct mode. It was simply never
+widened when the batch route arrived. So this was a scope defect, not a spec disagreement - I1 checked both
+governing documents and neither admits the shipped behaviour.
+
+**Why it is a bypass and not a curiosity.** The tempting dismissal is that a spender who wants a stale read
+can just not write. That is wrong, because the guard row is not the spender's choice: the caller contract's
+own body emits `IVault(v).withdraw(a0); IVault(v).assertFloor(a1);` and the graph transcript binds the row
+list. Open 100, withdraw 80, `assertFloor(50)`: true of 100, false of 20. **At base it passes preflight and
+settles.** The post-state stayed exactly authenticated the whole time - nothing here forges state - which is
+precisely why it survived every settlement suite we have. A guard satisfied against a value the transaction
+is simultaneously changing is invisible to any test that only checks the post-state.
+
+**X104 was the same cause, and my lead was falsified twice.** I told I1 the failing chunk-read shape was
+missing `dynamicReads`. I4 falsified it first; I1 reproduced the falsification independently rather than
+taking my word or its predecessor's. The real cause: a dropped read-only handler emitted its dynamic read
+INSIDE the subroutine, which has no trailing-region context. Journalling hoists the read into `__scb1` where
+`preAllocateDynamicWrite` knows the region base. No separate repair, no new diagnostic, no SDK change - and
+a fail-closed wall turned out to be fail-closed **by accident**.
+
+**I1 broke the C2 capstone on the way and said so.** The first version widened to the whole route closure:
+C2 went 14/25 red, honest A -> B -> A failing at input 0. Cause instrumented, not guessed - a read-only
+GRAPH EMISSION CLONE reading `legs`, whose frame is owned by the effect-frame protocol, so extra journal
+slots leave it one item deeper than the caller pushes. Exactly the arity hazard the note at
+`visitFunctionDefinition` warns about. Emission clones are now excluded.
+
+**The residual cannot be diagnosed at compile time, and that was MEASURED rather than asserted.** I1 built
+the fail-closed refusal for the emission-clone boundary and it false-refused C2 **entirely, 23/23**:
+`registerCredit`/`registerDebit` write `legs` and sit in the route closure even when no such row exists in
+the actual transaction. Route-closure membership is not route-composition membership, so any compile-time
+refusal here is necessarily over-broad. Filed as X111 for graph-planning time. Note what this is: a worker
+implementing a fix, measuring that it is worse than the gap, and reverting it - the opposite of the failure
+mode where a fail-closed boundary quietly becomes an unchecked witness path.
+
+**Cost, and one surprise.** +15 B for one pure scalar reader, +18 B for two, 0 B for a read-and-write reader,
+and **-88 B** for a pure dynamic reader. Runtime falls too: the Release 5 B covenant drops 43/55/195
+instructions at 2/3/8 rows, because a per-row commitment re-read becomes one frame pick. Direct mode is
+byte-identical, and 1278/1278 fixture hashes are unchanged across 639 `.scash` x 2 option modes - which is
+what bounds the blast radius to bus routes rather than a claim that nothing broke.
+
+**Integration half.** The 8 red assertions were in the tests/docs lease, so I applied them, and I
+re-measured all 8 figures rather than copying I1's - all matched. The 5 `Layer3DynamicChunksS3` assertions
+that recorded the divergence as FACT now record read-your-writes; bodies unchanged, so each pair still
+differs only in the expected value. Both guard negative controls pass before and after, and the single-row
+one is now labelled to say why it is insensitive (one reader, no writer, so the journal value coincides with
+the pre-state). Opened X108 rather than re-pinning the spec's Release 5 table silently: its figures match
+neither build.
+
+### 4.100 X57 answered by finding the observer derives PHANTOM state
+
+J2 was asked whether three `debug()` callers should keep gating on relaxed limits. The answer is leave all
+three, and the reason is not the performance argument the row was opened on.
+
+**The performance case is real but small.** At ordinary capacity a probe is bounded by BCH-2026 density
+control, not by taste: measured worst case 77,216 states, ~0.9 s, ~64 MB, at which point the VM refuses the
+next operation. Above ordinary capacity `debug()` does not crawl, it THROWS - libauth's `proxyDebug` does
+`results.push(...debugResult)` and blows V8's spread-argument limit with `RangeError` by 124,014 states. The
+relaxed mock budget is 1.24 MILLION times the ordinary ceiling, so the gate is the only thing making a
+relaxed probe possible at all.
+
+**The decisive finding is a soundness one.** `extractCommitmentMapFromTrace` treats ANY opcode between
+`OP_OUTPUTTOKENCOMMITMENT` and `OP_EQUALVERIFY` as proof the pair is not a commitment verification. The
+observer retains only 6 opcodes - so an intervening opcode outside that set is INVISIBLE to it. Pinned to
+input 0, real VM both sides, extractor transcribed verbatim: on a genuine verification both agree and derive
+`a0..a7`; with `OP_SIZE OP_DROP` intervening the full trace correctly derives NOTHING and **the observer
+derives phantom `a0..a7` for output 0**. The third row is the guard that makes this a finding rather than a
+coincidence: when the intervening opcode IS one the observer keeps, both agree again - isolating invisibility
+to the observer as the cause, not intervention as such. The same lossy projection feeds the sparse deploy
+probe, so this covers two of the three call sites verbatim.
+
+J2 also declined to claim the parts it had not established: whether 223 is the right number (inherited, not
+re-measured), and gate 3, which emits console text only, so relaxing it would change log formatting rather
+than correctness.
+
+**Side finding, filed as X109.** The gate is `> 10_000`, so a provider publishing limits AT 10,000 counts as
+"not relaxed" - and both non-relaxed branches then build a bare `createVirtualMachineBch2026()`, discarding
+that provider's limits. Measured: one program that the raw VM ACCEPTS and the provider's own verifier
+REJECTS. The failure tracer and strict preflight report under different rules than the verifier that decides.
 
 ### 4.97 THE HEADLINE MOVES: state-changing handlers reach the bus on real contracts
 

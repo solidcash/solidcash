@@ -59,7 +59,11 @@ footprint evidence, not a substitute for transaction-specific VM metrics:
 the final Release 0 gate still records evaluated instruction cost, pushed bytes, stack/memory peaks,
 unlocking sizes, and complete transaction sizes from constructed 2/3/8-row transactions.
 
-Constructed Release 5 transactions are pinned under `BCH_2026_05`:
+Constructed Release 5 transactions are pinned under `BCH_2026_05`. UNVERIFIED AT HEAD (row X108): the B
+figures below match neither the pre-X105 nor the post-X105 values that
+`RepeatedExternalBatchRelease5.test.ts` measures (2 rows: 2,492 instructions / 273,265 op cost there versus
+2,743 / 316,607 here), and the transaction sizes differ too, so this is a different fixture stale by an
+unattributed amount. It has not been re-measured and must not be cited as current.
 
 | rows | tx bytes | A instructions | A op cost / budget | A peak items/bytes | A unlock | B instructions | B op cost / budget | B peak items/bytes | B unlock |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -253,6 +257,21 @@ The journal representation is selected by the Release 1 benchmark. The default c
 authenticated base values plus an append-only `(slot, value)` write log. Deep mutable stack-frame
 replacement is not assumed.
 
+`load(slot)` above is honoured for handlers that only READ a slot as of X105. It previously was not: the
+journal closure required a function to WRITE a slot before joining, so a pure reader reached as an
+`OP_INVOKE` subroutine had no pending writes and read the input NFT commitment - the pre-transaction value -
+even when an earlier row of the same batch had written it. That admitted a guard bypass rather than a state
+forgery, since the post-state stayed authenticated; a router-enforced guard row is not the spender's choice,
+so `withdraw(80)` followed by `assertFloor(50)` settled against a balance the same transaction was reducing.
+`Layer3ReadYourWritesX105.test.ts` and `Layer3DynamicChunksS3.test.ts` pin both directions.
+
+One residual boundary: a read-only handler that also emits or transfers still reads the pre-state. Graph
+emission clones are deliberately excluded from the closure because their frame is owned by the effect-frame
+protocol, and extra journal slots leave it one item deeper than the caller pushes. This boundary cannot be
+diagnosed at compile time - route-closure membership is not route-composition membership, and a per-slot
+compile-time refusal was measured to false-refuse the C2 capstone entirely. Diagnosing it belongs to
+graph-planning time.
+
 ## 6. Returns, events, and value
 
 V1 reuses existing physical mechanisms:
@@ -328,6 +347,11 @@ Rejected in v1:
 - handlers with unresolved direct-versus-batch introspection divergence;
 - a batch requiring more than one existing split facet;
 - unresolved dynamic storage witnesses or over-limit batches.
+
+Admitted but carrying the section 5 residual, not rejected:
+
+- a read-only handler that also emits an event or transfers value reads the pre-transaction value of any
+  slot another row writes. Compile-time refusal is not available for this shape (section 5).
 
 ### 7.1 Mapping-backed transfer resource route
 

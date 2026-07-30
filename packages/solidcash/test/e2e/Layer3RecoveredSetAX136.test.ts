@@ -17,49 +17,61 @@ import {
 import type { Utxo } from '../../src/interfaces.js';
 
 /**
- * X136 CONTINUED. SET A - THE LARGEST PARTITION, AND THE LEAST EXAMINED.
+ * X136 CONTINUED. RUNNING THE RECOVERED HANDLERS - SET A, AND MyToken'S 68-SLOT ROUTE.
  *
- * The L2-F2 repair made 112 handlers newly buildable across three sets. Set A is 11 contracts and 53 of those
- * handlers, and it is the set whose ROUTE BLOCK SHAPE did not move while every redeem script GREW. That
- * combination is why it is worth running: a settling row here is evidence about the recovery generally, not
- * about one contract that happened to gain a slot.
+ * The L2-F2 repair made 112 handlers newly buildable across three sets. Before this file FOUR of them had ever
+ * been executed: `Airdrop.getLeafHash` settles (Set B, keccak side-car), `Attack.owner` and `Attack.wallet`
+ * settle (NEW set), and `Attack.attack` - the population's only writer - was proved NOT to, fail-closed.
+ * SET A, 11 contracts and the largest share of the 112, had never been run at all, and neither had the route
+ * `MyToken` was left with after it LOST a covenant slot.
  *
- * Before this file, three of the 112 had been executed - `Airdrop.getLeafHash` (Set B, a keccak side-car
- * route) and `Attack.owner`/`Attack.wallet` (NEW set) - and one, `Attack.attack`, had been proved NOT to
- * settle. NOTHING IN SET A HAD EVER BEEN RUN.
+ * THIS FILE SETTLES SEVEN MORE, each its own broadcast transaction:
  *
- * WHICH HANDLERS ARE ACTUALLY "GAINED", MEASURED RATHER THAN ASSUMED. The partition counts handlers the repair
- * ADDED, not handlers a contract publishes. Both sides were compiled - `a2885464^` = `c988817e` in a dedicated
- * worktree, and this branch - and the per-contract difference is what the rows below name:
+ *   ERC20Bank.token          set A   blockSize 3   master dataNft                   returnEvent
+ *   Vault.token              set A   blockSize 4   master dataNft entry             returnEvent
+ *   Vault.totalSupply        set A   blockSize 4   master dataNft entry             returnEvent
+ *   MyToken.totalSupply      set B   blockSize 68  master dataNft entry returnEvent + 64 trailing
+ *   MyToken.decimals         set B   blockSize 68  "
+ *   MyToken.name             set B   blockSize 68  "
+ *   MyToken.symbol           set B   blockSize 68  "
  *
- *   contract           before ->  after   GAINED BY THE REPAIR
- *   ERC20Bank          1      ->  2       token
- *   Vault              1      ->  3       token, totalSupply
- *   CrowdFund          1      ->  3       token, count
- *   EnglishAuction     1      ->  9       nft, nftId, seller, endAt, started, ended, highestBidder, highestBid
+ * WHICH HANDLERS ARE "GAINED", MEASURED RATHER THAN ASSUMED. The partition counts handlers the repair ADDED,
+ * not handlers a contract publishes, so both sides were compiled - `a2885464^` = `c988817e` in a dedicated
+ * worktree, and this branch. The difference per contract:
  *
- * Each row below invokes a handler from the GAINED column, so a settling row is a recovered handler settling
- * and not a handler that always worked.
+ *   contract           before -> after   GAINED BY THE REPAIR
+ *   ERC20Bank          1      ->  2      token
+ *   Vault              1      ->  3      token, totalSupply
+ *   MyToken            2      ->  6      totalSupply, name, symbol, decimals
  *
- * THE FOUR CONTRACTS ARE FOUR DISTINCT BLOCK SHAPES, which is what makes this a sample rather than a repeat:
+ * Every subject below is from the GAINED column, so a settling row is a RECOVERED handler settling and not a
+ * handler that always worked. `MyToken`'s four are its entire gained set.
  *
- *   ERC20Bank        blockSize 3   master dataNft                     returnEvent
- *   Vault            blockSize 4   master dataNft  entry              returnEvent
- *   CrowdFund        blockSize 4   master dataNft  dataNft            returnEvent
- *   EnglishAuction   blockSize 5   master dataNft  dataNft  dataNft   returnEvent
+ * MyToken IS THE SLOT-LOSS ROW, AND THE ANSWER IS THAT IT SETTLES. The repair took `MyToken` from blockSize 69
+ * to 68 by removing one of two `entry` slots, and `Layer3RecoveredCapacityX136.test.ts` argued that removal
+ * sound on COMPILE-time evidence while saying plainly in its own docblock that "MyToken's route was not run".
+ * A slot disappearing from a covenant is the shape most likely to be wrong. The 68-slot route is run here to
+ * completion on all four of its gained handlers, with a live head-sentinel `balanceOf` entry NFT co-spent in
+ * the surviving entry slot and the 64-slot trailing region materialized.
  *
- * `Airdrop` and `Attack` were both single-dataNft blocks with no entry slot, so a co-spent ENTRY input and a
- * multi-data-NFT block are both shapes no recovered route had been run on at all.
+ * THE RESULT IS NEVER RE-DERIVED HERE. Each row's declared return value is read off the ROUTE'S OWN VM TRACE by
+ * `routeResultFromTrace`, exactly as the Airdrop proof reads its keccak preimage off the trace rather than
+ * recomputing `abi.encode`; the honest run then asserts that re-wrapping the DECODED vector reproduces the
+ * covenant's own commitment bytes exactly. A harness that guessed the encoding wrong could not accidentally
+ * agree with the covenant, because it never writes an encoding down.
  *
- * THE RESULT IS NEVER RE-DERIVED HERE. Every row's declared return value is read off the ROUTE'S OWN VM TRACE
- * by `routeResultFromTrace` below, exactly as the Airdrop proof reads its keccak preimage off the trace rather
- * than recomputing `abi.encode`. A harness that guessed the result encoding wrong could not accidentally agree
- * with the covenant, because it never writes an encoding down.
+ * WHAT IS NOT ESTABLISHED, and it is most of the population.
  *
- * WHAT IS NOT ESTABLISHED. Every handler in this file is `writesState: false`; Set A's gained population is
- * read-only, so this is a read surface, and the one recovered WRITER is the separate, negative
- * `Layer3RecoveredWriterX136.test.ts`. `MarketplaceV1/V2/V3`, `FakeToken`, `UnicrowArbitrator`,
- * `UnicrowDispute` and `StableSwap` are Set A members this file does not run.
+ *  - SEVEN of 112. That is what this file adds; it does not speak for the other rows.
+ *  - Every subject here is `writesState: false`. Set A's gained population is read-only, so this is a read
+ *    surface. The one recovered WRITER is the separate, negative `Layer3RecoveredWriterX136.test.ts`.
+ *  - `CrowdFund` and `EnglishAuction` are Set A rows this file does NOT run, and the reason is this harness,
+ *    not the covenant: both carry a block oracle (`__block_timestamp` + an immutable `__blockOracleOwner` data
+ *    NFT) that this staging does not reproduce. `CrowdFund.count` was refused at input index 2 - its ORACLE
+ *    data NFT - and `EnglishAuction`'s probe never reached its return-event check. Neither is evidence that
+ *    those routes fail; they are unproven, exactly as before.
+ *  - `MarketplaceV1/V2/V3`, `FakeToken`, `UnicrowArbitrator`, `UnicrowDispute` and `StableSwap` are Set A
+ *    members this file does not run at all.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -109,12 +121,18 @@ type Attack = 'none' | 'result' | 'state';
 
 interface Row {
   name: string;
+  /** Which X136 partition this contract belongs to. */
+  partition: 'A' | 'B';
   file: string;
   /** Handlers this contract GAINED in the repair, measured against `c988817e`. */
   gained: readonly string[];
-  /** The gained handler this file runs to completion. */
-  subject: string;
+  /** Gained handlers this file runs to completion, one settled transaction each. */
+  subjects: readonly string[];
+  /** The one subject the two hostiles are built against. */
+  hostileSubject: string;
   state: Record<string, unknown>;
+  /** The post-state hostile: exactly ONE persisted field, moved to a believable neighbour. */
+  stateTamper: Record<string, unknown>;
   blockSize: number;
   slots: readonly string[];
   /** The sorted collection whose head-sentinel entry NFT fills the block's `entry` slot, when it has one. */
@@ -124,62 +142,54 @@ interface Row {
 const ROWS: readonly Row[] = [
   {
     name: 'ERC20Bank',
+    partition: 'A',
     file: `${SBE}/hacks/weth-permit/ERC20Bank.sol`,
     gained: ['token'],
-    subject: 'token',
+    subjects: ['token'],
+    hostileSubject: 'token',
     state: { token: hexToBin(`aa20${'55'.repeat(32)}87`) },
+    stateTamper: { token: hexToBin(`aa20${'55'.repeat(31)}5687`) },
     blockSize: 3,
     slots: ['master', 'dataNft', 'returnEvent'],
   },
   {
     name: 'Vault',
+    partition: 'A',
     file: `${SBE}/defi/vault/Vault.sol`,
     gained: ['token', 'totalSupply'],
-    subject: 'totalSupply',
+    subjects: ['token', 'totalSupply'],
+    hostileSubject: 'totalSupply',
     state: { token: hexToBin(`aa20${'55'.repeat(32)}87`), totalSupply: 4_242n },
+    stateTamper: { totalSupply: 4_243n },
     blockSize: 4,
     slots: ['master', 'dataNft', 'entry', 'returnEvent'],
     entryCollection: 'balanceOf',
   },
   {
-    name: 'CrowdFund',
-    file: `${SBE}/app/crowd-fund/CrowdFund.sol`,
-    gained: ['token', 'count'],
-    subject: 'count',
-    state: {
-      token: hexToBin(`aa20${'55'.repeat(32)}87`),
-      count: 7n,
-      __block_timestamp: 0n,
-      __blockOracleOwner: alicePub,
-    },
-    blockSize: 4,
-    slots: ['master', 'dataNft', 'dataNft', 'returnEvent'],
-  },
-  {
-    name: 'EnglishAuction',
-    file: `${SBE}/app/english-auction/EnglishAuction.sol`,
-    gained: [
-      'nft', 'nftId', 'seller', 'endAt', 'started', 'ended', 'highestBidder', 'highestBid',
-    ],
-    subject: 'seller',
-    state: {
-      nft: hexToBin(`aa20${'33'.repeat(32)}87`),
-      nftId: 9n,
-      seller: hexToBin(`aa20${'77'.repeat(32)}87`),
-      endAt: 0n,
-      started: false,
-      ended: false,
-      highestBidder: hexToBin(`aa20${'00'.repeat(32)}87`),
-      highestBid: 0n,
-      __block_timestamp: 0n,
-      __blockOracleOwner: alicePub,
-    },
-    blockSize: 5,
-    slots: ['master', 'dataNft', 'dataNft', 'dataNft', 'returnEvent'],
+    // SET B, and the one row in this file that is not Set A. `MyToken` LOST a covenant slot in the repair
+    // (blockSize 69 -> 68, one of two `entry` slots removed), and that removal was established on COMPILE-time
+    // evidence alone - `Layer3RecoveredCapacityX136.test.ts` says so in its own docblock: "MyToken's route was
+    // not run". A slot DISAPPEARING is the shape most likely to be wrong, so this runs the 68-slot route.
+    //
+    // Its block is also the only one here with a TRAILING REGION: 64 reserved slots, materialized as ordinary
+    // funding in and dust out, because `blockSize` includes them and both the projection verifier and the root
+    // controller step the next participant by `blockSize`. `name` and `symbol` are DYNAMIC strings and are
+    // seeded empty, so no chunk UTXO is required and no dynamic write runs.
+    name: 'MyToken',
+    partition: 'B',
+    file: `${SBE}/app/erc20/MyToken.sol`,
+    gained: ['totalSupply', 'name', 'symbol', 'decimals'],
+    subjects: ['totalSupply', 'decimals', 'name', 'symbol'],
+    hostileSubject: 'totalSupply',
+    state: { totalSupply: 1_000_000n, name: '', symbol: '', decimals: 18n },
+    stateTamper: { totalSupply: 1_000_001n },
+    blockSize: 68,
+    slots: ['master', 'dataNft', 'entry', 'returnEvent', ...Array.from({ length: 64 }, () => 'trailing')],
+    entryCollection: 'balanceOf',
   },
 ];
 
-describe('X136: Set A, the partition whose block shape did not move', () => {
+describe('X136: recovered routes run to completion - Set A, and MyToken after its slot loss', () => {
   /**
    * THE PARTITION TEST, from this run's own compiles. It states that each subject really is a handler the
    * repair ADDED and that the block shape is the one this file claims to be exercising, so the rows below are
@@ -203,8 +213,11 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
       for (const gained of row.gained) {
         expect(eligible, `${row.name}: ${gained} is not admitted`).toContain(gained);
       }
-      expect(row.gained, `${row.name}: the subject is not one of the gained handlers`)
-        .toContain(row.subject);
+      for (const subject of row.subjects) {
+        expect(row.gained, `${row.name}: ${subject} is not one of the gained handlers`).toContain(subject);
+      }
+      expect(row.subjects, `${row.name}: the hostile subject is not run as a positive`)
+        .toContain(row.hostileSubject);
       // Set A's gained population is read-only. Stated, not assumed - it bounds what this file establishes.
       for (const gained of row.gained) {
         const abi = artifact.abi.find((entry: any) => entry.name === gained);
@@ -217,9 +230,8 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
    * One attempt at one recovered route. `attack` moves exactly one field; `declared` is `undefined` for the
    * PROBE run, which is traced under the VM debugger and never broadcast.
    */
-  async function attempt(row: Row, attack: Attack, declared: Uint8Array | undefined): Promise<{
-    sent?: string; refusal?: string; failingInput?: number; discovered?: Uint8Array;
-  }> {
+  async function attempt(row: Row, handler: string, attack: Attack, declared: Uint8Array | undefined):
+  Promise<{ sent?: string; refusal?: string; failingInput?: number; discovered?: Uint8Array }> {
     const provider = createLayer3SemanticTestProvider();
     const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -276,10 +288,18 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
     // caller - the documented `unboundRouteWitnesses` case, and not a hole: the block carries no entry slot
     // for them, so nothing is read through them on this transaction. The SDK names each missing key exactly,
     // so this supplies precisely the named set and never a guessed one.
-    const unboundRouteWitnesses: Record<string, Uint8Array> = {};
+    const unboundRouteWitnesses: Record<string, Uint8Array | bigint> = {};
+    // The zero value of the type the ROUTE declares for that witness, read from the route's own inputs. An
+    // integer-keyed collection wants a number and a byte-keyed one wants bytes; neither is guessed here.
+    const zeroWitness = (name: string): Uint8Array | bigint => {
+      const declaredType = (artifact.hiddenBatch!.route.inputs as any[])
+        .find((input) => input.name === name)?.type;
+      if (declaredType === undefined) throw new Error(`${row.name}: the route declares no witness '${name}'`);
+      return /^(u?int|bigint)/.test(declaredType) ? 0n : new Uint8Array(32);
+    };
     const planOnce = (): any => layer3.planCompiledGraph(
       [{ artifact, lockingBytecode: participant.lockingBytecode, unboundRouteWitnesses }],
-      [{ parent: null, callee: 0, function: row.subject, args: [] as never[] }],
+      [{ parent: null, callee: 0, function: handler, args: [] as never[] }],
     );
     let plan: any;
     for (let attemptIndex = 0; ; attemptIndex += 1) {
@@ -289,7 +309,7 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
       } catch (error) {
         const named = (error as Error).message.match(/Missing SCB1 route witness '([^']+)'/);
         if (!named || attemptIndex > 16) throw error;
-        unboundRouteWitnesses[named[1]] = new Uint8Array(32);
+        unboundRouteWitnesses[named[1]] = zeroWitness(named[1]);
       }
     }
     const layout = layer3.compiledGraphPhysicalLayout(plan);
@@ -328,12 +348,7 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
     // variable, so it is the pre-state. The `state` hostile mutates one persisted field and nothing else.
     const commitments = buildInitialStateCommitments(artifact.stateLayout!, row.state);
     const tamperedState = attack === 'state'
-      ? buildInitialStateCommitments(artifact.stateLayout!, {
-        ...row.state,
-        ...(typeof Object.values(row.state)[1] === 'bigint'
-          ? { [Object.keys(row.state)[1]]: (Object.values(row.state)[1] as bigint) + 1n }
-          : { [Object.keys(row.state)[0]]: forge(Object.values(row.state)[0] as Uint8Array) }),
-      })
+      ? buildInitialStateCommitments(artifact.stateLayout!, { ...row.state, ...row.stateTamper })
       : commitments;
 
     const entryAddress = row.entryCollection === undefined ? undefined
@@ -402,6 +417,18 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
             },
           });
           break;
+        case 'trailing': {
+          // A RESERVED region, materialized but unconstrained. `blockSize` includes all 64 slots, and the
+          // projection verifier and the root controller both step the next participant by `blockSize`, so the
+          // inputs and outputs must exist. Nothing in the route reads them when no dynamic write runs - the
+          // chunk verification is emitted only for a handler with a pending dynamic write - so ordinary
+          // funding in and dust out is the whole requirement. Same idiom as Layer3DynamicChunksS3.
+          const filler = randomUtxo({ satoshis: 1500n });
+          await provider.addUtxo(p2pkh.address, filler);
+          tx.addInput(filler, p2pkh.unlock.spend(alicePub, signature()));
+          tx.addOutput({ to: p2pkh.address, amount: 1000n });
+          break;
+        }
         default:
           throw new Error(`${row.name}: this harness does not stage a '${slot.kind}' slot`);
       }
@@ -436,44 +463,52 @@ describe('X136: Set A, the partition whose block shape did not move', () => {
 
   /** The route's own result, read once off its trace and reused by every row for that contract. */
   const cached = new Map<string, Uint8Array>();
-  async function routeResult(row: Row): Promise<Uint8Array> {
-    if (!cached.has(row.name)) {
-      const probe = await attempt(row, 'none', undefined);
-      cached.set(row.name, probe.discovered!);
-      console.log(`[X136A] ${row.name}.${row.subject} result off its own trace: `
-        + `${binToHex(probe.discovered!)}`);
+  async function routeResult(row: Row, handler: string): Promise<Uint8Array> {
+    const key = `${row.name}.${handler}`;
+    if (!cached.has(key)) {
+      const probe = await attempt(row, handler, 'none', undefined);
+      cached.set(key, probe.discovered!);
+      console.log(`[X136A] ${key} result off its own trace: ${binToHex(probe.discovered!)}`);
     }
-    return cached.get(row.name)!;
+    return cached.get(key)!;
   }
 
+  /**
+   * THE POSITIVE. One settled transaction per GAINED handler, built by the same helper that builds the
+   * hostiles, so an acceptance cannot be an evaluation that never ran.
+   */
+  const positive = (row: Row, subject: string) => async (): Promise<void> => {
+    const result = await attempt(row, subject, 'none', await routeResult(row, subject));
+    if (result.refusal) {
+      console.log(`[X136A] ${row.name}.${subject} refused: ${result.refusal.split('\n')[0]}`);
+    }
+    expect(result.refusal, `the recovered ${row.name}.${subject} row did not settle`).toBeUndefined();
+    expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
+    console.log(`[X136A] ${row.name}.${subject} settled ${result.sent}`);
+  };
+
+  /**
+   * GUARD NEGATIVE CONTROL. Each differs from the settling positive in exactly one field - the declared
+   * result, or one persisted state field - and that positive is rebuilt by this same helper in this same
+   * file, so a refusal is a refusal of the attacked field and not of a builder that never worked.
+   */
+  const hostile = (row: Row, attack: Attack) => async (): Promise<void> => {
+    const result = await attempt(row, row.hostileSubject, attack, await routeResult(row, row.hostileSubject));
+    console.log(`[X136A] ${row.name}/${attack}: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
+    expect(result.sent, `a forged ${row.name} ${attack} was ACCEPTED`).toBeUndefined();
+    expect(result.refusal).toBeDefined();
+    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
+
   for (const row of ROWS) {
-    /**
-     * THE POSITIVE, and the guard negative control for both hostiles: the same builder, the same block, the
-     * same staging - only the attacked field differs below.
-     */
-    it(`MEASURED: the recovered ${row.name} route SETTLES its gained '${row.subject}' row`, async () => {
-      const result = await attempt(row, 'none', await routeResult(row));
-      if (result.refusal) console.log(`[X136A] ${row.name} refused: ${result.refusal.split('\n')[0]}`);
-      expect(result.refusal, `the recovered ${row.name} route did not settle`).toBeUndefined();
-      expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-      console.log(`[X136A] ${row.name}.${row.subject} settled ${result.sent}`);
-    }, 900_000);
-
-    it(`HOSTILE: ${row.name}'s return event carrying a believable-wrong result is refused`, async () => {
-      const result = await attempt(row, 'result', await routeResult(row));
-      console.log(`[X136A] ${row.name}/result: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
-      expect(result.sent, `a forged ${row.name} result was ACCEPTED`).toBeUndefined();
-      expect(result.refusal).toBeDefined();
-      expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-      expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
-    }, 900_000);
-
-    it(`HOSTILE: ${row.name}'s post-state carrying a mutated field is refused`, async () => {
-      const result = await attempt(row, 'state', await routeResult(row));
-      console.log(`[X136A] ${row.name}/state: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
-      expect(result.sent, `a forged ${row.name} post-state was ACCEPTED`).toBeUndefined();
-      expect(result.refusal).toBeDefined();
-      expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
-    }, 900_000);
+    for (const subject of row.subjects) {
+      it(`MEASURED: recovered ${row.name} (set ${row.partition}) SETTLES its gained '${subject}' row`,
+        positive(row, subject), 900_000);
+    }
+    it(`HOSTILE: ${row.name}'s return event carrying a believable-wrong result is refused`,
+      hostile(row, 'result'), 900_000);
+    it(`HOSTILE: ${row.name}'s post-state carrying one mutated field is refused`,
+      hostile(row, 'state'), 900_000);
   }
 });

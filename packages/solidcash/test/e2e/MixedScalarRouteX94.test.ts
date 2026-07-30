@@ -217,4 +217,115 @@ describe('X94 a scalar handler joins a collection route', () => {
     expect(artifact.hiddenBatch?.route.inputs.map((input: any) => input.name))
       .toEqual(expect.arrayContaining(['__scb_key_balances_0_row_r0', '__scb_key_balances_0_row_r1']));
   }, 180_000);
+
+  /**
+   * NEVER-SHRINK GUARD, with its own subject. The uniformity rules pick ONE shape for the whole set, so a
+   * newly admitted scalar handler can demote handlers that were already admitted - a RETURNING one makes the
+   * route result-shaped, an EMITTING one makes it event-shaped, and each of those refuses handlers the route
+   * already carried. The guard runs the rules over both sets and keeps the wider.
+   *
+   * Neither shape occurs in the four corpora - the corpus delta with the guard and without it is zero rows -
+   * so these are the only place the mechanism is exercised at all.
+   */
+  it('refuses a returning scalar handler rather than let it demote two emitting entry writers', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+contract X94Result() {
+  bigint total;
+  mapping(bytes20 => bigint) balances;
+  event Moved(int amount);
+  function totalSupply() public returns (bigint) { require(true); return this.total; }
+  function credit(bytes20 who, bigint a) public {
+    this.balances[who] = this.balances[who] + a; emit Moved(a); require(a >= 0);
+  }
+  function credit2(bytes20 who, bigint a) public {
+    this.balances[who] = this.balances[who] + a; emit Moved(a); require(a >= 0);
+  }
+}`, BUS);
+    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    // Admitting `totalSupply` makes the route result-shaped, which refuses BOTH emitters: one handler against
+    // the two the route already carried. The guard keeps the two.
+    expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['credit', 'credit2']);
+    expect(handlers.find((handler) => handler.name === 'totalSupply')).toMatchObject({
+      eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
+    });
+  }, 180_000);
+
+  it('refuses an emitting scalar handler rather than let it demote two silent entry writers', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+contract X94Event() {
+  bigint total;
+  mapping(bytes20 => bigint) balances;
+  event Bumped(int amount);
+  function bump(bigint a) public { this.total = this.total + a; emit Bumped(a); require(a >= 0); }
+  function credit(bytes20 who, bigint a) public { this.balances[who] = this.balances[who] + a; require(a >= 0); }
+  function debit(bytes20 who, bigint a) public { this.balances[who] = this.balances[who] - a; require(a >= 0); }
+}`, BUS);
+    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['credit', 'debit']);
+    expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({
+      eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
+    });
+  }, 180_000);
+});
+
+/**
+ * X88 + X89, and the pairing is the point. A collection ITERATION read never entered the footprint
+ * (`CollectionIterationNode` carries `collectionName`, not `name`), which was harmless only because X88 stopped
+ * the handler compiling: the enumerable-iteration lowering gives the handler extra parameters after the
+ * wrapper's dispatch call has already been generated from the pre-lowering signature.
+ *
+ * Fixing the arity alone would have turned a compile error into a SILENT UNDER-RESERVATION - a handler admitted
+ * with entry reads the block reserves nothing for. So the read is recovered AND the handler is refused by name,
+ * and both halves are pinned here.
+ */
+describe('X88/X89 a collection-iteration handler is refused by name, not crashed on arity', () => {
+  const iterating = (body: string, sibling = ''): string => `pragma solidcash >=0.8.0;
+contract X88Iter() {
+  enumerable mapping(bytes20 => bigint) m;
+  bigint total;
+  ${body}
+  ${sibling}
+}`;
+  const scanEntries = `function scan(bigint seed) public {
+    bigint t = seed;
+    for (bytes20 k, bigint v of this.m.entries) { t = t + v; }
+    this.total = t;
+    require(t >= 0);
+  }`;
+  const scanKeys = `function scan(bigint seed) public {
+    bigint t = seed;
+    for (bytes20 k in this.m) { t = t + 1; }
+    this.total = t;
+    require(t >= 0);
+  }`;
+
+  it('compiles the handler that used to crash the generated wrapper, with no route and a named reason', () => {
+    for (const body of [scanEntries, scanKeys]) {
+      const artifact = compileString(iterating(body), BUS);
+      expect(artifact.hiddenBatch).toBeUndefined();
+      expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
+        .toContain("'scan': collection-iteration-handler-not-enabled");
+    }
+  }, 240_000);
+
+  /**
+   * The half that makes the refusal load-bearing rather than cosmetic. Beside a handler the route DOES admit,
+   * the iteration handler must be refused for the iteration - not swept up by some other rule that happens to
+   * fire - and the route's entry slots must still be exactly the admitted handler's own.
+   */
+  it('refuses the iteration handler beside an admitted entry writer, and sizes only that writer', () => {
+    const artifact = compileString(iterating(
+      scanEntries,
+      'function credit(bytes20 who, bigint a) public { this.m[who] = this.m[who] + a; require(a >= 0); }',
+    ), BUS);
+    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    expect(handlers.find((handler) => handler.name === 'scan')).toMatchObject({
+      eligible: false, rejectionReason: 'collection-iteration-handler-not-enabled',
+    });
+    expect(handlers.find((handler) => handler.name === 'credit')).toMatchObject({ eligible: true });
+    expect(artifact.hiddenBatch?.route.entryAccesses)
+      .toEqual([{ collection: 'm', keyParams: ['__scb_key_m_0'], operations: ['read', 'write'] }]);
+  }, 240_000);
 });

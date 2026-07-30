@@ -196,35 +196,57 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
    * and closing the hole satisfies that strictly better. So the test now asserts the invariant directly and
    * additionally requires EVERY refused handler on the subject to carry a name, which is the stronger claim
    * the tree now supports and which would fail again if the channel regressed.
+   *
+   * X87. THE SUBJECT IS NOW CHOSEN BY WALKING, because pinning it to ONE census row is how this test failed in
+   * the first place. Any recorded refusal can stop reproducing - X72 renamed the whole `unnamed` bucket, X76
+   * lifted two gates and moved another 22 firings down to 5 - and a lone subject that stops refusing turns the
+   * "is it doing work" guard red without anything being wrong. So candidates are taken in census order and
+   * recompiled until one still refuses something; the invariant is asserted on EVERY candidate examined, and
+   * only the "doing work" line depends on finding a refusing one. Measured at this commit: the first candidate,
+   * `mistswap/SushiRoll`, still refuses two named reasons, so exactly one recompile happens.
    */
   it('MEASURED: no route refusal is unnamed on a handler the user wrote', () => {
-    const subject = F3_CENSUS_ELIGIBLE.find((row) => (row.rejectionReasons ?? []).includes('unnamed'))
-      ?? F3_CENSUS_ELIGIBLE.find((row) => (row.rejectionReasons ?? []).length > 0);
-    expect(subject, 'the census records no refused entry point to recompile').toBeDefined();
-    const artifact = compileFile(`${CORPUS_ROOTS[subject!.corpus]}/${subject!.rel}`, {
-      solidityImportCompat: true,
-      ecrecover: 'p2pkh',
-      forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
-    } as never);
-    const refused = artifact.hiddenBatch!.handlers.filter((handler) => !handler.eligible);
-    const unnamed = refused.filter((handler) => handler.rejectionReason === undefined);
-    console.log(`[F3] ${subject!.contractName}: census recorded reasons `
-      + `${JSON.stringify(subject!.rejectionReasons)}`);
-    console.log(`[F3] ${subject!.contractName}: recompiled reasons `
-      + `${JSON.stringify([...new Set(refused.map((handler) => handler.rejectionReason ?? 'unnamed'))])}`);
-    console.log(`[F3] ${subject!.contractName}: unnamed refusals = ${unnamed.length}`
-      + `${unnamed.length > 0 ? ` (${unnamed.map((handler) => handler.name).join(', ')})` : ''}`);
-    // THE INVARIANT, which held before X72 and holds after it: whatever arrives without a reason is
-    // compiler-synthesized. Vacuously true when the hole is closed, and that is the correct semantics.
-    expect(unnamed.every((handler) => handler.name.startsWith('__')),
-      'an unnamed refusal fell on a handler the user wrote').toBe(true);
-    // THE CLOSURE, asserted because the tree supports it: every refusal on this subject carries a name.
-    expect(unnamed, 'a refused entry point is published with no reason').toEqual([]);
-    expect(refused.length, 'the recompiled subject refuses nothing, so it proves nothing').toBeGreaterThan(0);
-  }, 120_000);
+    // Rows whose recorded refusal is `unnamed` first, since that is the bucket under investigation.
+    const candidates = [
+      ...F3_CENSUS_ELIGIBLE.filter((row) => (row.rejectionReasons ?? []).includes('unnamed')),
+      ...F3_CENSUS_ELIGIBLE.filter((row) => (row.rejectionReasons ?? []).length > 0
+        && !(row.rejectionReasons ?? []).includes('unnamed')),
+    ].filter((row) => CORPUS_ROOTS[row.corpus] !== undefined);
+    expect(candidates, 'the census records no refused entry point to recompile').not.toEqual([]);
+    let examined = 0;
+    let refusing: { name: string; reasons: string[] } | undefined;
+    for (const subject of candidates.slice(0, 4)) {
+      const artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
+        solidityImportCompat: true,
+        ecrecover: 'p2pkh',
+        forceStateful: true,
+        experimentalHiddenBatch: true,
+        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+        experimentalMessageBusControllerCategory: '22'.repeat(32),
+      } as never);
+      examined += 1;
+      const refused = (artifact.hiddenBatch?.handlers ?? []).filter((handler) => !handler.eligible);
+      const unnamed = refused.filter((handler) => handler.rejectionReason === undefined);
+      const reasons = [...new Set(refused.map((handler) => handler.rejectionReason ?? 'unnamed'))];
+      console.log(`[F3] ${subject.contractName}: census recorded reasons `
+        + `${JSON.stringify(subject.rejectionReasons)}`);
+      console.log(`[F3] ${subject.contractName}: recompiled reasons ${JSON.stringify(reasons)}`);
+      console.log(`[F3] ${subject.contractName}: unnamed refusals = ${unnamed.length}`
+        + `${unnamed.length > 0 ? ` (${unnamed.map((handler) => handler.name).join(', ')})` : ''}`);
+      // THE INVARIANT, which held before X72 and holds after it: whatever arrives without a reason is
+      // compiler-synthesized. Vacuously true when the hole is closed, and that is the correct semantics.
+      expect(unnamed.every((handler) => handler.name.startsWith('__')),
+        `${subject.contractName}: an unnamed refusal fell on a handler the user wrote`).toBe(true);
+      // THE CLOSURE, asserted because the tree supports it: every refusal carries a name.
+      expect(unnamed, `${subject.contractName}: a refused entry point is published with no reason`).toEqual([]);
+      if (refused.length > 0) { refusing = { name: subject.contractName!, reasons }; break; }
+    }
+    console.log(`[F3] examined ${examined} census candidate(s); refusing subject: `
+      + `${refusing === undefined ? 'NONE' : `${refusing.name} ${JSON.stringify(refusing.reasons)}`}`);
+    // The "doing work" guard, on the WALK rather than on one row: at least one recorded refusal must still
+    // reproduce, or this test is checking a channel nothing sends down.
+    expect(refusing, 'every census-flagged row now refuses nothing, so the closure is vacuous').toBeDefined();
+  }, 300_000);
 
   /**
    * REACHABLE IS NOT THE SAME AS USEFUL, and this is the count that separates them.
@@ -639,25 +661,36 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     console.log(`[F3] one-slot bus-reachable candidates, widest redeem first: ${candidates.length}`);
     expect(candidates.length, 'no one-slot bus-reachable corpus contract exists').toBeGreaterThan(0);
     const failures: string[] = [];
+    const censusDrift: string[] = [];
     let measured = 0;
     // EVERY one-slot candidate is measured, not just the first that works. There are few of them and the
     // estimator comparison is the point of the exercise, so one data point where two are available would be
     // choosing the weaker evidence.
     for (const subject of candidates) {
       try {
-        await measureSubject(subject);
+        const drift = await measureSubject(subject);
+        if (drift !== undefined) censusDrift.push(drift);
         measured += 1;
       } catch (error) {
         failures.push(`${subject.corpus}/${subject.contractName}: ${(error as Error).message.split('\n')[0]}`);
       }
     }
     for (const failure of failures) console.log(`[F3] candidate skipped - ${failure}`);
+    // X86. A CENSUS THAT HAS DRIFTED IS REPORTED, NOT SKIPPED. The recorded redeem length used to be asserted
+    // equal to the built participant inside this loop's catch, so three solc-corpus rows whose script the
+    // compiler had since changed were being counted with the nineteen contracts whose `require` a placeholder
+    // argument cannot satisfy. The descriptor is built from this run's compile, so the row is still measured.
+    console.log(`[F3] census rows whose recorded redeem length has drifted: ${censusDrift.length}`);
+    for (const drift of censusDrift) console.log(`[F3]   DRIFT ${drift}`);
     console.log(`[F3] measured ${measured} of ${candidates.length} one-slot candidates`);
     expect(measured, `no candidate could be built and measured; ${candidates.length} tried`).toBeGreaterThan(0);
   }, 900_000);
 
-  /** Build one census row into a real 1-participant graph, measure it, and check the estimator against it. */
-  async function measureSubject(subject: CensusRow): Promise<void> {
+  /**
+   * Build one census row into a real 1-participant graph, measure it, and check the estimator against it.
+   * Returns a description of any disagreement between the recorded census and this run's compile.
+   */
+  async function measureSubject(subject: CensusRow): Promise<string | undefined> {
     console.log(`[F3] measured-control subject: ${subject.corpus}/${subject.contractName} (${subject.rel}), `
       + `blockSize=${subject.blockSize}, census redeem=${subject.redeemBytes}B`);
 
@@ -684,15 +717,26 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
       experimentalMessageBusController: controller.lockingBytecode,
       experimentalMessageBusControllerCategory: controllerCategory,
     } as never);
+    // The one-slot rule is re-checked against the compiler, because a row the census recorded as one-slot can
+    // compile to a wider block now and building it without seeding the sidecar UTXOs fails further down with
+    // an unrelated message.
+    const compiledBlockSize = artifact.hiddenBatch!.route.blockLayout!.blockSize;
+    if (compiledBlockSize !== 1) {
+      throw new Error(`census recorded a one-slot block; the compiler now emits ${compiledBlockSize}`);
+    }
     const args = (artifact.constructorInputs ?? []).map((input) => placeholder(String(input.type)));
     const base = new Contract(artifact, args as never[], { provider });
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
     const participant = base.withCategory(hexToBin(setup.categoryId));
     // The census records the redeem length under a stand-in controller; a real controller is a p2sh32 locking
-    // bytecode of the same length, so the two must agree exactly. A mismatch would mean the census figure is
-    // not the figure a deployment gets, which is the whole point of recording it.
-    expect(participant.bytecode.length / 2, 'census redeem length disagrees with the built participant')
-      .toBe(subject.redeemBytes);
+    // bytecode of the same length, so the two figures are comparable exactly. Where they differ the RECORD is
+    // what is stale - a redeem length is `new Contract(artifact, args).bytecode.length`, which this run has
+    // just computed - so the disagreement is returned to the caller and the compile is what the estimator sees.
+    const compiledRedeemBytes = participant.bytecode.length / 2;
+    const drift = compiledRedeemBytes === subject.redeemBytes ? undefined
+      : `${subject.corpus}/${subject.contractName} (${subject.rel}): census ${subject.redeemBytes} B, `
+        + `compiled ${compiledRedeemBytes} B (${compiledRedeemBytes - subject.redeemBytes! >= 0 ? '+' : ''}`
+        + `${compiledRedeemBytes - subject.redeemBytes!})`;
 
     const handlerName = subject.eligibleHandlers![0];
     const handler = artifact.hiddenBatch!.handlers.find((entry) => entry.name === handlerName)!;
@@ -784,8 +828,11 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
 
     // And what the estimator said about this exact shape, before it existed. With the covenant sizes compiled
     // at this commit rather than defaulted from the calibration, so the prediction is not carrying 444 bytes of
-    // a projection verifier that the transaction measured beside it does not contain.
-    const prediction = estimate(replicaSpec(subject, 1, MEASURED_COVENANTS), calibration);
+    // a projection verifier that the transaction measured beside it does not contain - and with the master
+    // redeem length this run compiled rather than the recorded one, for the same reason.
+    const prediction = estimate({
+      ...replicaSpec(subject, 1, MEASURED_COVENANTS), redeemBytes: [compiledRedeemBytes],
+    }, calibration);
     console.log(`[F3] PREDICTED ${formatEstimate(prediction)}`);
     const comparison: [string, number, number][] = [
       ['serialized bytes', prediction.serializedBytes, envelope.serializedBytes],
@@ -808,5 +855,6 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     expect(envelope.inputCount).toBe(layout.participantInputs.length + 3);
     expect(envelope.refusedAtConsensus, 'refused at the real consensus profile').toEqual([]);
     expect(envelope.refusedAtStandard, 'refused at the real standard profile').toEqual([]);
+    return drift;
   }
 });

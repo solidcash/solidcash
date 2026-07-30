@@ -357,6 +357,10 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
     + 'container: the route wrapper has to declare that effect\'s block slot, which flattens the handler into '
     + 'the wrapper and leaves its returning edge with no slot to bind - move the effect into a second handler '
     + 'that consumes no result, or drop the result and make the call a void tail call',
+  'collection-iteration-handler-not-enabled':
+    'a handler that ITERATES a collection reads every entry of it, and the route addresses entries through '
+    + 'per-entry witnesses fixed at compile time, so an unbounded iteration has no representation in the '
+    + 'block layout: read the entries the batch needs by key, or keep the iteration on the direct route',
   'mixed-scalar-and-collection-route-not-enabled':
     'a handler that addresses no collection entry is refused on two route shapes. On a route that allocates a '
     + 'ROW-LOCAL entry slot per row, those slots are bound by the entry handler\'s own row, so a row that '
@@ -686,16 +690,17 @@ function synthesizeHiddenBatchRoute(
       walkInvocationAst(fn.body, (node) => {
         if (node instanceof ArrayDeleteNode && !locallyBound.has(node.name)
           && collectionByName.has(node.name)) bareShapeIsNormalizable = false;
-        // X95. This clause exists for the bare index the NORMALIZER declines while the widened key set would
-        // still have needed it - which is a COLLECTION name resolution sends elsewhere (a packed or dynamic
-        // array state variable becomes `StateArrayAssignNode`, a form with no entry NFT). A bare index of a
-        // name that is not a collection at all reserves no entry either way, so refusing the whole handler for
-        // one gave up the bare admission for nothing. Narrowed to collection names, which keeps every case
-        // where a key could go unreserved: the widened set can only grow, never shrink, so no route reserves
-        // FEWER entries than it did.
-        const bare = bareAccessOf(node);
+        // X95, MEASURED AND KEPT. Narrowing this clause to COLLECTION names only was filed as a sound widening:
+        // a bare index of a name that is not a collection reserves no entry, so refusing the whole handler for
+        // one looks like a loss for nothing. It is not. The names this clause catches beyond collections are
+        // DYNAMIC and PACKED array state variables, which `bareEntryAccessOf` declines precisely because they
+        // resolve to `StateArrayAssignNode` - and admitting the handler then puts an unbounded array write on a
+        // route beside collection entries, which is the shape NEGATIVE CONTROL 3 in HiddenBatchGatesX76 pins as
+        // refused. Measured on the corpus, the narrowing's ONLY subject is `EventSubscription.unsubscribe`,
+        // whose blocking bare index is `subscriberList[i]` on `address[] public subscriberList` - that exact
+        // shape. So the wider predicate buys one contract and costs the control; it stays as it was.
         if ((node instanceof ArrayAssignNode || node instanceof ArrayAccessNode)
-          && bare !== undefined && collectionByName.has(bare.name)
+          && bareAccessOf(node) !== undefined
           && bareEntryAccessOf(node, locallyBound) === undefined) bareShapeIsNormalizable = false;
       });
       const directKeys = bareShapeIsSelfReached
@@ -709,7 +714,15 @@ function synthesizeHiddenBatchRoute(
             const name = resource.split(':')[1];
             return dynamicState.has(name) || name === 'tokens';
           });
-      if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
+      // X88/X89. Refuse the ITERATION first and unconditionally. Recovering the read (above) is not by itself
+      // enough: an iteration contributes no KEY, so `directKeys` stays empty and the handler's footprint has no
+      // `collection:` resource either, which makes `nonEntryCollectionOnly` vacuously TRUE and lets the chain
+      // below fall through with no reason at all. That is how an iteration handler reached the wrapper and
+      // crashed it on arity. Nor is `directKeys.size === 0` the right test: a handler that BOTH iterates and
+      // writes one keyed entry has a non-empty key set while the iteration's reads are still unreserved.
+      if (iteratesCollection) {
+        reason = 'collection-iteration-handler-not-enabled';
+      } else if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => {
           let touches = false;
           walkInvocationAst(candidate.body, (node) => {

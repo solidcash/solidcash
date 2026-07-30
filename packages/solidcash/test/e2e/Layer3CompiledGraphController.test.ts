@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256, utf8ToBin,
+  bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin, sha256, utf8ToBin,
 } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
@@ -26,6 +26,22 @@ import {
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+/**
+ * X144. THE BYTE RULES ARE ASSERTED HERE OR NOWHERE.
+ *
+ * Every fixture in this file hands `raw()` straight to `provider.sendRawTransaction`, which is BELOW all eight
+ * SDK broadcast sites, so no gate in the SDK can ever see these transactions. Two of them settled a 5- and a
+ * 100-satoshi output to a one-byte `OP_1` script against a 474-satoshi dust floor (`3 * (10 + 148)`). The mock
+ * accepted both because it runs `enforceDust: false` with `dustRelayFeePerKb: 0n`; a real node refuses the
+ * whole transaction `64: dust` before it looks up an input, which is exactly what BCHN did to C1 (X60).
+ *
+ * A composition asserted to SETTLE has to be one a peer would forward, so the honest cases assert it. The
+ * hostile variants deliberately do not: what they measure is a covenant refusal, and whether the attacked
+ * shape would also have relayed is not part of that claim.
+ */
+const expectRelayable = (transaction: string): void => {
+  layer3.assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(transaction)));
+};
 // BCH consensus input-script limit, and the margin the caller-authorized ERC-20 settlement must keep under it.
 const MAXIMUM_INPUT_BYTES = 10_000;
 const INPUT_HEADROOM_BYTES = 1_000;
@@ -842,8 +858,17 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
   const recipient = Uint8Array.of(0x51);
-  const args = [b.lockingBytecode, a.lockingBytecode, recipient, 5n] as const;
-  const callbackArgs = [a.lockingBytecode, recipient, 5n] as const;
+  /*
+   * X144. The transferred amount was 5 satoshis, which is 469 short of the 474-satoshi dust floor its own
+   * one-byte output carries, so this "settlement" was unrelayable. 1,000 is the placeholder value X64 put on a
+   * BCHN v29 node with an explicit `-acceptnonstdtxn=0`: accepted, mined, then spent from. The script is left
+   * as the bare `OP_1` for the same reason - the node looked at that template and declined to refuse it, and
+   * only the VALUE was ever wrong. The container change absorbs the difference (5,000 - 1,000).
+   */
+  const transferSats = 1_000n;
+  const containerSats = 5_000n;
+  const args = [b.lockingBytecode, a.lockingBytecode, recipient, transferSats] as const;
+  const callbackArgs = [a.lockingBytecode, recipient, transferSats] as const;
   const plan = layer3.planCompiledGraph([
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
@@ -862,7 +887,7 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   );
   const fundingA = Array.from({ length: 16 }, () => randomUtxo({ satoshis: 1000n }));
   const fundingB = Array.from({ length: 8 }, () => randomUtxo({ satoshis: 1000n }));
-  const container = randomUtxo({ satoshis: 5000n });
+  const container = randomUtxo({ satoshis: containerSats });
   const projectionA = randomUtxo({ satoshis: 1000n });
   const projectionB = randomUtxo({ satoshis: 1000n });
   const fee = randomUtxo({ satoshis: 50_000n });
@@ -908,10 +933,11 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   );
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+  // A accrues the amount twice (start + finish), B once. The forged-state attack is still an off-by-one.
   const nextA = buildInitialStateCommitments(
-    artifactA.stateLayout!, { count: tamper === 'state' ? 11n : 10n },
+    artifactA.stateLayout!, { count: tamper === 'state' ? transferSats * 2n + 1n : transferSats * 2n },
   )[0];
-  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 5n })[0];
+  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: transferSats })[0];
   tx.addOutput({
     to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
     token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
@@ -923,10 +949,10 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
       nft: { capability: 'mutable', commitment: nextA },
     },
   });
-  tx.addOutput({ to: getSatoshiContainerAddress(a, setupA.categoryId), amount: 4995n });
-  tx.addOutput({ to: recipient, amount: tamper === 'value' ? 6n : 5n });
+  tx.addOutput({ to: getSatoshiContainerAddress(a, setupA.categoryId), amount: containerSats - transferSats });
+  tx.addOutput({ to: recipient, amount: tamper === 'value' ? transferSats + 1n : transferSats });
   for (let slot = 4; slot < 11; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
-  const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(5n)]));
+  const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(transferSats)]));
   const eventA = getEventNftAddress(a, setupA.categoryId, artifactA.events![0].signature);
   for (let slot = 11; slot < 19; slot += 1) {
     const reached = slot === 11 || slot === 12;
@@ -1892,10 +1918,15 @@ async function buildValueEffectGraph(tamperAmount = false) {
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
   const contract = base.withCategory(hexToBin(setup.categoryId));
   const recipient = Uint8Array.of(0x51);
+  // X144. Was 100 satoshis against the 474-satoshi dust floor of its own one-byte output, so the "settlement"
+  // was refused `64: dust` by a node. See `expectRelayable` and X64 for why 1,000 to a bare `OP_1` is the
+  // node-measured placeholder. The container change absorbs it (5,000 - 1,000).
+  const effectSats = 1_000n;
+  const containerSats = 5_000n;
   const plan = layer3.planCompiledGraph([
     { artifact, lockingBytecode: contract.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'pay', args: [recipient, 100n] },
+    { parent: null, callee: 0, function: 'pay', args: [recipient, effectSats] },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
@@ -1905,7 +1936,7 @@ async function buildValueEffectGraph(tamperAmount = false) {
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
   );
-  const container = randomUtxo({ satoshis: 5000n });
+  const container = randomUtxo({ satoshis: containerSats });
   const effectFunding = Array.from(
     { length: plan.participants[0].blockLayout!.blockSize - 2 },
     () => randomUtxo({ satoshis: 1000n }),
@@ -1939,9 +1970,9 @@ async function buildValueEffectGraph(tamperAmount = false) {
   });
   tx.addOutput({
     to: getSatoshiContainerAddress(contract, setup.categoryId),
-    amount: 4900n,
+    amount: containerSats - effectSats,
   });
-  tx.addOutput({ to: recipient, amount: tamperAmount ? 101n : 100n });
+  tx.addOutput({ to: recipient, amount: tamperAmount ? effectSats + 1n : effectSats });
   for (let slot = 3; slot < plan.participants[0].blockLayout!.blockSize; slot += 1) {
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
   }
@@ -3079,6 +3110,7 @@ describe('Layer-3 compiled graph controller', () => {
   it('composes a heterogeneous callback cycle with state, value, and event effects', async () => {
     const { provider, transaction, plan } = await buildCombinedGraph();
     expect(plan.participants.map((participant) => participant.invocations)).toEqual([[0, 2], [1]]);
+    expectRelayable(transaction);
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 
@@ -3416,6 +3448,7 @@ describe('Layer-3 compiled graph controller', () => {
     const { provider, transaction, layout } = await buildValueEffectGraph();
     expect(layout.controllerInput).toBe(11);
     expect(layout.totalSlots).toBe(13);
+    expectRelayable(transaction);
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 

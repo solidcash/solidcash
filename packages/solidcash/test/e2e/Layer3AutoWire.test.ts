@@ -71,10 +71,27 @@ describe('refinement: module auto-wiring (generateExecutionParticipant)', () => 
     await expect(provider.sendRawTransaction(raw(tx))).resolves.toBeTypeOf('string');
   });
 
+  /**
+   * X144. Three bare `toThrow()` calls on one generator, and NOTHING that said the honest spec is accepted.
+   * Every one of them passes on any error the generator raises, so a single shared refusal - a new required
+   * field, a tightened `controllerLbc` check, a throw from the appBody default - satisfies all three at once
+   * while no individual validation is measured. The three subjects could be deleted one at a time and this
+   * test would stay green on the remaining shared cause.
+   *
+   * Repaired as three attributable refusals plus the guard negative control they were missing: the spec that
+   * differs from each hostile in exactly the attacked field must NOT throw. If the honest spec ever starts
+   * failing, the control goes red instead of the three hostiles silently passing for its reason.
+   */
   it('validates the spec (bad contract/function name, selfPos range)', () => {
     const base = { n: 2, invocations: INV, controllerCategory: 'ab'.repeat(32), controllerLbc: 'aa20', selfPos: 0 };
-    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: '1bad', functionName: 'f' })).toThrow();
-    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: 'Ok', functionName: '1f' })).toThrow();
-    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: 'Ok', functionName: 'f', selfPos: 5 })).toThrow();
+    // Guard negative control: identical to all three hostiles apart from the one attacked field.
+    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: 'Ok', functionName: 'f' }))
+      .not.toThrow();
+    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: '1bad', functionName: 'f' }))
+      .toThrow(/layer3: invalid contractName/);
+    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: 'Ok', functionName: '1f' }))
+      .toThrow(/layer3: invalid functionName/);
+    expect(() => layer3.generateExecutionParticipant({ ...base, contractName: 'Ok', functionName: 'f', selfPos: 5 }))
+      .toThrow(/layer3: selfPos out of range/);
   });
 });

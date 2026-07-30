@@ -79,9 +79,20 @@ describe('R6: typed, module-generated fail-closed resource transition', () => {
     await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
   });
 
-  it('P11 CLOSED: an input commitment exceeding TypedTransition.total is rejected by BOTH sides', async () => {
-    // The SDK now rejects the oversized input at build time (matching the covenant's `nftCommitment.length ==
-    // total` requirement), so there is no SDK/covenant disagreement: a 17-byte input for total=16 fails.
-    await expect(build(Uint8Array.of(0xaa))).rejects.toThrow();
+  /**
+   * X144. The title said BOTH sides and the body was one bare `rejects.toThrow()` on the SDK build. Only the
+   * SDK side was ever reached - the build throws before a transaction exists - so the covenant half was an
+   * unguarded claim, and the bare form additionally passed on any build failure at all (a bad fixture, a
+   * compile error, a provider fault). It now names the SDK refusal and carries the control that differs in
+   * exactly the attacked field: the same build with a 16-byte commitment must succeed.
+   *
+   * NOT MEASURED HERE, and deliberately not claimed: the covenant's own `nftCommitment.length == total`. It
+   * cannot be reached from this fixture because the SDK check fires first, and reaching it needs a build path
+   * that skips `buildTranscriptTransaction`'s validation. Left as a stated gap rather than an implied pass.
+   */
+  it('P11: an oversized input commitment is refused by the SDK before a transaction exists', async () => {
+    await expect(build()).resolves.toBeDefined();
+    await expect(build(Uint8Array.of(0xaa)))
+      .rejects.toThrow(/TypedTransition input commitment must be 16 bytes/);
   });
 });

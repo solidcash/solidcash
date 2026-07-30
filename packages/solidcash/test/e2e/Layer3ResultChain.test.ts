@@ -82,9 +82,18 @@ describe('layer-3 real result-dependency chain (Kashi -> Bento -> Oracle, transi
     expect((await scKashi.getState()).collateral).toBe(10n); // consumed Bento's authenticated result
   });
 
+  /**
+   * X144. `.send()` is the STATEFUL SUBMIT PATH, and the finalized-byte gate now runs there - necessarily
+   * BEFORE the covenant, because covenant evaluation happens inside the provider. A bare `rejects.toThrow()`
+   * here would report that gate's refusal, or an SDK build error, or a fee-check refusal, as if it were the
+   * deep callee's guard. Censused: today it is a VM refusal, and it now has to stay one.
+   *
+   * Guard negative control: the same chain differing only in the borrowed amount settles.
+   */
   it('HOSTILE: a guard failure at the DEEPEST callee reverts the whole transitive settlement', async () => {
     const { scKashi } = await setupChain();
     // borrow(200): Oracle.price(200) trips its own require(x <= 100), aborting the entire Kashi->Bento->Oracle tx.
-    await expect(scKashi.borrow(200n).send()).rejects.toThrow();
+    await expect(scKashi.borrow(200n).send()).rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    await expect(scKashi.borrow(5n).send()).resolves.toBeDefined();
   });
 });

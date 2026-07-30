@@ -535,14 +535,24 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
       })).toThrow(/declares 1 value option\(s\)\/transfer\(s\), which the transcript row does not bind/);
     });
 
-    it('rejects a low-level call option at compile time before it can reach the graph', () => {
-      expect(() => compileString(`pragma solidcash >=0.8.0;
+    /*
+     * X144. This was a bare `toThrow()` on `compileString`, so ANY compile failure satisfied it - a syntax
+     * error, a pragma bump, a grammar regression - and the low-level value-option refusal it names could have
+     * been deleted outright without turning it red. Repaired as an attributable refusal plus the control that
+     * differs in exactly the attacked field: the same source with the option removed must COMPILE.
+     */
+    const rawValueSource = (option: string): string => `pragma solidcash >=0.8.0;
 contract E2RawValueCaller() {
   function run(address target, bytes payload, int amount) public {
-    (bool ok, bytes result) = target.call{value: amount}(payload);
-    require(ok && result.length >= 0);
+    (bool ok, bytes result) = target.call${option}(payload);
+    require(ok && result.length >= 0 && amount >= 0);
   }
-}`, busOptions)).toThrow();
+}`;
+
+    it('rejects a low-level call option at compile time before it can reach the graph', () => {
+      expect(() => compileString(rawValueSource(''), busOptions)).not.toThrow();
+      expect(() => compileString(rawValueSource('{value: amount}'), busOptions))
+        .toThrow(/low-level 'call' carrying the call option\(s\) 'value'/);
     });
   });
 

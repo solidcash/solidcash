@@ -272,6 +272,58 @@ for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
 
+### 4.96 X92 found X93 was creating FALSE labels; S3's constraint is 32x earlier than expected
+
+**X92 - the row's four named sites no longer existed**, because X93 had routed all six diagnostic sites through
+one helper. G1 landed the mark **inside that helper** instead - one home rather than a four-way duplication, and
+it picks up the two non-`unused` sites for free.
+
+**The composition finding is the important one: X92 is a REPAIR of X93, not an addition to it.** An imported
+label asserts *"line N is real in file F on disk"*. A generated position is in a string **no file holds**, so the
+imported label was a **specific false label naming a real file** - precisely the failure X93 refused in direct
+mode, **silently reappearing in bus mode**. Measured at base: **84 false imported labels on solidity-by-example
+and 664 on MistSwap, every one naming a file too short to hold the line.** After X92, both are **0**.
+
+Scale: beyond-the-file unlabelled positions across 152 SBE files, **5,151 -> 0**. The cheapest instance
+reproduces exactly - a **6-line** contract reporting `at line 57` under one option and `at line 106` under
+another, a **49-line shift**.
+
+**Its no-artifact oracle was wrong first, and it caught that itself.** Hashing whole artifacts showed 49/74 rows
+changed - **but also 61/88 in DIRECT mode, where the change cannot be active**. Cause: `artifact.updatedAt` is a
+wall-clock stamp. It re-verified determinism (30/30 identical modulo that field), re-ran, and got **0/74 and
+0/88**.
+
+**Two claims from the brief did not reproduce, and it removed rather than papered over them.** The
+`SushiMakerKashi.sol` instance is gone - **zero** `__scb_arg*` positions anywhere in MistSwap now - and the
+residue is **6 position-less aborts, not 14**. It also measured direct mode as **non-discriminating** rather than
+asserting it.
+
+**S3 - the write direction crosses handler boundaries, and the binding constraint is not where anyone was
+looking.** 24 VM cases settle, including two handler rows on one participant flushing only the last write, two
+dynamic participants each owning a private region (138 slots), and **64 chunks - exactly the declared capacity**,
+which doubles as the knob-liveness control.
+
+**The constraint is the 223-byte SCB1 blob, not the trailing region.** An argument-carried value caps at
+**202 bytes = 2 chunks**; the same handler **computing** its value reaches all **64**. **The envelope binds 32x
+earlier than the region does** - so the region was never the wall.
+
+Nine hostiles, each attacking a distinct invariant - commitment, length authority, order, bounds, permutation,
+old-chunk consumption, capability, category, and **alias** - all pinned to **input 1**. An over-capacity run now
+refuses at **zero signature requests**, where it previously built, funded, signed, and then failed at a
+projection input naming nothing about the cause.
+
+**Two limits reported rather than fixed**, both outside the lease. A persisted read of a non-empty chunk-backed
+value has **no diagnostic at all**. And more seriously: **a later handler row reading a variable observes the
+PRE-transaction value and the transaction SETTLES**, which **diverges from the documented single read-your-writes
+journal**. Not chunk-specific - a scalar behaves identically, and the read-and-write case is still journalled.
+Opened as **X104** and **X105**.
+
+**Nothing moved downstream**, checked rather than assumed: projection **4,121 B**, controller **1,493 / 1,459 B**,
+both exactly the pinned figures - after it caught its own first misread of 1,514/1,480 as `Contract.bytecode`
+including the 21-byte constructor push. It also flagged `MAX_HIDDEN_BATCH_BLOB_BYTES = 223` duplicated as a bare
+`223` in the controller source - a two-place constant that must move together (**X106**).
+
+
 ### 4.95 H1 landed NOTHING, correctly, and found the one-liner would have been wrong
 
 Empty commit range, tree byte-identical to its base. Three rows, three different stated reasons not to land.

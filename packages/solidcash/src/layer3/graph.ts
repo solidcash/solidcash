@@ -1,5 +1,7 @@
 import { MAX_HIDDEN_BATCH_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
-import type { AbiFunction, Artifact, ExternalCallAbi } from '@solidcash/utils';
+import type {
+  AbiFunction, Artifact, ExternalCallAbi, InvocationAnalysisFunction,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
   encodeHiddenBatch, type EncodedHiddenBatch, type HiddenBatchInvocation,
@@ -1217,6 +1219,125 @@ const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Name the compiler gives one handler's graph EMISSION clone.
+ *
+ * `compiler.ts` clones every `graphTailHandlers` member as `__scb_graph_<handler>`, and
+ * `GenerateTargetTraversal.ts:1774` excludes exactly that set from SEC-18's widened scalar-journal closure -
+ * an emission clone's frame is owned by the graph effect-frame protocol, so extra journal slots leave it one
+ * item deeper than the caller pushes. The presence of this name in the published invocation analysis is
+ * therefore the compiler's own answer to "does this row read the pre-state instead of the journal", not a
+ * proxy for it.
+ */
+const GRAPH_EMISSION_CLONE_PREFIX = '__scb_graph_';
+
+/**
+ * State-variable name behind one footprint resource, for both spellings a variable appears under.
+ *
+ * A scalar slot is `state:<name>`; an entry of a collection or state array is `collection:<name>:<key>`. Both
+ * matter on the WRITE side: `legs.push(..)` publishes only `collection:legs:*`, yet it moves that variable's
+ * scalar length slot, which is what `computeScalarJournalClosures` counts as a write (`StateArrayPushNode`).
+ * Reading the write side as scalar-only would therefore miss a push writer entirely.
+ */
+const footprintVariable = (resource: string): string | undefined => {
+  if (resource.startsWith('state:')) return resource.slice('state:'.length);
+  if (!resource.startsWith('collection:')) return undefined;
+  const rest = resource.slice('collection:'.length);
+  const separator = rest.lastIndexOf(':');
+  return separator < 0 ? rest : rest.slice(0, separator);
+};
+
+/** Scalar slots one summary reads. The scalar journal is what SEC-18 widened, so this side stays exact. */
+const scalarReadsOf = (summary: InvocationAnalysisFunction): readonly string[] => summary.reads
+  .filter((resource) => resource.startsWith('state:'))
+  .map((resource) => resource.slice('state:'.length));
+
+/** Every state variable one summary writes, under either spelling. */
+const writtenVariablesOf = (summary: InvocationAnalysisFunction): readonly string[] => summary.writes
+  .map(footprintVariable)
+  .filter((name): name is string => name !== undefined);
+
+/** One row of one owner, in the order that owner's SCB1 route executes them. */
+interface OwnerRow { localRow: number; function: string }
+
+/**
+ * X111. Refuse a route whose ROW SET makes a read-only graph emission clone observe the PRE-transaction value
+ * of a slot an EARLIER row of the same owner already wrote.
+ *
+ * SEC-18 widened the scalar journal to every route-reachable function, so a pure reader observes the newest
+ * write. Emission clones are excluded from that widening for a frame-arity reason that is not negotiable at
+ * code-generation time, so a clone which touches a scalar slot and writes none still reads the authenticated
+ * input commitment. That is exploitable exactly as SEC-18 was: the caller contract's own body emits the guard
+ * row, so a spender cannot drop it, and a post-condition then passes against the value the transaction is
+ * changing.
+ *
+ * WHY THIS IS THE RIGHT SITE. The equivalent compile-time refusal was implemented and measured: it
+ * false-refused the C2 capstone entirely, because `registerCredit`/`registerDebit` write `legs` and sit in the
+ * route CLOSURE even when no such row exists in the transaction. Route-closure membership is not
+ * route-composition membership. Here the row set is concrete, so the writers considered are the ones the
+ * transaction really contains.
+ *
+ * WHY ORDER IS PART OF THE RULE. A clone at local row 0 reading the pre-state is reading the sequentially
+ * correct value - there is no earlier write for it to have missed. Only an EARLIER writer of the same slot
+ * makes the read stale, and the journal is sequential, so a later write can never reach an earlier read.
+ * Ignoring order would refuse the honest reader-first composition.
+ *
+ * WHAT IS CONSERVATIVE. A clone whose footprint is `unknown` has no enumerable read set, so any writer of any
+ * slot on the same owner refuses it. A participant publishing no invocation analysis at all cannot be
+ * diagnosed and is refused rather than skipped: this gate is the only thing standing between the shape and
+ * settlement, so a silent skip would be an unchecked witness path.
+ */
+function assertNoStaleEmissionCloneReads(
+  participants: readonly CompiledGraphParticipant[],
+  rowsByOwner: readonly (readonly OwnerRow[])[],
+): void {
+  participants.forEach((participant, owner) => {
+    const summaries = participant.artifact.invocationAnalysis?.functions;
+    if (summaries === undefined) {
+      throw new Error(
+        `layer3: participant ${owner} publishes no invocation analysis, so a stale graph emission-clone read `
+        + 'cannot be diagnosed; recompile the participant with a compiler that publishes it',
+      );
+    }
+    const byName = new Map(summaries.map((summary) => [summary.name, summary]));
+    const rows = rowsByOwner[owner];
+    // Earliest local row writing each variable, over the rows THIS transaction contains.
+    const writtenAt = new Map<string, OwnerRow>();
+    for (const row of rows) {
+      const executed = byName.get(`${GRAPH_EMISSION_CLONE_PREFIX}${row.function}`)
+        ?? byName.get(row.function);
+      if (executed === undefined) continue;
+      for (const name of writtenVariablesOf(executed)) {
+        if (!writtenAt.has(name)) writtenAt.set(name, row);
+      }
+    }
+    const refuse = (row: OwnerRow, writer: OwnerRow, slot: string): never => {
+      throw new Error(
+        `layer3: participant ${owner} row ${row.localRow} '${row.function}' is a read-only graph emission `
+        + `clone reading '${slot}', which row ${writer.localRow} '${writer.function}' of the same owner `
+        + 'writes earlier in the route; the clone reads the pre-transaction value, so this composition is '
+        + 'not an admitted graph shape',
+      );
+    };
+    for (const row of rows) {
+      const clone = byName.get(`${GRAPH_EMISSION_CLONE_PREFIX}${row.function}`);
+      if (clone === undefined) continue;
+      // A clone that writes any slot joins the journal through `writerIds`, so its reads are live.
+      if (writtenVariablesOf(clone).length > 0) continue;
+      if (clone.unknown) {
+        for (const [slot, writer] of writtenAt) {
+          if (writer.localRow < row.localRow) refuse(row, writer, slot);
+        }
+        continue;
+      }
+      for (const slot of scalarReadsOf(clone)) {
+        const writer = writtenAt.get(slot);
+        if (writer !== undefined && writer.localRow < row.localRow) refuse(row, writer, slot);
+      }
+    }
+  });
+}
+
+/**
  * Resolve the single ABI function one graph row names.
  *
  * Overloads share a name, so a name alone can select a different dispatch target than the caller meant, and
@@ -1505,6 +1626,15 @@ export function planCompiledGraph(
       resultTypes: Object.freeze([...(result?.types ?? [])]),
     });
   });
+  // X111: ordered after `plannedBase` because the rule reads each owner's local row ORDER, and before the
+  // result-dependency walk so a stale-read composition names its own cause rather than whatever schema or
+  // callsite mismatch it happens to also carry.
+  assertNoStaleEmissionCloneReads(
+    participants,
+    globalByOwner.map((owned) => owned.map((index) => ({
+      localRow: plannedBase[index].localRow, function: plannedBase[index].function,
+    }))),
+  );
   const childrenOf: number[][] = invocations.map(() => []);
   for (let child = 1; child < invocations.length; child += 1) {
     childrenOf[invocations[child].parent!].push(child);

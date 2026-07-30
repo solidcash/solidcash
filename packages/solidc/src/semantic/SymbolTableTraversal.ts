@@ -369,14 +369,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // root file (ERC20.sol's `../../math/SafeMath.sol` prints as `@openzeppelin/contracts/math/SafeMath.sol`).
     const resolvePath = (parent: string, child: string): string => {
       if (!child.startsWith('.')) return child;
-      const base = parent.includes('/') ? parent.slice(0, parent.lastIndexOf('/')) : '';
-      const out: string[] = base ? base.split('/') : [];
+      const cut = parent.lastIndexOf('/');
+      const out = (cut > 0 ? parent.slice(0, cut) : '').split('/').filter((s) => s !== '');
       for (const seg of child.split('/')) {
         if (seg === '.' || seg === '') continue;
         if (seg === '..') out.pop();
         else out.push(seg);
       }
-      return out.join('/');
+      // Reconstructs the resolver's canonical id, which the AST does not carry.
+      return (parent.startsWith('/') ? '/' : '') + out.join('/');
     };
     const done = new Set<SourceFileNode>();
     const walkImports = (file: SourceFileNode, filePath: string, depth: number): void => {

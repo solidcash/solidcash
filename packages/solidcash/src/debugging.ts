@@ -17,23 +17,25 @@ type VM = AuthenticationVirtualMachine<
 /* eslint-enable @typescript-eslint/indent */
 
 /**
- * X121, SETTLED: these stay BARE - do not make them provider-faithful.
+ * X121, KNOWN GAP: this VM SHOULD read the network provider's consensus limits and cannot yet.
  *
  * This is a third caller of the same class as `StatefulTransactionBuilder`'s two, and it DECIDES:
  * `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows, so this VM is the
  * accept/reject gate for `.build()` on a `recursiveStateHandler` function, and `TransactionBuilder.send()`
- * propagates it for a standard non-covenant transaction. Threading a provider in here would need
- * `debugLibauthTemplate` -> `debugTemplate` -> `createProgram` to carry one.
+ * propagates it for a standard non-covenant transaction.
  *
- * Measured, not reasoned: with this switch temporarily rebuilt from `MOCK_CONSENSUS_LIMITS`,
- * `decrement(24).build()` and `decrement(40).build()` flipped from REJECT to ACCEPT on the DEFAULT mock
- * profile - transactions the provider then refuses at broadcast with a density-limit error. That converts a
- * fail-closed authorization gate into an accept path. The published limits reach nothing in the decider
- * (`@mem-cash/validation` @0.0.7 ignores them), and the default mock profile publishes limits far looser than
- * stock consensus, so reading them can only loosen this gate. `X121StrictPreflightDecision` rows 4, 6 and 6b.
+ * At `@mem-cash/validation` 0.0.8 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
+ * `consensusLimits` reach the decider, so a bare VM here is wrong in both directions. Measured:
  *
- * The existing `StatefulRecursion` regression at `decrement(10_000)` did NOT catch that flip - it still
- * refused under the instrumented build - so the N=24..40 band is where the coverage had to be added.
+ * - FAIL-OPEN: `decrement(3).build()` is ADMITTED under `operationCostBudgetPerByte: 150` while the decider
+ *   refuses that shape at 150 x density. This is the direction that matters and it is still open.
+ * - FAIL-CLOSED: `decrement(24)/(40).build()` are REFUSED at the stock 800 x density on the relaxed default
+ *   profile, which the decider accepts. Confirmed by temporarily rebuilding this switch from
+ *   `MOCK_CONSENSUS_LIMITS`, which flipped both to ACCEPT; that instrumentation was reverted.
+ *
+ * The fix needs a provider threaded through `debugLibauthTemplate` -> `debugTemplate` -> `createProgram`, which
+ * touches `libauth-template/LibauthTemplate.ts`. `.send()` is already covered: `_strictRecursiveVmPreflight`
+ * reads the provider, so only `.build()` is exposed. `X121StrictPreflightDecision` rows 2, 4, 6 and 6b.
  */
 const createVirtualMachine = (vmTarget: VmTarget): VM => {
   switch (vmTarget) {

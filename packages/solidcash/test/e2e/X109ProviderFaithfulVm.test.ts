@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,51 +10,47 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 /**
- * X109 - two VM callers that discard the provider's limits, and why reading them is NOT the repair.
+ * X109 - two VM callers that discarded the provider's limits. Reading them IS the repair; see X121.
  *
- * The row: `StatefulTransactionBuilder.ts` `_logCovenantFailureTrace` (the row cited :2662, now :2668 after the
- * comment this measurement left at the site) and `_strictRecursiveVmPreflight` (:2691, now :2707) build a bare
- * `createVirtualMachineBch2026()`. The first is reached whenever
+ * The row: `StatefulTransactionBuilder.ts` `_logCovenantFailureTrace` and `_strictRecursiveVmPreflight` built a
+ * bare `createVirtualMachineBch2026()`. The tracer is reached whenever
  * `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000` is false, so a provider publishing limits
- * AT 10,000 lands there; the second has no gate at all and builds the bare VM for every provider. The proposed
- * repair was `createVirtualMachineBch2026ForProvider(provider)` at both.
+ * AT 10,000 lands there; the preflight had no gate at all and built the bare VM for every provider.
  *
- * MEASURED ANSWER: do not apply it - but NOT for the reason first recorded here, which was wrong and is kept
- * visible because the mistake is instructive.
+ * ANSWER: apply it at the preflight, which is done. `X121StrictPreflightDecision.test.ts` carries the decision,
+ * the recursion measurements, and the version pin. This file keeps only the factory-level claims.
  *
- * THE ORIGINAL FRAMING IS FALSIFIED, and the row is REOPENED rather than closed NO_CHANGE.
+ * THIS FILE RECORDED THREE WRONG TURNS. All three are kept visible because each failed differently.
  *
- * This file first claimed the published limits are "rules nothing enforces", on the grounds that
- * `@mem-cash/validation`'s `createTxVerifier` never reads the `consensus` overrides MockNetworkProvider hands
- * it - a grep result with zero hits for `config.consensus`. The conclusion does not follow, and row 2 now
- * measures it failing in BOTH dimensions tested:
+ * (1) It argued from a grep - zero hits for `config.consensus` in `@mem-cash/validation` - that the published
+ *     limits are "rules nothing enforces". Inadequate evidence, and version-blind.
+ * (2) It then claimed the submit path enforces both a strict `maximumStackItemBytes` and a strict
+ *     `operationCostBudgetPerByte`, quoting 150 x 167 = 25,050. That row was RED at the commit that introduced
+ *     it, because the 25,050 string is emitted by `createVirtualMachineBch2026ForProvider` - which the same row
+ *     also called on the same spend - and was attributed to `sendRawTransaction`.
+ * (3) It then "settled" the row the other way by measuring `@mem-cash/validation` 0.0.7, where the overrides
+ *     genuinely are dropped, and concluded the bare VM is the faithful one. THAT is the conclusion that
+ *     mattered and it was wrong for this repo: `packages/solidcash/package.json` declares `^0.0.8` (exactly
+ *     0.0.8 for a 0.0.x range) and `yarn.lock` resolves 0.0.8. The 0.0.7 reading was accurate; generalising it
+ *     was not.
  *
- * - `maximumStackItemBytes: 8` -> the submit path REJECTS ("Maximum stack item length: 8 bytes. Item length:
- *   65 bytes"). Enforced partly via the `ConsensusCommon` patch at `MockNetworkProvider.ts:264-271`.
- * - `operationCostBudgetPerByte: 150` -> the submit path REJECTS at exactly 150 x 167 = 25,050 ("Maximum
- *   operation cost: 25050 (density control length: 167)"). Nothing patches this one; the overrides built at
- *   `MockNetworkProvider.ts:80-98` reach `createTxVerifier` and bite.
+ * AT 0.0.8 - the sanctioned version - `TxVerifierConfig.consensus` exists, MockNetworkProvider's overrides
+ * (`MockNetworkProvider.ts:80-98`) reach the decider, and `createVirtualMachineBch2026ForProvider` agrees with
+ * it on every shape measured while the bare VM diverges in both directions. Row 2 below now measures the submit
+ * path REFUSING both dimensions, which is 0.0.8 behaviour and is pinned as such.
  *
- * So `createVirtualMachineBch2026ForProvider` appears FAITHFUL to the decider on both fields, which is the
- * opposite of what this file originally concluded, and it means the proposed repair may be correct.
- *
- * WHAT IS STILL UNRESOLVED, and why nothing was changed here. A separate measurement reported that applying
- * the limits at `_strictRecursiveVmPreflight` with `operationCostBudgetPerByte: 150` refuses a
- * `recursiveStateHandler` send that SETTLES at base while the provider still accepts it. If the decider
- * enforces that budget - as row 2 shows it does for a P2PKH spend - that claim and this one cannot both hold
- * for one configuration, so one of them is comparing two different provider profiles. The recursion path is
- * exactly where the risk lives and two P2PKH probes are not enough to settle it. Re-measurement is filed as
- * X121; do not apply the repair, and do not record NO_CHANGE, until that is resolved.
- *
- * Row 1 reproduces J2's divergence between the two FACTORIES independently, and that stands - it is a claim
- * about the two constructors, not about the decider. Row 3 is its guard negative control: it differs ONLY in
- * `maximumStackItemBytes`, so row 1 cannot be passing because the factory is stricter in general.
+ * Rows 1 and 3 are unchanged and are version-independent: they compare the two FACTORIES, not the decider.
+ * Row 3 is row 1's guard negative control, differing ONLY in `maximumStackItemBytes`.
  *
  * NOT claimed: that the regime (`standard`) is decisive. MockNetworkProvider builds its verifier with
  * `standard: policy.enforceDust`, so a dust-disabled profile decides in the consensus regime while both bare
- * callers evaluate in the standard one - that divergence is real, but no shape was found where it changes an
- * outcome, so it is reported rather than repaired.
+ * callers evaluate in the standard one. Row 2c varies only that field and no verdict moves, so the divergence
+ * is real but explains nothing here.
  */
+
+const MEM_CASH_VALIDATION_VERSION: string = JSON.parse(readFileSync(
+  new URL('../../../../node_modules/@mem-cash/validation/package.json', import.meta.url), 'utf8',
+)).version;
 
 const limits = (maximumStackItemBytes: number): any => ({
   maximumInputBytes: 10_000,
@@ -83,7 +80,7 @@ const evaluateInput0 = (
   transaction: builder.buildLibauthTransaction(),
 }) as { error?: string }).error;
 
-describe('X109 - which published limits the decider actually applies, and why the repair is a regression', () => {
+describe('X109 - the decider applies the published limits (@mem-cash/validation 0.0.8)', () => {
   it('1. the bare VM accepts what the provider-faithful VM rejects, with the gate reading false', async () => {
     const provider = new MockNetworkProvider({
       consensusLimits: limits(8), policy: { enforceDust: false },
@@ -96,19 +93,25 @@ describe('X109 - which published limits the decider actually applies, and why th
       .toMatch(/exceeded the maximum stack item length/);
   });
 
-  it('2. the decider DOES enforce the published limits, in both dimensions tested', async () => {
-    // maximumStackItemBytes: enforced. This is the field row 1 attacks, so on that field the faithful factory
-    // AGREES with the decider rather than being stricter than it.
+  it('2. the decider DOES enforce the published limits, in both dimensions [0.0.8]', async () => {
+    // VERSION-DEPENDENT. At 0.0.7 both submits below ACCEPT, because TxVerifierConfig has no `consensus` field
+    // and the overrides are dropped. X121 row 0 is the version gate; this row states which side it pins.
+    expect(MEM_CASH_VALIDATION_VERSION, 'this row pins 0.0.8 behaviour').toBe('0.0.8');
+
+    // maximumStackItemBytes: enforced. The refusal names the published 8 and the offending 65-byte signature.
     const strictItem = new MockNetworkProvider({
       consensusLimits: limits(8), policy: { enforceDust: false },
     });
     const itemSpend = await buildP2pkhSpend(strictItem);
     await expect(strictItem.sendRawTransaction(itemSpend.build()))
-      .rejects.toThrow(/Maximum stack item length: 8 bytes/);
+      .rejects.toThrow(/Maximum stack item length: 8 bytes\. Item length: 65 bytes/);
+    // And the faithful factory refuses the same bytes for the same reason - the agreement this row establishes.
+    expect(evaluateInput0(createVirtualMachineBch2026ForProvider(strictItem), itemSpend))
+      .toMatch(/Maximum stack item length: 8 bytes\. Item length: 65 bytes/);
 
-    // operationCostBudgetPerByte: also enforced, and nothing patches this one - the overrides reach
-    // createTxVerifier and bite. The refusal arithmetic is exact, which is what makes this a measurement of the
-    // published value rather than of some unrelated ceiling: 150 per byte x 167 density-control bytes = 25,050.
+    // operationCostBudgetPerByte: also enforced. The arithmetic is exact, which is what makes this a
+    // measurement of the published value rather than of an unrelated ceiling: 150 per byte x 167
+    // density-control bytes = 25,050. Both the decider and the faithful factory quote it.
     const strictCost = new MockNetworkProvider({
       consensusLimits: { ...limits(10_000), operationCostBudgetPerByte: 150 },
       policy: { enforceDust: false },
@@ -116,14 +119,13 @@ describe('X109 - which published limits the decider actually applies, and why th
     const costSpend = await buildP2pkhSpend(strictCost);
     await expect(strictCost.sendRawTransaction(costSpend.build()))
       .rejects.toThrow(/Maximum operation cost: 25050 \(density control length: 167\)/);
-    // And the faithful factory refuses it for the same reason, which is the agreement this row establishes.
     expect(evaluateInput0(createVirtualMachineBch2026ForProvider(strictCost), costSpend))
-      .toMatch(/operation cost/i);
+      .toMatch(/Maximum operation cost: 25050 \(density control length: 167\)/);
   });
 
   it('2b. GUARD: the same two spends settle when only the attacked limit is relaxed', async () => {
-    // Without this, row 2 could be passing because these spends fail under ANY profile. Each provider below
-    // differs from its row-2 twin in exactly one field.
+    // Each provider differs from its row-2 twin in exactly one field, so row 2 cannot be passing because these
+    // spends fail under any profile.
     const okItem = new MockNetworkProvider({
       consensusLimits: limits(10_000), policy: { enforceDust: false },
     });
@@ -135,6 +137,23 @@ describe('X109 - which published limits the decider actually applies, and why th
     });
     await expect(okCost.sendRawTransaction((await buildP2pkhSpend(okCost)).build()))
       .resolves.toBeTypeOf('string');
+  });
+
+  it('2c. the same two refusals hold with dust ON, so the regime is not what produces them', async () => {
+    // MockNetworkProvider passes `standard: policy.enforceDust` to mem-cash, so this pair decides in the
+    // STANDARD regime while row 2's pair decides in the CONSENSUS one. Only that field differs, and no verdict
+    // moves - which is why the regime is reported as real but not decisive.
+    const strictItem = new MockNetworkProvider({
+      consensusLimits: limits(8), policy: { enforceDust: true },
+    });
+    await expect(strictItem.sendRawTransaction((await buildP2pkhSpend(strictItem)).build()))
+      .rejects.toThrow(/Maximum stack item length: 8 bytes/);
+    const strictCost = new MockNetworkProvider({
+      consensusLimits: { ...limits(10_000), operationCostBudgetPerByte: 150 },
+      policy: { enforceDust: true },
+    });
+    await expect(strictCost.sendRawTransaction((await buildP2pkhSpend(strictCost)).build()))
+      .rejects.toThrow(/Maximum operation cost: 25050 \(density control length: 167\)/);
   });
 
   it('3. guard negative control: raising only the attacked field makes the faithful VM accept', async () => {

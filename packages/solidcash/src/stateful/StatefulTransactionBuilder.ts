@@ -2659,14 +2659,14 @@ export class StatefulTransactionBuilder {
       }
       return;
     }
-    // X109 / X121, SETTLED: keep the bare VM here too. The gate above is `> 10_000`, so a provider AT 10,000
-    // reaches this bare VM. The published limits ARE rules nothing enforces - the claim that they were
-    // enforced is the one that turned out to be wrong; see `X109ProviderFaithfulVm.test.ts` rows 2 and 2c and
-    // `X121StrictPreflightDecision.test.ts`. This path only prints, so it decides nothing either way.
+    // X109 / X121: this path only PRINTS, so it decides nothing and is left bare deliberately. The gate above
+    // is `> 10_000`, so a provider publishing limits AT 10,000 reaches this branch.
     //
-    // Known diagnostic consequence, not repaired here: the relaxed branch above builds its observer VM from the
-    // provider, so on the default mock profile a density-limit broadcast failure evaluates clean under those
-    // inflated limits and the tracer prints nothing. Retuning the branch is a separate row.
+    // At `@mem-cash/validation` 0.0.8 - the version this package declares - the published limits DO reach the
+    // decider, so a bare VM here can trace a shape the decider judged differently. Being bare makes this
+    // tracer stricter than a strict profile and looser than a relaxed one; for a diagnostic that only widens
+    // or narrows what gets printed, which is why it is not worth the extra coupling. The deciding twin below
+    // reads the provider. See `X109ProviderFaithfulVm.test.ts` and `X121StrictPreflightDecision.test.ts`.
     const vm = createVirtualMachineBch2026();
     for (const idx of candidates) {
       if (idx < 0 || idx >= transaction.inputs.length) continue;
@@ -2696,24 +2696,25 @@ export class StatefulTransactionBuilder {
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    // X121, SETTLED: keep the bare VM. Unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and it
-    // has no relaxed-limits gate at all - the bare VM is built for every provider. That is correct.
+    // X121: read the provider's limits. Unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and
+    // a bare VM here decides against a configuration the provider may not be running.
     //
-    // `createVirtualMachineBch2026ForProvider(provider)` was proposed here. Measured, it is unsound in the worse
-    // direction. MockNetworkProvider's published `consensusLimits` reach NOTHING: `@mem-cash/validation` @0.0.7
-    // `TxVerifierConfig` has no `consensus` field and never reads one, so its decider runs libauth's stock
-    // `ConsensusBch2026`. The default `MOCK_CONSENSUS_LIMITS` publishes limits far ABOVE stock (10,000,000
-    // operation cost per byte against a stock 800), so reading them makes this gate LOOSER than the network on
-    // the profile every caller gets unconfigured: `X121StrictPreflightDecision` row 4 pins a recursion the bare
-    // VM refuses, the provider-faithful VM accepts, and the provider then refuses at broadcast. On live
-    // providers `consensusLimits` is undefined and the factory returns libauth's own VM, so the repair is also a
-    // no-op there (row 5). The bare VM at `standard = true` errs toward REJECTING, which is the safe direction.
+    // VERSION-DEPENDENT, and the pin is `@mem-cash/validation` 0.0.8 - the version
+    // `packages/solidcash/package.json` declares (`^0.0.8`, which for a 0.0.x range means exactly 0.0.8) and
+    // `yarn.lock` resolves. At 0.0.8 `TxVerifierConfig.consensus` exists and MockNetworkProvider's overrides
+    // reach the decider, so this factory AGREES with it on every shape measured, while a bare VM diverges in
+    // BOTH directions: it accepts what the provider refuses under a strict profile (P2PKH and recursion at
+    // `operationCostBudgetPerByte: 150`) and refuses what the provider accepts under the relaxed default
+    // (`decrement(24)`). The first of those is the fail-open direction, which is why this is not left bare.
     //
-    // One divergence IS real and is deliberately not repaired: MockNetworkProvider builds its verifier with
-    // `standard: policy.enforceDust`, so a dust-disabled profile decides in the consensus regime while this VM
-    // evaluates in the standard one. Standard is uniformly the stricter regime, so the error stays fail-closed;
-    // row 2 varies only that field and no verdict moves.
-    const vm = createVirtualMachineBch2026();
+    // At 0.0.7 the field does not exist and the overrides are silently dropped, which inverts every one of those
+    // verdicts. `X121StrictPreflightDecision` asserts the installed version first so a stale tree fails with
+    // that as the reason instead of six opaque assertion failures.
+    //
+    // `standard` is deliberately left at the factory default of `true` rather than tracked to the provider's
+    // `policy.enforceDust`. Standard is the stricter regime, so this keeps the residual error fail-closed. No
+    // shape was found where the two regimes give different VERDICTS, so tracking it is not known to be needed.
+    const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
       if (state.error) {

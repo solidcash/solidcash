@@ -1809,11 +1809,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    // Callers admitted by the invoker closure below, kept in two sets because holding a context and keeping a
+    // DYNAMIC one are different admissions: a pure reader that merely forwards a scalar context must not start
+    // journalling its own chunk-backed slots.
+    const invokerHolders = new Set<number>();
+    const dynamicInvokerHolders = new Set<number>();
     // The dynamic exclusion applies only to a clone admitted BY the widening. A clone which also writes, or
     // one reached as an ordinary route callee, keeps the full slot list it already had.
     const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
       [...slots.values()].filter((sv) =>
-        !sv.isDynamic || writerIds.has(id) || routeReachable.has(id));
+        !sv.isDynamic || writerIds.has(id) || routeReachable.has(id) || dynamicInvokerHolders.has(id));
     // L2-F2. The route must HOLD the journal its rows load through. The walk above admits the route's
     // callees and never the route itself, so a route with no writer among them - a pure-reader resource
     // route, or the `_self_alias` clone the resource shape emits - was filtered out while its callees were
@@ -1828,11 +1833,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (routeFunctionId !== undefined && [...routeReachable, ...widenedClones].some(admitted)) {
       routeReachable.add(routeFunctionId);
     }
+    // X139, completing L2-F2. The route is not the only holder a journalled callee needs. `visitUserFunctionCall`
+    // PICKs the callee's context off the CALLER's frame, so EVERY invoker of an admitted handler must hold it,
+    // and the route walk above reaches only what the route calls. `solidity-by-example/StakingRewards` is the
+    // measured case: `earned` is a public view invoking the admitted `rewardPerToken`, in neither the writer set
+    // nor the route closure, and bus compilation aborted with `Missing journal context
+    // '__internal__state_write___block_timestamp' while invoking 'rewardPerToken'`.
+    //
+    // WHY WIDENING HERE CANNOT SILENCE A CHECK. `invokesJournalHandler` in `visitFunctionDefinition` scans the
+    // SAME AST call edges this fixpoint walks. An edge C -> D with D admitted and C not is therefore either a
+    // hard `Missing journal context` throw, or an edge codegen never turns into an OP_INVOKE. There is no third
+    // case in which C compiled while reading a stale slot, so no shape loses a guard by being admitted.
+    //
+    // The two sets are separate on purpose. Holding a scalar context is not a licence to journal a chunk-backed
+    // slot: a pure reader that starts loading a dynamic header from the journal while its elements still come
+    // from the chunk loop is the exact failure the X111 note above records, and it breaks C2 at input 0. A
+    // caller is promoted to the dynamic set only when the callee it must serve keeps a dynamic slot itself, in
+    // which case the caller's slot map already contains that slot through the fixpoint above.
+    const holdsContext = (id: number): boolean =>
+      writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id) || invokerHolders.has(id);
+    for (let widened = true; widened;) {
+      widened = false;
+      for (const [id, calls] of callsById) {
+        for (const calleeId of calls) {
+          if (!holdsContext(calleeId)) continue;
+          const calleeSlots = journalSlotsOf(calleeId, slotsById.get(calleeId) ?? new Map());
+          if (calleeSlots.length === 0) continue;
+          if (!holdsContext(id)) {
+            invokerHolders.add(id);
+            widened = true;
+          }
+          if (calleeSlots.some((sv) => sv.isDynamic)
+            && !(writerIds.has(id) || routeReachable.has(id) || dynamicInvokerHolders.has(id))) {
+            dynamicInvokerHolders.add(id);
+            widened = true;
+          }
+        }
+      }
+    }
     this.journalWriterFunctionIds = writerIds;
     this.journalSlotsByFunctionId = new Map([...slotsById]
       .map(([id, slots]) => [id, journalSlotsOf(id, slots)] as const)
-      .filter(([id, slots]) =>
-        (writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id)) && slots.length > 0)
+      .filter(([id, slots]) => holdsContext(id) && slots.length > 0)
       .map(([id, slots]) => [id, slots
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
   }

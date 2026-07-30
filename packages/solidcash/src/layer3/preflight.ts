@@ -650,8 +650,15 @@ export const preflightLayer3Transaction = (
  * SCOPE. This is the only broadcast site in `src/` carrying the byte gate. The other seven -
  * `TransactionBuilder.send`, `StatefulTransactionBuilder`'s submit phase and five in `StatefulContract` - do
  * not, so a Layer-3-shaped composition assembled through the stateful builder reaches the network unjudged by
- * these rules. That is a scope statement rather than a design claim: whether the byte rules should be
- * default-on at the general `build()` has an unmeasured blast radius.
+ * these rules.
+ *
+ * THE BLAST RADIUS IS NO LONGER UNMEASURED (X126). Every broadcast of the whole SDK e2e population was
+ * assessed against these rules without enforcing them - 5,370 sends across 422 green files - and the
+ * per-site table is in `test/e2e/layer3-gatesite-probe.ts`. Six of the seven would newly refuse NOTHING;
+ * `StatefulTransactionBuilder.send` would newly refuse exactly two tests in one fixture, both because that
+ * fixture pays 100/200/300 satoshis to a one-byte script and trips `output-dust` at the same 474-satoshi
+ * threshold BCHN used to refuse C1. The gate is right there and the fixture is not, but turning a green test
+ * red is a regression to report rather than a win to land, so it stays off pending that fixture.
  */
 export async function sendPreflightedLayer3Transaction(
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,

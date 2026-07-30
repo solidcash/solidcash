@@ -901,8 +901,10 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     //      what the assertion above pins for C2's four.
     //   2. "C1 and C2 have the SAME row counts, so the projection verifier is a pure function of participant
     //      and invocation count and transcript length does not enter" - GONE. The SEC-6 reshape made C1 5/6, so
-    //      no two of these builds share row counts, and the three projection counts differ (17,686 / 15,008 /
-    //      24,382). The 17,259-in-both and 17,584-returning-row figures that stood here are pre-X24 history and
+    //      no two of these builds share row counts, and the three projection counts differ (13,882 / 11,818 /
+    //      18,845 at `3281ece9`; 17,686 / 15,008 / 24,382 when this paragraph was written, which is the same
+    //      conclusion at three stale figures). The 17,259-in-both and 17,584-returning-row figures are pre-X24
+    //      history and
     //      are obtainable on no tree today. Re-earning the claim needs two builds at equal P/N and different
     //      transcript length; none exists.
     //   3. "The controller is that plus 32 instructions per output, fitted over C1's 35 slots, C2's 79 and
@@ -1182,8 +1184,10 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
  * parameter above now allows.
  *
  * NOTHING IS RELAXED. `RegtestNetworkProvider` carries no `consensusLimits`, so both the SDK's probe VM and
- * BCHN itself apply the real BCH-2026 rules and the real standard relay policy. C2 is 53,249 bytes, inside the
- * 100,000-byte ceiling, so unlike C3 it can actually be relayed.
+ * BCHN itself apply the real BCH-2026 rules and the real standard relay policy. C2 is 51,049 bytes at
+ * `3281ece9`, inside the 100,000-byte ceiling, so unlike C3 it can actually be relayed. (R3-13: 53,249 stood
+ * here in the present tense and was two readings stale; the run's own assertion is a band under 100,000, which
+ * both figures satisfy, so nothing was asserting it.)
  *
  * Requires the docker regtest stack; see the root CLAUDE.md.
  */

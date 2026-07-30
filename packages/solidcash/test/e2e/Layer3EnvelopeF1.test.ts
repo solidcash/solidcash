@@ -66,7 +66,8 @@ import {
  * 10,000-byte per-input script limit, C2 and the sweep on operation-cost density, N=2 on per-input SigChecks,
  * C3 on the 100,000-byte standard relay ceiling. NOTHING IN THIS TABLE IS OVER ANY LIMIT. That was the X66
  * change and it was a change of verdict, not of digits: C3 was 650 bytes over the relay ceiling, then 330
- * under it, and is now 3,882 under, with all 108 slots intact. C3's margin has stopped being a near miss.
+ * under it, and is now 3,698 under (the errata above; 3,882 before X81), with all 108 slots intact. C3's margin
+ * has stopped being a near miss.
  *
  * THE CORRECTED HASH REGIME MOVES NOTHING, and that is now measured rather than assumed. Every shape binds on
  * the same limit it bound on at `4ac40b82`, at the same ratio.
@@ -78,7 +79,7 @@ import {
  * A shape could only be masked by the other fixtures' 3-per-byte knob if it landed between 1.0x and 6.0x of the
  * standard allowance; the envelope is 9.3x below the bottom of that window.
  *
- * THE SIZES HAVE NOW MOVED THREE TIMES, AND EVERY MOVE IS ATTRIBUTABLE TO ONE COVENANT. The projection
+ * THE SIZES HAVE NOW MOVED FOUR TIMES, AND EVERY MOVE IS ATTRIBUTABLE TO ONE COVENANT. The projection
  * verifier is ONE generated covenant instantiated once per PARTICIPANT, and each proof slot's unlocking script
  * pushes the whole redeem script, so one verifier byte is worth N transaction bytes.
  *
@@ -89,15 +90,18 @@ import {
  *                              script growing 28 bytes in each plus 24 bytes of output set in each.
  *   X65, -444 per participant: A13 -> 22,126, C2 -> 50,957, C1 -> 60,502, C3 -> 96,118. Exactly 444 x N on
  *                              ALL FOUR - no residue this time, re-measured at `77cd1e8c`.
+ *   X81, +23  per participant: A13 -> 22,195, C2 -> 51,049, C1 -> 60,617, C3 -> 96,302. Exactly 23 x N on ALL
+ *                              FOUR, re-measured at `3281ece9` from each capstone's own capacity test (R3-13).
  *
  * These are properties of the BUILT TRANSACTION, which no VM knob can reach.
  *
- * Every worst-DENSITY ratio reproduces across all three moves, because the worst-cost input of each capstone is
+ * Every worst-DENSITY ratio reproduces across all four moves, because the worst-cost input of each capstone is
  * a controller or a participant and never a projection. The 2/4/8 synthetic sweep is untouched and reproduces
  * exactly, 10,661 B and 0.3630x at N=8. The two BINDING ratios that are functions of size did move, and are
- * re-derived above rather than carried: A13 0.5002x -> 0.4558x, C3 0.9967x -> 0.9612x.
+ * re-derived above rather than carried: A13 0.5002x -> 0.4558x -> (not re-measured), C3 0.9967x -> 0.9612x ->
+ * 0.9630x.
  *
- * C3 IS NOW 3,882 BYTES UNDER THE STANDARD RELAY CEILING - AND THAT OVERTURNS A CONCLUSION rather than merely
+ * C3 IS NOW 3,698 BYTES UNDER THE STANDARD RELAY CEILING - AND THAT OVERTURNS A CONCLUSION rather than merely
  * restating a figure. FOUR TIMES OVER, which is the reason this paragraph is kept rather than deleted. F1
  * costed a C3 fix against the pre-X5 100,354 - remove the two cheapest slot pairs, free 388, land at 99,966 -
  * and X5 made that arithmetic wrong (100,650 - 388 = 100,262). This note then costed the four-pair fix at

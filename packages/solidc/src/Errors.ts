@@ -48,7 +48,7 @@ import {
   RevertNode,
 } from './ast/AST.js';
 import { Symbol, SymbolType } from './ast/SymbolTable.js';
-import { Location, generatedOriginOf } from './ast/Location.js';
+import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 /**
@@ -67,6 +67,24 @@ export function generatedSourceCaveat(location?: Location): string {
     + ' generated preamble, and no edit to the contract can name it. This is a compiler defect';
 }
 
+/**
+ * X107. Name the imported file a HARD error's Line/Column belongs to.
+ *
+ * Warnings learned to do this; every error class here still printed a bare `Line N, Column M`, which cites a line
+ * that is real in an IMPORTED file and impossible in the file the user named. Measured: `ERC20Mock.sol` (15 lines)
+ * reports `Type 'address' can not be assigned to variable of type 'address payable' at Line 16` - line 16 of the
+ * ERC20 base it inherits.
+ *
+ * X92 rule, unchanged: a position can look both imported and generated, and GENERATED WINS. The imported label
+ * asserts "line N is real in file F on disk"; a generated position is in a string no file holds, so labelling it
+ * would be a SPECIFIC FALSE label naming a real file - worse than none.
+ */
+export function importedFileCaveat(location?: Location): string {
+  if (generatedOriginOf(location)) return '';
+  const file = sourceFileOf(location);
+  return file ? ` of imported "${file}"` : '';
+}
+
 export class SolidCashError extends Error {
   node: Node;
 
@@ -76,6 +94,7 @@ export class SolidCashError extends Error {
   ) {
     if (node.location) {
       message += ` at ${node.location.start}`;
+      message += importedFileCaveat(node.location);
       message += generatedSourceCaveat(node.location);
     }
 
@@ -98,6 +117,11 @@ export class ParseError extends Error {
   ) {
     if (location) {
       message += ` at ${location.start}`;
+      // 39 of the 40 ParseError sites are raised BY AstBuilder, so the position is a line in whatever file that
+      // parse was reading - an import as often as the root. The listener-built positions (syntax errors) carry no
+      // stamp, so they print unchanged.
+      message += importedFileCaveat(location);
+      message += generatedSourceCaveat(location);
     }
 
     super(message);

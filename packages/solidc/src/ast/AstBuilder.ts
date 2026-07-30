@@ -237,7 +237,7 @@ import {
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
-import { Location } from './Location.js';
+import { Location, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
 import { isBchAsmBlock } from './YulAST.js';
 import AstTraversal from './AstTraversal.js';
@@ -393,7 +393,10 @@ export default class AstBuilder
   }
 
   build(): Node {
-    return this.visit(this.tree);
+    // X107. This builder handles ONE file, so stamp its id onto every Location the parse builds. That carries the
+    // answer to a diagnostic raised anywhere downstream - after the merge, after cloning, after re-parenting -
+    // where `importedFileId` itself is long out of scope. No-op for the root file (id undefined).
+    return withSourceFile(this.importedFileId, () => this.visit(this.tree));
   }
 
   visitSourceFile(ctx: SourceFileContext): SourceFileNode {

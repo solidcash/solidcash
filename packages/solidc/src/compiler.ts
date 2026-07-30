@@ -2997,12 +2997,15 @@ function byteSize(artifact: Artifact): number { return asmToBytecode(artifact.by
  * layout against its facets': the manifest fingerprint was taken from the unsplit BASELINE and never checked
  * against anything the bundle actually contains. Two orderings in the split path are shard-dependent -
  * `LowerStorageSlotPointers` appends one hidden state variable per ERC-7201 namespace in the order the
- * SURVIVING functions first reach it, and `prepareSplitAst` runs `SynthesizeBlockOracle` earlier than the
- * ordinary pipeline does - so a real OZ-upgradeable contract produces a root, six facets and a manifest with
- * THREE different layouts, where facet slot 2.0 is `PausableStorage___paused` and root slot 2.0 is
- * `OwnableStorage___owner`. That bundle compiles clean and every shard fits; a spend of it would write the
- * wrong variable. The SDK refuses it at load, but a compiler that emits it has already shipped the defect, so
- * it is refused here, by name, with the first disagreeing slot quoted.
+ * SURVIVING functions first reach it, and `prepareSplitAst` ran `SynthesizeBlockOracle` earlier than the
+ * ordinary pipeline does - so a real OZ-upgradeable contract produced a root, six facets and a manifest with
+ * FOUR different layouts, where facet slot 2.0 is `PausableStorage___paused` and root slot 2.0 is
+ * `OwnableStorage___owner`. That bundle compiles clean and every shard fits; a spend of it writes the wrong
+ * variable, and X162 BUILT that spend: with only the facet's published layout replaced, `touchC(9)` settles
+ * and lands 9 in `AStorage__a`. Every check on this - here, the SDK's bundle fingerprint, and the SDK's
+ * delegate-layout rule - is metadata; none is consensus. So the fix is that `prepareSplitAst` now runs both
+ * appending passes on the complete function set, and this stays as the fail-closed backstop for any pass that
+ * starts appending shard-dependently again (foreign function-pointer array lowering still could).
  */
 export function assertSplitLayoutsAgree(
   name: string, root: Artifact, facets: Array<{ name: string; artifact: Artifact }>, baseline: Artifact,

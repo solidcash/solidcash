@@ -197,7 +197,8 @@ task-specific report, not in this table.
 | X75 | `Unbound return call in __scbN` is an unnamed internal abort | D6 | F3 | **INTEGRATED** | NOT X22's shape; all 7 corpus files now name the real edge at a position INSIDE the user's file, 7/7 |
 | X76 | X71's class has a SECOND site the `parseCode` guard cannot cover | E2 | X71 | **BLOCKED, hunks measured** | WIDER than filed: 161 files cite a line beyond the file, and X76's own position falls INSIDE it - see 4.87 |
 | X92 | Mark generated-source AST nodes so every diagnostic on them says so | — | X76 | **TODO (4 files, one HELD)** | prototyped and demonstrated at +0 bytes; stamp at CONSTRUCTION, since lowering clones and re-parents nodes |
-| X93 | 13 diagnostics report a position in an IMPORTED file with no label | — | X76 | **TODO** | `ERC20Mock.sol` Line 16 of 15; not fixed by the generated-source marking |
+| X93 | 13 diagnostics report a position in an IMPORTED file with no label | F4 | X76 | **INTEGRATED** | keyed on CLONE IDENTITY (clones share the `Location` instance): 3/17 -> 17/17; 478 labels, 0 impossible - see 4.91 |
+| X98 | 60 unlabelled-beyond-file positions remain, all out of one lease | — | X93 | **TODO** | `AstBuilder` hex/gas, `TypeCheckTraversal` range/cast, and every hard error via `Errors.ts` |
 | X77 | `view` functions reported `writesState: true` | E3 | X71 | **DISPROVED - no defect** | fires on `externalCalls > 0`, not the array analysis; cannot refuse a handler; corpus delta ZERO - see 4.86 |
 | R2 | Final regression and documentation reconciliation | Main | R1 | TODO | Exact integration commit |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
@@ -250,7 +251,7 @@ task-specific report, not in this table.
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | B5 | SEC-6 | **INTEGRATED** | the two crashes are at DIFFERENT sites, so the gate sits ahead of both; +0 bytes |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | C5 | X19 | **INTEGRATED** | SILENT under-reservation: blockSize 2 while the covenant addresses slot +2, so the next block lands on it - see 4.76 |
 | X20 | Widen the assembly model to describe entry/aux inputs | C5 | — | **AUX HALF INTEGRATED; entry half refused** | keyed a POSITION off a WIDTH; one padding slot re-opened the fail-open. Entry half is not a modelling gap |
-| X69 | The direct route declares no trailing region at all | — | X20 | **TODO** | 680 + 381 rejections need `computeBlockLayout` AND `StatefulTransactionBuilder`, not an assembly-model change |
+| X69 | The direct route declares no trailing region at all | F4 | X20 | **REFUSED (measured)** | one half has NO TERM to relax - a mapping is a CollectionNode; where the term fires it breaks 4 of 33 settled sends at input 0 |
 | X21 | Reconcile the 1200-satoshi event NFT against the model's 1000 | B | X17 | LEASED | round 9; now measured - 1000 IS covenant-enforced for sidecar slots only |
 | X22 | Result-consuming handler that also carries an effect | A | C1 | LEASED | round 9; name it or admit it - silence and sentinels both unacceptable |
 | X23 | Reduce projection-verifier operation density | B | C1 | **PROVEN** | **C1 now fits ORDINARY BCH-2026 capacity**; see 4.22 |
@@ -265,6 +266,62 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.91 X93 fixed by keying on CLONE IDENTITY; X69 refused, and one half has no term to relax
+
+Merged at `c427ac67`.
+
+**X93 - the row's own question answered, and the answer changed the fix's shape.** The four `unused variable`
+sites do carry the import case, but they are **17.8% of it**: re-measured over 345 files, **44 files, 314 warning
+instances, 7 distinct texts**, with **14 of the compiler's 24 `at line` sites** in lease covering **280/314 =
+89.2%**. So a per-site patch was the wrong shape and F4 added **one shared helper** instead.
+
+**The mechanism is the interesting part.** `Location` carries no file identity, and matching node identity against
+the import tree resolved only **3 of 17** positions - because `InheritanceExpansionTransformation` **clones**, and
+clones carry **the same `Location` instance by reference**. Keying the map on the Location resolved **17 of 17**.
+
+**Two ordering details were load-bearing, and F4 found both by being wrong first.** A shallow map labelled line
+170 as `ERC20.sol` when the truth is `SafeMath.sol:170` - and F4's own note is the right standard: **"a specific
+false label is worse than none."** And last-write-wins let a clone in ERC20 overwrite Context.sol's claim on the
+`msg.sender` line, so it is first-write-wins on Location keys.
+
+**478 labelled positions across 40 files: 0 named a file that does not exist, 0 named a file too short to hold
+the line**, and 463 further verified the cited symbol is literally on that line of that file. The 15 residual
+mismatches are compiler-generated symbol names where **file and line are still correct** - X92's class, not a
+wrong label. **+0 bytes, 345/345 artifacts byte-identical.**
+
+**The hostile is pinned to the exact mislabel its own first cut produced** - `not.toContain('"/B.sol"')` for a
+position reached through a re-exporting intermediate - plus two guard negatives: in the same compile, the root
+file's own symbol stays **unlabelled**, and a no-import contract prints byte-exact unchanged output.
+
+**60 unlabelled positions remain and every one is out of lease**, named site by site (`AstBuilder` hex literal and
+gas option, `TypeCheckTraversal` integer range and `address(bytes20)`), plus every hard error via `Errors.ts` -
+including the row's own `ERC20Mock.sol` "Line 16 of 15", which is an `AssignTypeError` and is **Context.sol's line
+16**. Opened as **X98**.
+
+**X69 - REFUSED, and the decisive finding is that one half has NO TERM TO RELAX.** A mapping is a
+`CollectionNode`, and **all seven terms of `needsTrailingRegion` are about dynamic state VARIABLES**, loops,
+keccak or ecrecover. Measured: `stateVars=0, dynamicNames=0, collections=1`, and with the direct-route gate
+**fully removed** the C2 insert **still** got `trailingBase=undefined`. So the 381 `token outside every
+participant block` category is not a relaxation at all - it needs a **new reservation class keyed on
+`contract.collections.length`**, which would put 64 slots on nearly every stateful contract.
+
+**Where the term can fire, it breaks settled sends.** **4 of 33 previously-settling sends** became
+`OP_VERIFY` failures at **input 0**, the master covenant, all four value-returning plus dynamic-write. *"That is a
+soundness regression, not a diagnostic one."*
+
+**And it buys no describability, at +226% transaction size**: `arr.push(9)` goes 1,513 -> **4,938 bytes** and is
+**still REFUSED** (unbalanced 67/66). It is **arithmetically self-limiting** - the SDK requests `capacity + 1`
+funders, so at capacity 64 the funder budget exactly equals the slack one more fixed slot removes.
+
+**The row's stated span was short by a file**: `GenerateTargetTraversal` carries two live
+`trailingBase === undefined` branches that flip the moment the direct route declares a region. F4 measured that
+both sides moved the chunk consistently, so that pairing is **not** the cause of the VM failure - and then said
+the thing that matters: **"I did not isolate which covenant check fails, and I do not claim to have."**
+
+X28's unsound-narrowing warning was also **re-confirmed live on a fresh shape**: `touchesDynamic=false` for a
+function whose body is `arr.push(9)`. The measurement is recorded beside the predicate so the next reader does not
+re-walk it.
 
 ### 4.89 X90 is SATISFIABLE and SOUND - both halves of X83's sentence were wrong, oppositely
 

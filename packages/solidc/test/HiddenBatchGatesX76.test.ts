@@ -72,11 +72,15 @@ describe('X76 the result route refuses the effect, not the route', () => {
     expect(together.get('bump')).toBe('result-route-requires-effect-free-handlers');
   });
 
-  it('leaves a route standing where the sibling alone used to erase it', () => {
-    // `shares` publishes a returning auto-getter, so this contract is result-shaped with ONE emitting handler.
-    // Every handler was demoted and the contract reached the user with no route at all.
+  it('leaves a route standing where the pair used to erase it', () => {
+    // The whole contract lost its route: the emitting sibling made the set event-shaped, the result gate then
+    // demoted BOTH handlers, and the artifact reached the user with `hiddenBatch` absent. The route now exists,
+    // which is what makes this a lost-route bug rather than one refused handler.
+    expect(hasRoute(`${RESULT_HEAD}${getter}${emitter}}`)).toBe(true);
+    // Each handler alone is admitted, so neither is refused for anything about ITSELF.
+    expect(hasRoute(`${RESULT_HEAD}${getter}}`)).toBe(true);
     expect(hasRoute(`${RESULT_HEAD}${emitter}}`)).toBe(true);
-    expect(verdicts(`${RESULT_HEAD}${emitter}}`).get('shares')).toBe('ELIGIBLE');
+    expect(verdicts(`${RESULT_HEAD}${emitter}}`).get('bump')).toBe('ELIGIBLE');
   });
 
   /**
@@ -145,34 +149,39 @@ contract X76BareSender() {
   });
 
   /**
-   * NEGATIVE CONTROL 1. A name the function BINDS ITSELF is a local array, not a collection entry, whatever it
-   * is called. Normalizing that would silently retarget a local element write at a state entry NFT.
+   * NEGATIVE CONTROL 1. A bare element of a name the function BINDS ITSELF is a LOCAL array, not a collection
+   * entry. Normalizing one would retarget a local element write at a state entry NFT, so the handler must
+   * publish witnesses for the two `balances` entries and NOTHING for `scratch` - in particular no witness bound
+   * to a parameter index that only the local's arithmetic reads.
    */
-  it('CONTROL: a local that shadows the collection name is not treated as an entry', () => {
-    const shadowed = `pragma solidcash >=0.8.0;
-contract X76Shadow() {
+  it('CONTROL: a local array element is not turned into an entry key', () => {
+    const withLocal = `pragma solidcash >=0.8.0;
+contract X76Local() {
   mapping(address => bigint) balances;
   function move(address from, address to, bigint amount) public {
-    bigint[2] balances = [amount, amount];
-    balances[0] = balances[1] - amount;
-    require(this.balances[from] >= 0 && this.balances[to] >= 0);
+    bigint[2] scratch = [amount, amount];
+    scratch[0] = scratch[1] + amount;
+    balances[from] = balances[from] - scratch[0];
+    balances[to] = balances[to] + scratch[0];
+    require(amount >= 0);
   }
 }`;
-    // Whatever the verdict is, it must not be reached by treating `balances[0]` as an entry: the two entries
-    // the handler really addresses are the `this.`-spelled reads, both keyed by a parameter.
-    const artifact = compileString(shadowed, graph);
+    const artifact = compileString(withLocal, graph);
     const witnesses = artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'move')
       ?.batchKeyWitnesses ?? [];
-    expect(witnesses.every((witness) => witness.routeInput.startsWith('__scb_key_balances_'))).toBe(true);
-    expect(witnesses.some((witness) => witness.inputIndex === 2)).toBe(false);
+    expect(witnesses.length).toBeGreaterThan(0);
+    expect(witnesses.every((witness) => /^__scb_key_balances_0(_row)?$/.test(witness.routeInput))).toBe(true);
+    // `from` and `to` are inputs 0 and 1; `amount` is input 2 and keys nothing.
+    expect(witnesses.map((witness) => witness.inputIndex).sort()).toEqual([0, 1]);
   });
 
   /**
-   * NEGATIVE CONTROL 2. A bare element of a PACKED state array is not an entry either - resolution sends it to
-   * `StateArrayAssignNode`, a different physical form with no entry NFT - so it stays outside the boundary and
-   * the handler keeps its refusal.
+   * NEGATIVE CONTROL 2. A bare element of a state ARRAY is not an entry the route can size: its key here is a
+   * literal, not a parameter. The shape stays outside the boundary - and the refusal is now the accurate one
+   * (`...requires-one-parameter-keyed-entry-per-collection`) rather than the helper reason, because the entry
+   * is visible in the handler's own body and it is the KEY that disqualifies it.
    */
-  it('CONTROL: a bare packed state-array element is still refused', () => {
+  it('CONTROL: a bare literal-keyed state-array element is still refused', () => {
     const packed = `pragma solidcash >=0.8.0;
 contract X76Packed() {
   bigint[4] slots;
@@ -183,7 +192,9 @@ contract X76Packed() {
     require(amount >= 0);
   }
 }`;
-    expect(verdicts(packed).get('poke')).toBe('collection-helper-route-not-enabled');
+    expect(hasRoute(packed)).toBe(false);
+    expect(verdicts(packed).get('poke'))
+      .toBe('collection-route-requires-one-parameter-keyed-entry-per-collection');
   });
 
   /**
@@ -204,5 +215,32 @@ contract X76Helper() {
   }
 }`;
     expect(verdicts(helper).get('move')).toBe('collection-helper-route-not-enabled');
+  });
+
+  /**
+   * The paths this change does NOT touch must be untouched. A single-key all-parameter bare handler was already
+   * admitted (X19's self-reached set, which makes no clone and so normalizes nothing), and a scalar-only route
+   * never reaches either gate. Both keep their exact script.
+   */
+  it('CONTROL: the self-reached bare shape and a scalar route keep their exact bytecode', () => {
+    const selfReached = `pragma solidcash >=0.8.0;
+contract X76Self() {
+  mapping(address => bigint) balances;
+  function credit(address who, bigint amount) public {
+    balances[who] = balances[who] + amount;
+    require(amount >= 0);
+  }
+}`;
+    const scalar = `pragma solidcash >=0.8.0;
+contract X76Scalar() {
+  int count;
+  function add(int n) public { this.count = this.count + n; require(n >= 0); }
+}`;
+    // Pinned lengths, measured at 77cd1e8c with the same options. A change to either is a regression on a path
+    // this row claims not to touch, not a re-pin.
+    expect(compileString(selfReached, graph).bytecode.length).toBe(3185);
+    expect(compileString(scalar, graph).bytecode.length).toBe(2957);
+    expect(verdicts(selfReached).get('credit')).toBe('ELIGIBLE');
+    expect(verdicts(scalar).get('add')).toBe('ELIGIBLE');
   });
 });

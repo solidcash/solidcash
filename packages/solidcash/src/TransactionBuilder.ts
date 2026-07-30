@@ -675,6 +675,9 @@ export class TransactionBuilder {
     }
     const winStartIn = this.inputs.length - userFills;
     const winStartOut = this.outputs.length - userFills;
+    // Defensive invariant, not the live guard: the userFills clamp above already keeps the window past the loop
+    // block, and the shortfall refusal above is what actually fires. Kept so that if any of that arithmetic ever
+    // changes, the colliding layout (NI-2 == masterIndex+1+0) is refused rather than emitted.
     if (winStartIn <= loopEnd || winStartOut <= loopEnd) {
       throw new Error(`mixed keccak256 shape (${S} straight-line call(s) + ${L} in-loop call(s)) cannot be funded `
         + `at this layout: the straight-line call(s) read the last ${n} inputs/outputs count-relative while the `

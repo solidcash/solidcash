@@ -13,8 +13,9 @@ point without first knowing which parts are checked by something that runs.
 It has two halves:
 
 1. **Sections 1-5**: how to check the claims without trusting the board.
-2. **Section 6**: what a hostile reviewer would catch. Fourteen findings, each with the file, the line, the
-   verification performed, and what would close it. Two of them were closed by this row; twelve are open.
+2. **Section 6**: what a hostile reviewer would catch. Sixteen findings, each with the file, the line, the
+   verification performed, and what would close it. Two were closed by this row (R3-1 and R3-7, both by
+   re-measuring against a live node), one was settled empirically (R3-2), and thirteen are open.
 
 ---
 
@@ -41,7 +42,7 @@ The four corpora and their default paths, from `layer3-corpus-probe-f3.mjs` and 
 
 **None of the four is vendored, submoduled, or revision-pinned anywhere in this repository.** A reviewer who
 obtains them at a different revision is measuring a different population than the census recorded, and nothing
-would say so. See finding R3-5.
+would say so. See finding R3-16.
 
 ### 1.2 Evidence levels, as the plan defines them
 
@@ -95,8 +96,9 @@ TESTS_USE_REGTEST=true npx vitest run test/e2e/ReviewA13BoundedGraphC3.test.ts \
 (The `--silent=false` matters: the root vitest config sets `silent: 'passed-only'`, so a passing test prints
 none of its measurements.)
 
-**The reviewer must know that the recorded node evidence is for bytes that no longer exist.** See finding
-R3-1. This row re-ran three of the four at `abb3f13b`; results in section 3.1.
+**The recorded node evidence is for bytes that no longer exist**, because two covenant changes landed after
+the mining run - finding R3-1. All four were re-run at `abb3f13b` by this row and all four were accepted and
+mined at their current sizes; results in section 3.1.
 
 ### 2.2 Policy versus consensus is settled
 
@@ -160,8 +162,8 @@ R3-4.
 `layer3-estimator-basis-f2.ts` (a **frozen** basis stamped `F2_BASIS_COMMIT = '1591e87f'`) and
 `layer3-estimator-heldout-f2.ts`. The frozen basis is deliberate: two tests assert that the live covenant size
 **differs** from the basis figure, so the staleness is the assertion. A reviewer who "refreshes" the basis
-breaks `Layer3ProductionEnvelopeR1.test.ts:880`, which asserts the frozen C3 sits exactly 330 bytes under the
-ceiling.
+breaks `Layer3ProductionEnvelopeR1.test.ts:879`, which asserts the frozen C3 sits exactly 330 bytes under the
+ceiling - a figure that was C3's real margin at `9238abff` and is now 3,698.
 
 ---
 
@@ -169,12 +171,41 @@ ceiling.
 
 ### 3.1 MEASURED HERE at `abb3f13b`
 
-Node runs, against the live regtest stack (BCHN v29.0.0, May 2026 active, chain tip 4129 at start):
+**All four capstones re-executed against the live regtest stack** (BCHN v29.0.0, May 2026 upgrade active,
+chain tip 4129 at start), each in its own run, `--no-file-parallelism`, nothing relaxed:
 
-| shape | node verdict | height | bytes | hostile control's actual refusal |
-| --- | --- | --- | --- | --- |
-| A13 | ACCEPTED + MINED | 4144 | **22,195** | `mandatory-script-verify-flag-failed (Script failed an OP_VERIFY operation) (code 16)` |
-| C2 | ACCEPTED + MINED | 4242 | **51,049** | `mandatory-script-verify-flag-failed (Script failed an OP_EQUALVERIFY operation) (code 16)` |
+| shape | node verdict | height | txid prefix | bytes | inputs | hostile control's actual refusal |
+| --- | --- | --- | --- | --- | --- | --- |
+| A13 | ACCEPTED + MINED | 4144 | `bc7d1629e6462526` | **22,195** | 8 | `mandatory-script-verify-flag-failed (Script failed an OP_VERIFY operation) (code 16)` |
+| C2 | ACCEPTED + MINED | 4242 | `70ccb9c343478cc2` | **51,049** | 79 | `mandatory-script-verify-flag-failed (Script failed an OP_EQUALVERIFY operation) (code 16)` |
+| C3 | ACCEPTED + MINED | 4456 | `602b2e27b4ceaf50` | **96,302** | 108 | `mandatory-script-verify-flag-failed (Script failed an OP_VERIFY operation) (code 16)` |
+| C1 | ACCEPTED + MINED | 4630 | `c0c8b993a46852d0` | **60,617** | 38 | `mandatory-script-verify-flag-failed (Script failed an OP_EQUALVERIFY operation) (code 16)` |
+
+Each was then run a **second** time with the re-pinned assertion of finding R3-7 in place; all four are green,
+2 passed each, and C3 was accepted and mined again at height 5134 at the same 96,302 bytes - so the C3 figure
+has two independent on-chain confirmations at this commit.
+
+**The opcode is not stable across runs and the flag is.** C1's control was refused `OP_EQUALVERIFY` in the
+first run above and `OP_VERIFY` in the second, at the same commit on the same chain. Whichever input the node
+happens to reject first is not a property of the covenant, so a control pinned to the opcode would go red on a
+correct change. The re-pinned assertions therefore match `/mandatory-script-verify-flag-failed/` and stop
+there - that is the property that distinguishes "the node ran the scripts and they refused" from every policy
+or lookup refusal, and it is the only part of the message that is stable.
+
+Two things follow, and only two. First, the sizes the node accepted are the **current** sizes, so the
+`CONSENSUS_FIT` evidence and the size table now describe the same transactions - which was not true before this
+row (finding R3-1). Second, each hostile control is refused for a **script-verify** reason, so the node
+executed the covenants and they refused, rather than the node declining on size, dust or a missing input
+(finding R3-7). This is a re-establishment of an existing claim on bytes that had moved. It is not a new
+evidence level for anything, and it says nothing about `POLICY_FIT`.
+
+Also green on the same node at `abb3f13b`:
+
+| fixture | result |
+| --- | --- |
+| `Layer3NodeEnvelopeX49.test.ts` | 3/3 - the 100,000/100,001 size boundary and the size-before-lookup ordering hold on this node |
+| `Layer3OutputTemplateX64.test.ts` | 6 tests, 1 skipped (the skip is the `STRICT_RPC_URL` second-node case) |
+| `Layer3ParticipantBindingSpike.test.ts` | 7/7 broadcast and accepted, the only committed Layer-3 sweep fixture that offers bytes to the node |
 
 Mock-provider builds, at the real ordinary-capacity profile:
 
@@ -195,12 +226,12 @@ Mock-provider builds, at the real ordinary-capacity profile:
 | figure | source | status |
 | --- | --- | --- |
 | C3 mined at height 3718, 99,670 B, 108 inputs | plan 4.80, commit `9238abff` | true of that commit's bytes; **not the current C3** |
-| C1 mined at height 4058, 62,722 B | plan 4.80 | same caveat; and the ledger contradicts it - finding R3-2 |
+| C1 mined at height 4058, 62,722 B | plan 4.80 | same caveat; and the ledger denies it happened at all - finding R3-2, settled here |
 | 101,513 B refused `64: tx-size`, same bytes accepted in a block | plan 4.66, `x49-policy-vs-consensus.py` | not exercised by any suite |
 | bare `OP_1` output funded, mined, spent with an empty unlocking script | plan 4.78 | gated on `STRICT_RPC_URL`, requires a second node |
 | 12 / 0 / 134 application read-only headline | F3 doc, census `b4d33fc1` | asserted only over the under-8,000-byte subset |
 | 148/280 = 53% route-scope | F3 doc errata, census `b4d33fc1` | derived from the recorded census, not re-derived by a test |
-| A13 22,195 B | this row (section 3.1) | **now measured**, was previously the only capstone size never printed by a mock-mode run |
+| sweep N=2/4/8 accepted and mined | plan 4.66 | the board's only asserted `CONSENSUS_FIT`; no committed fixture reproduces it - finding R3-15 |
 
 ---
 
@@ -240,7 +271,7 @@ npx vitest run test/e2e/Layer3EnvelopeDocR2.test.ts --silent=false
 # 2. the envelope and the screen (~5 s)
 npx vitest run test/e2e/Layer3EnvelopeF1.test.ts test/e2e/Layer3ProductionEnvelopeR1.test.ts --silent=false
 
-# 3. the capstone sizes, mock provider (~2.5 min for C1+C2, ~25 s for C3's capacity block)
+# 3. the capstone sizes, mock provider (~2 min for C1+C2, ~30 s for C3's capacity block)
 npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts test/e2e/Layer3HeterogeneousCycleC2.test.ts --silent=false
 npx vitest run test/e2e/Layer3BoundedMaximumGraphC3.test.ts -t 'C3 capacity measurement' --silent=false
 
@@ -261,8 +292,10 @@ memory exhaustion with **zero failing tests printed**, which reads exactly like 
 
 ## 6. What a hostile reviewer would catch
 
-Fourteen findings. Severity is about the claim, not the code: **HIGH** means a headline claim rests on it,
-**MEDIUM** means a reader would be misled, **LOW** means it is untidy.
+Sixteen findings. Severity is about the claim, not the code: **HIGH** means a headline claim rests on it,
+**MEDIUM** means a reader would be misled, **LOW** means it is untidy. None of them is a soundness defect in a
+covenant; this row read no covenant. They are defects in what the evidence proves, which is a different thing
+and the one an external reviewer is being asked to judge.
 
 ### R3-1. The node-verified bytes are not the current bytes. HIGH.
 
@@ -282,14 +315,17 @@ These are not the same transactions and not the same scripts: X81 replaced a par
 total `OP_BIN2NUM` decode inside the covenant the node executed. Read literally, "all four capstones mined" is
 a statement about bytes that no longer exist anywhere in the tree.
 
-**Partly closed by this row.** A13 and C2 were re-run against the live node at `abb3f13b` and both were
-accepted and mined at the current sizes (section 3.1). C1 and C3 are recorded in the packet returned with this
-document. Nothing here says the claim was wrong - it says the claim was unpinned, and a size table that moves
-three times in two days is exactly the input this board has been burned by four times.
+Ancestry checked rather than inferred: `9238abff` is an ancestor of both `825f720f` (X65) and `e8bff7a9`
+(X81), and `825f720f` of `e8bff7a9`, so on the mainline both covenant changes land after the mining run.
 
-**What would close it**: the capstone node blocks assert `serializedBytes` against a band, not against a
-figure, so nothing fails when the size moves. That is deliberate and correct. What is missing is a statement,
-in the ledger row itself, of which commit the txids belong to.
+**CLOSED by this row.** All four capstones were re-run against the live node at `abb3f13b` and all four were
+accepted and mined at their current sizes (section 3.1). Nothing here says the claim was wrong - it says the
+claim was unpinned, and a size table that moved three times in two days is exactly the input this board has
+been burned by four times.
+
+**What remains open**: the capstone node blocks assert `serializedBytes` against a band rather than a figure,
+which is deliberate and correct, so nothing fails when the size moves again. What is missing is a statement in
+the ledger row itself of which commit its txids belong to.
 
 ### R3-2. The ledger and the plan disagree about whether C1 is node-verified. HIGH.
 
@@ -304,6 +340,11 @@ The plan's own preamble says *"The completion ledger remains authoritative for d
 document designated authoritative is the one that denies the strongest result. A reviewer starting from the
 ledger will conclude C1 is blocked by a provider defect; a reviewer starting from the plan will conclude it is
 mined. Both are current documents at `abb3f13b`.
+
+**Settled here, in the plan's favour**: C1 was executed, accepted and mined at height 4630, 60,617 B, 38
+inputs, with its hostile control refused `mandatory-script-verify-flag-failed (OP_EQUALVERIFY)` on the same
+chain in the same run. The ledger row is wrong on this point, and it is wrong in the direction that
+understates the result. It is outside this row's lease; the correction belongs to the integration owner.
 
 ### R3-3. The controller size everyone quotes is the anti-conservative one. MEDIUM.
 
@@ -338,8 +379,11 @@ hardest.
 places (a `${corpus}\0${rel}` key and its matching `split`). The bytes are committed: the blob is 27,688 bytes
 and 27,686 with NULs stripped.
 
-Consequently the file is classified as **binary**, and the default `grep` in this environment (a `ugrep`
-wrapper invoked with `-I`) skips it silently - returning "no match" rather than "binary file skipped":
+Consequently the file is classified as **binary** and its matching lines are not shown. In the environment this
+row ran in, where `grep` is a `ugrep` wrapper invoked with `-I`, it is worse than not shown: the file is
+skipped entirely and the command reports **no match**, exit 1. GNU grep is less dangerous but still hides the
+content, printing `Binary file ... matches` and no line. Either way a sweep that reads its own output loses the
+file.
 
 ```
 $ grep -n  "no-entry-point-declared" layer3-corpus-probe-f3.mjs   # exit 1, no output
@@ -349,10 +393,22 @@ $ grep -an "no-entry-point-declared" layer3-corpus-probe-f3.mjs   # 232:  ... 'n
 This is the same failure mode as the four vacuous guards already on the board - a check that cannot see its
 subject and reports success - except that it applies to **every grep-based audit anyone has run over this
 repository**, including the ones that produced the guard inventory. Any conclusion of the form "identifier X
-no longer exists anywhere" is unsound unless it was taken with `grep -a`.
+no longer exists anywhere" is unsound unless it was taken with `grep -a` or an equivalent.
 
-**What would close it**: replace the two raw NUL bytes with `' '` escapes, which changes no behaviour and
-makes the file text.
+It has a live consequence for a reviewer. `no-entry-point-declared` is the label carrying the fixed floor of 56
+refusals that the 53% route-scope figure is normalised against, and an ordinary grep finds it in the recorded
+census and **nowhere else** - which invites the conclusion that it is orphaned data with no producer. It is in
+fact produced at `layer3-corpus-probe-f3.mjs:232`, from the absence of a `Rejected entry points - ...` clause in
+the compiler's `hidden-batch-route-not-synthesized` diagnostic. This row reached the wrong conclusion first and
+only caught it because `sed` and `awk` disagreed with `grep` about the contents of the same file.
+
+**What would close it**: write the separator as the two-character escape sequence backslash-zero in both
+places instead of embedding a raw NUL. JavaScript produces the identical byte and the source becomes ASCII.
+
+**And a demonstration nobody planned.** The first draft of this very finding was written with the Write tool
+and the intended escape sequence was materialised as a **raw NUL byte** in the paragraph above, making this
+document binary too. It was found because the follow-up edit failed to match its own text. The hazard is not
+exotic and it is not confined to one file.
 
 ### R3-6. A file titled "standard relay policy, committed CI gate" asserts two limits that do not exist. MEDIUM.
 
@@ -365,9 +421,13 @@ const MAX_UNLOCKING = 1650;
 const MAX_COMMITMENT = 40;
 ```
 
-Both are pre-May-2026. This board measured the first one gone: X49 confirmed a **6,035-byte scriptSig is
-accepted** by BCHN v29 with May 2026 active, matching libauth's 10,000. The second is 128 in May 2026 - the
-semantic profile in the same directory sets `maximumNftCommitmentBytes: 128` and calls it unrelaxed.
+Both are pre-May-2026. **The repository contradicts itself on the first one, in the same directory.** The
+production envelope's own rule table, `layer3-production-envelope-r1.ts:107-114`, carries
+`input-unlocking-bytes` at **10,000** with the reason *"X49 separately accepted a 6,035-byte scriptSig on the
+node, so the legacy 1,650-byte standard limit is gone in v29 and the standard and consensus ceilings
+coincide."* So one file in `test/e2e` states the limit as 1,650 and another states, with the measurement, that
+1,650 no longer exists. The second constant is 128 in May 2026 - the semantic profile in the same directory
+sets `maximumNftCommitmentBytes: 128` and lists it as the one knob it does **not** relax.
 
 Being stricter than reality makes the gate conservative rather than unsound, but it is published as a
 statement about what mainnet requires, and it is 6x and 3.2x wrong in that role.
@@ -398,33 +458,40 @@ the RPC call itself throws. The board has an explicit standard against exactly t
 titled *"pin the three rejections to their causes so none can pass for the wrong reason"*, and X49's whole
 contribution was distinguishing `missing-inputs` from a script verdict.
 
-Measured, the claim holds where it was checked: A13's control is refused
-`mandatory-script-verify-flag-failed (Script failed an OP_VERIFY operation) (code 16)` and C2's
-`(Script failed an OP_EQUALVERIFY operation) (code 16)` - both genuine script-verify failures, at
-`abb3f13b`, on the same chain and in the same run as the acceptance. The four controls now capture and print
-the node's message instead of discarding it. The C1 and C3 readings are in the packet returned with this
-document.
+**Measured, the claim holds on all four** (section 3.1): every control is refused
+`mandatory-script-verify-flag-failed`, code 16, on the same chain and in the same run as the acceptance. The
+four controls now capture the node's message, print it, and assert `/mandatory-script-verify-flag-failed/`.
+The **flag** is pinned and the **opcode is not**, and that is a measurement rather than a preference: C1's
+control was refused `OP_EQUALVERIFY` in one run and `OP_VERIFY` in another at this same commit on this same
+chain. Which verify fails first is not a property of the covenant, so an opcode-pinned control would go red on
+a correct change.
+
+That the claim turned out to be true is not a reason the guard was adequate. It was checked here for the first
+time, four rounds after it started being quoted, and C3's case is the sharpest: C3 spent four rounds being
+refused `64: tx-size` before its scripts ever ran, so during that whole period this exact assertion was green
+for a reason that had nothing to do with any covenant.
 
 A13's control was the best of the four before this change: it pins the locally-refusing inputs to
 `[3, 4, 5, 6]` before offering the bytes to the node. C1, C2 and C3 had no such local pin in the node block.
 
 ### R3-8. The corpus-fit measurement swallows both of its own soundness rules. HIGH.
 
-`Layer3CorpusFitF3.test.ts:713-720` measures every one-slot candidate inside a `try`, and appends any throw to
+`Layer3CorpusFitF3.test.ts:714-721` measures every one-slot candidate inside a `try`, and appends any throw to
 a `failures` list that is only `console.log`ged. `measureSubject` contains **both** rules the test's own
 docstring names as load-bearing:
 
-- rule 2, knob liveness (`:870-872`): *"the same bytes at a budget the input provably cannot meet must be
-  refused, or an accepted reading only means the evaluation never ran"*;
+- rule 2, knob liveness (`:871-872`): `expect(control, 'the operation-cost knob does not bite at ${budget}/byte')
+  .toBeDefined()` - *"the same bytes at a budget the input provably cannot meet must be refused, or an accepted
+  reading only means the evaluation never ran"*;
 - rule 1, no refusal at either real profile (`:901-902`).
 
-A failure of either is caught, logged, and counted as a skip. The only gate is
+A failure of either is caught, logged, and counted as a skip. The only gate is `:731`,
 `expect(measured).toBeGreaterThan(0)`, so **one surviving candidate out of eighty-six keeps the test green.**
 
 This is the third vacuous-guard variant already on the board - "a knob control inside a try/catch that was
 swallowed into the skip list" - and it was repaired in the sibling file and not here:
-`Layer3EstimatorF2.test.ts` hoists `assertMeasurementDiscipline(measurement)` to `:1228`, **outside** the
-catch that ends at `:1226`. F2's own header names the defect it fixed. F3 kept it.
+`Layer3EstimatorF2.test.ts` puts `assertMeasurementDiscipline(measurement)` at `:1228`, **outside** the catch
+that ends at `:1227` with a `continue`. F2's own header names the defect it fixed. F3 kept it.
 
 **What would close it**: hoist the two assertions out of the catch, exactly as F2 did, and assert a floor on
 `measured` relative to `candidates.length` rather than against zero.
@@ -495,6 +562,34 @@ Two board documents carry the same class in the present tense: `message-bus-para
 `message-bus-completion-ledger.md:114` (the projection parser *"pinned at ... 4,542 bytes"*, three generations
 stale). Both are outside this row's lease and are left as findings; the plan already tracks the class as X99.
 
+### R3-15. The board's one asserted `CONSENSUS_FIT` cannot be reproduced from committed artifacts. MEDIUM.
+
+X49 asserted `CONSENSUS_FIT` for the participant-binding sweep at N=2, 4 and 8 - **and for nothing else** - on
+the grounds that those three were accepted and mined while A13/C2/C1/C3 only reached `missing-inputs`. That
+was the correct call at the time and it is the most carefully scoped promotion on the board.
+
+It is also the one a reviewer cannot re-run. The 2,429 / 4,977 / 10,661-byte shapes are built in exactly one
+place, `Layer3EnvelopeF1.test.ts`'s `buildSweep` - a binary-safe `grep -arn` over `packages/solidcash/test`
+returns six hits for those figures, four in that file's own header and two citations of it in the estimator -
+and that file **contains no call to `sendRawTransaction` at all**: it measures the built bytes and stops. The
+bytes reach a node only through a three-step manual procedure:
+
+1. run the sweep under `TESTS_USE_REGTEST` so the outpoints are real, with `vitest.broadcast.config.ts` and
+   `L3_BROADCAST_OUT` set, so `layer3-broadcast-probe.ts` captures the complete serialized bytes;
+2. submit the captured JSONL to the node;
+3. confirm the mining.
+
+**Step 2 has no committed implementation.** `grep -arl L3_BROADCAST_OUT` over the whole package returns the
+probe and its config and nothing else. The capture half is committed and documented; the submitting half
+existed only in a worker's session.
+
+The nearest thing a reviewer can run is `Layer3ParticipantBindingSpike.test.ts`, which does broadcast and is
+7/7 green on the node at `abb3f13b` - but its shape is a two-clone participant binding, not F1's N=4 or N=8
+sweep, and its own hostiles are bare `rejects.toThrow()` (`:216`, `:229`), the same class as R3-7.
+
+Nothing here says the sweep result is wrong. It says the single claim the board holds to the highest evidence
+standard is the one with the weakest reproduction path, which is an odd place for a review package to end up.
+
 ### R3-14. The retired 80% figure is still stated in the present tense in three places. LOW.
 
 The full census re-take moved route-scope refusals from 364/455 (80%) to 148/280 (53%), with the visibility
@@ -508,6 +603,22 @@ gate going 172 -> 0. The errata blocks were updated. The bodies were not:
 
 None of these is an assertion. The tests around them assert on census structure and on live-compiled gate
 counts, both of which are current. The plan tracks this as X99, TODO.
+
+### R3-16. The corpus result rests on four unpinned external checkouts. MEDIUM.
+
+Every census figure, every refusal histogram, the 12/0/134 headline and the 53% route-scope figure are
+functions of four Solidity corpora that live outside this repository at hard-coded absolute paths (section
+1.1). They are not submodules, not vendored, and no revision is recorded anywhere - not in the census module,
+which stamps only the **solidc** commit `b4d33fc1`, and not in the probe.
+
+The consequence is asymmetric and worth stating plainly. If the compiler's route admission changes, the
+recorded census silently keeps its old numbers, which is a known and accepted property. But if a **corpus**
+changes, a reviewer re-running the probe gets different numbers from the recorded ones and has no way to tell
+whether the compiler moved or the corpus did. The census's own drift check is scoped to redeem-script lengths
+of rows that still exist; it cannot see a row that appeared or vanished.
+
+**What would close it**: record the four corpus commit hashes beside `F3_CENSUS_COMMIT`. It costs four lines
+and makes every corpus figure falsifiable.
 
 ---
 

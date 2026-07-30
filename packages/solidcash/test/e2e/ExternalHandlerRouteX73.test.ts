@@ -193,21 +193,81 @@ contract X73Mixed() {
   });
 
   /**
-   * NEVER SHRINK. The route's uniformity rules choose ONE shape for the whole admitted set, so a newly
-   * eligible handler can demote handlers that were already admitted. Measured on a real ERC-20: admitting the
-   * event-emitting, value-returning `approve` makes the route both result-shaped and event-shaped, and that
-   * combination refuses EVERY handler - so the contract went from a route carrying `balanceOf` to no route at
-   * all. Admitting `external` must never cost a contract handlers it already had, so the public-only route is
-   * kept and the external handler is refused by name.
+   * NEVER SHRINK. The route's uniformity rules choose ONE shape for the whole admitted set, so a newly eligible
+   * handler can demote handlers that were already admitted. Admitting `external` must never cost a contract
+   * handlers it already had, so where it would, the external handler is refused by name and the wider
+   * public-only set is kept.
    *
-   * The control below is the same source with `approve` declared `public`. There the poisoning is not X73's to
-   * avoid - both handlers are public candidates, there is no narrower set, and the route is lost at HEAD
-   * exactly as it was before. That is what makes the preserved case a property of this guard rather than of
-   * some change to the uniformity rules themselves, which are untouched.
+   * X76 TOOK THIS GUARD'S ORIGINAL SUBJECT AWAY, AND THE REPAIR IS A NEW SUBJECT, NOT A RELAXED ASSERTION. The
+   * shape it was built on was a real ERC-20 whose event-emitting, value-returning `approve` poisoned the route
+   * for `balanceOf` too; X76 refuses `approve` on `result-route-requires-effect-free-handlers` in BOTH
+   * spellings, so that source no longer shrinks and cannot exercise this guard. The test below measures that
+   * collapse explicitly; this one moves to a shape that still shrinks, and the shrink is visible as a COUNT
+   * rather than as the difference between a route and no route.
+   *
+   * TWO public scalar handlers plus one external collection handler. The public spelling makes the route
+   * collection-shaped: `credit` is admitted and BOTH scalars are refused `mixed-scalar-and-collection`, so the
+   * admitted set is one handler. Admitting the external spelling the same way would take the contract from the
+   * two handlers its public-only route already carries down to one, so the guard refuses `credit` instead. The
+   * boundary is sharp and the other side of it is already pinned above: with ONE public scalar the counts are
+   * 1 against 1, no shrink, and `X73Mixed` shows the external collection handler displacing it.
    */
   it('keeps the public-only route when an external handler would cost the contract its handlers', () => {
-    const erc20 = (visibility: string): string => `pragma solidcash >=0.8.0;
+    const shrink = (visibility: string): string => `pragma solidcash >=0.8.0;
 contract X73Shrink() {
+  bigint total;
+  bigint other;
+  mapping(address => bigint) balances;
+  function bump(bigint n) public { this.total = this.total + n; require(n >= 0); }
+  function bump2(bigint n) public { this.other = this.other + n; require(n >= 0); }
+  function credit(address who, bigint n) ${visibility} {
+    this.balances[who] = this.balances[who] + n;
+    require(n >= 0);
+  }
+}`;
+    // CONTROL FIRST, because it is what establishes that there is something to lose: as `public` the route is
+    // collection-shaped and admits exactly one handler.
+    const asPublic = compileString(shrink('public'), BATCH);
+    expect(asPublic.hiddenBatch?.handlers).toEqual([
+      expect.objectContaining({
+        name: 'bump', eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
+      }),
+      expect.objectContaining({
+        name: 'bump2', eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
+      }),
+      expect.objectContaining({ name: 'credit', eligible: true }),
+    ]);
+
+    const asExternal = compileString(shrink('external'), BATCH);
+    expect(asExternal.hiddenBatch?.handlers).toEqual([
+      expect.objectContaining({ name: 'bump', eligible: true }),
+      expect.objectContaining({ name: 'bump2', eligible: true }),
+      expect.objectContaining({
+        name: 'credit', eligible: false, rejectionReason: 'external-handler-would-shrink-the-route',
+      }),
+    ]);
+    // THE PROPERTY, as the arithmetic the guard exists to enforce rather than as a list of names.
+    const admitted = (artifact: ReturnType<typeof compileString>): number =>
+      (artifact.hiddenBatch?.handlers ?? []).filter((handler) => handler.eligible).length;
+    expect(admitted(asExternal)).toBeGreaterThan(admitted(asPublic));
+    expect(admitted(asExternal)).toBe(2);
+    expect(admitted(asPublic)).toBe(1);
+  });
+
+  /**
+   * THE SUBJECT THIS GUARD WAS BUILT ON NO LONGER SHRINKS, recorded rather than deleted.
+   *
+   * X73 measured this real ERC-20 going from a route carrying `balanceOf` to no route at all when `approve` was
+   * admitted, because the combination is both result-shaped and event-shaped. X76 refuses the EFFECT rather
+   * than the route: `approve` is turned away on `result-route-requires-effect-free-handlers` and `balanceOf` is
+   * admitted - in BOTH spellings, identically. So the visibility keyword makes no difference on this source at
+   * all, the public arm now HAS the route it used to lose, and `external-handler-would-shrink-the-route` cannot
+   * fire here. A guard whose only subject has stopped reaching it would be passing for the wrong reason, which
+   * is why the test above moved to a shape that still shrinks and this one pins the collapse.
+   */
+  it('records that the ERC-20 shape X73 measured is no longer a shrink subject in either spelling', () => {
+    const erc20 = (visibility: string): string => `pragma solidcash >=0.8.0;
+contract X73Approve() {
   event Approval(address owner, bigint amount);
   mapping(address => bigint) balances;
   mapping(address => bigint) allowances;
@@ -219,19 +279,18 @@ contract X73Shrink() {
     return true;
   }
 }`;
-    expect(compileString(erc20('external'), BATCH).hiddenBatch?.handlers).toEqual([
+    const expected = [
       expect.objectContaining({ name: 'balanceOf', eligible: true }),
       expect.objectContaining({
-        name: 'approve', eligible: false, rejectionReason: 'external-handler-would-shrink-the-route',
+        name: 'approve', eligible: false, rejectionReason: 'result-route-requires-effect-free-handlers',
       }),
-    ]);
-
-    // CONTROL: the same handler as `public`. Nothing about the uniformity rules changed, so this contract has
-    // no route - which is exactly what it had before X73, and what the external spelling would have inherited.
+    ];
+    const asExternal = compileString(erc20('external'), BATCH);
     const asPublic = compileString(erc20('public'), BATCH);
-    expect(asPublic.hiddenBatch).toBeUndefined();
-    expect((asPublic.diagnostics ?? []).map((entry) => entry.message).join(' '))
-      .toContain("'balanceOf': result-route-requires-effect-free-handlers");
+    expect(asExternal.hiddenBatch?.handlers).toEqual(expected);
+    expect(asPublic.hiddenBatch?.handlers).toEqual(expected);
+    // The two spellings are the same program here, so they are the same bytes: nothing is credited to X73.
+    expect(asExternal.bytecode).toBe(asPublic.bytecode);
   });
 
   /**

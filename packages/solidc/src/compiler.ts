@@ -3118,6 +3118,14 @@ function prepareSplitAst(
   ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
   ast = expandInheritance(ast);
   ast = expandModifiers(ast);
+  // X162. Both remaining state-appending passes are SHARD-DEPENDENT and must therefore run here, on the
+  // complete function set, before `compileFacet` filters it. `LowerStorageSlotPointers` appends one hidden
+  // state variable per ERC-7201 namespace in the order the SURVIVING functions first reach it, so running it
+  // per-shard gave the root, its facets and the manifest three different physical layouts of the same state.
+  // The relative order with the block oracle matches the ordinary pipeline (slot pointers first), so the root
+  // also agrees with the unsplit baseline. Both passes are idempotent once their source metadata is consumed,
+  // so the ordinary pipeline's later invocations are no-ops on this AST.
+  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
   // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
   ast = ast.accept(new SynthesizeBlockOracle()) as Ast;

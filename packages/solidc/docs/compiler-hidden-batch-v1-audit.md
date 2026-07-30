@@ -29,11 +29,11 @@ missing-caller negative is a weak test that should be replaced. No new soundness
 
 | Finding | Disposition | Note |
 |---|---|---|
-| F1 overstated "real ERC-20" | **FIXED** | Spec now disclaims (`compiler-hidden-batch-v1.md:351-354` "does not demonstrate standard ERC-20 authorization"); fixture uses a `spender` param. Cosmetic residual: 2 test titles still say "ERC-20 transferFrom" unqualified. |
-| F2 alias only SDK-tested | **FIXED** | A raw hand-rewritten duplicate-outpoint tx is now pushed to the VM and rejected (`RepeatedExternalBatchCorpus.test.ts:194-236`), with an untouched positive control. Rejection is the consensus duplicate-input rule (by design), reaching the VM - not a `.build()` throw. |
-| F3 metadata-dependent cold gate | **FIXED** | Cold flag now set structurally (`StatefulContract.ts:7737` `if (compilerRoute && !exact)`) independent of `sortedBatchInfo`; any unresolved compiler-route entry throws. Construction-time refusal (the requested structural assertion). |
-| F4 no library size gate | **FIXED, but this row's EVIDENCE went stale (X123)** | `compileString` emits a structured `contract-size-limit` diagnostic (`compiler.ts:959-967`) - that part still holds. The citation does not: the route is **4,814** bytes, not 9,775, and `BatchCostRegression.test.ts:79` no longer contains the assertion quoted here (it now reads `routeBodyBytes:`). The margin the row leaned on has gone from 225 bytes to **5,186**, so "pinned just under the limit" is no longer the reason this is fixed. Authority for every figure: `compiler-hidden-batch-v1.md`'s Release 0 table, re-derived at X108. |
-| F5 adversarial coverage | **PARTIAL - one WEAK test** | R4 event/value/result-output negatives are covenant-layer and adequate (value mutation compensates the container to conserve satoshis; corpus corrupts the *last* entry). But the R5 missing-caller negative (`RepeatedExternalBatchRelease5.test.ts:405-412`) `splice`s out A's whole master input, so `rejects.toThrow()` fires on value/token-conservation + index-shift, and the callee fixture has no `msg.sender` check to exercise - it proves "can't delete an input," not caller authentication. Replace with a real caller-LBC-swap test in the `msg.sender`-keyed C2 scenario. Test-quality gap, not a soundness regression (caller/callee binding soundness stands via the target-substitution and forged-settlement negatives with positive controls). |
+| F1 overstated "real ERC-20" | **FIXED; citation re-located at X125** | Spec now disclaims ("does not demonstrate standard ERC-20 authorization"), but at `compiler-hidden-batch-v1.md:422`, not the `:351-354` this row cited - those lines are the `msg.data`/selector-position ineligibility rule and do not contain the quote. Fixture uses a `spender` param. Cosmetic residual: 2 test titles still say "ERC-20 transferFrom" unqualified. |
+| F2 alias only SDK-tested | **FIXED; citation re-located at X125** | A raw hand-rewritten duplicate-outpoint tx is now pushed to the VM and rejected (`RepeatedExternalBatchCorpus.test.ts:197-239`, not the `:194-236` this row cited), with an untouched positive control at `:239`. Rejection is the consensus duplicate-input rule (by design), reaching the VM - not a `.build()` throw. |
+| F3 metadata-dependent cold gate | **FIXED; citation re-located at X125** | Cold flag now set structurally (`if (compilerRoute && !exact)`) independent of `sortedBatchInfo`; any unresolved compiler-route entry throws. Construction-time refusal (the requested structural assertion). The gate is at `src/stateful/StatefulContract.ts:7801`, not the `:7737` this row cited. The path was never `src/StatefulContract.ts` (checked: `git log --all` on that path is empty), so only the line drifted. Five other bare `StatefulContract.ts:NNNN` citations in this document - `7736`, `7738`, `7943`, `7948`, `5225` - also land on unrelated lines in the current file, so re-locate any of them by content before relying on it. |
+| F4 no library size gate | **FIXED, but this row's EVIDENCE went stale (X123)** | `compileString` emits a structured `contract-size-limit` diagnostic - that part still holds, at `compiler.ts:2579-2586`. **X125: the X123 pass corrected this row's figure and left its own code citation rotted.** It cited `compiler.ts:959-967`, which is collection-route key-witness synthesis and has never emitted a diagnostic; re-located by grep for `contract-size-limit`, which occurs once in that file. The rest of X123 stands: the route is **4,814** bytes, not 9,775, and `BatchCostRegression.test.ts:79` no longer holds the assertion quoted here (it reads `routeBodyBytes:`; the ERC-20 pin moved to `:102-117`). The margin the row leaned on has gone from 225 bytes to **5,186**, so "pinned just under the limit" is no longer the reason this is fixed. Authority for every figure: `compiler-hidden-batch-v1.md`'s Release 0 table, re-derived at X108. |
+| F5 adversarial coverage | **PARTIAL - one WEAK test** | R4 event/value/result-output negatives are covenant-layer and adequate (value mutation compensates the container to conserve satoshis; corpus corrupts the *last* entry). But the R5 missing-caller negative (`RepeatedExternalBatchRelease5.test.ts:481-490` at X125, not the `:405-412` this row cited - those lines are now blob mutators) `splice`s out A's whole master input, so `rejects.toThrow()` fires on value/token-conservation + index-shift, and the callee fixture has no `msg.sender` check to exercise - it proves "can't delete an input," not caller authentication. Replace with a real caller-LBC-swap test in the `msg.sender`-keyed C2 scenario. Test-quality gap, not a soundness regression (caller/callee binding soundness stands via the target-substitution and forged-settlement negatives with positive controls). |
 | F6 direct-route isolation | **FIXED** | `MsgSenderCrossContractC2.test.ts` asserts byte-identical bytecode with/without the flag and executes the direct `bal[msg.sender]` insert on the VM. |
 
 R5 remains default-off regardless of audit status, per the graduation gates in
@@ -146,16 +146,47 @@ re-verify both gates before any eligibility broadening.
 
 ### F4 (MEDIUM, deployability) - 225-byte headroom with no library-API size gate
 
-The minimal two-row ERC-20 fixture compiles to 9,775 bytes; the SCB1 route body alone is 6,532 bytes,
-+6,728 over the 3,047-byte direct token (`BatchCostRegression.test.ts:64-83`). `MAX_INPUT_BYTESIZE =
-10_000` is enforced ONLY as a `console.warn` in `solidc-cli.ts:90`; `compileString` (the library/SDK
-path used by every programmatic caller and by the test suite) emits no size diagnostic. A marginally
-larger token (bytes32 keys, events, decimals, a second handler) silently compiles oversize and is
-rejected by the network at deploy with no compiler signal. The route roughly triples contract size, so
-it is viable only for the most minimal token.
+AS AUDITED at `4cff1624`; every byte figure in this finding is superseded, see the X125 re-derivation
+below. The minimal two-row ERC-20 fixture compiles to 9,775 bytes; the SCB1 route body alone is 6,532
+bytes, +6,728 over the 3,047-byte direct token (`BatchCostRegression.test.ts:64-83`).
+`MAX_INPUT_BYTESIZE = 10_000` is enforced ONLY as a `console.warn` in `solidc-cli.ts:90`;
+`compileString` (the library/SDK path used by every programmatic caller and by the test suite) emits no
+size diagnostic. A marginally larger token (bytes32 keys, events, decimals, a second handler) silently
+compiles oversize and is rejected by the network at deploy with no compiler signal. The route roughly
+triples contract size, so it is viable only for the most minimal token.
 
-Recommendation: surface contract size as an artifact-level warning/error from the library path (not
-just the CLI), and document the tripling. Treat the 225-byte margin as a hard ceiling for this shape.
+**X125 re-derivation. The conclusions died with the figures, so they are re-derived rather than
+refreshed.** Measured at HEAD by compiling this finding's own fixtures; the authority for the pinned
+columns is `compiler-hidden-batch-v1.md`'s Release 0 table, itself pinned by
+`BatchCostRegression.test.ts:102-117` (the `:64-83` cited above is now the parser/dispatcher pin, not
+this one).
+
+| figure | as audited | at HEAD | how measured |
+|---|---:|---:|---|
+| route batch bytes | 9,775 | 4,814 | `BatchCostRegression.test.ts:114` |
+| SCB1 route body | 6,532 | 1,554 | `BatchCostRegression.test.ts:116` |
+| direct token bytes | 3,047 | 3,157 | `BatchCostRegression.test.ts:113` |
+| batch delta | +6,728 | +1,657 | `BatchCostRegression.test.ts:115` |
+| headroom under 10,000 | 225 | 5,186 | `10,000 - 4,814` |
+
+Four consequences, not four numbers:
+
+1. **"Roughly triples contract size" is dead.** It was 9,775/3,047 = 3.21x; it is 4,814/3,157 = 1.53x.
+2. **"Viable only for the most minimal token" has inverted.** The five-function corpus token
+   (mint, approve, transferFrom, checkBalance, checkAllowance) compiles to 6,032 bytes with 3,968 to
+   spare and no `contract-size-limit` diagnostic (`RepeatedExternalBatchCorpus.test.ts:124-125`).
+3. **The named counter-example has inverted.** This finding's own "marginally larger token (bytes32
+   keys, events, decimals, a second handler)" was compiled as written: 5,777 batch bytes, 4,223 of
+   headroom, no diagnostic, `transferFrom` still eligible. It does not compile oversize.
+4. **"With no compiler signal" is fixed, and was fixed independently of the figures.** `compileString`
+   emits the structured `contract-size-limit` error above 10,000 bytes at `compiler.ts:2579-2586`. The
+   CLI `console.warn` at `solidc-cli.ts:90` is unchanged and still present, so that half of the
+   citation held.
+
+Recommendation, as re-derived: the library-path size gate is delivered and remains required. The
+"document the tripling" half is withdrawn - there is no tripling to document. Size is no longer a
+ceiling for this shape and must not be cited as one; the binding constraint on the route is its
+capability boundary, not its byte count.
 
 ### F5 (LOW/MEDIUM, test quality) - the adversarial suite over-attests
 
@@ -204,8 +235,9 @@ bifurcation cannot regress unnoticed.
 - Iterative derivation authenticates every entry output: the covenant does (in order); the SDK loop is
   liveness-only. The "every entry" property is under-tested (F5).
 - Non-batch artifacts byte-identical, exact v1-only capability match: CONFIRMED.
-- Frozen measurements reproduce: not re-run here; F4 flags the 225-byte ceiling and missing
-  library-path size gate.
+- Frozen measurements reproduce: not re-run here; F4 flagged a 225-byte ceiling and a missing
+  library-path size gate. Both are superseded at X125: the gate exists (`compiler.ts:2579-2586`) and
+  the ceiling is 5,186 bytes of headroom, so this line is no longer a reason to withhold anything.
 
 ## Remediation status
 
@@ -222,9 +254,11 @@ Post-audit corrections (2026-07-23):
   existing entry. Cold rejection no longer depends on `sortedBatchInfo.slotIndices`; that metadata
   only supplies route-internal C2 witnesses after exact resolution.
 - **F4 surfaced in the library artifact:** compilation emits a structured
-  `contract-size-limit` error diagnostic above 10,000 bytes. The stripped route fixture remains
-  9,775 bytes, while the corpus token with mint/approve/check helpers is measured at 10,600 bytes
-  and explicitly documented as non-deployable.
+  `contract-size-limit` error diagnostic above 10,000 bytes. The two byte figures recorded here are
+  superseded at X125 and both moved the same way: the stripped route fixture was 9,775 bytes and is
+  4,814, and the corpus token with mint/approve/check helpers was 10,600 bytes and is 6,032. The
+  "explicitly documented as non-deployable" clause has inverted - that token now compiles 3,968 bytes
+  inside the limit and `RepeatedExternalBatchCorpus.test.ts:124` asserts the diagnostic is ABSENT.
 - **F5 completed:** R5 includes a positional-second-push decoy transaction, a late/second
   entry-output corruption, the raw duplicate-resource transaction, removal of the physical caller
   input, and untouched positive controls. R4 separately mutates an authenticated event output and
@@ -235,8 +269,16 @@ Post-audit corrections (2026-07-23):
   no batch metadata, then executes the direct insertion in the VM.
 
 These corrections do not request default enablement. They narrow the claim, make cold handling
-structural, expose the deployability ceiling, and strengthen the audit evidence for the existing
-experimental boundary.
+structural, add a library-path size gate, and strengthen the audit evidence for the existing
+experimental boundary. ("Expose the deployability ceiling" was the third item here; X125 withdraws it,
+because at 5,186 bytes of headroom there is no ceiling to expose.)
+
+**This "all closed" claim is CONTRADICTED by the completion review above it, and the completion review
+is the later document.** Its F5 row records `PARTIAL - one WEAK test` and asks for a replacement
+caller-LBC-swap negative; that replacement has not landed, and the missing-caller test at
+`RepeatedExternalBatchRelease5.test.ts:481-490` still ends in a bare `rejects.toThrow()` after
+splicing out a whole input. So read the sentence below as scoped to 2026-07-23: it predates the
+2026-07-24 re-verification and was never revised after it. F1-F4 and F6 are closed; F5 is not.
 
 All required F1-F6 corrections and assurance gaps identified by this review are now closed. The
 default-off disposition remains a product/protocol graduation boundary, not an unresolved audit

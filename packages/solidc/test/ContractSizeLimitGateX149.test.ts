@@ -1,33 +1,31 @@
+import { asmToBytecode } from '@solidcash/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { compileString } from '../src/compiler.js';
 import { MAX_INPUT_BYTESIZE } from '../src/constants.js';
 
 /**
- * X149. THE SIZE GATE IS A DIAGNOSTIC NOTHING READ, AND THE POPULATION IS NOT NEAR THE CEILING.
+ * X149. `artifact.bytecode` IS NOT BYTES, AND THE SIZE GATE WAS MEASURING IT.
  *
- * `compiler.ts` records `artifact.diagnostics = [{severity: 'error', code: 'contract-size-limit'}]` when the
- * compiled script exceeds the 10,000-byte per-input limit. It did not throw, it did not print, and no SDK path
- * reads the field - so a contract that can never be spent compiled clean and silent. X136 fixed its BASIS
- * (`Math.max` of the debug script and the published one, closing a 498.5 to 1,448-byte band in which the
- * published script was over and the gate was still quiet); this file pins the basis, the band, and the fact
- * that the compiler now says so out loud.
+ * `generateArtifact` publishes `bytecode: scriptToAsm(script)` - the human-readable listing, in which one
+ * 1-byte opcode occupies `OP_CHECKSIGVERIFY `. So `artifact.bytecode.length / 2` is half a CHARACTER count and
+ * overstates the script on every contract, by a factor that depends on the opcode/data mix:
  *
- * WHAT A HARD COMPILE-TIME REFUSAL WOULD COST, measured in DIRECT mode at this commit - the mode every bench
- * compiles in, so the count is the count of bench rows a throw would turn red:
+ *      small stateful contract     1,332  listed   ->     283  real   (4.71x)
+ *      eacc/MarketplaceV1 direct  32,432  listed   ->  30,981  real   (1.047x)
  *
- *      eacc/MarketplaceV1        32,432 B   22,432 OVER
- *      eacc/MarketplaceV2        26,987 B   16,987 OVER
- *      eacc/MarketplaceV3        26,959 B   16,959 OVER
- *      eacc/EACCToken            15,772 B    5,772 OVER
- *      mistswap/UniswapV2Factory 42,908.5 B 32,908.5 OVER
- *      mistswap/UniswapV2Pair    13,664.5 B  3,664.5 OVER
+ * X136 read that overstatement as a SILENT BAND - "`debug.bytecode` is the shorter of the two on every row
+ * measured, 498.5 B on FakeToken up to 1,448 B on MarketplaceV1" - and closed it by taking `Math.max` of the
+ * two. THERE IS NO BAND. `debug.bytecode` is `binToHex(scriptToBytecode(optimisationResult.script))` of the
+ * SAME script the ASM lists; it was the exact byte count all along, and the max made the gate measure the
+ * listing on every contract that reached it. The direction is the false-positive one: a contract whose real
+ * script is 8,921 bytes was diagnosed `contract-size-limit` because its LISTING is 11,820.5 half-characters.
  *
- * NONE OF THAT IS A MESSAGE-BUS COST. Those are ORDINARY compiles with no route, no controller and no batch;
- * the bus adds a further 2,478 to 16,381.5 bytes on top. So a compile-time throw does not gate the bus, it
- * deletes six rows from the compile benches and, worse, deletes the ability to MEASURE the gap - the numbers
- * above exist only because `compileFile` returns an artifact for a contract that cannot be deployed. The
- * refusal belongs at the spend boundary, where a script length is fatal rather than merely measurable. What
- * belongs here is that the compiler stops being the quietest thing in the chain.
+ * THE FIGURES THIS ROW WAS OPENED WITH ARE IN THAT UNIT AND ARE THEREFORE HIGH. In real bytes, in ORDINARY
+ * DIRECT MODE with no route, no controller and no batch:
+ *
+ *      eacc/MarketplaceV1   30,981 B   20,981 over   (reported as 32,432 / 22,432)
+ *
+ * The conclusion survives the correction and the arithmetic does not, which is the whole reason to state both.
  */
 
 /**
@@ -49,43 +47,78 @@ ${lines.join('\n')}
 }`;
 };
 
-const sizes = (artifact: {
-  bytecode: string; debug: { bytecode: string };
-}): { published: number; gateBasis: number } => ({
-  published: artifact.bytecode.length / 2,
-  gateBasis: artifact.debug.bytecode.length / 2,
+interface Compiled {
+  bytecode: string;
+  debug: { bytecode: string };
+  diagnostics?: readonly { code: string; severity?: string; message?: string }[];
+}
+
+/** The two numbers this file is about: what the script weighs, and what its listing weighs. */
+const lengths = (artifact: Compiled): { scriptBytes: number; listingHalfChars: number } => ({
+  scriptBytes: asmToBytecode(artifact.bytecode).length,
+  listingHalfChars: artifact.bytecode.length / 2,
 });
 
-const sizeDiagnostics = (artifact: { diagnostics?: readonly { code: string }[] }): readonly {
-  code: string; severity?: string; message?: string;
-}[] => (artifact.diagnostics ?? []).filter((entry) => entry.code === 'contract-size-limit');
+const sizeDiagnostics = (artifact: Compiled): readonly { code: string; severity?: string; message?: string }[] =>
+  (artifact.diagnostics ?? []).filter((entry) => entry.code === 'contract-size-limit');
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('X149: the over-limit contract is diagnosed and announced', () => {
+describe('X149: the size gate measures the script, not its listing', () => {
   /**
-   * THE BAND X136 CLOSED, held open on purpose. 260 guards puts the PUBLISHED script over the limit while the
-   * `debug.bytecode` the gate used to measure is still under it. That is the exact shape the old basis was
-   * blind to, and it is asserted as a PREMISE first: if a compiler change ever moves the two lengths together,
-   * this row stops being a band row and the test says so instead of passing vacuously.
+   * THE ROOT FACT, asserted before anything that depends on it. `debug.bytecode` and `bytecode` are two
+   * renderings of ONE script, and only one of them is bytes. If this ever fails, every other assertion in this
+   * file is measuring something else.
    */
-  it('MEASURED: a row whose published script is over while the debug script is under is diagnosed', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(260), {});
-    const { published, gateBasis } = sizes(artifact);
+  it('MEASURED: debug.bytecode is the exact byte count and bytecode is a longer listing', () => {
+    const artifact = compileString(bulk(40), {}) as Compiled;
+    const { scriptBytes, listingHalfChars } = lengths(artifact);
+    expect(scriptBytes, 'debug.bytecode is not the same script as bytecode')
+      .toBe(artifact.debug.bytecode.length / 2);
+    expect(listingHalfChars, 'the ASM listing is no longer longer than the script it lists')
+      .toBeGreaterThan(scriptBytes);
+  }, 120_000);
 
-    expect(published, 'premise: the published script must be OVER the limit').toBeGreaterThan(MAX_INPUT_BYTESIZE);
-    expect(gateBasis, 'premise: the OLD gate basis must be UNDER it, or this is not a band row')
-      .toBeLessThan(MAX_INPUT_BYTESIZE);
+  /**
+   * THE FALSE POSITIVE THE `Math.max` BASIS PRODUCED, and the reason the basis had to change rather than the
+   * message. 240 guards is a contract whose LISTING is over the limit and whose SCRIPT is comfortably under
+   * it. Both halves of that are asserted as premises, so the row cannot quietly stop being the case it is.
+   */
+  it('REGRESSION: a contract whose listing is over and whose script is under is NOT diagnosed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const artifact = compileString(bulk(240), {}) as Compiled;
+    const { scriptBytes, listingHalfChars } = lengths(artifact);
+
+    expect(listingHalfChars, 'premise: the LISTING must be over the limit, or this is not the false-positive row')
+      .toBeGreaterThan(MAX_INPUT_BYTESIZE);
+    expect(scriptBytes, 'premise: the SCRIPT must be under the limit').toBeLessThan(MAX_INPUT_BYTESIZE);
+
+    expect(sizeDiagnostics(artifact), 'a deployable contract is diagnosed as over the limit').toHaveLength(0);
+    const printed = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(printed).not.toContain('input-script limit');
+  }, 120_000);
+
+  /**
+   * THE GENUINE CASE, differing from the control above in exactly ONE field: the guard count, i.e. the size.
+   * Over on the SCRIPT, so the diagnostic fires, states the real length and the real overage, and prints.
+   */
+  it('MEASURED: a contract over the limit in real bytes is diagnosed and announced', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const artifact = compileString(bulk(300), {}) as Compiled;
+    const { scriptBytes } = lengths(artifact);
+
+    expect(scriptBytes, 'premise: the SCRIPT must be over the limit').toBeGreaterThan(MAX_INPUT_BYTESIZE);
 
     const found = sizeDiagnostics(artifact);
-    expect(found, 'the band row carries no size diagnostic').toHaveLength(1);
+    expect(found, 'the over-limit row carries no size diagnostic').toHaveLength(1);
     expect(found[0].severity).toBe('error');
-    expect(found[0].message).toContain(`${published} bytes`);
+    // The number in the message is the SCRIPT length, not the listing length.
+    expect(found[0].message).toContain(`${scriptBytes} bytes`);
     expect(found[0].message, 'the diagnostic does not state the overage')
-      .toContain(`${published - MAX_INPUT_BYTESIZE} over`);
+      .toContain(`${scriptBytes - MAX_INPUT_BYTESIZE} over`);
+    expect(found[0].message).not.toContain(`${lengths(artifact).listingHalfChars} bytes`);
 
     expect(warn, 'the compiler compiled an unspendable contract without printing anything').toHaveBeenCalled();
     const printed = warn.mock.calls.map((call) => String(call[0])).join('\n');
@@ -94,37 +127,18 @@ describe('X149: the over-limit contract is diagnosed and announced', () => {
   }, 120_000);
 
   /**
-   * THE GUARD NEGATIVE CONTROL, differing from the case above in ONE field: the guard count, i.e. the size.
-   * 200 guards is under the limit on BOTH bases. No diagnostic and no print - so the test above is measuring
-   * the size and not merely the presence of the contract.
+   * THE SECOND CONTROL: under the limit on BOTH renderings. Neither the diagnostic nor the print appears, so
+   * the case above is measuring the size and not merely the presence of a contract.
    */
-  it('CONTROL: an under-limit contract carries no size diagnostic and prints nothing', () => {
+  it('CONTROL: a contract under the limit on both renderings is silent', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(200), {});
-    const { published, gateBasis } = sizes(artifact);
-
-    expect(published, 'premise: the control must be UNDER the limit').toBeLessThan(MAX_INPUT_BYTESIZE);
-    expect(gateBasis).toBeLessThan(MAX_INPUT_BYTESIZE);
+    const artifact = compileString(bulk(150), {}) as Compiled;
+    const { scriptBytes, listingHalfChars } = lengths(artifact);
+    expect(scriptBytes).toBeLessThan(MAX_INPUT_BYTESIZE);
+    expect(listingHalfChars, 'premise: this control must be under on the LISTING too')
+      .toBeLessThan(MAX_INPUT_BYTESIZE);
     expect(sizeDiagnostics(artifact)).toHaveLength(0);
-    const printed = warn.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(printed).not.toContain('input-script limit');
-  }, 120_000);
-
-  /**
-   * THE SAME ROW WITH BOTH LENGTHS OVER. Nothing about the gate may depend on which of the two is the larger,
-   * so the deep row is asserted separately rather than assumed to follow from the band row.
-   */
-  it('MEASURED: a row over on BOTH bases is diagnosed once, not twice', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(300), {});
-    const { published, gateBasis } = sizes(artifact);
-    expect(gateBasis, 'premise: this row must be over on the OLD basis too').toBeGreaterThan(MAX_INPUT_BYTESIZE);
-    expect(published).toBeGreaterThan(gateBasis);
-
-    const found = sizeDiagnostics(artifact);
-    expect(found).toHaveLength(1);
-    // The LONGER length is what a spender pays for, so that is what the message has to state.
-    expect(found[0].message).toContain(`${published} bytes`);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).not.toContain('input-script limit');
   }, 120_000);
 
   /**
@@ -137,7 +151,9 @@ describe('X149: the over-limit contract is diagnosed and announced', () => {
    */
   it('MEASURED: an over-limit contract with no route keeps both diagnostics', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(300, 'unsafe '), { forceStateful: true, experimentalHiddenBatch: true });
+    const artifact = compileString(
+      bulk(300, 'unsafe '), { forceStateful: true, experimentalHiddenBatch: true },
+    ) as Compiled;
     const codes = (artifact.diagnostics ?? []).map((entry) => entry.code).sort();
     expect(codes).toEqual(['contract-size-limit', 'hidden-batch-route-not-synthesized']);
   }, 120_000);

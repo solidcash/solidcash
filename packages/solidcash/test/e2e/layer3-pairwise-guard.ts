@@ -39,19 +39,42 @@
  * flag the very comparison the design depends on. The row rule is therefore a SECOND, independent rule over a
  * different population, not a widening of the first.
  *
- * WHAT IS STILL OPEN, WITH THE MEASUREMENT THAT SAYS WHY. The derivation propagates only through `bytes`-typed
- * assignments, so a row-to-row comparison DECODED INTO SCALARS FIRST is invisible: written inline it is caught
- * (the clause names both frames), written through two `bigint` locals it is not. Both forms are pinned below by
- * `SYNTHETIC_ROW_SCALAR_INLINE_SOURCE` and `SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE`, the second asserting the
- * CURRENT boundary, so it is a recorded limit rather than an unknown.
+ *  5. X140, closed here. The derivation used to propagate only through `bytes`-typed assignments, so a
+ *     row-to-row comparison DECODED INTO SCALARS FIRST was invisible when routed through two `bigint` locals.
+ *     `SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE` reproduced it and the fixtures asserted it was NOT flagged.
  *
- * Propagating through scalars too was measured and rejected. Every field in both loops is decoded from the
- * transcript, so scalar propagation marks nearly every identifier: the projection verifier goes from 10 derived
- * identifiers and 5 both-sides clauses to 38 and 13, and the controller from 4 and 0 to 31 and 8. The 16 new
- * clauses are the covenants' own bookkeeping - `tail == transcript.length`, `batchCursor == ownerBatch.length`,
- * `parent == openIndex`, `subtreeEnd == invocationCount - 1` - so closing this form costs 16 more named
- * exemptions covering the arithmetic, which is a detector that cries wolf rather than one that reports. The
- * scalar form is left open deliberately and measured, not overlooked.
+ * HOW X140 CLOSES IT WITHOUT CRYING WOLF, AND THE NUMBER THAT SAYS SO. Propagating through EVERY `bigint`
+ * assignment was measured and rejected once: the projection verifier goes from 10 derived identifiers and 5
+ * both-sides clauses to 38 and 13, and the controller from 4 and 0 to 31 and 8 - 16 further exemptions, all
+ * covering the covenants' own bookkeeping (`tail == transcript.length`, `batchCursor == ownerBatch.length`).
+ *
+ * A scalar inherits row-hood here only when its defining expression takes a SLICE OF a row - `int(...
+ * frame.slice(a, b) ...)` - and never when it merely mentions one. That is the difference between "decoded
+ * FROM a row" and "computed BESIDE a row", and it is the whole of the noise: `tail`, `batchCursor`,
+ * `emissionCursor`, `resultCursor` and `participantInput` are all derived from a row's LENGTH or from a
+ * counter, not from a slice of it. Paired with blanking `.slice(...)` BOUNDS - the same argument
+ * `stripIndexes` already makes for `[...]`, since a row value used as a bound does not make the result row
+ * bytes - the cost is:
+ *
+ *     projection  10 -> 28 derived,  5 -> 6 both-sides clauses,  1 new exemption
+ *     controller   4 -> 23 derived,  0 -> 2 both-sides clauses,  2 new exemptions
+ *
+ * THREE new named exemptions, not sixteen, and each names a real binding rather than arithmetic. Every control
+ * the previous rules had is unchanged by the widening: the honest base binding, the four near-misses and the
+ * mutation control on both real sources all behave exactly as before, and `SYNTHETIC_ROW_SCALAR_INLINE_SOURCE`
+ * is still flagged. Blanking slice bounds alone leaves the OLD rule's verdicts byte-identical (projection
+ * 10/5, controller 4/0), so it is a refinement of the vocabulary and not a relaxation of it.
+ *
+ * The widening also catches `SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE`, a decode straight off the transcript with no
+ * intermediate frame, which the narrower "only via a frame" variant misses at a cost of only one exemption
+ * fewer. That variant was measured and rejected for the hole, not for the price.
+ *
+ * WHAT IS STILL OPEN, WITH ITS OWN NUMBER. A scalar re-derived from ANOTHER SCALAR - `bigint again = one + 0`
+ * - does not inherit, because the second hop takes no slice. `SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE` pins it and
+ * the fixtures assert it is NOT flagged. Closing it means letting a derived scalar seed further scalars, which
+ * was measured: projection 28 -> 36 derived and 6 -> 11 both-sides, controller 23 -> 30 and 2 -> 5, for 11
+ * exemptions in place of 3. That is back to the bookkeeping the first measurement rejected, so the two-hop
+ * form is left open deliberately and measured, not overlooked.
  */
 
 /**
@@ -66,16 +89,18 @@ export const SELF_PRESERVATION_EXEMPTION =
 const PARTICIPANT_LBC = /lockingBytecode|participantLbc/;
 
 /**
- * X134. Every comparison in the generated covenants that carries TRANSCRIPT BYTES on both sides, each named,
- * each with the reason it is not a row-to-row uniqueness comparison, each asserted PRESENT by the fixtures with
- * an exact clause count. There are five clauses under four names and all five are in the projection verifier;
- * the controller has none.
+ * X134, extended by X140. Every comparison in the generated covenants that carries TRANSCRIPT BYTES on both
+ * sides, each named, each with the reason it is not a row-to-row uniqueness comparison, each asserted PRESENT
+ * by the fixtures with an exact clause count. There are eight clauses under seven names: six in the projection
+ * verifier and two in the controller.
  *
- * `count` is asserted exactly, not as a floor: a sixth clause landing under an existing name would otherwise be
- * absorbed silently, which is the exact failure mode this guard exists to prevent.
+ * `count` is the count in the PROJECTION verifier and `controllerCount` the count in the controller, both
+ * asserted exactly rather than as floors: a further clause landing under an existing name would otherwise be
+ * absorbed silently, which is the exact failure mode this guard exists to prevent. Splitting them per covenant
+ * is what keeps "this exemption moved covenant" from reading as "this exemption is still fine".
  */
 export const ROW_COMPARISON_EXEMPTIONS: readonly {
-  name: string; pattern: RegExp; count: number; reason: string;
+  name: string; pattern: RegExp; count: number; controllerCount?: number; reason: string;
 }[] = [
   {
     name: 'owner-emissions-vs-canonical-row',
@@ -106,6 +131,32 @@ export const ROW_COMPARISON_EXEMPTIONS: readonly {
     count: 1,
     reason: 'the owner\'s returned bytes against the INVOCATION row that declares them; same scope note as '
       + 'the batch clauses above',
+  },
+  // X140's three, the entire price of closing the scalar-decoded form. Each names a binding; none is
+  // arithmetic dressed up as a finding, which is what the 16-exemption variant would have been.
+  {
+    name: 'batch-args-length-vs-invocation-row',
+    pattern: /\bownerBatch\.slice\([^()]*\)[^=]*\)\s*==\s*argsLength\b/,
+    count: 1,
+    reason: 'the owner\'s compiled batch args-LENGTH field against the length the INVOCATION row declares - '
+      + 'the scalar half of `owner-batch-vs-invocation-row`, and in the same scope: an invocation row is not '
+      + 'a participant row',
+  },
+  {
+    name: 'controller-subtree-end-vs-invocation-count',
+    pattern: /\bsubtreeEnd\s*==\s*invocationCount\b/,
+    count: 0,
+    controllerCount: 1,
+    reason: 'the last frame\'s subtree end against the number of invocations, both indices into the '
+      + 'controller\'s own DFS bookkeeping over ONE record; neither is a participant row',
+  },
+  {
+    name: 'controller-parent-vs-open-frame',
+    pattern: /\bparent\s*==\s*openIndex\b/,
+    count: 0,
+    controllerCount: 1,
+    reason: 'the parent an invocation declares against the frame currently open in the controller\'s walk - '
+      + 'a tree-shape check inside one record, not a comparison of two participant rows',
   },
 ];
 
@@ -160,13 +211,44 @@ function stripIndexes(text: string): string {
 }
 
 /**
- * X134. Which identifiers carry transcript bytes, computed rather than listed.
+ * Blank out every `.slice(...)` BOUND expression, innermost first.
+ *
+ * X140. Exactly the argument `stripIndexes` makes, for the other way a row value can appear without making the
+ * result row bytes: `unlocking.slice(6, 6 + batchLength)` is a slice of an UNLOCKING SCRIPT, and `batchLength`
+ * being row-derived does not change that. Without this, one row-derived length used as a bound on both sides
+ * of a comparison reports the comparison as row-to-row. Measured to leave the pre-X140 rule's verdicts
+ * byte-identical (projection 10 derived / 5 both-sides, controller 4 / 0), so it narrows nothing that was
+ * being caught.
+ */
+function stripSliceBounds(text: string): string {
+  let stripped = text;
+  let previous = '';
+  while (stripped !== previous) {
+    previous = stripped;
+    stripped = stripped.replace(/\.slice\s*\([^()]*\)/g, '.slice()');
+  }
+  return stripped;
+}
+
+/** Both blankings, applied to fixpoint: what is left names only values that CARRY row bytes. */
+function normalise(text: string): string {
+  return stripSliceBounds(stripIndexes(text));
+}
+
+/**
+ * X134, widened by X140. Which identifiers carry transcript bytes, computed rather than listed.
  *
  * Seeded from the `bytes` PARAMETERS of the covenant's functions - the transcript is the only one in either
- * generated source - and propagated to fixpoint through assignments whose target is `bytes`-declared. Typed
- * propagation is what keeps it usable: every scalar field in the loops is decoded from the transcript too, so
- * propagating through `bigint` would mark `participantInput == expectedParticipantInput` as a row comparison
- * and the rule would report nothing but noise.
+ * generated source - and propagated to fixpoint:
+ *
+ *   - a `bytes`-declared target inherits when its defining expression NAMES a row (X134);
+ *   - any other target inherits only when its defining expression takes a SLICE OF one (X140), which is the
+ *     difference between a field decoded FROM a row and a counter computed BESIDE one. The header carries the
+ *     measurement: 3 new exemptions this way against 16 for propagating through every `bigint`.
+ *
+ * A scalar that inherits does NOT go on to seed further scalars: it is in `derived`, but the slice test is
+ * applied against the expression, and `bigint again = one + 0` takes no slice. That is the recorded two-hop
+ * boundary, pinned by `SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE`.
  *
  * Computing the set instead of naming it is the point. A generator that renames `frame` to anything else is
  * still covered, which is the failure this guard has now had four times.
@@ -186,13 +268,22 @@ function rowDerivedIdentifiers(rejoined: string): string[] {
   while (changed) {
     changed = false;
     for (const statement of statements) {
-      const assignment = /^\s*(?:bytes(?:\d+)?\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$/.exec(statement);
+      const assignment =
+        /^\s*(?:(?:bytes(?:\d+)?|bigint|int)\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$/.exec(statement);
       if (!assignment) continue;
       const [, target, value] = assignment;
-      if (!bytesDeclared.has(target) || derived.has(target)) continue;
-      const stripped = stripIndexes(value);
+      if (derived.has(target)) continue;
+      const carriesBytes = bytesDeclared.has(target);
+      const stripped = normalise(value);
       for (const seed of derived) {
-        if (new RegExp(`\\b${seed}\\b`).test(stripped)) { derived.add(target); changed = true; break; }
+        if (!new RegExp(`\\b${seed}\\b`).test(stripped)) continue;
+        // A non-`bytes` target must be DECODED FROM the row, not merely computed in its company. The slice
+        // is looked for in the raw value: `normalise` has blanked the bounds, so `frame.slice()` survives as
+        // the evidence while `usedMask.slice(0, participantCount)` no longer makes `participantCount` a row.
+        if (!carriesBytes && !new RegExp(`\\b${seed}\\s*\\.\\s*slice\\s*\\(`).test(stripIndexes(value))) continue;
+        derived.add(target);
+        changed = true;
+        break;
       }
     }
   }
@@ -219,7 +310,7 @@ export function scanComparisons(source: string): ComparisonScan {
     .filter((clause) => /[=!]=/.test(clause));
   const rowDerived = rowDerivedIdentifiers(rejoined);
   const carriesRow = (text: string): boolean => {
-    const stripped = stripIndexes(text);
+    const stripped = normalise(text);
     return rowDerived.some((seed) => new RegExp(`\\b${seed}\\b`).test(stripped));
   };
   // Every ADJACENT comparand pair, not just the first two: a clause can carry more than one operator, and
@@ -350,12 +441,9 @@ export const SYNTHETIC_ROW_SCALAR_INLINE_SOURCE = `contract Fake() {
 }`;
 
 /**
- * THE RECORDED HOLE, and the reason it is recorded rather than closed: the same comparison routed through two
- * `bigint` locals. The derivation stops at `bytes`, so neither comparand names a row and the rule is silent.
- *
- * The fixtures assert this is NOT flagged. That is not an endorsement - it is the boundary written down where
- * it can be seen, so closing it later is a deliberate change with a visible before. The header block above
- * carries the measurement (16 new exemptions) that says why widening to scalars is the wrong trade today.
+ * X140'S REPRODUCTION, now CLOSED: the same comparison routed through two `bigint` locals. Each local is
+ * decoded from a SLICE of a row, so each inherits row-hood and the clause is flagged. The fixtures assert both
+ * halves - it was the recorded hole, and it is now the thing the widening exists to catch.
  */
 export const SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE = `contract Fake() {
   function f(bytes transcript, bigint a, bigint b) public {
@@ -364,6 +452,42 @@ export const SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE = `contract Fake() {
     bigint one = int(bytes.concat(frame.slice(0, 2), hex"00"));
     bigint two = int(bytes.concat(otherFrame.slice(0, 2), hex"00"));
     require(one == two);
+    require(true);
+  }
+}`;
+
+/**
+ * The frameless spelling: two scalars decoded straight off the transcript at two cursors, with no intermediate
+ * `bytes` local for a "only via a frame" rule to key on. Flagged, and the reason the narrower variant was
+ * rejected - it misses this and saves exactly one exemption.
+ */
+export const SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE = `contract Fake() {
+  function f(bytes transcript, bigint a, bigint b) public {
+    bigint one = int(bytes.concat(transcript.slice(a, a + 2), hex"00"));
+    bigint two = int(bytes.concat(transcript.slice(b, b + 2), hex"00"));
+    require(one == two);
+    require(true);
+  }
+}`;
+
+/**
+ * X140'S OWN RECORDED BOUNDARY: the same comparison with one more hop, through scalars that take no slice.
+ * `oneAgain` is computed from `one` rather than decoded from a row, so it does not inherit and the clause is
+ * silent.
+ *
+ * The fixtures assert this is NOT flagged. That is not an endorsement - it is the limit written down where it
+ * can be seen. The header carries the measurement that says why: letting a derived scalar seed further scalars
+ * takes the exemption cost from 3 to 11, back into the bookkeeping the whole design avoids.
+ */
+export const SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE = `contract Fake() {
+  function f(bytes transcript, bigint a, bigint b) public {
+    bytes frame = transcript.slice(a, transcript.length);
+    bytes otherFrame = transcript.slice(b, transcript.length);
+    bigint one = int(bytes.concat(frame.slice(0, 2), hex"00"));
+    bigint two = int(bytes.concat(otherFrame.slice(0, 2), hex"00"));
+    bigint oneAgain = one + 0;
+    bigint twoAgain = two + 0;
+    require(oneAgain == twoAgain);
     require(true);
   }
 }`;

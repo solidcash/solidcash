@@ -15,7 +15,8 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   ROW_COMPARISON_EXEMPTIONS, SYNTHETIC_BASE_BINDING_SOURCE, SYNTHETIC_PAIRWISE_SOURCE,
-  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_INLINE_SOURCE,
+  SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE,
+  SYNTHETIC_ROW_SCALAR_INLINE_SOURCE, SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE,
   SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
   injectPairwiseComparison, scanComparisons,
 } from './layer3-pairwise-guard.js';
@@ -1074,14 +1075,20 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     }
     expect(scanComparisons(SYNTHETIC_ROW_NEAR_MISS_SOURCE).rowPairwise,
       'the row rule flags a legitimate row comparison, so it over-reports').toEqual([]);
-    // X134's RECORDED BOUNDARY, asserted in both directions so it cannot move silently. The same row-to-row
-    // comparison decoded into scalars is caught when written inline and NOT caught through two `bigint` locals,
-    // because the derivation stops at `bytes`. Propagating through scalars was measured and costs 16 further
-    // named exemptions covering the covenants' own bookkeeping - see the header of `layer3-pairwise-guard.ts`.
+    // X140. X134's RECORDED BOUNDARY, NOW CLOSED, and the new one it left behind - both asserted so neither
+    // can move silently. A scalar inherits row-hood only when it is decoded from a SLICE of a row, which costs
+    // 3 named exemptions where propagating through every `bigint` cost 16; see the header of
+    // `layer3-pairwise-guard.ts` for both measurements.
     expect(scanComparisons(SYNTHETIC_ROW_SCALAR_INLINE_SOURCE).rowPairwise,
       'the inline scalar decode names both rows in one clause and must still be flagged').toHaveLength(1);
     expect(scanComparisons(SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE).rowPairwise,
-      'the scalar-via-locals form is now caught, so this recorded boundary is stale and the header measurement '
+      'the scalar-via-locals form is X140\'s subject and is no longer caught, so the widening has been undone')
+      .toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE).rowPairwise,
+      'the frameless decode is why the "only via a frame" variant was rejected; it must stay flagged')
+      .toHaveLength(1);
+    expect(scanComparisons(SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE).rowPairwise,
+      'the two-hop scalar form is now caught, so this recorded boundary is stale and the header measurement '
       + 'in layer3-pairwise-guard.ts should be rewritten rather than this assertion relaxed').toEqual([]);
     for (const source of [projectionSource, controllerSource]) {
       expect(source).toContain('lockingBytecode');
@@ -1112,16 +1119,20 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     expect(scanComparisons(controllerSource).exempted,
       'the named self-preservation exemption matches nothing now, so it should be deleted').toHaveLength(1);
     // X134's exemptions, the same way: every comparison carrying transcript bytes on both sides is named, and
-    // each name is asserted at its EXACT clause count. All five clauses are in the projection verifier; a
-    // sixth landing under an existing name would otherwise be absorbed silently, which is the failure this
-    // guard exists to prevent.
+    // each name is asserted at its EXACT clause count in EACH covenant. A further clause landing under an
+    // existing name would otherwise be absorbed silently, which is the failure this guard exists to prevent.
+    // X140 raised the totals from 5/0 to 6/2 and added three names; the counts are what pins that the widening
+    // bought exactly those three and no silent fourth.
     const projectionScan = scanComparisons(projectionSource);
-    expect(projectionScan.rowBothSides).toHaveLength(5);
-    expect(scanComparisons(controllerSource).rowBothSides).toEqual([]);
+    const controllerScan = scanComparisons(controllerSource);
+    expect(projectionScan.rowBothSides).toHaveLength(6);
+    expect(controllerScan.rowBothSides).toHaveLength(2);
     for (const exemption of ROW_COMPARISON_EXEMPTIONS) {
-      expect(projectionScan.rowExempted[exemption.name],
+      expect(projectionScan.rowExempted[exemption.name] + controllerScan.rowExempted[exemption.name],
         `the row exemption "${exemption.name}" matches nothing now, so it should be deleted`)
-        .toBe(exemption.count);
+        .toBe(exemption.count + (exemption.controllerCount ?? 0));
+      expect(projectionScan.rowExempted[exemption.name],
+        `the row exemption "${exemption.name}" moved covenant`).toBe(exemption.count);
     }
     const built = await buildA1();
     expect(new Set(built.participantLbc).size).toBe(4);

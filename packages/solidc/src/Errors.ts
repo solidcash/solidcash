@@ -78,6 +78,16 @@ export function generatedSourceCaveat(location?: Location): string {
  * X92 rule, unchanged: a position can look both imported and generated, and GENERATED WINS. The imported label
  * asserts "line N is real in file F on disk"; a generated position is in a string no file holds, so labelling it
  * would be a SPECIFIC FALSE label naming a real file - worse than none.
+ *
+ * Measured over mistswap + solidity-by-example + eacc + a bus-mode solidity-by-example pass, 7394 diagnostics:
+ * hard-error positions naming a file too short to hold the line went 21 -> 4, and no diagnostic anywhere names a
+ * file that does not exist. WHAT THE STAMP DOES NOT REACH, so the next reader does not have to re-measure it:
+ *  - The 4 that remain are ANTLR error-listener SYNTAX errors. Their Location is built by the listener during
+ *    lexing/parsing, before `AstBuilder.build()` opens the stamped scope, so they are unstamped and print bare.
+ *    Moving the scope up to cover the lexer/parser phase in `parseCode` would cover them.
+ *  - Warnings raised from SymbolTableTraversal still print 39 bare positions that are imported lines, because its
+ *    private `diagLine` consults only its own reachability map, and one site (the revert-is-a-no-op warning) does
+ *    not even call it. Those exact Locations DO carry the stamp, measured.
  */
 export function importedFileCaveat(location?: Location): string {
   if (generatedOriginOf(location)) return '';

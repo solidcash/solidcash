@@ -29,7 +29,9 @@ import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.j
  *
  * It under-counts rather than over-counts wherever the evidence is ambiguous - a trailing output minted under
  * some other category, or a next participant sharing this one's category - so it never manufactures a refusal
- * for a transaction the covenants would have accepted.
+ * for a transaction the covenants would have accepted. Nor does it manufacture one past the LAST block: a
+ * claimed output there is already refused by the token-outside-the-region rule below, so the only thing that
+ * changes for that shape is which message the composer reads.
  */
 const trailingRunsFromBuilder = (
   builder: TransactionBuilder, assembly: BalancedAssembly, regions: readonly GraphTrailingRegion[],

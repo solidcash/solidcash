@@ -1,5 +1,5 @@
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { buildInitialStateCommitments } from '@solidcash/utils';
+import { buildChunkCommitment, buildInitialStateCommitments } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
@@ -8,7 +8,9 @@ import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  createDataNftUnlocker, createDynamicChunkUnlocker, getDataNftAddress, getDynamicChunkAddress,
+} from '../../src/stateful/covenant-helpers.js';
 
 /**
  * X105 - a later handler row of one route observes the value an earlier row wrote.
@@ -41,10 +43,13 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  *                                                                          correct value in that order, so
  *                                                                          the repair does not over-reject
  *
- * NOT in this set, and not claimed: chunk-backed (dynamic) readers, which X104 shows do not settle on this
- * route at all in either direction; mapping/collection readers; readers reached through a further foreign
- * participant; the Release 5 repeated-external-callee route; and any route with more than one writer of the
- * same slot. Only the balanced two-participant graph route is measured here.
+ * Shapes 6-9 below extend the same question to a chunk-backed value; that is X104, and it turns out to have
+ * the same cause.
+ *
+ * NOT in this set, and not claimed: mapping and collection readers; a reader reached through a further
+ * foreign participant; the Release 5 repeated-external-callee route; a route with more than one writer of
+ * the same slot; and a reader whose slot no handler of the route writes. Only the balanced two-participant
+ * graph route is measured here.
  */
 
 const raw = (builder: TransactionBuilder): string =>
@@ -271,5 +276,257 @@ describe('X105 - a router-enforced guard row reads the live journal, not the pre
     expect(built.closing).toBe(20n);
     expect(failingInput(built.builder)).toBe(null);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
+});
+
+/**
+ * X104 - a persisted read of a NON-EMPTY chunk-backed value on the bus route.
+ *
+ * S3 measured this as failing at the participant master in all six assemblies it tried, with no diagnostic,
+ * while the identical read settled on the direct route. Its recorded lead was the route ABI publishing
+ * `dynamicReads: undefined` for a read-only handler.
+ *
+ * That lead was one layer above the cause. The cause is the SAME classifier as X105: a read-only handler was
+ * dropped from the journal closure, so its dynamic read was emitted INSIDE an OP_INVOKE subroutine, which has
+ * no trailing-region context to resolve the chunk run against. Journalling the handler hoists the read into
+ * the `__scb1` wrapper - `preAllocateDynamicWrite` reads the persisted value there, where the region base is
+ * known - and the handler picks the value out of its frame.
+ *
+ * So X104 needed no separate repair and no new diagnostic: the shape is supportable, and the fix that makes a
+ * later row see an earlier row's write also makes a persisted chunk read work at all. It is still fail-closed
+ * on a wrong expectation, which is what distinguishes "now reads" from "now ignores".
+ */
+const NOTEBOOK = `pragma solidcash >=0.8.0;
+    contract Notebook() {
+      bytes note;
+      function setNote(bytes t) public {
+        this.note = t;
+        require(true);
+      }
+      function checkNote(bytes expected) public {
+        require(this.note == expected);
+      }
+    }`;
+
+const CHUNK = 120;
+
+interface ChunkSpec {
+  rows: { fn: 'setNote' | 'checkNote'; value: Uint8Array }[];
+  /** Persisted pre-transaction value, split into chunk UTXOs. */
+  persisted: Uint8Array;
+  /** Post-state value; defaults to the last `setNote` row, else the persisted value. */
+  settled?: Uint8Array;
+}
+
+async function buildChunkReadGraph(spec: ChunkSpec): Promise<Built> {
+  const provider = createTestProvider();
+  const projection = new Contract(compileString(layer3.generateGraphProjectionVerifier()), [], { provider });
+  const controller = new Contract(
+    compileString(layer3.generateGraphRootController(projection.lockingBytecode)), [alicePkh], { provider },
+  );
+  const genesis = await (provider as any).addTokenUtxosDynamic(() => [{
+    address: controller.tokenAddress,
+    satoshis: 3000n,
+    token: { amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  }]);
+  const controllerCategory = genesis.categoryId as string;
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const noteArtifact = compileString(NOTEBOOK, options);
+  const noteBase = new Contract(noteArtifact, [], { provider });
+  const noteSetup = await setupStatefulUtxos(
+    provider, noteBase, noteArtifact.stateLayout!, { note: spec.persisted },
+  );
+  const notebook = noteBase.withCategory(hexToBin(noteSetup.categoryId));
+  const chunkAddress = getDynamicChunkAddress(notebook, noteSetup.categoryId, 'note', 'bytes');
+  const oldChunks: any[] = [];
+  for (let i = 0; i < Math.ceil(spec.persisted.length / CHUNK); i++) {
+    const utxo = randomUtxo({
+      satoshis: 1200n,
+      token: {
+        category: noteSetup.categoryId,
+        amount: 0n,
+        nft: {
+          capability: 'mutable' as const,
+          commitment: buildChunkCommitment(i, spec.persisted.slice(i * CHUNK, (i + 1) * CHUNK)),
+        },
+      },
+    });
+    await provider.addUtxo(chunkAddress, utxo);
+    oldChunks.push(utxo);
+  }
+
+  const calls = spec.rows.map((row, index) => `        INotebook(note).${row.fn}(v${index});`).join('\n');
+  const params = spec.rows.map((_row, index) => `bytes v${index}`).join(', ');
+  const iface = [...new Set(spec.rows.map((row) => row.fn))]
+    .map((fn) => `function ${fn}(bytes t);`).join(' ');
+  const routerArtifact = compileString(`pragma solidcash >=0.8.0;
+    interface INotebook { ${iface} }
+    contract NoteRouter(int brand, address note) {
+      function route(${params}) public {
+${calls}
+        require(true);
+      }
+    }`, options);
+  const routerBase = new Contract(routerArtifact, [1n, notebook.lockingBytecode], { provider });
+  const routerSetup = await setupStatefulUtxos(provider, routerBase, routerArtifact.stateLayout!, {});
+  const router = routerBase.withCategory(hexToBin(routerSetup.categoryId));
+
+  const plan = layer3.planCompiledGraph([
+    { artifact: routerArtifact, lockingBytecode: router.lockingBytecode },
+    { artifact: noteArtifact, lockingBytecode: notebook.lockingBytecode },
+  ], [
+    { parent: null, callee: 0, function: 'route', args: spec.rows.map((row) => row.value) },
+    ...spec.rows.map((row) => ({ parent: 0, callee: 1, function: row.fn, args: [row.value] })),
+  ]);
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+
+  const seedFee = randomUtxo({ satoshis: 20_000n });
+  await provider.addUtxo(p2pkh.address, seedFee);
+  const seedTx = new TransactionBuilder({ provider });
+  seedTx.addInput(
+    genesis.utxos[0], controller.unlock.initialize(hexToBin(transcript.root), alicePub, signature()),
+  );
+  seedTx.addInput(seedFee, p2pkh.unlock.spend(alicePub, signature()));
+  seedTx.addOutput({
+    to: controller.tokenAddress,
+    amount: genesis.utxos[0].satoshis,
+    token: {
+      category: controllerCategory, amount: 0n,
+      nft: { capability: 'mutable', commitment: transcript.root },
+    },
+  });
+  seedTx.addOutput({ to: p2pkh.address, amount: 15_000n });
+  await provider.sendRawTransaction(raw(seedTx));
+  const rootedController = (await provider.getUtxos(controller.tokenAddress))
+    .find((utxo: any) => utxo.token?.nft?.commitment === transcript.root);
+
+  const projectionUtxos = plan.participants.map(() => randomUtxo({ satoshis: 1000n }));
+  for (const proof of projectionUtxos) await provider.addUtxo(projection.address, proof);
+  const fee = randomUtxo({ satoshis: 400_000n });
+  await provider.addUtxo(p2pkh.address, fee);
+
+  const written = spec.rows.filter((row) => row.fn === 'setNote').pop();
+  const settled = spec.settled ?? written?.value ?? spec.persisted;
+  const routeUnlocker = (contract: Contract<any, any>, artifact: any): any =>
+    contract.createCompilerRouteUnlocker(artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector));
+
+  const builder = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  builder.addInput(routerSetup.masterUtxo, routeUnlocker(router, routerArtifact)(
+    ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as FunctionArgument[] as any,
+  ));
+  const region = layout.trailingRegions.find((entry) => entry.participant === 1)!;
+  builder.addInput(noteSetup.masterUtxo, routeUnlocker(notebook, noteArtifact)(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as FunctionArgument[] as any,
+  ));
+  builder.addInput(
+    noteSetup.dataNftUtxos[0],
+    createDataNftUnlocker(notebook, layout.participantInputs[1], noteSetup.categoryId),
+  );
+  for (const chunk of oldChunks) {
+    builder.addInput(chunk, createDynamicChunkUnlocker(
+      notebook, layout.participantInputs[1], noteSetup.categoryId, 'note', 'bytes',
+    ));
+  }
+  for (let i = oldChunks.length; i < region.capacity; i++) {
+    const funder = randomUtxo({ satoshis: 1500n });
+    await provider.addUtxo(p2pkh.address, funder);
+    builder.addInput(funder, p2pkh.unlock.spend(alicePub, signature()));
+  }
+  projectionUtxos.forEach((proof, participant) =>
+    builder.addInput(proof, projection.unlock.verify(
+      transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    )));
+  builder.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  builder.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  builder.addOutput({
+    to: router.tokenAddress, amount: routerSetup.masterUtxo.satoshis,
+    token: { category: routerSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  builder.addOutput({
+    to: notebook.tokenAddress, amount: noteSetup.masterUtxo.satoshis,
+    token: { category: noteSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  builder.addOutput({
+    to: getDataNftAddress(notebook, noteSetup.categoryId), amount: noteSetup.dataNftUtxos[0].satoshis,
+    token: {
+      category: noteSetup.categoryId, amount: 0n,
+      nft: {
+        capability: 'mutable',
+        commitment: buildInitialStateCommitments(noteArtifact.stateLayout!, { note: settled })[0],
+      },
+    },
+  });
+  const pieces = Math.ceil(settled.length / CHUNK);
+  for (let i = 0; i < pieces; i++) {
+    builder.addOutput({
+      to: chunkAddress, amount: 1200n,
+      token: {
+        category: noteSetup.categoryId, amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: buildChunkCommitment(i, settled.slice(i * CHUNK, (i + 1) * CHUNK)),
+        },
+      },
+    });
+  }
+  for (let i = pieces; i < region.capacity; i++) builder.addOutput({ to: p2pkh.address, amount: 1000n });
+  for (let i = 0; i < plan.participants.length; i++) {
+    builder.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
+  builder.addOutput({ to: p2pkh.address, amount: 1000n });
+  builder.addOutput({ to: p2pkh.address, amount: 20_000n });
+  return {
+    provider, builder, transaction: raw(builder), closing: 0n, vaultInput: layout.participantInputs[1],
+  };
+}
+
+const filled = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
+
+describe('X104 - a persisted chunk-backed read on the bus route', () => {
+  it('6. a one-row read of a NON-EMPTY persisted chunk value settles', async () => {
+    const built = await buildChunkReadGraph({
+      rows: [{ fn: 'checkNote', value: filled(40, 0x4a) }], persisted: filled(40, 0x4a),
+    });
+    expect(failingInput(built.builder)).toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
+
+  it('7. the same read with a wrong expectation is still refused, so 6 is not a bypass', async () => {
+    const built = await buildChunkReadGraph({
+      rows: [{ fn: 'checkNote', value: filled(40, 0x4b) }], persisted: filled(40, 0x4a),
+      settled: filled(40, 0x4a),
+    });
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  }, 300_000);
+
+  it('8. a later row reads the chunk value an earlier row wrote', async () => {
+    const built = await buildChunkReadGraph({
+      rows: [{ fn: 'setNote', value: filled(40, 0x48) }, { fn: 'checkNote', value: filled(40, 0x48) }],
+      persisted: new Uint8Array(),
+    });
+    expect(failingInput(built.builder)).toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
+
+  it('9. HOSTILE: the same later row asserting the PRE-transaction (empty) value is refused', async () => {
+    const built = await buildChunkReadGraph({
+      rows: [{ fn: 'setNote', value: filled(40, 0x48) }, { fn: 'checkNote', value: new Uint8Array() }],
+      persisted: new Uint8Array(), settled: filled(40, 0x48),
+    });
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 });

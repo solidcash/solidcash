@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, encodeTransaction, hexToBin,
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
   type Input, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
@@ -299,6 +299,39 @@ describe('L4 finalized-bytes gate: every rule, at its boundary, in both directio
     expect(layer3.FINALIZED_BYTE_GATE_BLIND_SPOTS.length).toBeGreaterThan(4);
   });
 
+  it('MEASURED: the SDK 1,000-satoshi event slot clears its dust floor by 37 satoshis, not more', () => {
+    /*
+     * A reading, not a rule, and the reason it is pinned: `BALANCED_SLOT_SATOSHIS` is 1,000 and the SDK emits
+     * every event / return-event NFT at that value to a bare `OP_1` script. At the BCH-2026 maximum 128-byte
+     * commitment that output serializes to 173 bytes, so BCHN's floor is 963 - the slot value clears it by 37
+     * satoshis, 1.0384x, and by 22 satoshis once a fungible amount joins the prefix.
+     *
+     * So this class is currently SAFE and this test does not claim otherwise. It fails if the commitment limit
+     * rises, if the slot value falls, or if the dust relay fee moves, which is exactly when someone needs to
+     * re-read it. The chunk path already sizes itself - `Math.max(1200, calculateDust(chunkOutput))` - and a
+     * p2sh32 state output at 1,000 satoshis would NOT be safe: 207 bytes, a 1,065-satoshi floor.
+     */
+    const slot = (commitment: number, fungible: bigint): Output => ({
+      lockingBytecode: bareOneLock(),
+      valueSatoshis: 1_000n,
+      token: {
+        amount: fungible,
+        category: new Uint8Array(32).fill(7),
+        nft: { capability: 'none' as const, commitment: new Uint8Array(commitment) },
+      },
+    });
+    expect(layer3.finalizedOutputDustThreshold(slot(128, 0n))).toBe(963);
+    expect(layer3.finalizedOutputDustThreshold(slot(128, 1_000_000n))).toBe(978);
+    expectAdmits(transactionOf([inputOf(pushOnlyPadding(4))], [slot(128, 1_000_000n)]));
+    // The p2sh32 spelling of the same value IS dust at 1,000 satoshis, so the margin above is not slack.
+    const p2sh32 = new Uint8Array(35);
+    p2sh32[0] = 0xaa; p2sh32[1] = 0x20; p2sh32[34] = 0x87;
+    const stateOutput = { ...slot(128, 0n), lockingBytecode: p2sh32 };
+    expect(layer3.finalizedOutputDustThreshold(stateOutput)).toBe(1_065);
+    expect(refusedRules(transactionOf([inputOf(pushOnlyPadding(4))], [stateOutput])))
+      .toEqual(['output-dust']);
+  });
+
   it('push-only accepts every legal push form and rejects a truncated one', () => {
     expect(layer3.isPushOnlyBytecode(hexToBin(''))).toBe(true);
     expect(layer3.isPushOnlyBytecode(hexToBin('0201aa'))).toBe(false); // 2-byte push with 1 byte present
@@ -311,6 +344,32 @@ describe('L4 finalized-bytes gate: every rule, at its boundary, in both directio
     expect(layer3.isPushOnlyBytecode(hexToBin('60'))).toBe(true); // OP_16
     expect(layer3.isPushOnlyBytecode(hexToBin('61'))).toBe(false); // OP_NOP
     expect(layer3.isPushOnlyBytecode(hexToBin('50'))).toBe(false); // OP_RESERVED
+  });
+
+  it('both send paths measure the same locking length on a token output', () => {
+    // `preflightLayer3Transaction` judges `buildLibauthTransaction()`; `sendPreflightedLayer3Transaction`
+    // judges `decodeTransactionUnsafe` of the broadcast hex. If the decode left the token prefix inside
+    // `lockingBytecode`, the second path would see 203 bytes where the first sees 35, and would refuse honest
+    // 128-byte-commitment state outputs that the first admits. Asserted rather than assumed.
+    const p2sh32 = new Uint8Array(35);
+    p2sh32[0] = 0xaa; p2sh32[1] = 0x20; p2sh32[34] = 0x87;
+    const built = transactionOf([inputOf(pushOnlyPadding(4))], [{
+      lockingBytecode: p2sh32,
+      valueSatoshis: 5_000n,
+      token: {
+        amount: 123_456n,
+        category: new Uint8Array(32).fill(7),
+        nft: { capability: 'mutable' as const, commitment: new Uint8Array(128).fill(3) },
+      },
+    }]);
+    const decoded = decodeTransactionUnsafe(encodeTransaction(built));
+    expect(decoded.outputs[0].lockingBytecode.length).toBe(35);
+    expect(layer3.assessFinalizedTransactionBytes(built).readings)
+      .toEqual(layer3.assessFinalizedTransactionBytes(decoded).readings);
+    expectAdmits(built);
+    expectAdmits(decoded);
+    // The token prefix DOES count toward dust, on both paths: 212 serialized bytes, so a 1,080-satoshi floor.
+    expect(layer3.finalizedOutputDustThreshold(decoded.outputs[0])).toBe(1_080);
   });
 
   it('reports every violated rule at once, not just the first', () => {

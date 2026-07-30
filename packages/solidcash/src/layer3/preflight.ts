@@ -238,10 +238,12 @@ export const FINALIZED_BYTE_RULES: readonly FinalizedByteRule[] = Object.freeze(
     scope: 'output',
     threshold: `${RELAY_LOCKING_BYTES_LIMIT} locking bytecode bytes`,
     source: 'libauth `ConsensusBch2026.maximumStandardLockingBytecodeLength`. Measured against the BARE '
-      + 'locking bytecode, not the token-prefixed serialization: a token prefix is stripped before the '
-      + 'standardness checks run, and measuring the prefixed form would refuse honest 128-byte-commitment '
-      + 'state outputs on a reading nobody has verified. Under-refusing is the correct direction when a '
-      + 'threshold applicability is uncertain.',
+      + 'locking bytecode, not the token-prefixed serialization. Whether BCHN applies this to the prefixed '
+      + 'form is UNVERIFIED here, and measuring the prefixed form would refuse an honest p2sh32 state output '
+      + 'carrying a 128-byte commitment and a fungible amount at 203 bytes; under-refusing is the correct '
+      + 'direction while the applicability is uncertain. The two Layer-3 send paths agree on this number by '
+      + 'measurement: `decodeTransactionUnsafe` splits the token prefix back out, so a built transaction and '
+      + 'the decoded broadcast bytes report the same bare length.',
   },
   {
     id: 'relay-data-carrier',
@@ -270,6 +272,18 @@ export const FINALIZED_BYTE_RULES: readonly FinalizedByteRule[] = Object.freeze(
       + 'expresses both. Reported here as well as in the VM because the VM reads the provider limits, which on '
       + 'every Layer-3 test are 100x this figure.',
   },
+  /*
+   * `standard-output-template` IS DELIBERATELY ABSENT AND MUST NOT BE RE-ADDED WITHOUT A NEW MEASUREMENT.
+   *
+   * It was measured against `mainnet/bitcoin-cash-node:v29.0.0`, on a throwaway container started with an
+   * explicit `-acceptnonstdtxn=0`, and BCHN does not enforce it: a bare `OP_1` output was funded, accepted,
+   * mined, and then spent with an EMPTY unlocking script. The same one-byte script at 10 satoshis is refused
+   * `64: dust`, which proves the per-output policy loop runs and reaches that script - it looked and declined
+   * to refuse.
+   *
+   * A rule that refuses more than the node does is wrong, not conservative. Keeping this one would have taken
+   * two working shapes out of the envelope over eighteen fixtures that build a bare `OP_1` output.
+   */
 ]);
 
 const finalizedRuleById = new Map(FINALIZED_BYTE_RULES.map((rule) => [rule.id, rule]));

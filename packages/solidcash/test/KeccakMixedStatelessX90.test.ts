@@ -159,12 +159,14 @@ describe('X90: X83 second face - a STATELESS mixed keccak256 shape, satisfiabili
     await deploySidecar(provider, false, 0x33);
     await deploySidecar(provider, false, 0x34);
 
+    // Pinned to the builder's OWN failure, not a VM rejection: the loop probe never sees the straight-line
+    // side-car read because that co-spend was never spliced in.
     await expect(
       new TransactionBuilder({ provider })
         .addInputs(await contract.getUtxos(), contract.unlock.f(x, 1n))
         .addOutput({ to: contract.address, amount: 800_000n })
         .send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow('keccak256 preimage extraction: no side-car read found in the probe trace.');
   });
 
   it('HOSTILE: the straight-line read cannot be pointed at a side-car for a DIFFERENT preimage (VM)', async () => {
@@ -196,8 +198,10 @@ describe('X90: X83 second face - a STATELESS mixed keccak256 shape, satisfiabili
       .addOutput(slHostile.recreate)
       .addOutput({ to: aliceAddress, amount: 900_000n });
 
-    // The master's `preimage == arg` OP_EQUALVERIFY rejects it: the read is bound to its own argument.
-    await expect(provider.sendRawTransaction(builder.build())).rejects.toThrow();
+    // The master's `preimage == arg` OP_EQUALVERIFY rejects it: the read is bound to its own argument. Pinned to
+    // a VM script failure while evaluating the CONTRACT's input (index 0), not a builder-side error.
+    await expect(provider.sendRawTransaction(builder.build()))
+      .rejects.toThrow(/error in evaluating input index 0.*OP_VERIFY/s);
   });
 
   it('GUARD NEGATIVE CONTROL: forcing the two readings onto ONE input fails closed (VM)', async () => {
@@ -225,6 +229,7 @@ describe('X90: X83 second face - a STATELESS mixed keccak256 shape, satisfiabili
       .addOutput({ to: aliceAddress, amount: 900_000n });            // output 2
 
     expect(builder.inputs.length - 2).toBe(0 + 1 + 0); // NI - 2 == I + 1 + counter: forced collision
-    await expect(provider.sendRawTransaction(builder.build())).rejects.toThrow();
+    await expect(provider.sendRawTransaction(builder.build()))
+      .rejects.toThrow(/error in evaluating input index 0.*OP_VERIFY/s);
   });
 });

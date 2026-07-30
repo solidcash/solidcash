@@ -5,6 +5,7 @@ import { scriptToBytecode } from '@solidcash/utils';
 import { Contract, TransactionBuilder } from '../../src/index.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { acceptedByNode } from './layer3-semantic-profile.js';
 import {
   BCH_2026_CONSENSUS, BCH_2026_STANDARD, ORDINARY_LIMITS, assessEnvelope, densityKnobControl, formatEnvelope,
   hashAllowancesFor, hashKnobControl, knobControlBudgetFor,
@@ -37,6 +38,21 @@ import {
  *   C2 cycle        4      79      50,957B    51.0%   0.6491x @ input 77   op-cost    0.6491x   0.1078x std
  *   C1 DeFi         5      38      60,502B    60.5%   0.6183x @ input 36   script B   0.7451x   0.1078x std
  *   C3 max graph    8     108      96,118B    96.1%   0.9218x @ input 106  RELAY SIZE 0.9612x   0.1078x std
+ *
+ * ERRATA, R3-13. THE FOUR CAPSTONE ROWS ARE THE `77cd1e8c` READING and their serialized column has moved
+ * since. X81 put 23 bytes back on the projection verifier redeem script and every shape pays it once per
+ * participant, so at `3281ece9`, each read from that capstone's own capacity test:
+ *
+ *   A13 22,126 -> 22,195 (22.2%)   C2 50,957 -> 51,049 (51.0%)
+ *   C1  60,502 -> 60,617 (60.6%)   C3  96,118 -> 96,302 (96.3%)
+ *
+ * +69 / +92 / +115 / +184 is 23 x N exactly on all four. ONE ratio above is a pure function of size and moves
+ * with it: C3's RELAY SIZE binding ratio is 0.9630, not 0.9612, and its headroom under the 100,000-byte
+ * ceiling is 3,698 bytes rather than 3,882. The three worst-DENSITY figures for C1, C2 and C3 reproduce
+ * exactly at `3281ece9` (0.6183, 0.6491, 0.9218). A13's script-bytes ratio and every hash column were NOT
+ * re-measured for this errata and remain the `77cd1e8c` reading. The three SWEEP rows are the ones this file
+ * asserts, and they are untouched - re-broadcast and mined at 2,429 / 4,977 / 10,661 B by the node block at
+ * the bottom of this file.
  *
  * THE FOUR CAPSTONE ROWS MOVED AGAIN, and the whole move is one covenant. X65 cut the projection verifier
  * 4,542 -> 4,098, and it is instantiated once per PARTICIPANT with each proof slot pushing the whole redeem
@@ -135,6 +151,14 @@ function makeParticipant(n: number): string {
 async function buildSweep(n: number): Promise<{
   transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>;
   sourceOutputs: ReturnType<typeof generateLibauthSourceOutputs>;
+  /**
+   * R3-15. THE SERIALIZED BYTES AND THE PROVIDER THAT MINTED THEIR OUTPOINTS, so the node block at the bottom
+   * of this file can offer these exact bytes to BCHN rather than a copy of the builder. `createTestProvider`
+   * is `RegtestNetworkProvider` under `TESTS_USE_REGTEST`, so under that flag every outpoint the sweep spends
+   * is a real UTXO the node holds and the node executes the scripts instead of stopping at `missing-inputs`.
+   */
+  hex: string;
+  provider: ReturnType<typeof createTestProvider>;
 }> {
   const provider = createTestProvider();
   const artifact = compileString(makeParticipant(n), {
@@ -182,6 +206,8 @@ async function buildSweep(n: number): Promise<{
   return {
     transaction: builder.buildLibauthTransaction(),
     sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+    hex: builder.build(),
+    provider,
   };
 }
 
@@ -345,5 +371,65 @@ describe('F1 envelope: the 2/4/8 participant sweep', () => {
           .toBe(row.derivedConsensusCost);
       }
     }
+  }, 900_000);
+});
+
+/**
+ * R3-15. THE SWEEP'S NODE EVIDENCE, COMMITTED.
+ *
+ * X49 promoted the 2/4/8 participant-binding sweep to `CONSENSUS_FIT` - and nothing else - because those
+ * three shapes were accepted and mined by a real BCHN node while A13/C2/C1/C3 only ever reached
+ * `missing-inputs`. That was the correct call and it is the most carefully scoped promotion on the board. It
+ * was also the one nobody could re-run: the shapes are built in exactly ONE place, `buildSweep` above, and
+ * this file contained no call to `sendRawTransaction`. The bytes reached a node through a three-step manual
+ * procedure whose SECOND step - submitting the captured JSONL - had no committed implementation.
+ * `layer3-broadcast-probe.ts` captures; nothing submitted. So the board's highest-evidence claim had its
+ * weakest reproduction path.
+ *
+ * This block is the missing step, and it does not need the capture at all. `buildSweep` already builds
+ * through `createTestProvider`, which is `RegtestNetworkProvider` under `TESTS_USE_REGTEST`, so the outpoints
+ * are real and the node can execute the scripts. Broadcasting is then one call on the same provider that
+ * minted them - which is what makes a capture-and-replay round trip unnecessary, and why the replay was never
+ * able to settle script validity in the first place: replayed mock outpoints exist on no chain.
+ *
+ * WHAT A PASS HERE ESTABLISHES: BCHN accepted each of the three shapes into its mempool and mined it, having
+ * executed every input script under real BCH-2026 consensus and real standard relay policy. `acceptedByNode`
+ * reads the transaction back FROM THE NODE and refuses a txid whose stored bytes differ, so "the node kept
+ * exactly these bytes" is a reading rather than an inference. Nothing is relaxed: `RegtestNetworkProvider`
+ * carries no `consensusLimits`.
+ *
+ * WHAT IT DOES NOT ESTABLISH: anything about a shape not built here, and nothing about mainnet. It is
+ * evidence about three transactions, at one commit, on regtest.
+ *
+ * Requires the docker regtest stack; see the root CLAUDE.md. Skipped by an ordinary `yarn test`, exactly as
+ * the four capstone node blocks are.
+ */
+describe.runIf(process.env.TESTS_USE_REGTEST)('R3-15: the 2/4/8 sweep on a real BCHN node', () => {
+  it('CONSENSUS: BCHN executes, accepts and mines each of N=2, N=4 and N=8', async () => {
+    const accepted: { n: number; serializedBytes: number; inputCount: number; blockHeight: number }[] = [];
+    for (const n of [2, 4, 8]) {
+      const built = await buildSweep(n);
+      // The shape is the one this file measures everywhere else - the same builder, not a copy of it. The
+      // input count is asserted so a build that silently lost a participant cannot be broadcast as the sweep.
+      expect(built.transaction.inputs).toHaveLength(n + 1);
+      const node = await acceptedByNode(built.provider as never, built.transaction, built.hex);
+      console.log(`[R3-15] N=${n} accepted by BCHN: ${node.txid} at height ${node.blockHeight}, `
+        + `${node.serializedBytes} B, ${node.inputCount} inputs`);
+      // A node that accepts AND MINES a transaction has executed every input script. This is the reading
+      // `missing-inputs` could never give.
+      expect(node.blockHeight).toBeGreaterThan(0);
+      expect(node.inputCount).toBe(n + 1);
+      accepted.push({ n, serializedBytes: node.serializedBytes, inputCount: node.inputCount,
+        blockHeight: node.blockHeight });
+    }
+    // All three, not one: the promotion was made for N=2, N=4 AND N=8, so a block that broadcast the smallest
+    // and stopped would leave two thirds of it unreproduced.
+    expect(accepted.map((row) => row.n)).toEqual([2, 4, 8]);
+    // Monotone in participants, which is the one cross-shape property this block can check for free: a run
+    // where N=8 came back no larger than N=2 would mean the three builds are not the sweep.
+    expect(accepted[2].serializedBytes).toBeGreaterThan(accepted[1].serializedBytes);
+    expect(accepted[1].serializedBytes).toBeGreaterThan(accepted[0].serializedBytes);
+    console.log(`[R3-15] serialized bytes as mined: ${accepted.map((row) => `N=${row.n} ${row.serializedBytes}B`)
+      .join(', ')}`);
   }, 900_000);
 });

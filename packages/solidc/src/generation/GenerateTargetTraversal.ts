@@ -6397,11 +6397,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the journal-context picks, the hidden-context pushes and the argument loop - so no partially lowered call
     // is left behind. Checked against this caller's stack rather than against the callee's effect list: the
     // failure belongs to the call edge, which is why X42's graphEmissionHandler gate did not see it.
-    const witnessMiss = process.env.X91_DISABLE_GUARD
-      ? undefined
-      : forwardedWitnessMiss(
-        node.parameters, targetFunc, this.currentFunction, this.stack, this.constantExpressions,
-      );
+    const witnessMiss = forwardedWitnessMiss(
+      node.parameters, targetFunc, this.currentFunction, this.stack, this.constantExpressions,
+    );
     if (witnessMiss) {
       throw new ForwardedWitnessError(
         witnessMiss.node, witnessMiss.reason, FORWARDED_WITNESS_DETAIL[witnessMiss.reason],

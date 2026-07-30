@@ -2182,6 +2182,21 @@ function compileResolvedAst(
     ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
   }
 
+  // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
+  // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
+  // packed state. Consumes the slot-pointer factory's assembly before it reaches LowerInlineAssembly. Runs AFTER
+  // expandModifiers so factory uses inside OZ initializer/reinitializer modifiers (now inlined into fn bodies) are
+  // rewritten too (else the factory method is dropped with a dangling call left in the modifier body).
+  //
+  // X115. This MUST precede the early hidden-batch synthesis below. A storage-slot pointer access is not a
+  // Mapping* node until this pass runs, so `analyseFunctionFootprint` reported NO `collection:` resource for a
+  // handler that reads or writes `__evm_storage`. The route's whole collection-eligibility branch is gated on
+  // that resource, so every such handler was admitted with no key witness and no reserved entry slot, and the
+  // published route could not settle a single row (owner-local: OP_EQUALVERIFY on the entry output commitment).
+  // Lowering first makes the footprint honest: the same handlers are now refused BY NAME when their key is a
+  // constant, and reserve a real entry slot when it is a parameter.
+  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+
   // The compiler-owned route must participate in the same helper/state
   // lowerings as source entry points. In particular, collection-bearing
   // handlers need their authenticated entry operations inlined into this
@@ -2240,13 +2255,6 @@ function compileResolvedAst(
       admitMixedScalarHandlers, attribution,
     );
   }
-
-  // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
-  // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
-  // packed state. Consumes the slot-pointer factory's assembly before it reaches LowerInlineAssembly. Runs AFTER
-  // expandModifiers so factory uses inside OZ initializer/reinitializer modifiers (now inlined into fn bodies) are
-  // rewritten too (else the factory method is dropped with a dangling call left in the modifier body).
-  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
 
   // Redo the using-for method desugar for calls whose receiver is an IMPORTED struct (unknown at parse time, so
   // the AstBuilder left `x.method()` raw): `x.method(args)` -> `L.method(x, args)`. After modifier expansion (so

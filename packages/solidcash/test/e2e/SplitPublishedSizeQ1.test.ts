@@ -11,10 +11,11 @@ import { addressToLockScript } from '../../src/utils.js';
  * constructor arguments: the 32-byte brand on every facet, and one locking-bytecode push per facet link on
  * the root. So a shard's real margin is smaller than the published figure by a fixed, measurable amount.
  *
- * Measured on the corpus MarketplaceV1 bundle at this commit: every facet is +70 B constructed and the root
- * is +253 B, which moves the worst shard from 9,885 B / 115 B of headroom to 9,955 B / 45 B - the margin is
- * 2.5x tighter than the number the deployer is handed. That contract is not in this repo, so the INVARIANT
- * is pinned here instead: constructed is strictly larger, on both a facet and the root.
+ * Measured on the corpus MarketplaceV1 bundle: every facet is +70 B constructed and the root is +253 B, which
+ * moves the worst shard from 9,881 B / 119 B of headroom to 9,951 B / 49 B - the margin is 2.4x tighter than
+ * the number the deployer is handed. (Was 9,885 / 115 -> 9,955 / 45 before X162 moved two functions between
+ * groups; the overheads are unchanged and so is the conclusion.) That contract is not in this repo, so the
+ * INVARIANT is pinned here instead: constructed is strictly larger, on both a facet and the root.
  */
 const SOURCE = `pragma solidity ^0.8.7;
 contract Sized {

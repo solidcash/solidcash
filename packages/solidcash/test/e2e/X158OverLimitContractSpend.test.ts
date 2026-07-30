@@ -6,6 +6,7 @@ import {
   Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3,
 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
+import type { Unlocker } from '../../src/interfaces.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -32,6 +33,27 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * the compiler is SILENT on both: `artifact.diagnostics` is undefined for a contract every spend of which is
  * invalid at consensus. That band is what no compile-time check can reach, because at compile time the call
  * arguments do not exist yet.
+ *
+ * 122 IS ONE SAMPLE, NOT THE CONSTANT (X163). The band's width IS the overhead - a script of L bytes is
+ * unspendable whenever `L > 10_000 - overhead` - and `l4-overhead-probe.ts` measured the overhead of every
+ * contract-bearing input the corpus builds. 14,067 spends, 787 distinct contracts, 50 files:
+ *
+ *   overhead over all spends       min 2   p25 5   MEDIAN 122   p75 122   p90 173   p99 1,537   max 2,077
+ *   of which ctor pushes           min 0   median 21   max 145
+ *   of which call arguments        min 1   median 101  max 2,040
+ *   per-contract WORST overhead    min 2   median 5   mean 55   max 2,077
+ *   contracts whose band is wider than 125 bytes:  65 / 787 (8.3%);  wider than 1,000:  15 / 787 (1.9%)
+ *
+ * So `Bulk` sits exactly at the median and the median is not the answer. The widest band measured is 2,077
+ * bytes: for that spend shape the effective compile-time threshold is 7,923, and a contract the compiler
+ * passes at 9,000 script bytes is unspendable with 1,000 bytes to spare. The band should be stated as a RANGE
+ * of 2..2,077 bytes over this corpus, with no upper bound in principle - `argOverhead` reaches 2,040 here and
+ * a call argument may be up to the stack-item limit.
+ *
+ * AND IT IS NOT EVEN A PER-CONTRACT CONSTANT. 69 of the 952 distinct (contract, function) pairs measured show
+ * MORE THAN ONE overhead, spreads up to 696 bytes, because a variable-width argument moves the boundary per
+ * CALL. Rows 6 and 7 are that, constructed. This is the sharpest form of "no compile-time check can reach it":
+ * the same deployed contract is spendable through one call and not through another.
  *
  * THE MOCK ACCEPTS THE VERY BYTES THE GATE REFUSES, which is what makes row 1 evidence rather than a
  * coincidence. `MOCK_CONSENSUS_LIMITS.maximumInputBytes` is 1,000,000 - 100x the real ceiling - so the
@@ -85,6 +107,28 @@ async function bulkSpend(artifact: typeof OVER, lead: boolean = false): Promise<
   const index = lead ? 1 : 0;
   const unlockingBytes = decodeTransactionUnsafe(hexToBin(raw)).inputs[index].unlockingBytecode.length;
   return { builder, raw, provider, unlockingBytes };
+}
+
+/**
+ * Overhead of ONE spend: `unlockingBytes - scriptBytes`, which is exactly the width of the silent band for
+ * that contract and that call. `artifact.bytecode` is an ASM LISTING, so `asmToBytecode` is what turns it into
+ * a byte count; halving its character count reads about 2.2x high and produced five wrong measurements here.
+ */
+async function measureOverhead(
+  artifact: typeof OVER, unlock: (contract: Contract<typeof OVER>) => Unlocker,
+  constructorArgs: unknown[] = [],
+): Promise<{ script: number; redeem: number; unlocking: number; overhead: number }> {
+  const provider = new MockNetworkProvider();
+  const contract = new Contract(artifact, constructorArgs as never[], { provider });
+  const utxo = randomUtxo({ satoshis: 200_000n });
+  await provider.addUtxo(contract.address, utxo);
+  const builder = new TransactionBuilder({ provider });
+  builder.addInput(utxo, unlock(contract));
+  builder.addOutput({ to: contract.address, amount: 150_000n });
+  const script = asmToBytecode(artifact.bytecode).length;
+  const redeem = contract.bytecode.length / 2;
+  const unlocking = decodeTransactionUnsafe(hexToBin(builder.build())).inputs[0].unlockingBytecode.length;
+  return { script, redeem, unlocking, overhead: unlocking - script };
 }
 
 const sendError = async (builder: TransactionBuilder): Promise<string> => {
@@ -159,6 +203,48 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
       /it spends contract 'Bulk', whose redeem script is 10025 bytes on its own - already 25 over the limit/,
     );
     expect(message).toMatch(/before any of its 104 bytes of arguments and redeem push/);
+  }, 300_000);
+
+  it('6. THE BAND IS PER-CONTRACT: two shapes, two boundaries, one compiler threshold', async () => {
+    // The 122 figure is a property of `Bulk`'s constructor and call signature, not of the limit. A contract
+    // with no constructor argument and a no-argument function carries almost nothing beyond its redeem push,
+    // so its cliff sits within a couple of bytes of 10,000 while `Bulk`'s sits 125 below it.
+    //
+    // Measured on SMALL scripts on purpose - the overhead does not depend on script length except through the
+    // redeem push prefix, and that term is stated rather than folded in: 1 byte below 76, 2 below 256, and 3
+    // in the band itself, where every script is over 9,800.
+    const bare = compileString(`pragma solidcash >=0.8.0;
+contract Bare() {
+  function spend() public {
+    require(1 == 1);
+  }
+}`);
+    const bareSpend = await measureOverhead(bare, (contract) => contract.unlock.spend());
+    const bulkSpendOverhead = await measureOverhead(compileString(source(1)), (contract) =>
+      contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv), 1n), [alicePkh]);
+
+    // Bare carries only its redeem push prefix; Bulk carries 21 + prefix + 34 + 66 + 1.
+    expect(bareSpend.overhead).toBeLessThan(4);
+    expect(bulkSpendOverhead.overhead).toBeGreaterThan(120);
+    // The two cliffs are 100+ bytes apart under ONE compiler threshold, which is the whole claim.
+    expect(bulkSpendOverhead.overhead - bareSpend.overhead).toBeGreaterThan(100);
+  }, 300_000);
+
+  it('7. THE BAND IS PER-CALL: one deployed contract, two argument values, two boundaries', async () => {
+    // The sharpest form of "no compile-time check can reach it". Same artifact, same constructor arguments,
+    // same address, same function - only the VALUE of a variable-width argument differs, and the unlocking
+    // bytecode moves by that value's length. A compile-time check does not have this number because the
+    // argument does not exist yet, and a per-contract check does not have it either.
+    const variadic = compileString(`pragma solidcash >=0.8.0;
+contract Variadic() {
+  function spend(bytes data) public {
+    require(data.length >= 0);
+  }
+}`);
+    const short = await measureOverhead(variadic, (contract) => contract.unlock.spend(new Uint8Array(1)));
+    const long = await measureOverhead(variadic, (contract) => contract.unlock.spend(new Uint8Array(400)));
+    expect(long.overhead - short.overhead).toBe(400 + 1); // 400 payload bytes, plus OP_PUSHDATA1's extra byte
+    expect(short.redeem).toBe(long.redeem); // identical deployment: only the call differs
   }, 300_000);
 
   it('5. a subject can neither create a refusal nor suppress one', async () => {

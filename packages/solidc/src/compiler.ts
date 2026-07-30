@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
@@ -2575,19 +2575,36 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
-  // X136: measure the LONGER of the debug script and the published one. `debug.bytecode` is the shorter of
-  // the two on every row measured - 498.5 B on FakeToken up to 1,448 B on MarketplaceV1 - so gating on it
-  // alone left a silent band above the limit where a contract is over and nothing says so. The census, the
-  // fit rows and `Contract.bytecode` all measure the published script, and that band is a lower bound because
-  // the deployed redeem adds constructor argument pushes on top.
-  const artifactBytes = Math.max(debug.bytecode.length, artifact.bytecode.length) / 2;
+  // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
+  // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is
+  // half a character count and OVERSTATES the script on every contract: 1,332 against a real 283 on a small
+  // stateful contract (4.7x), 32,432 against a real 30,981 on MarketplaceV1.
+  //
+  // X136 read that overstatement as a SILENT BAND ("`debug.bytecode` is the shorter of the two on every row")
+  // and took `Math.max` of the two to close it. There is no band: `debug.bytecode` is
+  // `binToHex(scriptToBytecode(optimisationResult.script))` of the SAME script the ASM lists, so it is the
+  // exact byte count, and the max was measuring the ASM listing on every contract that reached this line. It
+  // is the same script - measured twice, once correctly.
+  const artifactBytes = scriptToBytecode(optimisationResult.script).length;
   if (artifactBytes > MAX_INPUT_BYTESIZE) {
-    artifact.diagnostics = [{
-      severity: 'error',
-      code: 'contract-size-limit',
-      message: `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the BCH `
-        + `${MAX_INPUT_BYTESIZE}-byte input-script limit; it cannot be deployed without splitting or reduction.`,
-    }];
+    const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the BCH `
+      + `${MAX_INPUT_BYTESIZE}-byte input-script limit by ${artifactBytes - MAX_INPUT_BYTESIZE}. `
+      + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
+      + '(compileFileSplit / compileStringSplit) or reduction.';
+    // X149. APPEND. This used to assign, and it is the only site on this path that does not - so any diagnostic
+    // recorded before it would be dropped by the contract that most needs its other diagnostics kept.
+    artifact.diagnostics = [
+      ...(artifact.diagnostics ?? []),
+      { severity: 'error', code: 'contract-size-limit', message },
+    ];
+    // X149. SAY IT OUT LOUD, from the compiler rather than from one caller of it. The diagnostic is severity
+    // `error` and no consumer reads the field: not the SDK, not the benches, not the corpus probe. `solidc-cli`
+    // prints its own warning, so a contract compiled through the CLI was told and a contract compiled through
+    // `compileFile`/`compileString` - which is every bench, every test and every SDK user - was not. Measured
+    // on this corpus: MarketplaceV1 is 20,981 bytes over in ORDINARY DIRECT MODE and compiled silently.
+    // This is not the refusal; a refusal belongs at the spend boundary, where a script length is fatal rather
+    // than merely measurable. It is the compiler no longer being the quietest thing in the chain.
+    console.warn(`Error: ${message}`);
   }
   const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
   if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
@@ -2953,7 +2970,15 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   };
 }
 
-function byteSize(artifact: Artifact): number { return artifact.bytecode.length / 2; }
+/**
+ * X149. The SPLIT PLANNER'S RULER, in bytes. `artifact.bytecode` is `scriptToAsm(script)` - a listing, not a
+ * script - so `.length / 2` was half a character count and every packing decision here was taken against an
+ * OVERSTATED length: measured 32,432 against a real 30,981 on MarketplaceV1, and 1,332 against 283 on a small
+ * stateful contract. The direction is the one that hurts: a union whose real bytes fit was refused, `maxShardBytes`
+ * bit early, and `estimatedRedeemBytes` was published to the deployer wrong. Nothing about the packing algorithm
+ * changes; it is now measuring what it always meant to.
+ */
+function byteSize(artifact: Artifact): number { return asmToBytecode(artifact.bytecode).length; }
 function emptyFootprint(): SplitStateFootprint { return { reads: [], writes: [], effects: [], unknown: false }; }
 function splitStateLayoutFingerprint(layout: Artifact['stateLayout']): string {
   if (!layout) return '{}';

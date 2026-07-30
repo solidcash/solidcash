@@ -204,6 +204,9 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
+// SPIKE TOGGLE - remove before staging.
+const WIDEN_EMISSION_CLONES = process.env.M3_WIDEN_CLONES === '1';
+
 // X29. Hidden context an SCB1 route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
@@ -1784,16 +1787,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
       .map((fn) => fn.functionId!));
     const routeReachable = new Set<number>();
+    const widenedClones = new Set<number>();
     if (routeFunctionId !== undefined) {
       const pending = [routeFunctionId];
       while (pending.length > 0) {
         for (const calleeId of callsById.get(pending.pop()!) ?? []) {
-          if (routeReachable.has(calleeId) || emissionClones.has(calleeId)) continue;
+          if (routeReachable.has(calleeId) || widenedClones.has(calleeId)) continue;
+          if (emissionClones.has(calleeId)) {
+            if (WIDEN_EMISSION_CLONES) widenedClones.add(calleeId);
+            continue;
+          }
           routeReachable.add(calleeId);
           pending.push(calleeId);
         }
       }
     }
+    // A clone admitted only by the widening carries its PLAIN SCALAR slots. A dynamic slot's journal is a
+    // (header, value) pair whose second half is a chunk-settlement obligation, and a pure reader settles no
+    // chunks.
+    const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
+      [...slots.values()].filter((sv) =>
+        !sv.isDynamic || writerIds.has(id) || routeReachable.has(id));
     // L2-F2. The route must HOLD the journal its rows load through. The walk above admits the route's
     // callees and never the route itself, so a route with no writer among them - a pure-reader resource
     // route, or the `_self_alias` clone the resource shape emits - was filtered out while its callees were
@@ -1803,15 +1817,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // and no remedy. Admitting the route is not a widening of what loads live - it is the holder of the very
     // context those callees were already admitted to read, so no shape that compiles today can move.
     const admitted = (id: number): boolean =>
-      (writerIds.has(id) || routeReachable.has(id)) && (slotsById.get(id)?.size ?? 0) > 0;
-    if (routeFunctionId !== undefined && [...routeReachable].some(admitted)) {
+      (writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id))
+      && journalSlotsOf(id, slotsById.get(id) ?? new Map()).length > 0;
+    if (routeFunctionId !== undefined && [...routeReachable, ...widenedClones].some(admitted)) {
       routeReachable.add(routeFunctionId);
     }
     this.journalWriterFunctionIds = writerIds;
     this.journalSlotsByFunctionId = new Map([...slotsById]
-      .filter(([id, slots]) => (writerIds.has(id) || routeReachable.has(id)) && slots.size > 0)
-      .map(([id, slots]) => [id, [...slots.values()]
+      .map(([id, slots]) => [id, journalSlotsOf(id, slots)] as const)
+      .filter(([id, slots]) =>
+        (writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id)) && slots.length > 0)
+      .map(([id, slots]) => [id, slots
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
+    if (process.env.M3_DUMP_JOURNAL === '1') {
+      const nameById = new Map(functions.filter((fn) => fn.functionId !== undefined)
+        .map((fn) => [fn.functionId!, fn.name]));
+      // eslint-disable-next-line no-console
+      console.log('M3JOURNAL ' + JSON.stringify({
+        contract: node.name,
+        route: routeFunctionId === undefined ? null : nameById.get(routeFunctionId),
+        writers: [...writerIds].map((id) => nameById.get(id)),
+        reachable: [...routeReachable].map((id) => nameById.get(id)),
+        clones: [...emissionClones].map((id) => nameById.get(id)),
+        journal: [...this.journalSlotsByFunctionId].map(([id, slots]) =>
+          [nameById.get(id), slots.map((sv) => `${sv.name}${sv.isDynamic ? '(dyn)' : ''}`)]),
+      }));
+    }
   }
 
   private journalContextNames(sv: StateVariableNode): string[] {

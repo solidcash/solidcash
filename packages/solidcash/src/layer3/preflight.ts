@@ -331,6 +331,24 @@ export interface FinalizedByteRefusal {
   detail: string;
 }
 
+/**
+ * What an input SPENDS, so an input-scoped refusal can name it. X158.
+ *
+ * `consensus-unlocking-bytes` reports the input index and the byte count, and that is not enough to act on: an
+ * over-limit spend's cause is a CONTRACT, and the index alone does not name it. Worse, the compiler's own
+ * `contract-size-limit` diagnostic and this rule measure DIFFERENT subjects, so the contract named there is not
+ * the set refused here - see `describeInputSubject`.
+ *
+ * Optional and additive. A subject is a LABEL appended to the detail; no rule reads one, no threshold moves,
+ * and a caller that supplies none gets the identical verdict it got before.
+ */
+export interface FinalizedByteSubject {
+  /** Contract name, when the input is a contract spend. */
+  contractName?: string;
+  /** Bytes of the redeem script the unlocking bytecode carries (constructor arguments included). */
+  redeemBytes?: number;
+}
+
 export interface FinalizedByteReading {
   rule: string;
   where: string;
@@ -364,7 +382,61 @@ export interface FinalizedByteGateOptions {
    * Suppressing a policy refusal cannot make an invalid transaction valid, so this widens nothing.
    */
   allowNonRelayable?: boolean;
+  /**
+   * What each input spends, indexed by input. Purely descriptive: it appends a label to an input-scoped
+   * refusal and can neither create nor suppress one. `inputSubjectsOfBuilder` reads it off a builder.
+   */
+  inputSubjects?: readonly (FinalizedByteSubject | undefined)[];
 }
+
+/**
+ * Read each input's subject off a builder, for the gate's message. X158.
+ *
+ * A contract input publishes both halves; anything else - a P2PKH input, a side-car, a custom unlocker -
+ * yields `undefined` and the refusal reads exactly as it did before. `contract.bytecode` is a HEX STRING of
+ * the redeem script, so its byte length is `.length / 2`; measuring it as characters is the X148/X153 unit
+ * error, and it would report a contract at twice its size here.
+ */
+export const inputSubjectsOfBuilder = (
+  builder: Pick<TransactionBuilder, 'inputs'>,
+): (FinalizedByteSubject | undefined)[] => builder.inputs.map((input) => {
+  const unlocker = input.unlocker as { contract?: { name?: string; bytecode?: string } } | undefined;
+  const contract = unlocker?.contract;
+  if (contract === undefined) return undefined;
+  return {
+    contractName: contract.name,
+    redeemBytes: typeof contract.bytecode === 'string' ? contract.bytecode.length / 2 : undefined,
+  };
+});
+
+/**
+ * Name the contract behind an over-limit input, and say where its bytes went. X158.
+ *
+ * THE TWO SUBJECTS ARE NOT THE SAME SET, which is the whole reason this text exists. `solidc` warns when
+ * `scriptToBytecode(script).length > 10_000` - the UN-CONSTRUCTED script. Consensus limits the UNLOCKING
+ * BYTECODE, which is that script PLUS the constructor-argument pushes baked into the redeem script, PLUS the
+ * redeem push prefix, PLUS every call argument. Measured on one contract family: the compiler is silent at
+ * 9,878 script bytes and the spend is refused by 3, so the true boundary sits 122 bytes below the compiler's
+ * threshold and every contract in that band compiles clean and cannot be spent.
+ *
+ * `redeemBytes` is what a `Contract` publishes as its locking script preimage, so `unlockingBytes -
+ * redeemBytes` is exactly the argument and push-prefix overhead - reported rather than re-derived, because a
+ * re-derivation would be a second place to get the same arithmetic wrong.
+ */
+const describeInputSubject = (subject: FinalizedByteSubject, unlockingBytes: number): string => {
+  const name = subject.contractName === undefined ? 'an unnamed contract' : `contract '${subject.contractName}'`;
+  if (subject.redeemBytes === undefined) return `; input spends ${name}`;
+  const overhead = unlockingBytes - subject.redeemBytes;
+  if (subject.redeemBytes > CONSENSUS_UNLOCKING_BYTES_LIMIT) {
+    return `; it spends ${name}, whose redeem script is ${subject.redeemBytes} bytes on its own - already `
+      + `${subject.redeemBytes - CONSENSUS_UNLOCKING_BYTES_LIMIT} over the limit before any of its `
+      + `${overhead} bytes of arguments and redeem push`;
+  }
+  return `; it spends ${name}, whose ${subject.redeemBytes}-byte redeem script fits the limit on its own but `
+    + `leaves only ${CONSENSUS_UNLOCKING_BYTES_LIMIT - subject.redeemBytes} bytes for the ${overhead} bytes of `
+    + 'arguments and redeem push it must also carry. The limit is on the WHOLE unlocking bytecode, so a '
+    + "contract the compiler's script-size check passes can still be unspendable";
+};
 
 const serializedOutputBytes = (output: Output): number => encodeTransactionOutput(output).length;
 
@@ -422,7 +494,9 @@ export function isPushOnlyBytecode(bytecode: Uint8Array): boolean {
  * can differ by an output and one of the two be refused. Not a provider, because the relaxed limits every
  * Layer-3 test publishes are exactly what made the existing capacity checks vacuous.
  */
-export function assessFinalizedTransactionBytes(transaction: Transaction): FinalizedByteVerdict {
+export function assessFinalizedTransactionBytes(
+  transaction: Transaction, subjects: readonly (FinalizedByteSubject | undefined)[] = [],
+): FinalizedByteVerdict {
   const refusals: FinalizedByteRefusal[] = [];
   const readings: FinalizedByteReading[] = [];
   const serializedBytes = encodeTransaction(transaction).length;
@@ -469,9 +543,11 @@ export function assessFinalizedTransactionBytes(transaction: Transaction): Final
     const bytes = input.unlockingBytecode.length;
     if (bytes > worstUnlocking.bytes) worstUnlocking = { input: index, bytes };
     if (bytes > CONSENSUS_UNLOCKING_BYTES_LIMIT) {
+      const subject = subjects[index];
       refuse('consensus-unlocking-bytes', `input ${index}`, bytes, CONSENSUS_UNLOCKING_BYTES_LIMIT,
         `${bytes} unlocking bytecode bytes is ${bytes - CONSENSUS_UNLOCKING_BYTES_LIMIT} over the `
-        + `${CONSENSUS_UNLOCKING_BYTES_LIMIT}-byte per-input script limit`);
+        + `${CONSENSUS_UNLOCKING_BYTES_LIMIT}-byte per-input script limit`
+        + (subject === undefined ? '' : describeInputSubject(subject, bytes)));
     }
     if (!isPushOnlyBytecode(input.unlockingBytecode)) {
       refuse('scriptsig-push-only', `input ${index}`, 1, 0,
@@ -582,7 +658,7 @@ export function formatFinalizedByteVerdict(verdict: FinalizedByteVerdict): strin
 export function assertFinalizedTransactionBytes(
   transaction: Transaction, options: FinalizedByteGateOptions = {},
 ): FinalizedByteVerdict {
-  const verdict = assessFinalizedTransactionBytes(transaction);
+  const verdict = assessFinalizedTransactionBytes(transaction, options.inputSubjects ?? []);
   const consensus = verdict.refusals.filter((row) => row.regime === 'consensus');
   const policy = verdict.refusals.filter((row) => row.regime === 'policy');
   const enforced = options.allowNonRelayable === true ? consensus : [...consensus, ...policy];

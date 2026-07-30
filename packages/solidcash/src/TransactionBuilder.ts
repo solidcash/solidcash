@@ -50,7 +50,7 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
-import { assertFinalizedTransactionBytes } from './layer3/preflight.js';
+import { assertFinalizedTransactionBytes, inputSubjectsOfBuilder } from './layer3/preflight.js';
 import { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
@@ -1155,7 +1155,16 @@ export class TransactionBuilder {
     // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
     // `test/e2e/layer3-gatesite-probe.ts` for the per-site table and `test/e2e/X131SendFinalizedBytesGate.test.ts`
     // for the throw census that confirms it after the gate was applied.
-    assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(tx)));
+    //
+    // X158. THE OVER-LIMIT REFUSAL LIVES HERE, and this is the only place it can. `solidc` warns when the
+    // un-constructed script passes 10,000 bytes and cannot do better: it does not know the constructor
+    // arguments, the redeem push prefix or the call arguments, and consensus limits their SUM. Measured on one
+    // contract family, the true boundary is 122 bytes below the compiler's threshold, so contracts that
+    // compile without a diagnostic are refused here. `inputSubjectsOfBuilder` gives the refusal the contract
+    // name the input index alone does not carry.
+    assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(tx)), {
+      inputSubjects: inputSubjectsOfBuilder(this),
+    });
 
     let txid: string;
     try {

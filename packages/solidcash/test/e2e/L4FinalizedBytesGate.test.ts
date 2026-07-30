@@ -336,8 +336,9 @@ describe('L4 finalized-bytes gate: every rule, at its boundary, in both directio
 
   it('push-only accepts every legal push form and rejects a truncated one', () => {
     expect(layer3.isPushOnlyBytecode(hexToBin(''))).toBe(true);
-    expect(layer3.isPushOnlyBytecode(hexToBin('0201aa'))).toBe(false); // 2-byte push with 1 byte present
+    expect(layer3.isPushOnlyBytecode(hexToBin('02aa'))).toBe(false); // 2-byte push with 1 byte present
     expect(layer3.isPushOnlyBytecode(hexToBin('02aabb'))).toBe(true);
+    expect(layer3.isPushOnlyBytecode(hexToBin('02aabbcc'))).toBe(false); // trailing byte is not an opcode
     expect(layer3.isPushOnlyBytecode(hexToBin('4c02aabb'))).toBe(true); // PUSHDATA1
     expect(layer3.isPushOnlyBytecode(hexToBin('4c05aa'))).toBe(false); // PUSHDATA1, truncated
     expect(layer3.isPushOnlyBytecode(hexToBin('4d0200aabb'))).toBe(true); // PUSHDATA2
@@ -433,7 +434,14 @@ contract L4ReturningA(int brand, address target) {
  */
 type Perturbation =
   | 'none'
-  /** 10 satoshis to a 34-byte P2PKH output against its 546-satoshi floor: C1's refusal class. */
+  /**
+   * 10 satoshis to the change output against its 576-satoshi floor: C1's refusal class.
+   *
+   * 576 rather than the 546 a bare P2PKH scriptPubKey would carry, because this fixture's `p2pkh` is a
+   * CONTRACT wrapping the P2PKH artifact, so its address is p2sh32 - a 35-byte locking script, 44 serialized
+   * bytes, `3 * (44 + 148)`. Measured off the gate's own message rather than assumed, after this test asserted
+   * 546 and was corrected by the run.
+   */
   | 'dust-change'
   /** A 202-byte raw locking script, one byte over the standard allowance. */
   | 'oversized-change-script'
@@ -610,7 +618,7 @@ describe('L4 the gate is on the Layer-3 send path, on a composition that really 
 
     const built = await build('dust-change');
     expect(() => layer3.preflightLayer3Transaction(built.builder)).toThrow(
-      /10 satoshis is 536 short of the 546-satoshi dust threshold for a 34-byte output \(3 \* \(34 \+ 148\)\)/,
+      /10 satoshis is 566 short of the 576-satoshi dust threshold for a 44-byte output \(3 \* \(44 \+ 148\)\)/,
     );
     await expect(layer3.sendPreflightedLayer3Transaction(built.builder))
       .rejects.toThrow(/\[policy\] output-dust at output 7/);

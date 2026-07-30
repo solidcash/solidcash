@@ -27,14 +27,19 @@ import {
  * published nonexistent write flips the planner from REFUSED to ADMITTED, and left it there: "PLANNER LEVEL
  * ONLY - no settlement is claimed either way".
  *
- * This file settles it. The same fake write is published on a read-only emission clone whose stale read is on
- * a chunk-backed `bytes`, the plan the planner then produces is built into a real transaction, and the
- * transaction is evaluated under BCH-2026 and broadcast. It settles, and the guard row it carries is FALSE of
- * the state the same transaction commits.
+ * This file settles it, in two halves.
  *
- * THE DEPLOYED CONTRACT IS NOT TOUCHED. Every case asserts that the escaped artifact's `bytecode` and the
- * participant's `lockingBytecode` are byte-identical to the honest ones, so the exploit costs the attacker one
- * off-chain metadata field and nothing on chain.
+ * FIRST HALF - the claim-driven ADMISSION is removed. The gate now reads `stateLayout` for the slot's
+ * dynamism and refuses a chunk-backed stale read whatever `clone.writes` says. The scalar contrast keeps that
+ * statement scoped: there the claim is still honoured, because the compiler journals a clone's scalar slots
+ * regardless and the covenant refuses the stale scalar composition itself.
+ *
+ * SECOND HALF - and it changes nothing at consensus. The residual is reached by hand-assembling the plan, so
+ * `planCompiledGraph` is never called and no witness-side rule applies. Those bytes preflight clean under
+ * BCH-2026 and broadcast, carrying a guard row TRUE of the pre-state and FALSE of the state the same
+ * transaction commits. The fake write also leaves `bytecode`, `hiddenBatch` and `stateLayout` byte-identical,
+ * so the covenant cannot tell the honest artifact from the escaped one either. A rule reading spender metadata
+ * is a diagnostic; only the compiler can make this a boundary.
  */
 
 const raw = (builder: TransactionBuilder): string =>
@@ -73,6 +78,81 @@ interface Spec {
   final: Uint8Array;
   /** `honest` publishes the compiler's footprint; `fakeWrite` adds one nonexistent write to the clone. */
   footprint: 'honest' | 'fakeWrite';
+  /**
+   * How the plan handed to `finalizeCompiledGraph` is produced. `handAssembled` reproduces
+   * `planCompiledGraph`'s output without calling it, so nothing in the SDK stands between the bytes and the
+   * VM - the constructor L2-A1 used against X111, which no witness-side rule can be subject to.
+   */
+  constructor?: 'planner' | 'handAssembled';
+}
+
+/**
+ * L2-A1's constructor, verbatim from `Layer3EmissionCloneJournalX111.test.ts`: reproduce the planner's output
+ * for a root-plus-N-void-rows graph without calling it. Every field `finalizeCompiledGraph` reads comes from
+ * the same `encodeHiddenBatch` the planner uses, so the transcript is the planner's transcript.
+ */
+function handAssemblePlan(
+  participants: readonly { artifact: any; lockingBytecode: string }[],
+  invocations: readonly { parent: number | null; callee: number; function: string; args: any[] }[],
+): any {
+  const perOwner: any[][] = participants.map(() => []);
+  const globalByOwner: number[][] = participants.map(() => []);
+  invocations.forEach((invocation, index) => {
+    perOwner[invocation.callee].push({
+      function: invocation.function,
+      args: invocation.args,
+      ...(invocation.parent !== null && {
+        logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode),
+      }),
+    });
+    globalByOwner[invocation.callee].push(index);
+  });
+  const executions = participants.map((participant, owner) => ({
+    participant: owner,
+    lockingBytecode: participant.lockingBytecode.toLowerCase(),
+    batch: layer3.encodeHiddenBatch(participant.artifact, perOwner[owner]),
+    invocations: globalByOwner[owner],
+    blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,
+  }));
+  const subtreeEnds = invocations.map((_invocation, index) => index);
+  const active: number[] = [];
+  invocations.forEach((invocation, index) => {
+    if (index === 0) active.push(0);
+    else {
+      while (active.length > 0 && active[active.length - 1] !== invocation.parent) active.pop();
+      for (const ancestor of active) subtreeEnds[ancestor] = index;
+      active.push(index);
+    }
+  });
+  const localCursor = participants.map(() => 0);
+  const depths = invocations.map(() => 0);
+  for (let index = 1; index < invocations.length; index += 1) {
+    depths[index] = depths[invocations[index].parent!] + 1;
+  }
+  const planned = invocations.map((invocation, index) => {
+    const execution = executions[invocation.callee];
+    const localRow = localCursor[invocation.callee];
+    localCursor[invocation.callee] += 1;
+    const row = execution.batch.rows[localRow];
+    const result = execution.batch.results.find((candidate: any) => candidate.row === localRow);
+    return {
+      index,
+      parent: invocation.parent,
+      caller: invocation.parent === null ? null : invocations[invocation.parent].callee,
+      callee: invocation.callee,
+      subtreeEnd: subtreeEnds[index],
+      localRow,
+      depth: depths[index],
+      function: row.function,
+      selectorHex: row.selectorHex,
+      callMode: 'call' as const,
+      callOptions: 0,
+      argsHex: row.argsHex,
+      resultTypes: [...(result?.types ?? [])],
+      resultDependencies: [],
+    };
+  });
+  return { participants: executions, invocations: planned };
 }
 
 interface Built {
@@ -161,23 +241,27 @@ ${calls}
   const router = routerBase.withCategory(hexToBin(routerSetup.categoryId));
 
   const published = spec.footprint === 'honest' ? honestArtifact : withFakeWrite(honestArtifact);
-  const plan = layer3.planCompiledGraph([
+  const graphParticipants = [
     { artifact: routerArtifact, lockingBytecode: router.lockingBytecode },
     { artifact: published, lockingBytecode: dyn.lockingBytecode },
-  ] as any, [
+  ];
+  const graphInvocations = [
     {
-      parent: null,
+      parent: null as number | null,
       callee: 0,
       function: 'route',
       args: [...spec.rows.map((row) => row.value), hexToBin(router.lockingBytecode)],
     },
     ...spec.rows.map((row) => ({
-      parent: 0,
+      parent: 0 as number | null,
       callee: 1,
       function: row.fn,
       args: row.fn === 'assertShort' ? [row.value, hexToBin(router.lockingBytecode)] : [row.value],
     })),
-  ] as any);
+  ];
+  const plan = spec.constructor === 'handAssembled'
+    ? handAssemblePlan(graphParticipants, graphInvocations as any)
+    : layer3.planCompiledGraph(graphParticipants as any, graphInvocations as any);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
@@ -307,7 +391,107 @@ const assertShort = (probeLength: number): Row => ({ fn: 'assertShort', value: b
 
 const STALE = /read-only graph emission clone reading 'note'/;
 
-describe('X138 - one published write turns the stale dynamic read from REFUSED into SETTLED', () => {
+/** A plain SCALAR guard, so the scope of the gate's remaining write claim can be pinned against a contrast. */
+const SCALAR_GUARD = `pragma solidcash >=0.8.0;
+    contract Vault() {
+      bigint balance;
+      function withdraw(bigint amount) public {
+        this.balance = this.balance - amount;
+        require(amount >= 0);
+      }
+      function assertFloor(bigint floor, address who) public {
+        require(this.balance >= floor);
+        require(msg.sender == who);
+      }
+    }`;
+
+const PROBE_OPTIONS = {
+  forceStateful: true,
+  experimentalHiddenBatch: true,
+  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+  experimentalMessageBusControllerCategory: '22'.repeat(32),
+} as const;
+
+const ROUTER_LBC = `aa20${'33'.repeat(32)}87`;
+const VAULT_LBC = `aa20${'44'.repeat(32)}87`;
+
+/** Plan two rows against one vault artifact through a router that emits them in order. No provider needed. */
+function planAnswer(
+  vaultArtifact: any,
+  rows: readonly { fn: string; types: readonly string[]; args: readonly any[] }[],
+  signatures: Readonly<Record<string, string>>,
+): string {
+  const calls = rows.map((row, index) =>
+    `IV(v).${row.fn}(${row.args.map((_arg, slot) => `p${index}_${slot}`).join(', ')});`).join('\n      ');
+  const params = rows.flatMap((row, index) =>
+    row.types.map((type, slot) => `${type} p${index}_${slot}`)).join(', ');
+  const iface = [...new Set(rows.map((row) => row.fn))].map((fn) => signatures[fn]).join(' ');
+  const router = compileString(`pragma solidcash >=0.8.0;
+    interface IV { ${iface} }
+    contract R(int brand, address v) {
+      function route(${params}) public {
+      ${calls}
+        require(true);
+      }
+    }`, PROBE_OPTIONS);
+  try {
+    layer3.planCompiledGraph([
+      { artifact: router, lockingBytecode: ROUTER_LBC },
+      { artifact: vaultArtifact, lockingBytecode: VAULT_LBC },
+    ] as any, [
+      { parent: null, callee: 0, function: 'route', args: rows.flatMap((row) => [...row.args]) },
+      ...rows.map((row) => ({ parent: 0, callee: 1, function: row.fn, args: [...row.args] })),
+    ] as any);
+    return 'ADMITTED';
+  } catch (error) {
+    return `REFUSED: ${(error as Error).message}`;
+  }
+}
+
+describe('X138 - the gate no longer ADMITS on a published claim', () => {
+  const dynRows = [
+    { fn: 'setNote', types: ['bytes'], args: [bytes(40, 0x41)] },
+    { fn: 'assertShort', types: ['bytes', 'address'], args: [bytes(30, 0x21), hexToBin(ROUTER_LBC)] },
+  ];
+  const dynSignatures = {
+    setNote: 'function setNote(bytes t);', assertShort: 'function assertShort(bytes p, address w);',
+  };
+  const scalarRows = [
+    { fn: 'withdraw', types: ['bigint'], args: [80n] },
+    { fn: 'assertFloor', types: ['bigint', 'address'], args: [50n, hexToBin(ROUTER_LBC)] },
+  ];
+  const scalarSignatures = {
+    withdraw: 'function withdraw(bigint v);', assertFloor: 'function assertFloor(bigint v, address w);',
+  };
+
+  it('X138-C1 the fake write no longer buys admission on a CHUNK-BACKED slot', () => {
+    // R3 of `Layer3EmissionCloneJournalX111.test.ts` recorded this exact artifact as ADMITTED. The gate now
+    // reads `stateLayout` for the slot's dynamism and refuses the claim outright where it is load-bearing.
+    const vault = compileString(DYN_GUARD, PROBE_OPTIONS);
+    expect(planAnswer(vault, dynRows, dynSignatures)).toMatch(STALE);
+    expect(planAnswer(withFakeWrite(vault), dynRows, dynSignatures)).toMatch(STALE);
+    // GUARD on ORDER, differing in nothing else: reader-first has no earlier write, so it stays admitted.
+    expect(planAnswer(withFakeWrite(vault), [dynRows[1], dynRows[0]], dynSignatures)).toBe('ADMITTED');
+  }, 180_000);
+
+  it('X138-C2 the claim is still honoured on a PLAIN SCALAR slot, so the change is scoped', () => {
+    // The compiler journals a clone's scalar slots whether or not it writes, and the covenant refuses the
+    // stale scalar composition itself - X111-V1/V2 broadcast that refusal - so believing a liar here costs a
+    // diagnostic and nothing more. This contrast is what keeps X138-C1 a statement about DYNAMIC slots.
+    const vault = compileString(SCALAR_GUARD, PROBE_OPTIONS);
+    const escaped = JSON.parse(JSON.stringify(vault));
+    Object.assign(
+      escaped.invocationAnalysis.functions.find((entry: any) => entry.name === '__scb_graph_assertFloor'),
+      { writes: ['state:nosuchslot'] },
+    );
+    expect(vault.stateLayout!.variables.find((v) => v.name === 'balance')!.dynamic).toBeUndefined();
+    expect(planAnswer(vault, scalarRows, scalarSignatures))
+      .toMatch(/read-only graph emission clone reading 'balance'/);
+    expect(planAnswer(escaped, scalarRows, scalarSignatures)).toBe('ADMITTED');
+  }, 180_000);
+});
+
+describe('X138 - the dynamic residual settles anyway, because no witness-side rule is a boundary', () => {
   it('the subject is a read-only emission clone on a CHUNK-BACKED slot, so this is X111\'s residual', () => {
     const artifact = compileString(DYN_GUARD, {
       forceStateful: true,
@@ -323,42 +507,44 @@ describe('X138 - one published write turns the stale dynamic read from REFUSED i
     expect(artifact.stateLayout!.variables.find((v) => v.name === 'note')!.dynamic).toBe(true);
   }, 180_000);
 
-  it('X138-G GUARD: the honest footprint REFUSES this exact row set at plan time', async () => {
-    // Same contract, same rows, same order, same everything - only `clone.writes` differs from the hostile
-    // case below. This is the field being attacked, and on the honest value the gate names the refusal.
+  it('X138-G GUARD: the planner refuses this exact row set, honest footprint or fake write', async () => {
+    // Same contract, same rows, same order. Whichever footprint is published, no plan comes out of the
+    // planner - so every settling case below has to be built without it.
     await expect(buildDynGuardGraph({
       rows: [write(bytes(40, 0x41)), assertShort(30)],
       initial: bytes(30, 0x39),
       final: bytes(40, 0x41),
       footprint: 'honest',
     })).rejects.toThrow(STALE);
+    await expect(buildDynGuardGraph({
+      rows: [write(bytes(40, 0x41)), assertShort(30)],
+      initial: bytes(30, 0x39),
+      final: bytes(40, 0x41),
+      footprint: 'fakeWrite',
+    })).rejects.toThrow(STALE);
   }, 300_000);
 
-  it('X138-V1 HOSTILE: with the fake write published the same bytes SETTLE, guard false of the post-state',
-    async () => {
-      // Pre-state note is 30 bytes; row 0 writes 40; row 1 requires `note.length <= 30`.
-      // TRUE of the pre-state (30 <= 30), FALSE of the state this transaction commits (40 <= 30).
-      const built = await buildDynGuardGraph({
-        rows: [write(bytes(40, 0x41)), assertShort(30)],
-        initial: bytes(30, 0x39),
-        final: bytes(40, 0x41),
-        footprint: 'fakeWrite',
-      });
-      expect(failingInput(built.builder)).toBe(null);
-      await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
-    }, 300_000);
+  it('X138-V1 HOSTILE: the hand-assembled bypass SETTLES a guard false of the post-state', async () => {
+    // L2-A1's constructor, so `planCompiledGraph` is never called and no witness-side rule applies. Pre-state
+    // note is 30 bytes; row 0 writes 40; row 1 requires `note.length <= 30` - TRUE of the pre-state (30 <= 30)
+    // and FALSE of the state this transaction commits (40 <= 30). The scalar equivalent of this composition
+    // is refused by the covenant since X111; the chunk-backed one is not.
+    const built = await buildDynGuardGraph({
+      rows: [write(bytes(40, 0x41)), assertShort(30)],
+      initial: bytes(30, 0x39),
+      final: bytes(40, 0x41),
+      footprint: 'honest',
+      constructor: 'handAssembled',
+    });
+    expect(failingInput(built.builder)).toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 300_000);
 
-  it('X138-V1c the escape costs NOTHING on chain: same bytecode, same address as the honest artifact',
+  it('X138-V1c the fake write costs NOTHING on chain, which is why no rule reading it can be a boundary',
     async () => {
-      // Without this the hostile case could be settling because it deployed a different contract. The
-      // covenant sees byte-identical inputs in both; `invocationAnalysis` is metadata no output commits to.
-      const options = {
-        forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
-      };
-      const honest = compileString(DYN_GUARD, options);
+      // The escaped artifact deploys to the same address and runs the same script. `invocationAnalysis` is
+      // metadata no output commits to, so the covenant cannot tell the two apart, and neither can the row set.
+      const honest = compileString(DYN_GUARD, PROBE_OPTIONS);
       const escaped = withFakeWrite(honest);
       expect(escaped.bytecode).toBe(honest.bytecode);
       expect(JSON.stringify(escaped.hiddenBatch)).toBe(JSON.stringify(honest.hiddenBatch));
@@ -372,27 +558,29 @@ describe('X138 - one published write turns the stale dynamic read from REFUSED i
       rows: [write(bytes(40, 0x41)), assertShort(10)],
       initial: bytes(30, 0x39),
       final: bytes(40, 0x41),
-      footprint: 'fakeWrite',
+      footprint: 'honest',
+      constructor: 'handAssembled',
     });
     expect(failingInput(built.builder)).toBe(built.dynInput);
     await expect(built.provider.sendRawTransaction(built.transaction))
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
-  it('X138-V3 the read is the PRE value, not the post: a probe true of the POST only is REFUSED', async () => {
-    // 40 is true of the post-state (40 <= 40) and FALSE of the pre-state (30 <= 40 is true) - so pick the
-    // discriminating direction instead: shrink the value. Row 0 writes 10 bytes over a 30-byte pre-state and
-    // the probe is 10. A live read passes (10 <= 10); a pre-transaction read fails (30 <= 10).
-    const built = await buildDynGuardGraph({
-      rows: [write(bytes(10, 0x41)), assertShort(10)],
-      initial: bytes(30, 0x39),
-      final: bytes(10, 0x41),
-      footprint: 'fakeWrite',
-    });
-    expect(failingInput(built.builder)).toBe(built.dynInput);
-    await expect(built.provider.sendRawTransaction(built.transaction))
-      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
-  }, 300_000);
+  it('X138-V3 the read is the PRE value: shrinking the value makes a LIVE read pass and it is REFUSED',
+    async () => {
+      // Row 0 writes 10 bytes over a 30-byte pre-state and the probe is 10. A live read passes (10 <= 10);
+      // a pre-transaction read fails (30 <= 10). It is refused, so the clone demonstrably reads the pre value.
+      const built = await buildDynGuardGraph({
+        rows: [write(bytes(10, 0x41)), assertShort(10)],
+        initial: bytes(30, 0x39),
+        final: bytes(10, 0x41),
+        footprint: 'honest',
+        constructor: 'handAssembled',
+      });
+      expect(failingInput(built.builder)).toBe(built.dynInput);
+      await expect(built.provider.sendRawTransaction(built.transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    }, 300_000);
 
   it('X138-V4 ORDER: reader-first is the sequentially correct read and settles', async () => {
     // The clone at local row 0 has no earlier write to have missed, so nothing here is stale. A repair that
@@ -401,7 +589,8 @@ describe('X138 - one published write turns the stale dynamic read from REFUSED i
       rows: [assertShort(30), write(bytes(40, 0x41))],
       initial: bytes(30, 0x39),
       final: bytes(40, 0x41),
-      footprint: 'fakeWrite',
+      footprint: 'honest',
+      constructor: 'handAssembled',
     });
     expect(failingInput(built.builder)).toBe(null);
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');

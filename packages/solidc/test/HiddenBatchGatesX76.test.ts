@@ -149,6 +149,39 @@ contract X76BareSender() {
   });
 
   /**
+   * THE CORPUS SHAPE, which is what makes this row worth doing: `EventSubscription.subscribe()` from
+   * solidity-by-example (`events-advanced/EventsAdvanced.sol`) writes `subscribers[msg.sender] = true` bare and
+   * pushes to a dynamic state array. It was the ONE state-changing handler this change newly admits across the
+   * three application corpora, and it was refused `collection-helper-route-not-enabled`.
+   *
+   * The `this.`-prefixed respelling was ALREADY admitted before the change, and the two now publish the same
+   * byte count. So the route the bare form reaches is not a new covenant - it is the one the dotted form always
+   * reached, which is the whole soundness claim for this relaxation.
+   */
+  it('admits the corpus EventSubscription.subscribe shape, with the dotted route\'s exact size', () => {
+    const port = (dotted: boolean): string => {
+      const at = (access: string): string => (dotted ? `this.${access}` : access);
+      return `pragma solidcash >=0.8.0;
+contract X76Subscription() {
+  mapping(address => bool) subscribers;
+  address[] subscriberList;
+  function subscribe() public {
+    require(!${at('subscribers[msg.sender]')});
+    ${at('subscribers[msg.sender]')} = true;
+    this.subscriberList.push(msg.sender);
+  }
+}`;
+    };
+    expect(verdicts(port(false)).get('subscribe')).toBe('ELIGIBLE');
+    expect(verdicts(port(true)).get('subscribe')).toBe('ELIGIBLE');
+    expect(compileString(port(false), graph).bytecode.length)
+      .toBe(compileString(port(true), graph).bytecode.length);
+    // And it is a WRITE, not a getter: the read-only surface is not what moved.
+    expect(compileString(port(false), graph).abi.find((entry) => entry.name === 'subscribe')?.writesState)
+      .toBe(true);
+  });
+
+  /**
    * NEGATIVE CONTROL 1. A bare element of a name the function BINDS ITSELF is a LOCAL array, not a collection
    * entry. Normalizing one would retarget a local element write at a state entry NFT, so the handler must
    * publish witnesses for the two `balances` entries and NOTHING for `scratch` - in particular no witness bound

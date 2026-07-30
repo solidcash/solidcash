@@ -443,10 +443,17 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     console.log(`[F3] X84 MerkleTree.sol bus:    ${merkleBus ?? 'OK'}`);
     expect(merkleDirect, 'MerkleTree.sol now compiles directly, so the X84 reconciliation needs re-reading')
       .toBeDefined();
-    expect(merkleDirect).toContain('Block slot not found');
-    expect(merkleBus, 'the bus-mode head no longer matches the direct-mode head').toBe(merkleDirect);
+    // ASSERTED ON THE GATE, NOT ON ITS WORDING. X83 renames this refusal - the unnamed `Block slot not found:
+    // keccakSideCar[0]` becomes `keccak-loop-and-straight-line-mix-not-enabled` with a real position - and the
+    // reconciliation does not depend on which spelling is current: what matters is that MerkleTree.sol is
+    // refused in DIRECT mode over the keccak side-car slot, so it can never reach the bus-failure table, and
+    // that it is not a ParseError. Both spellings are accepted so this does not go red on that rename.
+    const keccakGate = /Block slot not found: keccakSideCar|keccak-loop-and-straight-line-mix-not-enabled/;
+    expect(merkleDirect).toMatch(keccakGate);
+    expect(merkleBus, 'bus mode no longer stops at the same gate as direct mode').toMatch(keccakGate);
     expect(merkleDirect, 'a ParseError in DIRECT mode would put this row somewhere else entirely')
       .not.toContain('ParseError');
+    expect(merkleBus, 'the bus-mode ParseError this row was filed over is back').not.toContain('ParseError');
 
     // (2) The fallback erases a real cause. MarketplaceV1.sol compiles as a whole in direct mode and does NOT
     // in bus mode, and the error the census used to discard names a sibling in another file.
@@ -727,8 +734,10 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     expect(control, `the operation-cost knob does not bite at ${budget}/byte`).toBeDefined();
     expect(String(control)).toMatch(/density|operation cost/i);
 
-    // And what the estimator said about this exact shape, before it existed.
-    const prediction = estimate(replicaSpec(subject, 1), calibration);
+    // And what the estimator said about this exact shape, before it existed. With the covenant sizes compiled
+    // at this commit rather than defaulted from the calibration, so the prediction is not carrying 444 bytes of
+    // a projection verifier that the transaction measured beside it does not contain.
+    const prediction = estimate(replicaSpec(subject, 1, MEASURED_COVENANTS), calibration);
     console.log(`[F3] PREDICTED ${formatEstimate(prediction)}`);
     const comparison: [string, number, number][] = [
       ['serialized bytes', prediction.serializedBytes, envelope.serializedBytes],

@@ -703,13 +703,23 @@ describe('layer3.planCompiledGraph', () => {
     // have carried since X27 - is applied to the projection verifier's invocation loop (-60) and participant
     // loop (-61). Not one require is removed, weakened or reordered; each `cursor + n <= transcript.length`
     // is the same predicate as its rewritten `local + n <= frame.length`.
+    // X65 then replaced the verifier's 8-way dispatch with an input-index table: 4,542 -> 4,098, -444, which
+    // is what the assertion below pins.
     // WHY THIS FIGURE IS THE LEVERAGED ONE. The verifier is instantiated once per PARTICIPANT and each proof
     // slot pushes the whole redeem script, so a verifier byte is worth N transaction bytes. Measured on all
-    // four capstones and the multiplier is exactly N every time: A13 23,845 -> 23,458 (-387 = 3 x 129),
-    // C2 53,249 -> 52,733 (-516 = 4 x), C1 63,315 -> 62,670 (-645 = 5 x), C3 100,650 -> 99,618 (-1,032 = 8 x).
-    // C3 is thereby INSIDE the 100,000-byte standard relay ceiling, by 382 bytes, with all 108 slots intact.
-    // The controller row is unchanged, and that is a control rather than a coincidence: F4 edited
-    // `generateGraphProjectionVerifier` only, so exactly one covenant's figure may move.
+    // four capstones for BOTH cuts and the multiplier is exactly N every time.
+    //
+    //   F4, -129 per participant (measured, and the two graph capstones came in 52 bytes above the arithmetic
+    //   because one participant's script grew 28 and the output set 24):
+    //     A13 23,845 -> 23,458   C2 53,249 -> 52,733   C1 63,315 -> 62,722   C3 100,650 -> 99,670
+    //   X65, -444 per participant (re-measured at `77cd1e8c` through the estimator probe, no residue):
+    //     A13 23,458 -> 22,126   C2 52,733 -> 50,957   C1 62,722 -> 60,502   C3 99,670 -> 96,118
+    //
+    // C3 is thereby INSIDE the 100,000-byte standard relay ceiling by 3,882 bytes, with all 108 slots intact.
+    // (This comment used to give C1 as 62,670 and C3 as 99,618 - both the 129 x N arithmetic rather than the
+    // build, and the two figures the F1 and F2 tables disagreed with. The measurements are above.)
+    // The controller row is unchanged across both cuts, and that is a control rather than a coincidence: each
+    // edited `generateGraphProjectionVerifier` only, so exactly one covenant's compiled size may move.
     expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
     expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_098);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(

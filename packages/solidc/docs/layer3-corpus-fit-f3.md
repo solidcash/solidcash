@@ -263,19 +263,48 @@ missing `compileFile` fallback. Measured at `77cd1e8c`, that is not a discrepanc
 before bus mode is reached, so the row belongs in section 3.3 and is there. X71 has since made both modes
 report the same error. The fallback exists; the real gap was what it discards, above.
 
-**The `ParseError` is a bus-mode-only failure whose reported position is not in the user's file.**
-`UniswapV2Router02.sol` compiles in direct mode and with `forceStateful`, and fails the moment
-`experimentalHiddenBatch` is added:
+**The `ParseError` was a bus-mode-only failure whose reported position was not in the user's file - AND IT IS
+GONE (X71).** As this report recorded it, `UniswapV2Router02.sol` compiled in direct mode and with
+`forceStateful` and failed the moment `experimentalHiddenBatch` was added, at `Line 68, Column 82` under
+`+hiddenBatch` and `Line 119, Column 82` under `+controller`. **Neither position exists in that file**, and the
+reported line moving by 51 when an unrelated option is added was the proof: it was a position in whatever the
+compiler assembled. A user handed that could not act on it.
+
+Re-measured at `77cd1e8c`, the ParseError is not reachable and the positions above cannot be reproduced:
 
 ```
 direct           -> OK
 +forceStateful   -> OK
-+hiddenBatch     -> ParseError: Unexpected token '[' at Line 68, Column 82
-+controller      -> ParseError: Unexpected token '[' at Line 119, Column 82
++hiddenBatch     -> OK, route present, 25 handlers, 7 eligible
++controller      -> Error: Graph handler '__scb_graph_removeLiquidity' requires call/staticcall edges
+                    and at most one returning call
 ```
 
-The reported line moves by 51 when an unrelated option is added, so it is a position in whatever the
-compiler assembled, not in `UniswapV2Router02.sol`. A user handed this cannot act on it.
+Two things follow, and the second is a correction to a claim made in passing elsewhere. First, Router02 now
+synthesizes a route under `+hiddenBatch`, but it still does NOT reach the bus under `+controller` - F3's actual
+configuration - so it is **not** added to the bus-reachable set here; it fails on a pre-existing *named*
+refusal instead of on a position that does not exist, which is a diagnostic improvement and not an admission.
+
+Second, **the seven handlers it admits under `+hiddenBatch` are not all read-only by this report's own test,
+and the claim that they are should not be repeated.** Measured at `77cd1e8c`:
+
+| admitted handler | `writesState` |
+| --- | --- |
+| `quote`, `getAmountOut`, `getAmountIn`, `factory`, `WETH` | `false` |
+| `getAmountsOut`, `getAmountsIn` | **`true`** |
+
+All seven are `view` in Solidity, which is presumably where "all seven are `view`/`pure`" came from - but
+section 3.2 classifies on the compiler's `writesState`, not on the annotation, and the compiler sets it from
+whether the function makes an external call. So **if Router02 ever cleared `+controller`, it would be the first
+application contract in this corpus to admit a handler this report counts as state-changing, and section 3.2's
+headline would have to be retired with it.** That is the precise condition under which the headline falls, and
+it is not met today.
+
+The impossible positions are kept above, quoted as history and labelled as impossible, because that class of
+defect is still live elsewhere: a corpus scan found 161 files emitting a warning that cites a line beyond the
+file, 138 of them naming a generated `__scb_*` symbol, plus 13 reporting an unlabelled position inside an
+IMPORTED file. Those are compiler-side and outside this report; nothing in this document reproduces a
+position that cannot exist as though it were current.
 
 ## 4. Where the bus-reachable contracts land
 

@@ -536,8 +536,13 @@ describe('X138 - the dynamic residual settles anyway, because no witness-side ru
       footprint: 'honest',
       constructor: 'handAssembled',
     });
-    expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    // INVERTED BY X146. This settled when it was written, and that was the exploit. The dynamic half is now
+    // closed AT CONSENSUS: the emission clone's journal was PARTIAL, because a function-pointer table's arrays
+    // are named on the external-call slot rather than in the body, so the trailing chunk loop addressed the
+    // wrong chunk by one slot. With the journal completed the clone reads live and the covenant refuses here.
+    expect(failingInput(built.builder)).toBe(1);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
   it('X138-V1c the fake write costs NOTHING on chain, which is why no rule reading it can be a boundary',
@@ -577,9 +582,12 @@ describe('X138 - the dynamic residual settles anyway, because no witness-side ru
         footprint: 'honest',
         constructor: 'handAssembled',
       });
-      expect(failingInput(built.builder)).toBe(built.dynInput);
-      await expect(built.provider.sendRawTransaction(built.transaction))
-        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+      // INVERTED BY X146, and this direction is the one that DISCRIMINATES. A repair that merely broke the
+      // clone would leave this refused; it settles, which is what proves the read is LIVE. C2 alone cannot
+      // tell the two apart - an unsound basis-only variant also takes C2 to 23/2 while leaving a live array
+      // beside a stale chunk-read one, so this pair is the check that matters.
+      expect(failingInput(built.builder)).toBe(null);
+      await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
     }, 300_000);
 
   it('X138-V4 ORDER: reader-first is the sequentially correct read and settles', async () => {

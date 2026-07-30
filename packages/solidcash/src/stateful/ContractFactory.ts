@@ -1,4 +1,4 @@
-import { Artifact } from '@solidcash/utils';
+import { Artifact, asmToBytecode } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
@@ -53,7 +53,8 @@ export async function selectGenesisFundingUtxo(
   identityNftCount = 1,
 ): Promise<Utxo> {
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
-  const deployFee = BigInt(Math.max(5000, Math.ceil(artifact.bytecode.length / 2) + 2000));
+  // X149: `bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count and this overpaid.
+  const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n;
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
   const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find(

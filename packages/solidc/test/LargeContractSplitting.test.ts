@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { asmToBytecode } from '@solidcash/utils';
 import { compileString, compileStringSplit } from '../src/index.js';
 
 const SOURCE = `
@@ -53,7 +54,10 @@ describe('large-contract state-local splitting', () => {
       expect(facet.brandedLibrary).toBe(true);
       expect(facet.delegateOnly).toBe(true);
       expect(facet.constructorInputs).toEqual([{ name: '__brand', type: 'bytes32' }]);
-      expect(info.estimatedRedeemBytes).toBe(facet.bytecode.length / 2);
+      // X149: `facet.bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count, not bytes -
+      // one 1-byte opcode occupies `OP_CHECKSIGVERIFY `. This assertion encoded that error, which is why it
+      // agreed with the planner's ruler until the ruler was corrected. Both now measure real bytes.
+      expect(info.estimatedRedeemBytes).toBe(asmToBytecode(facet.bytecode).length);
       expect(bundle.root.constructorInputs.some((input) => input.name === info.linkArgument)).toBe(true);
     }
     expect(bundle.manifest.deploymentMode).toBe('immutable-one-hop');

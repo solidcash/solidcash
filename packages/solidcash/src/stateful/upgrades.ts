@@ -1,6 +1,7 @@
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
-  Artifact, AbiFunction, attachDecodedAccessors, buildEventNftCovenantScript, computeEventNameHash,
+  Artifact, AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
+  computeEventNameHash,
 } from '@solidcash/utils';
 import {
   ContractFactory, DeployedContract, DeployContractOptions,
@@ -77,7 +78,8 @@ function deriveLargeMockInitializerState(
   if (!initializer || !Array.isArray(initialState)) return undefined;
   const provider = runner instanceof Signer ? runner.provider : runner;
   if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) return undefined;
-  if (impl.bytecode.length / 2 <= 100_000) return undefined;
+  // X149: measure real bytes, not the ASM listing's character count.
+  if (asmToBytecode(impl.bytecode).length <= 100_000) return undefined;
   const fn = impl.abi.find((item) => item.name === initializer);
   if (!fn) return undefined;
   const stateVariables = impl.stateLayout?.variables ?? [];

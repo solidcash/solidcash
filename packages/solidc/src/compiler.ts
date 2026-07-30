@@ -2582,12 +2582,24 @@ function compileResolvedAst(
   // the deployed redeem adds constructor argument pushes on top.
   const artifactBytes = Math.max(debug.bytecode.length, artifact.bytecode.length) / 2;
   if (artifactBytes > MAX_INPUT_BYTESIZE) {
-    artifact.diagnostics = [{
-      severity: 'error',
-      code: 'contract-size-limit',
-      message: `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the BCH `
-        + `${MAX_INPUT_BYTESIZE}-byte input-script limit; it cannot be deployed without splitting or reduction.`,
-    }];
+    const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, `
+      + `${artifactBytes - MAX_INPUT_BYTESIZE} over the BCH ${MAX_INPUT_BYTESIZE}-byte input-script limit. `
+      + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
+      + '(compileFileSplit / compileStringSplit) or reduction.';
+    // X149. APPEND. This used to assign, and it is the only site on this path that does not - so any diagnostic
+    // recorded before it would be dropped by the contract that most needs its other diagnostics kept.
+    artifact.diagnostics = [
+      ...(artifact.diagnostics ?? []),
+      { severity: 'error', code: 'contract-size-limit', message },
+    ];
+    // X149. SAY IT OUT LOUD, from the compiler rather than from one caller of it. The diagnostic is severity
+    // `error` and no consumer reads the field: not the SDK, not the benches, not the corpus probe. `solidc-cli`
+    // prints its own warning, so a contract compiled through the CLI was told and a contract compiled through
+    // `compileFile`/`compileString` - which is every bench, every test and every SDK user - was not. Measured
+    // on this corpus: MarketplaceV1 is 22,432 bytes over in ORDINARY DIRECT MODE and compiled silently.
+    // This is not the refusal; a refusal belongs at the spend boundary, where a script length is fatal rather
+    // than merely measurable. It is the compiler no longer being the quietest thing in the chain.
+    console.warn(`Error: ${message}`);
   }
   const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
   if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);

@@ -61,25 +61,32 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * measured floor under-predicted real corpus masters 34 times out of 45, because density is a property of a
  * contract body and not of any driver in the descriptor.
  *
- * RE-MEASURED AT THIS COMMIT, and TWO of X70's figures above no longer reproduce. Both are staleness, not
- * regression, and neither is caused by the X78 ranking change - the whole row was re-run with both estimator
- * files reverted to the baseline and produced the same numbers.
+ * RE-MEASURED AT THIS COMMIT, against a census re-taken at this commit (X86), and X70's figures above are
+ * history. The differences are staleness and lifted gates, not regression, and none of them is caused by the
+ * X78 ranking change - the whole row was re-run with both estimator files reverted to the baseline and
+ * produced the same numbers.
  *
- *   - THE POPULATION IS 43, NOT 45. Seventy-one one-slot bus-reachable census rows are attempted and 28 skip;
- *     three of the new skips are `census redeem length disagrees with the built participant`, i.e. the census
- *     itself has drifted from what the compiler now emits and needs re-taking.
- *   - THE BAND IS +15.0% TO +18.9%, MEAN +18.7%, still 0/43 under-predicted, and 444 bytes of that is a STALE
- *     CONSTANT rather than model looseness. `estimate` defaults the two generated covenant lengths to the
- *     recorded basis - projection 4,542, controller 1,514 - and this commit generates 4,098 and 1,493.
- *     `GraphShapeSpec` carries override fields for exactly this and `replicaSpec` does not fill them in. With
- *     this commit's sizes in the descriptor the band is +4.8% to +8.3%, mean +8.2%, which is X70's published
- *     +4.3% to +7.5% back again. Serialized is +15.2% to +24.3% and carries the same 444-byte inflation.
- *     THE FIX BELONGS IN `replicaSpec` (`layer3-corpus-fit-f3.ts`), which is not this file.
- *   - The legacy `before` column consequently reads -0.9% to +13.1%, mean +2.6%, 1/43 under-predicted, where
- *     X70 measured 44/45 under. The defect has not healed: the legacy fit returns 4,441 bytes for an input
- *     whose covenant WAS 4,542 and is now 4,098, so an impossibility became mere looseness. The corpus count
- *     is therefore no longer asserted; the impossibility is asserted on the calibration instead, where it
- *     does not drift - 3,966-byte intercept against the 4,542-byte covenant every proof input pushes.
+ *   - THE POPULATION IS 50 OF 86, NOT 45 OF 71. The census re-take routes 428 corpus contracts where the
+ *     recorded one routed 367, so there are 86 one-slot candidates; 36 skip, all of them on a handler
+ *     parameter type this harness cannot supply or a contract whose `require` a placeholder cannot satisfy.
+ *     `census rows whose recorded redeem length has drifted: 0`, where three rows had drifted before the
+ *     re-take - and those three were being swallowed by the same try/catch as the `require` failures, which is
+ *     how the population reached 43 without a reason being published.
+ *   - THE BAND IS +4.8% TO +8.3%, MEAN +8.2%, 0/50 under-predicted, once the descriptor carries the covenant
+ *     lengths this commit DEPLOYS. Defaulted from the calibration instead it reads +15.0% to +18.9%, mean
+ *     +18.8%, and the difference is a single stale constant of exactly 444 bytes on every row: the projection
+ *     verifier is 4,098 where the basis measured 4,542. The controller is NOT part of it - it compiles to
+ *     1,493 and deploys at 1,514, which is the calibration's figure - and reading the compile instead of the
+ *     deployment is how a 21-byte saving got invented and then caught by the assertion below. Serialized
+ *     reads +9.8% to +18.4%, mean +17.8%, against +15.2% to +24.3% defaulted.
+ *   - The legacy `before` column reads -0.9% to +13.1%, mean +2.6%, 1/50 under-predicted, where X70 measured
+ *     44/45 under. The defect has not healed: the legacy fit returns 4,441 bytes for an input whose covenant
+ *     WAS 4,542 and is now 4,098, so an impossibility became mere looseness. The corpus count is therefore no
+ *     longer asserted; the impossibility is asserted on the calibration instead, where it does not drift -
+ *     3,966-byte intercept against the 4,542-byte covenant every proof input pushes. That check is deliberately
+ *     left on the RECORDED covenant: derived from the 4,098 this commit generates the same intercept has three
+ *     bytes of margin, and X85 passing live covenant sizes into the DESCRIPTOR does not move it, because the
+ *     legacy fit reads only participants, invocations and master redeem bytes out of that descriptor.
  *
  * X78: THE BINDING-LIMIT PREDICTION, WHICH X70 REPORTED RATHER THAN FIXED. Density was named first at
  * 0.5758x against a script prediction of 0.5002x on a population measuring 0.2177x and 0.4651x, because the
@@ -100,15 +107,14 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  *     density as tight.
  *
  * MEASURED AFTER, off the training data and on it, at THIS commit: the ranked leader names the measured
- * binder on 43/43 built corpus graphs (was 0/43 - see the re-measurement note below for why the population is
- * 43 here and 45 at X70's commit), on 4/4 capstones (was 3/4), and misses the held-out E1 graph exactly as it
- * did before, for 47/48 against 3/48. The measured binder remains inside `bindingUnresolved` on every row,
- * and that set shrinks from 3 limits to 2 on the corpus and to ONE on C2 and C3, where the one is the
- * measured binder. Not one predicted magnitude moves: `ratio`, `predicted`, `serializedBytes`,
+ * binder on 50/50 built corpus graphs (was 0/50 - see the re-measurement note below for why the population is
+ * 50 here and 45 at X70's commit), on 4/4 built shapes whose binder was measured against 3/5 for the raw
+ * ranking, and it misses the held-out E1 graph exactly as it did before. The measured binder remains inside
+ * `bindingUnresolved` on every row, and that set is 2 limits on every corpus row and ONE on C2 and C3, where
+ * the one is the measured binder. Not one predicted magnitude moves: `ratio`, `predicted`, `serializedBytes`,
  * `worstUnlockingBytes` and the FITS/OVER verdict are the same upper bounds. That is not an argument - the
  * whole corpus row was re-run with these two files reverted to the baseline commit and every band came back
- * IDENTICAL (+15.0% to +18.9% script, +15.2% to +24.3% serialized, +56.9% to +164.4% density, 0/43
- * under-predicted on each); the only line that differed was the ranking, at 0/43 against 43/43.
+ * IDENTICAL; the only line that differed was the ranking.
  *
  * WHAT IS STILL WRONG. E1, the one real held-out graph, is still named density 0.8049x where relay size
  * 0.7129x binds at 0.6813x measured; the de-biased density floor lands at 0.6846x against 0.6368x measured,
@@ -124,9 +130,10 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * rather than switched on, and the reason is now measured rather than argued - see the last margin test.
  *
  * WHAT IS MEASURED HERE AND WHAT IS RECORDED. The synthetic sweep is rebuilt and re-measured live in this
- * file, so the estimator faces a transaction produced in the same process it is judged in. So are all
- * forty-five corpus graphs. The four capstone shapes are a RECORDED basis (`layer3-estimator-basis-f2.ts`),
- * and the held-out graph a second recorded file (`layer3-estimator-heldout-f2.ts`), both captured by
+ * file, so the estimator faces a transaction produced in the same process it is judged in. So is every
+ * one-slot corpus graph, fifty of them at this commit. The four capstone shapes are a RECORDED basis
+ * (`layer3-estimator-basis-f2.ts`), and the held-out graph a second recorded file
+ * (`layer3-estimator-heldout-f2.ts`), both captured by
  * observing the fixtures' OWN builders through `layer3-estimator-probe.ts` and re-taken at `1591e87f` for
  * X66, because F4 had cut 129 bytes from a covenant that every one of them instantiates once per
  * participant.
@@ -134,8 +141,8 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  * A MODEL EVALUATED ON ITS TRAINING DATA IS NOT EVALUATED. It is held out four ways: each of the seven
  * shapes dropped from the calibration in turn and predicted from coefficients that never saw it; three
  * synthetic participant counts predicted BEFORE building them; a REAL six-participant, seven-invocation
- * graph in no calibration set here; and forty-five real application contracts from four corpora, which are
- * not fixtures at all.
+ * graph in no calibration set here; and every one-slot bus-reachable contract from four real corpora, which
+ * are not fixtures at all.
  */
 
 /* ------------------------------------------------------------------------------------------------------ */
@@ -775,8 +782,8 @@ describe('F2 estimator: held out', () => {
 
   /**
    * BOTH ENDS OF THE RANGE, which is the report F2 did not have. A one-participant graph is BELOW every
-   * calibrated driver, and F2 answered it `in-range` and confidently - which is how forty-five real contracts
-   * were answered wrong. The clamp is what makes the answer sound; this is what makes it honest.
+   * calibrated driver, and F2 answered it `in-range` and confidently - which is how a whole corpus of real
+   * contracts was answered wrong. The clamp is what makes the answer sound; this is what makes it honest.
    */
   it('a driver BELOW the calibrated minimum is reported out of range, and answered at the measured floor', () => {
     const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
@@ -855,7 +862,7 @@ describe('F2 estimator: held out', () => {
 });
 
 /* -------------------------------------------------------------------------------------------------------- */
-/* X70: the forty-five-contract corpus calibration                                                            */
+/* X70: the one-slot corpus calibration, fifty contracts at this commit                                       */
 /* -------------------------------------------------------------------------------------------------------- */
 
 /**
@@ -1159,7 +1166,7 @@ function measuredClasses(measurement: CorpusMeasurement): Map<InputClass, { byte
   return rows;
 }
 
-describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on script bytes', () => {
+describe('F2 estimator: X70 - the real corpus contracts that bind on script bytes', () => {
   /**
    * THE ROW THAT FOUND THE DEFECT, RE-RUN AGAINST THE REPAIR.
    *

@@ -259,6 +259,19 @@ export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGr
 }
 
 /**
+ * The part of a physical layout the capacity rule reads: how many participants exist, and which of them
+ * declare a runtime-resource region.
+ *
+ * `CompiledGraphPhysicalLayout` satisfies this structurally, so a caller holding one passes it unchanged. The
+ * narrower type is what lets the preflight run the same rule against an assembly DERIVED from a builder's own
+ * inputs, where no caller-supplied plan object exists at all - see `preflightLayer3BlockAssembly`.
+ */
+export interface GraphTrailingCapacityView {
+  participantInputs: readonly number[];
+  trailingRegions: readonly GraphTrailingRegion[];
+}
+
+/**
  * Refuse a runtime-resource run the balanced model cannot describe, BEFORE anything is signed.
  *
  * `runs` names, per participant, how many trailing slots that owner's handlers actually claim: one per
@@ -274,7 +287,7 @@ export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGr
  * count, order, category, capability and commitment checks in the participant's own route.
  */
 export function assertGraphTrailingCapacity(
-  layout: CompiledGraphPhysicalLayout,
+  layout: GraphTrailingCapacityView,
   runs: Readonly<Record<number, number>>,
 ): void {
   for (const [key, run] of Object.entries(runs)) {
@@ -307,6 +320,39 @@ const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');
 const MAX_GRAPH_PARTICIPANTS = 8;
 const MAX_GRAPH_INVOCATIONS = 24;
 const MAX_GRAPH_DEPTH = 7;
+
+/**
+ * Largest SCB1 batch blob the GENERATED root controller admits, in bytes (X106).
+ *
+ * This is the controller's own bound, compiled into `generateGraphRootController`. It has a twin: the compiler
+ * publishes `artifact.hiddenBatch.maximumBlobBytes` from its private `MAX_HIDDEN_BATCH_BLOB_BYTES`, and the two
+ * must agree. It was a bare `223` in the generated source, so nothing connected them.
+ *
+ * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary, the
+ * blob and not the trailing region is the binding constraint - an argument-carried value caps at 202 bytes
+ * (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than the
+ * region. A silent drift between the two copies therefore moves a real limit.
+ *
+ * `assertGraphBatchBlobEnvelope` closes the loop the other way, from the artifact back to this bound.
+ */
+export const GRAPH_MAX_BATCH_BLOB_BYTES = 223;
+
+/**
+ * Refuse a participant whose published blob envelope is wider than the generated controller admits.
+ *
+ * The direction is not symmetric, and only one side is a defect. A participant publishing a SMALLER maximum is
+ * merely tighter: `encodeHiddenBatch` refuses the oversized blob first, by name. A participant publishing a
+ * LARGER one is the drift that costs: the SDK encodes a blob its own encoder accepts, and the co-spent
+ * controller then refuses the whole transaction at the controller input, naming nothing about blob width.
+ */
+export function assertGraphBatchBlobEnvelope(artifact: Artifact, participant: number): void {
+  const published = artifact.hiddenBatch?.maximumBlobBytes;
+  if (published === undefined || published <= GRAPH_MAX_BATCH_BLOB_BYTES) return;
+  throw new Error(
+    `layer3: participant ${participant} publishes an SCB1 blob envelope of ${published} bytes, wider than the `
+    + `${GRAPH_MAX_BATCH_BLOB_BYTES} the generated graph root controller admits`,
+  );
+}
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let offset = 0;
@@ -604,7 +650,7 @@ contract GraphRootController(bytes20 initializer) {
       require(tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength));
       bigint batchLength = int(bytes.concat(frame.slice(6 + lbcLength, 8 + lbcLength), hex"00"));
       bigint local = 8 + lbcLength;
-      require(batchLength >= 7 && batchLength <= 223 && local + batchLength + 2 <= frame.length);
+      require(batchLength >= 7 && batchLength <= ${GRAPH_MAX_BATCH_BLOB_BYTES} && local + batchLength + 2 <= frame.length);
       bytes unlocking = tx.inputs[participantInput].unlockingBytecode;
       require(unlocking.slice(0, 5) == hex"0453434231");
       if (batchLength <= 75) {
@@ -1276,6 +1322,9 @@ export function planCompiledGraph(
       throw new Error('layer3: two participant rows name the same physical locking bytecode');
     }
     identities.add(lbc);
+    // X106: the artifact's published blob envelope has to fit the generated controller's compiled-in bound.
+    // Skipped for an artifact publishing no envelope at all, which fails later by name at `hiddenBatch!`.
+    assertGraphBatchBlobEnvelope(participant.artifact, index);
   });
   if (invocations.length === 0 || invocations[0].parent !== null
     || invocations.slice(1).some((invocation) => invocation.parent === null)) {

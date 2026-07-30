@@ -9,6 +9,68 @@ import {
 } from '../stateful/balancedBlocks.js';
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
+
+/**
+ * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
+ * balanced model cannot describe.
+ *
+ * `assertGraphTrailingCapacity` is the rule; this is what makes it a gate instead of a capability the composer
+ * must remember to invoke. The composer never declares its run: it is read from the transaction, so stripping
+ * the declaration cannot silence the check.
+ *
+ * WHAT COUNTS. A run is the contiguous prefix of token-bearing outputs starting at the region's first slot -
+ * one per dynamic-storage chunk, loop entry or loop sidecar. Inside the declared region every token output
+ * counts, because the region is that participant's private space. PAST the region a token output counts only
+ * when it carries the participant's own state category (read off its master input) AND is not explained as
+ * another block's master output. That second clause is what catches the shape the model could not otherwise
+ * see: with two dynamic participants, an over-capacity run spills into the NEXT participant's block, where
+ * neither the token-outside-the-region rule nor the input/output balance rule fires, and only the VM objects.
+ *
+ * It under-counts rather than over-counts wherever the evidence is ambiguous - a trailing output minted under
+ * some other category, or a next participant sharing this one's category - so it never manufactures a refusal
+ * for a transaction the covenants would have accepted. Nor does it manufacture one past the LAST block: a
+ * claimed output there is already refused by the token-outside-the-region rule below, so the only thing that
+ * changes for that shape is which message the composer reads.
+ */
+const trailingRunsFromBuilder = (
+  builder: TransactionBuilder, assembly: BalancedAssembly, regions: readonly GraphTrailingRegion[],
+): Record<number, number> => {
+  const runs: Record<number, number> = {};
+  const blockAt = new Map(assembly.blocks.map((block) => [block.base, block]));
+  for (const region of regions) {
+    const block = assembly.blocks.find((candidate) => candidate.participant === region.participant)!;
+    const own = builder.inputs[block.base]?.token?.category;
+    const blockEnd = block.base + block.blockLayout.blockSize;
+    let run = 0;
+    for (let index = region.base; index < builder.outputs.length; index += 1) {
+      const token = builder.outputs[index].token;
+      if (token === undefined) break;
+      if (index >= region.base + region.capacity) {
+        // Outside the region: only the participant's own category, and only where no other block's master
+        // output already explains the slot.
+        if (index < blockEnd || own === undefined || token.category !== own) break;
+        const displaced = blockAt.get(index);
+        if (displaced !== undefined
+          && builder.inputs[displaced.base]?.token?.category === token.category) break;
+      }
+      run += 1;
+    }
+    runs[region.participant] = run;
+  }
+  return runs;
+};
+
+/** The declared regions of a derived assembly, in the same participant indexing the assembly uses. */
+const trailingRegionsOf = (assembly: BalancedAssembly): GraphTrailingRegion[] =>
+  assembly.blocks.flatMap((block) => (block.blockLayout.trailingBase === undefined
+    || block.blockLayout.trailingCapacity === undefined
+    ? []
+    : [{
+      participant: block.participant,
+      base: block.base + block.blockLayout.trailingBase,
+      capacity: block.blockLayout.trailingCapacity,
+    }]));
 
 /**
  * Structural block-assembly gate, run BEFORE any unlocker is asked for bytecode.
@@ -17,6 +79,11 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
  * published block layout), so this fires without the caller opting in. Only a transaction where NO input
  * publishes a participant master is left alone; a transaction that publishes one but cannot be described is
  * refused - see `deriveBalancedAssemblyFromInputs`.
+ *
+ * It also runs the runtime-resource capacity rule (`assertGraphTrailingCapacity`) against runs measured off the
+ * transaction itself. That rule used to exist without a caller: an over-capacity chunk run was built, funded and
+ * signed, and only then refused by the VM at the first projection input - a slot that names nothing about the
+ * cause. A gate the caller must remember to call is not a gate.
  *
  * Returns the assembly it checked, or undefined when the transaction is out of the block model's scope.
  */
@@ -27,6 +94,16 @@ export const preflightLayer3BlockAssembly = (
     builder.inputs as never, builder.inputs.length,
   );
   if (!assembly) return undefined;
+  // The describability rule runs BEFORE the generic structural checks, so an over-capacity run reports its
+  // cause. Left second, the same transaction reports whatever its overflow happened to collide with - a token
+  // in the sidecar tail, or nothing at all when the collision lands inside the next participant's block.
+  const regions = trailingRegionsOf(assembly);
+  if (regions.length > 0) {
+    assertGraphTrailingCapacity(
+      { participantInputs: assembly.blocks.map((block) => block.base), trailingRegions: regions },
+      trailingRunsFromBuilder(builder, assembly, regions),
+    );
+  }
   preflightBalancedBlockAssembly(builder, assembly, options);
   return assembly;
 };

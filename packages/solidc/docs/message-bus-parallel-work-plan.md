@@ -273,6 +273,9 @@ task-specific report, not in this table.
 | R3-16 | The corpus result rests on four unpinned external checkouts | L3 | R3 | **INTEGRATED** | all four pinned and currently AT their pins; detection is three-layered because a commit does NOT pin the denominator - SBE moved 139 -> 141 in-scope with its pin unchanged - see 4.106 |
 | X124 | mistswap is NOT recreatable from any public commit | L3 | R3-16 | **RECORDED, not closeable** | a local unpushed commit; 15 of 16 targets byte-identical to public ancestor `1f8622bb`, exactly one differs - `BentoBoxV1.sol`, a load-bearing anchor. Divergence is cosmetic rebranding, immaterial to what the census measures |
 | X125 | The solc-corpus row is a 1-in-12 stride SAMPLE and the stride was recorded nowhere | L3 | R3-16 | **TODO** | 407 of 4,876; a second unpinned reproducibility parameter moving the same denominators, now marked `strideIsInferred: true` with two corroborations |
+| R1-gate | The gate must sit on FINALIZED BYTES, not at plan time | L4 | R1 | **INTEGRATED** | 7 rules, policy/consensus split ENFORCED (`allowNonRelayable` cannot reach a consensus refusal), C1's dust refusal reproduced in-repo with the mock ACCEPTING the bytes - see 4.107 |
+| X126 | 7 of 8 `sendRawTransaction` sites are still ungated | L4 | R1-gate | **TODO (L4 declined to recommend its own 1-line fix)** | a Layer-3-shaped composition via `StatefulTransactionBuilder.drive().send()` reaches the network unjudged. Blast radius unmeasured, and R1 recorded an analogue rejecting 44.5% of sends |
+| X127 | `Layer3DynamicChunksS3` "64-chunk value" is LOAD-SENSITIVE, not broken | — | S3 | **TODO (flake)** | green in isolation and in a 2-file batch (33/33 here), red under `--maxWorkers=2` across 31 files for two independent workers, on op-cost density 2,893,600 / 3,617. `failingInput()` returns null the line before, so the gate admits it |
 | X109 | Two non-relaxed VM callers discard the provider's own limits | — | X57 | **TODO** | gate is `> 10_000`, so a provider AT 10,000 builds a bare VM: measured a program the raw VM ACCEPTS and the provider's verifier REJECTS. `StatefulTransactionBuilder.ts:2662,:2691` |
 | X110 | A shared `refs/stash` entry survived from round s1 | — | — | **TODO (process, hazard live)** | 923 lines of pointer-table files; all five now PRESENT and four LARGER in-tree, so nothing unique - but a `stash pop` would resurrect older copies. Drop was denied by the classifier; needs the user |
 | X111 | Emission-clone readers still read the pre-state, undiagnosable at compile time | I1 | SEC-18 | **BOUNDARY (measured, refusal reverted)** | a per-slot compile-time refusal false-refused C2 **23/23**: route-closure membership is not route-composition membership. Belongs at graph-planning time |
@@ -314,6 +317,100 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.107 THREE WORKERS CORRECTED ME IN ONE ROUND, and the corrections were the deliverable
+
+L1, L3 and L2 each overturned something I had written, and in two cases my error was the reason the row
+existed at all. Recording that plainly, because a board where the integrator is never wrong is a board that
+is not being read.
+
+**L1 vs me on X109, and then me vs L1: it was a DEPENDENCY VERSION.** I falsified K1's claim that the
+published consensus limits are unenforced. L1 falsified my falsification. Both of us were right about what we
+ran, because **L1's worktree had `@mem-cash/validation@0.0.7` and this workspace installs `0.0.8`** - 0.0.8's
+`TxVerifierConfig` declares `consensus?: ConsensusOverrides` and its verifier reads it 28 times; 0.0.7 has
+neither. Under 0.0.8, six of L1's assertions fail, including its stated decision row. This is X122's second
+and sharper form: K1's version of the trap was obvious (a different branch's code), L1's is invisible - the
+right source, the wrong version of the dependency whose behaviour is the entire subject. **A gate whose
+correctness depends on which patch release is installed is fragile whichever answer is right**, which is the
+finding that outlives either. Sent back to L1 with the version fact and an instruction not to trust my
+numbers either.
+
+**L3 vs me on X108: my diagnosis was the error.** I filed it as "a different fixture, stale by an
+unattributed amount". It is the SAME fixture, and the amount is fully attributable to three named commits.
+L3 settled it with arithmetic rather than argument: constant unlock deltas across 2/3/8 rows (A -908,
+B -1,432), which a substituted fixture cannot produce, and a tx-size delta exactly equal to their sum in all
+three rows. Written into the doc **two minutes** after being measured, then never re-derived through seven
+commits. The line worth keeping: **both the stale and current tables satisfy `budget = 800 * (41 + unlock)`,
+and that internal consistency is why the stale table looked credible for seven commits. Self-consistency is
+not currency.** It then found the Release 0 table stale too, with the corpus-token claim INVERTED outright,
+and re-derived the consequences rather than the numbers - the "only 225 bytes of headroom" reasoning is dead
+at 5,186 bytes.
+
+**L2 vs SEC-18: the first adversarial review of the round FAILED a merged security fix.** See 4.105.
+
+### 4.106 L3: pinning made an irreproducibility VISIBLE rather than papering over it
+
+R3-16 asked for four corpora to be pinned. The valuable part is what pinning exposed.
+
+**Detection had to be three-layered, and the middle layer earns its place by counterexample.** Commit,
+file counts, and a sha256 digest over exactly the files the census reads. A commit does NOT pin the
+denominator: solidity-by-example moved **139 -> 141** in-scope files with its pin unchanged and a clean tree,
+because exclusions were removed from the harness. A digest alone would miss a matching-commit dirty tree; a
+commit alone missed this.
+
+**mistswap is not recreatable from any public commit**, and L3 refused to hide that behind a SHA. It sits on
+a local unpushed commit; 15 of 16 targets are byte-identical to public ancestor `1f8622bb` and exactly one
+differs - `BentoBoxV1.sol`, one of the two load-bearing anchors. The divergence is cosmetic rebranding and
+immaterial to what the census measures, and the manifest says plainly that no public commit reproduces it,
+with a test to stop a later pin refresh quietly upgrading that.
+
+**A second unpinned reproducibility parameter**: the recorded solc-corpus row is a **1-in-12 stride sample,
+407 of 4,876**, and the stride was written down nowhere. Marked `strideIsInferred: true` with both
+corroborations stated rather than asserted as known.
+
+**Two silent degradations closed**: `findSol` returned `[]` for a missing root, so an absent corpus
+contributed zero while a total was still reported; and the mistswap list is `.filter(existsSync)`, so a
+renamed target shrank the denominator. L3 refused to make absence a skip - the easy way to stay green
+everywhere - on the grounds that a guard whose subject can vanish while it stays green is the defect the row
+exists to close.
+
+### 4.107b L4: the gate R1 proved was necessary, and a defect its author found by READING
+
+R1 measured that a plan-time screen cannot be the gate: nothing in the corpus reaches its REFUSE threshold,
+and a per-input VM evaluation is **structurally blind** to transaction size, dust and output template. L4
+built the finalized-bytes gate on both Layer-3 entry points - one judging `buildLibauthTransaction()`, one
+judging `decodeTransactionUnsafe` of the literal broadcast hex.
+
+**The policy/consensus split is enforced, not annotated**: `allowNonRelayable` admits a policy-only refusal
+and cannot reach a consensus one, and suppressed policy refusals are still named. It is a caller argument and
+never a provider field - reading `provider.policy.enforceDust` is exactly how dust came to be present,
+correct and switched off. The gate reads **zero** provider limits, asserted against a profile publishing
+10,000,000-byte ceilings.
+
+**`standard-output-template` is deliberately absent**, and the code says why: X64 measured that BCHN v29 does
+not enforce it. A rule refusing more than the node is wrong, not conservative.
+
+**C1's refusal is reproduced in-repo, and the control is what makes it a wiring proof**: the perturbed bytes
+are ACCEPTED by the mock network, so every covenant is satisfied and the gate is the only objector.
+
+**The file defends itself against the vacuity class**: a `DEMONSTRATED` set must equal the rule-id set, so a
+rule added without a byte-exact hostile pair fails the suite. Every rule has an admit/refuse pair differing
+in ONE byte, with the message matched on its arithmetic. At the 1,000,000-byte boundary, the added rule IS
+the added byte.
+
+**L4 found a defect in its own rule by reading BCHN's source, not by a red test.** `isPushOnlyBytecode`
+rejected `OP_RESERVED` and its own test asserted that; `CScript::IsPushOnly` is `if (opcode > OP_16) return
+false` and its comment records `OP_RESERVED` as push-only. The gate was refusing a scriptSig BCHN accepts -
+the identical error that got `standard-output-template` deleted.
+
+**Three things it declined to ship**: a min-relay-fee rule (a real finalized-bytes property, but the mock
+publishes `minRelayFeePerKb` unconditionally, so unlike dust the class was never invisible and the
+justification does not transfer); a minimum-transaction-size rule (structurally unable to fire on any
+Layer-3 shape - the sixth vacuous guard on this effort had it landed); and a dust defect in the SDK's slot
+values that it had framed as a live production bug and then measured away, downgrading it to a pinned reading
+that fails if any of three numbers moves. It also refused to recommend its own one-line coverage extension
+(X126): 7 of 8 `sendRawTransaction` sites remain ungated, the hunk is trivial and in scope, and it declined
+because the blast radius is unmeasured and R1 recorded an analogue rejecting 44.5% of sends.
 
 ### 4.104 K1: the honest half closed a live exploit; the other half I had to falsify
 

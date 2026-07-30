@@ -9306,6 +9306,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     // subsumed - it can only be set for a name in `dynamicNames`, so the blanket two lines up already covers it.
     // The terms are kept because they state the intent this predicate must regain if the layout ever moves after
     // code generation; they are not, today, a second leg that could be sized independently.
+    //
+    // X69 asked whether the DIRECT route should declare and fund a region here, so the balanced assembly model
+    // could describe its 680 `unbalanced transaction` / 381 `token outside every participant block` rejections.
+    // MEASURED at this commit and REFUSED. Three findings, in order of weight:
+    //
+    // 1. A C2 mapping insert - the whole 381 category - has NO term here that can fire. Measured on
+    //    `mapping(int => int) m; function put(..) { m[k] = v; }`: `stateVars=0, dynamicNames=0, collections=1`.
+    //    Every term above is about dynamic state VARIABLES, loops, keccak or ecrecover, and a mapping is a
+    //    CollectionNode. So that half is not a relaxation of this predicate at all; it needs a NEW reservation
+    //    class keyed on `contract.collections.length`, which puts 64 slots on nearly every stateful contract.
+    // 2. Where the blanket term CAN fire, declaring the region BREAKS SETTLED SENDS. Ungating it for the direct
+    //    route turned 4 of 33 previously-settling sends in DynamicWriteBehavior/ChunkedArrays into
+    //    `Program failed an OP_VERIFY operation` at INPUT INDEX 0. All four are value-returning + dynamic-write.
+    //    That is a soundness regression, not a diagnostic change.
+    // 3. It buys no describability and is arithmetically self-limiting. `arr.push(9)` grew from 2 inputs /
+    //    3 outputs / 1,513 raw bytes to 67 / 66 / 4,938 (+226%) and the model still refused it, only under a
+    //    different category. The returnEvent variant reached `blockSize` 67 against 67 funded inputs, so the
+    //    block consumed the fee/change pair the model requires past every participant block - at capacity 64 the
+    //    funder budget the SDK requests (`capacity + 1`) exactly equals the slack one more fixed slot removes.
+    //
+    // Also: the row is filed as spanning `computeBlockLayout` and `StatefulTransactionBuilder`, and that span is
+    // short. `GenerateTargetTraversal` has two live `blockLayout.trailingBase === undefined` branches (the
+    // returnEvent `-1` adjustment and `emitTrailingBlockBase`) that flip the moment the direct route declares a
+    // region. Both sides moved the chunk consistently from output 2 to 3 in the measurement, so that pairing is
+    // NOT the cause of (2); which covenant check fails was NOT isolated.
     const needsTrailingRegion = node.name === '__scb1' && (touchesDynamicState
       || (node.dynamicReads?.length ?? 0) > 0
       || (node.dynamicWrites?.length ?? 0) > 0

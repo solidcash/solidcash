@@ -327,6 +327,121 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
     + 'pre-scan counted. This is a compiler defect: no edit to the contract can name the missing slot',
 };
 
+/**
+ * X91. A synthetic witness an internal call forwards but the CALLER does not carry, refused by name.
+ *
+ * X42's `blockhash` half at its real origin. That guard fires on `graphEmissionHandler`, which is only the
+ * subset of hidden-batch handlers that also make a tail-form external call. The failure is not a property of
+ * the handler's effects at all - it is a property of the CALL EDGE:
+ *
+ *   1. `SymbolTableTraversal` appends `__internal__blockhashInputIndex` to any function with `usesBlockhash`.
+ *      Unlike `__internal__msgSenderCategory`, that injection is NOT skipped for a route or a graph handler.
+ *   2. `TypeCheckTraversal.forwardInternalReturnOutputIdx` auto-forwards such a witness at an internal call
+ *      site as an identifier naming "the caller's own same-named param".
+ *   3. The generated `__scb1` route calls each eligible handler with the user-visible args only, and declares
+ *      no such param - so step 2 inserts a reference to a name the route does not have.
+ *   4. Code generation evaluates that identifier and died on the bare internal
+ *      `Expected variable '__internal__blockhashInputIndex' does not exist on the stack`.
+ *
+ * So a route-eligible handler that reads `blockhash(n)` and makes NO external call escaped X42 entirely, on
+ * the plain hidden-batch route and on the graph route alike. The refusal below sits on the edge instead of on
+ * an effect list, and is checked against the caller's own stack - the exact condition the identifier read
+ * would abort on - so it names any forwarded witness the caller cannot supply, not only this one.
+ *
+ * The deploy half does NOT escape the same way: `new C(..)` injects no synthetic witness, and a route-eligible
+ * handler that deploys and makes no external call compiles onto the route (measured, not assumed).
+ *
+ * Fires only where the internal invariant already threw: nothing is emitted before the check, so no program
+ * that compiled stops compiling and no emitted byte changes.
+ */
+export class ForwardedWitnessError extends SolidCashError {
+  constructor(node: Node, public readonly reason: string, detail: string) {
+    super(node, `${reason}: ${detail}`);
+  }
+}
+
+const FORWARDED_WITNESS_DETAIL: Record<string, string> = {
+  'route-cannot-carry-blockhash-oracle-index':
+    'reading blockhash(n) is not admitted in a function the hidden-batch route invokes. The block-oracle '
+    + 'co-spend is located through a synthesized __internal__blockhashInputIndex witness, which the compiler '
+    + 'forwards from the caller; the generated __scb1 route neither declares it nor appears in the ABI, so the '
+    + 'SDK has nowhere to fill it and the handler would read an unlocated input. The read itself is fine on the '
+    + 'direct route: compile this contract without the hidden-batch option, or keep the blockhash read in a '
+    + 'function the route does not admit',
+  'route-cannot-carry-forwarded-witness':
+    'this function is invoked with a compiler-synthesized witness parameter that the calling function does not '
+    + 'carry, so there is no value to forward. Synthetic witnesses are threaded from caller to callee unchanged, '
+    + 'which requires every caller on the path to declare one. This is a compiler defect: no edit to the '
+    + 'contract can supply the missing witness',
+};
+
+/**
+ * X91. A synthetic witness this call site forwards that the CALLER cannot supply.
+ *
+ * Mirrors, as a pre-check, exactly what the argument loop below would abort on: an `__internal__*` identifier
+ * argument that is a declared parameter of the target but is absent from the caller's stack. The three
+ * fallbacks `visitIdentifier` takes before its stack lookup - the compiler-owned `__internal__graphBlockSize`,
+ * a function-pointer reference, and a constant expression - are excluded, so the predicate is the abort
+ * condition and nothing wider. `__internal__returnOutputIdx` is excluded because the argument loop skips it.
+ */
+function forwardedWitnessMiss(
+  args: Node[],
+  targetFunc: FunctionDefinitionNode,
+  stack: string[],
+  constantExpressions: Map<string, ExpressionNode>,
+): { reason: string; node: Node } | undefined {
+  // X76's class: the forwarded identifier was synthesized by TypeCheckTraversal at the CALL site, which for a
+  // routed handler lives in compiler-generated `__scb1` source. Its Line/Column reads as a position in the
+  // user's file and is not one. Report the effect's own site in the callee instead, falling back to the callee's
+  // declaration - both are genuine user-source positions.
+  const blame = (name: string, fallback: Node): Node =>
+    (name === '__internal__blockhashInputIndex' ? findBlockhashCall(targetFunc.body) : undefined)
+    ?? (targetFunc.location ? targetFunc : fallback);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!(arg instanceof IdentifierNode)) continue;
+    const name = arg.name;
+    if (!name.startsWith('__internal__')) continue;
+    if (name === '__internal__graphBlockSize' || name === '__internal__returnOutputIdx') continue;
+    if (targetFunc.parameters[i]?.name === '__internal__returnOutputIdx') continue;
+    if (arg.functionReference || constantExpressions.has(name)) continue;
+    // Only a FORWARDED witness: one the target declares as a parameter. An `__internal__*` local the caller
+    // computes itself is not forwarded and is not this failure.
+    if (!targetFunc.parameters.some((parameter) => parameter.name === name)) continue;
+    if (stack.includes(name)) continue;
+    return {
+      reason: name === '__internal__blockhashInputIndex'
+        ? 'route-cannot-carry-blockhash-oracle-index'
+        : 'route-cannot-carry-forwarded-witness',
+      node: blame(name, arg),
+    };
+  }
+  return undefined;
+}
+
+/** The first `blockhash(n)` call in a function body, for a user-source position to blame. */
+function findBlockhashCall(body: Node | undefined): Node | undefined {
+  if (!body) return undefined;
+  let found: Node | undefined;
+  const seen = new WeakSet<object>();
+  const walk = (n: unknown): void => {
+    if (found) return;
+    if (Array.isArray(n)) { for (const item of n) walk(item); return; }
+    if (!(n instanceof Node) || seen.has(n)) return;
+    seen.add(n);
+    if (n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.BLOCKHASH && n.location) {
+      found = n;
+      return;
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+      walk(value);
+    }
+  };
+  walk(body);
+  return found;
+}
+
 /** The first effect kind a graph emission handler's body carries that the graph route cannot describe. */
 function graphHandlerUnsupportedEffect(
   body: Node | undefined,
@@ -6260,6 +6375,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * pull the selector from the bottom.
    */
   visitUserFunctionCall(node: FunctionCallNode, targetFunc: FunctionDefinitionNode): Node {
+    // X91. Refuse a forwarded synthetic witness the caller cannot supply BEFORE anything is emitted - ahead of
+    // the journal-context picks, the hidden-context pushes and the argument loop - so no partially lowered call
+    // is left behind. Checked against this caller's stack rather than against the callee's effect list: the
+    // failure belongs to the call edge, which is why X42's graphEmissionHandler gate did not see it.
+    const witnessMiss = forwardedWitnessMiss(node.parameters, targetFunc, this.stack, this.constantExpressions);
+    if (witnessMiss) {
+      throw new ForwardedWitnessError(
+        witnessMiss.node, witnessMiss.reason, FORWARDED_WITNESS_DETAIL[witnessMiss.reason],
+      );
+    }
     const locationData = { location: node.location, positionHint: PositionHint.END };
     const targetJournalSlots = targetFunc.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(targetFunc.functionId) ?? []);

@@ -871,25 +871,32 @@ contract C11Opt() {
     }
   });
 
-  // The remaining VALUE spellings, so the class is covered by syntax and not only by the modern one.
-  it('fails closed on the legacy low-level value-option spelling', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
-contract C11LegacyValue() {
+  /*
+   * The remaining VALUE spellings, so the class is covered by syntax and not only by the modern one.
+   *
+   * X144. Both were bare `toThrow()` on `compileString`: any compile failure passed them, so the refusal they
+   * name could have been deleted and they would have stayed green on a syntax error instead. Now each names
+   * the refusal, and each carries the control that differs in exactly the attacked field - the same contract
+   * with no value option must COMPILE, which is what makes the refusal attributable to the option.
+   */
+  const c11ValueSource = (name: string, call: string): string => `pragma solidcash >=0.8.0;
+contract ${name}() {
   function run(address target, bytes payload, int amount) public {
-    (bool ok, bytes result) = target.call.value(amount)(payload);
-    require(ok && result.length >= 0);
+    (bool ok, bytes result) = target.${call}(payload);
+    require(ok && result.length >= 0 && amount >= 0);
   }
-}`, busOnly)).toThrow();
+}`;
+
+  it('fails closed on the legacy low-level value-option spelling', () => {
+    expect(() => compileString(c11ValueSource('C11LegacyValue', 'call'), busOnly)).not.toThrow();
+    expect(() => compileString(c11ValueSource('C11LegacyValue', 'call.value(amount)'), busOnly))
+      .toThrow(/low-level 'call' carrying the call option\(s\) 'value'/);
   });
 
   it('fails closed on the modern low-level value-option spelling', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
-contract C11ModernValue() {
-  function run(address target, bytes payload, int amount) public {
-    (bool ok, bytes result) = target.call{value: amount}(payload);
-    require(ok && result.length >= 0);
-  }
-}`, busOnly)).toThrow();
+    expect(() => compileString(c11ValueSource('C11ModernValue', 'call'), busOnly)).not.toThrow();
+    expect(() => compileString(c11ValueSource('C11ModernValue', 'call{value: amount}'), busOnly))
+      .toThrow(/low-level 'call' carrying the call option\(s\) 'value'/);
   });
 
   // A value option written in only ONE arm of a branch still publishes the transfer, so the branch spelling

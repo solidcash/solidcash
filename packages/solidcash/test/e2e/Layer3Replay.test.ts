@@ -70,9 +70,15 @@ describe('refinement: one-shot controller replay policy', () => {
 
   it('HOSTILE: replaying with the same (now-consumed) controller is rejected', async () => {
     const s = await setup();
-    await s.provider.sendRawTransaction(raw(await transcript(s, s.ctrlUtxo))); // first run consumes the controller
-    // attempt to re-run against the same controller UTXO - it no longer exists (burned, mint-once).
-    await expect(s.provider.sendRawTransaction(raw(await transcript(s, s.ctrlUtxo)))).rejects.toThrow();
+    // Guard negative control: the FIRST run of the identical transcript must be accepted, so the replay's
+    // refusal is attributable to the controller having been consumed and not to the fixture.
+    await expect(s.provider.sendRawTransaction(raw(await transcript(s, s.ctrlUtxo))))
+      .resolves.toBeTypeOf('string');
+    // Re-run against the same controller UTXO - it no longer exists (burned, mint-once). X144: was a bare
+    // `rejects.toThrow()`; a censused run showed it catches `bad-txns-inputs-missingorspent`, which is the
+    // right cause, but the bare form also passed on a script failure or an SDK build error.
+    await expect(s.provider.sendRawTransaction(raw(await transcript(s, s.ctrlUtxo))))
+      .rejects.toThrow(/bad-txns-inputs-missingorspent/);
   });
 
   it('HOSTILE: recreating the controller in a one-shot transcript is rejected by attest', async () => {

@@ -238,14 +238,43 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     await expect(sendRow(branded, branded.valid)).resolves.toBeTypeOf('string');
   });
 
-  it('HOSTILE: co-spending one owner twice (two settlement authorities) is rejected', async () => {
+  /**
+   * X144. THIS TEST'S SUBJECT NEVER RAN.
+   *
+   * It set `setupB = setupA`, so `buildTx` handed the SAME master UTXO to `addInput` twice and the SDK threw
+   * `Duplicate input detected` at BUILD time - censused, from `TransactionBuilder.ts:151`. No transaction was
+   * ever encoded, no script was ever evaluated, and the covenant rule the title names,
+   * `require(lockingBytecode0 != lockingBytecode1)`, could have been deleted from PARTICIPANT without turning
+   * this green test red. The bare `rejects.toThrow()` is what let a builder-level refusal stand in for a
+   * covenant one.
+   *
+   * Split into the two distinct claims, each attributable to the layer that actually refuses.
+   */
+  it('HOSTILE: co-spending one master UTXO twice is refused by the SDK builder, before any script', async () => {
     const s = await setup();
-    // Both participant slots resolve to owner A's single master UTXO -> duplicate input + non-distinct row.
     const dup = {
       ...s, B: s.A, setupB: s.setupA,
       valid: { ...s.valid, cat1: s.valid.cat0, lbc1: s.valid.lbc0 },
     };
-    await expect(sendRow(dup, dup.valid)).rejects.toThrow();
+    await expect(sendRow(dup, dup.valid)).rejects.toThrow(/Duplicate input detected/);
+    await expect(sendRow(s, s.valid)).resolves.toBeTypeOf('string');
+  });
+
+  /**
+   * The covenant-level half the test above never reached: two DISTINCT master UTXOs are co-spent, so the
+   * builder is satisfied and the transaction is encoded and evaluated, but the participant row names one owner
+   * in both slots. The VM refuses it.
+   *
+   * SCOPE, stated rather than implied: two requires in `__layer3_bind` are false for this row - the
+   * distinctness rule and input 1's owner binding - and this asserts the VM refusal at the participant input,
+   * not which OP_VERIFY fails first. Isolating distinctness alone would need a second co-spent UTXO carrying
+   * owner A's own locking bytecode and category, which this fixture does not build.
+   */
+  it('HOSTILE: a row naming one owner in both participant slots is refused by the covenant', async () => {
+    const s = await setup();
+    await expect(sendRow(s, { ...s.valid, lbc1: s.valid.lbc0, cat1: s.valid.cat0 }))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0/);
+    // Guard negative control: the same co-spend, differing only in the two attacked row fields, settles.
     await expect(sendRow(s, s.valid)).resolves.toBeTypeOf('string');
   });
 });

@@ -402,8 +402,15 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     // Nothing has asked an unlocker for bytecode yet: `raw()` was called during assembly, so reset the counter
     // and prove the preflight itself needs no signature to reject.
     built.signatureRequests.count = 0;
-    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly)).toThrow();
+    // X144. Was a bare `toThrow()`, so the `signatureRequests.count === 0` line below would have stayed green
+    // on ANY throw - including one raised before the preflight was even reached, which asks no signatures for
+    // a reason that has nothing to do with this claim. The refusal is now named, and the honest control below
+    // shows the same preflight passes when the slot funder is present.
+    expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
+      .toThrow(/balanced assembly: transaction has \d+ slots, layout declares \d+/);
     expect(built.signatureRequests.count).toBe(0);
+    const honest = await build();
+    expect(() => preflightBalancedBlockAssembly(honest.builder, honest.assembly)).not.toThrow();
   }, 180_000);
 
   // X13: the DIRECT `withExternalCall` route now honours the published block layout. Its callee block carries a

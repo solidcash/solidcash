@@ -12,6 +12,7 @@ import {
   BCH_2026_CONSENSUS, BCH_2026_STANDARD, assessEnvelope, densityKnobControl, formatEnvelope,
   knobControlBudgetFor,
 } from './layer3-envelope-f1.js';
+import type { EnvelopeMeasurement } from './layer3-envelope-f1.js';
 import { deriveCalibration, estimate, formatEstimate } from './layer3-estimator-f2.js';
 import { F2_BASIS, F2_BASIS_COMMIT } from './layer3-estimator-basis-f2.js';
 import {
@@ -50,17 +51,20 @@ const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
  *
  * `GraphShapeSpec` lets a caller pass these and defaults them from the calibration when it does not. The
  * default is stale the moment either covenant moves, and it had moved: the F2 basis carries the pre-X65
- * projection verifier, so every corpus prediction in this file was carrying 444 bytes per participant that
+ * projection verifier, so every corpus prediction in this file was carrying 421 bytes per participant that
  * HEAD does not generate. Two compiles and two instantiations - no UTXO, no builder, no VM - remove the whole
  * class of error.
  *
- * X85. THE FIGURE IS 444 BYTES ON THE PROJECTION AND NOTHING ON THE CONTROLLER, and getting that wrong the
+ * X85. THE FIGURE IS 421 BYTES ON THE PROJECTION AND NOTHING ON THE CONTROLLER, and getting that wrong the
  * first time is why these are INSTANTIATED lengths rather than compiled ones.
  *
  * The quantity `estimate` wants is the redeem script the input PUSHES, which for a covenant with constructor
  * parameters is the compiled bytecode plus each argument's push. The projection verifier takes none, so its
- * compile and its deployment are both 4,098 bytes against the basis's 4,542: 444 bytes of real staleness, once
- * per participant. The root controller takes a `bytes20 initializer`, so it compiles to 1,493 and deploys at
+ * compile and its deployment are both 4,121 bytes against the basis's 4,542: 421 bytes of real staleness, once
+ * per participant. (R3-13: this read 4,098 and 444, which was the figure between X65 and X81. Both are
+ * measured here rather than cited - the assertions below read `MEASURED_COVENANTS`, which is two compiles at
+ * module scope, so nothing in this file depends on the paragraph being current.)
+ * The root controller takes a `bytes20 initializer`, so it compiles to 1,493 and deploys at
  * 1,514 - which is exactly what the calibration holds. Reading 1,493 off the compile and calling the
  * difference a stale covenant invented a 21-byte saving that does not exist, and passing it would have
  * UNDER-stated the controller input, which is the one direction a conservative estimator may not err in. The
@@ -68,10 +72,12 @@ const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
  * assertion is what caught it.
  *
  * AND THE CONSEQUENCE IS NOT ONLY A LOOSE BAND. The estimated-landing test tallies both descriptors and prints
- * the difference, so the run states its own figure rather than quoting this comment: the dead covenant is 444
- * bytes per participant, 3,552 serialized bytes at eight, and the standard relay ceiling is what the affected
+ * the difference, so the run states its own figure rather than quoting this comment: the dead covenant is 421
+ * bytes per participant, 3,368 serialized bytes at eight, and the standard relay ceiling is what the affected
  * rows were being refused on. A stale constant that only inflated a published band would be an accuracy
- * problem; one that answers "will not fit" about a graph that fits is a wrong answer.
+ * problem; one that answers "will not fit" about a graph that fits is a wrong answer. Measured at `3281ece9`,
+ * the default answers OVER on 22 of 1,712 predicted rows that the live covenant sizes say fit - printed by the
+ * run, not quoted from here.
  */
 const MEASURED_COVENANTS = ((): { projectionRedeemBytes: number; controllerRedeemBytes: number } => {
   const provider = new MockNetworkProvider();
@@ -698,8 +704,19 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
    *
    * Rule 1 is honoured by construction: `assessEnvelope` reads every cost RUN TO COMPLETION on a relaxed
    * density ceiling with every other consensus knob real, then re-checks acceptance with NOTHING relaxed at
-   * both real profiles. Rule 2 is the knob-liveness control below: the same bytes at a budget the input
-   * provably cannot meet must be refused, or an accepted reading only means the evaluation never ran.
+   * both real profiles. Rule 2 is the knob-liveness control: the same bytes at a budget the input provably
+   * cannot meet must be refused, or an accepted reading only means the evaluation never ran.
+   *
+   * R3-8. BOTH RULES ARE ASSERTED OUTSIDE THE CATCH, and they were not. `measureSubject` used to make all
+   * five of those assertions itself, from inside the `try` that turns a contract whose handler cannot execute
+   * with placeholder arguments into a legitimate skip. So a rule that stopped biting was indistinguishable
+   * from a `require` a placeholder cannot satisfy: it was caught, appended to `failures`, and printed as
+   * "candidate skipped". The only gate left was `measured > 0`, which ONE surviving candidate out of eighty-six
+   * satisfies. The sibling file had already been repaired this way - `Layer3EstimatorF2.test.ts` calls
+   * `assertMeasurementDiscipline` after its catch's `continue` - and this file kept the defect.
+   *
+   * `measureSubject` therefore asserts nothing about the result and returns it, exactly as F2's
+   * `measureCorpusSubject` does. The floor below is on the RATIO of candidates measured, not on zero.
    */
   it('MEASURED: a real corpus participant against every real BCH-2026 limit', async () => {
     const candidates = measuredControlCandidates();
@@ -712,13 +729,18 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     // estimator comparison is the point of the exercise, so one data point where two are available would be
     // choosing the weaker evidence.
     for (const subject of candidates) {
+      let measurement: CorpusMeasurement;
       try {
-        const drift = await measureSubject(subject);
-        if (drift !== undefined) censusDrift.push(drift);
-        measured += 1;
+        measurement = await measureSubject(subject);
       } catch (error) {
         failures.push(`${subject.corpus}/${subject.contractName}: ${(error as Error).message.split('\n')[0]}`);
+        continue;
       }
+      // OUTSIDE THE CATCH. A failure here is a failure of the measurement discipline and fails the test; it
+      // can no longer be logged as a skipped candidate.
+      assertMeasurementDiscipline(measurement);
+      if (measurement.drift !== undefined) censusDrift.push(measurement.drift);
+      measured += 1;
     }
     for (const failure of failures) console.log(`[F3] candidate skipped - ${failure}`);
     // X86. A CENSUS THAT HAS DRIFTED IS REPORTED, NOT SKIPPED. The recorded redeem length used to be asserted
@@ -727,15 +749,68 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     // argument cannot satisfy. The descriptor is built from this run's compile, so the row is still measured.
     console.log(`[F3] census rows whose recorded redeem length has drifted: ${censusDrift.length}`);
     for (const drift of censusDrift) console.log(`[F3]   DRIFT ${drift}`);
-    console.log(`[F3] measured ${measured} of ${candidates.length} one-slot candidates`);
+    console.log(`[F3] measured ${measured} of ${candidates.length} one-slot candidates `
+      + `(${(measured * 100 / candidates.length).toFixed(1)}%)`);
+    // R3-8. A FLOOR ON THE POPULATION, not on zero. `measured > 0` was satisfiable by one candidate, which is
+    // the whole reason a swallowed rule could hide here. The floor is set BELOW the reading this commit takes
+    // so ordinary compiler churn in a corpus contract does not fail the row, and far above one: if the skip
+    // list ever swallowed most of the population again, this is the line that says so. Measured at `3281ece9`:
+    // 50 of 86, 58.1%, so the floor tolerates six further skips before it bites. The RUN prints the reading,
+    // above, so a reader compares against a measurement rather than against this comment.
     expect(measured, `no candidate could be built and measured; ${candidates.length} tried`).toBeGreaterThan(0);
+    expect(measured / candidates.length,
+      `only ${measured} of ${candidates.length} candidates could be measured`).toBeGreaterThan(0.5);
   }, 900_000);
 
   /**
-   * Build one census row into a real 1-participant graph, measure it, and check the estimator against it.
-   * Returns a description of any disagreement between the recorded census and this run's compile.
+   * What one measured candidate yields. `measureSubject` builds it and asserts NOTHING about the result; the
+   * caller asserts, outside its catch. Same split as F2's `CorpusMeasurement`, and for the same reason.
    */
-  async function measureSubject(subject: CensusRow): Promise<string | undefined> {
+  interface CorpusMeasurement {
+    subject: CensusRow;
+    envelope: EnvelopeMeasurement;
+    transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>;
+    sourceOutputs: ReturnType<typeof generateLibauthSourceOutputs>;
+    /** Participant inputs plus the projection, controller and fee slots - what `inputCount` must equal. */
+    expectedInputCount: number;
+    /** A description of any disagreement between the recorded census and this run's compile, or `undefined`. */
+    drift: string | undefined;
+  }
+
+  /**
+   * THE TWO RULES, ASSERTED OUTSIDE THE CALLER'S CATCH.
+   *
+   * Rule 1: acceptance with nothing relaxed, at both real BCH-2026 profiles. Rule 2: a density knob that
+   * refuses these exact bytes at a budget derived from this input's own reading. A throw from either now
+   * fails the test instead of being counted as a contract that could not be built.
+   */
+  function assertMeasurementDiscipline(measurement: CorpusMeasurement): void {
+    const { subject, envelope, transaction, sourceOutputs, expectedInputCount } = measurement;
+    const name = `${subject.corpus}/${subject.contractName}`;
+    // RULE 2. Knob liveness, on the worst-cost input of THIS transaction, at a budget derived from its own
+    // reading rather than a fixed fraction that a low-density shape would survive.
+    const budget = knobControlBudgetFor(envelope.worstCostInput);
+    const control = densityKnobControl(
+      transaction as never, sourceOutputs, envelope.worstCostInput.input, budget,
+    );
+    expect(budget, `${name}: the control budget is not below the ordinary one`)
+      .toBeLessThan(BCH_2026_CONSENSUS.operationCostBudgetPerByte);
+    expect(control, `${name}: the operation-cost knob does not bite at ${budget}/byte`).toBeDefined();
+    expect(String(control)).toMatch(/density|operation cost/i);
+    // RULE 1. Nothing relaxed, at both real profiles, and the input set is the one the layout describes.
+    expect(envelope.inputCount, `${name}: the built input count is not the layout's`).toBe(expectedInputCount);
+    expect(envelope.refusedAtConsensus, `${name} refused at the real consensus profile`).toEqual([]);
+    expect(envelope.refusedAtStandard, `${name} refused at the real standard profile`).toEqual([]);
+  }
+
+  /**
+   * Build one census row into a real 1-participant graph, measure it, and report the estimator against it.
+   *
+   * IT ASSERTS NOTHING ABOUT THE MEASUREMENT, deliberately - see R3-8 on the test above. The three `expect`s
+   * that remain are PRECONDITIONS on whether this harness can build the subject at all (a parameter type it
+   * cannot supply, a controller genesis that did not root), which is exactly what the caller's catch is for.
+   */
+  async function measureSubject(subject: CensusRow): Promise<CorpusMeasurement> {
     console.log(`[F3] measured-control subject: ${subject.corpus}/${subject.contractName} (${subject.rel}), `
       + `blockSize=${subject.blockSize}, census redeem=${subject.redeemBytes}B`);
 
@@ -861,18 +936,8 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
     );
     console.log(`[F3] MEASURED ${formatEnvelope(envelope)}`);
 
-    // RULE 2. Knob liveness, on the worst-cost input of THIS transaction, at a budget derived from its own
-    // reading rather than a fixed fraction that a low-density shape would survive.
-    const budget = knobControlBudgetFor(envelope.worstCostInput);
-    const control = densityKnobControl(
-      transaction as never, sourceOutputs, envelope.worstCostInput.input, budget,
-    );
-    expect(budget).toBeLessThan(BCH_2026_CONSENSUS.operationCostBudgetPerByte);
-    expect(control, `the operation-cost knob does not bite at ${budget}/byte`).toBeDefined();
-    expect(String(control)).toMatch(/density|operation cost/i);
-
     // And what the estimator said about this exact shape, before it existed. With the covenant sizes compiled
-    // at this commit rather than defaulted from the calibration, so the prediction is not carrying 444 bytes of
+    // at this commit rather than defaulted from the calibration, so the prediction is not carrying 421 bytes of
     // a projection verifier that the transaction measured beside it does not contain - and with the master
     // redeem length this run compiled rather than the recorded one, for the same reason.
     const prediction = estimate({
@@ -897,9 +962,13 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
       + `${envelope.binding[0].ratio.toFixed(4)}x at ${envelope.binding[0].where}`);
     console.log(`[F3] refusedAtConsensus=${envelope.refusedAtConsensus.length} `
       + `refusedAtStandard=${envelope.refusedAtStandard.length}`);
-    expect(envelope.inputCount).toBe(layout.participantInputs.length + 3);
-    expect(envelope.refusedAtConsensus, 'refused at the real consensus profile').toEqual([]);
-    expect(envelope.refusedAtStandard, 'refused at the real standard profile').toEqual([]);
-    return drift;
+    return {
+      subject,
+      envelope,
+      transaction,
+      sourceOutputs,
+      expectedInputCount: layout.participantInputs.length + 3,
+      drift,
+    };
   }
 });

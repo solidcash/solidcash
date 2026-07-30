@@ -66,8 +66,8 @@ import {
  *
  * The last two tests measure capacity, and they establish two DIFFERENT things. On the CONSENSUS knobs C3
  * fits: all 108 inputs are inside ordinary BCH-2026 operation-cost density, the worst being the controller at
- * 0.9218 (measured at `77cd1e8c`). Under standard relay POLICY it NOW fits as well: the serialized
- * transaction is 96,118 bytes, 3,882 under the 100,000-byte ceiling. That reverses what this header used to
+ * 0.9218 (measured at `3281ece9`). Under standard relay POLICY it NOW fits as well: the serialized
+ * transaction is 96,302 bytes, 3,698 under the 100,000-byte ceiling. That reverses what this header used to
  * record - 100,354 bytes, 354 over - and the two claims still are not the same claim, which is why they are
  * still measured separately: the density result would survive a size change and the size result would not.
  */
@@ -1476,9 +1476,10 @@ describe('C3 capacity measurement', () => {
     // Every compiled participant route sits under the ordinary 10,000-byte input limit, so no single route is
     // a capacity constraint. Nor were the routes ever what pushed C3 at the relay ceiling: measured on one
     // common scale (`densityControlLength`, which the next test tabulates), the eight participant inputs total
-    // 27,665 bytes against 43,784 for the eight projection proofs at 5,473 each, out of a 96,118-byte
-    // transaction. Re-derived at `77cd1e8c`; the 27,637 / 48,072 at 6,009 each / 100,354 recorded here was
-    // three readings stale, and the ratio it was making the point with has if anything sharpened.
+    // 27,665 bytes against 43,968 for the eight projection proofs at 5,496 each, out of a 96,302-byte
+    // transaction. Re-derived at `3281ece9`; the 27,637 / 48,072 at 6,009 each / 100,354 recorded here was
+    // three readings stale, and the ratio it was making the point with has if anything sharpened. (R3-13: the
+    // 43,784 / 5,473 / 96,118 that stood here in between was itself a pre-X81 reading of the same three.)
     // Bands are asserted rather than exact figures so compiler work elsewhere does not falsely fail here; the
     // run prints the figures so a reader compares against a measurement rather than a citation.
     console.log(`C3 route input sizes (${DEFAULT_ORDER.join(', ')}): ${built.routeInputBytes.join(', ')}; `
@@ -1498,19 +1499,19 @@ describe('C3 capacity measurement', () => {
     // TWO DIFFERENT CLAIMS, AND C3 NOW MEETS BOTH. "Fits ordinary BCH-2026 capacity" is about the CONSENSUS
     // knobs - operation-cost density above all - and C3 does fit: the next test measures every one of its 108
     // inputs run-to-completion with an empty over-budget set, the worst being the controller at 0.9218.
-    // "Relayable under standard policy" is a separate claim, and at `77cd1e8c` the serialized transaction is
-    // 96,118 bytes against the 100,000-byte standard relay ceiling, 3,882 UNDER. This paragraph recorded
+    // "Relayable under standard policy" is a separate claim, and at `3281ece9` the serialized transaction is
+    // 96,302 bytes against the 100,000-byte standard relay ceiling, 3,698 UNDER. This paragraph recorded
     // 100,354 bytes and 354 OVER, which was the pre-F4 reading; F4 and then X65 both cut the projection
     // verifier and C3 pays each cut eight times. This profile sets `maximumTransactionBytes` to the 1,000,000
     // CONSENSUS figure, so nothing in this file rejects it either way; the size is asserted below so the
-    // margin is a measured number rather than an untested caveat. C1, at 60,502 bytes, clears both.
+    // margin is a measured number rather than an untested caveat. C1, at 60,617 bytes, clears both.
     //
     // ATTRIBUTION, CORRECTED. This test used to justify itself with "C1 already fails its first PROJECTION
     // proof on operation-cost density; C3 is strictly larger". Both halves are stale. C1 was brought under
     // ordinary capacity by X23 and settles there now, and C3's projections are not a blocker either: measured
-    // run-to-completion at `77cd1e8c` they are 0.5039-0.5083 of budget (0.6257-0.6334 pre-X5, 0.6284-0.6361
-    // post-X5). Every F-phase statement that names the projection input as the thing to shrink is reading a
-    // pre-X23 figure.
+    // run-to-completion at `3281ece9` they are 0.5062-0.5106 of budget (0.6257-0.6334 pre-X5, 0.6284-0.6361
+    // post-X5, 0.5039-0.5083 pre-X81). Every F-phase statement that names the projection input as the thing to
+    // shrink is reading a pre-X23 figure.
     //
     // RESULT CHANGED, and in the good direction. X24 (unroll the deep stack write) and X27 (suffix-split the
     // transcript in attest) landed in separate worker rounds and were measured separately; neither was
@@ -1537,9 +1538,11 @@ describe('C3 capacity measurement', () => {
     // comment to be re-read, and that is what happened. F4 cut 129 bytes from the projection verifier, which
     // is ONE covenant instantiated once per participant, so C3 paid 8x: 100,650 -> 99,670 measured (the
     // 99,618 this comment used to give was the ARITHMETIC 129 x 8, and the build came in 52 bytes above it).
-    // X65 then cut 444 more from the same covenant, worth another 3,552 to C3 with no such residue, and the
-    // measurement at `77cd1e8c` is 96,118 bytes - 3,882 under the ceiling, still with all 108 slots intact.
-    // The band's lower bound of 95,000 is now the one within reach of the next cut, not the upper.
+    // X65 then cut 444 more from the same covenant, worth another 3,552 to C3 with no such residue, and X81
+    // put 23 back per projection script. The measurement at `3281ece9` is 96,302 bytes - 3,698 under the
+    // ceiling, still with all 108 slots intact. (R3-13: 96,118 / 3,882 was the pre-X81 reading, and it stood
+    // here in the present tense.) The band's lower bound of 95,000 is now the one within reach of the next
+    // cut, not the upper.
     //
     // The history is worth keeping, because it is the reason this file distrusts its own recorded figures.
     // 100,354 was measured before X5 added 37 bytes to each of the eight projection scripts (+296, overrun
@@ -1588,7 +1591,7 @@ describe('C3 capacity measurement', () => {
       + `arithmetic+hashing ${((controller.arithmetic + controller.hashIterations * 64) * 100
         / controller.cost).toFixed(2)}%`);
 
-    // RE-MEASURED at `77cd1e8c`, run to completion, ratio against the ORDINARY 800/byte budget. Every row is
+    // RE-MEASURED at `3281ece9`, run to completion, ratio against the ORDINARY 800/byte budget. Every row is
     // a reading from the run that prints the table above; the budget column is bytes x 800:
     //
     //   input             bytes   cost        budget      instr    ratio
@@ -1600,11 +1603,15 @@ describe('C3 capacity measurement', () => {
     //   75   P5 Settler    3,105   1,149,845   2,484,000   10,808   0.4629
     //   77   P6 Reporter   3,102   1,149,679   2,481,600   10,807   0.4633
     //   79   P7 Sink       4,979   1,670,061   3,983,200   15,692   0.4193
-    //   98-105 projections 5,473 each, 2,206,194-2,225,512, budget 4,378,400, 18,656 each, 0.5039-0.5083
+    //   98-105 projections 5,496 each, 2,225,787-2,245,088, budget 4,396,800, 18,845 each, 0.5062-0.5106
     //   106  controller    2,891   2,131,942   2,312,800   15,336   0.9218   <- the worst input, and it FITS
     //
     // The over-budget set is EMPTY: all 108 inputs are inside ordinary BCH-2026 operation-cost density, and the
     // controller clears it with 7.8% headroom.
+    //
+    // R3-13. THE PROJECTION ROW IS THE ONLY ONE THAT MOVED since this table read 5,473 / 2,206,194-2,225,512 /
+    // 4,378,400 / 18,656 / 0.5039-0.5083 at `77cd1e8c`. The other ten rows reproduce exactly, including every
+    // controller figure. X81's +23 per projection redeem script is the whole of the byte move.
     //
     // WHAT THIS CORRECTS. The table that stood here was introduced as "RE-MEASURED after the SEC-6 reshape, run
     // to completion" and NOT ONE of its ten rows reproduces. It recorded the controller at 1.2310x and called
@@ -1619,10 +1626,13 @@ describe('C3 capacity measurement', () => {
     // THE PROJECTION ROW HAS MOVED TWICE SINCE, and the table above is the reading at this commit, not either
     // history. X5 bound the ROOT row's call-options byte and cost 6,009 -> 6,046 bytes, 24,067 -> 24,382
     // instructions, 0.6257-0.6334 -> 0.6284-0.6361. X65 then replaced the projection verifier's 8-way dispatch
-    // with an input-index table, cutting the REDEEM script 4,542 -> 4,098 (-444, pinned by
-    // `Layer3CompiledGraph.test.ts`), and the row moved again to the 5,473 bytes / 18,656 instructions /
-    // 0.5039-0.5083 asserted below. The row's byte column is UNLOCKING bytecode, not redeem, so its -573 is
-    // not the -444 and this file does not decompose it. Both older readings are HISTORY; the
+    // with an input-index table, cutting the REDEEM script 4,542 -> 4,098 (-444), and X81 then retired the
+    // verifier's NUM2BIN width bound for +23, so the redeem script is 4,121 at `3281ece9` - which is what
+    // `Layer3CompiledGraph.test.ts` pins. The row moved with it, to the 5,496 bytes / 18,845 instructions /
+    // 0.5062-0.5106 asserted below. (R3-13: this paragraph said "5,473 bytes / 18,656 instructions ...
+    // asserted below" while the assertions below already read 5,496 and 18,845.) The row's byte column is
+    // UNLOCKING bytecode, not redeem, so its move is not the redeem move and this file does not decompose it.
+    // Both older readings are HISTORY; the
     // pre-X5 figures are kept only because the paragraph that introduced them named 6,009 as current while X5
     // had already moved it.
     //
@@ -1639,11 +1649,11 @@ describe('C3 capacity measurement', () => {
     //
     // SCOPE, and the reason the two claims are stated separately. "Fits ordinary BCH-2026 capacity" is a
     // CONSENSUS-knob result and is what the empty over-budget set establishes. "Relayable under standard
-    // policy" is a different claim, and C3 NOW MEETS IT TOO: the serialized transaction is 96,118 bytes,
-    // 3,882 UNDER the 100,000-byte standard relay ceiling, against the 1,000,000-byte consensus figure this
+    // policy" is a different claim, and C3 NOW MEETS IT TOO: the serialized transaction is 96,302 bytes,
+    // 3,698 UNDER the 100,000-byte standard relay ceiling, against the 1,000,000-byte consensus figure this
     // profile sets. This reverses the verdict this paragraph used to record - 100,650 bytes, 650 over - which
-    // was true when F4's cut was the last one; X65's -444 per projection took a further 3,552 off C3's eight.
-    // C1, at 60,502 bytes, clears both (X39).
+    // was true when F4's cut was the last one; X65's -444 per projection took a further 3,552 off C3's eight,
+    // and X81's +23 put 184 of it back. C1, at 60,617 bytes, clears both (X39).
     for (const projection of projections) {
       expect(projection.bytes).toBe(5_496);
       expect(projection.ratio).toBeGreaterThan(0.5);
@@ -1725,19 +1735,21 @@ describe('C3 capacity measurement', () => {
     // did not reproduce either, because X5 landed between the two readings.
     //
     //   build  P/N   transcript  slots  projection instr  controller instr  controller ratio  serialized
-    //   C1     5/6   1,314 B      38    13,735 x5          9,561            0.6183            60,502 B
-    //   C2     4/5     743 B      79    11,692 x4          9,536            0.6491            50,957 B
-    //   C3     8/8   1,325 B     108    18,656 x8         15,336            0.9218            96,118 B
+    //   C1     5/6   1,314 B      38    13,882 x5          9,561            0.6183            60,617 B
+    //   C2     4/5     743 B      79    11,818 x4          9,536            0.6491            51,049 B
+    //   C3     8/8   1,325 B     108    18,845 x8         15,336            0.9218            96,302 B
     //
-    // Re-read at `77cd1e8c` from each capstone's own capacity test. The projection column moved on all three
-    // (17,686 / 15,008 / 24,382 before) and the serialized column moved on all three (63,315 / 53,249 /
-    // 100,650 before), because X65's input-index table cut the projection verifier by 444 bytes and every
-    // build pays it once per participant: -2,220 on C1's five, -1,776 on C2's four, -3,552 on C3's eight,
-    // which is 444 x N exactly, three times over. The controller instruction counts did NOT move.
+    // Re-read at `3281ece9` from each capstone's own capacity test. The projection column has now moved twice
+    // (17,686 / 15,008 / 24,382, then 13,735 / 11,692 / 18,656) and so has the serialized column (63,315 /
+    // 53,249 / 100,650, then 60,502 / 50,957 / 96,118). X65's input-index table cut the projection verifier by
+    // 444 bytes and every build pays it once per participant - 444 x N exactly, three times over - and X81
+    // then put 23 back per participant: +115 on C1's five, +92 on C2's four, +184 on C3's eight, which is
+    // 23 x N exactly and accounts for the whole of the serialized move since the previous reading. The
+    // controller instruction counts did NOT move across either.
     //
     // WHAT THAT SUPPORTS, and what it no longer does:
-    //   1. Within a build every projection costs the same instruction count whatever row it proves - 13,735,
-    //      11,692 and 18,656 respectively - so the per-row cost does not depend on the row.
+    //   1. Within a build every projection costs the same instruction count whatever row it proves - 13,882,
+    //      11,818 and 18,845 respectively - so the per-row cost does not depend on the row.
     //   2. The stronger claim that the projection verifier is a pure function of participant and invocation
     //      count with transcript LENGTH not entering rested on C1 and C2 sharing row counts (both 4/5) while
     //      differing by 398 transcript bytes - C1 carried 1,141 before the SEC-6 reshape. The reshape made C1

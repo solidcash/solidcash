@@ -703,8 +703,11 @@ describe('layer3.planCompiledGraph', () => {
     // have carried since X27 - is applied to the projection verifier's invocation loop (-60) and participant
     // loop (-61). Not one require is removed, weakened or reordered; each `cursor + n <= transcript.length`
     // is the same predicate as its rewritten `local + n <= frame.length`.
-    // X65 then replaced the verifier's 8-way dispatch with an input-index table: 4,542 -> 4,098, -444, which
-    // is what the assertion below pins.
+    // X65 then replaced the verifier's 8-way dispatch with an input-index table: 4,542 -> 4,098, -444. X81
+    // then retired the verifier's NUM2BIN width bound for a 6-byte table stride and folded `expectedTarget`:
+    // 4,098 -> 4,121, +23, measured at `6183cf12` by the commit that landed it. 4,121 IS WHAT THE ASSERTION
+    // BELOW PINS. (R3-13: this line read "4,542 -> 4,098, -444, which is what the assertion below pins" while
+    // the assertion already read 4,121 - the comment contradicted the code two lines under it.)
     // WHY THIS FIGURE IS THE LEVERAGED ONE. The verifier is instantiated once per PARTICIPANT and each proof
     // slot pushes the whole redeem script, so a verifier byte is worth N transaction bytes. Measured on all
     // four capstones for BOTH cuts and the multiplier is exactly N every time.
@@ -714,12 +717,18 @@ describe('layer3.planCompiledGraph', () => {
     //     A13 23,845 -> 23,458   C2 53,249 -> 52,733   C1 63,315 -> 62,722   C3 100,650 -> 99,670
     //   X65, -444 per participant (re-measured at `77cd1e8c` through the estimator probe, no residue):
     //     A13 23,458 -> 22,126   C2 52,733 -> 50,957   C1 62,722 -> 60,502   C3 99,670 -> 96,118
+    //   X81, +23 per participant (re-measured at `3281ece9`, each from that capstone's own test, no residue):
+    //     A13 22,126 -> 22,195   C2 50,957 -> 51,049   C1 60,502 -> 60,617   C3 96,118 -> 96,302
     //
-    // C3 is thereby INSIDE the 100,000-byte standard relay ceiling by 3,882 bytes, with all 108 slots intact.
+    // R3-13. THE X81 ROW IS THE ONE THIS COMMENT WAS MISSING, and every capstone in the tree carried the X65
+    // figures in the present tense because of it. The multiplier holds a third time: +69 / +92 / +115 / +184
+    // is 23 x 3, 23 x 4, 23 x 5, 23 x 8 exactly.
+    //
+    // C3 is thereby INSIDE the 100,000-byte standard relay ceiling by 3,698 bytes, with all 108 slots intact.
     // (This comment used to give C1 as 62,670 and C3 as 99,618 - both the 129 x N arithmetic rather than the
     // build, and the two figures the F1 and F2 tables disagreed with. The measurements are above.)
-    // The controller row is unchanged across both cuts, and that is a control rather than a coincidence: each
-    // edited `generateGraphProjectionVerifier` only, so exactly one covenant's compiled size may move.
+    // The controller row is unchanged across all three cuts, and that is a control rather than a coincidence:
+    // each edited `generateGraphProjectionVerifier` only, so exactly one covenant's compiled size may move.
     expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
     expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_121);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(

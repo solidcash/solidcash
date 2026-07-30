@@ -354,10 +354,10 @@ if (process.env.F3_ENRICH) {
     const census = JSON.parse(readFileSync(path, 'utf8'));
     const targets = [...new Set(census.rows
       .filter((row) => (row.eligibleHandlers?.length ?? 0) > 0)
-      .map((row) => `${row.corpus} ${row.rel}`))];
+      .map((row) => `${row.corpus}\u0000${row.rel}`))];
     let done = 0;
     for (const target of targets) {
-      const [corpus, rel] = target.split(' ');
+      const [corpus, rel] = target.split('\u0000');
       const root = { mistswap: MISTSWAP_ROOT, eacc: EACC_ROOT, 'solc-corpus': SOLC_ROOT }[corpus]
         ?? join(SBE_ROOT, 'contracts', 'src');
       const fresh = probeOne(join(root, rel), rel, corpus);

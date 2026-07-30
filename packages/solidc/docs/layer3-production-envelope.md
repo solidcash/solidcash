@@ -210,6 +210,46 @@ this envelope adds no second, different participant cap, because participant cou
 An output on a non-standard template was a row in this table and is not one now: **BCHN v29 does not enforce
 an output-script template** (X64, measured on the shared node and again with `-acceptnonstdtxn=0`). See 6.1.
 
+### R3-15. The sweep's `CONSENSUS_FIT` is now reproducible from this repository
+
+The external review found that the first row above - the board's only asserted `CONSENSUS_FIT` for the sweep,
+and the most carefully scoped promotion on the board - was **the one a reviewer could not re-run**. The 2,429 /
+4,977 / 10,661-byte shapes are built in exactly one place, `Layer3EnvelopeF1.test.ts`'s `buildSweep`, and that
+file contained no call to `sendRawTransaction`: it measured the built bytes and stopped. The bytes reached a
+node through a three-step manual procedure whose second step, submitting the captured JSONL, had **no
+committed implementation**. `layer3-broadcast-probe.ts` captures; nothing submitted.
+
+That is closed. `Layer3EnvelopeF1.test.ts` now carries a `describe.runIf(process.env.TESTS_USE_REGTEST)` block
+gated exactly as the four capstone node blocks are, which broadcasts all three shapes through `acceptedByNode`
+and reads each transaction back **from the node**. It needs no capture-and-replay round trip at all, because
+`buildSweep` already builds through `createTestProvider` - `RegtestNetworkProvider` under that flag - so every
+outpoint is a real UTXO the node holds and the node executes the scripts instead of stopping at
+`missing-inputs`. That is also why the replay path could never have settled script validity: replayed mock
+outpoints exist on no chain.
+
+```
+docker compose -f docker-compose.regtest.yml up -d bchn fulcrum miner
+cd packages/solidcash && TESTS_USE_REGTEST=true npx vitest run \
+  test/e2e/Layer3EnvelopeF1.test.ts --no-file-parallelism
+```
+
+**Run on the live regtest node at `3281ece9`, 5/5 green**, twice, with different txids and identical sizes:
+
+| shape | txid | height | serialized | inputs |
+| --- | --- | --- | --- | --- |
+| N=2 | `c9a79caaa88e3993...` | 5340 | 2,429 B | 3 |
+| N=4 | `0d5c52b02af905f0...` | 5350 | 4,977 B | 5 |
+| N=8 | `d8f44e372e7c400f...` | 5368 | 10,661 B | 9 |
+
+The three sizes reproduce F1's table exactly. **The guard was shown to be able to fail**: flipping one byte
+inside the first input's unlocking script and offering those bytes instead makes the node answer
+`mandatory-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack
+element) (code 16)` and the test go red - which is also the direct evidence that the node is executing the
+scripts rather than accepting on size alone. The break was reverted.
+
+This does not change the row's grade or its scope. It is still `CONSENSUS_FIT` for three shapes, on regtest, at
+one commit; what changed is that a reviewer can now obtain that reading with one command.
+
 Three honest gaps in that table, stated rather than smoothed:
 
 - **`POLICY_FIT` remains supported for nothing.** The node-mined rows above are `CONSENSUS_FIT`: a regtest

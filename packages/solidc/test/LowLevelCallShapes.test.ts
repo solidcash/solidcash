@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { compileString, parseCode } from '../src/compiler.js';
+import { compileFile } from '../src/compileFile.js';
 import { LowLevelCallShapeError, validateLowLevelCallShapes } from '../src/semantic/LowLevelCallShapes.js';
 import { Ast } from '../src/ast/AST.js';
 
@@ -263,6 +266,151 @@ contract X6Twice() {
    * source-shape pass cannot see it. The compiler runs the same check a second time on the expanded bodies;
    * these cases leaked `Block slot not found: lowLevelCall[0]` with only the first pass wired.
    */
+  /**
+   * X132. THE OPTION SET IS NOT WHAT DECIDES UnicrowClaim, AND NO OPTION IS.
+   *
+   * The board recorded two disagreeing measurements of `eacc/unicrow/UnicrowClaim.sol` and attributed the
+   * disagreement to the option set, `ecrecover: 'p2pkh'` in particular: compiles under the F3 walk's options,
+   * raises a named `LowLevelCallShapeError` on `refund` under a narrower set. Measured here, that is not the
+   * mechanism. THE TWO MEASUREMENTS HAVE DIFFERENT SUBJECTS:
+   *
+   *   - `UnicrowClaim.sol` compiles in bus mode under every option set that parses at all, and it has no
+   *     function named `refund`;
+   *   - `refund` is `Unicrow.sol:218`, whose `escrow.buyer.call{value: escrow.amount}("")` at `:262` is what
+   *     raises the refusal. `Unicrow.sol` is a SEPARATE FILE in the same corpus directory.
+   *
+   * `ecrecover` decides neither: both files give the same answer with and without it, and `UnicrowClaim`
+   * compiles to the same byte count either way. The only option that changes anything is
+   * `solidityImportCompat`, without which neither file gets past its `pragma solidity` line.
+   *
+   * The name in the retired bare error is the corroboration: `__extaddr_unicrow` is the external-address
+   * variable for `UnicrowClaim.sol:21`'s `Unicrow public immutable unicrow`, so that error was about
+   * UnicrowClaim's REFERENCE to Unicrow and is genuinely gone. The `refund` refusal was never the same defect.
+   *
+   * So the empty compile-failure pin in `Layer3CorpusFitF3.test.ts` is correct, but not for the reason
+   * recorded beside it. `Unicrow.sol` cannot appear in that pin at all: it lists APPLICATION rows, and a file
+   * that fails bus compilation never becomes one. The failure is not invisible, it is unattributed - it is the
+   * single `LowLevelCallShapeError` in the eacc column of `F3_CENSUS_BUS_FAILURES`, recorded as an anonymized
+   * histogram key with no filename.
+   *
+   * WHETHER THE REFUSAL IS CORRECT IS A SEPARATE QUESTION AND THE ANSWER IS YES: `refund` really does carry a
+   * `value` option, and a transcript row has no field to bind it. No admission is requested.
+   */
+  describe('X132 the Unicrow refusal is a property of one file, not of an option', () => {
+    const busWithImports = { ...busOptions, solidityImportCompat: true };
+    const EACC = process.env.EACC_CONTRACTS_DIR ?? '/Code/effectiveacceleration.ai/contract/contracts';
+
+    /**
+     * The shape itself, self-contained, so this pin does not depend on an external checkout. This is
+     * `Unicrow.refund` reduced to what the refusal is about: a `call` carrying `value` in a handler.
+     */
+    const refundShape = `pragma solidcash >=0.8.0;
+contract X132Refund() {
+  function refund(address buyer, bytes payload, int amount) public {
+    buyer.call{value: amount}(payload);
+    require(amount > 0);
+  }
+}`;
+
+    it('names refund and the value option, for the shape Unicrow.refund is written in', () => {
+      expect(namedDiagnostic(refundShape))
+        .toContain("function 'refund' issues a low-level 'call' carrying the call option(s) 'value'");
+      expect(compilerMessage(refundShape))
+        .toContain("function 'refund' issues a low-level 'call' carrying the call option(s) 'value'");
+    });
+
+    /** Negative control differing only in the attacked field: drop the option and the same call is admitted. */
+    it('admits the same callsite once the value option is removed', () => {
+      expect(namedDiagnostic(refundShape.replace('.call{value: amount}', '.call'))).toBe('ADMITTED');
+      expect(compilerMessage(refundShape.replace('.call{value: amount}', '.call'))).toBe('COMPILED');
+    });
+
+    /**
+     * Every corpus compile below is several seconds, and the same (file, options) pair is asked for by more
+     * than one case, so each is compiled once. Caching results rather than sharing one artifact keeps each
+     * case reading its own outcome string.
+     */
+    const OUTCOMES = new Map<string, string>();
+
+    /**
+     * The corpus attribution. Absence is a NAMED REFUSAL rather than a skip: this test exists to say which
+     * file raises the refusal, and a version of it that quietly passes when the corpus is gone would restate
+     * the mistake it was written to correct.
+     */
+    const eaccFile = (name: string): string => {
+      const path = join(EACC, 'unicrow', name);
+      if (!existsSync(path)) {
+        throw new Error(`X132 refusal: the eacc corpus file ${name} is absent at ${path}, so which of the two `
+          + 'Unicrow files raises the refund refusal cannot be measured. Set EACC_CONTRACTS_DIR. This must not '
+          + 'be softened into a skip: the finding IS the attribution.');
+      }
+      return path;
+    };
+
+    const outcome = (path: string, options: object): string => {
+      const key = `${path}|${JSON.stringify(options)}`;
+      const cached = OUTCOMES.get(key);
+      if (cached !== undefined) return cached;
+      let result: string;
+      try {
+        result = `COMPILED ${compileFile(path, options as never).debug!.bytecode.length / 2}`;
+      } catch (error) {
+        result = `${(error as Error).constructor.name}: ${(error as Error).message.split('.')[0]}`;
+      }
+      OUTCOMES.set(key, result);
+      return result;
+    };
+
+    /**
+     * Six distinct (file, options) compiles back these cases and each is several seconds, so they are taken
+     * once here rather than per case. The budget is a hang guard for six real compiles, not a performance
+     * assertion: nothing below measures time.
+     */
+    beforeAll(() => {
+      for (const name of ['Unicrow.sol', 'UnicrowClaim.sol']) {
+        const path = eaccFile(name);
+        for (const options of [busOptions, busWithImports, { ...busWithImports, ecrecover: 'p2pkh' }]) {
+          outcome(path, options);
+        }
+      }
+    }, 180_000);
+
+    it('raises the refund refusal from Unicrow.sol, which has the function and the value option', () => {
+      const result = outcome(eaccFile('Unicrow.sol'), busWithImports);
+      expect(result).toContain('LowLevelCallShapeError');
+      // The message names the function and the option, so the refusal is attributable without this test.
+      expect(result).toMatch(/function 'refund' issues a low-level 'call' carrying the call option\(s\) 'value'/);
+    });
+
+    it('compiles UnicrowClaim.sol in bus mode, which has no refund at all', () => {
+      expect(outcome(eaccFile('UnicrowClaim.sol'), busWithImports)).toMatch(/^COMPILED \d+$/);
+    });
+
+    /**
+     * THE CONTROL THAT SETTLES THE DIAGNOSIS. If the option set decided this, adding or removing
+     * `ecrecover: 'p2pkh'` would move at least one of the two outcomes. It moves neither, and UnicrowClaim
+     * compiles to the identical byte count both ways.
+     */
+    it('gives the same answer for both files with and without ecrecover', () => {
+      for (const name of ['Unicrow.sol', 'UnicrowClaim.sol']) {
+        const path = eaccFile(name);
+        expect(outcome(path, busWithImports), `${name} without ecrecover`)
+          .toBe(outcome(path, { ...busWithImports, ecrecover: 'p2pkh' }));
+      }
+    });
+
+    /**
+     * The one option that does change the outcome, recorded so "no option decides it" is not overstated:
+     * without `solidityImportCompat` neither file parses, so neither reaches the shape check.
+     */
+    it('names solidityImportCompat as the only option that changes either outcome', () => {
+      for (const name of ['Unicrow.sol', 'UnicrowClaim.sol']) {
+        expect(outcome(eaccFile(name), busOptions), `${name} without solidityImportCompat`)
+          .toContain("Unsupported pragma 'solidity'");
+      }
+    });
+  });
+
   describe('callsites inlined from a modifier', () => {
     const modifierSource = (modifierBody: string): string => `pragma solidcash >=0.8.0;
 contract X6Modifier(address sink) {

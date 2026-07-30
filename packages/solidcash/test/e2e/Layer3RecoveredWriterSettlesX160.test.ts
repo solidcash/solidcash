@@ -23,7 +23,8 @@ import type { Utxo } from '../../src/interfaces.js';
  * THE POPULATION WAS RE-TAKEN AND IT IS BIGGER. Both sides of the repair were compiled in two dedicated
  * worktrees - `c988817e` (= `a2885464^`, pre-repair) and this branch - over mistswap, EA and
  * solidity-by-example, 179 files, one probe binary copied to both sides so only the compiler differs.
- * 206 handlers gained, 0 lost, across 70 contracts. ELEVEN of the 206 publish `writesState: true`, not one.
+ * 206 handlers gained, 0 lost, over 135 rows and 54 moved contracts. ELEVEN of the 206 publish
+ * `writesState: true`, not one.
  *
  * `solidity-by-example/fallback/FallbackInputOutput.sol` contract `Counter` is the cleanest of the eleven and
  * is the subject here:
@@ -41,11 +42,11 @@ import type { Utxo } from '../../src/interfaces.js';
  *     the new count in the return-event NFT.
  *  2. THE WRITE IS REAL, read off the covenant rather than asserted. The probe run publishes the PRE state as
  *     the post state - the mistake an honest builder makes when it forgets the increment - and the route's own
- *     trace hands back the commitment IT computed. That commitment is the encoding of `count = 1`, and it is
- *     NOT the encoding of `count = 0`. Nothing here computed a post-state and then agreed with itself.
+ *     trace hands back the commitment IT computed. That commitment is the encoding of `count = 42`, and it
+ *     is NOT the encoding of `count = 41`. Nothing here computed a post state and then agreed with itself.
  *  3. HOSTILE. The post state left at the pre-state value is refused, at a pinned input index.
- *  4. HOSTILE. The post state moved to a believable neighbour (`count = 2`, the same length and encoding) is
- *     refused, at a pinned input index.
+ *  4. HOSTILE. The post state moved to a believable neighbour (`count = 43`, the same length and encoding)
+ *     is refused, at a pinned input index.
  *  5. HOSTILE. A return event carrying a believable-wrong result is refused, at a pinned input index.
  *  6. GUARD NEGATIVE CONTROL. Every hostile differs from a settling positive in exactly ONE field, that
  *     positive is rebuilt by the same helper in the same file, and the read-only siblings `get` and `count`
@@ -54,7 +55,8 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  * WHAT IS NOT ESTABLISHED, and it is most of the population.
  *
- *  - FOUR of 206. Three handlers on `Counter` plus the write proof; this file does not speak for the rest.
+ *  - THREE of the 206 gained handlers are run here - `inc`, `get`, `count`, all on `Counter`. This file
+ *    does not speak for the other 203.
  *  - ONE of the ELEVEN gained writers. `Attack.attack` remains proved NOT to settle - fail-closed, a
  *    published-but-dead admission, not an exploit - and the other nine are unproven either way.
  *  - `Counter` writes ONE uint256 scalar into one data NFT. A recovered writer over a mapping, a sorted
@@ -91,10 +93,16 @@ const POST_COUNT = 42n;
 /**
  * The value the ROUTE ITSELF computed, read off its own execution.
  *
- * The route reaches a check that compares what it computed against what the transaction carries; this finds
- * the step where those two operands are both on the stack - identified by the placeholder being one of them -
- * and returns the OTHER one. So every byte this file commits to is a byte the covenant produced, and a
- * harness that guessed the encoding wrong could not accidentally agree with it.
+ * The route puts what it computed next to what the transaction carries; this finds the last step where those
+ * two are the top two stack items - identified by the declared value being one of them - and returns the
+ * OTHER one. So every byte this file commits to is a byte the covenant produced, and a harness that guessed
+ * the encoding wrong could not accidentally agree with it.
+ *
+ * It reports ADJACENCY, not the opcode. For the result that is unambiguous: `PROBE_RESULT` is a value the
+ * covenant cannot derive, so the only way it lands beside the computed one is the route's own check. For the
+ * post state the declared value is the PRE state, which the route legitimately handles while computing - so
+ * the caller cross-checks the answer against what `count + 1` encodes to, which is the assertion that makes
+ * the extraction meaningful rather than the extraction itself.
  */
 function operandComparedAgainst(trace: unknown[], placeholder: Uint8Array, what: string): Uint8Array {
   const wanted = binToHex(placeholder);
@@ -160,9 +168,9 @@ describe('X160: the recovered population has a WRITER that settles', () => {
   async function attempt(handler: 'inc' | 'get' | 'count', attack: Attack, options: {
     declaredResult?: Uint8Array; postCount?: bigint;
   }): Promise<{
-    sent?: string; refusal?: string; failingInput?: number; trace?: unknown[];
-    preCommitments: string[]; publishedState: string[];
-  }> {
+      sent?: string; refusal?: string; failingInput?: number; trace?: unknown[];
+      preCommitments: string[]; publishedState: string[];
+    }> {
     const provider = createLayer3SemanticTestProvider();
     const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -403,14 +411,15 @@ describe('X160: the recovered population has a WRITER that settles', () => {
    * and the writer's acceptance is not a property of `Counter` being easy, since these prove the staging is
    * sound for the non-writing rows too.
    */
+  const guard = (handler: 'get' | 'count') => async (): Promise<void> => {
+    const result = await attempt(handler, 'none', { declaredResult: await routeResult(handler) });
+    if (result.refusal) console.log(`[X160W] ${handler} refused: ${result.refusal.split('\n')[0]}`);
+    expect(result.refusal, `${handler} did not settle`).toBeUndefined();
+    expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
+    console.log(`[X160W] ${handler} settled ${result.sent}`);
+  };
   for (const handler of ['get', 'count'] as const) {
-    it(`GUARD: the read-only sibling '${handler}' settles through the same staging`, async () => {
-      const result = await attempt(handler, 'none', { declaredResult: await routeResult(handler) });
-      if (result.refusal) console.log(`[X160W] ${handler} refused: ${result.refusal.split('\n')[0]}`);
-      expect(result.refusal, `${handler} did not settle`).toBeUndefined();
-      expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-      console.log(`[X160W] ${handler} settled ${result.sent}`);
-    }, 900_000);
+    it(`GUARD: the read-only sibling '${handler}' settles through the same staging`, guard(handler), 900_000);
   }
 
   /**
@@ -424,17 +433,16 @@ describe('X160: the recovered population has a WRITER that settles', () => {
     ['state-neighbour', 'the post state moved one past the truth (count = 43)', POST_COUNT + 1n],
     ['result', 'the return event carrying a believable-wrong result', POST_COUNT],
   ];
+  const hostile = (attack: Attack, postCount: bigint | undefined) => async (): Promise<void> => {
+    const result = await attempt('inc', attack, { declaredResult: await routeResult('inc'), postCount });
+    console.log(`[X160W] ${attack}: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
+    console.log(`[X160W] ${attack} published state ${JSON.stringify(result.publishedState)}`);
+    expect(result.sent, `a forged ${attack} was ACCEPTED`).toBeUndefined();
+    expect(result.refusal).toBeDefined();
+    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
   for (const [attack, description, postCount] of HOSTILES) {
-    it(`HOSTILE: ${description} is refused`, async () => {
-      const result = await attempt('inc', attack, {
-        declaredResult: await routeResult('inc'), postCount,
-      });
-      console.log(`[X160W] ${attack}: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
-      console.log(`[X160W] ${attack} published state ${JSON.stringify(result.publishedState)}`);
-      expect(result.sent, `a forged ${attack} was ACCEPTED`).toBeUndefined();
-      expect(result.refusal).toBeDefined();
-      expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-      expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
-    }, 900_000);
+    it(`HOSTILE: ${description} is refused`, hostile(attack, postCount), 900_000);
   }
 });

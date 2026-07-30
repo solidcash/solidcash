@@ -23,6 +23,23 @@ import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
  * unchanged. Inert unless `L3_CENSUS_OUT` names an output file, so an ordinary `yarn test` never loads it.
  *
  *   L3_CENSUS_OUT=/tmp/census.jsonl npx vitest run -c vitest.census.config.ts test/e2e
+ *
+ * THE MEASUREMENT, three runs over the whole SDK e2e population (2026-07-30). Each run recorded 8,026 calls -
+ * 1,298 `debug()`, 1,314 `send()`, 5,414 `sendRawTransaction` - across 398 files and 2,555 tests, and the runs
+ * are diffed by `file::test::kind::occurrence`.
+ *
+ *   BASE -> ROW A (the debug VM reads the provider's limits)
+ *     newly refused 1: `X121StrictPreflightDecision` row 6 at `StatefulContract.ts:10991`, which is the row
+ *                      that PINNED this fail-open as a known gap. Refusal quotes 150 x 687 = 103,050.
+ *     newly admitted 0.
+ *     message changed 1 that matters: `StatefulRecursion` "rejects an over-budget concrete recursion" still
+ *                      refuses, but no longer for BUDGET - see the note in that file's row.
+ *   ROW A -> ROW B (the finalized-bytes gate at `TransactionBuilder.send()`)
+ *     newly refused 0, newly admitted 0, message changed 0, over 1,160 sends through the gated site.
+ *
+ * THREE `P2PKH-tokens` rows change message in EVERY diff, including the one where no code between the runs
+ * could affect them. `randomUtxo`/`randomToken` draw amounts from `Math.random()`, so those messages carry a
+ * different token amount each run. Nondeterminism, not blast radius.
  */
 
 const OUT = process.env.L3_CENSUS_OUT;

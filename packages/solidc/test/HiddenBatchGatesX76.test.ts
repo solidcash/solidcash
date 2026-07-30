@@ -231,7 +231,29 @@ contract X76Packed() {
   });
 
   /**
-   * NEGATIVE CONTROL 3. The gate's other half is untouched: an entry reached through a HELPER is still refused,
+   * NEGATIVE CONTROL 3, and it is the one the normalization itself turns on. A bare element of a DYNAMIC state
+   * array resolves to `StateArrayAssignNode`, a different physical form with no entry NFT, so normalizing it
+   * would retarget the write at C2 storage. The whole handler therefore stays outside the boundary and keeps its
+   * refusal - fail-closed, and the refusal is the one it had at 77cd1e8c.
+   */
+  it('CONTROL: a bare dynamic state-array element keeps the handler outside the boundary', () => {
+    const dynamic = `pragma solidcash >=0.8.0;
+contract X76Dynamic() {
+  mapping(address => bigint) balances;
+  bigint[] log;
+  function move(address from, address to, bigint amount) public {
+    log[0] = amount;
+    balances[from] = balances[from] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
+}`;
+    expect(hasRoute(dynamic)).toBe(false);
+    expect(verdicts(dynamic).get('move')).toBe('collection-helper-route-not-enabled');
+  });
+
+  /**
+   * NEGATIVE CONTROL 4. The gate's other half is untouched: an entry reached through a HELPER is still refused,
    * because the route only sizes entries it can see in the handler's own body.
    */
   it('CONTROL: an entry reached through a helper is still refused', () => {

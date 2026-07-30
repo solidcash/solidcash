@@ -440,3 +440,183 @@ describe('X111 at consensus - the emission clone reads the journal, not the pre-
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------------------------------
+// THE RESIDUAL. The repair takes the SCALAR half. A clone whose stale read is on a chunk-backed DYNAMIC
+// slot is still not journalled, because journalling a dynamic slot replaces a chunk read with a threaded
+// (header, value) pair while the ELEMENTS keep coming from the chunk loop - two sources for one array.
+// These cases are COMPILE and PLANNER LEVEL ONLY. No settlement is claimed either way: they record where
+// the repair stops and what is left standing in front of it, so a later widening has something to move.
+// ---------------------------------------------------------------------------------------------------
+
+const BUS_OPTIONS = {
+  forceStateful: true,
+  experimentalHiddenBatch: true,
+  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+  experimentalMessageBusControllerCategory: '22'.repeat(32),
+} as const;
+
+const ROUTER_LBC = `aa20${'33'.repeat(32)}87`;
+const VAULT_LBC = `aa20${'44'.repeat(32)}87`;
+
+/** Deep-copy an artifact so a footprint mutation cannot leak into another case. */
+const copyArtifact = (artifact: any): any => JSON.parse(JSON.stringify(artifact));
+
+/**
+ * Plan `rows` against one vault artifact through a router that emits them in order, and report the gate's
+ * answer as a string. No provider: `planCompiledGraph` needs none.
+ */
+function planAnswer(
+  vaultArtifact: any,
+  rows: readonly { fn: string; types: readonly string[]; args: readonly any[] }[],
+  signatures: Readonly<Record<string, string>>,
+  unboundRouteWitnesses?: Record<string, any>,
+): string {
+  const calls = rows.map((row, index) =>
+    `IV(v).${row.fn}(${row.args.map((_arg, slot) => `p${index}_${slot}`).join(', ')});`).join('\n      ');
+  const params = rows.flatMap((row, index) =>
+    row.types.map((type, slot) => `${type} p${index}_${slot}`)).join(', ');
+  const iface = [...new Set(rows.map((row) => row.fn))].map((fn) => signatures[fn]).join(' ');
+  const router = compileString(`pragma solidcash >=0.8.0;
+    interface IV { ${iface} }
+    contract R(int brand, address v) {
+      function route(${params}) public {
+      ${calls}
+        require(true);
+      }
+    }`, BUS_OPTIONS);
+  const participants = [
+    { artifact: router, lockingBytecode: ROUTER_LBC },
+    {
+      artifact: vaultArtifact,
+      lockingBytecode: VAULT_LBC,
+      ...(unboundRouteWitnesses && { unboundRouteWitnesses }),
+    },
+  ];
+  const invocations = [
+    { parent: null, callee: 0, function: 'route', args: rows.flatMap((row) => [...row.args]) },
+    ...rows.map((row) => ({ parent: 0, callee: 1, function: row.fn, args: [...row.args] })),
+  ];
+  try {
+    layer3.planCompiledGraph(participants as any, invocations as any);
+    return 'ADMITTED';
+  } catch (error) {
+    return `REFUSED: ${(error as Error).message}`;
+  }
+}
+
+/** The C2 hub, reduced to the two handlers that matter: a `legs` writer and the emission clone reading it. */
+const DYNAMIC_HUB = `pragma solidcash >=0.8.0;
+interface ICycleLeg { function credit(uint value); }
+contract CycleHub() {
+  function(uint) external[] legs;
+  uint total;
+  function registerCredit(address target) public { this.legs.push(ICycleLeg(target).credit); require(true); }
+  function fireAll(uint value) public {
+    require(legs.length <= 2);
+    for (int i = 0; i < legs.length; i = i + 1) { legs[i](value); }
+    require(value >= 0);
+  }
+}`;
+
+/** A RESOURCE-shaped clone (a mapping is present) whose stale read is on a chunk-backed dynamic array. */
+const DYNAMIC_RESOURCE = `pragma solidcash >=0.8.0;
+contract Vault() {
+  bigint[] notes;
+  mapping(address => bigint) ledger;
+  function append(bigint n, address who) public {
+    require(this.ledger[who] >= 0);
+    this.notes.push(n);
+    require(n >= 0);
+  }
+  function assertCount(bigint atMost, address who, address other) public {
+    require(this.ledger[who] >= 0);
+    require(this.ledger[other] >= 0);
+    require(this.notes.length <= atMost);
+    require(msg.sender == who);
+  }
+}`;
+
+const STALE = /read-only graph emission clone reading/;
+
+describe('X111 residual - the dynamic half, and what is left in front of it', () => {
+  it('R1 the dynamic-slot clone is outside the repair, and the SDK gate is what refuses it', () => {
+    // Same shape as the repaired one - a read-only emission clone, an earlier writer of the slot it reads -
+    // but the slot is chunk-backed, so the compiler leaves it reading the pre-state and only the planner
+    // stands in front of it. That refusal is witness-side, which is exactly what did not close X111.
+    const hub = compileString(DYNAMIC_HUB, BUS_OPTIONS);
+    const clone = hub.invocationAnalysis!.functions.find((entry) => entry.name === '__scb_graph_fireAll');
+    expect(clone!.reads).toContain('state:legs');
+    expect(clone!.writes.filter((resource: string) => resource.startsWith('state:'))).toEqual([]);
+    const signatures = {
+      registerCredit: 'function registerCredit(address t);', fireAll: 'function fireAll(uint v);',
+    };
+    const rows = [
+      { fn: 'registerCredit', types: ['address'], args: [hexToBin(ROUTER_LBC)] },
+      { fn: 'fireAll', types: ['uint'], args: [1n] },
+    ];
+    expect(planAnswer(hub, rows, signatures)).toMatch(STALE);
+    // GUARD on ORDER: reader-first has no earlier write to have missed, so it must not be refused.
+    expect(planAnswer(hub, [rows[1], rows[0]], signatures)).toBe('ADMITTED');
+  }, 180_000);
+
+  it('R2 L2-F1b is STILL REACHABLE, narrowed to the dynamic half', () => {
+    // The prefix blind spot no longer matters for a scalar read - the covenant refuses that itself now. It
+    // still matters here: a `__scb_resource_` clone reading a chunk-backed array is journalled by neither the
+    // compiler nor seen by the gate, and the planner admits the hostile order with nothing behind it.
+    // PLANNER LEVEL ONLY - no settlement is claimed for this composition.
+    const vault = compileString(DYNAMIC_RESOURCE, BUS_OPTIONS);
+    const names = vault.invocationAnalysis!.functions.map((entry) => entry.name);
+    expect(names).toContain('__scb_resource_assertCount');
+    expect(names).not.toContain('__scb_graph_assertCount');
+    const clone = vault.invocationAnalysis!.functions
+      .find((entry) => entry.name === '__scb_resource_assertCount');
+    expect(clone!.reads).toEqual(['state:notes']);
+    expect(clone!.writes).toEqual([]);
+
+    const signatures = {
+      append: 'function append(bigint n, address w);',
+      assertCount: 'function assertCount(bigint m, address w, address o);',
+    };
+    const rows = [
+      { fn: 'append', types: ['bigint', 'address'], args: [1n, hexToBin(ROUTER_LBC)] },
+      {
+        fn: 'assertCount',
+        types: ['bigint', 'address', 'address'],
+        args: [5n, hexToBin(ROUTER_LBC), hexToBin(ROUTER_LBC)],
+      },
+    ];
+    const witnesses = { __scb_key_ledger_0_row_r0: hexToBin(ROUTER_LBC) };
+    expect(planAnswer(vault, rows, signatures, witnesses)).toBe('ADMITTED');
+
+    // GUARD on the ATTACKED FIELD: the only thing changed is the clone's published NAME. Same reads, same
+    // writes, same rows, same order. The gate fires, which isolates the PREFIX rather than this footprint.
+    const renamed = copyArtifact(vault);
+    renamed.invocationAnalysis.functions
+      .find((entry: any) => entry.name === '__scb_resource_assertCount').name = '__scb_graph_assertCount';
+    expect(planAnswer(renamed, rows, signatures, witnesses)).toMatch(STALE);
+  }, 180_000);
+
+  it('R3 L2-F1c is STILL REACHABLE, and now sits in front of the only remaining exposure', () => {
+    // `writtenVariablesOf(clone).length > 0` is tested before `clone.unknown` and before anything else, so a
+    // footprint publishing ONE nonexistent write short-circuits the whole rule. The published write is the
+    // spender's data, not the compiler's `writerIds`. Before the repair this bought a scalar stale read;
+    // now it buys the dynamic one, which nothing else covers.
+    const hub = compileString(DYNAMIC_HUB, BUS_OPTIONS);
+    const signatures = {
+      registerCredit: 'function registerCredit(address t);', fireAll: 'function fireAll(uint v);',
+    };
+    const rows = [
+      { fn: 'registerCredit', types: ['address'], args: [hexToBin(ROUTER_LBC)] },
+      { fn: 'fireAll', types: ['uint'], args: [1n] },
+    ];
+    // Guard: the honest artifact, same rows, same order.
+    expect(planAnswer(hub, rows, signatures)).toMatch(STALE);
+    const escaped = copyArtifact(hub);
+    Object.assign(
+      escaped.invocationAnalysis.functions.find((entry: any) => entry.name === '__scb_graph_fireAll'),
+      { writes: ['state:nosuchslot'] },
+    );
+    expect(planAnswer(escaped, rows, signatures)).toBe('ADMITTED');
+  }, 180_000);
+});

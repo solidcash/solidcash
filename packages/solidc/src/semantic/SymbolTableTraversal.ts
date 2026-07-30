@@ -120,7 +120,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { cloneNode } from '../ast/clone.js';
-import { generatedOriginOf } from '../ast/Location.js';
+import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import { computeBranchOps, countBranchOps } from './branchOps.js';
 import {
   FunctionRedefinitionError,
@@ -418,6 +418,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (line === undefined) return '';
     const generated = generatedOriginOf(location);
     if (generated) return ` at line ${line} of ${generated}, not of your file`;
+    // X107: the parse that built this Location stamped the file it was reading, so prefer that over the
+    // reachability map. It cannot name a re-exporting intermediate and needs no import list to be present.
+    const stamped = sourceFileOf(location);
+    if (stamped) return ` at line ${line} of imported "${stamped}"`;
     if (!this.sourceFile?.imports?.length) return ` at line ${line}`;
     this.importedLocations ??= this.buildImportedLocations();
     const file = this.importedLocations.get(location as unknown as object);
@@ -7429,8 +7433,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // Multiple overloads: defer to TypeCheckTraversal
 
-      const line = node.location?.start?.line;
-      const loc = line ? ` at line ${line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: revert with custom error is a no-op in SolidCash${loc}. Error arguments are type-checked but not evaluated; the script simply fails unconditionally.`);
     }
 

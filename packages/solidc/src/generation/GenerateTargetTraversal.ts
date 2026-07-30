@@ -188,7 +188,8 @@ import { getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError,
-  ChainedEntryElementReadError, ConditionalDeployError, SolidCashError, UnboundReturnCallError,
+  ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
+  UnboundReturnCallError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
@@ -7224,7 +7225,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.operator === BinaryOperator.POW) {
       // Solidity: exponent must be unsigned (non-negative). Reject negative literal exponents.
       if (node.right instanceof IntLiteralNode && node.right.value < 0n) {
-        throw new Error(`Negative exponent ${node.right.value} in exponentiation at ${node.location}`);
+        // X107: was `at ${node.location}`, which stringified the whole object and printed
+        // "at [object Object]". SolidCashError appends the position and both file caveats itself.
+        throw new NegativeExponentError(node, node.right.value);
       }
       // Check if both operands are compile-time constants
       if (node.left instanceof IntLiteralNode && node.right instanceof IntLiteralNode) {

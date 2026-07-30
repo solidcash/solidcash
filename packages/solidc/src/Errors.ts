@@ -202,6 +202,15 @@ export class EmptyContractError extends SolidCashError {
   }
 }
 
+export class NegativeExponentError extends SolidCashError {
+  constructor(
+    public node: Node,
+    exponent: bigint,
+  ) {
+    super(node, `Negative exponent ${exponent} in exponentiation`);
+  }
+}
+
 export class TransferInStatelessContractError extends SolidCashError {
   constructor(
     public node: FunctionDefinitionNode,

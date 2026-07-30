@@ -144,7 +144,7 @@ an entry-only block layout - safe for a pure balance-transfer route, not defensi
 Recommendation: make entry-existence a structural SDK assertion independent of `sortedBatchInfo`, and
 re-verify both gates before any eligibility broadening.
 
-### F4 (MEDIUM, deployability) - 225-byte headroom with no library-API size gate
+### F4 (MEDIUM, deployability) - no library-API size gate (the "225-byte headroom" half is superseded)
 
 AS AUDITED at `4cff1624`; every byte figure in this finding is superseded, see the X125 re-derivation
 below. The minimal two-row ERC-20 fixture compiles to 9,775 bytes; the SCB1 route body alone is 6,532
@@ -171,7 +171,7 @@ this one).
 
 Four consequences, not four numbers:
 
-1. **"Roughly triples contract size" is dead.** It was 9,775/3,047 = 3.21x; it is 4,814/3,157 = 1.53x.
+1. **"Roughly triples contract size" is dead.** It was 9,775/3,047 = 3.21x; it is 4,814/3,157 = 1.52x.
 2. **"Viable only for the most minimal token" has inverted.** The five-function corpus token
    (mint, approve, transferFrom, checkBalance, checkAllowance) compiles to 6,032 bytes with 3,968 to
    spare and no `contract-size-limit` diagnostic (`RepeatedExternalBatchCorpus.test.ts:124-125`).

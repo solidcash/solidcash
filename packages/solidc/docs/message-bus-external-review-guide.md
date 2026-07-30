@@ -547,6 +547,10 @@ files whose narrative disagrees with their own code. No live assertion is stale 
 
 - `packages/solidcash/test/Layer3CompiledGraph.test.ts:706`: *"4,542 -> 4,098, -444, which is what the
   assertion below pins"*. The assertion at `:723` pins **4,121**.
+  X125: this first example is REMEDIATED. The comment now reads "4,098 -> 4,121, +23 ... 4,121 IS WHAT
+  THE ASSERTION BELOW PINS" and cites R3-13 by name for why. The assertion moved to `:733`, so the
+  `:723` above is itself now stale. Only this bullet was re-checked; the other two are untouched and
+  their status is unchanged.
 - `packages/solidcash/test/e2e/Layer3BoundedMaximumGraphC3.test.ts:1623`: *"the row moved again to the 5,473
   bytes / 18,656 instructions ... asserted below"*. Asserted below: **5,496** and **18,845**.
 - `packages/solidcash/test/e2e/Layer3HeterogeneousCycleC2.test.ts:839`: a capacity table giving 15,008

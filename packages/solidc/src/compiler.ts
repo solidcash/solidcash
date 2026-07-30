@@ -410,6 +410,51 @@ function synthesizeHiddenBatchRoute(
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
+  // X76(E1). A bare `m[k]` on a PACKED or DYNAMIC state array does not resolve to a mapping entry at all:
+  // `SymbolTableTraversal.visitArrayAssign` sends it to `StateArrayAssignNode`, a different physical form with
+  // no entry NFT. Normalizing one of those to a Mapping* node would silently retarget the write, so the bare
+  // spelling is only admitted for the names that resolution itself turns into entries.
+  const packedOrDynamicArrayState = new Set(contract.stateVariables
+    .filter((state) => (state.isPacked || state.isDynamic) && state.type instanceof ArrayType)
+    .map((state) => state.name));
+  /**
+   * The names a function binds itself. A bare `x[k]` on one of these is a LOCAL array element, never a
+   * collection entry - the same test `analyseFunctionFootprint` and `isShadowedByLocal` apply.
+   */
+  const locallyBoundNames = (fn: FunctionDefinitionNode): Set<string> => {
+    const bound = new Set<string>(fn.parameters.map((parameter) => parameter.name));
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode) bound.add(node.name);
+    });
+    return bound;
+  };
+  /**
+   * The bare spelling of a collection entry, flattened exactly as `SymbolTableTraversal.visitArrayAccess`
+   * flattens it, or undefined for anything that is not one. `chain` names the inner `ArrayAccessNode`s the
+   * flatten consumed, so a nested `m[a][b]` is reported ONCE with both keys instead of once per level.
+   */
+  const bareEntryAccessOf = (node: Node, bound: Set<string>): {
+    name: string; keys: ExpressionNode[]; chain: readonly Node[];
+  } | undefined => {
+    const named = (name: string): boolean =>
+      collectionByName.has(name) && !bound.has(name) && !packedOrDynamicArrayState.has(name);
+    if (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) {
+      return named(node.name) ? { name: node.name, keys: [node.index], chain: [] } : undefined;
+    }
+    if (node instanceof ArrayAccessNode) {
+      const keys: ExpressionNode[] = [node.index];
+      const chain: Node[] = [];
+      let base: ExpressionNode = node.array;
+      while (base instanceof ArrayAccessNode) {
+        chain.push(base);
+        keys.unshift(base.index);
+        base = base.array;
+      }
+      if (!(base instanceof IdentifierNode) || !named(base.name)) return undefined;
+      return { name: base.name, keys, chain };
+    }
+    return undefined;
+  };
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
@@ -534,10 +579,7 @@ function synthesizeHiddenBatchRoute(
       // already reported the collection, and every such handler was rejected 'collection-helper-route-not-enabled'
       // - no SCB1 route at all, for a write the direct route compiles. A name bound locally in this function is a
       // LOCAL array element, not a collection entry; that is the same test analyseFunctionFootprint applies.
-      const locallyBound = new Set<string>(fn.parameters.map((parameter) => parameter.name));
-      walkInvocationAst(fn.body, (node) => {
-        if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
-      });
+      const locallyBound = locallyBoundNames(fn);
       const bareAccessOf = (node: Node): { name: string; keys: ExpressionNode[] } | undefined => {
         if (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) {
           return locallyBound.has(node.name) ? undefined : { name: node.name, keys: [node.index] };
@@ -548,13 +590,17 @@ function synthesizeHiddenBatchRoute(
         }
         return undefined;
       };
-      const collectKeys = (includeBare: boolean): Map<string, number[][]> => {
+      const collectKeys = (includeBare: boolean, flattenBare = false): Map<string, number[][]> => {
         const collected = new Map<string, number[][]>();
+        const consumed = new Set<Node>();
         walkInvocationAst(fn.body, (node) => {
+          if (consumed.has(node)) return;
+          const flattened = includeBare && flattenBare ? bareEntryAccessOf(node, locallyBound) : undefined;
+          for (const inner of flattened?.chain ?? []) consumed.add(inner);
           const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
             || node instanceof MappingDeleteNode
             ? { name: node.name, keys: node.keys as ExpressionNode[] }
-            : (includeBare ? bareAccessOf(node) : undefined);
+            : (flattened ?? (includeBare && !flattenBare ? bareAccessOf(node) : undefined));
           if (!access || !collectionByName.has(access.name)) return;
           const indices = access.keys.map((key) => {
             if (key instanceof IdentifierNode) {
@@ -570,12 +616,16 @@ function synthesizeHiddenBatchRoute(
         });
         return collected;
       };
-      // Admit the bare spelling only where the route reaches the entry through the handler ITSELF. Every other
-      // shape - a second key alternative (resource-shaped), a msg.sender key, a non-parameter key - is served by
-      // a cloned handler whose keys are rewritten to synthetic entry-key parameters, and that rewrite still only
-      // matches the `this.`-prefixed nodes. Admitting a bare access there turns today's silent route-less
-      // artifact into a hard 'Block slot not found' / 'stable key expression' compile failure, so those shapes
-      // keep exactly the behaviour they have; converging them means converging bindEntryKeyParameters too.
+      // X19 admitted the bare spelling only where the route reaches the entry through the handler ITSELF; every
+      // other shape - a second key alternative, a msg.sender key - is served by a cloned handler whose keys are
+      // rewritten to synthetic entry-key parameters, and that rewrite matched only the `this.`-prefixed nodes.
+      //
+      // X76(E1) converges the two by NORMALIZING the clone: `normalizeBareEntryAccesses` turns the bare forms
+      // into the same Mapping* nodes resolution would have produced, so the rewrite, the self-alias handler and
+      // everything downstream see one shape. The self-reached set keeps its own path (no clone is made for it,
+      // so nothing normalizes it) and is decided EXACTLY as before, which is what keeps those artifacts
+      // byte-identical. Normalization is not available for every bare form - `ArrayDeleteNode` has no state
+      // path in `SymbolTableTraversal` at all - so the widened set is gated on the forms that do normalize.
       const mappingOnlyKeys = collectKeys(false);
       const withBareKeys = collectKeys(true);
       const bareShapeIsSelfReached = [...withBareKeys].every(([name, alternatives]) => {
@@ -583,7 +633,17 @@ function synthesizeHiddenBatchRoute(
         return alternatives.length === 1 && alternatives[0].length === collection.allKeyTypes.length
           && alternatives[0].every((index) => index >= 0);
       });
-      const directKeys = bareShapeIsSelfReached ? withBareKeys : mappingOnlyKeys;
+      let bareShapeIsNormalizable = true;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof ArrayDeleteNode && !locallyBound.has(node.name)
+          && collectionByName.has(node.name)) bareShapeIsNormalizable = false;
+        if ((node instanceof ArrayAssignNode || node instanceof ArrayAccessNode)
+          && bareAccessOf(node) !== undefined
+          && bareEntryAccessOf(node, locallyBound) === undefined) bareShapeIsNormalizable = false;
+      });
+      const directKeys = bareShapeIsSelfReached
+        ? withBareKeys
+        : bareShapeIsNormalizable ? collectKeys(true, true) : mappingOnlyKeys;
       const closure = collectNamedFunctionClosure(fn, byName);
       const nonEntryCollectionOnly = directKeys.size === 0
         && [...footprint.reads, ...footprint.writes]
@@ -817,9 +877,9 @@ function synthesizeHiddenBatchRoute(
       }
       survivors = survivors.filter((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0);
     }
-    const eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
+    let eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
     const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
-    const valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+    let valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
     // A nested collection needs one fixed C2 entry slot per row: the composite key is only resolvable against a
     // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
     // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
@@ -850,17 +910,35 @@ function synthesizeHiddenBatchRoute(
       return [...footprint.reads, ...footprint.writes]
         .some((resource) => resource.startsWith('collection:tokens:'));
     });
-    const modes = {
+    // Read AFTER the result filter below, which can retire the event and value shapes entirely: the modes are a
+    // property of the SURVIVING set, and returning the pre-filter values sized the route for a shape no admitted
+    // handler has.
+    const modes = (): {
+      eventMode: boolean; resultMode: boolean; valueEffectMode: boolean;
+      nestedCollectionMode: boolean; fixedArrayMode: boolean; tokenContainerMode: boolean;
+    } => ({
       eventMode, resultMode, valueEffectMode, nestedCollectionMode, fixedArrayMode, tokenContainerMode,
-    };
+    });
     if (resultMode) {
+      // X76(E1). Demote only the handler that CARRIES the effect. The test also read `eventMode`, which is a
+      // property of the SET, so ONE emitting sibling refused every effect-free handler on the route - including
+      // returning getters that are admitted when compiled alone. Measured on the real solidity-by-example
+      // ERC-20: `balanceOf`/`allowance` are eligible until `transfer` is present, then the route vanishes.
+      // The remaining rule is unchanged and still fires on the same handler: a handler that both returns and
+      // carries an effect is refused, because the effect's block slot flattens it into the wrapper and its
+      // returning edge then has no slot to bind (the same mechanism `result-consuming-handler-...` names).
       for (const fn of survivors) {
-        if (eventMode || eligibleFootprint(fn).effects.length > 0) {
+        if (eligibleFootprint(fn).effects.length > 0) {
           fn.hiddenBatchEligible = false;
           fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
         }
       }
       survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+      // Every effect-carrying handler has just been demoted, so no survivor emits or moves value. Recomputing
+      // is what lets the route exist at all here: the blocks below refuse a survivor that carries no event
+      // precisely because the flag said the route was event-shaped.
+      eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
+      valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
     }
     if (eventMode) {
       const eventWidths = new Set<number>();
@@ -890,7 +968,7 @@ function synthesizeHiddenBatchRoute(
         }
         survivors = [];
       }
-      if (survivors.length === 0) return { survivors, ...modes };
+      if (survivors.length === 0) return { survivors, ...modes() };
     }
     if (valueEffectMode) {
       for (const fn of survivors) {
@@ -908,7 +986,7 @@ function synthesizeHiddenBatchRoute(
       }
       survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
     }
-    return { survivors, ...modes };
+    return { survivors, ...modes() };
   };
 
   /**
@@ -1011,9 +1089,55 @@ function synthesizeHiddenBatchRoute(
       if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
       return 'other';
     }).join('|');
+  /**
+   * X76(E1). Rewrite the CLONE's bare `m[k]` / `m[k] = v` spellings into the Mapping* nodes
+   * `SymbolTableTraversal` would have produced, before anything else looks at the clone.
+   *
+   * The decision is that traversal's, reproduced: a state collection name, not shadowed by a local, and not a
+   * packed or dynamic state array (which resolves to `StateArrayAssignNode`, a different physical form). Doing
+   * it here rather than teaching each consumer the second spelling is what keeps the entry-key rewrite, the
+   * resource self-alias handler, the collection journal and code generation on one node kind. The SOURCE
+   * handler is untouched, so the direct entry point still resolves exactly as it did.
+   */
+  const BACKREF_KEYS = new Set([
+    'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable', 'stateVariable',
+  ]);
+  const normalizeBareEntryAccesses = (handler: FunctionDefinitionNode): void => {
+    const bound = locallyBoundNames(handler);
+    const rewrite = (node: Node): Node => {
+      const bare = bareEntryAccessOf(node, bound);
+      if (bare && node instanceof ArrayAccessNode) {
+        return Object.assign(
+          new MappingAccessNode(bare.name, bare.keys.map((key) => rewrite(key) as ExpressionNode)),
+          { location: node.location },
+        );
+      }
+      if (bare && node instanceof ArrayAssignNode) {
+        return Object.assign(
+          new MappingAssignNode(
+            bare.name, [rewrite(node.index) as ExpressionNode], rewrite(node.value) as ExpressionNode,
+          ),
+          { location: node.location },
+        );
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (BACKREF_KEYS.has(key)) continue;
+        if (child instanceof Node) {
+          (node as unknown as Record<string, unknown>)[key] = rewrite(child);
+        } else if (Array.isArray(child)) {
+          for (let index = 0; index < child.length; index += 1) {
+            if (child[index] instanceof Node) child[index] = rewrite(child[index] as Node);
+          }
+        }
+      }
+      return node;
+    };
+    if (handler.body) rewrite(handler.body);
+  };
   const bindEntryKeyParameters = (
     handler: FunctionDefinitionNode, source: FunctionDefinitionNode,
   ): void => {
+    normalizeBareEntryAccesses(handler);
     // Alternative order per collection decides which entry is shared by every row and which is row-local; it
     // must match the witness naming above exactly, so it is derived the same way from encounter order.
     const alternatives = new Map<string, string[]>();

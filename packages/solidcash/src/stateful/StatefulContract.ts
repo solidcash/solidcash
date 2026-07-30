@@ -368,7 +368,8 @@ const LOOP_ENTRY_MAX_ITERATIONS = 256;
 
 // X10. Cap on the speculative growth of a dynamic-storage chunk region whose length the probe has not revealed
 // yet (a trailing C2 entry mint aborts the probe before the data NFT is verified). One extra probe per output,
-// so this must stay well inside the derivation iteration budget.
+// so this must stay well inside the derivation iteration budget. X101: the cap is on the region TOTAL across all
+// chunk vars, so a multi-var write costs the same probe budget as a single-var one.
 const MAX_SPECULATIVE_CHUNK_OUTPUTS = 32;
 
 /**
@@ -5832,13 +5833,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // computed. Break that cycle from the only evidence a zero-progress probe leaves: nothing at all was
           // learned, so the trailing region is the wrong size. Grow it by one output and re-probe. The first
           // probe that reaches ANY commitment stops the growth, and A$len then snaps the count to its exact
-          // value. One chunk var only: with several, growing the first is not a search of the right shape.
-          if (commitmentProgress === 0 && !derivedAState && chunkVars.length === 1
+          // value.
+          // X101. This is a linear grow of the region TOTAL, not a search over per-var splits, and measurement
+          // says a search is not needed: the covenant reaches the trailing NEW node's address before it verifies
+          // any chunk, so during the speculative phase only the region's total output count is observable - the
+          // split is not. Growing the first var and growing the last var were measured to produce the same
+          // accepted transaction for (200,60), (60,200) and (200,200), including the two cases whose grown split
+          // is WRONG (right total): the very next probe reads every $len off the data NFT and the block above
+          // snaps each var to its exact count. Grow the first so the single-var path stays byte-identical. The
+          // bound is on the TOTAL region, so several vars cannot multiply it.
+          if (commitmentProgress === 0 && !derivedAState && chunkVars.length >= 1
             && stb.getLoopEntryVars().length > 0 && fullTrace2.some((s: any) => s.error)) {
-            const speculative = stb.getChunkRawCommitments(chunkVars[0].name);
-            if (speculative.length > 0 && speculative.length < MAX_SPECULATIVE_CHUNK_OUTPUTS
-              && speculative.every((c) => c === '00')) {
-              stb.setChunkRawCommitments(chunkVars[0].name, [...speculative, '00']);
+            const regions = chunkVars.map((cv) => stb.getChunkRawCommitments(cv.name));
+            const total = regions.reduce((n, r) => n + r.length, 0);
+            if (total > 0 && total < MAX_SPECULATIVE_CHUNK_OUTPUTS
+              && regions.every((r) => r.every((c) => c === '00'))) {
+              stb.setChunkRawCommitments(chunkVars[0].name, [...regions[0], '00']);
             }
           }
 

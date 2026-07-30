@@ -366,6 +366,11 @@ function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): n
 // commitments. Only indices the covenant actually verified appear in the map, so this just caps the scan window.
 const LOOP_ENTRY_MAX_ITERATIONS = 256;
 
+// X10. Cap on the speculative growth of a dynamic-storage chunk region whose length the probe has not revealed
+// yet (a trailing C2 entry mint aborts the probe before the data NFT is verified). One extra probe per output,
+// so this must stay well inside the derivation iteration budget.
+const MAX_SPECULATIVE_CHUNK_OUTPUTS = 32;
+
 /**
  * Extract expected commitment hex strings from a VM debug trace, keyed by the output index each verifies.
  *
@@ -5576,13 +5581,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 stb.setChunkRawCommitments(dv.name, Array.from({ length: nNew }, (_, i) => existing[i] ?? '00'));
               }
               if (nNew > 0) {
+                // X10: key each observation by ITS output index (chunk i lives at chunkOffset + i), not
+                // positionally. A positional list collapses onto index 0, so when the region's LOW chunks are
+                // never verified - the covenant addressed a different output - a commitment observed higher in
+                // the window is silently credited to chunk 0 and the true chunk 0 stays a '00' placeholder.
+                // Matches the loop-entry and value-chunk derivations, which are already index-keyed.
                 const range = { min: chunkOffset, max: chunkOffset + nNew };
-                const chunkCommits = extractCommitmentsFromTrace(fullTrace2, nNew, range) ?? [];
-                if (chunkCommits.length > 0) {
+                const chunkMap = extractCommitmentMapFromTrace(fullTrace2, range);
+                if (chunkMap.size > 0) {
+                  const derivedChunks: string[] = [];
+                  for (const [outIdx, commit] of chunkMap) derivedChunks[outIdx - chunkOffset] = commit;
                   const cur = stb.getChunkRawCommitments(dv.name);
                   stb.setChunkRawCommitments(dv.name,
-                    Array.from({ length: nNew }, (_, i) => chunkCommits[i] ?? cur[i] ?? '00'));
-                  commitmentProgress += chunkCommits.length;
+                    Array.from({ length: nNew }, (_, i) => derivedChunks[i] ?? cur[i] ?? '00'));
+                  commitmentProgress += chunkMap.size;
                 }
               }
               chunkOffset += nNew;
@@ -5811,6 +5823,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   });
                 }
               }
+            }
+          }
+
+          // X10. A trailing C2 entry mint places its NEW node AFTER the chunk region, and the covenant checks
+          // that output's ADDRESS before any commitment - so a region laid out one output short aborts the probe
+          // before the data NFT is verified, A$len is never revealed, and the exact count above can never be
+          // computed. Break that cycle from the only evidence a zero-progress probe leaves: nothing at all was
+          // learned, so the trailing region is the wrong size. Grow it by one output and re-probe. The first
+          // probe that reaches ANY commitment stops the growth, and A$len then snaps the count to its exact
+          // value. One chunk var only: with several, growing the first is not a search of the right shape.
+          if (commitmentProgress === 0 && !derivedAState && chunkVars.length === 1
+            && stb.getLoopEntryVars().length > 0 && fullTrace2.some((s: any) => s.error)) {
+            const speculative = stb.getChunkRawCommitments(chunkVars[0].name);
+            if (speculative.length > 0 && speculative.length < MAX_SPECULATIVE_CHUNK_OUTPUTS
+              && speculative.every((c) => c === '00')) {
+              stb.setChunkRawCommitments(chunkVars[0].name, [...speculative, '00']);
             }
           }
 
@@ -11419,6 +11447,27 @@ export class StatefulFunctionCall {
             + detail + ' Use .setState() to provide state values manually.',
           );
         }
+      }
+    }
+
+    // X10. A dynamic-storage chunk region that is not FULLY derived must never be broadcast. '00' is the seed
+    // placeholder, never a real chunk commitment (a chunk carries an index opcode, a push opcode and >= 1 data
+    // byte), so a '00' left in the region means the covenant never verified that output. Building it anyway
+    // mints a garbage chunk NFT no later chunked read can parse, and - when a C2 entry mint shares the trailing
+    // region - the covenant's NEW-node check lands inside the chunk window, so the mint's commitment is written
+    // at a chunk index as well and the region carries it twice. Refuse by name instead of assembling it.
+    for (const dv of builder.getDynamicChunkVars()) {
+      const chunkCommitments = builder.getChunkRawCommitments(dv.name);
+      const unresolvedChunks = chunkCommitments.filter((c) => c === '00').length;
+      if (unresolvedChunks > 0) {
+        const derivationError = (builder as any).__derivationError;
+        const detail = derivationError ? ` Reason: ${derivationError.message}` : '';
+        throw new Error(
+          `Cannot send stateful transaction: the dynamic storage chunk region for '${dv.name}' is not fully `
+          + `derived (${chunkCommitments.length - unresolvedChunks} of ${chunkCommitments.length} chunks `
+          + 'resolved). The covenant did not verify every chunk output the SDK laid out, so the remaining '
+          + 'chunks cannot be funded correctly.' + detail,
+        );
       }
     }
 

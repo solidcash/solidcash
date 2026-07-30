@@ -78,6 +78,11 @@ interface Built {
   root: string;
   /** Vault locking bytecode, to prove the covenant is byte-identical across constructors. */
   vaultLbc: string;
+  /**
+   * Transcript root each bypass constructor produces from THIS fixture's artifacts. Computed inside one
+   * setup because every build randomises its token categories, so roots are only comparable within one.
+   */
+  rootsByConstructor: Readonly<Record<'handAssembled' | 'decoyAnalysis', string>>;
 }
 
 /**
@@ -241,6 +246,21 @@ ${calls}
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
+  // Same fixture, both bypass constructors, so the roots are comparable.
+  const rootOf = (candidate: any): string => {
+    const candidateLayout = layer3.compiledGraphPhysicalLayout(candidate);
+    return layer3.finalizeCompiledGraph(
+      candidate, {}, candidateLayout.participantInputs, candidateLayout.returnOutputs,
+      ['', ''], candidateLayout.projectionInputs,
+    ).root;
+  };
+  const rootsByConstructor = {
+    handAssembled: rootOf(handAssemblePlan(graphParticipants, graphInvocations as any)),
+    decoyAnalysis: rootOf(layer3.planCompiledGraph([
+      graphParticipants[0],
+      { ...graphParticipants[1], artifact: withoutClone(vaultArtifact, '__scb_graph_assertFloor') },
+    ] as any, graphInvocations as any)),
+  };
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
   const seedFee = randomUtxo({ satoshis: 20_000n });
@@ -332,6 +352,7 @@ ${calls}
     vaultInput: layout.participantInputs[1],
     root: transcript.root,
     vaultLbc: vault.lockingBytecode,
+    rootsByConstructor,
   };
 }
 
@@ -403,12 +424,11 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
 
-  it('L2-A3 the two bypass constructors produce the SAME transcript root as each other', async () => {
-    // If the roots agree, the two constructors are producing one transaction, and the covenant set is
-    // identical to what the refused planner would have committed.
-    const hand = await buildGuardGraph({ constructor: 'handAssembled', opening: 100n, rows: HOSTILE });
-    const decoy = await buildGuardGraph({ constructor: 'decoyAnalysis', opening: 100n, rows: HOSTILE });
-    expect(hand.root).toBe(decoy.root);
-    expect(hand.vaultLbc).toBe(decoy.vaultLbc);
+  it('L2-A3 both bypass constructors produce ONE transcript root from one fixture', async () => {
+    // If the roots agree, the two constructors are producing the same transaction, so neither is an artefact
+    // of its own encoder. Compared inside one build because each build randomises its token categories.
+    const built = await buildGuardGraph({ constructor: 'handAssembled', opening: 100n, rows: HOSTILE });
+    expect(built.rootsByConstructor.handAssembled).toBe(built.rootsByConstructor.decoyAnalysis);
+    expect(built.root).toBe(built.rootsByConstructor.handAssembled);
   }, 300_000);
 });

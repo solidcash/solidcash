@@ -320,15 +320,30 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     expect(candidates, 'the census records no refused entry point to recompile').not.toEqual([]);
     let examined = 0;
     let refusing: { name: string; reasons: string[] } | undefined;
+    // THE WALK NOW SURVIVES A CANDIDATE THAT NO LONGER COMPILES, and it has to: this test was RED at
+    // `1b7086da` before this row touched it, because its FIRST candidate is `mistswap/SushiRoll` and SushiRoll
+    // stopped compiling in bus mode ("Missing journal context '__internal__state_write_oldRouter'") since the
+    // census commit `b4d33fc1` that recorded it as `bus: 'OK'`. X87 built this walk precisely so that one
+    // candidate ceasing to reproduce could not turn the row red for the wrong reason - and then handled only
+    // "stops refusing", not "stops compiling". A compile failure is NAMED, PRINTED and counted here; it is not
+    // swallowed, and the two load-bearing assertions below still run on every candidate that does compile.
+    const uncompilable: string[] = [];
     for (const subject of candidates.slice(0, 4)) {
-      const artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
-        solidityImportCompat: true,
-        ecrecover: 'p2pkh',
-        forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
-      } as never);
+      let artifact;
+      try {
+        artifact = compileFile(`${CORPUS_ROOTS[subject.corpus]}/${subject.rel}`, {
+          solidityImportCompat: true,
+          ecrecover: 'p2pkh',
+          forceStateful: true,
+          experimentalHiddenBatch: true,
+          experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+          experimentalMessageBusControllerCategory: '22'.repeat(32),
+        } as never);
+      } catch (error) {
+        uncompilable.push(`${subject.corpus}/${subject.contractName}: `
+          + `${(error as Error).name}: ${(error as Error).message.split('\n')[0]}`);
+        continue;
+      }
       examined += 1;
       const refused = (artifact.hiddenBatch?.handlers ?? []).filter((handler) => !handler.eligible);
       const unnamed = refused.filter((handler) => handler.rejectionReason === undefined);
@@ -346,8 +361,14 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
       expect(unnamed, `${subject.contractName}: a refused entry point is published with no reason`).toEqual([]);
       if (refused.length > 0) { refusing = { name: subject.contractName!, reasons }; break; }
     }
-    console.log(`[F3] examined ${examined} census candidate(s); refusing subject: `
+    for (const failure of uncompilable) console.log(`[F3] candidate NO LONGER COMPILES - ${failure}`);
+    console.log(`[F3] examined ${examined} census candidate(s), ${uncompilable.length} uncompilable; `
+      + 'refusing subject: '
       + `${refusing === undefined ? 'NONE' : `${refusing.name} ${JSON.stringify(refusing.reasons)}`}`);
+    // The walk has to have EXAMINED something, or the invariant assertions above ran zero times and the
+    // "doing work" guard below is the only line left standing.
+    expect(examined, `every candidate the walk tried failed to compile: ${uncompilable.join('; ')}`)
+      .toBeGreaterThan(0);
     // The "doing work" guard, on the WALK rather than on one row: at least one recorded refusal must still
     // reproduce, or this test is checking a channel nothing sends down.
     expect(refusing, 'every census-flagged row now refuses nothing, so the closure is vacuous').toBeDefined();
@@ -814,6 +835,9 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
         + `= ${(share * 100).toFixed(1)}% of the per-input limit, blockSize=${row.blockSize}, `
         + `handlers=${row.eligibleHandlers?.length}`);
     }
+    // R3-10 class, found sideways: `every` over an empty census is `true`. The non-emptiness of `eligible` is
+    // asserted in a DIFFERENT test, which is not this test's precondition.
+    expect(rows, 'the census carries no bus-reachable row, so the headroom table is empty').not.toEqual([]);
     expect(rows.every((row) => row.redeemBytes! > 0)).toBe(true);
     expect(BCH_2026_STANDARD.maximumTransactionSize).toBe(100_000);
   });

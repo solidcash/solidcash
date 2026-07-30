@@ -992,6 +992,10 @@ contract ArmHub() {
       experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
       experimentalMessageBusControllerCategory: 'cd'.repeat(32),
     });
+    // R3-10 class, found sideways: `every` over an empty handler list is `true`, so a route that published no
+    // handler at all would satisfy "all admitted".
+    expect(artifact.hiddenBatch!.handlers, 'the route published no handler, so "all eligible" is vacuous')
+      .not.toEqual([]);
     expect(artifact.hiddenBatch!.handlers.every((h: any) => h.eligible)).toBe(true);
     // 8 sites x transferWidth 2, while `narrow` settles one slot per site.
     expect(artifact.hiddenBatch!.route.blockLayout!.slots

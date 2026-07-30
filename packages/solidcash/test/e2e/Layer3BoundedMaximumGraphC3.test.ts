@@ -1050,6 +1050,10 @@ describe('C3 bounded maximum graph capstone (SEMANTIC)', () => {
     expect(built.chunkCount).toBeGreaterThan(0);
     const ledgerLayout = built.artifacts[1].hiddenBatch.route.blockLayout;
     expect(ledgerLayout.trailingBase).toBe(2);
+    // R3-11 class, found sideways: `every` over an empty list is `true`, and `chunkCount > 0` above is a
+    // different quantity from the length of this list. Tie the two together before reading the locality claim.
+    expect(built.assembly.chunkOffsets, 'the chunk offsets the locality claim reads are not the chunks counted')
+      .toHaveLength(built.chunkCount);
     expect(built.assembly.chunkOffsets.every((offset) =>
       offset >= ledgerLayout.trailingBase
       && offset < ledgerLayout.trailingBase + ledgerLayout.trailingCapacity)).toBe(true);

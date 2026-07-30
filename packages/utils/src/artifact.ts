@@ -641,6 +641,22 @@ export interface InvocationAnalysisArtifact {
   }[];
 }
 
+/**
+ * Largest SCB1 hidden-batch blob any generated covenant admits, in bytes (X106).
+ *
+ * ONE home for a value with two enforcers. The compiler compiles this bound into every hidden-batch route
+ * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.hiddenBatch.maximumBlobBytes`; the SDK's
+ * layer3 graph generator compiles the same bound into the root controller's per-participant frame check. Both
+ * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
+ * compiler and the SDK already depend on, so it is the only place the two can share a literal.
+ *
+ * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
+ * blob envelope, NOT the trailing region, is the binding constraint - an argument-carried value caps at 202
+ * bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than
+ * the region. Silent drift between the copies would therefore move a real limit.
+ */
+export const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];

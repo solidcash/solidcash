@@ -69,18 +69,23 @@ const NO_WRITE = 'require(amount >= 0);';
 const MISSING_JOURNAL = /Missing journal context '__internal__state_write_balance' while invoking/;
 
 describe('L2 review of SEC-18 - the widened journal closure', () => {
-  it('L2-F2 V1 HOSTILE: an honest resource-shaped route with a scalar read fails code generation', () => {
-    // Compiled at 1cd218c9^ (1483 B redeem). At HEAD the widened closure journals
-    // `__scb_resource_assertFloor_self_alias` and the invoking site has no journal context.
-    expect(() => compileString(resourceVault(SCALAR_READ, WRITES_BALANCE), BUS_OPTIONS))
-      .toThrow(MISSING_JOURNAL);
+  // BOTH INVERTED WHEN THE FIX LANDED. These recorded a real regression: SEC-18's widening turned an
+  // honest contract into a bare `Missing journal context` error with no name, position or remedy, and it
+  // was not confined to this fixture - three real corpus contracts crashed the same way, of which
+  // TreasurySplit and SushiRoll are fixed by the same change. The cause was that `routeReachable` admits
+  // the route's CALLEES and never the route itself, so `invokesJournalHandler` was computed true against an
+  // empty `candidateJournalSlots`. Fail-closed throughout, so it was never a soundness defect.
+  it('L2-F2 V1: the honest resource-shaped route with a scalar read now COMPILES', () => {
+    const artifact = compileString(resourceVault(SCALAR_READ, WRITES_BALANCE), BUS_OPTIONS);
+    expect(artifact.bytecode.length).toBeGreaterThan(0);
   });
 
-  it('L2-F2 V2 the crash does not need a writer of the slot at all', () => {
-    // Isolates `routeReachable` rather than `writerIds` as the admitting disjunct: nothing on this
-    // route writes `balance`, so at the baseline the closure was empty and nothing was journalled.
-    expect(() => compileString(resourceVault(SCALAR_READ, NO_WRITE), BUS_OPTIONS))
-      .toThrow(MISSING_JOURNAL);
+  it('L2-F2 V2: and it compiles with no writer of the slot at all', () => {
+    // Still isolates `routeReachable` rather than `writerIds` as the admitting disjunct: nothing on this
+    // route writes `balance`. Kept as a distinct case because the two reached the crash by different
+    // disjuncts, so a fix covering only one of them would leave this red.
+    const artifact = compileString(resourceVault(SCALAR_READ, NO_WRITE), BUS_OPTIONS);
+    expect(artifact.bytecode.length).toBeGreaterThan(0);
   });
 
   it('L2-F2 V3 NEGATIVE CONTROL on the READ: the same route without the scalar read compiles', () => {

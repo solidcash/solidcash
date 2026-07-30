@@ -468,16 +468,21 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
 
-  it('L2-F3 HOSTILE: SEC-18 misses a reader reached through a FUNCTION POINTER, and it SETTLES', async () => {
-    // No bypass, no tampering: the GUARDED planner admits this, because the guard is not an emission
-    // clone. `withdraw(80)` on an opening 100 then `assertFloor(50)`: 50 is true of 100 and false of
-    // the 20 this transaction commits. Byte-identical to 1cd218c9^, so the widening never reached it.
+  it('L2-F3 was a LIVE EXPLOIT and is now refused at the vault master', async () => {
+    // INVERTED WHEN THE FIX LANDED, and the exploit it recorded was real. No bypass, no tampering: the
+    // GUARDED planner admitted this, because the guard is not an emission clone. `withdraw(80)` on an
+    // opening 100 then `assertFloor(50)`: 50 is true of 100 and false of the 20 this transaction commits,
+    // and it SETTLED. The tell was byte-identical output to 1cd218c9^ - the widening never reached it,
+    // because the callee was recorded only from `FunctionCallNode.resolvedFunction` while the
+    // `functionReference` key was skipped. Pointer spelling was 1,623 B against 1,643 for the same read by
+    // name: twenty bytes CHEAPER, because it paid no journal at all. Now 1,641 and refused.
     const built = await buildGuardGraph({
       constructor: 'planner', vault: 'pointer', opening: 100n, rows: HOSTILE,
     });
     expect(built.closing).toBe(20n);
-    expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    expect(failingInput(built.builder)).toBe(built.vaultInput);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
   it('L2-F3p POSITIVE CONTROL: the SAME guard spelled as a direct read is refused at the vault', async () => {

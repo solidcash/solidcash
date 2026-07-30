@@ -160,7 +160,19 @@ function compileApplicationRow(row: CensusRow): { artifact?: any; error?: string
  * try/catch, which made the whole headline test THROW. It was red at `1b7086da` before this row touched it,
  * on `SushiRoll`.
  */
-const APPLICATION_COMPILE_FAILURES = ['TreasurySplit', 'UnicrowClaim', 'SushiRoll'];
+/**
+ * RE-PINNED TO EMPTY after X115/L2-F2. All three recovered: `routeReachable` admitted the route's callees and
+ * never the route itself, so `invokesJournalHandler` was true against an empty slot set and code generation
+ * hit `Missing journal context`. TreasurySplit and SushiRoll were named as fixed by that change.
+ *
+ * UnicrowClaim needs a caveat, because two measurements of it disagree and the difference is the option set.
+ * Under THIS walk's options - which include `ecrecover: 'p2pkh'` - it compiles, and that is what the empty
+ * pin below records. The worker that fixed the other two reported it still failing, with its bare
+ * `Expected variable '__extaddr_unicrow' does not exist on the stack` replaced by a NAMED
+ * `LowLevelCallShapeError` on `refund`. Both can be true: a named refusal raised under a narrower option set
+ * is invisible here. Do not read the empty pin as "UnicrowClaim is bus-compilable in general".
+ */
+const APPLICATION_COMPILE_FAILURES: string[] = [];
 
 /**
  * The application rows admitting at least one handler the compiler does NOT prove read-only, pinned by name.
@@ -172,8 +184,22 @@ const APPLICATION_COMPILE_FAILURES = ['TreasurySplit', 'UnicrowClaim', 'SushiRol
  * contracts sit above the 8,000-byte rule that used to select the subjects, which is why the old subset could
  * assert exactly zero and stay green.
  */
-const APPLICATION_STATE_CHANGERS = ['UniswapV2Pair', 'UniswapV2Factory'];
-const APPLICATION_STATE_CHANGING_HANDLERS = 4;
+/**
+ * MOVED 2 -> 3 by the L2-F2 repair, and the third entry is FLAGGED, not endorsed.
+ *
+ * The repair let the widest admission rung succeed where a code-generation crash had silently demoted
+ * contracts to a narrower one, which made roughly NINETY handlers newly buildable across the corpus. None of
+ * them has been VM-proved. `FakeToken` arrives here admitting `name` and `symbol` as state-changing - those
+ * are ERC-20 METADATA GETTERS, so either the `writesState` classification is wrong for a `string` storage
+ * read, or these are genuinely writing and that is worse. Filed as X135.
+ *
+ * This pin therefore records what is MEASURED, not what is believed correct. Do not cite the 3 as a capability
+ * figure until X135 says which of the two it is.
+ */
+const APPLICATION_STATE_CHANGERS = ['UniswapV2Pair', 'UniswapV2Factory', 'FakeToken'];
+// 4 -> 6 with the L2-F2 repair: FakeToken adds `name` and `symbol`. Both are ERC-20 metadata getters, so this
+// count is MEASURED and not endorsed - see the APPLICATION_STATE_CHANGERS docblock and X135.
+const APPLICATION_STATE_CHANGING_HANDLERS = 6;
 
 /** Corpus roots, so a census row can be recompiled. Same defaults the probe uses. */
 const CORPUS_ROOTS: Record<string, string> = {
@@ -446,7 +472,7 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
    * because both write-admitting contracts are above 8,000 bytes. The assertion states the current figure and
    * names the contracts, so a change in either direction has to be re-read rather than absorbed.
    */
-  it('MEASURED: X73 lifted the visibility gate, and the FULL application write surface is 2 of 12', () => {
+  it('MEASURED: X73 lifted the visibility gate, and the FULL application write surface is 3 of 12', () => {
     expect(applicationRows, 'the census records no application-corpus contract').not.toEqual([]);
     // The population is PINNED, so a row cannot silently leave the subject set the way the size rule let it.
     expect(applicationRows, 'the recorded application population changed size; re-read X113 before re-pinning')

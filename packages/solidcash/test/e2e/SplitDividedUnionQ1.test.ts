@@ -76,6 +76,48 @@ describe('Q1 row B: a divided call-edge union settles on the VM', () => {
   });
 
   /**
+   * The demoted copy loses its entry-point return channel, because an internal caller consumes the value on
+   * the stack instead. The callee's OWN facet still publishes one. Both halves are settled here so that
+   * asymmetry is proven rather than assumed.
+   */
+  it('settles a divided union whose demoted callee RETURNS a value', async () => {
+    const source = `pragma solidity ^0.8.7;
+      contract PairR {
+        uint total;
+        uint touched;
+        function publish(uint256 v) public {
+          touched = tail(v * 2);
+          require(v >= 0, "n");
+        }
+        function tail(uint256 v) public returns (uint256) {
+          total = total + v;
+          require(v >= 0, "n");
+          return v + 1;
+        }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true };
+    const union = compileStringSplit(source, options);
+    const divided = compileStringSplit(source, {
+      ...options, maxShardBytes: union.manifest.facets[0].estimatedRedeemBytes - 1,
+    });
+    expect(divided.manifest.facets).toHaveLength(2);
+    console.log(`[Q1-B] returning union=${union.manifest.facets[0].estimatedRedeemBytes}B divided=${divided
+      .manifest.facets.map((f) => `${f.functions.join('|')}:${f.estimatedRedeemBytes}`).join(' ')}`);
+
+    const signer = await fundedSigner();
+    const deployed = await SplitContractBundle.from(divided, signer)
+      .deploy([], { initialState: { total: 0n, touched: 0n } });
+    await deployed.call.publish(5n).send();
+    let state = await deployed.root.getState();
+    expect(state.total).toBe(10n);
+    expect(state.touched).toBe(11n);
+    await deployed.call.tail(3n).send();
+    state = await deployed.root.getState();
+    expect(state.total).toBe(13n);
+    expect(state.touched).toBe(11n);
+  });
+
+  /**
    * GUARD NEGATIVE CONTROL. The same source at a limit that admits the union is NOT divided, settles the same
    * way, and reaches the same state - so the assertions above are about the division, not about the fixture.
    */

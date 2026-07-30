@@ -828,7 +828,7 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     console.log(`C2 serialized transaction size: ${built.transaction.length / 2} bytes; `
       + `transcript ${built.transcript.bytes.length} bytes; ${built.layout.totalSlots} slots`);
 
-    // RE-MEASURED at this commit, run to completion, ratio against the ORDINARY 800/byte budget.
+    // RE-MEASURED at `3281ece9`, run to completion, ratio against the ORDINARY 800/byte budget.
     // 4 participants, 5 invocations, a 743-byte transcript, 79 slots:
     //
     //   input             bytes   cost        instructions   ratio
@@ -836,12 +836,18 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     //   66   leg B        2,585     894,508     8,398        0.4325
     //   68   leg C        2,722     910,810     8,543        0.4183
     //   70   auditor      2,766   1,159,267    10,996        0.5239
-    //   73-76 projections 5,464 each, 1,721,310-1,739,262, 15,008 each, 0.3938-0.3979
+    //   73-76 projections 4,914 each, 1,311,150-1,323,013, 11,818 each, 0.3335-0.3365
     //   77   controller   2,309   1,198,938     9,536        0.6491   <- the worst input, and it FITS
     //
-    // Serialized transaction: 53,249 bytes, inside both the 100,000-byte standard relay ceiling and the
+    // Serialized transaction: 51,049 bytes, inside both the 100,000-byte standard relay ceiling and the
     // 1,000,000-byte consensus one. EVERY input fits, so C2 settles under ordinary BCH-2026 capacity today and
     // the relaxed profile is NOT what this composition needs - its SEMANTIC-only label is conservative.
+    //
+    // R3-13. THE PROJECTION ROW AND THE SERIALIZED FIGURE ABOVE ARE THE ONES THAT MOVED. This block used to
+    // give 5,464 B / 1,721,310-1,739,262 / 15,008 each / 0.3938-0.3979 and a 53,249-byte transaction, both
+    // pre-X65 readings, and the 15,008 contradicted the `toEqual([11_818, ...])` assertion sixty lines below
+    // it. The other five rows reproduce byte-for-byte at `3281ece9`. Re-read from this test's own printed
+    // table, not from any other file's citation.
     //
     // WHAT THIS CORRECTS, and it is all six rows. The block that stood here recorded hub 4,709 B / 2,234,254 /
     // 0.5931, leg B 2,602 / 935,055 / 0.4492, leg C 2,739 / 949,332 / 0.4332, auditor 2,682 / 905,373 / 0.4220,
@@ -877,13 +883,18 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     // in sign and the assertions on them still hold, so this is spend, not a capacity move.
     expect(new Set(projections.map((row) => row.instructions)).size).toBe(1);
 
-    // THE CROSS-BUILD COMPARISON, re-measured at this commit rather than carried over. C1 and C3 print their
+    // THE CROSS-BUILD COMPARISON, re-measured at `3281ece9` rather than carried over. C1 and C3 print their
     // own tables from their own capacity tests; these are the readings this file's claims are stated against:
     //
     //   build  P/N   transcript  slots  projection instr  controller instr  controller ratio  serialized
-    //   C1     5/6   1,314 B      38    17,686 x5          9,561            0.6182            63,315 B
-    //   C2     4/5     743 B      79    15,008 x4          9,536            0.6491            53,249 B
-    //   C3     8/8   1,325 B     108    24,382 x8         15,336            0.9217           100,650 B
+    //   C1     5/6   1,314 B      38    13,882 x5          9,561            0.6183            60,617 B
+    //   C2     4/5     743 B      79    11,818 x4          9,536            0.6491            51,049 B
+    //   C3     8/8   1,325 B     108    18,845 x8         15,336            0.9218            96,302 B
+    //
+    // R3-13. The projection and serialized columns moved on all three since the 17,686 / 15,008 / 24,382 and
+    // 63,315 / 53,249 / 100,650 this table used to give. The controller instruction counts did NOT move, and
+    // neither did any controller ratio beyond the fourth decimal. Each figure re-read from that capstone's own
+    // capacity test at `3281ece9`; no attempt is made here to attribute the moves to individual commits.
     //
     // WHAT THAT SUPPORTS, and what this file must STOP claiming:
     //   1. Within a build every projection costs the same instruction count whatever row it proves, which is

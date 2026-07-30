@@ -60,21 +60,39 @@ async function fixture(): Promise<any> {
 
 const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
+/**
+ * X144. THIS FILE HAD NO HONEST CONTROL ANYWHERE.
+ *
+ * Three hostiles, three bare `rejects.toThrow()`, and nothing that ever asserted a settlement. Every one of
+ * them would have stayed green if `fixture()` had stopped producing a valid transaction at all - which is the
+ * "hostiles failing for the honest case's reason" shape, not a proof that any finding is CLOSED. Each test now
+ * carries a guard negative control built from the same fixture and differing in exactly the attacked field,
+ * and each refusal is attributed to the VM rather than to any throw.
+ *
+ * A fresh fixture per control on purpose: a settled control consumes its UTXOs, so reusing it would make the
+ * hostile fail `bad-txns-inputs-missingorspent` instead of on its own attack.
+ */
 describe('layer-3 production audit probes (findings now CLOSED - fail-closed regressions)', () => {
+  const VM_REFUSAL = /mandatory-script-verify-flag-failed/;
+
   it('L3-2 CLOSED: a non-transition resource preserves its commitment; a rewritten commitment is rejected', async () => {
+    const honest = await fixture();
+    await expect(honest.provider.sendRawTransaction(raw(honest.result.builder))).resolves.toBeTypeOf('string');
     const { provider, result, spec } = await fixture();
     // Honest build now preserves the input commitment (01020304); the covenant enforces it. Forge it:
     const stateOutput = layer3.transcriptLayout(spec).stateOutput(0);
     result.builder.outputs[stateOutput].token.nft.commitment = 'deadbeef';
-    await expect(provider.sendRawTransaction(raw(result.builder))).rejects.toThrow();
+    await expect(provider.sendRawTransaction(raw(result.builder))).rejects.toThrow(VM_REFUSAL);
   });
 
   it('L3-3 CLOSED: siphoning satoshis from a declared resource output is rejected', async () => {
+    const honest = await fixture();
+    await expect(honest.provider.sendRawTransaction(raw(honest.result.builder))).resolves.toBeTypeOf('string');
     const { provider, result, spec, open } = await fixture();
     const stateOutput = layer3.transcriptLayout(spec).stateOutput(0);
     result.builder.outputs[stateOutput].amount = 1000n;
     result.builder.addOutput({ to: open.address, amount: 4000n });
-    await expect(provider.sendRawTransaction(raw(result.builder))).rejects.toThrow();
+    await expect(provider.sendRawTransaction(raw(result.builder))).rejects.toThrow(VM_REFUSAL);
   });
 
   it('L3-1 CLOSED: three participants using two different OVERLAPPING transcripts ([A,B] vs [B,C]) is rejected', async () => {
@@ -102,29 +120,41 @@ describe('layer-3 production audit probes (findings now CLOSED - fail-closed reg
     const handlerSelector = artifact.hiddenBatch!.handlers.find((h: any) => h.name === '__layer3_bind')!.selector;
     const blob01 = layer3.encodeTranscriptBlob(handlerSelector, [0n, 0n, 1n, 1n]);
     const blob12 = layer3.encodeTranscriptBlob(handlerSelector, [1n, 1n, 2n, 2n]);
-    const builder = new TransactionBuilder({ provider });
-    builder.addInput(parts[0].master, parts[0].contract.createCompilerRouteUnlocker(route, selector)(blob01));
-    builder.addInput(parts[1].master, parts[1].contract.createCompilerRouteUnlocker(route, selector)(blob01));
-    builder.addInput(parts[2].master, parts[2].contract.createCompilerRouteUnlocker(route, selector)(blob12));
     const open = new Contract(compileString(OPEN), [], { provider });
-    const fee = randomUtxo({ satoshis: 20000n });
-    await provider.addUtxo(open.address, fee);
-    builder.addInput(fee, open.unlock.spend());
-    for (const p of parts) {
-      builder.addOutput({
-        to: p.contract.tokenAddress,
-        amount: p.master.satoshis,
-        token: {
-          category: p.categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      });
-    }
+    const build = (members: number[], blobs: string[]): TransactionBuilder => {
+      const b = new TransactionBuilder({ provider });
+      members.forEach((index, slot) => b.addInput(
+        parts[index].master, parts[index].contract.createCompilerRouteUnlocker(route, selector)(blobs[slot]),
+      ));
+      return b;
+    };
+    const fund = async (b: TransactionBuilder, members: number[]): Promise<TransactionBuilder> => {
+      const fee = randomUtxo({ satoshis: 20000n });
+      await provider.addUtxo(open.address, fee);
+      b.addInput(fee, open.unlock.spend());
+      for (const index of members) {
+        b.addOutput({
+          to: parts[index].contract.tokenAddress,
+          amount: parts[index].master.satoshis,
+          token: { category: parts[index].categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+        });
+      }
+      return b;
+    };
+
     // Input 2 carries a divergent blob; the L3-1 canonical-blob binding aborts it. Overlapping/divergent
     // views no longer co-validate. (Residual: a fully DISJOINT injected transcript with a different-structured
     // blob is not yet caught - full exhaustiveness needs a structure-independent canonical digest, see
     // layer3-production-audit.md L3-1.)
-    await expect(provider.sendRawTransaction(raw(builder))).rejects.toThrow();
+    const attacked = await fund(build([0, 1, 2], [blob01, blob01, blob12]), [0, 1, 2]);
+    await expect(provider.sendRawTransaction(raw(attacked))).rejects.toThrow(VM_REFUSAL);
+
+    // X144 guard negative control. The two participants blob01 actually names, on the same masters, the same
+    // route and the same canonical blob, settle. Without this the refusal above is indistinguishable from a
+    // fixture that cannot build a valid transcript at all - which is how a hostile passes for the honest
+    // case's reason. It runs AFTER the attack: a refused transaction consumes nothing, but a settled one
+    // spends its masters and would leave the attack reporting `bad-txns-inputs-missingorspent` instead.
+    const control = await fund(build([0, 1], [blob01, blob01]), [0, 1]);
+    await expect(provider.sendRawTransaction(raw(control))).resolves.toBeTypeOf('string');
   });
 });

@@ -146,12 +146,25 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
     expect((await scKashi.getState()).collateral).toBe(4n);
   });
 
+  /**
+   * X144. `.send()` is the STATEFUL SUBMIT PATH, where the finalized-byte gate runs BEFORE the covenant - the
+   * covenant only speaks once the provider has the bytes. A bare `rejects.toThrow()` here would report that
+   * gate, a fee-check refusal or an SDK build error as if it were the callee's own guard, which is exactly how
+   * a forgery test stops measuring its forgery. Censused: this is a VM refusal at input 5, and it stays one.
+   *
+   * Guard negative control: the same 3-owner composition, differing only in the attacked balance, settles.
+   */
   it('HOSTILE: the callee covenant stays authoritative - an over-debit (balance < amount) reverts the whole settlement', async () => {
     // Token balance 3 < borrow 5: Token.debit's own require(balance >= amount) fails, aborting the atomic tx.
     const { scKashi, scBento, scToken } = await setup3({ elastic: 10n, base: 8n }, { balance: 3n });
     await expect(scKashi.borrow(5n)
       .withExternalCall(scBento, 'deposit', [5n])
       .withExternalCall(scToken, 'debit', [5n])
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    const honest = await setup3({ elastic: 10n, base: 8n }, { balance: 100n });
+    await expect(honest.scKashi.borrow(5n)
+      .withExternalCall(honest.scBento, 'deposit', [5n])
+      .withExternalCall(honest.scToken, 'debit', [5n])
+      .send()).resolves.toBeDefined();
   });
 });

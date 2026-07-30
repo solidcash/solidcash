@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
+import { asmToBytecode } from '@solidcash/utils';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -287,4 +288,66 @@ describe('X117 __evm_storage word round-trip on the direct path', () => {
       expect(rejection.index).toBe(0);
     });
   }
+});
+
+/**
+ * L2-F3 - the scalar-journal closure missed a reader reached through a FUNCTION POINTER.
+ *
+ * `computeScalarJournalClosures`'s `scan` recorded a callee only from `FunctionCallNode.resolvedFunction`
+ * and skipped the `functionReference` key, so a pointer-invoked reader never entered `callsById`: its slots
+ * never propagated into its caller's journal and the route-reachable closure never contained it. The read then
+ * loaded the pre-transaction NFT commitment while an earlier row's write was live in the wrapper frame, and
+ * the guard exploit settled through the guarded planner. The settlement evidence is the reviewer's
+ * `Layer3SecurityReviewL2X111.test.ts` cases L2-F3 / L2-F3p / L2-F3L; what is pinned here is the BYTE TELL
+ * that identified it, because it is what a later change would silently undo.
+ *
+ * The tell is self-relative, so nothing is hard-coded: the pointer spelling was 20 B CHEAPER than the same
+ * read reached through a named call, which is only possible if it paid no journal cost at all.
+ */
+const POINTER_VAULT = `pragma solidcash >=0.8.0;
+    contract Vault() {
+      bigint balance;
+      bigint other;
+      function checkFloor(bigint floor) internal {
+        require(this.balance >= floor);
+      }
+      function withdraw(bigint amount) public {
+        this.balance = this.balance - amount;
+        require(amount >= 0);
+      }
+      function bumpOther(bigint n) public {
+        this.other = this.other + n;
+        require(n >= 0);
+      }
+      function assertFloor(bigint floor, address expectedSender) public {
+        function(bigint) internal probe = checkFloor;
+        probe(floor);
+        require(expectedSender.length >= 0);
+      }
+    }`;
+
+const POINTER_HOP = 'function(bigint) internal probe = checkFloor;\n        probe(floor);';
+
+describe('L2-F3 the scalar journal reaches a pointer-invoked reader', () => {
+  const busOptions = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+    experimentalMessageBusControllerCategory: '22'.repeat(32),
+  };
+  const size = (text: string): number => asmToBytecode(compileQuiet(text, busOptions).bytecode).length;
+
+  it('costs a pointer-invoked read the same journal as the named call it points at', () => {
+    const pointer = size(POINTER_VAULT);
+    const namedCall = size(POINTER_VAULT.replace(POINTER_HOP, 'checkFloor(floor);'));
+    const inHandler = size(POINTER_VAULT.replace(POINTER_HOP, 'require(this.balance >= floor);'));
+
+    // The two journalled spellings agree exactly: reaching the read through a helper changes no cost.
+    expect(namedCall).toBe(inHandler);
+    // And the pointer hop no longer buys a discount. Before the fix this gap was 20 B - the whole journal -
+    // and the pointer build was byte-identical to the pre-SEC-18 compiler. A tolerance of 4 B covers the
+    // pointer local's own encoding without admitting a missing journal context.
+    expect(namedCall - pointer).toBeLessThanOrEqual(4);
+    expect(namedCall - pointer).toBeGreaterThanOrEqual(0);
+  });
 });

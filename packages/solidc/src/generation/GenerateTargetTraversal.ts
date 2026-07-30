@@ -1685,6 +1685,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (root instanceof FunctionCallNode && root.resolvedFunction?.functionId !== undefined) {
         calls.add(root.resolvedFunction.functionId);
       }
+      // L2-F3. A function used as a VALUE - `function(bigint) internal probe = checkFloor; probe(floor)`,
+      // `this.f` - is invoked through the same OP_INVOKE as a named call, and `collectInvokedFunctionIds`
+      // above already records it for exactly that reason. It was missing HERE, so a pointer-invoked callee
+      // never entered `callsById`: its slots never propagated into its caller's journal and the
+      // route-reachable closure never contained it. The read then loaded the pre-transaction NFT commitment
+      // while an earlier row's write was live in the wrapper frame - the stale read X105/SEC-18 closed for the
+      // direct spelling, still open behind one pointer hop. The recursion below skips `functionReference` as a
+      // back-reference, so it has to be read explicitly before that loop.
+      if (root instanceof IdentifierNode && root.functionReference?.functionId !== undefined) {
+        calls.add(root.functionReference.functionId);
+      }
       for (const [key, value] of Object.entries(root)) {
         if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
           || key === 'collection' || key === 'stateVariable') continue;

@@ -245,7 +245,9 @@ task-specific report, not in this table.
 | X35 | Eligibility oddity: stricter combination admitted, simpler refused | A3 | — | **NO_CHANGE (measured)** | correct conservative proxy; real key is per-row `conditional` entry slots, fix site `compiler.ts` |
 | X29 | Thread a per-call-site output index into the subroutine | C | SEC-6 | **INTEGRATED, striding now PROVEN** | reviewed by R1: striding holds both directions; opened SEC-15 on its reserved slots |
 | **SEC-15** | Forged log LIVE in X29's own unreached frame slots | S5 | X29 | **INTEGRATED** | per-slot ordinal binding; a SECOND forgeable entry point found repairing it - see 4.54 |
-| X44 | Two reached event-settling sites collapse to one ordinal | — | SEC-15 | **DEFERRED (fail-closed)** | refuses today; becomes a FALSE refusal if X41's independent limit is ever lifted |
+| X44 | Two reached event-settling sites collapse to one ordinal | H1 | SEC-15 | **RE-CHECKED, still unreachable** | the effect-free control rejects identically, so X41's limit refuses it, not X44's collapse - see 4.95 |
+| X102 | The collection-iteration depth term is CALL-SITE dependent | — | X10 | **TODO** | `+1` is correct at one caller and wrong at the C2 INSERT arm; a shared constant cannot fix it, pass the depth |
+| X103 | A worker cannot merge or check out integration commits into its worktree | — | — | **TODO (process)** | the permission classifier denies both; dispatch from a later base or relay the half as a patch |
 | X45 | `EcrecoverRecovery` STATEFUL fails at a low rate on a rare nonce | A5 | — | **INTEGRATED** | 1.33% per draw, ~12.6% per file; deterministic by PRECONDITION, bounded retry replaces an unbounded loop |
 | X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | B6 | — | **INTEGRATED** | the overrides were HALVING a later package-wide fix; removing them restores 30,000 ms |
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
@@ -269,6 +271,63 @@ The main thread should reproduce this table in progress updates using only chang
 for example: `2 PROVEN / 3 INTEGRATED / 4 REVIEW / 12 TODO / 0 BLOCKED`.
 
 Aggregate after round 3 integration: `2 PROVEN / 11 INTEGRATED / 0 REVIEW / 0 LEASED / 22 TODO / 0 BLOCKED`.
+
+### 4.95 H1 landed NOTHING, correctly, and found the one-liner would have been wrong
+
+Empty commit range, tree byte-identical to its base. Three rows, three different stated reasons not to land.
+
+**M3 is not one mechanism - the row as filed conflates two shapes sharing an error string and nothing else.**
+Enumerated across 190 files (mistswap 16/16, eacc 22/22, solidity-by-example 152/152; solc-corpus explicitly
+**not** enumerated and every claim scoped accordingly):
+
+- **A**: an SCB1 route clone (`Slot.sol`), thrower `__scb_external_write`, `kind=entry`, route lost at rung 4.
+- **B**: an **`internal` constructor** - `constructor() internal { ...; emit E(...); }`, the OZ `Ownable` idiom,
+  legal Solidity <=0.6. **Nothing to do with the route.** `isEntryPoint` is derived from visibility, so an
+  internal constructor gets no `blockLayout`, but GTT still compiles it through `emitEntryPointFunctionDefine`
+  and runs `emitEventCovenantVerification`. Minimal repro, **one variable each way**: drop the `emit` -> compiles;
+  `internal` -> `public` -> compiles.
+
+**Sub-shape A has two independent gaps, not one.** The clone is created after `InlineStoragePointerCalls` because
+the synthesis decision reads a **pre-lowering** footprint that cannot see a collection created later. H1 forced
+early synthesis and **it still throws**, because the collection is not yet `sorted` at that point.
+
+**The naive fix compiles and MUST NOT SHIP - this is the finding.** Applied as a dist experiment, it turns
+`route=ABSENT handlers=0` into **`route=PRESENT handlers=2`**, confirming that closing M3 returns a whole
+contract's route. But the route then publishes **`writesState=false`** and `operations ['read']` for a slot the
+clone's covenant **upserts**, because `collectEntryAccesses` walks only a function's own body. `StatefulContract`
+branches on `operations.includes('write')` to pick a read-only unlocker, so a write row would be built with a
+preserved output against a covenant demanding a rewritten one. **"A route that reports a write surface it cannot
+exercise - worse than the refusal."** H1 labelled this a **code-path argument, not VM-measured**, and handed over
+a two-part repair (union the operations by `(collection, keyParams, slotIndex)`, refuse on identity mismatch,
+then share the layout) measured to give `writesState=true`, `operations ['read','write']`, **layout unchanged**.
+
+Cost if landed: **+1,689 B** on `TestSlot` - which is the SCB1 route it currently loses entirely - and the
+metadata union itself is **+0**.
+
+**X44's premise was re-checked rather than inherited, and still holds.** The discriminator is the **effect-free
+control**: a handler carrying no event and no transfer rejects with the identical `OP_VERIFY at input 0`, and it
+has no ordinals to collapse - so the refusal is X41's independent limit, not X44's. Honest weakness stated: all
+five reject with the same symptom, **so the control carries the argument, not the symptom.**
+
+**X10's covenant line: DO NOT LAND, and a new finding that would have made it wrong.** The SDK half sits **ahead
+of H1's base**, and both `git merge` and `git checkout <paths>` were **denied by the permission classifier**, so
+the joint control could not be produced - and by the board's own measurement `+6` **alone** is worse than base.
+*"Landing it unverified would be shipping a known regression on the chance it composes."*
+
+What it verified statically **supports** `+6`: `emitAddDynamicOutputsBeforeEntries` has **exactly one call site**,
+and five lines earlier the same routine already uses `returnOutputIdx + 6` with a comment enumerating the five
+raw C2 working fields plus the running index. *"`+1` is the bug; `+6` is the constant already established at that
+exact point."*
+
+**But the same routine's collection-iteration term still uses `+1` at that same depth-6 call site - and that
+helper has a SECOND caller where `+1` is CORRECT.** So the correction is **call-site-dependent and cannot be
+fixed by a constant in the shared helper**; a clean repair passes the depth as a parameter. A contract with both
+a collection iteration and a dynamic write reaching the C2 INSERT arm would still compute a wrong offset. Opened
+as **X102**.
+
+**An operational finding**: a worker cannot merge or check out integration commits into its own worktree - the
+permission classifier denies both. Any row whose evidence needs a sibling's merged half must either be dispatched
+from a later base or have that half relayed as a patch. Opened as **X103**.
 
 ### 4.94 X10's pin was wrong IN KIND: the region grew, and filled itself wrong
 

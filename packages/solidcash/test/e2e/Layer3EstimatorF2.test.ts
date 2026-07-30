@@ -954,6 +954,18 @@ const raw = (builder: TransactionBuilder): string =>
 
 interface CorpusMeasurement {
   subject: CensusRow;
+  /**
+   * X86. THE PARTICIPANT REDEEM LENGTH THIS RUN COMPILED, which is what the descriptor is built from.
+   *
+   * It used to be read off the recorded census and asserted equal to the built participant INSIDE the caller's
+   * try/catch, so a census that had drifted from the compiler was indistinguishable from a contract whose
+   * handler cannot execute with placeholder arguments: three solc-corpus rows were being dropped into the same
+   * skip list as nineteen `require` failures, and the population silently fell from 45 to 43. A redeem length
+   * is a COMPILE OUTPUT - `new Contract(artifact, args).bytecode.length` - and this run has the compile, so it
+   * takes the figure from there and reports the census disagreement as the drift it is. Nothing about the
+   * estimator's input boundary changes: still a compile, no UTXO, no builder, no VM.
+   */
+  compiledRedeemBytes: number;
   envelope: EnvelopeMeasurement;
   classification: ReturnType<typeof classifyInputs>;
   transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>;
@@ -994,12 +1006,18 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   } as never);
+  // X86. THE SELECTION RULE IS ONE SLOT, AND IT IS RE-CHECKED AGAINST THE COMPILER RATHER THAN THE CENSUS.
+  // A row the census recorded as one-slot can compile to a wider block now, and building it without seeding the
+  // sidecar UTXOs would fail somewhere further down with an unrelated message. Refused here, by name.
+  const compiledBlockSize = artifact.hiddenBatch!.route.blockLayout!.blockSize;
+  if (compiledBlockSize !== 1) {
+    throw new Error(`census recorded a one-slot block; the compiler now emits ${compiledBlockSize}`);
+  }
   const args = (artifact.constructorInputs ?? []).map((input) => placeholder(String(input.type)));
   const base = new Contract(artifact, args as never[], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
   const participant = base.withCategory(hexToBin(setup.categoryId));
-  expect(participant.bytecode.length / 2, 'census redeem length disagrees with the built participant')
-    .toBe(subject.redeemBytes);
+  const compiledRedeemBytes = participant.bytecode.length / 2;
 
   const handlerName = subject.eligibleHandlers![0];
   const handler = artifact.hiddenBatch!.handlers.find((entry) => entry.name === handlerName)!;
@@ -1074,7 +1092,12 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
   const envelope = assessEnvelope(`${subject.contractName} x1`, transaction as never, sourceOutputs);
   const redeemBytes = transaction.inputs.map((input) => redeemScriptLength(input.unlockingBytecode));
   return {
-    subject, envelope, classification: classifyInputs(envelope, redeemBytes), transaction, sourceOutputs,
+    subject,
+    compiledRedeemBytes,
+    envelope,
+    classification: classifyInputs(envelope, redeemBytes),
+    transaction,
+    sourceOutputs,
   };
 }
 
@@ -1083,7 +1106,13 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
  * and a density knob that refuses these exact bytes at a budget derived from this input's own reading.
  */
 function assertMeasurementDiscipline(measurement: CorpusMeasurement): void {
-  const { subject, envelope, transaction, sourceOutputs } = measurement;
+  const { subject, classification, compiledRedeemBytes, envelope, transaction, sourceOutputs } = measurement;
+  // THE DESCRIPTOR'S REDEEM LENGTH IS THE SCRIPT THE MASTER INPUT ACTUALLY PUSHES. This is the assertion the
+  // census-equality check was standing in for, and it belongs here rather than inside the caller's catch: a
+  // within-run disagreement is a broken measurement, where a census disagreement is only a stale record.
+  expect(classification.redeemBytes[0],
+    `${subject.contractName}: the compiled participant is not the script the master input pushes`)
+    .toBe(compiledRedeemBytes);
   expect(envelope.refusedAtConsensus, `${subject.contractName} refused at the real consensus profile`)
     .toEqual([]);
   expect(envelope.refusedAtStandard, `${subject.contractName} refused at the real standard profile`)
@@ -1167,6 +1196,7 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
     }
     const rows: Row[] = [];
     const skipped: string[] = [];
+    const censusDrift: string[] = [];
     let controlled = 0;
     for (const subject of candidates) {
       let measurement: CorpusMeasurement;
@@ -1178,7 +1208,19 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       }
       assertMeasurementDiscipline(measurement);
       controlled += 1;
-      const spec = replicaSpec(subject, 1, MEASURED_COVENANTS);
+      // X86. THE DESCRIPTOR CARRIES THE REDEEM LENGTH THIS RUN COMPILED, not the recorded one, and the census
+      // disagreement is published instead of dropping the row. Same class of defect as X85 one field over: a
+      // recorded constant standing in for a compile output that is available right here.
+      if (measurement.compiledRedeemBytes !== subject.redeemBytes) {
+        censusDrift.push(`${subject.corpus}/${subject.contractName} (${subject.rel}): census `
+          + `${subject.redeemBytes} B, compiled ${measurement.compiledRedeemBytes} B `
+          + `(${measurement.compiledRedeemBytes - subject.redeemBytes! >= 0 ? '+' : ''}`
+          + `${measurement.compiledRedeemBytes - subject.redeemBytes!})`);
+      }
+      const spec = {
+        ...replicaSpec(subject, 1, MEASURED_COVENANTS),
+        redeemBytes: [measurement.compiledRedeemBytes],
+      };
       const prediction = estimate(spec, calibration);
       // THE DESCRIPTOR'S COVENANT LENGTHS ARE THE ONES THE BUILT TRANSACTION PUSHES, asserted rather than
       // assumed. `MEASURED_COVENANTS` comes from two compiles at module scope and this comes from classifying
@@ -1227,6 +1269,11 @@ describe('F2 estimator: X70 - the forty-five real corpus contracts that bind on 
       });
     }
     for (const failure of skipped) console.log(`[F2/X70] candidate skipped - ${failure}`);
+    // X86. WHERE THE RECORDED CENSUS AND THE COMPILER DISAGREE, named and counted rather than skipped. A
+    // non-empty list means the census is due a re-take; it does not invalidate a row, because the descriptor
+    // below is built from the compile and not from the record.
+    console.log(`[F2/X70] census rows whose recorded redeem length has drifted: ${censusDrift.length}`);
+    for (const drift of censusDrift) console.log(`[F2/X70]   DRIFT ${drift}`);
     console.log(`[F2/X70] measured ${rows.length} of ${candidates.length} one-slot candidates, `
       + 'all run to completion, refused by nothing at either real profile, and with a density knob that '
       + `bites on the same bytes: ${controlled}/${rows.length}`);
@@ -1469,11 +1516,11 @@ describe('F2 estimator: X78 - which limit is NAMED, against which limit was meas
     // At N=1 every one of these is a one-participant graph whose projection input alone is the whole generated
     // verifier - 4,098 bytes at this commit, and 4,542 before X85 stopped the descriptor defaulting it from the
     // calibration - and F3 measured script bytes binding on every such graph it built. After X78 the table
-    // names script bytes on all of them. BEFORE, it named them on 22 - the rows whose own redeem script is wide
-    // enough to beat a flat 0.5758x density prediction on its own - which is why the corpus row that matters is
-    // the BUILT one-slot contracts, where the raw ranking scored zero: those are selected by widest redeem and
-    // are still all under it. Measured both ways at this commit, the 22 and the sweep are the same either way:
-    // taking 444 bytes off an input that is not the widest on any of these rows moves neither ranking.
+    // names script bytes on all of them. BEFORE, it named them on 29 of 428 - the rows whose own redeem script
+    // is wide enough to beat a flat 0.5758x density prediction on its own - which is why the corpus row that
+    // matters is the BUILT one-slot contracts, where the raw ranking scored zero: those are selected by widest
+    // redeem and are still all under it. Measured both ways at this commit, the 29 and the sweep are the same
+    // either way: taking 444 bytes off an input that is not the widest on any of these rows moves no ranking.
     expect(afterTally['unlocking bytecode length @ N=1']).toBe(rows.length);
     const beforeScriptAtOne = beforeTally['unlocking bytecode length @ N=1'] ?? 0;
     console.log(`[F2/X78] script bytes named at N=1: before ${beforeScriptAtOne}/${rows.length},`

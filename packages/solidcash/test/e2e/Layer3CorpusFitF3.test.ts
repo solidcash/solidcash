@@ -15,7 +15,7 @@ import {
 import { deriveCalibration, estimate, formatEstimate } from './layer3-estimator-f2.js';
 import { F2_BASIS, F2_BASIS_COMMIT } from './layer3-estimator-basis-f2.js';
 import {
-  F3_CENSUS_BUS_FAILURES, F3_CENSUS_COMMIT, F3_CENSUS_DIRECT_FAILURES, F3_CENSUS_ELIGIBLE,
+  F3_CENSUS_BUS_FAILURES, F3_CENSUS_COMMIT, F3_CENSUS_CORPORA, F3_CENSUS_DIRECT_FAILURES, F3_CENSUS_ELIGIBLE,
   F3_CENSUS_GATES, F3_CENSUS_REJECTIONS,
 } from './layer3-corpus-census-f3.js';
 import { fitAt, formatFitRow, replicaSpec } from './layer3-corpus-fit-f3.js';
@@ -125,7 +125,13 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
    * bookkeeping error, and the assertion is what makes the published table trustworthy.
    */
   it('MEASURED: the gate chain is monotone and the counts are published', () => {
-    console.log(`[F3] census taken at ${F3_CENSUS_COMMIT}`);
+    console.log(`[F3] census taken at ${F3_CENSUS_COMMIT}, corpora ${F3_CENSUS_CORPORA.join(', ')}`);
+    // X86. ALL FOUR CORPORA, TAKEN IN ONE RUN AT ONE COMMIT. A partial re-take would leave rows from two
+    // compilers under one commit stamp, and this is the line that would catch it: the gate table and the
+    // recorded corpora have to describe the same set. Measured cost of the full re-take at stride 12: 29
+    // minutes, so there is no reason to take a partial one.
+    expect([...F3_CENSUS_CORPORA].sort()).toEqual([...corpora].sort());
+    expect(F3_CENSUS_CORPORA).toHaveLength(4);
     console.log('[F3] corpus                 files contracts  direct     bus   route  handler  instantiable');
     for (const corpus of corpora) {
       const gate = F3_CENSUS_GATES[corpus];

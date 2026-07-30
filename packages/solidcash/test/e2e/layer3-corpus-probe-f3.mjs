@@ -483,8 +483,23 @@ const module = `import type { CensusGates, CensusRow } from './layer3-corpus-fit
  * every contract that reaches the bus. Regenerate with:
  *
  *   node packages/solidcash/test/e2e/layer3-corpus-probe-f3.mjs
+ *   npx eslint --fix packages/solidcash/test/e2e/layer3-corpus-census-f3.ts
+ *
+ * The second line is not optional: the module is emitted with \`JSON.stringify\`, whose double quotes this
+ * repository's lint rejects. Measured cost of a full four-corpus re-take at stride 12: 29 minutes.
+ *
+ * F3_CENSUS_COMMIT IS THE COMPILER COMMIT THESE ROWS WERE COMPILED AGAINST, not the commit that committed the
+ * file. Every figure here is an output of that compiler, so a consumer reporting a different commit is quoting
+ * a record rather than a measurement - which is fine for a gate count and is NOT fine for a quantity the
+ * consumer could recompile. The built-graph rows in \`Layer3EstimatorF2.test.ts\` and \`Layer3CorpusFitF3.test.ts\`
+ * therefore take block size and redeem length from their own compile and report any disagreement with this
+ * file as drift; three solc-corpus redeem lengths had drifted before that was done, and the population of the
+ * built corpus row silently fell from 45 to 43 because the disagreement was being caught inside a try/catch.
  */
 export const F3_CENSUS_COMMIT = '${process.env.F3_COMMIT ?? 'UNSTAMPED'}';
+
+/** Corpora present in this census, in the order they were merged. A partial re-take shows up here. */
+export const F3_CENSUS_CORPORA: string[] = ${JSON.stringify([...new Set(rows.map((row) => row.corpus))])};
 
 export const F3_CENSUS_GATES: Record<string, CensusGates> = ${JSON.stringify(gates, null, 2)};
 

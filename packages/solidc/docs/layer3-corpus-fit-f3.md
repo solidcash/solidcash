@@ -18,6 +18,70 @@ its number. **No F3 measurement is restated**: the census, the verdict counts, t
 the 45 built transactions are all still the `6a685f33` run and are not re-derived here - except section 3.2's
 write classification, which X73 invalidated outright and which is re-measured in place, in that section.
 
+**X86 re-take at `b4d33fc1`: the census below is superseded, and this is what moved.** Every gate count,
+refusal histogram and eligible row in sections 2 to 4 is the `6a685f33` run. `layer3-corpus-census-f3.ts` now
+holds a re-take of ALL FOUR corpora at `b4d33fc1`, taken in one run against one compiler. The handoff that
+opened X86 said solc-corpus and solidity-by-example were hours of work; measured, at the same stride 12 the
+recorded census used, a full four-corpus re-take is **29 minutes** - mistswap 167 s, EA 734 s,
+solidity-by-example 360 s, solc-corpus 486 s - so there was no reason to take a partial one and no reason for
+this document to keep quoting a census two compilers old.
+
+| | `6a685f33` | `b4d33fc1` |
+| --- | --- | --- |
+| contracts probed | 712 | 712 |
+| compile in direct mode | 635 | 635 |
+| compile in bus mode | 504 | 512 |
+| routed / eligible / instantiable | 367 | **428** |
+| one-slot candidates for the measured control | 71 | **86** |
+| named route refusals | 455 | **280** |
+| bus-mode failure rows | 96 | 88 |
+| bus-mode failure rows naming NO cause | 15 | **0** |
+
+Nothing was lost: the contract and direct-compile denominators are identical, so the +61 routed contracts are
+gates lifted rather than a changed population. Named by gate: `initial-v1-route-requires-public-visibility`
+**172 -> 0** (X73, at full corpus scale rather than on the two application corpora), `unnamed` **20 -> 0**
+against `not-examined-by-route-synthesis` 2 -> 22 (X72's rename, one for one),
+`result-route-requires-effect-free-handlers` 66 -> 44 and `batched-handler-forward-call-not-enabled` 22 -> 35
+(X76), `collection-helper-route-not-enabled` 52 -> 29, `mixed-scalar-and-collection-route-not-enabled` 52 -> 40,
+and two new ones - `external-handler-route-generation-unsupported` 0 -> 29 and
+`external-handler-would-shrink-the-route` 0 -> 1. The 15 unattributed bus-failure rows going to 0 is X84's
+sibling-error carry-through, measured rather than predicted.
+
+**Section 3.1's 80% re-derives to 53%, and section 3.2's headline does not move.** Under the same grouping this
+report uses - visibility, the two collection gates, the result-route gate, the forward-call gate - route-scope
+refusals are **148 of 280 (53%)**, down from 364 of 455 (80%); counting the new external-handler
+route-generation gap as route scope as well gives 177 of 280 (63%). The `no-entry-point-declared` count is
+unchanged at 56, which is why the percentage falls: the denominator shrank around a fixed floor of contracts
+that declare no entry point at all. Section 3.2 re-derives from the new census as **12 bus-reachable
+application contracts, 0 admitting a state-changing handler, 134 state-changing handlers refused** - MistSwap 3
+/ 0 / 18 and EA 9 / 0 / 116, every figure identical to both earlier measurements. What moved there is the
+ADMITTED count, 38 -> 26, because 38 was the stale record. Corpus-wide the write table becomes MistSwap 3/0,
+EA 9/0, solidity-by-example 115/60, solc corpus 301/226, total **428 / 286 writing / 142 read-only only**.
+
+**X85: 444 bytes of every estimate in section 4 was a covenant this tree does not build.** `estimate` defaults
+the two generated covenant lengths from the calibration and `replicaSpec` never filled the override fields, so
+every projection proof was priced at the basis's 4,542 bytes where the verifier is 4,098 - once per
+participant. Passed through, the section 4.1 verdict counts change: at the new census the stale default answers
+OVER on **23 of 1,712** rows that fit, 8 at four participants and 15 at eight, because at N = 8 the dead
+covenant is 3,552 serialized bytes and relay size is what those rows were refused on. The controller is NOT
+part of this: it compiles to 1,493 and DEPLOYS at 1,514, which is the calibration's figure exactly, and the
+override fields mean the deployed length. A first pass at this fix read 1,493 off the compile and passed a
+controller input 21 bytes shorter than the script the transaction pushes; the built-graph row now asserts both
+figures against what `classifyInputs` recovers from the assembled transaction, and that is what caught it.
+
+**X86's drift, and where it was not.** X86 was filed as three rows failing `census redeem length disagrees with
+the built participant`, to be repaired by re-taking the application corpora. Probing all 71 one-slot rows
+against the compiler found the three exactly - and all three are solc-corpus, none is an application contract,
+and **no application contract is a one-slot candidate at all**, so re-taking mistswap and EA could not have
+moved that population by one row. The three are
+`ethdebugTests/abstract_and_interface.sol` (+24 B), `smtCheckerTests/external_calls/
+external_call_this_with_value_1.sol` (+24 B) and `controlFlow/uninitializedAccess/reverting_call_virtual.sol`
+(+535 B and blockSize 1 -> 2, which stops it being a one-slot candidate). The disagreement was being asserted
+inside the measured control's own try/catch, so those three were counted with the nineteen contracts whose
+`require` a placeholder argument cannot satisfy and the built population fell from 45 to 43 with no reason
+published. Both built-graph rows now take block size and redeem length from their own compile, re-check the
+one-slot rule against the compiler by name, and publish the census disagreement as counted drift.
+
 ## 0. What is measured and what is estimated
 
 | Class | Produced by | Status |

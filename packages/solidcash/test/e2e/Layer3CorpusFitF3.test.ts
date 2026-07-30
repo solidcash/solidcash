@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileFile, compileString } from 'solidc';
+import { compileFile, compileFileMulti, compileString } from 'solidc';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
@@ -46,13 +46,13 @@ import type { CensusRow } from './layer3-corpus-fit-f3.js';
 const calibration = deriveCalibration(F2_BASIS, F2_BASIS_COMMIT);
 
 /**
- * THE TWO GENERATED COVENANTS, COMPILED HERE RATHER THAN DEFAULTED FROM THE CALIBRATION.
+ * THE TWO GENERATED COVENANTS, DEPLOYED HERE RATHER THAN DEFAULTED FROM THE CALIBRATION.
  *
  * `GraphShapeSpec` lets a caller pass these and defaults them from the calibration when it does not. The
  * default is stale the moment either covenant moves, and it had moved: the F2 basis carries the pre-X65
  * projection verifier, so every corpus prediction in this file was carrying 444 bytes per participant that
- * HEAD does not generate. Two compiles - no UTXO, no builder, no VM - remove the whole class of error, and
- * they are the same two figures `Layer3EnvelopeDocR2.test.ts` guards the documents against.
+ * HEAD does not generate. Two compiles and two instantiations - no UTXO, no builder, no VM - remove the whole
+ * class of error.
  *
  * X85. THE FIGURE IS 444 BYTES ON THE PROJECTION AND NOTHING ON THE CONTROLLER, and getting that wrong the
  * first time is why these are INSTANTIATED lengths rather than compiled ones.
@@ -461,12 +461,18 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
    * which the DIRECT path keeps as `directSiblingError`. That head accounts for 15 of the recorded census's 96
    * bus-failure rows, and it names no cause for any of them.
    *
-   * THIRD, AND THIS IS THE PART THAT MATTERS FOR THE BOARD: it does NOT touch the 80% route-scope figure. The
+   * THIRD, AND THIS IS THE PART THAT MATTERS FOR THE BOARD: it does NOT touch the route-scope figure. The
    * refusal histogram is tallied only over rows with `bus === 'OK'` - routed plus route-ABSENT - so a bus-FAIL
-   * row contributes nothing to the 455 refusals or to the 364/455. Nor does it move a gate count: the fallback
-   * exists precisely to widen `busOk`, which is the documented intent. What it corrupts is the ATTRIBUTION in
-   * one table, and `layer3-corpus-probe-f3.mjs` now carries the sibling error through so a re-taken census
-   * names the cause.
+   * row contributes nothing to the refusal total or to the route-scope share of it. Nor does it move a gate
+   * count: the fallback exists precisely to widen `busOk`, which is the documented intent. What it corrupts is
+   * the ATTRIBUTION in one table, and `layer3-corpus-probe-f3.mjs` now carries the sibling error through so a
+   * re-taken census names the cause.
+   *
+   * X86 TOOK THE RE-TAKE, SO THE THIRD ASSERTION BELOW IS INVERTED. The census at `b4d33fc1` is the first taken
+   * with the carry-through, and it has 88 bus-failure rows with ZERO unattributed, against 96 with 15 before.
+   * A test that kept asserting "some row names no cause" would be asserting that the repair did not land, so
+   * it asserts the closure instead - and the mechanism that made the erasure possible is measured live above,
+   * which is what stops the closure being vacuous.
    */
   it('MEASURED: X84 - the bus-mode fallback erased the cause, and MerkleTree is a DIRECT failure', () => {
     const busOptions = {
@@ -509,25 +515,43 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
       .not.toContain('ParseError');
     expect(merkleBus, 'the bus-mode ParseError this row was filed over is back').not.toContain('ParseError');
 
-    // (2) The fallback erases a real cause. MarketplaceV1.sol compiles as a whole in direct mode and does NOT
-    // in bus mode, and the error the census used to discard names a sibling in another file.
+    // (2) THE MECHANISM IS STILL LIVE AND THE CENSUS NO LONGER ERASES IT, which is the other way round from
+    // what this test used to assert. MarketplaceV1.sol's primary contract compiles in BOTH modes, so
+    // `compileFileMulti` throwing in bus mode is what takes the fallback and leaves its siblings out of the
+    // one-entry map. Measured live rather than read from the census, because the mechanism is the claim.
     const marketplace = `${CORPUS_ROOTS.eacc}/MarketplaceV1.sol`;
     const marketplaceDirect = attempt(marketplace, directOptions);
     const marketplaceBus = attempt(marketplace, busOptions);
+    const multiBus = (() => {
+      try { compileFileMulti(marketplace, busOptions as never); return undefined; } catch (error) {
+        return headOf(error);
+      }
+    })();
     console.log(`[F3] X84 MarketplaceV1.sol primary direct: ${marketplaceDirect ?? 'OK'}`);
     console.log(`[F3] X84 MarketplaceV1.sol primary bus:    ${marketplaceBus ?? 'OK'}`);
-    // The primary contract compiles in BOTH modes, which is why the fallback is taken and why the siblings -
-    // recorded as five rows across MarketplaceV1/V2/V3.sol - are the ones that carry the empty head.
+    console.log(`[F3] X84 MarketplaceV1.sol MULTI bus:      ${multiBus ?? 'OK'}`);
     expect(marketplaceDirect, 'MarketplaceV1 no longer compiles directly').toBeUndefined();
     expect(marketplaceBus, 'MarketplaceV1 no longer compiles in bus mode either').toBeUndefined();
+    // The condition under which the fallback fires, and therefore under which a sibling can lose its cause.
+    expect(multiBus, 'the whole file now compiles in bus mode, so the fallback is never taken and this test '
+      + 'no longer has a subject - find another file whose multi-compile fails where its primary succeeds')
+      .toBeDefined();
+
+    // AND THE ATTRIBUTION IS NOW COMPLETE, WHICH IS WHY THIS ASSERTION IS INVERTED. X84 measured 15 of the
+    // recorded census's 96 bus-failure rows carrying `Error: contract absent from the bus-mode artifact map`,
+    // a head that names no cause, and fixed the probe to carry the sibling error through instead. The census
+    // re-take at `b4d33fc1` is the first one taken with that fix: 88 bus-failure rows and ZERO of them
+    // unattributed, with EA's five nameless rows replaced by seven `InvalidParameterTypeError` heads naming
+    // `meceTags`. Asserting "some row still names no cause" would now be asserting that the repair did not
+    // land, so what is asserted is the closure - and the mechanism above is what keeps it non-vacuous.
     const absent = 'Error: contract absent from the bus-mode artifact map';
-    const carriers = corpora.filter((corpus) => (F3_CENSUS_BUS_FAILURES[corpus] ?? {})[absent] !== undefined);
-    const total = carriers.reduce((sum, corpus) => sum + F3_CENSUS_BUS_FAILURES[corpus][absent], 0);
+    const total = corpora.reduce((sum, corpus) => sum + ((F3_CENSUS_BUS_FAILURES[corpus] ?? {})[absent] ?? 0), 0);
     const allBusRows = corpora.reduce((sum, corpus) => sum
       + Object.values(F3_CENSUS_BUS_FAILURES[corpus] ?? {}).reduce((a, b) => a + b, 0), 0);
     console.log(`[F3] X84 bus-failure rows whose head names no cause: ${total} of ${allBusRows}`);
-    expect(total).toBeGreaterThan(0);
-    expect(total).toBeLessThan(allBusRows);
+    expect(allBusRows, 'the census records no bus-mode failure at all, so attribution proves nothing')
+      .toBeGreaterThan(0);
+    expect(total, 'a bus-failure row is attributed to the fallback mechanism instead of to a cause').toBe(0);
     // (3) The 80% route-scope figure cannot be affected: it is tallied over bus-OK rows only. Asserted on the
     // census structure rather than on prose - no eligible row is a bus failure.
     expect(F3_CENSUS_ELIGIBLE.filter((row) => row.bus !== 'OK')).toEqual([]);

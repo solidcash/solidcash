@@ -204,9 +204,6 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
-// SPIKE TOGGLE - remove before staging.
-const WIDEN_EMISSION_CLONES = process.env.M3_WIDEN_CLONES === '1';
-
 // X29. Hidden context an SCB1 route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
@@ -1777,11 +1774,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
     // the route's own call closure: a contract with no `__scb1` produces the same map as before, and a
     // read-only function outside the route keeps its established covenant path.
-    // A graph EMISSION clone is excluded, and not as a convenience: its frame is owned by the graph
-    // effect-frame protocol, which already pushes hidden context of its own (see the arity note in
-    // visitFunctionDefinition), and adding journal slots to it leaves the frame one item deeper than the
-    // caller pushes. C2's read-only `__scb_graph_fireAll` is exactly that shape and its honest cycle stops
-    // settling. A read-only clone which also emits or transfers therefore still reads the pre-state.
+    // X111. A graph EMISSION clone used to be dropped from this widening entirely, so a clone which reads a
+    // scalar slot and writes none still re-read the pre-transaction commitment while an earlier row's write
+    // was live. That was exploitable at CONSENSUS - a router body emitting `withdraw(80)` then
+    // `assertFloor(50)` on an opening 100 settled a guard true of the pre-balance and false of the 20 the same
+    // transaction committed - and no witness-side refusal can close it, because the bytes settle whoever
+    // builds them. A clone is now admitted here, on its own terms:
+    //   - it is admitted but NOT DESCENDED THROUGH, so its own callees keep the closure they had. The clone's
+    //     slot map already contains theirs through the fixpoint above, which is what it needs to hold.
+    //   - it carries its PLAIN SCALAR slots only. A DYNAMIC slot's journal replaces a chunk read with a
+    //     threaded (header, value) pair, and a pure reader holds only the slots it names: C2's
+    //     `__scb_graph_fireAll` reads `state:legs` plus `collection:legs:i` and `collection:__fnsel_legs:i`,
+    //     so journalling the header while the elements still come from the chunk loop mixes two sources for
+    //     one array and the honest A -> B -> A cycle stops settling at input 0. Measured, not assumed.
+    // The residual is therefore exact and named: a clone whose stale read is on a DYNAMIC slot still reads the
+    // pre-state, and `layer3/graph.ts`'s planning-time gate is the only thing standing in front of it.
     const routeFunctionId = functions.find((fn) => fn.hiddenBatchRoute)?.functionId;
     const emissionClones = new Set(functions
       .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
@@ -1794,7 +1801,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (const calleeId of callsById.get(pending.pop()!) ?? []) {
           if (routeReachable.has(calleeId) || widenedClones.has(calleeId)) continue;
           if (emissionClones.has(calleeId)) {
-            if (WIDEN_EMISSION_CLONES) widenedClones.add(calleeId);
+            widenedClones.add(calleeId);
             continue;
           }
           routeReachable.add(calleeId);
@@ -1802,9 +1809,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    // A clone admitted only by the widening carries its PLAIN SCALAR slots. A dynamic slot's journal is a
-    // (header, value) pair whose second half is a chunk-settlement obligation, and a pure reader settles no
-    // chunks.
+    // The dynamic exclusion applies only to a clone admitted BY the widening. A clone which also writes, or
+    // one reached as an ordinary route callee, keeps the full slot list it already had.
     const journalSlotsOf = (id: number, slots: Map<string, StateVariableNode>): StateVariableNode[] =>
       [...slots.values()].filter((sv) =>
         !sv.isDynamic || writerIds.has(id) || routeReachable.has(id));
@@ -1829,20 +1835,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         (writerIds.has(id) || routeReachable.has(id) || widenedClones.has(id)) && slots.length > 0)
       .map(([id, slots]) => [id, slots
         .sort((a, b) => a.nftIndex - b.nftIndex || a.fieldIndex - b.fieldIndex)]));
-    if (process.env.M3_DUMP_JOURNAL === '1') {
-      const nameById = new Map(functions.filter((fn) => fn.functionId !== undefined)
-        .map((fn) => [fn.functionId!, fn.name]));
-      // eslint-disable-next-line no-console
-      console.log('M3JOURNAL ' + JSON.stringify({
-        contract: node.name,
-        route: routeFunctionId === undefined ? null : nameById.get(routeFunctionId),
-        writers: [...writerIds].map((id) => nameById.get(id)),
-        reachable: [...routeReachable].map((id) => nameById.get(id)),
-        clones: [...emissionClones].map((id) => nameById.get(id)),
-        journal: [...this.journalSlotsByFunctionId].map(([id, slots]) =>
-          [nameById.get(id), slots.map((sv) => `${sv.name}${sv.isDynamic ? '(dyn)' : ''}`)]),
-      }));
-    }
   }
 
   private journalContextNames(sv: StateVariableNode): string[] {

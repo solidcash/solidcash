@@ -1221,12 +1221,17 @@ const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
 /**
  * Name the compiler gives one handler's graph EMISSION clone.
  *
- * `compiler.ts` clones every `graphTailHandlers` member as `__scb_graph_<handler>`, and
- * `GenerateTargetTraversal.ts:1771,1779` excludes exactly that set from SEC-18's widened closure -
- * an emission clone's frame is owned by the graph effect-frame protocol, so extra journal slots leave it one
- * item deeper than the caller pushes. The presence of this name in the published invocation analysis is
- * therefore the compiler's own answer to "does this row read the pre-state instead of the journal", not a
- * proxy for it.
+ * `compiler.ts` clones every `graphTailHandlers` member as `__scb_graph_<handler>`.
+ *
+ * SUPERSEDED IN PART, and the note is kept rather than deleted because the gate below still reads this name.
+ * `computeScalarJournalClosures` used to exclude every emission clone from SEC-18's widened closure, which is
+ * what made this name a reliable answer to "does this row read the pre-state". It no longer is: a clone is now
+ * admitted for its PLAIN SCALAR slots, so a clone reading `state:<scalar>` loads through the live journal and
+ * the covenant itself refuses the stale composition - proven by bypass constructors in
+ * `Layer3EmissionCloneJournalX111.test.ts`. What survives is the DYNAMIC half: a clone whose stale read is on
+ * a chunk-backed slot is still not journalled, because journalling only the header would mix two sources for
+ * one array. So the gate below now over-refuses on the scalar half and is load-bearing only on the dynamic
+ * half. Narrowing or removing it is an integration decision, not a local one.
  */
 const GRAPH_EMISSION_CLONE_PREFIX = '__scb_graph_';
 
@@ -1264,11 +1269,19 @@ interface OwnerRow { localRow: number; function: string }
  * of a slot an EARLIER row of the same owner already wrote.
  *
  * SEC-18 widened the scalar journal to every route-reachable function, so a pure reader observes the newest
- * write. Emission clones are excluded from that widening for a frame-arity reason that is not negotiable at
- * code-generation time, so a clone which touches a scalar slot and writes none still reads the authenticated
- * input commitment. That is exploitable exactly as SEC-18 was: the caller contract's own body emits the guard
- * row, so a spender cannot drop it, and a post-condition then passes against the value the transaction is
- * changing.
+ * write. Emission clones were excluded from that widening, so a clone which touched a scalar slot and wrote
+ * none still read the authenticated input commitment. That was exploitable exactly as SEC-18 was: the caller
+ * contract's own body emits the guard row, so a spender cannot drop it, and a post-condition then passes
+ * against the value the transaction is changing.
+ *
+ * THE PREMISE ABOVE IS NO LONGER TRUE FOR SCALAR SLOTS. The exclusion was called non-negotiable at
+ * code-generation time and it was not: `computeScalarJournalClosures` now admits an emission clone for its
+ * plain scalar slots, and the two constructors that bypass this function entirely - the hand-assembled plan
+ * and the artifact with the clone dropped from `invocationAnalysis` - are refused by the vault's own covenant.
+ * What this rule still covers alone is a clone whose stale read is on a chunk-backed DYNAMIC slot, which the
+ * compiler cannot journal without mixing the header's source with the elements'. Every scalar refusal it
+ * issues is now an over-refusal, and L2-A5 measured that cost: it is every writer-then-guard order, i.e. the
+ * honest act-then-assert composition.
  *
  * WHY THIS IS THE RIGHT SITE. The equivalent compile-time refusal was implemented and measured: it
  * false-refused the C2 capstone entirely, because `registerCredit`/`registerDebit` write `legs` and sit in the

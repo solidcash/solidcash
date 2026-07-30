@@ -11886,6 +11886,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // X167. Dynamic-storage delete (chunk-backed string / bytes / array): the VALUE lives in the trailing
+    // chunk UTXOs, not in the data-NFT field, so a delete must register a dynamic write exactly as
+    // visitStateAssign does. Writing only the A$len field left `pendingDynamicWrites` untouched - and that is
+    // the map `emitReadDynamicScalar` carries a later read's read-after-write from, so `delete a; a.push(x)`
+    // read the OLD chunk blob off-chain and APPENDED. It also left the stale chunks unconsumed, because the
+    // SDK drives old-chunk consumption off `dynamicWrites`, which only emitRegisterDynamicWrite populates.
+    // The whole-array copy `d2 = d1` desugars to `delete d2; while (i < d1.length) d2.push(...)`, so this is
+    // what made the copy append instead of replace.
+    if (sv.isDynamic) {
+      this.emitDefaultValue(locationData, sv.type);
+      this.pushToStack('(value)');
+      const stripCount = sv.type instanceof ArrayType && isFixedWidthType(sv.type.elementType);
+      this.emitRegisterDynamicWrite(sv, key, locationData, stripCount, node);
+      return node;
+    }
+
     // 1. Emit the default value for this type
     this.emitDefaultValue(locationData, sv.type);
 

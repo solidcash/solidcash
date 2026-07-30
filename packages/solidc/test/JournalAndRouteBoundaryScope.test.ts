@@ -108,16 +108,27 @@ contract Mixed() {
   }
 }`;
 
-  it('refuses the scalar-only handler and admits the one that also writes a collection entry', () => {
+  // X94 LIFTED THIS GATE, AND THIS ROW'S OWN PROSE WAS THE THING THAT TURNED OUT WRONG. It used to assert that
+  // a scalar-only handler is REFUSED beside a collection handler, and X35 argued the refusal was "the correct
+  // conservative proxy until those entry slots are conditional".
+  //
+  // The measurement inverted the argument. Every physical entry key on a route is a WRAPPER PARAMETER, so the
+  // entry read is hoisted to the top of the wrapper and its write-back to the bottom - OUTSIDE the row dispatch.
+  // A row that addresses no entry therefore flushes the reserved entry UNCHANGED, not unconstrained. So the
+  // unconditional slot asserted in the case below is not the reason to refuse; it is the reason it is SAFE, and
+  // that case is now this one's supporting evidence rather than its justification.
+  //
+  // The genuine exception is narrower and is now what the gate keys on: a `perRow` witness, which fails two
+  // measured ways - an unbindable `_r{n}` witness, and duplicate co-spend of one entry NFT because the alias
+  // gating lives inside the entry handler's dispatch arm. That case is pinned in `MixedScalarRouteX94.test.ts`.
+  it('admits a scalar-only handler beside a collection handler, because the entry flush is unconditional', () => {
     const scalarOnly = once(mixed('this.total = this.total + a;'), busOptions);
     const alsoCollection = once(
       mixed('this.total = this.total + a; this.balances[who] = this.balances[who] + a;'), busOptions,
     );
     const reasonOf = (artifact: any, name: string): unknown =>
       artifact.hiddenBatch.handlers.find((handler: any) => handler.name === name);
-    expect(reasonOf(scalarOnly, 'bump')).toMatchObject({
-      eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
-    });
+    expect(reasonOf(scalarOnly, 'bump')).toMatchObject({ eligible: true });
     expect(reasonOf(alsoCollection, 'bump')).toMatchObject({ eligible: true });
   }, COMPILE_TIMEOUT_MS * 2);
 

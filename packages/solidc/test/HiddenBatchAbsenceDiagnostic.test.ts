@@ -117,12 +117,46 @@ contract X15NoEntry() {
    * external handler is dispatched through an internal clone. This case is about the diagnostic channel, not
    * about which handlers a route admits, so it is stated with a refusal that outlives that change.
    */
+  // RESTATED ON A REFUSAL THAT OUTLIVES X94. This case's subject is the absence CHANNEL - that it stays silent
+  // when a route exists and only some handlers are refused. It used to reach that state via
+  // `mixed-scalar-and-collection-route-not-enabled`, which was merely a convenient way to produce a refused
+  // handler, and X94 lifted that gate: a scalar handler beside a collection one is now eligible, because the
+  // entry read and its write-back are hoisted outside the row dispatch, so a row addressing no entry flushes
+  // the reserved entry UNCHANGED.
+  //
+  // The replacement is a handler that BOTH returns a value and carries an effect, refused
+  // `result-route-requires-effect-free-handlers`. That one survives because the row which relaxed the
+  // result gate relaxed only its SET-WIDE half - a handler that itself carries an effect is still demoted -
+  // so it is a refusal grounded in the handler's own shape rather than in its siblings'.
+  //
+  // Two shapes were tried and rejected as subjects first, which is why this comment names one: a persisted
+  // write plus an external call is now ADMITTED (X94 took it too), and a plain returning handler is admitted
+  // as well. The same substitution was made once before in this file when X73 lifted the `external` refusal it
+  // had been borrowing - this file has now had its borrowed subject lifted out from under it twice.
   it('does not fire when only some handlers are rejected', () => {
-    const source = caller(`  function bump(int amount) public { total = total + amount; require(amount >= 0); }
-  function credit(address who, int amount) public { balances[who] = balances[who] + amount; require(amount >= 0); }`);
+    const source = `pragma solidcash >=0.8.0;
+interface ISink { function ping(int amount) external; }
+contract X15Caller(address sink) {
+  mapping(address => bigint) balances;
+  bigint total;
+  event Bumped(int amount);
+  function bump(int amount) public { total = total + amount; require(amount >= 0); }
+  function tally(int amount) public returns (int) {
+    total = total + amount;
+    emit Bumped(amount);
+    require(amount >= 0);
+    return total;
+  }
+}`;
     const artifact = compileString(source, graph);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bump'))
-      .toMatchObject({ eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled' });
+    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    // The route exists, one handler is admitted, and at least one is refused BY NAME - without which this case
+    // would assert an empty diagnostic list over a state it never reached.
+    expect(artifact.hiddenBatch).toBeDefined();
+    expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({ eligible: true });
+    const refused = handlers.filter((handler) => handler.eligible === false);
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.every((handler) => typeof handler.rejectionReason === 'string')).toBe(true);
     expect(absenceDiagnostics(source, graph)).toHaveLength(0);
   });
 

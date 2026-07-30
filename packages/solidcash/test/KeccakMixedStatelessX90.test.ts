@@ -6,7 +6,7 @@ import { keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/
 import { Contract, TransactionBuilder, MockNetworkProvider, SignatureTemplate } from '../src/index.js';
 import { buildKeccakComputeSidecar } from '../src/keccak/keccakComputeSidecar.js';
 import { randomUtxo } from '../src/utils.js';
-import { alicePriv, alicePub, aliceAddress } from './fixture/vars.js';
+import { alicePriv, aliceAddress } from './fixture/vars.js';
 
 /**
  * X90. Settle the satisfiability of X83's second face.

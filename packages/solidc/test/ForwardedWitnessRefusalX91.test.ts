@@ -130,7 +130,7 @@ const compile = (src: string, options: object): { ok: true; bytes: number } | { 
 
 const expectRefusal = (src: string, options: object, reason: string): Error => {
   const result = compile(src, options);
-  expect(result.ok, `expected a refusal, got an artifact`).toBe(false);
+  expect(result.ok, 'expected a refusal, got an artifact').toBe(false);
   const error = (result as { ok: false; error: Error }).error;
   expect(error).toBeInstanceOf(ForwardedWitnessError);
   expect((error as ForwardedWitnessError).reason).toBe(reason);

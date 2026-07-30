@@ -107,6 +107,7 @@ interface BuiltProbe {
   builder: TransactionBuilder;
   hubArtifact: any;
   participantInputs: readonly number[];
+  chunkAddresses: Record<string, string>;
 }
 
 /** The honest C2 cycle, with no tamper mode and no hostile variation. */
@@ -346,7 +347,17 @@ async function buildHonestCycle(): Promise<BuiltProbe> {
   }
   tx.addOutput({ to: p2pkh.address, amount: 30_000n });
 
-  return { builder: tx, hubArtifact, participantInputs: layout.participantInputs };
+  const chunkAddresses: Record<string, string> = {};
+  for (const entry of chunks) chunkAddresses[entry.variable.name] = entry.address;
+  return {
+    builder: tx, hubArtifact, participantInputs: layout.participantInputs, chunkAddresses,
+  };
+}
+
+/** The locking bytecode of each of the first eight inputs, so a chunk-offset landing can be read directly. */
+function sourceOutputsPreview(built: BuiltProbe): string[] {
+  return generateLibauthSourceOutputs(built.builder.inputs).slice(0, 8)
+    .map((output, index) => `${index} ${binToHex(output.lockingBytecode)}`);
 }
 
 describe('X146 diagnosis - the honest C2 cycle at input 0', () => {
@@ -355,6 +366,16 @@ describe('X146 diagnosis - the honest C2 cycle at input 0', () => {
     const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs);
     const transaction = built.builder.buildLibauthTransaction();
     const vm = createVirtualMachineBch2026ForProvider(built.builder.provider);
+    const addressLookup: Record<string, string> = {};
+    for (const [name, address] of Object.entries(built.chunkAddresses)) {
+      const script = (built.builder.provider as any).addressToLockScript?.(address);
+      addressLookup[script ? binToHex(script) : address] = name;
+    }
+    // eslint-disable-next-line no-console
+    console.log('X146-CHUNKS', JSON.stringify({
+      chunkAddresses: built.chunkAddresses,
+      inputBytecodes: sourceOutputsPreview(built),
+    }, null, 1));
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as any[];
     const failure = trace.findIndex((state) => state.error !== undefined);
     const report: Record<string, unknown> = { failedStateIndex: failure };
@@ -366,18 +387,18 @@ describe('X146 diagnosis - the honest C2 cycle at input 0', () => {
       report.instruction = previous?.instructions?.[previous.ip]
         ? binToHex(new Uint8Array([previous.instructions[previous.ip].opcode]))
         : undefined;
-      report.stackTop = (previous?.stack ?? []).slice(-6).map((item: Uint8Array) => binToHex(item));
+      report.stackTop = (previous?.stack ?? []).slice(-10).map((item: Uint8Array) => binToHex(item));
+      report.stackDepth = previous?.stack?.length;
       report.controlStackDepth = previous?.controlStack?.length;
-      const window = (previous?.instructions ?? []).slice(
-        Math.max(0, (previous?.ip ?? 0) - 12), (previous?.ip ?? 0) + 4,
+      const toBytes = (instruction: any): Uint8Array => (instruction.data !== undefined
+        ? new Uint8Array([instruction.opcode, ...instruction.data])
+        : new Uint8Array([instruction.opcode]));
+      const instructions = previous?.instructions ?? [];
+      report.instructionCount = instructions.length;
+      report.executingBytecode = binToHex(
+        new Uint8Array(instructions.flatMap((instruction: any) => [...toBytes(instruction)])),
       );
-      report.window = window.map((instruction: any, offset: number) => {
-        const index = Math.max(0, (previous?.ip ?? 0) - 12) + offset;
-        const bytecode = instruction.data !== undefined
-          ? binToHex(new Uint8Array([instruction.opcode, ...instruction.data]))
-          : binToHex(new Uint8Array([instruction.opcode]));
-        return `${index === previous.ip ? '>>' : '  '} ${index} ${disassembleBytecodeBCH(hexToBin(bytecode))}`;
-      });
+      report.executingAsm = disassembleBytecodeBCH(hexToBin(report.executingBytecode as string));
     }
     // eslint-disable-next-line no-console
     console.log('X146-DIAG', JSON.stringify(report, null, 1));

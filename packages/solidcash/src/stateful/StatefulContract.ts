@@ -59,13 +59,15 @@ import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../ke
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
 import { encodeHiddenBatch } from '../layer3/hidden-batch.js';
 import {
-  assertFinalizedTransactionBytes, inputSubjectsOfBuilder, type FinalizedByteSubject,
+  assertFinalizedTransactionBytes, assessFinalizedTransactionBytes, inputSubjectsOfBuilder,
+  type FinalizedByteSubject,
 } from '../layer3/preflight.js';
 import {
   binToHex,
   hexToBin,
   binsAreEqual,
   decodeTransactionUnsafe,
+  type Transaction,
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
@@ -134,6 +136,175 @@ async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigin
   const { encodeTransaction } = await import('@bitauth/libauth');
   const tx = builder.buildLibauthTransaction();
   return BigInt(encodeTransaction(tx).byteLength);
+}
+
+/**
+ * X175. THE COVENANT'S OWN OBJECTION to a finalized transaction, or undefined when every input evaluates.
+ *
+ * The four lifecycle-admin sites deliberately bypass `debug()`, so nothing ran a covenant evaluation ahead of
+ * the byte gate and a transaction breaking BOTH reported only its bytes. This is the instrument that ends that:
+ * the same per-input BCH-2026 evaluation `sendPreflightedLayer3Transaction` runs, from the same
+ * provider-derived factory `StatefulTransactionBuilder._strictRecursiveVmPreflight` uses, which at
+ * `@mem-cash/validation` 0.0.8 agrees with the mock's own decider on every shape measured (X121).
+ *
+ * `debug()` WAS NOT THE INSTRUMENT TO REACH FOR, and the docstring saying these sites bypass it because "the
+ * debug VM cannot validate covenant scripts" has expired in the half that matters: `TransactionBuilder.send`
+ * debugs a covenant input on a BEST-EFFORT basis and SWALLOWS the result, so swapping `debug()` in here would
+ * have surfaced nothing. Evaluating the finalized bytes needs no wallet template and no swallowing.
+ *
+ * NEVER THROWS, and that is load-bearing: it annotates a refusal that is already decided, so a harness that
+ * cannot supply source outputs must leave the byte refusal exactly as it was rather than replace it.
+ */
+function covenantObjectionOf(
+  builder: TransactionBuilder, transaction: Transaction,
+): string | undefined {
+  try {
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+      if (state.error !== undefined) return `input ${inputIndex}: ${state.error}`;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * X175. THE BYTE GATE AT THE FOUR LIFECYCLE-ADMIN SITES. It reports BOTH objections, so the ordering it used to
+ * have cannot matter.
+ *
+ * WHAT THE ORDERING COST. These four sites bypass `debug()`, so the gate was the first decider to speak and a
+ * split that broke its covenant AND paid dust reported the dust. That is the exact shape that made the seventh
+ * vacuous guard on this effort: a hostile test whose loose match absorbed a new gate's dust error and kept
+ * passing while its rejection was no longer the forgery's. Pinning the window with an ordering row recorded the
+ * hazard; it did not remove it, because any future hostile that pays dust and matches loosely walks back into
+ * it.
+ *
+ * SO NEITHER OBJECTION IS ALLOWED TO MASK THE OTHER. When the bytes are refused this asks the covenant too, and
+ * a transaction that breaks both names both - covenant FIRST, matching the ordering principle every other live
+ * site already follows ("a transaction that cannot execute reports its semantic cause"). A test matching on the
+ * covenant's message and a test matching on the byte rule now both find their own subject, whichever fires.
+ *
+ * THE BLAST RADIUS IS THE SET THE GATE ALREADY REFUSED, and nothing else. The VM is consulted only on a path
+ * that has already decided to throw, so no transaction that used to settle can now fail, and a byte-only
+ * refusal keeps its message byte for byte - `assertFinalizedTransactionBytes` still produces it. `admitted`
+ * decides the branch rather than the refusal list because these sites pass no `allowNonRelayable`, so every
+ * refusal is enforced and `admitted === false` is exactly "the assert throws".
+ *
+ * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor and an attacker does not call
+ * `StatefulContract.split`. A composer reads two causes here instead of building, funding, signing and
+ * broadcasting twice to find the second one.
+ */
+function assertAdminSiteFinalizedBytes(
+  builder: TransactionBuilder, transaction: Transaction,
+  subjects: readonly (FinalizedByteSubject | undefined)[],
+): void {
+  const verdict = assessFinalizedTransactionBytes(transaction, subjects);
+  if (verdict.admitted) return;
+  const covenant = covenantObjectionOf(builder, transaction);
+  // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
+  if (covenant === undefined) assertFinalizedTransactionBytes(transaction, { inputSubjects: subjects });
+  throw new Error(
+    `layer3: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
+    + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
+    + `${verdict.outputCount} outputs):\n  [covenant] ${covenant}\n`
+    + verdict.refusals.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
+  );
+}
+
+/**
+ * X176. One published reason an ABI entry's `writesState` is not `false`.
+ *
+ * Named for the EVIDENCE, not for a conclusion: several may hold at once and the ABI does not say which one the
+ * compiler stopped at, so every one that is published is reported.
+ */
+export type StateEffectEvidence =
+  /** A collection entry is written, deleted or upserted, straight-line or as a fixed sorted batch. */
+  | 'entry-write'
+  /** A collection is written by a runtime loop, or by a sorted insert loop. */
+  | 'entry-loop-write'
+  /** A chunk-backed dynamic-storage variable is rewritten. */
+  | 'dynamic-write'
+  /** A lifecycle modifier that rewrites or retires the covenant: upgrade, selfdestruct, delegate, unsafe. */
+  | 'lifecycle-modifier'
+  /** `split(n)` / `merge(n)`: the master set changes, the state variables do not. */
+  | 'split-merge'
+  /** An event NFT is minted. Output shape, not a state variable. */
+  | 'emit'
+  /** Native value is moved. Balance, not a state variable. */
+  | 'transfer'
+  /** A token container is read or written. */
+  | 'token-container'
+  /** A child contract is deployed. The CHILD gets state; this handler's own variables need not move. */
+  | 'deploy'
+  /** ANOTHER contract's handler is co-spent. The callee's state may change; this handler's need not. */
+  | 'external-call'
+  /** A delegate-library call, or a low-level call/staticcall/delegatecall. */
+  | 'delegate-or-low-level';
+
+/**
+ * X176. What `writesState` actually answers about one ABI entry.
+ *
+ * `writesState` IS READ BY COMPOSERS AS "THIS HANDLER MUTATES STATE" AND IT DOES NOT MEAN THAT. The compiler
+ * computes it conservatively: `false` only when the body has NO stateful statement and the function has no
+ * external call, child deploy, library delegate, dynamic write, low-level call, split/merge or covenant-bypass
+ * modifier. Anything else is `true`, so `true` means "not provably read-only", which in SDK terms is "needs the
+ * state machinery" - and that is a strictly weaker claim than "changes a state variable".
+ *
+ * MEASURED, not argued. `Foo.callBar` publishes `writesState: true` and its whole body is `bar.log();` - one
+ * external call and not one assignment. `Attack.attack` is the same shape. So of the seven handlers the L2-F2
+ * partition counts as explicit writers, at least two write nothing at all, and the four that publish the flag
+ * ABSENT and are conservatively counted as writers are handlers of contracts with `dataNftCount === 0`, which
+ * have no state variable for any handler to change.
+ *
+ * ONE READING IS SOUND IN ONE DIRECTION ONLY, and this type keeps that visible:
+ *   `writesState === false`  the compiler PROVED read-only. Sound to act on - it is what the derivation skip
+ *                            in `_prepareCall` acts on, and misclassification there fails closed anyway.
+ *   `writesState === true`   NOT a proof of mutation. Read `evidence`.
+ *   absent                   unknown or stateless. Never a proof of either.
+ */
+export interface StateEffectReading {
+  /** The field verbatim, including the absent case. */
+  published: boolean | undefined;
+  /** The only sound reading of the flag: everything but an explicit `false` needs the machinery. */
+  needsStateMachinery: boolean;
+  /** True only for an explicit `false` - the compiler's own proof that output state == input state. */
+  provablyReadOnly: boolean;
+  /** Published evidence that this handler changes its OWN persisted state. */
+  ownStateEvidence: StateEffectEvidence[];
+  /** Published evidence of an effect that is NOT a change to this handler's own state variables. */
+  otherEffectEvidence: StateEffectEvidence[];
+  /**
+   * The flag is set and the ABI itemizes NOTHING. A plain `this.x = y` lands here: the ABI publishes no
+   * "assigns a state variable" field, so this is as close as an artifact gets to naming one - and it is
+   * indistinguishable from a bus-mode journal reservation, which is why it is reported rather than concluded.
+   */
+  unattributed: boolean;
+  /**
+   * The contract has NO data NFT, so it has no persisted state variable and no handler of it can change one.
+   * Structural and decisive where it applies; requires the artifact, so it is false when only the ABI entry is
+   * supplied. This is what settles the four absent-flag handlers.
+   */
+  contractHasNoState: boolean;
+}
+
+/** Evidence classes that are changes to the handler's OWN persisted state. */
+const OWN_STATE_EVIDENCE: readonly StateEffectEvidence[] = [
+  'entry-write', 'entry-loop-write', 'dynamic-write', 'lifecycle-modifier',
+];
+
+/** Function modifiers the compiler treats as covenant-rewriting. Mirrors `STATE_WRITING_MODIFIERS`. */
+const LIFECYCLE_MODIFIERS = ['upgrade', 'selfdestruct', 'delegate', 'unsafe'];
+
+/** One prebuilt `destroy` batch: its finalized bytes, what it reclaims, and the builder that produced them. */
+interface DestroyBatch {
+  hex: string;
+  reclaimed: bigint;
+  subjects: (FinalizedByteSubject | undefined)[];
+  /** X175: kept so a refused batch can report its covenant objection alongside its byte rule. */
+  builder: TransactionBuilder;
 }
 
 /** Custom error class for auto-derivation failures (VM execution, trace parsing, etc.) */
@@ -879,6 +1050,64 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   get inner(): Contract<TArtifact> { return this._inner; }
 
   get categoryId(): string { return this._categoryId; }
+
+  /**
+   * X176. Read an ABI entry's `writesState` for what it actually answers.
+   *
+   * THE FLAG IS MISNAMED FOR THE QUESTION COMPOSERS ASK IT. `writesState: true` means "not provably read-only",
+   * which in SDK terms is "needs the state machinery" - it is set by an external call, a child deploy, a
+   * library delegate, a low-level call, a split/merge or a covenant-bypass modifier just as readily as by an
+   * assignment. `Foo.callBar` publishes `true` with a body of `bar.log();` and not one assignment. Reading the
+   * flag as "this handler mutates state" over-counts, and the over-count is not small: of the seven handlers
+   * the L2-F2 partition counts as explicit writers, at least two write nothing.
+   *
+   * ONLY `false` IS A PROOF, AND ONLY IN ONE DIRECTION. That is the reading `_prepareCall`'s derivation skip
+   * uses, and the only one this SDK acts on. Everything else is evidence to be read, which is what this
+   * returns: each published cause, split by whether it is a change to the handler's OWN persisted state.
+   * `unattributed` is the honest residue - the ABI publishes no "assigns a state variable" field at all, so a
+   * plain `this.x = y` is indistinguishable from a bus-mode journal reservation from the outside.
+   *
+   * NOT RENAMED, DELIBERATELY. The flag's conservative direction is correct for its one consumer and the name
+   * is published in every artifact on disk; re-deriving it toward "mutates" would make that consumer fail OPEN
+   * (a handler whose only cause is an external call would be skipped and its call group never derived). The
+   * distinction is published alongside it instead.
+   *
+   * Pass the artifact when you have it: `stateLayout.dataNftCount === 0` settles the question structurally,
+   * because a contract with no data NFT has no state variable for any handler to change.
+   */
+  static readWritesState(abi: AbiFunction, artifact?: Artifact): StateEffectReading {
+    const evidence = new Set<StateEffectEvidence>();
+    // `sortedBatchInfo` is a STRAIGHT-LINE C2 write sharing one list transition, not a loop, so it belongs
+    // with `entry-write`; classifying it as a loop write reported two causes for one `m[k] = v`.
+    if (abi.entryAccesses?.some((ea) => ea.operations.some((op) => op !== 'read'))
+      || (abi.sortedBatchInfo?.length ?? 0) > 0) evidence.add('entry-write');
+    if ((abi.entryLoopWrites?.length ?? 0) > 0 || (abi.sortedInsertLoops?.length ?? 0) > 0) {
+      evidence.add('entry-loop-write');
+    }
+    if ((abi.dynamicWrites?.length ?? 0) > 0) evidence.add('dynamic-write');
+    if (abi.modifiers?.some((m) => LIFECYCLE_MODIFIERS.includes(m))) evidence.add('lifecycle-modifier');
+    if (abi.splitCountParam !== undefined || abi.mergeCountParam !== undefined) evidence.add('split-merge');
+    if ((abi.emits?.length ?? 0) > 0) evidence.add('emit');
+    if ((abi.transferCount ?? 0) > 0 || (abi.transfers?.length ?? 0) > 0) evidence.add('transfer');
+    if ((abi.tokenContainerAccesses?.length ?? 0) > 0) evidence.add('token-container');
+    if ((abi.deployTargets?.length ?? 0) > 0) evidence.add('deploy');
+    if ((abi.externalCalls?.length ?? 0) > 0) evidence.add('external-call');
+    if ((abi.libraryDelegateCalls?.length ?? 0) > 0 || (abi.lowLevelCalls?.length ?? 0) > 0) {
+      evidence.add('delegate-or-low-level');
+    }
+
+    const all = [...evidence];
+    const needsStateMachinery = abi.writesState !== false;
+    return {
+      published: abi.writesState,
+      needsStateMachinery,
+      provablyReadOnly: abi.writesState === false,
+      ownStateEvidence: all.filter((cause) => OWN_STATE_EVIDENCE.includes(cause)),
+      otherEffectEvidence: all.filter((cause) => !OWN_STATE_EVIDENCE.includes(cause)),
+      unattributed: needsStateMachinery && all.length === 0,
+      contractHasNoState: artifact !== undefined && (artifact.stateLayout?.dataNftCount ?? 0) === 0,
+    };
+  }
 
   state!: StateGetterMap<TArtifact>;
   call!: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
@@ -2993,9 +3222,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ];
 
     const totalInputs = masterUtxos.length + allNftInputs.length;
-    const builtTxs: Array<{
-      hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[];
-    }> = [];
+    const builtTxs: DestroyBatch[] = [];
 
     if (totalInputs <= maxInputsPerTx) {
       // Single transaction: destroy everything at once
@@ -3074,8 +3301,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // one's input, by locally computed txid - so a refusal on batch `i` from inside the loop would leave
     // `0..i-1` already settled and the contract half-swept, with no path that both finishes and reports. Every
     // batch is final and decodable here, so deciding all of them first keeps the refusal atomic.
-    for (const { hex, subjects } of builtTxs) {
-      assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(hex)), { inputSubjects: subjects });
+    //
+    // X175. Each batch carries its own builder so a refused batch can report its covenant alongside its byte
+    // rule. Only batch 0 spends inputs that exist yet - the rest chain on locally computed txids - but the
+    // evaluation reads SOURCE OUTPUTS off the builder rather than the chain, so every batch is evaluable.
+    for (const { hex, subjects, builder } of builtTxs) {
+      assertAdminSiteFinalizedBytes(builder, decodeTransactionUnsafe(hexToBin(hex)), subjects);
     }
 
     for (let i = 0; i < builtTxs.length; i++) {
@@ -3134,7 +3365,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     destroyFunctionArgs: FunctionArgument[],
     isFinal: boolean,
     maxFee?: bigint,
-  ): Promise<{ hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[] }> {
+  ): Promise<DestroyBatch> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const builder = new TransactionBuilder({
       provider: contract.inner.provider,
@@ -3231,7 +3462,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.outputs.pop(); // remove placeholder - no reclaim
       }
       const hex = builder.build();
-      return { hex, reclaimed: reclaimed > 0n ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder) };
+      return {
+        hex, reclaimed: reclaimed > 0n ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder), builder,
+      };
     }
 
     // Final: send everything to recipient. Add placeholder output for fee estimation.
@@ -3248,7 +3481,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...builder.outputs[builder.outputs.length - 1], amount: reclaimed,
     };
     const hex = builder.build();
-    return { hex, reclaimed, subjects: inputSubjectsOfBuilder(builder) };
+    return { hex, reclaimed, subjects: inputSubjectsOfBuilder(builder), builder };
   }
 
   /*
@@ -9560,7 +9793,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // A provably read-only getter (compiler writesState=false) produces output state == input state, so the
     // builder reproduces the input commitments (empty stateUpdates) and the multi-pass derivation probe is pure
-    // overhead. Skipping it makes getter calls cheap on-chain here AND in production. Guards: value-returning
+    // overhead. X176: `=== false` is the ONLY sound reading of this flag - `true` means "not provably
+    // read-only", never "mutates a state variable". `StatefulContract.readWritesState` publishes the
+    // distinction; nothing here may be rewritten to act on `true`, which would make this skip fail OPEN.
+    // Skipping it makes getter calls cheap on-chain here AND in production. Guards: value-returning
     // views (returnEmitOutputIndex>=0) still need the return blob derived, and external call/read groups still
     // need Phase-1 derivation. Misclassification fails closed - the covenant rejects a mismatched output.
     // Kill-switch: SC_DISABLE_GETTER_SKIP=1 forces the full probe (escape hatch for the covenant-path change).
@@ -10125,12 +10361,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at 1000 satoshis and then overwritten by index on `builder.outputs`, which is the one path into an output
     // that no validator sees. That is the same construction X131 row 2b uses deliberately to reach the gate.
     //
-    // THIS SITE HAS NO `debug()` AHEAD OF IT, by design - covenant unlockers do not evaluate in the debug VM on
-    // a mock provider - so the gate is the FIRST thing that speaks here. A split that breaks its covenant AND
-    // pays dust therefore reports the dust, not the covenant. That window is real and is pinned by an explicit
-    // ordering row rather than left to be discovered; the covenant verdict still arrives from the provider for
-    // every split whose bytes are relayable.
-    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+    // X175. THIS SITE HAS NO `debug()` AHEAD OF IT, by design, so the byte gate used to be the FIRST decider and
+    // a split that broke its covenant AND paid dust reported only the dust. The ordering no longer decides
+    // anything: `assertAdminSiteFinalizedBytes` asks the covenant whenever the bytes are refused and reports
+    // BOTH, so neither objection can absorb a test written against the other.
+    assertAdminSiteFinalizedBytes(builder, decoded, inputSubjectsOfBuilder(builder));
 
     const txid = await provider.sendRawTransaction(rawTx);
 
@@ -10282,7 +10517,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Merge also runs with `allowImplicitNftBurn: true`, so the builder's own burn check is off and the
     // consumed masters vanish into that change output. Refusing here is refusing before an intentional burn
     // whose proceeds the network would not have relayed.
-    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+    //
+    // X175. Nothing debugs ahead of this site either, so the gate reports the covenant alongside the byte rule
+    // rather than in place of it.
+    assertAdminSiteFinalizedBytes(builder, decoded, inputSubjectsOfBuilder(builder));
 
     const txid = await provider.sendRawTransaction(rawTx);
 
@@ -11177,9 +11415,11 @@ export class StatefulFunctionCall {
     //
     // Ordered after the fee-per-byte cap above so a missing change output still reports as a fee problem
     // rather than as whichever relay observation happens to be true of the same bytes - the same ordering the
-    // stateful submit path uses. Like split and merge, nothing debugs ahead of this, so the gate speaks before
-    // any covenant verdict.
-    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+    // stateful submit path uses.
+    //
+    // X175. Like split and merge, nothing debugs ahead of this, so the gate carries the covenant's objection
+    // with it instead of arriving before it.
+    assertAdminSiteFinalizedBytes(builder, decoded, inputSubjectsOfBuilder(builder));
 
     const provider = this.parentContract!.inner.provider;
     const txid = await provider.sendRawTransaction(rawTx);

@@ -408,6 +408,10 @@ const INPUT = {
   projectionE: 15, projectionD: 16,
   controller: 17,
 } as const;
+const invalidResultSplitAt = (input: number): RegExp => new RegExp('^mandatory-script-verify-flag-failed '
+  + `\\(Unable to verify transaction: error in evaluating input index ${input}: `
+  + 'Program called an OP_SPLIT operation with an invalid index\\. '
+  + 'stack item length: 0; requested split index: 1\\.\\)$');
 
 function failingInput(builder: TransactionBuilder): number | null {
   try {
@@ -437,7 +441,8 @@ describe('E1 hostile review: producer result-cursor exhaustion (worker C)', () =
     // absent, so the projection verifier accepts the short read; something else must reject.
     const built = await buildReviewGraph({ results: { 6: '01' } });
     expect(failingInput(built.builder)).toBe(INPUT.masterD);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(invalidResultSplitAt(INPUT.masterD));
   });
 
   it('claiming the first producer occurrence returned nothing is refused by the SDK, not the VM', async () => {
@@ -454,7 +459,8 @@ describe('E1 hostile review: producer result-cursor exhaustion (worker C)', () =
     // because the cursor never moved. A binds its consumed result, so A is what rejects.
     const built = await buildReviewGraph({ results: { 2: '', 6: '0148' } });
     expect(failingInput(built.builder)).toBe(INPUT.masterA);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(invalidResultSplitAt(INPUT.masterA));
   });
 });
 
@@ -479,6 +485,7 @@ describe('E1 hostile review: sliding window with a consumer that discards its re
     // Measured: A rejects at input 1 even though `child` is never read, so the consumed bytes are
     // bound to C's physical return event by A's route, not by anything in the transcript machinery.
     expect(failingInput(built.builder)).toBe(INPUT.masterA);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(invalidResultSplitAt(INPUT.masterA));
   });
 });

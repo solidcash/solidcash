@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
-import { compileFileMulti, compileString } from 'solidc';
+import { compileFile, compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
@@ -134,12 +134,12 @@ describe('X160: the recovered population has a WRITER that settles', () => {
    */
   it('MEASURED: the recovered route admits `inc`, and `inc` is published writesState TRUE', () => {
     // The subject is a SIBLING declaration in the file, so the multi-contract map is what is read.
-    const map = compileFileMulti(FALLBACK_IO, {
+    const counter = compileFile(FALLBACK_IO, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
       experimentalMessageBusControllerCategory: '22'.repeat(32),
+      primaryContractName: 'Counter',
     } as never) as any;
-    const counter = map.Counter;
     const handlers = counter.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
     console.log(`[X160W] pre-repair (${PRE_REPAIR_COMMIT}, RECORDED): BUS-FAIL ${PRE_REPAIR_BUS_ERROR}`);
@@ -186,12 +186,12 @@ describe('X160: the recovered population has a WRITER that settles', () => {
       token: { amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     }]);
     const controllerCategory = genesis.categoryId as string;
-    const map = compileFileMulti(FALLBACK_IO, {
+    const artifact = compileFile(FALLBACK_IO, {
       ...BUS,
       experimentalMessageBusController: controller.lockingBytecode,
       experimentalMessageBusControllerCategory: controllerCategory,
+      primaryContractName: 'Counter',
     } as never) as any;
-    const artifact = map.Counter;
     const base = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, { count: PRE_COUNT });
     const participant = base.withCategory(hexToBin(setup.categoryId));
@@ -383,12 +383,13 @@ describe('X160: the recovered population has a WRITER that settles', () => {
    * used afterwards only to say WHICH count they are.
    */
   it('MEASURED: the covenant computes a post state that is count+1, not the pre state', async () => {
-    const map = compileFileMulti(FALLBACK_IO, {
+    const counter = compileFile(FALLBACK_IO, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
       experimentalMessageBusControllerCategory: '22'.repeat(32),
+      primaryContractName: 'Counter',
     } as never) as any;
-    const layout = map.Counter.stateLayout!;
+    const layout = counter.stateLayout!;
     const computed = binToHex(await postStateFromCovenant());
     const written = buildInitialStateCommitments(layout, { count: POST_COUNT })[0];
     const unwritten = buildInitialStateCommitments(layout, { count: PRE_COUNT })[0];

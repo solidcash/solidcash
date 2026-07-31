@@ -110,6 +110,8 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 
 export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
+  /** Select a named top-level contract instead of the source file's last concrete contract. */
+  primaryContractName?: string;
 }
 
 export interface SplitCompileOptions extends CompileOptions {
@@ -341,7 +343,7 @@ function compileWithExternalAdmissionFallback(
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
-  const { errorListener, ...artifactCompilerOptions } = compilerOptions;
+  const { errorListener, primaryContractName, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver;
   let cacheKey = '';
@@ -351,7 +353,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
-  const artifact = compileWithExternalAdmissionFallback(code, mergedCompilerOptions, errorListener);
+  const artifact = compileWithExternalAdmissionFallback(
+    code, mergedCompilerOptions, errorListener, primaryContractName,
+  );
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
 }

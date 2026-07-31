@@ -77,6 +77,16 @@ describe('compileStringMulti', () => {
     expect(map.Second.bytecode).toBe(compileString(src).bytecode);
   });
 
+  it('compileString can select one named top-level contract without compiling every sibling', () => {
+    const src = `
+      contract First(int x) { function f1() { require(x > 0); } }
+      contract Broken { function bad() { missing(); require(true); } }
+    `;
+    const first = compileString(src, { primaryContractName: 'First' });
+    expect(first.contractName).toBe('First');
+    expect(first.abi.map((entry) => entry.name)).toEqual(['f1']);
+  });
+
   it('excludes abstract contracts from the map', () => {
     const src = `
       abstract contract Base { function b() virtual; }

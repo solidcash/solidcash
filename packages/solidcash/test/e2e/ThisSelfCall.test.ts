@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+
 // `this.f(args)` is an external self-call in Solidity; on BCH the covenant is the contract itself, so it
 // resolves to a direct call to the contract's own function `f`. Verified end-to-end: a public helper called
 // via `this.` returns the right value into the covenant check.
@@ -24,7 +26,7 @@ describe('this.f() external self-call resolves to the own function', () => {
     // dbl(5)=10, addOne(5)=6 -> 16
     const tx = await sc.check(5n, 16n).send();
     expect(tx.txid).toBeDefined();
-    await expect(sc.check(5n, 15n).send()).rejects.toThrow();
+    await expect(sc.check(5n, 15n).send()).rejects.toThrow(inputZeroVerifyFailure);
   });
 
   it('this.ext(v) invokes an external function as a subroutine', async () => {
@@ -35,6 +37,6 @@ describe('this.f() external self-call resolves to the own function', () => {
     // ext(4) = 12
     const tx = await sc.checkExt(4n, 12n).send();
     expect(tx.txid).toBeDefined();
-    await expect(sc.checkExt(4n, 11n).send()).rejects.toThrow();
+    await expect(sc.checkExt(4n, 11n).send()).rejects.toThrow(inputZeroVerifyFailure);
   });
 });

@@ -3173,7 +3173,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forwarded graph signature from a key other than the child-row owner', async () => {
     const { provider, transaction } = await buildForwardedSignedGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('executes canonical low-level calldata as an authenticated typed graph edge', async () => {
@@ -3183,7 +3183,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the typed result of a low-level graph edge', async () => {
     const { provider, transaction } = await buildRawCallGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('executes canonical low-level staticcall calldata as an authenticated read-only edge', async () => {

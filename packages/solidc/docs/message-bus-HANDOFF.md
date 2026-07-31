@@ -125,7 +125,7 @@ These were all learned by getting them wrong first.
    A negative result reported honestly is worth more than a repair invented to have something to show.
 10. **A widening to route ADMISSION needs the FULL bus-mode sweep, not a targeted set.** The worked
     example is X201: its author measured the capstones plus 5 files and disclosed 4 reds; I measured 5
-    files and found 9; the full 108-file sweep found 12 across 6 files, and the 12th is the one that
+    files and found 9; the then-complete 108-file sweep found 12 across 6 files, and the 12th is the one that
     decided the row. **The handler a widening breaks need not appear in any file that mentions the
     changed feature** - here it was demoted by a uniformity pass, not by the widened predicate.
 11. **When judging a capability change, price it in PROVEN handlers, not in features.** X201 gained
@@ -202,7 +202,8 @@ npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
   test/e2e/Layer3HeterogeneousCycleC2.test.ts test/e2e/Layer3BoundedMaximumGraphC3.test.ts
 
 # 2. The full bus-mode sweep - MANDATORY before any route-admission change lands.
-#    108 files, ~9 minutes. It is the only thing that has reliably caught the X229 class.
+#    109 files on current HEAD, ~36 minutes with --maxWorkers=2. It is the only thing that has
+#    reliably caught the X229 class.
 npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch) \
   --maxWorkers=2 --reporter=dot
 
@@ -224,7 +225,8 @@ npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
    surface and prior rounds show a real hit rate there.
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:
-`ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` is 108 files, ~9 minutes at
+`ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` is 109 files on current HEAD; the
+final X201 verification took ~36 minutes at
 `--maxWorkers=2`. It is the only measurement that has reliably caught this class.
 
 Do not start by adding capability. The bus admits more than it has been proven to bind, and the

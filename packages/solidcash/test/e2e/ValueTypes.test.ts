@@ -6,6 +6,8 @@ import { fundedSigner } from '../test-util.js';
 // directly (`const sc = await getContractFactory(...).deploy(); await sc.test(args)`).
 
 describe('Value Types', () => {
+  const REQUIRE_REFUSAL =
+    /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   describe('wrap and unwrap', () => {
     it('should wrap and unwrap a value type (bigint -> Price -> bigint)', async () => {
       const source = `
@@ -88,7 +90,7 @@ describe('Value Types', () => {
       `;
       const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.test(10n, 20n)).rejects.toThrow();
+      await expect(sc.test(10n, 20n)).rejects.toThrow(REQUIRE_REFUSAL);
     });
   });
 
@@ -140,7 +142,7 @@ describe('Value Types', () => {
       `;
       const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.test(10n, 50n)).rejects.toThrow();
+      await expect(sc.test(10n, 50n)).rejects.toThrow(REQUIRE_REFUSAL);
     });
   });
 

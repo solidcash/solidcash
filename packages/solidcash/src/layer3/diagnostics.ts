@@ -13,6 +13,8 @@ export type Layer3DiagnosticCode =
   | 'L3_RECURSIVE_CLOSURE'
   | 'L3_RESOURCE_CAPACITY'
   | 'L3_GRAPH_DEPTH_LIMIT'
+  | 'L3_SCB_ENVELOPE_MALFORMED'
+  | 'L3_SCB_VERSION_UNSUPPORTED'
   | 'L3_SETTLEMENT_AUTHORITY_CONFLICT'
   | 'L3_TARGET_UNRESOLVED'
   | 'L3_TARGET_EXHAUSTED';
@@ -36,6 +38,8 @@ export interface Layer3DiagnosticContext {
   stateLayoutFingerprint?: string;
   settlementPaths?: readonly string[];
   handler?: string;
+  inputIndex?: number;
+  rawVmReason?: string;
 }
 
 /** Machine-stable code plus the human context required by transcript-v1 section 12. */

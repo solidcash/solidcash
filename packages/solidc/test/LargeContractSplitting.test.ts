@@ -253,13 +253,22 @@ describe('large-contract state-local splitting', () => {
 
     const swapped = [{ name: 'F0', artifact: layout('own', 'BStorage__b', 'AStorage__a') }];
     expect(() => assertSplitLayoutsAgree('M', root, swapped as never, root as never))
-      .toThrow(/facet 'F0' does not share the root's storage layout \(root has AStorage__a@0\.1, it has BStorage__b@0\.1\)/);
+      .toThrow(expect.objectContaining({
+        code: 'SPLIT_LAYOUT_CONFLICT',
+        context: expect.objectContaining({
+          contractName: 'M', facet: 'F0', callChain: ['M', 'F0'],
+          divergence: 'root has AStorage__a@0.1, it has BStorage__b@0.1',
+        }),
+      }));
 
     // The second arm: the root agreeing with its facets is not enough if the PUBLISHED layout - the unsplit
     // baseline the manifest fingerprint is taken from - describes something else.
     expect(() => assertSplitLayoutsAgree(
       'M', root, agreeing as never, layout('own', 'BStorage__b', 'AStorage__a') as never,
-    )).toThrow(/generated root does not share the unsplit contract's storage layout/);
+    )).toThrow(expect.objectContaining({
+      code: 'SPLIT_LAYOUT_CONFLICT',
+      context: expect.objectContaining({ contractName: 'M', facet: 'root', callChain: ['M', 'root'] }),
+    }));
   });
 
   /**

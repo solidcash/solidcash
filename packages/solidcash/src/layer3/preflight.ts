@@ -11,6 +11,7 @@ import {
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
+import { Layer3DiagnosticError } from './diagnostics.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -806,10 +807,60 @@ const evaluateEveryInput = (
   transaction.inputs.forEach((_input, inputIndex) => {
     const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
     if (objection !== true) {
-      throw new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${objection}`);
+      throw mapLayer3VmFailure(builder, transaction, inputIndex, String(objection));
     }
   });
 };
+
+const firstPush = (bytecode: Uint8Array): Uint8Array | undefined => {
+  if (bytecode.length === 0) return undefined;
+  const opcode = bytecode[0];
+  let width = 0;
+  let length = 0;
+  if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; }
+  else if (opcode === 76 && bytecode.length >= 2) { width = 2; length = bytecode[1]; }
+  else if (opcode === 77 && bytecode.length >= 3) {
+    width = 3; length = bytecode[1] | (bytecode[2] << 8);
+  }
+  if (width === 0 || width + length > bytecode.length) return undefined;
+  return bytecode.slice(width, width + length);
+};
+
+/** Preserve the VM's raw objection while naming malformed compiler-route envelopes at their exact input. */
+export function mapLayer3VmFailure(
+  builder: TransactionBuilder,
+  transaction: Transaction,
+  inputIndex: number,
+  rawVmReason: string,
+): Error {
+  const input = builder.inputs[inputIndex] as { unlocker?: { abiFunction?: { selector?: string } } } | undefined;
+  if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
+    return new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
+  }
+  const envelope = firstPush(transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array());
+  const context = { inputIndex, rawVmReason, metadataField: 'SCB1.envelope' };
+  if (envelope && envelope.length >= 5
+    && binToHex(envelope.slice(0, 4)) === '53434231' && envelope[4] !== 1) {
+    return new Layer3DiagnosticError(
+      'L3_SCB_VERSION_UNSUPPORTED',
+      `BCH-2026 preflight failed at input ${inputIndex}: SCB1 version ${envelope[4]} is unsupported; `
+        + `VM: ${rawVmReason}`,
+      { ...context, metadataField: 'SCB1.version', actual: envelope[4], expected: 1 },
+    );
+  }
+  const malformed = !envelope || envelope.length < 7
+    || binToHex(envelope.slice(0, 4)) !== '53434231'
+    || envelope[4] !== 1 || envelope[5] !== 0 || envelope[6] < 1
+    || envelope.length < 7 + envelope[6] * 12;
+  if (malformed) {
+    return new Layer3DiagnosticError(
+      'L3_SCB_ENVELOPE_MALFORMED',
+      `BCH-2026 preflight failed at input ${inputIndex}: malformed SCB1 envelope; VM: ${rawVmReason}`,
+      context,
+    );
+  }
+  return new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
+}
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */
 export const assertFinalizedTransactionCovenants = (

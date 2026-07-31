@@ -4,6 +4,8 @@ import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.j
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+const verifyPreflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // A state struct with a mapping field flattens to per-field state (`s__a` scalar + `s__c` mapping). The bare
 // scalar field write `s.a = v` (the Solidity form) resolves to the flattened `s__a` state var, symmetric with
 // the read side (`s.a` -> `s__a`). Verified end-to-end: write the field, then read it back off the persisted
@@ -37,6 +39,6 @@ describe('mapping-bearing struct scalar field write (s.a = v -> flattened s__a)'
     expect(readTx.txid).toBeDefined();
     // the wrong value is rejected by the covenant
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.checkA(100n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.checkA(100n, alicePub, sig).send()).rejects.toThrow(verifyPreflight);
   });
 });

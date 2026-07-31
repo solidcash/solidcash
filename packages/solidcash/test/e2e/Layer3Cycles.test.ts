@@ -7,6 +7,9 @@ import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const input0Verify = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 0: Program failed an OP_VERIFY operation.)';
+
 // HONEST SCOPE (corrected per layer3-required-path-audit.md P2/P3): this proves the participants AGREE ON an
 // ordered edge LABEL list committed by the controller root, and that a missing edge is rejected. It does NOT
 // prove any call executes: A does not call B and B does not call A here; the selectors 11111111/22222222 are
@@ -83,6 +86,6 @@ describe('R5 cycles: repeated 1-callee settlement + heterogeneous A->B->A', () =
       { caller: 0, callee: 1, selectorHex: '11111111' },
       { caller: 1, callee: 0, selectorHex: '22222222' },
     ], true); // controller commits only the first edge; participants recompute both -> mismatch
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(input0Verify);
   });
 });

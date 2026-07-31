@@ -7,6 +7,9 @@ import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const input1Verify = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 1: Program failed an OP_VERIFY operation.)';
+
 // Audit P2/P3/P6/P7: the callee STATE JOURNAL. The callee EXECUTES every edge naming it as callee - reading
 // its resource state, applying each edge's operation (dispatched by the edge's selector: deposit=add,
 // scale=mul) with the edge's args, IN ORDER, and flushing once. So repeated calls to one physical callee
@@ -103,6 +106,6 @@ describe('P2/P6: callee state journal (real execution of ordered edges)', () => 
         { caller: 0, callee: 1, selectorHex: SCALE, argsHex: binToHex(num8(2n)) }],
       10n, 29n, // wrong: the journal computes 30
     );
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(input1Verify);
   });
 });

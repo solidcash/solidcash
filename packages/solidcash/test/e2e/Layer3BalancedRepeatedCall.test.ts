@@ -7,6 +7,9 @@ import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const input0Verify = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 0: Program failed an OP_VERIFY operation.)';
+
 const raw = (builder: TransactionBuilder): string => (
   binToHex(encodeTransaction(builder.buildLibauthTransaction()))
 );
@@ -120,6 +123,6 @@ describe('Layer-3 compiler-derived repeated native calls', () => {
 
   it('rejects swapping the two repeated-call argument prefixes', async () => {
     const { provider, transaction } = await build(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(input0Verify);
   });
 });

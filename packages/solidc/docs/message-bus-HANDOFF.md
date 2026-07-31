@@ -29,7 +29,7 @@ refused at a NAMED INPUT INDEX.
 |---|---|
 | 206 recovered handlers | SOLID. Re-taken with one shared probe binary across two worktrees, both directions checked (206 gained, 0 lost). |
 | **82 of 206 VM-proved on the file-set union** | X235 ran the exact 25-file union in `layer3-x235-union-manifest.txt`. Its AST consumer first reproduces X160's 135 rows / 206 gained / 0 lost, then attributes only contained batch blobs by source digest and deduplicates partition rows. It observed 1,255 records, 627 settlements and 108 contained routes: 82 exact gained rows, no unresolved digest and no digest/name mismatch. The prior inference that the union had to be larger was falsified by the current-HEAD run; agreement with the two historical 82s does not mean the memberships are identical. |
-| 11 gained writers | Exhausted: 4 proved, 1 fail-closed (`Target.protected`), 2 INADMISSIBLE since X187 (`Attack.attack`, `Foo.callBar` - X201 would have re-admitted them but was reverted), 4 publish `writesState` ABSENT and mutate nothing. |
+| 11 gained writers | Exhausted: 4 proved, 1 fail-closed (`Target.protected`), 2 re-admitted by X201 but still without a settlement (`Attack.attack`, `Foo.callBar`; their missing-callee hostiles refuse at the covenant), 4 publish `writesState` ABSENT and mutate nothing. |
 | "no chunk-backed writer exists" | SOLID, measured both directions. Writer rows and dynamic-variable rows are DISJOINT sets. Do not hunt a subject for this shape. |
 | "co-spent-callee graphs have no subject in the 206" | SOLID. Exactly 2 of 206 publish an outgoing external call; the other 81 measured directly at 0. A boundary of the POPULATION, not the machinery. |
 

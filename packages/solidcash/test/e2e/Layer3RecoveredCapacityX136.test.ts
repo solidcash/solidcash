@@ -144,39 +144,24 @@ describe('X136: the recovery pushed Set A at the per-input ceiling', () => {
 });
 
 /**
- * X136 CONTINUED. MyToken LOST A SLOT, AND THE SLOT WAS ONE NO ADMITTED HANDLER EVER USED.
+ * X136 CONTINUED. MyToken's current route RETAINS TWO ENTRY SLOTS.
  *
  * A slot disappearing from a covenant is the shape most likely to be wrong, so this is what it was.
  *
  *   before  blockSize 69  master dataNft entry entry returnEvent  + 64 trailing
- *   after   blockSize 68  master dataNft entry       returnEvent  + 64 trailing
+ *   current blockSize 69  master dataNft entry entry returnEvent  + 64 trailing
  *
- * ONE OF TWO `entry` SLOTS. Nothing else in the block changed in kind or in count; the block shifted down by
- * one, so `returnEvent` moved from offset 4 to 3 and the trailing base from 5 to 4.
+ * The earlier one-slot observation belonged to the reverted X201 admission state. Current HEAD admits both
+ * collection getters and authenticates their distinct collection addresses independently: `balanceOf` and
+ * `allowance`. Each selected handler demands one entry, but the uniform route needs one slot per address family.
  *
- * WHY, and it is not a slot vanishing from the same covenant - it is a DIFFERENT covenant. The route changed
- * admission rung. Before, `totalSupply`/`name`/`symbol`/`decimals` were refused
- * `mixed-scalar-and-collection-route-not-enabled` and the route was collection-only, admitting exactly
- * `balanceOf` and `allowance`; after, the mixed scalar+collection rung succeeds and all six are admitted.
- * The rung change is independently visible in the compiler's own warnings: the BEFORE compile emits
- * `unused variable '__rh0___getterKey1'`, `'__rh1___getterKey1'` and `'__rh1___getterKey2'` - one key witness
- * per ADMITTED HANDLER, which is where two entry slots for two collection handlers came from. The AFTER
- * compile emits none of those three.
- *
- * AND THE REMOVAL IS SOUND ON THE EVIDENCE AVAILABLE AT COMPILE TIME. Every admitted handler's own published
- * `entryAccesses` and `blockLayout` are byte-identical on both sides, and the maximum entry demand of any of
- * them is ONE: `balanceOf` is `balanceOf[k]`, and `allowance` is `allowance[k1][k2]` - a nested mapping is
- * ONE entry with a two-part key, not two entries. So the route reserved two slots to serve handlers that
- * never needed more than one, and the removed slot was surplus on both sides. The direction is also the safe
- * one: fewer entry slots is less capacity, never more authority.
- *
- * NOT CLAIMED, AND IT IS THE REAL RESIDUAL. This is a COMPILE-level argument. MyToken's route was not run:
- * its block is 68 slots wide and a row needs a live C2 sorted-mapping entry, so settling `balanceOf` or
- * `allowance` through the recovered 1-entry route is not established here. What a single 68-slot block does
- * with a participant carrying TWO collection rows in one transaction is also not established.
+ * The six-handler admission remains: four scalar getters plus `balanceOf` and `allowance`. The latter each
+ * demand one entry in their own handler layout, but those entries are governed by different collection NFT
+ * locking bytecodes. The route therefore publishes two entry accesses and two physical slots. This test is
+ * compile-shape evidence only; VM settlement remains accounted for by the union settlement probe.
  */
-describe('X136: MyToken lost an `entry` slot', () => {
-  it('MEASURED: the route reserves ONE entry slot, and no admitted handler demands more', () => {
+describe('X136: MyToken retains one authenticated slot per admitted collection', () => {
+  it('MEASURED: the route reserves TWO collection-address slots; each handler demands one', () => {
     const artifact = compile(`${SBE}/app/erc20/MyToken.sol`);
     const route = artifact.hiddenBatch!.route.blockLayout!;
     const tally = (slots: readonly any[]): Record<string, number> => slots
@@ -184,9 +169,8 @@ describe('X136: MyToken lost an `entry` slot', () => {
         { ...acc, [slot.kind]: (acc[slot.kind] ?? 0) + 1 }), {});
     const routeTally = tally(route.slots);
     console.log(`[X136M] route blockSize=${route.blockSize} ${JSON.stringify(routeTally)}`);
-    expect(route.blockSize).toBe(68);
-    // Recorded at `c988817e`: blockSize 69, entry 2. The removed slot is the second `entry`.
-    expect(routeTally).toEqual({ master: 1, dataNft: 1, entry: 1, returnEvent: 1, trailing: 64 });
+    expect(route.blockSize).toBe(69);
+    expect(routeTally).toEqual({ master: 1, dataNft: 1, entry: 2, returnEvent: 1, trailing: 64 });
 
     const handlers = artifact.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
@@ -197,11 +181,13 @@ describe('X136: MyToken lost an `entry` slot', () => {
 
     // The demand side: the maximum entry slots any admitted handler's own block declares.
     let peak = 0;
+    const collections = new Set<string>();
     for (const name of eligible) {
       const entry = artifact.abi.find((abi: any) => abi.name === name);
       const demand = (entry?.blockLayout?.slots ?? [])
         .filter((slot: any) => slot.kind === 'entry').length;
       const accesses = entry?.entryAccesses ?? null;
+      for (const access of accesses ?? []) collections.add(access.collection);
       console.log(`[X136M] ${name.padEnd(12)} entrySlots=${demand} `
         + `entryAccesses=${JSON.stringify(accesses)}`);
       peak = Math.max(peak, demand);
@@ -209,6 +195,7 @@ describe('X136: MyToken lost an `entry` slot', () => {
     // `allowance[k1][k2]` is ONE entry with a two-part key. If this ever reads 2, the removed slot was load
     // bearing and this whole docblock is wrong.
     expect(peak, 'an admitted handler demands more entry slots than the route reserves').toBe(1);
-    expect(routeTally.entry).toBeGreaterThanOrEqual(peak);
+    expect([...collections].sort()).toEqual(['allowance', 'balanceOf']);
+    expect(routeTally.entry).toBe(collections.size);
   }, 900_000);
 });

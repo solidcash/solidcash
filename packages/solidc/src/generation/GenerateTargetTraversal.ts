@@ -950,6 +950,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // pre-allocates; nested ones reuse those slots. Without this a nested/else-if transfer over-allocates a slot that
   // is pushed conditionally and then missing at the epilogue ("__internal__transfer_lb_N does not exist").
   private transferPreallocDepth: number = 0;
+  private transfersPreallocatedAtFunctionStart: boolean = false;
 
   // Conditional transfer/emit/tcTransfer indices (only active in one branch)
   private conditionalTransferIndices: Set<number> = new Set();
@@ -3123,6 +3124,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedEntryDeletes = new Set();
     this.plainLoopDepth = 0;
     this.transferPreallocDepth = 0;
+    this.transfersPreallocatedAtFunctionStart = false;
     this.condDeleteSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
@@ -3570,6 +3572,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.c2WitnessSnapshotsRestored = false;
     this.emitRuntimeAliasWitnessPreflight(node);
+
+    // Allocate the complete semantic transfer frame before visiting control flow. Branch/loop-local allocation
+    // can lose a register when inlining or early-return lowering moves the transfer beneath a nested branch: the
+    // epilogue still owns the function-wide transfer slot, but the real stack only saw the conditional push.
+    // `visit*Transfer*` already replaces pre-allocated registers in place, so doing this once here is both
+    // layout-driven and path-independent. Straight-line transfers retain the same two registers; only their
+    // allocation point moves earlier.
+    if (this.transferInfos.length > 0) {
+      const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
+      for (const { transferIndex } of this.transferInfos) {
+        const lbName = `__internal__transfer_lb_${transferIndex}`;
+        const amtName = `__internal__transfer_amt_${transferIndex}`;
+        this.emit(encodeInt(0n), loc);
+        this.pushToStack(lbName);
+        this.emit(encodeInt(0n), loc);
+        this.pushToStack(amtName);
+        this.pendingTransfers.push({
+          transferIndex, lockingBytecodeStackName: lbName, amountStackName: amtName,
+        });
+        this.preAllocatedTransfers.add(transferIndex);
+      }
+      for (const slot of node.blockLayout?.slots ?? []) {
+        if (slot.kind === 'transfer' && slot.conditional && slot.slotIndex !== undefined) {
+          this.conditionalTransferIndices.add(slot.slotIndex);
+        }
+      }
+      this.transfersPreallocatedAtFunctionStart = true;
+    }
     node.body = this.visit(node.body) as BlockNode;
 
     if (!this.isDefineSubTraversal && node.hiddenBatchRoute === true
@@ -4364,7 +4394,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // skips this: the enclosing (outermost) branch's max-path transferCount already pre-allocated the slots its
       // mutually-exclusive transfers share (semantic index), and its min/max marked their conditionality. Re-
       // pre-allocating here would push an extra slot conditionally, missing at the epilogue.
-      if (this.transferPreallocDepth === 0) {
+      if (this.transferPreallocDepth === 0 && !this.transfersPreallocatedAtFunctionStart) {
         const transferStartIndex = this.pendingTransfers.length;
         for (let i = 0; i < ops.transferCount; i++) {
           // Find the global transfer index from transferInfos
@@ -18567,6 +18597,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const transfer of this.pendingTransfers) {
       const { transferIndex, lockingBytecodeStackName, amountStackName } = transfer;
       const isConditional = this.conditionalTransferIndices.has(transferIndex);
+      if (this.getStackIndex(lockingBytecodeStackName, true) < 0
+        || this.getStackIndex(amountStackName, true) < 0) {
+        throw new Error(
+          `Function '${node.name}' lost pre-allocated transfer ${transferIndex} before covenant verification`,
+        );
+      }
 
       // For conditional transfers, check if the LBC slot is non-empty (active)
       if (isConditional) {

@@ -94,24 +94,9 @@ describe('layer3 canonical result binding (E1)', () => {
   });
 });
 
-// X3. Result fan-in - one handler consuming two producer results - is not implemented, and this block states
-// the wall's exact shape rather than only that a wall exists.
-//
-// COMPILER (both files leased elsewhere this round, so the wall is measured, not moved):
-//   1. `SymbolTableTraversal` refuses to lower a graph-emission handler with more than one call slot when any
-//      slot returns. The two isolation cases below show neither conjunct is the problem on its own: two VOID
-//      calls lower, and one RETURNING call lowers; only the conjunction is refused.
-//   2. `GenerateTargetTraversal.verifyGraphEmissionRow` cannot compose a returning row. Its void arm builds a
-//      row for the dispatch site to concatenate; its returning arm instead splits the caller's WHOLE emission
-//      vector at its own prefix and then requires the remainder to be exactly one framed result, so a
-//      returning row consumes the entire vector and nothing can follow it.
-//   3. The multi-slot dispatch site concatenates every row and compares once, which cannot interleave the
-//      per-row result decodes a second returning slot needs.
-//
-// SDK: nothing blocks it. `resultDependencies` is a list, the dependency resolver takes any acyclic table,
-// `finalizeCompiledGraph` frames one emission row per child and the projection verifier walks a caller's rows
-// with a cursor rather than one equality. The probe below reaches that machinery with an artifact the compiler
-// cannot emit, which is why the planner now refuses by name instead of producing an unexecutable transaction.
+// X3. Result fan-in and returning/void continuation lower to one ordered emission stream. Each returning row
+// consumes only its own framed result and leaves the suffix for the next callsite; the SDK records every
+// producer dependency rather than imposing an artificial one-result ceiling.
 describe('layer3 ordered result fan-in lowering (E1)', () => {
   it('lowers a handler that consumes two producer results', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
@@ -157,8 +142,7 @@ contract ArgForward(int brand, address peerA, address peerB) {
       .toEqual([{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 }]);
   });
 
-  // Isolation, both directions: neither conjunct of the lowering predicate is refused on its own, so the
-  // refused shape is exactly "more than one call slot AND at least one of them returns".
+  // Isolation controls for the two homogeneous shapes.
   it('lowers two void calls and one returning call, so only the conjunction is refused', () => {
     const twoVoid = compileString(TWO_CALLER, options);
     expect(twoVoid.abi.find((fn) => fn.name === 'fan')!.externalCalls).toHaveLength(2);
@@ -168,17 +152,8 @@ contract ArgForward(int brand, address peerA, address peerB) {
   });
 });
 
-/**
- * X3, SDK half. PROBE, not a fixture: no compiler-emitted artifact can declare two returning callsites on one
- * graph handler (the block above measures why), so the only way to reach the planner's fan-in path is to
- * publish that shape by hand. The two producers are REAL compiled contracts; only the consumer's two callsites
- * are annotated as returning.
- *
- * Before this round the planner accepted such a plan and emitted `resultDependencies: [1, 2]`. Nothing
- * downstream refuses it either, so the failure surfaced only as an unnamed script error at the consumer's own
- * master input, on a transaction no handler could ever have executed.
- */
-describe('layer3 refuses result fan-in by name at plan time (X3)', () => {
+/** SDK dependency-table controls for one and two consumed producer results. */
+describe('layer3 plans ordered result fan-in (X3)', () => {
   const RETURNING_ALPHA = `pragma solidcash >=0.8.0;
 contract TwoAlphaR(int brand) {
   function alpha(int n) public pure returns (int) { require(n >= 0); return n * 2; }

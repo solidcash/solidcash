@@ -1468,40 +1468,6 @@ function assertHandlerRowFloor(callsites: readonly ExternalCallAbi[], rows: numb
   }
 }
 
-/**
- * X3: refuse a handler asked to consume more than one producer result - result fan-in.
- *
- * This is a capability gap, not a policy: no compiler-emitted artifact can execute such a row. The wall has a
- * measured shape, and none of it is in the SDK.
- *
- *   1. `SymbolTableTraversal` refuses to LOWER a graph-emission handler holding more than one call slot when
- *      any of them returns, so the artifact never exists. That predicate is broader than fan-in: one returning
- *      call plus one void call is refused by the same clause.
- *   2. `GenerateTargetTraversal.verifyGraphEmissionRow` cannot compose a returning row. The void arm builds a
- *      row and leaves it for the dispatch site to concatenate; the returning arm instead SPLITS the caller's
- *      whole emission vector at its own prefix and then requires the remainder to be exactly one framed
- *      result, so a returning row consumes the entire vector and nothing can follow it.
- *   3. The multi-slot dispatch site builds the vector by concatenating every row and comparing once, which
- *      cannot interleave the per-row result decodes a second returning slot would need.
- *
- * Everything downstream of the artifact already handles fan-in: `resultDependencies` is a list, the dependency
- * resolver takes any acyclic table, `finalizeCompiledGraph` frames one emission row per child, and the
- * projection verifier walks a caller's rows with a cursor rather than a single equality. Closing this needs
- * (2) rewritten to the cursor form `consumeGraphRuntimeEmissionRow` already uses for loop rows - split one row
- * off the front, decode its result, keep the remainder - and (3) rewritten to interleave those decodes; then
- * (1) can be narrowed. Both files are compiler-side.
- *
- * Refusing here converts that into a named plan-time diagnostic. A fan-in plan is otherwise accepted, and its
- * unexecutable transaction fails as an unnamed script error at the consumer's own master input.
- */
-function assertSingleConsumedResult(parent: number, producers: readonly number[]): void {
-  if (producers.length <= 1) return;
-  throw new Error(
-    `layer3: invocation ${parent} consumes results from invocations ${producers.join(', ')}; a graph handler `
-    + 'binds at most one producer result, so result fan-in is not an admitted graph shape',
-  );
-}
-
 /** Block slots that carry a call option or an unconditioned value movement. */
 const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
   'satoshiContainer', 'transfer', 'tokenContainer', 'tcTransfer',

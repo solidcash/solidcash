@@ -239,6 +239,10 @@ async function buildContextGraph(overrides: ContextOverrides = {}): Promise<{
 const INPUT = {
   masterRoot: 0, masterChild: 1, projectionRoot: 2, projectionChild: 3, controller: 4,
 } as const;
+const CHILD_REFUSAL =
+  /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 1: Program failed an OP_VERIFY operation/;
+const ROOT_PROJECTION_REFUSAL =
+  /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 2: Program failed an OP_VERIFY operation/;
 
 function failingInput(builder: TransactionBuilder): number | null {
   try {
@@ -297,7 +301,7 @@ describe('E4: admitted context values on the BCH-2026 VM', () => {
     // control above differs only in this field.
     const built = await buildContextGraph({ childExpectedSender: 'self' });
     expect(failingInput(built.builder)).toBe(INPUT.masterChild);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(CHILD_REFUSAL);
   }, 120_000);
 
   it('rejects a graph handler told its caller is tx.origin rather than its parent participant', async () => {
@@ -305,7 +309,7 @@ describe('E4: admitted context values on the BCH-2026 VM', () => {
     // msg.sender LOGICAL rather than EQUIVALENT: a nested handler cannot see the funder.
     const built = await buildContextGraph({ childExpectedSender: 'origin' });
     expect(failingInput(built.builder)).toBe(INPUT.masterChild);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(CHILD_REFUSAL);
   }, 120_000);
 
   it('rejects a root logical caller which is not the transaction origin', async () => {
@@ -316,7 +320,7 @@ describe('E4: admitted context values on the BCH-2026 VM', () => {
     // msg.sender in this fixture, so nothing in the root's own route can be credited with the rejection.
     const built = await buildContextGraph({ rootCaller: `76a914${'ab'.repeat(20)}88ac` });
     expect(failingInput(built.builder)).toBe(INPUT.projectionRoot);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(ROOT_PROJECTION_REFUSAL);
   }, 120_000);
 
   it('measures msg.data: the ABI form holds in a graph route and not at the entry point', async () => {

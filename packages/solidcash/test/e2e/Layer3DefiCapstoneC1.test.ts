@@ -1092,10 +1092,8 @@ contract C1AccrueEmitting(address vault) {
     expect(message).toContain('move the effect into a second handler that consumes no result');
   });
 
-  it('BOUNDARY: a handler may not consume a result alongside any second edge', () => {
-    // Broader than result fan-in (board task X3): a returning edge may not share a handler with ANY other edge,
-    // which is why the Router reaches the Vault through Accrue rather than calling it directly.
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+  it('admits a consumed result alongside a second edge', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
 interface IC1Vault { function deposit(bigint amount) returns (bigint); }
 interface IC1Accrue { function accrue(bigint amount); }
 contract C1RouterDirect(address vault, address accrue) {
@@ -1106,7 +1104,9 @@ contract C1RouterDirect(address vault, address accrue) {
     this.settled = this.settled + shares;
     require(shares >= 0);
   }
-}`, boundaryOptions)).toThrow(/requires call\/staticcall edges and at most one returning call/);
+}`, boundaryOptions);
+    expect(artifact.hiddenBatch).toBeDefined();
+    expect(artifact.abi.find((entry) => entry.name === 'settle')?.externalCalls).toHaveLength(2);
   });
 });
 

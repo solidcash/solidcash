@@ -127,8 +127,8 @@ contract FanIn(int brand, address peerA, address peerB) {
     expect(artifact.abi.find((fn) => fn.name === 'fan')!.externalCalls).toHaveLength(2);
   });
 
-  it('keeps a named refusal for mixed returning/void continuation lowering', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+  it('lowers mixed returning/void continuation in source order', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
 interface IFanAlpha { function alpha(int n) returns (int); }
 interface IFanBeta { function beta(int n); }
 contract MixedFan(int brand, address peerA, address peerB) {
@@ -137,7 +137,9 @@ contract MixedFan(int brand, address peerA, address peerB) {
     IFanBeta(peerB).beta(n);
     return first;
   }
-}`, options)).toThrow(/mixed returning\/void continuation lowering is pending/);
+}`, options);
+    expect(artifact.abi.find((fn) => fn.name === 'fan')!.externalCalls
+      ?.map((call) => call.hasReturnValues === true)).toEqual([true, false]);
   });
 
   it('lowers forwarding a consumed result into a later call argument', () => {

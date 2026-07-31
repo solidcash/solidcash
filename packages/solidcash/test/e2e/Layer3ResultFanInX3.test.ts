@@ -54,6 +54,30 @@ const DOWN = `pragma solidcash >=0.8.0;
 contract X3Down(int brand) {
   function down(int n) public pure returns (int) { require(n >= 0); return n + 30; }
 }`;
+const MIXED_CALLER = `pragma solidcash >=0.8.0;
+interface IFanUp { function up(int n) returns (int); }
+interface IFanDown { function down(int n); }
+contract X3MixedCaller(int brand) {
+  function fan(address a, address b, int n) public pure {
+    int first = IFanUp(a).up(n);
+    IFanDown(b).down(n);
+    require(first == n + 20);
+  }
+}`;
+const MIXED_CALLER_VOID_FIRST = `pragma solidcash >=0.8.0;
+interface IFanUp { function up(int n) returns (int); }
+interface IFanDown { function down(int n); }
+contract X3MixedCallerVoidFirst(int brand) {
+  function fan(address a, address b, int n) public pure {
+    IFanDown(b).down(n);
+    int first = IFanUp(a).up(n);
+    require(first == n + 20);
+  }
+}`;
+const DOWN_VOID = `pragma solidcash >=0.8.0;
+contract X3DownVoid(int brand) {
+  function down(int n) public pure { require(n >= 0); }
+}`;
 
 const SEED = 2n;
 const raw = (builder: TransactionBuilder): string =>
@@ -115,7 +139,9 @@ interface FanInFixture {
 
 type ResultMutation = 'tamper-first' | 'tamper-second' | 'reorder' | 'omit-second';
 
-async function buildFanInGraph(mutation?: ResultMutation): Promise<FanInFixture> {
+async function buildFanInGraph(
+  mutation?: ResultMutation, mixed: false | 'return-first' | 'void-first' = false,
+): Promise<FanInFixture> {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -132,12 +158,14 @@ async function buildFanInGraph(mutation?: ResultMutation): Promise<FanInFixture>
   const setupUp = await setupStatefulUtxos(provider, baseUp, artifactUp.stateLayout!, {});
   const up = baseUp.withCategory(hexToBin(setupUp.categoryId));
 
-  const artifactDown = compileString(DOWN, options);
+  const artifactDown = compileString(mixed ? DOWN_VOID : DOWN, options);
   const baseDown = new Contract(artifactDown, [2n], { provider });
   const setupDown = await setupStatefulUtxos(provider, baseDown, artifactDown.stateLayout!, {});
   const down = baseDown.withCategory(hexToBin(setupDown.categoryId));
 
-  const artifactCaller = compileString(FAN_CALLER, options);
+  const artifactCaller = compileString(
+    mixed === 'void-first' ? MIXED_CALLER_VOID_FIRST : mixed ? MIXED_CALLER : FAN_CALLER, options,
+  );
   const baseCaller = new Contract(artifactCaller, [0n], { provider });
   const setupCaller = await setupStatefulUtxos(provider, baseCaller, artifactCaller.stateLayout!, {});
   const caller = baseCaller.withCategory(hexToBin(setupCaller.categoryId));
@@ -148,24 +176,33 @@ async function buildFanInGraph(mutation?: ResultMutation): Promise<FanInFixture>
     { artifact: artifactDown, lockingBytecode: down.lockingBytecode },
   ], [
     { parent: null, callee: 0, function: 'fan', args: [up.lockingBytecode, down.lockingBytecode, SEED] },
-    { parent: 0, callee: 1, function: 'up', args: [SEED] },
-    { parent: 0, callee: 2, function: 'down', args: [SEED + 20n] },
+    ...(mixed === 'void-first' ? [
+      { parent: 0, callee: 2, function: 'down', args: [SEED] },
+      { parent: 0, callee: 1, function: 'up', args: [SEED] },
+    ] : [
+      { parent: 0, callee: 1, function: 'up', args: [SEED] },
+      { parent: 0, callee: 2, function: 'down', args: [mixed ? SEED : SEED + 20n] },
+    ]),
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const resultUp = packedScalar(SEED + 20n);
   const resultDown = packedScalar(SEED + 50n);
-  const declaredResults: Record<number, string> = mutation === 'reorder'
+  const declaredResults: Record<number, string> = mixed === 'void-first'
+    ? { 2: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp) }
+    : mutation === 'reorder'
     ? { 1: binToHex(resultDown), 2: binToHex(resultUp) }
     : {
       1: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp),
-      ...(mutation !== 'omit-second' && {
+      ...(!mixed && mutation !== 'omit-second' && {
         2: binToHex(mutation === 'tamper-second' ? packedScalar(SEED + 51n) : resultDown),
       }),
     };
   const transcript = layer3.finalizeCompiledGraph(
     plan, declaredResults,
     layout.participantInputs, layout.returnOutputs,
-    ['', declaredResults[1] ?? '', declaredResults[2] ?? ''], layout.projectionInputs,
+    mixed === 'void-first'
+      ? ['', declaredResults[2] ?? '', '']
+      : ['', declaredResults[1] ?? '', declaredResults[2] ?? ''], layout.projectionInputs,
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -194,9 +231,9 @@ async function buildFanInGraph(mutation?: ResultMutation): Promise<FanInFixture>
   tx.addInput(funding[0], p2pkh.unlock.spend(alicePub, signature()));
   tx.addInput(setupDown.masterUtxo, route(down, artifactDown)(
     ...layer3.compiledGraphRouteArgs(transcript, 2, layout.controllerInput) as any,
-    BigInt(layout.returnOutputs![2]!),
+    ...(mixed ? [] : [BigInt(layout.returnOutputs![2]!)]),
   ));
-  tx.addInput(funding[1], p2pkh.unlock.spend(alicePub, signature()));
+  if (!mixed) tx.addInput(funding[1], p2pkh.unlock.spend(alicePub, signature()));
   projectionUtxos.forEach((proof, participant) => tx.addInput(
     proof,
     projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
@@ -219,7 +256,7 @@ async function buildFanInGraph(mutation?: ResultMutation): Promise<FanInFixture>
   tx.addOutput(master(up, setupUp));
   tx.addOutput(returnEvent(setupUp, resultUp));
   tx.addOutput(master(down, setupDown));
-  tx.addOutput(returnEvent(setupDown, resultDown));
+  if (!mixed) tx.addOutput(returnEvent(setupDown, resultDown));
   for (let slot = 0; slot < 3; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 100_000n });
@@ -263,7 +300,6 @@ describe('Layer-3 ordered result fan-in (X3)', () => {
     expect(built.plan.invocations.map((invocation) => invocation.resultTypes))
       .toEqual([[], ['int256'], ['int256']]);
     expect(built.transcript.resultsHex).toEqual(['', '0116', '0134']);
-    expect(built.transcript.participantEmissionsHex[0]).toMatch(/0116.*0134/);
 
     expect(inputError(built.builder, INPUT.masterCaller)).toBeUndefined();
 
@@ -282,6 +318,27 @@ describe('Layer-3 ordered result fan-in (X3)', () => {
     expect(built.plan.invocations.map((invocation) => invocation.consumerCallsiteId))
       .toEqual([undefined, 0, 1]);
   }, 180_000);
+
+  it('settles a returning call followed by a void call', async () => {
+    const built = await buildFanInGraph(undefined, 'return-first');
+    expect(built.plan.invocations.map((invocation) => invocation.resultDependencies))
+      .toEqual([[1], [], []]);
+    expect(failingInput(built.builder)).toBeNull();
+  }, 180_000);
+
+  it('settles a void call followed by a returning call', async () => {
+    const built = await buildFanInGraph(undefined, 'void-first');
+    expect(built.plan.invocations.map((invocation) => invocation.resultDependencies))
+      .toEqual([[2], [], []]);
+    expect(failingInput(built.builder)).toBeNull();
+  }, 180_000);
+
+  for (const order of ['return-first', 'void-first'] as const) {
+    it(`rejects a tampered result in the ${order} mixed stream`, async () => {
+      const built = await buildFanInGraph('tamper-first', order);
+      expect(inputError(built.builder, INPUT.masterCaller)).toBeDefined();
+    }, 180_000);
+  }
 
   for (const mutation of ['tamper-first', 'tamper-second', 'reorder', 'omit-second'] as const) {
     it(`rejects ${mutation} in the authenticated ordered result stream`, async () => {

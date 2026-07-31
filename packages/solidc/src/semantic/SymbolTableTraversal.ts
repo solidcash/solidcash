@@ -1943,7 +1943,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
         if (node.graphEmissionHandler) {
-          const returningCallCount = logicalCallSlots.filter((slot) => slot.hasReturnValues).length;
           // X119. All six refusals below carry the handler's definition node, so each gains a Line/Column plus
           // the imported-file and generated-source caveats. The message text is unchanged: a `__scb_graph_*`
           // clone keeps the location of the function it was cloned from, so the position names the user's own
@@ -1954,8 +1953,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               || (slot.fnPtrCall && !slot.runtimeSelector)
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
-            || (logicalCallSlots.length > 1 && returningCallCount > 0
-              && returningCallCount !== logicalCallSlots.length)) {
+            ) {
             throw new GraphHandlerShapeError(
               node,
               `Graph handler '${node.name}' requires a homogeneous void or returning call set; mixed `

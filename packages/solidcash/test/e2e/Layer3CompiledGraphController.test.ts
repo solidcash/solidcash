@@ -940,6 +940,8 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
     { parent: 1, callee: 0, function: 'finish', args: callbackArgs },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const blockA = plan.participants[0].blockLayout!;
+  const blockB = plan.participants[1].blockLayout!;
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
@@ -947,8 +949,8 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
   );
-  const fundingA = Array.from({ length: 16 }, () => randomUtxo({ satoshis: 1000n }));
-  const fundingB = Array.from({ length: 8 }, () => randomUtxo({ satoshis: 1000n }));
+  const fundingA = Array.from({ length: blockA.blockSize - 3 }, () => randomUtxo({ satoshis: 1000n }));
+  const fundingB = Array.from({ length: blockB.blockSize - 2 }, () => randomUtxo({ satoshis: 1000n }));
   const container = randomUtxo({ satoshis: containerSats });
   const projectionA = randomUtxo({ satoshis: 1000n });
   const projectionB = randomUtxo({ satoshis: 1000n });
@@ -1013,13 +1015,18 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   });
   tx.addOutput({ to: getSatoshiContainerAddress(a, setupA.categoryId), amount: containerSats - transferSats });
   tx.addOutput({ to: recipient, amount: tamper === 'value' ? transferSats + 1n : transferSats });
-  for (let slot = 4; slot < 11; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  const aTransferSlots = blockA.slots.filter((slot) => slot.kind === 'transfer');
+  const aEventSlots = blockA.slots.filter((slot) => slot.kind === 'event');
+  const bEventSlots = blockB.slots.filter((slot) => slot.kind === 'event');
+  for (const slot of aTransferSlots.slice(1)) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
   const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(transferSats)]));
   const eventA = getEventNftAddress(a, setupA.categoryId, artifactA.events![0].signature);
-  for (let slot = 11; slot < 19; slot += 1) {
-    const reached = slot === 11 || slot === 12;
+  for (const [eventOrdinal] of aEventSlots.entries()) {
+    const reached = eventOrdinal < 2;
     tx.addOutput(reached ? {
-      to: tamper === 'event' && slot === 12 ? a.tokenAddress : eventA,
+      to: tamper === 'event' && eventOrdinal === 1 ? a.tokenAddress : eventA,
       amount: 1000n,
       token: {
         category: setupA.categoryId, amount: 0n,
@@ -1046,7 +1053,7 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
       nft: { capability: 'none', commitment: eventCommitment },
     },
   });
-  for (let slot = 22; slot < 29; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  for (const _slot of bEventSlots.slice(1)) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });

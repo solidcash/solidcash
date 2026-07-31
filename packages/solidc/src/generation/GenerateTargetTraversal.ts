@@ -3530,20 +3530,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GRAPH_TRANSFER_REACHED);
     }
 
-    // SEC-15. Same shape for the EVENT frame, but the value carried is the dispatch-site ORDINAL rather than a
-    // boolean. Only the reached site's window is settled from inside the handler's subroutine; the epilogue has
-    // to bind every OTHER reserved event ordinal, and cannot do that without knowing which window to skip.
-    // -1 is an ordinal no slot has, so a batch that reaches no site binds all of them.
+    // Reached-site bit mask for event frames. Each occurrence settles its own window; the epilogue binds every
+    // window whose bit remains clear. A mask (rather than the former last-site ordinal) supports repetition.
     this.graphEventSiteActive = !this.isDefineSubTraversal && node.hiddenBatchRoute === true
       && (node.graphEffectFrame?.eventWidth ?? 0) > 0;
     if (this.graphEventSiteActive) {
-      this.emit(encodeInt(-1n), { location: node.location, positionHint: PositionHint.START });
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GRAPH_EVENT_SITE);
     }
 
     this.c2WitnessSnapshotsRestored = false;
     this.emitRuntimeAliasWitnessPreflight(node);
     node.body = this.visit(node.body) as BlockNode;
+
+    if (!this.isDefineSubTraversal && node.hiddenBatchRoute === true
+      && this.stack.includes('__internal__graphEmissions')) {
+      const loc = { location: node.body.location, positionHint: PositionHint.END };
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    }
 
     // Drop the function-level deploy counter (roll it up from wherever it sits - the body is depth-balanced, so
     // it is on top, but roll by tracked index to be safe). Done before any covenant verification.
@@ -3577,7 +3586,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.graphEmissionHandler && node.graphEffectFrame) {
         if (this.pendingTransfers.length > 0) {
           this.emitTransferCovenantVerification(node);
-          this.emitGraphEffectContainerConservation(node);
           this.emitTransferCleanup(node);
         }
         if (this.pendingEmits.length > 0) this.emitEventCovenantVerification(node);
@@ -6924,10 +6932,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
       const slots = targetFunc.externalCalls ?? [];
+      const emissionStackBaseline = [...this.stack];
+      this.scopeDepth += 1;
       if (slots.length === 1) {
-        hiddenContextCount += this.verifyGraphEmissionRow(
-          slots[0], targetFunc, node.parameters, locationData,
+        const resultCount = this.verifyGraphEmissionRow(
+          slots[0], targetFunc, node.parameters, locationData, slots[0].hasReturnValues === true,
         );
+        hiddenContextCount += resultCount;
+        if (slots[0].hasReturnValues !== true) {
+          this.consumeConstructedGraphEmissionRow(node, locationData);
+        }
       } else if (slots.length > 1) {
         this.emit(new Uint8Array(), locationData);
         this.pushToStack('(__graph_emission_vector)');
@@ -6937,13 +6951,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.popFromStack(2);
           this.pushToStack('(__graph_emission_vector)');
         }
-        const expected = '__internal__graphEmissions';
-        this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.pushToStack('(__graph_expected_emissions)');
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-        this.popFromStack(2);
+        this.consumeConstructedGraphEmissionRow(node, locationData);
       }
+      this.scopeDepth -= 1;
+      this.stack = emissionStackBaseline;
     }
     // X29. Which owner-local effect frame this invocation owns. Compile-time here (the route knows its own
     // dispatch sites) and a stack value inside the shared subroutine, which is the whole point: one subroutine
@@ -7039,9 +7050,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < targetFunc.returnTypes.length; i++) {
       this.pushToStack('(value)');
     }
-    // X29. This dispatch site reached a handler that settles the satoshi container itself, so the route's
-    // epilogue must NOT also preserve it. Written through emitReplace so a site inside a dispatch branch keeps
-    // the frame depth-balanced, the same way a conditional emit's pre-allocated blob slot is written.
+    // Accumulate this occurrence's authenticated transfer outputs. The route performs container conservation
+    // once over the aggregate, so repeated occurrences authorize their sum rather than each independently
+    // imposing the old `min(reached site transfers)` bound.
     //
     // SEC-8. The test is the reached handler's OWN settlement, not `graphEffectFrame.transferWidth`. That frame
     // is one object shared by every framed handler, so its width is the group maximum: keying on it let a
@@ -7050,8 +7061,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // and no value check at all.
     if (this.graphTransferFlagActive && targetFunc.graphEffectSettlesTransfers === true
       && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
-      this.emit(Op.OP_1, locationData);
-      this.pushToStack('(graph_transfer_reached_new)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(graph_transfer_total)');
+      const frame = targetFunc.graphEffectFrame!;
+      for (let slot = 0; slot < frame.transferWidth; slot += 1) {
+        const ordinal = node.graphEffectSite! * frame.transferWidth + slot;
+        this.emitBlockSlotIndex('transfer', ordinal, locationData);
+        this.emit(Op.OP_OUTPUTVALUE, locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
       this.emitReplace(this.getStackIndex(GRAPH_TRANSFER_REACHED), node);
       this.popFromStack();
     }
@@ -7061,8 +7080,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // a dispatch of an emit-free sibling would otherwise claim a window and exempt it from the binding.
     if (this.graphEventSiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
       && (targetFunc.emitInfos?.length ?? 0) > 0 && this.stack.includes(GRAPH_EVENT_SITE)) {
-      this.emit(encodeInt(BigInt(node.graphEffectSite!)), locationData);
-      this.pushToStack('(graph_event_site_new)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_EVENT_SITE))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.pushToStack('(graph_event_sites_new)');
       this.emitReplace(this.getStackIndex(GRAPH_EVENT_SITE), node);
       this.popFromStack();
     }
@@ -12960,6 +12982,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_runtime_remainder)');
+    this.emitReplace(this.getStackIndex(remainder), node);
+    this.popFromStack();
+  }
+
+  /** Consume the canonical row/vector on top from the authenticated emission stream in occurrence order. */
+  private consumeConstructedGraphEmissionRow(node: Node, locationData: SingleLocationData): void {
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.pushToStack('(__graph_emission_length)');
+    const remainder = '__internal__graphEmissions';
+    this.emit(encodeInt(BigInt(this.getStackIndex(remainder))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__graph_emission_stream)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(3);
+    this.pushToStack('(__graph_emission_remainder)');
     this.emitReplace(this.getStackIndex(remainder), node);
     this.popFromStack();
   }
@@ -19233,26 +19276,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * model and nothing untracked may sit above it yet.
    */
   private emitGraphFrameSlotUnowned(ordinal: number, locationData: SingleLocationData): void {
-    const width = this.currentFunction.graphEffectFrame?.eventWidth ?? 1;
     const siteIdx = this.getStackIndex(GRAPH_EVENT_SITE);
-    if (width === 1) {
-      this.emit(encodeInt(BigInt(siteIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.emit(encodeInt(BigInt(ordinal)), locationData);
-      this.emit(Op.OP_NUMNOTEQUAL, locationData);
-    } else {
-      // owned <=> site*width <= ordinal < site*width + width
-      this.emit(encodeInt(BigInt(ordinal)), locationData);
-      this.emit(encodeInt(BigInt(siteIdx + 1)), locationData); // +1 untracked: the ordinal pushed above
-      this.emit(Op.OP_PICK, locationData);
-      this.emit(encodeInt(BigInt(width)), locationData);
-      this.emit(Op.OP_MUL, locationData);
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(encodeInt(BigInt(width)), locationData);
-      this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_WITHIN, locationData);
-      this.emit(Op.OP_NOT, locationData);
-    }
+    const width = this.currentFunction.graphEffectFrame?.eventWidth ?? 1;
+    const site = Math.floor(ordinal / width);
+    this.emit(encodeInt(BigInt(siteIdx)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(1n << BigInt(site)), locationData);
+    this.emit(Op.OP_DIV, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_MOD, locationData);
+    this.emit(Op.OP_NOT, locationData);
     this.emit(Op.OP_IF, locationData);
   }
 
@@ -21865,25 +21898,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     }
 
-    // X29. The route's own pendingTransfers is empty when the transfers live in a graph handler's frames, so
-    // neither block above runs - yet the container slot IS in the block and the container's own covenant does
-    // not protect its output on the master-spend path. The subroutine settles it, but only on a dispatch site
-    // that reached it, and a route may admit a transfer-FREE sibling handler. On the path where no site was
-    // reached, preserve the container here instead: identity plus inputValue <= outputValue, so a batch of
-    // sibling-only rows cannot co-spend the container and pay its satoshis anywhere.
+    // Graph handlers authenticate each transfer output inside their occurrence-specific subroutine frame. Sum
+    // those reached outputs above, then conserve the shared container once here. Zero reached transfers reduces
+    // naturally to preservation; repeated occurrences authorize exactly their aggregate.
     if (this.graphTransferFlagActive && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED))), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.emit(Op.OP_NOT, locationData);
-      this.emit(Op.OP_IF, locationData);
       this.emitSatoshiContainerIdentity(locationData);
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_OUTPUTVALUE, locationData);
-      this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-      this.emit(Op.OP_VERIFY, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED) + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.emit(Op.OP_NUMEQUALVERIFY, locationData);
     }
   }
 

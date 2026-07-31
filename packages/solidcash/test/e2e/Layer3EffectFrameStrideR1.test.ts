@@ -755,7 +755,7 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
    * cannot authorize. Measured here rather than argued, with a transfer-FREE control that isolates the
    * container from the rest of the two-reached-site machinery.
    */
-  it('TWO reached sites: the effect frames are what refuses, not the two rows', async () => {
+  it('TWO reached sites settle occurrence bindings and aggregate container conservation', async () => {
     const effectFree = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [], emitting: false, transferring: false,
     });
@@ -763,28 +763,37 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
     expect(effectFree.blockSize).toEqual(2);
     const control = await reject(effectFree);
     console.log('R1 fireTwice, handler carries NO effect (control):', control);
-    expect(control).not.toEqual('ACCEPTED');
+    expect(control).toEqual('ACCEPTED');
 
     const eventsOnly = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [0, 1], emitting: true, transferring: false,
     });
     expect(eventsOnly.hubRows).toEqual(['fireAll', 'fireAll']);
-    console.log('R1 fireTwice, EVENT frames only (no container):', await reject(eventsOnly));
-    expect(await reject(eventsOnly)).not.toEqual('ACCEPTED');
+    const eventsOnlyVerdict = await reject(eventsOnly);
+    console.log('R1 fireTwice, EVENT frames only (no container):', eventsOnlyVerdict);
+    expect(eventsOnlyVerdict).toEqual('ACCEPTED');
 
     const honest = await buildStrideCase({ mode: 'fireTwice', effectOrdinals: [0, 1], emitting: false });
-    console.log('R1 fireTwice, honest 2 x 900 drain:', await reject(honest));
-    expect(await reject(honest)).not.toEqual('ACCEPTED');
+    const honestVerdict = await reject(honest);
+    console.log('R1 fireTwice, honest 2 x 900 drain:', honestVerdict);
+    expect(honestVerdict).toEqual('ACCEPTED');
     const single = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [0, 1], emitting: false,
       containerOut: CONTAINER_SATS - TRANSFER_SATS,
     });
-    console.log('R1 fireTwice, container keeps back ONE transfer:', await reject(single));
-    expect(await reject(single)).not.toEqual('ACCEPTED');
+    const singleVerdict = await reject(single);
+    console.log('R1 fireTwice, container keeps back ONE transfer:', singleVerdict);
+    expect(singleVerdict).not.toEqual('ACCEPTED');
     const none = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [0, 1], emitting: false, containerOut: CONTAINER_SATS,
     });
-    console.log('R1 fireTwice, container fully preserved:', await reject(none));
-    expect(await reject(none)).not.toEqual('ACCEPTED');
+    const noneVerdict = await reject(none);
+    console.log('R1 fireTwice, container fully preserved:', noneVerdict);
+    expect(noneVerdict).not.toEqual('ACCEPTED');
+    const over = await buildStrideCase({
+      mode: 'fireTwice', effectOrdinals: [0, 1], emitting: false,
+      containerOut: CONTAINER_SATS - 2n * TRANSFER_SATS - 1n,
+    });
+    expect(await reject(over)).not.toEqual('ACCEPTED');
   }, 900_000);
 });

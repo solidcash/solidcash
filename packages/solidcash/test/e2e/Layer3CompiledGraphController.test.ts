@@ -3286,7 +3286,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a root-committed but structurally invalid invocation tree', async () => {
     const { provider, transaction } = await build(false, false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('rejects a root-committed participant table above the deployed parser bound', async () => {
@@ -3299,17 +3299,17 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects replacing a participant projection proof with an ordinary funding input', async () => {
     const { provider, transaction } = await build(false, false, false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(4));
   });
 
   it('rejects aliasing two participant projections to one physical proof input', async () => {
     const { provider, transaction } = await build(false, false, false, false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('rejects a valid controller covenant carrying a forged token category', async () => {
     const { provider, transaction } = await build(false, false, false, false, false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('supplies graph msg.sender from the authenticated parent participant', async () => {
@@ -3325,7 +3325,7 @@ describe('Layer-3 compiled graph controller', () => {
       false, false, false, false, false, false, 1n, undefined, undefined,
       { forgeExpected: true },
     );
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('constructs graph msg.data from the authenticated selector and row arguments', async () => {
@@ -3348,7 +3348,7 @@ describe('Layer-3 compiled graph controller', () => {
       false, false, false, false, false, false, 1n,
       undefined, undefined, undefined, false, false, true,
     );
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('authenticates compiler-produced return blobs in balanced owner slots', async () => {
@@ -3367,12 +3367,12 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forged return commitment even when the result NFT is otherwise well formed', async () => {
     const { provider, transaction } = await buildReturning(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('rejects substitution of a non-leading tuple result field', async () => {
     const { provider, transaction } = await buildReturning(false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('authenticates a dynamic bytes result consumed by its parent', async () => {
@@ -3389,7 +3389,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substitution of a dynamic bytes producer result', async () => {
     const { provider, transaction } = await buildReturning(true, false, 'bytes');
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('authenticates a dynamic string result consumed by its parent', async () => {
@@ -3405,7 +3405,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substitution of a dynamic string producer result', async () => {
     const { provider, transaction } = await buildReturning(true, false, 'string');
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('authenticates a struct result consumed by its parent', async () => {

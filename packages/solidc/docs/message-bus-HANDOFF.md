@@ -90,9 +90,14 @@ These were all learned by getting them wrong first.
    PRE-repair file and show the old code was green under it.
 4. **Match on what YOUR gate writes, not on what the decider says.** A control matching the wrong
    vocabulary passes vacuously.
-5. **Validate your own instrument before trusting it.** One census tool silently changed assertion
-   text; one mutation harness reported GREEN when ZERO TESTS RAN (vitest `-t` is a REGEX, and a title
-   containing `m[k]++` matched nothing). Make any harness refuse to call an empty run a result.
+5. **Validate your own instrument before trusting it, against a figure it must reproduce.** Three
+   real failures: a census tool silently changed assertion text; a mutation harness reported GREEN when
+   ZERO TESTS RAN (vitest `-t` is a REGEX, and a title containing `m[k]++` matched nothing); and a
+   partition parser silently matched **15 of 135 rows and 68 of 206 gained handlers** because it
+   required a rigid field order, then emitted a confident-looking count that was nearly published.
+   The cure is cheap and non-negotiable: make the tool reproduce a number the source already publishes
+   (here, X160's own 135 rows / 206 gained) and fail loudly if it does not. Make any harness refuse to
+   call an empty run a result.
 6. **Attribute by containment, never by adjacency.** An adjacency-based settlement probe manufactured
    settlements: a probe attempt traces its route and never broadcasts, leaving the route pending for
    the next attempt's initialization transaction to absorb.
@@ -121,8 +126,11 @@ These were all learned by getting them wrong first.
 - Owner identity is the actual co-spent input locking bytecode plus category/capability, never
   witness-declared.
 - **A fail-closed boundary must never become an unchecked witness path.** When a capability is
-  restored, prove the refusal MOVED (e.g. admission -> covenant) rather than disappeared. X201 is the
-  worked example: `attack` is admitted again, and the VM refuses it at input index 0.
+  restored, prove the refusal MOVED (e.g. admission -> covenant) rather than disappeared. The worked
+  example is X201 while it was applied: `attack` became admissible again, and the VM refused it at
+  input index 0 with the vector-exhausted signature - the refusal moved, it did not vanish. X201 was
+  then reverted for an unrelated reason (X229), so on HEAD `attack` is refused at ADMISSION again.
+  Re-derive this before relying on it; do not quote it from here.
 - Never a bare `rejects.toThrow()` as sole hostile evidence.
 
 ## 7. Environment traps that have each cost a full run
@@ -139,8 +147,14 @@ These were all learned by getting them wrong first.
 - `yarn install` DELETES the gitignored-but-tracked fixture
   `test/imports/fixtures/node_modules/@solidcash/testlib/constants.scash`, and `git status` reports
   nothing.
-- `TaskStop` on a backgrounded task kills the wrapper but NOT the node child. Orphans have exhausted
-  swap. Kill by PID; `readlink /proc/<pid>/fd/2` identifies which is live.
+- `TaskStop` on a backgrounded task kills the wrapper but NOT the node child. Live orphans have
+  exhausted swap once. Kill by PID; `readlink /proc/<pid>/fd/2` identifies which is live.
+- **But a high `vitest` process count is NOT evidence of a leak.** This box carries ~45 ZOMBIE vitest
+  entries (`STAT=Z`, PPID 1, **0 MB RSS**), some 26 days old, that hold process-table slots and no
+  memory. They look identical to live orphans under `pgrep -c`. Diagnose with `ps -eo pid,stat,rss`
+  and check actual swap holders via `/proc/<pid>/status` `VmSwap` - on this box the top holders are
+  VS Code (~1.9 GB), not the test run. This is also the concrete reason `pkill -f vitest` is banned:
+  it would match 45 corpses plus whatever live run is going, in every worktree.
 - `pgrep` waiters SELF-MATCH their own command line.
 - `artifact.bytecode` is an **ASM LISTING**, not hex. `.length / 2` is meaningless. Use
   `debug.bytecode` or `asmToBytecode`.
@@ -154,7 +168,41 @@ These were all learned by getting them wrong first.
 - Never run the full suite under `yarn test:regtest`.
 - No em-dashes or non-ASCII in generated code. Keep comments tight.
 
-## 9. What I would do first
+## 9. Where prior work is parked, and how to re-run the measurements
+
+**Nothing is lost to a revert.** Every worker branch is kept (139 of them, `worker-<id>-<round>`), and
+merged worktrees are removed but their branches retain the commits.
+
+- **X201's implementation is `worker-v1-i16` at `dd0d751b`** - a complete, VM-proved compiler change
+  plus its test file `Layer3BareForwardingBodyX201.test.ts`. It was reverted on the integration branch
+  for the uniformity interaction (X229), NOT because it was wrong on its own terms. Whoever retakes the
+  row should start from that commit rather than reimplement it, and only needs to solve X229.
+- V1-V4 of the last round are `worker-v{1,2,3,4}-i16`; earlier rounds follow the same pattern.
+
+**The three measurements worth re-running, with commands.** All from
+`/Code/cashscript/.worktrees/layer3-binding-spike/packages/solidcash`.
+
+```bash
+# 1. The capstones - the fastest real signal. Expect 52 passed / 6 skipped.
+npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
+  test/e2e/Layer3HeterogeneousCycleC2.test.ts test/e2e/Layer3BoundedMaximumGraphC3.test.ts
+
+# 2. The full bus-mode sweep - MANDATORY before any route-admission change lands.
+#    108 files, ~9 minutes. It is the only thing that has reliably caught the X229 class.
+npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch) \
+  --maxWorkers=2 --reporter=dot
+
+# 3. The settlement count. The probe is inert unless L3_X204_OUT is set, and it is a pure
+#    observer: every patched method forwards to the original. Attribution is by CONTAINMENT of the
+#    batch blob in the settled raw transaction - never adjacency, which manufactures settlements.
+L3_X204_OUT=/tmp/x204 npx vitest run --config vitest.x204.config.ts \
+  $(ls test/e2e/*.test.ts | xargs grep -l "solidity-by-example\|SBE_ROOT\|mistswap\|eacc") \
+  --maxWorkers=2 --reporter=dot
+# then intersect the emitted JSONL with the gained set parsed out of
+# Layer3RecoveredPartitionX160.test.ts - and make the parser reproduce 135 rows / 206 gained first.
+```
+
+## 10. What I would do first
 
 1. Re-pin **X159** (probably stale) so the board stops carrying a false HIGH.
 2. Take **SEC-18 and the L2-F family** - the only rows where a defect is believed live, and the review

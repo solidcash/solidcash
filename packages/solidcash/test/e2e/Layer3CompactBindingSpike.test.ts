@@ -67,7 +67,7 @@ function makeCompact(n: number): string {
   }
   const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
   body.push(`require(${members.join(' || ')});`);
-  return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 
@@ -136,6 +136,13 @@ function measureBuilder(b: TransactionBuilder, n: number): { ratioPct: number; i
   return { ratioPct: Math.round(worst * 1000) / 10, instr };
 }
 
+const verifyAtInput0 =
+  /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
+const unsubstantiatedMint = new RegExp(
+  'mandatory-script-verify-flag-failed \\(Transaction violates token validation: '
+  + '.*Invalid output minting token category: [0-9a-f]{64}\\)',
+);
+
 describe('layer-3 compact identity-by-reference binding (E2E)', () => {
   it('POSITIVE: binds N=2,4,8 participants past the full-identity blob-cap ceiling', async () => {
     const metrics: { n: number; instr: number; ratioPct: number }[] = [];
@@ -162,7 +169,8 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.outputs[0].token!.category = forged.outputs[0].token!.category.slice();
     forged.outputs[0].token!.category[0] ^= 1;
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(unsubstantiatedMint);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 
@@ -172,13 +180,15 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.inputs[1].unlockingBytecode = forged.inputs[1].unlockingBytecode.slice();
     forged.inputs[1].unlockingBytecode[1] ^= 1;
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(verifyAtInput0);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: an unbranded participant (no controller prefix) is rejected', async () => {
     const s = await setup(2, false);
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s))))
+      .rejects.toThrow(verifyAtInput0);
     const good = await setup(2, true);
     await expect(good.provider.sendRawTransaction(rawOf(await build(good)))).resolves.toBeTypeOf('string');
   });
@@ -186,14 +196,16 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
   it('HOSTILE: mismatched owner output (output index points to the wrong participant) is rejected', async () => {
     const s = await setup(2);
     // Swap the two participants' recreation outputs: output0 now preserves participant 1, not 0.
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, (i) => 1 - i)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, (i) => 1 - i))))
+      .rejects.toThrow(verifyAtInput0);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: non-canonical (reversed) participant order is rejected', async () => {
     const s = await setup(2);
     const reversed = { ...s, parts: [...s.parts].reverse() }; // input0 now the larger owner key
-    await expect(s.provider.sendRawTransaction(rawOf(await build(reversed)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(reversed))))
+      .rejects.toThrow(verifyAtInput0);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
@@ -208,6 +220,7 @@ describe('layer-3 compact identity-by-reference binding (E2E)', () => {
     // non-branded peer - proving the check is not self-only.
     const r = createVirtualMachineBch2026().evaluate({ inputIndex: brandedIdx, sourceOutputs, transaction });
     expect((r as { error?: string }).error).toBeDefined();
-    await expect(s.provider.sendRawTransaction(rawOf(b))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(b)))
+      .rejects.toThrow(verifyAtInput0);
   });
 });

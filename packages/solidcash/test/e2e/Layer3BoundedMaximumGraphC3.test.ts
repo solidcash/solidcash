@@ -26,6 +26,7 @@ import {
   createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
   getDataNftAddress, getDynamicChunkAddress, getEventNftAddress, getSatoshiContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
+import { createX82CapacityReport, writeX82CapacityReport } from './layer3-capacity-report-x82.js';
 
 /**
  * C3 - the bounded maximum graph capstone.
@@ -1689,6 +1690,12 @@ describe('C3 capacity measurement', () => {
     console.log(`C3 serialized transaction size: ${built.transaction.length / 2} bytes; `
       + `transcript ${built.transcript.bytes.length} bytes; ${built.layout.totalSlots} slots; `
       + `over budget: ${JSON.stringify(costs.filter((row) => row.ratio > 1).map((row) => row.input))}`);
+    if (process.env.L3_X82_OUT) {
+      writeX82CapacityReport(process.env.L3_X82_OUT, createX82CapacityReport(
+        costs, [...interesting], built.transaction.length / 2, built.transcript.bytes.length,
+        built.layout.totalSlots,
+      ));
+    }
     // WHERE THE CONTROLLER'S COST GOES, printed rather than cited, because the comment below has been wrong
     // about this split twice. Every term is read off the same run that prints the table above it.
     console.log(`C3 controller cost split: total ${controller.cost}; `

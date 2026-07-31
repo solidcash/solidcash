@@ -59,13 +59,15 @@ import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../ke
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
 import { encodeHiddenBatch } from '../layer3/hidden-batch.js';
 import {
-  assertFinalizedTransactionBytes, inputSubjectsOfBuilder, type FinalizedByteSubject,
+  assertFinalizedTransactionBytes, assessFinalizedTransactionBytes, inputSubjectsOfBuilder,
+  type FinalizedByteSubject,
 } from '../layer3/preflight.js';
 import {
   binToHex,
   hexToBin,
   binsAreEqual,
   decodeTransactionUnsafe,
+  type Transaction,
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
@@ -134,6 +136,82 @@ async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigin
   const { encodeTransaction } = await import('@bitauth/libauth');
   const tx = builder.buildLibauthTransaction();
   return BigInt(encodeTransaction(tx).byteLength);
+}
+
+/**
+ * X175. THE COVENANT'S OWN OBJECTION to a finalized transaction, or undefined when every input evaluates.
+ *
+ * The four lifecycle-admin sites deliberately bypass `debug()`, so nothing ran a covenant evaluation ahead of
+ * the byte gate and a transaction breaking BOTH reported only its bytes. This is the instrument that ends that:
+ * the same per-input BCH-2026 evaluation `sendPreflightedLayer3Transaction` runs, from the same
+ * provider-derived factory `StatefulTransactionBuilder._strictRecursiveVmPreflight` uses, which at
+ * `@mem-cash/validation` 0.0.8 agrees with the mock's own decider on every shape measured (X121).
+ *
+ * `debug()` WAS NOT THE INSTRUMENT TO REACH FOR, and the docstring saying these sites bypass it because "the
+ * debug VM cannot validate covenant scripts" has expired in the half that matters: `TransactionBuilder.send`
+ * debugs a covenant input on a BEST-EFFORT basis and SWALLOWS the result, so swapping `debug()` in here would
+ * have surfaced nothing. Evaluating the finalized bytes needs no wallet template and no swallowing.
+ *
+ * NEVER THROWS, and that is load-bearing: it annotates a refusal that is already decided, so a harness that
+ * cannot supply source outputs must leave the byte refusal exactly as it was rather than replace it.
+ */
+function covenantObjectionOf(
+  builder: TransactionBuilder, transaction: Transaction,
+): string | undefined {
+  try {
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+      if (state.error !== undefined) return `input ${inputIndex}: ${state.error}`;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * X175. THE BYTE GATE AT THE FOUR LIFECYCLE-ADMIN SITES. It reports BOTH objections, so the ordering it used to
+ * have cannot matter.
+ *
+ * WHAT THE ORDERING COST. These four sites bypass `debug()`, so the gate was the first decider to speak and a
+ * split that broke its covenant AND paid dust reported the dust. That is the exact shape that made the seventh
+ * vacuous guard on this effort: a hostile test whose loose match absorbed a new gate's dust error and kept
+ * passing while its rejection was no longer the forgery's. Pinning the window with an ordering row recorded the
+ * hazard; it did not remove it, because any future hostile that pays dust and matches loosely walks back into
+ * it.
+ *
+ * SO NEITHER OBJECTION IS ALLOWED TO MASK THE OTHER. When the bytes are refused this asks the covenant too, and
+ * a transaction that breaks both names both - covenant FIRST, matching the ordering principle every other live
+ * site already follows ("a transaction that cannot execute reports its semantic cause"). A test matching on the
+ * covenant's message and a test matching on the byte rule now both find their own subject, whichever fires.
+ *
+ * THE BLAST RADIUS IS THE SET THE GATE ALREADY REFUSED, and nothing else. The VM is consulted only on a path
+ * that has already decided to throw, so no transaction that used to settle can now fail, and a byte-only
+ * refusal keeps its message byte for byte - `assertFinalizedTransactionBytes` still produces it. `admitted`
+ * decides the branch rather than the refusal list because these sites pass no `allowNonRelayable`, so every
+ * refusal is enforced and `admitted === false` is exactly "the assert throws".
+ *
+ * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor and an attacker does not call
+ * `StatefulContract.split`. A composer reads two causes here instead of building, funding, signing and
+ * broadcasting twice to find the second one.
+ */
+function assertAdminSiteFinalizedBytes(
+  builder: TransactionBuilder, transaction: Transaction,
+  subjects: readonly (FinalizedByteSubject | undefined)[],
+): void {
+  const verdict = assessFinalizedTransactionBytes(transaction, subjects);
+  if (verdict.admitted) return;
+  const covenant = covenantObjectionOf(builder, transaction);
+  // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
+  if (covenant === undefined) assertFinalizedTransactionBytes(transaction, { inputSubjects: subjects });
+  throw new Error(
+    `layer3: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
+    + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
+    + `${verdict.outputCount} outputs):\n  [covenant] ${covenant}\n`
+    + verdict.refusals.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
+  );
 }
 
 /** Custom error class for auto-derivation failures (VM execution, trace parsing, etc.) */
@@ -2995,6 +3073,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalInputs = masterUtxos.length + allNftInputs.length;
     const builtTxs: Array<{
       hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[];
+      builder: TransactionBuilder;
     }> = [];
 
     if (totalInputs <= maxInputsPerTx) {
@@ -3074,8 +3153,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // one's input, by locally computed txid - so a refusal on batch `i` from inside the loop would leave
     // `0..i-1` already settled and the contract half-swept, with no path that both finishes and reports. Every
     // batch is final and decodable here, so deciding all of them first keeps the refusal atomic.
-    for (const { hex, subjects } of builtTxs) {
-      assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(hex)), { inputSubjects: subjects });
+    //
+    // X175. Each batch carries its own builder so a refused batch can report its covenant alongside its byte
+    // rule. Only batch 0 spends inputs that exist yet - the rest chain on locally computed txids - but the
+    // evaluation reads SOURCE OUTPUTS off the builder rather than the chain, so every batch is evaluable.
+    for (const { hex, subjects, builder } of builtTxs) {
+      assertAdminSiteFinalizedBytes(builder, decodeTransactionUnsafe(hexToBin(hex)), subjects);
     }
 
     for (let i = 0; i < builtTxs.length; i++) {
@@ -3134,7 +3217,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     destroyFunctionArgs: FunctionArgument[],
     isFinal: boolean,
     maxFee?: bigint,
-  ): Promise<{ hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[] }> {
+  ): Promise<{
+    hex: string; reclaimed: bigint; subjects: (FinalizedByteSubject | undefined)[];
+    builder: TransactionBuilder;
+  }> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const builder = new TransactionBuilder({
       provider: contract.inner.provider,
@@ -3231,7 +3317,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.outputs.pop(); // remove placeholder - no reclaim
       }
       const hex = builder.build();
-      return { hex, reclaimed: reclaimed > 0n ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder) };
+      return {
+        hex, reclaimed: reclaimed > 0n ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder), builder,
+      };
     }
 
     // Final: send everything to recipient. Add placeholder output for fee estimation.
@@ -3248,7 +3336,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...builder.outputs[builder.outputs.length - 1], amount: reclaimed,
     };
     const hex = builder.build();
-    return { hex, reclaimed, subjects: inputSubjectsOfBuilder(builder) };
+    return { hex, reclaimed, subjects: inputSubjectsOfBuilder(builder), builder };
   }
 
   /*
@@ -10125,12 +10213,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at 1000 satoshis and then overwritten by index on `builder.outputs`, which is the one path into an output
     // that no validator sees. That is the same construction X131 row 2b uses deliberately to reach the gate.
     //
-    // THIS SITE HAS NO `debug()` AHEAD OF IT, by design - covenant unlockers do not evaluate in the debug VM on
-    // a mock provider - so the gate is the FIRST thing that speaks here. A split that breaks its covenant AND
-    // pays dust therefore reports the dust, not the covenant. That window is real and is pinned by an explicit
-    // ordering row rather than left to be discovered; the covenant verdict still arrives from the provider for
-    // every split whose bytes are relayable.
-    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+    // X175. THIS SITE HAS NO `debug()` AHEAD OF IT, by design, so the byte gate used to be the FIRST decider and
+    // a split that broke its covenant AND paid dust reported only the dust. The ordering no longer decides
+    // anything: `assertAdminSiteFinalizedBytes` asks the covenant whenever the bytes are refused and reports
+    // BOTH, so neither objection can absorb a test written against the other.
+    assertAdminSiteFinalizedBytes(builder, decoded, inputSubjectsOfBuilder(builder));
 
     const txid = await provider.sendRawTransaction(rawTx);
 
@@ -10282,7 +10369,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Merge also runs with `allowImplicitNftBurn: true`, so the builder's own burn check is off and the
     // consumed masters vanish into that change output. Refusing here is refusing before an intentional burn
     // whose proceeds the network would not have relayed.
-    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+    //
+    // X175. Nothing debugs ahead of this site either, so the gate reports the covenant alongside the byte rule
+    // rather than in place of it.
+    assertAdminSiteFinalizedBytes(builder, decoded, inputSubjectsOfBuilder(builder));
 
     const txid = await provider.sendRawTransaction(rawTx);
 
@@ -11177,9 +11267,11 @@ export class StatefulFunctionCall {
     //
     // Ordered after the fee-per-byte cap above so a missing change output still reports as a fee problem
     // rather than as whichever relay observation happens to be true of the same bytes - the same ordering the
-    // stateful submit path uses. Like split and merge, nothing debugs ahead of this, so the gate speaks before
-    // any covenant verdict.
-    assertFinalizedTransactionBytes(decoded, { inputSubjects: inputSubjectsOfBuilder(builder) });
+    // stateful submit path uses.
+    //
+    // X175. Like split and merge, nothing debugs ahead of this, so the gate carries the covenant's objection
+    // with it instead of arriving before it.
+    assertAdminSiteFinalizedBytes(builder, decoded, inputSubjectsOfBuilder(builder));
 
     const provider = this.parentContract!.inner.provider;
     const txid = await provider.sendRawTransaction(rawTx);

@@ -41,11 +41,12 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * THE NUMBER IS 576 AND IT IS NOT NEW. `3 * (44 + 148)` for a 44-byte output paying a p2sh32 address, the same
  * arithmetic BCHN used to refuse C1 `64: dust` at 474 for a 10-byte one. Rows 1/2/3/4 quote every term.
  *
- * THE ORDERING WINDOW IS REAL HERE AND IS PINNED, NOT PAPERED OVER. All four sites deliberately bypass
- * `debug()` - covenant unlockers do not evaluate in the debug VM on a mock provider - so unlike
- * `TransactionBuilder.send`, the gate is the FIRST thing that speaks. A split that breaks its covenant AND pays
- * dust reports the dust. Row 5 measures exactly that, in both directions, so nobody discovers it by writing a
- * hostile test that passes for the wrong reason.
+ * THE ORDERING WINDOW WAS PINNED HERE AND IS NOW CLOSED (X175). All four sites deliberately bypass `debug()`,
+ * so the gate used to be the FIRST decider and a split that broke its covenant AND paid dust reported the dust.
+ * Pinning that with an ordering row recorded the hazard without removing it: any future hostile that pays dust
+ * and matches loosely walks straight back into the shape that made the seventh vacuous guard on this effort.
+ * Section 5 below is now the demonstration that it cannot recur - the gate reports BOTH objections, so the
+ * ordering decides nothing.
  *
  * THE THROW CENSUS, because a green suite proves nothing went RED and only a census proves nothing went
  * VACUOUS. `assertFinalizedTransactionBytes` was temporarily instrumented to append every call - throwing or
@@ -447,35 +448,171 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   }, 300_000);
 
   /* ---------------------------------------------------------------------------------------------------- */
-  /* The ordering window these four sites have and `TransactionBuilder.send` does not                        */
+  /* X175. The ordering window these four sites had, and why it can no longer decide anything                */
   /* ---------------------------------------------------------------------------------------------------- */
 
-  it('5. ORDERING, DISCLOSED: with no `debug()` ahead of it the gate speaks before the covenant', async () => {
-    // THE ANTI-VACUITY MEASUREMENT, and it does NOT come out the way row 3 of X131 does. This split breaks
-    // BOTH: `require(checkSig(s, admin))` fails because the signature is Bob's against Alice's admin key, AND
-    // the change output pays 100 satoshis against 576. At `TransactionBuilder.send` the script cause would win
-    // because `debug()` runs first; here nothing debugs, so the byte rule is what surfaces.
-    //
-    // Recorded rather than fixed. Running a full per-input VM evaluation at these sites is what they were
-    // written to avoid, and the composer must fix the dust either way - a node refuses these bytes whether or
-    // not the covenant holds. What must never happen is a hostile test at one of these sites matching loosely
-    // and silently becoming a test of the byte gate; row 5b is the control that keeps that visible.
-    const hostileDeployment = await deploy();
-    const hostile = await errorOf(() => staticSplit(hostileDeployment, 100n, bobPriv));
-    expect(hostile).toMatch(/output-dust/);
-    expect(hostile, 'the covenant verdict is masked here, by design of these sites').not.toMatch(/checkSig|OP_/);
+  /**
+   * THE SHAPE THAT MUST NOT RECUR. The seventh vacuous guard on this effort was a forgery test whose bare
+   * `rejects.toThrow()` absorbed a new gate's dust error: it kept passing while its rejection was no longer the
+   * forgery's. At these four sites that was reachable by construction, because nothing debugs ahead of the gate
+   * and the byte rule spoke first.
+   *
+   * WHY THE ORDERING WAS NOT SIMPLY SWAPPED. The stated reason these sites bypass `debug()` - "the debug VM
+   * cannot validate covenant scripts" - has expired in the half that matters: `TransactionBuilder.send` debugs a
+   * covenant input on a best-effort basis and SWALLOWS the result (TransactionBuilder.ts:1131-1137), so calling
+   * `debug()` here would have surfaced nothing. Running the covenant FIRST would also have closed one absorption
+   * direction by opening the other: a dust test whose fixture also broke a covenant would then report the
+   * covenant. Reporting BOTH is what makes the order irrelevant, and it is the only one of the three options
+   * that leaves NO direction of absorption open.
+   *
+   * IT COSTS NOTHING A TRANSACTION USED TO GET. The covenant is consulted only when the bytes are already
+   * refused, so nothing that settled can now fail, and a byte-only refusal keeps its message byte for byte -
+   * rows 1 through 4 above are unchanged and are the evidence for that.
+   *
+   * THE ROW 5 THAT WAS HERE IS ITSELF THE LESSON. It asserted `not.toMatch(/checkSig|OP_/)` to claim the
+   * covenant was masked, and it STILL PASSES against the combined message, because libauth phrases this
+   * covenant's failure as `Program failed a signature verification ... "NULLFAIL" ... Schnorr` and names neither
+   * token. A negative control matching on the wrong vocabulary is a guard that cannot see the thing it guards.
+   */
+  const HOSTILE_COVENANT = /\[covenant\] input 0: Program failed a signature verification/;
+  const BOTH_REFUSED = /refused by its covenant and 1 byte rule\(s\)/;
+
+  it('5. BOTH: a split that breaks its covenant AND pays dust reports the covenant AND the dust', async () => {
+    // THE DEMONSTRATION. The signature is Bob's against Alice's admin key, so `require(checkSig(s, admin))`
+    // fails, AND the change output pays 100 satoshis against 576. Rows 5b and 5c each differ from this one in a
+    // single field, so each half of this message is attributable to the field that produced it.
+    const d = await deploy();
+    const hostile = await errorOf(() => staticSplit(d, 100n, bobPriv));
+    expect(hostile).toMatch(BOTH_REFUSED);
+    expect(hostile, 'the covenant objection is absorbed').toMatch(HOSTILE_COVENANT);
+    expect(hostile, 'the byte objection is absorbed').toMatch(/\[policy\] output-dust at output 3/);
+    expect(hostile).toMatch(
+      /100 satoshis is 476 short of the 576-satoshi dust threshold for a 44-byte output \(3 \* \(44 \+ 148\)\)/,
+    );
   }, 300_000);
 
-  it('5b. CONTROL: the same broken covenant with a relayable change output reports the covenant', async () => {
-    // Differs from row 5 in the change amount alone. The covenant is equally broken in both, and once the
-    // bytes clear the gate the provider's own evaluation is what speaks - so the gate masks a diagnostic
-    // rather than replacing it, and no covenant failure has become unreportable.
-    const controlDeployment = await deploy();
-    const covenant = await errorOf(() => staticSplit(controlDeployment, CHANGE_DUST, bobPriv));
-    expect(covenant).not.toBe('');
-    expect(covenant, 'the byte gate spoke instead of the covenant').not.toMatch(/finalized transaction refused/);
-    expect(covenant).toMatch(/Failed require|script-verify|OP_|evaluating input|Signature/i);
+  it('5b. GUARD: the same split with a VALID signature reports the dust and no covenant line', async () => {
+    // Differs from row 5 in the signing key alone - same funding, same change, same fee, same count - so the
+    // covenant line in row 5 is attributable to the signature and to nothing else about that shape.
+    const d = await deploy();
+    const dustOnly = await errorOf(() => staticSplit(d, 100n, alicePriv));
+    expect(dustOnly).toMatch(/^layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(dustOnly, 'a covenant objection appeared without a broken covenant').not.toMatch(/\[covenant\]/);
+    expect(dustOnly).toMatch(/\[policy\] output-dust at output 3/);
   }, 300_000);
+
+  it('5c. GUARD: the same broken covenant with a relayable change reports the covenant and no byte line',
+    async () => {
+      // Differs from row 5 in the change amount alone. The bytes clear the gate, so the PROVIDER's own
+      // evaluation is what speaks - and it produces the same sentence the gate quoted in row 5, at the same
+      // input index. That is what makes row 5's covenant line evidence rather than a string the SDK invented.
+      const d = await deploy();
+      const covenant = await errorOf(() => staticSplit(d, CHANGE_DUST, bobPriv));
+      expect(covenant, 'the byte gate spoke instead of the covenant').not.toMatch(/finalized transaction refused/);
+      expect(covenant).toMatch(/evaluating input index 0: Program failed a signature verification/);
+      expect(covenant).toMatch(/"NULLFAIL"/);
+    }, 300_000);
+
+  it('5d. the gate quotes the DECIDER, not a string of its own: same sentence, same input index', async () => {
+    // The two runs differ in the change amount alone, so the covenant is identical. One sentence is produced
+    // locally by `covenantObjectionOf` and reported inside the gate's refusal; the other is produced by the
+    // provider on the wire. They agree verbatim, which is the discriminating evidence that the local
+    // evaluation is the same decider the network would have used and not a second opinion.
+    const gatedDeployment = await deploy();
+    const wireDeployment = await deploy();
+    const gated = await errorOf(() => staticSplit(gatedDeployment, 100n, bobPriv));
+    const wire = await errorOf(() => staticSplit(wireDeployment, CHANGE_DUST, bobPriv));
+    const sentence = /Program failed a signature verification with a non-null signature \(violating the "NULLFAIL" rule\)\. Algorithm used: Schnorr\./;
+    expect(gated).toMatch(sentence);
+    expect(wire).toMatch(sentence);
+    expect(gated).toMatch(/\[covenant\] input 0:/);
+    expect(wire).toMatch(/evaluating input index 0:/);
+  }, 300_000);
+
+  it('5e. ALL FOUR SITES: a hostile that breaks a covenant and pays dust is attributable at every one',
+    async () => {
+      // ONE SITE PROVING IT IS NOT FOUR SITES PROVING IT. `_sendRawBuilder` is a different frame from the static
+      // `split`, and destroy and merge compute their payouts from different arithmetic; a fix applied at one
+      // could silently miss the others. Each row here is a hostile with a broken signature AND a below-dust
+      // payout, and each must name both.
+      const sites: Array<[string, () => Promise<unknown>, RegExp]> = [];
+
+      const splitDeployment = await deploy();
+      sites.push(['split', () => staticSplit(splitDeployment, 100n, bobPriv), /output-dust at output 3/]);
+
+      const rawDeployment = await deploy();
+      const rawFunding = await fund(rawDeployment, 1_200n * 2n + 2_000n + 100n);
+      sites.push(['_sendRawBuilder', () => rawDeployment.contract.call
+        .fork(2n, new SignatureTemplate(bobPriv))
+        .withSplitFunding([rawFunding], funder(rawDeployment), rawDeployment.p2pkh.address)
+        .withNewMintingAmount(1_200n)
+        .withSplitFee(2_000n)
+        .send(), /output-dust at output 3/]);
+
+      const destroyDeployment = await deploy();
+      const destroyState = await destroyDeployment.contract.getFullState();
+      const destroyMasters = await destroyDeployment.provider.getUtxos(
+        destroyDeployment.contract.inner.tokenAddress,
+      );
+      const destroyTotal = destroyMasters.reduce((s, u) => s + u.satoshis, 0n)
+        + destroyState.dataNftUtxos.reduce((s: bigint, u: Utxo) => s + u.satoshis, 0n);
+      sites.push(['destroy', () => StatefulContract.destroy({
+        provider: destroyDeployment.provider,
+        contract: destroyDeployment.contract,
+        destroyFunctionName: 'wind',
+        destroyFunctionArgs: [new SignatureTemplate(bobPriv)],
+        recipient: destroyDeployment.p2pkh.address,
+        fee: destroyTotal - 100n,
+      }), /output-dust at output 0/]);
+
+      const mergeDeployment = await deploy();
+      await staticSplit(mergeDeployment, 40_000n);
+      const mergeMinting = (await mergeDeployment.provider.getUtxos(
+        mergeDeployment.contract.inner.tokenAddress,
+      )).filter((u) => u.token?.category === mergeDeployment.contract.categoryId
+        && u.token?.nft?.capability === 'minting');
+      const mergeConsumed = mergeMinting.slice(1);
+      const mergeConsumedSats = mergeConsumed.reduce((s, u) => s + u.satoshis, 0n);
+      const mergeExtra = await fund(mergeDeployment, 20_000n);
+      sites.push(['merge', () => StatefulContract.merge({
+        provider: mergeDeployment.provider,
+        contract: mergeDeployment.contract,
+        mergeFunctionName: 'consolidate',
+        mergeFunctionArgs: [BigInt(mergeConsumed.length), new SignatureTemplate(bobPriv)],
+        funder: funder(mergeDeployment),
+        consumedMasterUtxos: mergeConsumed,
+        fundingUtxos: [mergeExtra],
+        changeAddress: mergeDeployment.p2pkh.address,
+        fee: mergeConsumedSats + mergeExtra.satoshis - 100n,
+        maxFee: 200_000n,
+      }), /output-dust at output 1/]);
+
+      for (const [site, run, dustRule] of sites) {
+        const message = await errorOf(run);
+        expect(message, `${site}: neither objection reported`).toMatch(BOTH_REFUSED);
+        expect(message, `${site}: the covenant objection is absorbed`).toMatch(HOSTILE_COVENANT);
+        expect(message, `${site}: the byte objection is absorbed`).toMatch(dustRule);
+      }
+    }, 300_000);
+
+  it('5f. STRUCTURAL: no admin site can be added with the bare gate, because none calls it', () => {
+    // The row that makes it impossible to get wrong rather than merely correct today. A new lifecycle-admin
+    // broadcast path added later gets whichever gate its author copies from a neighbour; if every neighbour
+    // calls `assertAdminSiteFinalizedBytes`, the ordering hazard cannot be reintroduced by copying. The bare
+    // `assertFinalizedTransactionBytes` appears in this file exactly once - inside the helper, on the
+    // covenant-clean branch, which is what keeps rows 1-4 byte-identical.
+    const source = readFileSync(fileURLToPath(new URL('../../src/stateful/StatefulContract.ts', import.meta.url)),
+      'utf8');
+    const bare = source.split('\n')
+      .filter((line) => /assertFinalizedTransactionBytes\(/.test(line) && !/^\s*\*/.test(line)
+        && !/^import|^\s{2}assertFinalizedTransactionBytes/.test(line));
+    expect(bare, `bare gate calls: ${bare.join(' | ')}`).toHaveLength(1);
+    expect(bare[0]).toMatch(/if \(covenant === undefined\)/);
+    const routed = source.split('\n')
+      .filter((line) => /assertAdminSiteFinalizedBytes\(/.test(line) && !/^\s*\*/.test(line)
+        && !/^function /.test(line));
+    expect(routed, `routed sites: ${routed.length}`).toHaveLength(4);
+  });
 
   /* ---------------------------------------------------------------------------------------------------- */
   /* The eighth site                                                                                        */

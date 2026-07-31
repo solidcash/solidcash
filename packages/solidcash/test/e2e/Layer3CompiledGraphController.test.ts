@@ -3211,6 +3211,19 @@ describe('Layer-3 compiled graph controller', () => {
     },
   );
 
+  it.each([-1, 1] as const)(
+    'rejects a callback graph whose PUSHDATA1 batch length is displaced by %s',
+    async (delta) => {
+      const { provider, transaction } = await buildCombinedGraph();
+      const decoded = decodeTransactionUnsafe(hexToBin(transaction));
+      const unlocking = decoded.inputs[0].unlockingBytecode;
+      expect(unlocking[5]).toBe(76);
+      unlocking[6] += delta;
+      await expect(provider.sendRawTransaction(binToHex(encodeTransaction(decoded))))
+        .rejects.toThrow(scriptRefusalAt(0));
+    },
+  );
+
   it('preserves the complete transaction input/output table in transcript mode', async () => {
     const { provider, transaction } = await buildIntrospectionGraph();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');

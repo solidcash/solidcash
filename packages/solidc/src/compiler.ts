@@ -2322,8 +2322,9 @@ function synthesizeHiddenBatchRoute(
           require(__scb_unlock.slice(6, 6 + batchBlob.length) == batchBlob);
         } else {
           require(__scb_pushOpcode == 76);
-          bigint __scb_pushLength = int(bytes.concat(__scb_unlock.slice(6, 7), hex"00"));
-          require(__scb_pushLength == batchBlob.length);
+          // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
+          // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
+          // through Script-number casts: their sign-bit encoding is not the unsigned push length.
           require(__scb_unlock.slice(7, 7 + batchBlob.length) == batchBlob);
         }
         require(batchBlob.slice(0, 4) == hex"53434231");

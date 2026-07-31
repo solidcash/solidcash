@@ -85,6 +85,9 @@ const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
   'hacks/vault-inflation/VaultInflation.sol::Token': ['totalSupply', 'decimals'],
   'app/erc20/ERC20.sol::ERC20': ['totalSupply', 'name', 'symbol', 'decimals', 'balanceOf', 'allowance'],
   'app/erc20/MyToken.sol::ERC20': ['totalSupply', 'name', 'symbol', 'decimals', 'balanceOf', 'allowance'],
+  'app/airdrop/Token.sol::Token': [
+    'totalSupply', 'name', 'symbol', 'decimals', 'balanceOf', 'allowance', 'authorized',
+  ],
 };
 
 interface Subject {
@@ -112,6 +115,24 @@ interface Row {
 const TRAILING = Array.from({ length: 64 }, () => 'trailing');
 
 const ROWS: readonly Row[] = [
+  {
+    rel: 'app/airdrop/Token.sol',
+    contract: 'Token',
+    subjects: [
+      { handler: 'totalSupply' }, { handler: 'name' }, { handler: 'symbol' }, { handler: 'decimals' },
+      { handler: 'balanceOf', args: [addr('55')] },
+      { handler: 'allowance', args: [addr('55'), addr('66')] },
+      { handler: 'authorized', args: [addr('77')] },
+    ],
+    hostileSubject: 'authorized',
+    presentEntries: {
+      balanceOf: { key: addr('55'), value: 42n, valueType: 'uint256' },
+      authorized: { key: addr('77'), value: 1n, valueType: 'bool' },
+    },
+    state: { totalSupply: 1_000_000n, name: '', symbol: '', decimals: 18n },
+    stateTamper: { totalSupply: 1_000_001n },
+    slots: ['master', 'dataNft', 'entry', 'entry', 'entry', 'returnEvent', ...TRAILING],
+  },
   {
     rel: 'app/erc20/MyToken.sol',
     contract: 'ERC20',
@@ -551,6 +572,6 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     console.log(`[V2C] ${settled.length} gained handlers settle in this file; `
       + `${ROWS.reduce((n, row) => n + (row.unproven?.length ?? 0), 0)} more are run and recorded unproven`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(17);
+    expect(settled.length).toBe(24);
   });
 });

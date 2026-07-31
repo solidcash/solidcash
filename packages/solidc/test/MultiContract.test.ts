@@ -87,6 +87,24 @@ describe('compileStringMulti', () => {
     expect(first.abi.map((entry) => entry.name)).toEqual(['f1']);
   });
 
+  it('pins a bare low-level call through its immutable address state root', () => {
+    const artifact = compileString(`
+      contract Forwarder(address immutable target) {
+        fallback(bytes data) external {
+          (bool ok, bytes result) = target.call(data);
+          require(ok);
+        }
+      }
+    `, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    });
+    expect(artifact.contractName).toBe('Forwarder');
+    expect(artifact.bytecode).not.toBe('');
+  });
+
   it('excludes abstract contracts from the map', () => {
     const src = `
       abstract contract Base { function b() virtual; }

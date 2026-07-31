@@ -405,7 +405,7 @@ function compileRow(row: Row, controllerLbc: string, controllerCategory: string)
   } catch {
     // fall through to the single-contract compile
   }
-  const artifact = compileFile(path, options) as any;
+  const artifact = compileFile(path, { ...options, primaryContractName: row.contract }) as any;
   if (artifact.contractName !== row.contract) {
     throw new Error(`${key(row)}: the single-contract compile is '${artifact.contractName}'`);
   }

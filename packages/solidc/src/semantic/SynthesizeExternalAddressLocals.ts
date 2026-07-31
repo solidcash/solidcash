@@ -341,6 +341,19 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
+    } else if (LOW_LEVEL_CALLS.has(node.methodName) && node.object instanceof IdentifierNode
+      && this.plainAddrStateVars.has(node.object.name)) {
+      // A bare plain-address STATE receiver (`target.call(data)`) is not a caller/function parameter. Hoist it
+      // just like an interface-typed state receiver so the external-call epilogue pins the co-spent callee to
+      // the authenticated state value. `resolveLlReceiver` intentionally leaves bare identifiers alone because
+      // bare PARAM receivers already work; this state-rooted form must not be confused with that caller witness.
+      const localName = `${PREFIX}${node.object.name}`;
+      if (!this.usedInFn.has(localName)) {
+        this.usedInFn.set(localName, { iface: undefined, init: cloneNode(node.object) as ExpressionNode });
+      }
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
     } else if (LOW_LEVEL_CALLS.has(node.methodName) && this.resolveLlReceiver(node.object)) {
       // `<recv>.call/staticcall/delegatecall(..)` where `<recv>` resolves to an address that is a self-pinned state
       // chain OR a param-rooted field. A bare-identifier receiver already sources in codegen; a field/element

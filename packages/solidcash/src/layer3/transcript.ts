@@ -16,6 +16,10 @@ import {
 import { encodeTranscriptBlob, participantArgs } from './codec.js';
 import type { DerivedExternalCallTable } from './derive-native.js';
 import { protocolVersionHex } from './protocol.js';
+import { assertLayer3AuthorityClaims, type Layer3AuthorityClaim } from './contention.js';
+import {
+  compiledGraphPhysicalLayout, type FinalizedCompiledGraph,
+} from './graph.js';
 
 /** Apply a TypedTransition to a commitment hex: add delta to the width-byte LE field at offset, preserving the rest. */
 export function applyTypedTransition(commitmentHex: string, t: TypedTransition): string {
@@ -365,5 +369,75 @@ export function buildBalancedTranscriptTx(
     tx.addInput(s.utxo, unlock as never);
   }
   for (const s of slots) tx.addOutput(s.output as never);
+  return tx;
+}
+
+/**
+ * Assemble a finalized compiled graph after deriving concrete authority claims from its physical slots.
+ * This is the acquisition/build boundary: no caller-authored claim table is accepted.
+ */
+export function buildCompiledGraphTransaction(
+  provider: unknown,
+  transcript: FinalizedCompiledGraph,
+  slots: BalancedSlot[],
+): TransactionBuilder {
+  const layout = compiledGraphPhysicalLayout(transcript.plan);
+  if (slots.length !== layout.totalSlots) {
+    throw new Error(`layer3: compiled graph needs exactly ${layout.totalSlots} physical slots, got ${slots.length}`);
+  }
+  const outpointOf = (slot: BalancedSlot): string => `${slot.utxo.txid.toLowerCase()}:${slot.utxo.vout}`;
+  const claims: Layer3AuthorityClaim[] = [];
+  transcript.plan.participants.forEach((participant, owner) => {
+    const ownerInput = layout.participantInputs[owner];
+    const artifactFingerprint = participant.artifact.fingerprint ?? participant.artifact.bytecode;
+    const stateLayoutFingerprint = JSON.stringify(participant.artifact.stateLayout ?? null);
+    const common = {
+      ownerIdentity: participant.lockingBytecode,
+      artifactFingerprint,
+      stateLayoutFingerprint,
+      settlementPath: `participant:${owner}:boundary:${participant.settlementBoundary}`,
+      mutable: true,
+      transcriptCapable: participant.artifact.hiddenBatch?.version === 1,
+      dynamicAliasesResolved: true,
+    };
+    claims.push({
+      ...common,
+      inputIdentity: `input:${ownerInput}`,
+      outpoint: outpointOf(slots[ownerInput]),
+    });
+    participant.blockLayout!.slots.filter((slot) => slot.offset !== 0).forEach((blockSlot) => {
+      const input = ownerInput + blockSlot.offset;
+      claims.push({
+        ...common,
+        inputIdentity: `input:${input}`,
+        outpoint: outpointOf(slots[input]),
+        resourceIdentity: `${blockSlot.kind}:${blockSlot.nftIndex ?? blockSlot.slotIndex ?? blockSlot.offset}`,
+      });
+    });
+  });
+  slots.forEach((slot, input) => {
+    if (claims.some((claim) => claim.inputIdentity === `input:${input}`)) return;
+    claims.push({
+      ownerIdentity: 'graph-system',
+      inputIdentity: `input:${input}`,
+      outpoint: outpointOf(slot),
+      artifactFingerprint: 'graph-system',
+      stateLayoutFingerprint: 'graph-system',
+      settlementPath: 'graph-system',
+      resourceIdentity: `system:${input}`,
+      mutable: false,
+      transcriptCapable: true,
+      dynamicAliasesResolved: true,
+    });
+  });
+  assertLayer3AuthorityClaims(claims);
+  const tx = new TransactionBuilder({ provider: provider as never });
+  slots.forEach((slot) => {
+    const unlock = typeof slot.unlock === 'function'
+      ? (slot.unlock as (physical: typeof layout) => unknown)(layout)
+      : slot.unlock;
+    tx.addInput(slot.utxo, unlock as never);
+  });
+  slots.forEach((slot) => tx.addOutput(slot.output as never));
   return tx;
 }

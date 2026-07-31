@@ -68,6 +68,8 @@ export interface PlannedGraphInvocation {
 
 export interface CompiledParticipantExecution {
   participant: number;
+  /** Exact artifact whose route and state layout this physical owner executes. */
+  artifact: Artifact;
   lockingBytecode: string;
   batch: EncodedHiddenBatch;
   /** Global invocation indices, in the exact order executed by this owner's SCB1 route. */
@@ -1810,6 +1812,7 @@ export function planCompiledGraph(
     }
     return Object.freeze({
       participant: owner,
+      artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
       batch: encodeHiddenBatch(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
       invocations: Object.freeze(globalByOwner[owner]),

@@ -51,7 +51,11 @@ import { Symbol, SymbolType } from './ast/SymbolTable.js';
 import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
-export type SolidcDiagnosticCode = 'SCB_RESERVED_SELECTOR_COLLISION';
+export type SolidcDiagnosticCode =
+  | 'SCB_RESERVED_SELECTOR_COLLISION'
+  | 'SPLIT_CLOSURE_CAPACITY'
+  | 'SPLIT_ROOT_CAPACITY'
+  | 'SPLIT_LAYOUT_CONFLICT';
 
 /** Machine-stable compiler refusal with source-owned context. */
 export class SolidcDiagnosticError extends Error {

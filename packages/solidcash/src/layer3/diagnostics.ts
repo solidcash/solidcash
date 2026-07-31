@@ -6,10 +6,13 @@ export type Layer3DiagnosticCode =
   | 'L3_INPUT_AUTHORITY_CONFLICT'
   | 'L3_INVOCATION_LIMIT'
   | 'L3_MUTABLE_ARTIFACT_UNSUPPORTED'
+  | 'L3_PARTICIPANT_LIMIT'
   | 'L3_OWNER_ARTIFACT_CONFLICT'
   | 'L3_PROTOCOL_METADATA_MALFORMED'
   | 'L3_PROTOCOL_VERSION_UNSUPPORTED'
   | 'L3_RECURSIVE_CLOSURE'
+  | 'L3_RESOURCE_CAPACITY'
+  | 'L3_GRAPH_DEPTH_LIMIT'
   | 'L3_SETTLEMENT_AUTHORITY_CONFLICT'
   | 'L3_TARGET_UNRESOLVED'
   | 'L3_TARGET_EXHAUSTED';
@@ -32,6 +35,7 @@ export interface Layer3DiagnosticContext {
   artifactFingerprint?: string;
   stateLayoutFingerprint?: string;
   settlementPaths?: readonly string[];
+  handler?: string;
 }
 
 /** Machine-stable code plus the human context required by transcript-v1 section 12. */

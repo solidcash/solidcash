@@ -640,10 +640,16 @@ describe('S3 bounds', () => {
     // Knob-liveness: the honest 64-slot run passes the same check that refuses 65.
     expect(() => layer3.assertGraphTrailingCapacity(built.layout, built.chunkRuns)).not.toThrow();
     expect(() => layer3.assertGraphTrailingCapacity(built.layout, { 1: 65 }))
-      .toThrow(/runtime-resource run exceeds its balanced trailing capacity \(65 > 64\)/);
+      .toThrow(expect.objectContaining({
+        code: 'L3_RESOURCE_CAPACITY',
+        context: expect.objectContaining({ participant: 1, measured: 65, limit: 64 }),
+      }));
     // The router declares no region at all, so any run on it is refused rather than silently placed.
     expect(() => layer3.assertGraphTrailingCapacity(built.layout, { 0: 1 }))
-      .toThrow(/its block declares no trailing region/);
+      .toThrow(expect.objectContaining({
+        code: 'L3_RESOURCE_CAPACITY',
+        context: expect.objectContaining({ participant: 0, measured: 1, limit: 0 }),
+      }));
     expect(() => layer3.assertGraphTrailingCapacity(built.layout, { 7: 1 }))
       .toThrow(/which this graph does not have/);
     expect(() => layer3.assertGraphTrailingCapacity(built.layout, { 1: 0 })).not.toThrow();

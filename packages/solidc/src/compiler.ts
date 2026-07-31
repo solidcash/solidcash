@@ -3318,8 +3318,15 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     const name = `${logicalName}__Facet${index}`;
     const artifact = compileFacet(code, merged, errorListener, group, name);
     if (byteSize(artifact) > maxShardBytes) {
-      throw new Error(`Cannot split '${logicalName}': facet '${name}' is ${byteSize(artifact)} bytes `
-        + `(limit ${maxShardBytes}); closure: ${group.map((p) => p.name).join(', ')}.`);
+      const measured = byteSize(artifact);
+      const handlers = group.map((plan) => plan.name);
+      const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
+      throw new SolidcDiagnosticError(
+        'SPLIT_CLOSURE_CAPACITY',
+        `Cannot split '${logicalName}': facet '${name}' is ${measured} bytes `
+          + `(limit ${maxShardBytes}); closure: ${handlers.join(', ')}.`,
+        { contractName: logicalName, facet: name, handlers, callChain, measured, limit: maxShardBytes },
+      );
     }
     facets[name] = artifact;
     facetRecords.push({ name, link: `__facetAddr_${index}`, plans: group, artifact });
@@ -3335,7 +3342,17 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     rootAst, code, merged, false, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
   );
   if (byteSize(root) > maxShardBytes) {
-    throw new Error(`Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`);
+    throw new SolidcDiagnosticError(
+      'SPLIT_ROOT_CAPACITY',
+      `Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`,
+      {
+        contractName: logicalName,
+        handlers: plans.map((plan) => plan.name),
+        callChain: plans.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]),
+        measured: byteSize(root),
+        limit: maxShardBytes,
+      },
+    );
   }
 
   assertSplitLayoutsAgree(logicalName, root, facetRecords, baseline);
@@ -3404,15 +3421,23 @@ export function assertSplitLayoutsAgree(
   for (const facet of facets) {
     const divergence = firstDivergence(slots(facet.artifact));
     if (divergence) {
-      throw new Error(`Cannot split '${name}': facet '${facet.name}' does not share the root's storage layout `
-        + `(${divergence}). A delegate facet writes the root's state through physical slots, so a spend would `
-        + 'write the wrong variable.');
+      throw new SolidcDiagnosticError(
+        'SPLIT_LAYOUT_CONFLICT',
+        `Cannot split '${name}': facet '${facet.name}' does not share the root's storage layout `
+          + `(${divergence}). A delegate facet writes the root's state through physical slots, so a spend would `
+          + 'write the wrong variable.',
+        { contractName: name, facet: facet.name, callChain: [name, facet.name], divergence },
+      );
     }
   }
   const baselineDivergence = firstDivergence(slots(baseline));
   if (baselineDivergence) {
-    throw new Error(`Cannot split '${name}': the generated root does not share the unsplit contract's storage `
-      + `layout (${baselineDivergence}). The published state layout would not describe the deployed bundle.`);
+    throw new SolidcDiagnosticError(
+      'SPLIT_LAYOUT_CONFLICT',
+      `Cannot split '${name}': the generated root does not share the unsplit contract's storage `
+        + `layout (${baselineDivergence}). The published state layout would not describe the deployed bundle.`,
+      { contractName: name, facet: 'root', callChain: [name, 'root'], divergence: baselineDivergence },
+    );
   }
 }
 function emptyFootprint(): SplitStateFootprint { return { reads: [], writes: [], effects: [], unknown: false }; }

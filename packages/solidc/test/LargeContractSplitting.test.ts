@@ -93,8 +93,22 @@ describe('large-contract state-local splitting', () => {
   });
 
   it('fails closed when a measured facet or root cannot fit', () => {
-    expect(() => compileStringSplit(SOURCE, { forceSplit: true, maxShardBytes: 100 }))
-      .toThrow(/Cannot split 'SplitCounter'.*(facet|root)/);
+    try {
+      compileStringSplit(SOURCE, { forceSplit: true, maxShardBytes: 100 });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: expect.stringMatching(/^SPLIT_(CLOSURE|ROOT)_CAPACITY$/),
+        context: expect.objectContaining({
+          contractName: 'SplitCounter',
+          handlers: ['addX'],
+          callChain: ['addX'],
+          measured: expect.any(Number),
+          limit: 100,
+        }),
+      });
+      expect((error as Error).message).toContain("Cannot split 'SplitCounter'");
+    }
   });
 
   /**

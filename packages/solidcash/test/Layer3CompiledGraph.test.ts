@@ -646,7 +646,26 @@ describe('layer3.planCompiledGraph', () => {
         artifact: a, lockingBytecode: (0x51 + index).toString(16),
       })),
       [{ parent: null, callee: 0, function: 'add', args: [1n] }],
-    )).toThrow(/between 1 and 8/);
+    )).toThrow(expect.objectContaining({
+      code: 'L3_PARTICIPANT_LIMIT',
+      context: expect.objectContaining({ measured: 9, limit: 8 }),
+    }));
+
+    const tooDeep = Array.from({ length: 9 }, (_unused, index) => ({
+      parent: index === 0 ? null : index - 1,
+      callee: 0,
+      function: 'add',
+      args: [1n],
+    }));
+    expect(() => layer3.planCompiledGraph(
+      [{ artifact: a, lockingBytecode: '51' }], tooDeep,
+    )).toThrow(expect.objectContaining({
+      code: 'L3_GRAPH_DEPTH_LIMIT',
+      context: expect.objectContaining({
+        participant: 0, handler: 'add', measured: 8, limit: 7,
+        invocationIds: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+      }),
+    }));
   });
 
   it('rejects a child attached after its parent subtree has completed', () => {

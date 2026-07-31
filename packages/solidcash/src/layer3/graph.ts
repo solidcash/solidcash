@@ -6,6 +6,7 @@ import type { FunctionArgument } from '../Argument.js';
 import {
   encodeHiddenBatch, type EncodedHiddenBatch, type HiddenBatchInvocation,
 } from './hidden-batch.js';
+import { Layer3DiagnosticError } from './diagnostics.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
@@ -314,15 +315,19 @@ export function assertGraphTrailingCapacity(
     if (run === 0) continue;
     const region = layout.trailingRegions.find((entry) => entry.participant === participant);
     if (region === undefined) {
-      throw new Error(
+      throw new Layer3DiagnosticError(
+        'L3_RESOURCE_CAPACITY',
         `layer3: participant ${participant} claims ${run} runtime-resource slots but its block declares no `
         + 'trailing region',
+        { participant, measured: run, limit: 0 },
       );
     }
     if (run > region.capacity) {
-      throw new Error(
+      throw new Layer3DiagnosticError(
+        'L3_RESOURCE_CAPACITY',
         `layer3: participant ${participant} runtime-resource run exceeds its balanced trailing capacity `
         + `(${run} > ${region.capacity})`,
+        { participant, measured: run, limit: region.capacity },
       );
     }
   }
@@ -453,7 +458,23 @@ export function finalizeCompiledGraph(
   if (plan.participants.length > MAX_GRAPH_PARTICIPANTS
     || plan.invocations.length > MAX_GRAPH_INVOCATIONS
     || plan.invocations.some((invocation) => invocation.depth > MAX_GRAPH_DEPTH)) {
-    throw new Error('layer3: graph exceeds the deployed participant, invocation, or depth bound');
+    const overParticipants = plan.participants.length > MAX_GRAPH_PARTICIPANTS;
+    const overInvocations = plan.invocations.length > MAX_GRAPH_INVOCATIONS;
+    const deepest = Math.max(0, ...plan.invocations.map((invocation) => invocation.depth));
+    const code = overParticipants ? 'L3_PARTICIPANT_LIMIT'
+      : overInvocations ? 'L3_INVOCATION_LIMIT' : 'L3_GRAPH_DEPTH_LIMIT';
+    throw new Layer3DiagnosticError(
+      code,
+      'layer3: graph exceeds the deployed participant, invocation, or depth bound',
+      {
+        measured: overParticipants ? plan.participants.length
+          : overInvocations ? plan.invocations.length : deepest,
+        limit: overParticipants ? MAX_GRAPH_PARTICIPANTS
+          : overInvocations ? MAX_GRAPH_INVOCATIONS : MAX_GRAPH_DEPTH,
+        invocationIds: plan.invocations.map((invocation) => invocation.index),
+        callChain: plan.invocations.map((invocation) => `${invocation.index}:${invocation.function}`),
+      },
+    );
   }
   plan.participants.forEach((participant, index) => {
     const returning = participant.batch.results.length > 0;
@@ -1698,12 +1719,23 @@ export function planCompiledGraph(
   invocations: readonly CompiledGraphInvocation[],
 ): CompiledGraphPlan {
   if (participants.length < 1 || participants.length > MAX_GRAPH_PARTICIPANTS) {
-    throw new Error(
+    throw new Layer3DiagnosticError(
+      'L3_PARTICIPANT_LIMIT',
       `layer3: compiled graph participant count must be between 1 and ${MAX_GRAPH_PARTICIPANTS}`,
+      { measured: participants.length, limit: MAX_GRAPH_PARTICIPANTS },
     );
   }
   if (invocations.length > MAX_GRAPH_INVOCATIONS) {
-    throw new Error(`layer3: compiled graph has more than ${MAX_GRAPH_INVOCATIONS} invocations`);
+    throw new Layer3DiagnosticError(
+      'L3_INVOCATION_LIMIT',
+      `layer3: compiled graph has more than ${MAX_GRAPH_INVOCATIONS} invocations`,
+      {
+        measured: invocations.length,
+        limit: MAX_GRAPH_INVOCATIONS,
+        invocationIds: invocations.map((_invocation, index) => index),
+        callChain: invocations.map((invocation, index) => `${index}:${invocation.function}`),
+      },
+    );
   }
   const identities = new Set<string>();
   participants.forEach((participant, index) => {
@@ -1748,7 +1780,19 @@ export function planCompiledGraph(
       active.push(index);
     }
     if (active.length - 1 > MAX_GRAPH_DEPTH) {
-      throw new Error(`layer3: compiled graph depth exceeds ${MAX_GRAPH_DEPTH}`);
+      throw new Layer3DiagnosticError(
+        'L3_GRAPH_DEPTH_LIMIT',
+        `layer3: compiled graph depth exceeds ${MAX_GRAPH_DEPTH}`,
+        {
+          measured: active.length - 1,
+          limit: MAX_GRAPH_DEPTH,
+          invocationIds: [...active],
+          callChain: active.map((invocationIndex) =>
+            `${invocationIndex}:${invocations[invocationIndex].function}`),
+          handler: invocation.function,
+          participant: invocation.callee,
+        },
+      );
     }
     perOwner[invocation.callee].push({
       function: invocation.function,

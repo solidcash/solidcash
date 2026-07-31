@@ -35,29 +35,30 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * Forwarded argument, expression argument, and the same caller compiled under `solidityImportCompat` with a
  * return-event slot in its block: all three are refused at input 0 with the vector exhausted.
  *
- * ANSWER 3: THE OTHER TWO ESCAPE, AND THEY ARE `Attack.attack`'s SHAPE. A method call on a CONTRACT-TYPED
- * STATE VARIABLE - `X179SolBar bar; ... bar.log();` - settles with an EMPTY emission vector, no co-spent
- * counterparty and one participant. Each escaping shape settles its own honest co-spend in this harness, and
- * the interface-cast shapes are refused by this harness, so this is a property of the compiled caller and not
- * of the staging. `Attack.attack` is therefore not a curiosity of a bus-inadmissible counterparty: the escape
- * reproduces on a clean pair where the counterparty is admitted.
+ * ANSWER 3, AND X187 CLOSED IT. The two shapes that escaped were `Attack.attack`'s: a method call on a
+ * CONTRACT-TYPED STATE VARIABLE - `X179SolBar bar; ... bar.log();` - settled with an EMPTY emission vector, no
+ * co-spent counterparty and one participant, on a clean pair whose counterparty the bus admits. The isolation
+ * left exactly one variable standing, the RECEIVER SPELLING, and that is what it was: `bar.log()` parses as a
+ * NAMESPACED FunctionCall (`bar.log`), not a MethodCall, and only becomes an `ExternalFunctionCallNode` in the
+ * semantic pass that runs AFTER route synthesis has frozen its verdict. `synthesizeHiddenBatchRoute`'s
+ * conservative call rejection tested three node kinds and none of them was this one, so the handler was
+ * admitted as a plain scalar handler - never a graph tail handler - and its route framed no emission for the
+ * edge it published in its own ABI. Route synthesis now recovers the call from the receiver's declared type,
+ * the same type the semantic pass reads, so both spellings reach the same verdict.
  *
- * THE ISOLATION IS COMPLETE, AND WHAT SURVIVES IS THE RECEIVER SPELLING. Five candidate variables separated
- * the bound shapes from the escaping ones, and four are eliminated by a subject that BINDS while carrying
- * them: the argument source (forwarded vs compiler-labelled expression), the target source (constructor
- * parameter vs state variable), `solidityImportCompat`, and the return-event slot / result mode - all present
- * in `expression-compat`, which is refused. The fifth, the tail `require(true)`, is eliminated from the other
- * direction by `solidity-require`, which ESCAPES while carrying it. Only how the callee is named is left.
+ * WHAT THAT MEANS FOR EACH SHAPE. `solidity-require` now BINDS: refused at input 0 with the vector exhausted,
+ * with its honest co-spend still settling as the positive. `solidity` - one call statement, no trailing
+ * require - is now refused from the bus BY NAME, which is what the interface-cast spelling of that same body
+ * has always been (see the X187 block at the bottom, which asserts both halves).
  *
- * WHAT CLOSED, AND WHAT DID NOT. The SDK now refuses all five dropped plans by name at plan time
- * (`assertHandlerRowFloor`), which is the same statement `deriveCompiledGraphPlan` already made. That is a
- * diagnostic, NOT a boundary - the SDK is an untrusted witness constructor, and `dropped-bypass` below shows
- * exactly how a composer walks past it. For the escaping shapes the caller covenant does not bind its own
- * outgoing edge at all, so nothing on chain refuses them. Closing that is compiler-side.
+ * ON THE SDK. The SDK refuses every dropped plan by name at plan time (`assertHandlerRowFloor`), the same
+ * statement `deriveCompiledGraphPlan` already made. That is a diagnostic, NOT a boundary - the SDK is an
+ * untrusted witness constructor, and `dropped-bypass` below is exactly how a composer walks past it. What
+ * answers it now is the caller's own compiled route.
  *
- * NOT CLAIMED. No value or authority is shown moving, on any shape. The escaping caller's callee is simply
- * absent from the transaction; nothing here demonstrates a theft primitive, and no mechanism inside the
- * compiler is named - only the source shape that reproduces it and the one variable that does not.
+ * NOT CLAIMED. No value or authority was ever shown moving, on any shape: the escaping caller's callee was
+ * simply absent from the transaction, and nothing here demonstrated a theft primitive. Nothing is claimed
+ * about receiver spellings this file does not build - a contract-typed local, parameter or struct field.
  */
 
 const CALLEE = `pragma solidcash >=0.8.0;
@@ -362,16 +363,22 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
 /** The caller's route ran out of authenticated emission rows mid-partition. */
 const VECTOR_EXHAUSTED = 'Program called an OP_SPLIT operation with an invalid index';
 
+/** The bus refuses a handler whose outgoing edge it cannot frame, before any transaction is built. */
+const NOT_ELIGIBLE = 'is not batch eligible: batched-handler-forward-call-not-enabled';
+
 /**
- * The three subjects, and whether the CALLER COVENANT binds its own outgoing edge on each. Every other field
- * of the harness is identical, so `covenantBinds` is the measurement this file exists to take.
+ * The subjects the bus ADMITS, and whether the CALLER COVENANT binds its own outgoing edge on each. Every other
+ * field of the harness is identical, so `covenantBinds` is the measurement this file exists to take.
+ *
+ * X187 CLOSED THE LAST ROW HERE. `solidity-require` was the escaping shape this file isolated; it now binds,
+ * refused at input 0 with the same exhausted vector as the interface-cast subjects. See the X187 block below
+ * for the bare-body shape, which the bus no longer admits at all.
  */
 const SUBJECTS = [
   { shape: 'forward', label: 'interface cast, forwarded argument', covenantBinds: true },
   { shape: 'expression', label: 'interface cast, expression argument, state-var target', covenantBinds: true },
   { shape: 'expression-compat', label: 'interface cast, compat mode, return-event slot', covenantBinds: true },
-  { shape: 'solidity', label: 'CONTRACT-TYPED state variable, bare call body', covenantBinds: false },
-  { shape: 'solidity-require', label: 'CONTRACT-TYPED state variable, trailing require', covenantBinds: false },
+  { shape: 'solidity-require', label: 'CONTRACT-TYPED state variable, trailing require', covenantBinds: true },
 ] as const;
 
 describe('X179: does a straight-line `once` external call require its counterparty to be co-spent?', () => {
@@ -421,18 +428,48 @@ describe('X179: does a straight-line `once` external call require its counterpar
         expect(result.participants).toBe(1);
         expect(result.invocations).toBe(1);
         expect(result.emissions).toEqual(['']);
-        if (covenantBinds) {
-          expect(result.sent, 'a dropped external call SETTLED').toBeUndefined();
-          expect(result.refusal).toContain(VECTOR_EXHAUSTED);
-          expect(result.failingInput, 'the refusal did not name the caller master').toBe(0);
-          return;
-        }
-        // THE ESCAPE, and it is the row. `Attack.attack`'s source shape settles a transaction asserting a
-        // call that did not happen, against a co-spend that is not there - with a settling positive above
-        // proving the harness builds this contract correctly, and two sibling shapes proving the covenant
-        // binds this edge when the call is spelled as an interface cast.
-        expect(result.refusal, 'the escape closed - promote this shape to covenantBinds').toBeUndefined();
-        expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
+        expect(covenantBinds, 'every admitted subject must bind its own outgoing edge').toBe(true);
+        expect(result.sent, 'a dropped external call SETTLED').toBeUndefined();
+        expect(result.refusal).toContain(VECTOR_EXHAUSTED);
+        expect(result.failingInput, 'the refusal did not name the caller master').toBe(0);
       }, 900_000);
+  });
+
+  /**
+   * X187. THE BARE-BODY SHAPE IS NOW REFUSED FROM THE BUS BY NAME, and that refusal is PARITY rather than a
+   * loss: the interface-cast spelling of the same body - one external-call statement, no trailing require - has
+   * always been refused with this exact reason. Route synthesis could not see the contract-typed-receiver
+   * spelling at all (it parses as a namespaced FunctionCall, not a MethodCall), so it admitted the handler as a
+   * plain scalar one and framed no emission for the edge; the two spellings now reach the same verdict.
+   *
+   * Both halves are asserted here so a future change that re-admits one and not the other is a failure.
+   */
+  describe('CONTRACT-TYPED state variable, bare call body', () => {
+    it('the bus refuses the handler by name, before any transaction exists', async () => {
+      await expect(attempt('solidity', 'co-spent')).rejects.toThrow(`Handler 'callBar' ${NOT_ELIGIBLE}`);
+    }, 900_000);
+
+    /**
+     * The PARITY control: same body shape, interface-cast spelling, refused with the same reason. The getter
+     * sibling is `X179SolBar bar`'s published getter, and it is what keeps a route in existence for the
+     * refused handler's verdict to be read off - without one the contract has no route at all.
+     */
+    it('and refuses the interface-cast spelling of the same body identically', () => {
+      const artifact = compileString(`pragma solidcash >=0.8.0;
+interface IX179Callee { function tick(int value); }
+contract X179BareCast() {
+  address callee;
+  function ping() { IX179Callee(callee).tick(1); }
+  function peek() returns (address) { return callee; }
+}`, {
+        forceStateful: true,
+        experimentalHiddenBatch: true,
+        experimentalMessageBusController: 'aa'.repeat(35),
+        experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+      } as never) as any;
+      const handler = artifact.hiddenBatch!.handlers!.find((entry: any) => entry.name === 'ping');
+      expect(handler.eligible).toBe(false);
+      expect(handler.rejectionReason).toBe('batched-handler-forward-call-not-enabled');
+    });
   });
 });

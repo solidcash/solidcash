@@ -1478,8 +1478,11 @@ larger than 82 was an inference and is falsified by this current-HEAD measuremen
 
 During the run X235 found and repaired an observer defect: staged routes were keyed to one value per
 blob, so byte-identical blobs from different contract sources could overwrite each other. The probe
-now retains all candidates and uses contained participant bytecode to disambiguate collisions. A
-second full union run after that repair produced the same 82.
+now retains all candidates and uses contained participant bytecode to disambiguate collisions. Its
+records include candidate identities, matched identities and resolution cardinality. Zero or multiple
+matches credit no route and make the consumer fail; synthetic controls pin cardinalities zero, one and
+two. The fresh full union run recorded 98 contained blob collisions, all resolving to exactly one
+source/contract/participant-bytecode identity, and produced the same 82.
 
 The vitest run completed 321 passed / 2 skipped with one known X203 failure: the
 `Layer3RecoveredPartitionX160` live Solidity-by-example recompile reaches the already-recorded

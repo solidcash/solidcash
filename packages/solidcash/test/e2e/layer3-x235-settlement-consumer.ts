@@ -83,7 +83,16 @@ const records = recordPaths.flatMap((path) => readFileSync(path, 'utf8').split('
   }));
 const settlements = records.filter((record) => record.kind === 'settled');
 if (settlements.length === 0) throw new Error('X235 refuses a run with zero settled transactions');
+if (settlements.some((record) => !Array.isArray(record.collisionResolutions))) {
+  throw new Error('X235 refuses settlement records without collision-resolution evidence');
+}
+const badCollisions = settlements.flatMap((record) => record.collisionResolutions ?? [])
+  .filter((resolution: any) => resolution.resolutionCardinality !== 1);
+if (badCollisions.length > 0) {
+  throw new Error(`X235 refuses ambiguous blob collisions: ${JSON.stringify(badCollisions)}`);
+}
 const drove = settlements.flatMap((record) => record.drove ?? []);
+const collisions = settlements.flatMap((record) => record.collisionResolutions);
 if (drove.length === 0) throw new Error('X235 refuses a run with zero contained route blobs');
 
 const proved = new Set<string>();
@@ -111,7 +120,13 @@ for (const route of drove) {
 
 console.log(JSON.stringify({
   partition: { rows: rows.length, gained: gained.length, lost: lost.length },
-  observation: { files: recordPaths.length, records: records.length, settlements: settlements.length, routes: drove.length },
+  observation: {
+    files: recordPaths.length,
+    records: records.length,
+    settlements: settlements.length,
+    routes: drove.length,
+    collisions: collisions.length,
+  },
   proved: proved.size,
   handlers: [...proved].sort(),
   unresolved: [...new Set(unresolved)].sort(),

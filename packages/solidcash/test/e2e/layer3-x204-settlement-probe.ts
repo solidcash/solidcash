@@ -51,7 +51,7 @@ function emit(record: Record<string, unknown>): void {
 }
 
 /** Every route staged so far in this worker, keyed by its batch-blob hex. Bounded by the run's route count. */
-interface StagedRoute {
+export interface StagedRoute {
   contract: string;
   participantBytecode: string;
   sourceDigest: string | null;
@@ -62,6 +62,45 @@ interface StagedRoute {
   seq: number;
 }
 const stagedByBlob = new Map<string, StagedRoute[]>();
+
+export interface CollisionResolution {
+  blobDigest: string;
+  candidateIdentities: string[];
+  matchedIdentities: string[];
+  resolutionCardinality: number;
+}
+
+const routeIdentity = (route: StagedRoute): string => {
+  const bytecodeDigest = binToHex(sha256.hash(utf8ToBin(route.participantBytecode))).slice(0, 24);
+  return `${route.sourceDigest ?? 'missing'}:${route.contract}:${bytecodeDigest}`;
+};
+
+/** Resolve every contained blob independently. Collisions are evidence and never silently disappear. */
+export const resolveContainedRoutes = (
+  txHex: string, routes: ReadonlyMap<string, StagedRoute[]>,
+): { drove: StagedRoute[]; collisionResolutions: CollisionResolution[] } => {
+  const drove: StagedRoute[] = [];
+  const collisionResolutions: CollisionResolution[] = [];
+  for (const [blobHex, candidates] of routes) {
+    if (!txHex.includes(blobHex)) continue;
+    if (candidates.length === 1) {
+      drove.push(candidates[0]);
+      continue;
+    }
+    const matched = candidates.filter((candidate) => txHex.includes(candidate.participantBytecode));
+    const candidateIdentities = [...new Set(candidates.map(routeIdentity))].sort();
+    const matchedByIdentity = new Map(matched.map((candidate) => [routeIdentity(candidate), candidate]));
+    const matchedIdentities = [...matchedByIdentity.keys()].sort();
+    collisionResolutions.push({
+      blobDigest: binToHex(sha256.hash(utf8ToBin(blobHex))).slice(0, 24),
+      candidateIdentities,
+      matchedIdentities,
+      resolutionCardinality: matchedIdentities.length,
+    });
+    if (matchedIdentities.length === 1) drove.push(matchedByIdentity.get(matchedIdentities[0])!);
+  }
+  return { drove, collisionResolutions };
+};
 
 if (OUT !== undefined) {
   const originalUnlocker = Contract.prototype.createCompilerRouteUnlocker;
@@ -126,25 +165,20 @@ if (OUT !== undefined) {
       const txid = await originalSend.call(this, txHex);
       // CONTAINMENT. A settled transaction drove exactly the routes whose executable batch blob its bytes
       // carry. Nothing is inferred from ordering, so a probe that never broadcast cannot be absorbed.
-      const drove = [...stagedByBlob.entries()]
-        .filter(([blobHex]) => txHex.includes(blobHex))
-        .flatMap(([, candidates]) => candidates.length === 1
-          ? candidates : candidates.filter((candidate) => txHex.includes(candidate.participantBytecode)));
+      const { drove, collisionResolutions } = resolveContainedRoutes(txHex, stagedByBlob);
       const noRouteCandidates = drove.length === 0
         ? [...new Map([...stagedByBlob.values()].flat()
           .filter((staged) => txHex.includes(staged.participantBytecode))
           .map((staged) => [`${staged.sourceDigest}:${staged.contract}`, staged])).values()]
           .map(({ contract, sourceDigest }) => ({ contract, sourceDigest }))
         : [];
-      emit({ kind: 'settled', txid, rawBytes: txHex.length / 2, drove, noRouteCandidates });
+      emit({ kind: 'settled', txid, rawBytes: txHex.length / 2, drove, collisionResolutions, noRouteCandidates });
       return txid;
     } catch (error) {
-      const drove = [...stagedByBlob.entries()]
-        .filter(([blobHex]) => txHex.includes(blobHex))
-        .flatMap(([, candidates]) => candidates.length === 1
-          ? candidates : candidates.filter((candidate) => txHex.includes(candidate.participantBytecode)));
+      const { drove, collisionResolutions } = resolveContainedRoutes(txHex, stagedByBlob);
       emit({
-        kind: 'refused', drove, reason: String((error as Error).message).split('\n')[0].slice(0, 240),
+        kind: 'refused', drove, collisionResolutions,
+        reason: String((error as Error).message).split('\n')[0].slice(0, 240),
       });
       throw error;
     }

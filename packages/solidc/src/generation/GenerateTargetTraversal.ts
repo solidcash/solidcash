@@ -60,6 +60,7 @@ import {
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
   isChunkableValueType,
+  MAX_HIDDEN_BATCH_BLOB_BYTES,
   outlineSharedSpans,
 } from '@solidcash/utils';
 import {
@@ -20378,7 +20379,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Construct the exact minimal push encoding of the expected blob. Blobs
     // through 75 bytes use a one-byte direct-push opcode; the remainder of the
-    // frozen 223-byte envelope uses OP_PUSHDATA1 followed by one length byte.
+    // The shared SCB1 envelope above the direct-push range uses OP_PUSHDATA1
+    // followed by one length byte.
     // Comparing the complete encoded push avoids divergent locator/parser
     // rules and rejects non-minimal encodings without content scanning.
     this.emit(encodeInt(BigInt(this.getStackIndex(accumulator) + 2)), locationData);
@@ -20387,7 +20389,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(223n), locationData);
+    this.emit(encodeInt(BigInt(MAX_HIDDEN_BATCH_BLOB_BYTES)), locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData); // [idx, remainder, expected, expectedLen]
 

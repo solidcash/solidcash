@@ -35,7 +35,9 @@ import {
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
-import { assertFinalizedTransactionBytes, inputSubjectsOfBuilder } from '../layer3/preflight.js';
+import {
+  assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants, inputSubjectsOfBuilder,
+} from '../layer3/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
@@ -2696,7 +2698,6 @@ export class StatefulTransactionBuilder {
 
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
     const transaction = builder.buildLibauthTransaction(true);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     // X121: read the provider's limits. Unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and
     // a bare VM here decides against a configuration the provider may not be running.
     //
@@ -2724,12 +2725,11 @@ export class StatefulTransactionBuilder {
     //
     // Scope: this path is opt-in and default-off, and no hostile was constructed against it. The repair is
     // inferred from field semantics that WERE measured, on the sibling decider in `layer3/preflight.ts`.
-    const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
-      if (objection !== true) {
-        throw new Error(`input ${inputIndex}: ${objection}`);
-      }
+    try {
+      assertFinalizedTransactionCovenants(builder, transaction);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(reason.replace(/^layer3: BCH-2026 preflight failed at /, ''));
     }
   }
 
@@ -2880,6 +2880,14 @@ export class StatefulTransactionBuilder {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`Recursive state invocation failed concrete BCH VM preflight: ${reason}`);
       }
+    }
+
+    // X210. The ordinary stateful submit path must verify the exact fully funded transaction too. The
+    // recursive flag controls only the earlier, specialized diagnostic; it is not permission to skip covenant
+    // evaluation. This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and
+    // `stateSuccess` includes completed scripts with a falsy top item as well as raised VM errors.
+    if (!this.strictVmPreflight) {
+      assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
     }
 
     const rawTx = finalBuilder.build();

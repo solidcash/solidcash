@@ -811,6 +811,13 @@ const evaluateEveryInput = (
   });
 };
 
+/** Refuse any covenant failure in an exact, fully assembled transaction. */
+export const assertFinalizedTransactionCovenants = (
+  builder: TransactionBuilder, transaction: Transaction,
+): void => evaluateEveryInput(
+  builder, transaction,
+);
+
 /**
  * Evaluate every input of a fully assembled Layer-3 transaction on the BCH-2026 VM, then decide its finalized
  * bytes against the byte rules.

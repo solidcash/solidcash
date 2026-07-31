@@ -50,8 +50,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 `Layer3EmissionCloneFakeWriteX138`, `Layer3ReadYourWritesX105`, and `SecurityReviewL2Sec18`.
 
 ### Tier 2: named gaps with a known shape
-- **X210** - the ORDINARY stateful submit path has no covenant reader at all; the only gate there is
-  byte-only. The recursive VM preflight is opt-in and default-off.
+- **X210** - CLOSED: the ordinary stateful submit path now evaluates every input of the exact fully funded
+  transaction before byte checks and broadcast. The recursive opt-in keeps its specialized diagnostic, but is
+  no longer the only VM boundary.
 - **X186** - absorption window at `TransactionBuilder.send`; a hunk is ready and unapplied.
 - **X214** - **450 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
   remaining vacuity surface: 1.6x the population that just came back clean, and the exact shape

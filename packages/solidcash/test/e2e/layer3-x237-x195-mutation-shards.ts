@@ -15,10 +15,10 @@ interface Site {
   end: number;
   title: string;
   selector: {
+    strategy: 'direct-title' | 'parameterized-title' | 'shared-helper-caller';
     fileLine: string;
     titleRegex: string;
     expectedTitleDefinitions: number;
-    refusal?: string;
   };
   subject: string;
   subjectSha256: string;
@@ -73,7 +73,8 @@ for (const file of files) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const titleCounts = new Map<string, number>();
 
-  const testTitle = (node: ts.Node): string | undefined => {
+  const titleSelector = (node: ts.Node): { title: string; regex: string; strategy: Site['selector']['strategy'] }
+  | undefined => {
     for (let current: ts.Node | undefined = node; current; current = current.parent) {
       if (!ts.isCallExpression(current)) continue;
       const callee = current.expression;
@@ -83,10 +84,46 @@ for (const file of files) {
         && ['it', 'test'].includes(callee.expression.expression.getText(source));
       if (!isTest && !isEach) continue;
       const title = current.arguments[0];
-      if (title && (ts.isStringLiteral(title) || ts.isNoSubstitutionTemplateLiteral(title))) return title.text;
+      if (title && (ts.isStringLiteral(title) || ts.isNoSubstitutionTemplateLiteral(title))) {
+        return { title: title.text, regex: `^${regexEscape(title.text)}$`, strategy: 'direct-title' };
+      }
+      if (title && ts.isTemplateExpression(title)) {
+        const parts = [regexEscape(title.head.text), ...title.templateSpans.map((span) =>
+          `.+${regexEscape(span.literal.text)}`)];
+        return {
+          title: compact(title.getText(source)),
+          regex: `^${parts.join('')}$`,
+          strategy: 'parameterized-title',
+        };
+      }
       return undefined;
     }
     return undefined;
+  };
+  const helperSelector = (node: ts.Node): { title: string; regex: string; strategy: Site['selector']['strategy'] }
+  | undefined => {
+    let declaration: ts.VariableDeclaration | undefined;
+    let scope: ts.Node | undefined;
+    for (let current: ts.Node | undefined = node; current; current = current.parent) {
+      if (!declaration && ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) declaration = current;
+      if (ts.isCallExpression(current) && ts.isIdentifier(current.expression)
+        && current.expression.text === 'describe') {
+        scope = current;
+        break;
+      }
+    }
+    if (!declaration || !ts.isIdentifier(declaration.name)) return undefined;
+    scope ??= source;
+    let selected: { title: string; regex: string } | undefined;
+    const findCaller = (candidate: ts.Node): void => {
+      if (selected) return;
+      if (ts.isCallExpression(candidate) && ts.isIdentifier(candidate.expression)
+        && candidate.expression.text === declaration!.name.getText(source)
+        && candidate.pos > declaration!.end) selected = titleSelector(candidate);
+      ts.forEachChild(candidate, findCaller);
+    };
+    findCaller(scope);
+    return selected && { ...selected, strategy: 'shared-helper-caller' };
   };
   const countTitles = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -116,8 +153,9 @@ for (const file of files) {
       const position = source.getLineAndCharacterOfPosition(node.expression.name.getStart(source));
       const line = position.line + 1;
       const column = position.character + 1;
-      const enclosingTitle = testTitle(node);
-      const title = enclosingTitle ?? `<shared helper at ${file}:${line}>`;
+      const selectedTitle = titleSelector(node) ?? helperSelector(node);
+      if (!selectedTitle) throw new Error(`X237 refusal: no runnable selector for ${file}:${line}`);
+      const title = selectedTitle.title;
       const expectChain = node.expression.expression.expression;
       let subject: ts.Expression | undefined;
       const findExpect = (candidate: ts.Expression): void => {
@@ -144,13 +182,10 @@ for (const file of files) {
         end: node.end,
         title,
         selector: {
+          strategy: selectedTitle.strategy,
           fileLine: `${file}:${line}`,
-          // A matcher in a shared helper has no honest one-test title selector.
-          // Its deliberately never-matching regex makes a naive runner fail with
-          // zero tests; the source anchor tells a worker where caller analysis is required.
-          titleRegex: enclosingTitle ? `^${regexEscape(title)}$` : '(?!)',
-          expectedTitleDefinitions: enclosingTitle ? (titleCounts.get(title) ?? 0) : 0,
-          ...(!enclosingTitle && { refusal: 'shared helper: select and count an explicit calling test before mutation' }),
+          titleRegex: selectedTitle.regex,
+          expectedTitleDefinitions: titleCounts.get(title) ?? 1,
         },
         subject: subjectText,
         subjectSha256: sha256(subjectText),
@@ -176,7 +211,8 @@ if (new Set(sites.map(({ key }) => key)).size !== sites.length) {
   throw new Error('X237 refusal: AST site identities are not unique');
 }
 for (const site of sites) {
-  if (site.selector.expectedTitleDefinitions < 1 && !site.selector.refusal) {
+  if (site.selector.expectedTitleDefinitions < 1 || site.selector.titleRegex.length === 0
+    || site.selector.titleRegex === '(?!)') {
     throw new Error(`X237 refusal: selector matches no test definition: ${site.key}`);
   }
 }

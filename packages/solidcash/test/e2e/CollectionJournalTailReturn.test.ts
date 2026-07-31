@@ -4,6 +4,8 @@ import { Contract, StatefulContract } from '../../src/index.js';
 import { alicePkh, bobPkh } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 /**
  * D2/R19 settling proof for the tail-return relaxation in LowerCollectionJournalHelpers.
  *
@@ -63,7 +65,7 @@ describe('collection journal with a tail-return wrapper, on the VM', () => {
   it('refuses a transfer the sender cannot cover, on the same contract', async () => {
     const token = await deploy();
     await token.seed(alicePkh, 10n).send();
-    await expect(token.transfer(alicePkh, bobPkh, 11n).send()).rejects.toThrow();
+    await expect(token.transfer(alicePkh, bobPkh, 11n).send()).rejects.toThrow(verifyFailure);
     await token.check(alicePkh, 10n).send();
     await token.check(bobPkh, 0n).send();
   });

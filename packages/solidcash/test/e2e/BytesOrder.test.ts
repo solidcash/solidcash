@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // bytesN ordering < <= > >=: equal-width fixed bytes compare as unsigned big-endian (Solidity).
 // The contract recomputes each comparison and requires it equals the expected bool, so the spend only
 // succeeds if the big-endian reverse + unsigned sign-pad codegen is correct on the VM.
@@ -51,6 +53,7 @@ describe('bytesN ordering', () => {
   it('rejects a wrong expected relation', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.cmp(B(0, 0, 0, 1), B(0, 0, 0, 2), false, true, false, false)).rejects.toThrow();
+    await expect(sc.cmp(B(0, 0, 0, 1), B(0, 0, 0, 2), false, true, false, false))
+      .rejects.toThrow(verifyFailure);
   });
 });

@@ -65,6 +65,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   verdict; a never-match mutation made them red while the positive graph passed. `MsgSenderC2` required staged mutation: mutating its first rejection prevented
   the Alice state update needed by the next test, so restoring that first exact reason was required before the
   second matcher could be independently driven red.
+  `BytesOrder`, `C2DefaultMapping`, `C2ScalarCacheInLoop`, `CoalesceMappingEntryFieldWrites`, and
+  `CollectionJournalTailReturn` are exhausted as a five-file bundle: every sole target independently reached
+  the same mutation-proved layer-3 input-0 `OP_VERIFY` reason while ten controls stayed green.
   `Layer3ExecutionRoot` is exhausted: both the participant-set-only commitment and wrong-call-graph commitment
   reach the same mutation-proved provider refusal at input 0 (`OP_VERIFY`). `Layer3ResultSpike` is exhausted too:
   both result and settlement forgeries pin that exact provider verdict, with the positive graph green under

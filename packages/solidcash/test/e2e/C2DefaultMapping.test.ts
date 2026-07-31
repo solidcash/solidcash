@@ -7,6 +7,8 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // Locks the FLIP: a plain mapping compiled with NO storage options is C2 by DEFAULT (exclusion-proof reads =
 // Solidity storage parity). Exercises the full lifecycle under the default: deploy (HEAD auto-minted) -> write ->
 // RMW -> present read -> absent bracket-proven default -> omission claim reverts -> delete (nullify).
@@ -49,7 +51,7 @@ describe('C2 is the default for a plain mapping (no options)', () => {
     await fund(contract.address);
     expect((await contract.check(3n, 0n, alicePub, sig).send()).txid).toBeDefined(); // absent -> proven default 0
     await fund(contract.address);
-    await expect(contract.check(3n, 1n, alicePub, sig).send()).rejects.toThrow(); // absent claimed nonzero -> revert
+    await expect(contract.check(3n, 1n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
 
     await fund(contract.address);
     expect((await contract.del(5n, alicePub, sig).send()).txid).toBeDefined(); // delete -> nullify

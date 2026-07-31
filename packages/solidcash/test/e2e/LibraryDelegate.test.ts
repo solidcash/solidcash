@@ -10,6 +10,9 @@ import {
   createTestProvider, getTxOutputs, setupStatefulUtxos, type StatefulUtxoSetup,
 } from '../test-util.js';
 
+const input0Preflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const input2Preflight = 'layer3: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.';
+
 // library-contracts 3b: a state-touching LIBRARY (docs/library-contracts.md) lowers to a delegate contract
 // (auto-delegated public functions). This probes the consumer side: a proxy delegatecalls the library via the
 // EXISTING delegatecall machinery (withDelegatecall), running the library's function against the PROXY's state.
@@ -315,7 +318,7 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
     const foreignSc = StatefulContract.withCategory(foreignProxy, foreignCat);
     await expect(
       foreignSc.call.__fallback().withDelegatecall(libSc, 'increment', []).send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(input2Preflight);
   });
 
   // A branded library through the L.f() auto-wire path (registerLibrary), not just the proxy/impl withDelegatecall
@@ -463,7 +466,7 @@ describe('SEC-4: L.f() pins the library co-spend', () => {
   const twoFnConsumerArtifact = compileString(CONSUMER_TWO, { importResolver: resolve(TWO_FN, 'pair') });
 
   const failingInput = (message: string): number | null => {
-    const match = /error in evaluating input index (\d+)/.exec(message);
+    const match = /(?:error in evaluating input index|preflight failed at input) (\d+)/.exec(message);
     return match ? Number(match[1]) : null;
   };
 
@@ -563,7 +566,7 @@ describe('SEC-4: L.f() pins the library co-spend', () => {
       libArtifact: oneFnLibArtifact, consumerArtifact: oneFnConsumerArtifact, libId: 'counter',
       coSpend: 'hostile', settled: 999n,
     });
-    expect(message).toContain('mandatory-script-verify-flag-failed');
+    expect(message).toBe(input0Preflight);
     expect(failingInput(message)).toBe(0);
   }, 120_000);
 
@@ -576,7 +579,7 @@ describe('SEC-4: L.f() pins the library co-spend', () => {
       libArtifact: oneFnLibArtifact, consumerArtifact: oneFnConsumerArtifact, libId: 'counter',
       coSpend: 'none', settled: 999n,
     });
-    expect(message).toContain('mandatory-script-verify-flag-failed');
+    expect(message).toBe(input0Preflight);
     expect(failingInput(message)).toBe(0);
   }, 120_000);
 
@@ -594,7 +597,7 @@ describe('SEC-4: L.f() pins the library co-spend', () => {
       libArtifact: twoFnLibArtifact, consumerArtifact: twoFnConsumerArtifact, libId: 'pair',
       coSpend: 'honest', libFunction: 'wipe', settled: 0n,
     });
-    expect(substituted).toContain('mandatory-script-verify-flag-failed');
+    expect(substituted).toBe(input0Preflight);
     expect(failingInput(substituted)).toBe(0);
   }, 240_000);
 });

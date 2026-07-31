@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+const verifyPreflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // A storage pointer to a (non-flattened) struct state variable is an ALIAS, not a copy: writes through the
 // pointer reach the state variable. Previously `S storage sL = s` silently fell through to a local copy, so
 // `sL.f = v` / `sL = other` wrote the local and left `s` unchanged (a silent miscompile). VM-verified: each
@@ -39,7 +41,7 @@ describe('struct storage pointer to a state variable is an alias (runtime)', () 
   it('a wrong expectation reverts (the field write really reached s)', async () => {
     const sc = await mk(SRC);
     await sc.wrField().send();
-    await expect(sc.chkWrong().send()).rejects.toThrow();
+    await expect(sc.chkWrong().send()).rejects.toThrow(verifyPreflight);
   });
   it('whole-assigns through the pointer to the state variable', async () => {
     const sc = await mk(SRC);

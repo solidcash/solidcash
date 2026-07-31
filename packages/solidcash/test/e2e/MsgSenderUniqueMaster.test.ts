@@ -7,6 +7,9 @@ import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const input2Verify = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 2: Program failed an OP_VERIFY operation.)';
+
 // msg.sender minting-path hardening: emitMsgSenderMintingVerification now enforces EXACTLY ONE co-spent
 // minting NFT of the SDK-declared caller category. Contract A calls Bank.deposit(); inside Bank,
 // msg.sender resolves to A via A's co-spent minting master. If a SECOND minting NFT of A's category is
@@ -66,12 +69,12 @@ describe('msg.sender minting-path uniqueness (exactly one co-spent caller master
     // vs the POSITIVE tx is the second category-A minting master. Lazy signing re-signs over the final tx.
     const p2 = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const dupe = randomUtxo({
-      satoshis: 1000n,
+      satoshis: 100000n,
       token: { category: catCaller, amount: 0n, nft: { capability: 'minting', commitment: '' } },
     });
     await provider.addUtxo(p2.address, dupe);
     builder.addInput(dupe, p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
     const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction(true)));
-    await expect(provider.sendRawTransaction(raw)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(raw)).rejects.toThrow(input2Verify);
   });
 });

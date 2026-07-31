@@ -10,6 +10,9 @@ import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const input0Verify = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 0: Program failed an OP_VERIFY operation.)';
+
 // Task 4 (full corpus-4 oracle + realistic magnitudes): all NINE oracle fields with 8-byte encodings.
 // Bento (E,B,C,K), Kashi (U,T), token (X,Y,L). S = floor(M*B/E) with the MIN-SHARE init branch when E==0
 // (1:1). Authorization: balance X>=M and allowance L>=M. Transitions per section 4: Bento (E+M,B+S,C,K+S)
@@ -17,7 +20,6 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 // intermediate overflow (M*B is a full bignum); 8-byte fields hold positive values < 2^63 (see width note).
 const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
-const BENTO_CAT = 'ab'.repeat(32); const KASHI_CAT = 'cd'.repeat(32); const TOKEN_CAT = 'ef'.repeat(32);
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -33,8 +35,6 @@ const n8 = (n: bigint): Uint8Array => Uint8Array.from({ length: 8 }, (_, i) => N
 const F = {
   E: 1000000n, B: 800000n, C: 200000n, K: 50000n, U: 30000n, T: 90000n, X: 5000000n, Y: 1200000n, L: 600000n, M: 500000n,
 };
-const S = (F.M * F.B) / F.E;
-
 const HANDLER = `pragma solidcash >=0.8.0;
 contract Participant() {
   function __layer3_bind(
@@ -119,7 +119,9 @@ async function build(s: any, opts: { init?: boolean; tokenOut?: string } = {}): 
   const bentoIdx = 3; const kashiIdx = 4; const tokenIdx = 5;
   const E = opts.init ? 0n : F.E; const Bv = opts.init ? 0n : F.B;
   const share = opts.init ? F.M : (F.M * Bv) / E;
-  const argParts = [0n, 0n, 1n, 1n, 2n, 2n, BigInt(bentoIdx), BigInt(kashiIdx), BigInt(tokenIdx), F.M, share].map((v) => bigIntToVmNumber(v));
+  const argParts = [
+    0n, 0n, 1n, 1n, 2n, 2n, BigInt(bentoIdx), BigInt(kashiIdx), BigInt(tokenIdx), F.M, share,
+  ].map((v) => bigIntToVmNumber(v));
   const argsBlob = scriptToBytecode(argParts);
   const rowB = concat(hexToBin(s.handler.selector), le(0, 4), le(0, 2), le(argsBlob.length, 2), argsBlob);
   const blob = concat(hexToBin('53434231'), Uint8Array.from([1, 0, 1]), rowB);
@@ -151,7 +153,10 @@ async function build(s: any, opts: { init?: boolean; tokenOut?: string } = {}): 
   const tokOut = (cat: string, commit: Uint8Array): any => ({
     to: p2pkh.tokenAddress, amount: 5000n, token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commit) } },
   });
-  builder.addOutput(tokOut(s.parts[1].setup.categoryId, concat(n8(E + F.M), n8(Bv + share), n8(F.C), n8(F.K + share)))); // 3 Bento
+  builder.addOutput(tokOut(
+    s.parts[1].setup.categoryId,
+    concat(n8(E + F.M), n8(Bv + share), n8(F.C), n8(F.K + share)),
+  )); // 3 Bento
   builder.addOutput(tokOut(s.parts[0].setup.categoryId, concat(n8(F.U + share), n8(F.T + share)))); // 4 Kashi
   const tokenState = opts.tokenOut ? hexToBin(opts.tokenOut) : concat(n8(F.X - F.M), n8(F.Y + F.M), n8(F.L - F.M));
   builder.addOutput(tokOut(s.parts[2].setup.categoryId, tokenState)); // 5 token
@@ -172,7 +177,10 @@ describe('layer-3 full corpus-4 oracle (task 4)', () => {
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Nine oracle fields across three owners at millions-magnitude, min-share branch, one covenant.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -189,6 +197,6 @@ describe('layer-3 full corpus-4 oracle (task 4)', () => {
   it('HOSTILE: a wrong token transition (Y not += M) is rejected', async () => {
     const s = await setup();
     const bad = binToHex(concat(n8(F.X - F.M), n8(F.Y + F.M + 1n), n8(F.L - F.M)));
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { tokenOut: bad })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { tokenOut: bad })))).rejects.toThrow(input0Verify);
   });
 });

@@ -7,6 +7,8 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 
+const WRONG_DISPATCH_PREFLIGHT = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+
 describe('fixed-method table', () => {
   // A permissionless callee (no checkSig) so it can be co-spent by the table covenant.
   const COUNTER = `pragma solidcash >=0.8.0;
@@ -211,7 +213,7 @@ describe('varying-method table', () => {
       // Provision c0 with dec (wrong): the on-chain selector for element 0 is inc's, so the co-spent dec method
       // fails the covenant's per-element selector check.
       tableSc.registerExternalArray('IH', [c0Sc], ['dec']);
-      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow();
+      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
   });
 });
@@ -324,7 +326,7 @@ describe('received-value table', () => {
       await tableSc.reg(hexToBin(c0Addr), incSel, alicePub, sig()).send();  // fns[0] carries inc's selector
 
       tableSc.registerExternalArray(fnPtrIface, [c0Sc], ['dec']);
-      await expect(tableSc.fire(3n, alicePub, sig()).send()).rejects.toThrow();
+      await expect(tableSc.fire(3n, alicePub, sig()).send()).rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
   });
 });
@@ -406,7 +408,7 @@ describe('single-element calls', () => {
 
       // Element 0 carries inc's selector: co-spending dec against it must fail (runtime selector binding).
       await expect(tableSc.fire(0n, 3n, alicePub, sig()).withExternalCall(c0Sc, 'dec', [3n]).send())
-        .rejects.toThrow();
+        .rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
 
     it('RECEIVED table: value-RETURNING single call returns the callee result', async () => {
@@ -450,7 +452,7 @@ describe('single-element calls', () => {
 
       // The old (address, selector) pair must no longer verify.
       await expect(tableSc.fire(0n, 4n, alicePub, sig()).withExternalCall(c0Sc, 'inc', [4n]).send())
-        .rejects.toThrow();
+        .rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
 
     it('MIXED table (inline + received pushes) + state-var pointer push: single calls dispatch', async () => {

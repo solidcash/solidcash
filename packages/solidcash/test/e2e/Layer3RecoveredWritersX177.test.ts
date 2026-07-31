@@ -26,42 +26,51 @@ import type { Utxo } from '../../src/interfaces.js';
  * (`Layer3RecoveredWriterX136.test.ts`). NINE were unproven either way.
  *
  * `Counter.inc` DOES NOT GENERALIZE and its own docblock says so: one `uint256` scalar, one data NFT, no
- * argument, no counterparty, no collection. The risk lives in the shapes it is not - and those shapes are
- * the machinery every security row on this board has been about. This file runs the writers that HAVE those
- * shapes, one settled transaction each, and every one of them is measured, never assumed:
+ * argument, no counterparty, no collection. The risk lives in the shapes it is not. This file takes the four
+ * remaining EXPLICIT writers and says what each one is, measured:
  *
- *   subject                                shape                                        block
- *   Lib.doSomething(uint256)               scalar written from an ARGUMENT              3   master dataNft returnEvent
- *   Target.protected()                     bool write behind a msg.sender guard         3   master dataNft returnEvent
- *   UniswapV2Pair.initialize(addr,addr)    TWO fields, FOUR data NFTs, mapping layout   6   master dataNft x4 returnEvent
- *   StakingRewards.setRewardsDuration(u256) FOUR data NFTs + THREE mapping ENTRY slots  9   master dataNft x4 entry x3 returnEvent
+ *   subject                                 shape                                verdict
+ *   Lib.doSomething(uint256)                scalar written from an ARGUMENT      SETTLES
+ *   Target.protected()                      bool behind a msg.sender guard       REFUSED, fail-closed
+ *   UniswapV2Pair.initialize(addr,addr)     2 fields / 4 data NFTs / 3 mappings  BLOCKED by this harness
+ *   StakingRewards.setRewardsDuration(u256) 4 data NFTs + 3 mapping ENTRY slots  BLOCKED by this harness
  *
- * WHAT EACH ROW ESTABLISHES.
+ * EVERY WRITER HERE IS VOID, and `Counter.inc` is not - it returns `count`. A void row still fills its
+ * return-event slot, with an NFT carrying the EMPTY result vector's single push. A PLAIN output there is
+ * refused at input 0, and that refusal is a property of the staging rather than of the handler. That is not
+ * a footnote: see `Layer3RecoveredVoidWriterX177.test.ts`, which shows the same substitution flips
+ * `Attack.attack` from refused to SETTLED.
  *
- *  1. POSITIVE. The route co-spends its master, its data NFTs and (where the block has them) its collection
- *     entry NFTs, recreates the data NFTs with the POST state, and settles.
- *  2. THE WRITE IS REAL, READ OFF THE COVENANT. The probe run publishes the PRE state as the post state - the
- *     mistake an honest builder makes when it forgets the assignment - and the route's own trace hands back
- *     the commitment IT computed, PER DATA NFT SLOT. A slot whose computed commitment equals the declared one
- *     is UNCHANGED and is reported as such; a slot that differs is the written one. Nothing here computes a
- *     post state and then agrees with itself: `buildInitialStateCommitments` is used only afterwards, to say
- *     WHICH value the covenant's own bytes are.
- *  3. HOSTILE. The post state left at the PRE value is refused, at a pinned input index.
- *  4. HOSTILE. The post state moved to a believable neighbour - same length, same encoding, one bit - is
- *     refused, at a pinned input index.
- *  5. HOSTILE. A return event carrying a believable-wrong result is refused, at a pinned input index.
- *  6. GUARD NEGATIVE CONTROL. Every hostile differs from a settling positive in exactly ONE field, that
- *     positive is rebuilt by the same helper in the same file, and a READ-ONLY sibling of the same contract
- *     settles through the identical staging - so a refusal discriminates the attacked field, and an
- *     acceptance is not an evaluation that never ran.
+ * WHAT THE `SETTLES` ROW ESTABLISHES.
+ *
+ *  1. POSITIVE. The route co-spends its master and data NFT, recreates the data NFT with the POST state, and
+ *     settles.
+ *  2. THE WRITE IS REAL, READ OFF THE COVENANT, ONE SLOT AT A TIME. Each data NFT slot is probed with a
+ *     SENTINEL commitment the covenant cannot have computed, so the route's own comparison hands back the
+ *     commitment IT computed for that slot. `buildInitialStateCommitments` is used only afterwards, to say
+ *     WHICH state those bytes are.
+ *  3. HOSTILE. The write simply not applied is refused, at input 0.
+ *  4. HOSTILE. The written slot moved one bit is refused, at input 0.
+ *  5. GUARD. A read-only sibling settles through the identical staging, and ITS return event carrying a
+ *     believable-wrong result is refused at input 0 - which is where the return-event check is shown to be
+ *     LIVE, since the writer itself is void and publishes no result.
+ *
+ * WHAT THE `REFUSED` ROW ESTABLISHES, and it is fail-CLOSED rather than an exploit. `Target.protected` is
+ * `require(!isContract(msg.sender)); pwned = true;`. The bus's `msg.sender` is a locking bytecode, and the
+ * route's own caller binding accepts only the p2sh32 shape - which `isContract` reads as a contract. Both
+ * shapes are run: a p2sh32 caller passes the binding and fails `!isContract`, a P2PKH caller fails the
+ * binding itself. There is no caller this handler can be called by, and nothing is accepted.
  *
  * WHAT IS NOT ESTABLISHED.
  *
- *  - This file speaks for the handlers it runs and for nothing else. The 206 are not proved by four of them.
- *  - `Foo.callBar` (the remaining EXTERNAL-CALL writer) and the four ABSENT-flag handlers are the subject of
- *    `Layer3RecoveredWriterShapesX177.test.ts`; neither is claimed here.
+ *  - The two BLOCKED rows are not evidence in either direction, and the reason is named on each row: both
+ *    carry a BLOCK ORACLE (`__block_timestamp` plus an immutable `__blockOracleOwner` data NFT) that this
+ *    staging does not reproduce - the same wall `Layer3RecoveredSetAX136.test.ts` names for `CrowdFund` and
+ *    `EnglishAuction`. So NO multi-data-NFT writer and NO mapping-entry writer is run anywhere, and the
+ *    UNTOUCHED-data-NFT hostile this file implements has no subject to run against.
+ *  - This file speaks for the handlers it runs and for nothing else.
  *  - No recovered writer over a DYNAMIC string or an unbounded chunk collection is run anywhere. That shape
- *    has no subject in the eleven and is explicitly still open.
+ *    has no subject in the eleven at all.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -126,7 +135,41 @@ interface Row {
   slots: readonly string[];
   /** The sorted collections whose head-sentinel entry NFTs fill the block's `entry` slots, in slot order. */
   entryCollections?: readonly string[];
+  /**
+   * The transcript's ROOT CALLER, which is what `msg.sender` resolves to for the outermost invocation. A
+   * handler behind a `msg.sender` guard is unsatisfiable without it, and that is a property of the handler,
+   * not of the covenant: `Target.protected` refuses CONTRACT callers by design, so the root caller has to be
+   * a plain P2PKH. `alice` selects the harness's own P2PKH locking bytecode.
+   */
+  rootCaller?: 'none' | 'contract' | 'pkh';
+  /**
+   * What this row is evidence FOR.
+   *
+   *  - `settles`   the writer runs to completion and the post state is read off the covenant.
+   *  - `refuses`   the writer is UNSATISFIABLE on the bus and every caller shape is refused. Fail-closed, and
+   *                not an exploit: nothing is accepted that should not be.
+   *  - `blocked`   the harness cannot stage this route. NOT evidence either way, and named as such.
+   */
+  verdict: 'settles' | 'refuses' | 'blocked';
+  /** Why a `blocked` row is not run. Empty for every other row. */
+  blockedBy?: string;
 }
+
+/**
+ * THE ROOT CALLER, and it is the whole story for `Target.protected`.
+ *
+ * `msg.sender` on the bus is a LOCKING BYTECODE. `contract` hands the route a p2sh32 - the only shape the
+ * route's own caller binding accepts - and `pkh` hands it a plain P2PKH, which the binding refuses on length.
+ * A handler that requires its caller NOT to be a contract therefore has no satisfiable caller at all.
+ */
+const PKH_CALLER = `76a914${binToHex(alicePkh as unknown as Uint8Array)}88ac`;
+
+const rootCallerFor = (row: Row, participantLockingBytecode: Uint8Array | string): string => {
+  if (row.rootCaller === 'pkh') return PKH_CALLER;
+  if (row.rootCaller !== 'contract') return '';
+  return typeof participantLockingBytecode === 'string'
+    ? participantLockingBytecode : binToHex(participantLockingBytecode);
+};
 
 const TOKEN0 = hexToBin(`aa20${'a0'.repeat(32)}87`);
 const TOKEN1 = hexToBin(`aa20${'b1'.repeat(32)}87`);
@@ -140,6 +183,7 @@ const ROWS: readonly Row[] = [
     writer: 'doSomething',
     writerArgs: [777n],
     guards: [{ name: 'someNumber', args: [] }],
+    verdict: 'settles',
     pre: { someNumber: 41n },
     post: { someNumber: 777n },
     blockSize: 3,
@@ -153,6 +197,8 @@ const ROWS: readonly Row[] = [
     writer: 'protected',
     writerArgs: [],
     guards: [{ name: 'pwned', args: [] }],
+    verdict: 'refuses',
+    rootCaller: 'contract',
     pre: { pwned: false },
     post: { pwned: true },
     blockSize: 3,
@@ -166,6 +212,10 @@ const ROWS: readonly Row[] = [
     writer: 'initialize',
     writerArgs: [TOKEN0, TOKEN1],
     guards: [{ name: 'token0', args: [] }, { name: 'kLast', args: [] }],
+    verdict: 'blocked',
+    blockedBy: 'the route carries a BLOCK ORACLE - `__block_timestamp` plus an immutable `__blockOracleOwner` '
+      + 'data NFT at index 3 - which this staging does not reproduce. Same wall Layer3RecoveredSetAX136 '
+      + 'names for CrowdFund and EnglishAuction. Not evidence about the covenant.',
     pre: { token0: new Uint8Array(0), token1: new Uint8Array(0) },
     post: { token0: TOKEN0, token1: TOKEN1 },
     blockSize: 6,
@@ -179,6 +229,10 @@ const ROWS: readonly Row[] = [
     writer: 'setRewardsDuration',
     writerArgs: [86_400n],
     guards: [{ name: 'duration', args: [] }, { name: 'rewardRate', args: [] }],
+    verdict: 'blocked',
+    blockedBy: 'the route carries a BLOCK ORACLE - `__block_timestamp` plus an immutable `__blockOracleOwner` '
+      + 'data NFT at index 3 - AND `setRewardsDuration` is `onlyOwner` with a `finishAt < block.timestamp` '
+      + 'guard, so it needs both the oracle and a bound msg.sender. Not evidence about the covenant.',
     pre: { duration: 3_600n },
     post: { duration: 86_400n },
     blockSize: 9,
@@ -324,7 +378,7 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
       returns ? physical.returnOutputs : [null],
       returns ? [binToHex(publishedVector)] : [''],
       physical.projectionInputs,
-      '',
+      rootCallerFor(row, participant.lockingBytecode as never),
     );
 
     const initFee = randomUtxo({ satoshis: 20_000n });
@@ -460,27 +514,42 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   }
 
   /**
-   * THE POST STATE, TAKEN OFF THE COVENANT, PER DATA NFT SLOT.
+   * THE POST STATE, TAKEN OFF THE COVENANT, ONE DATA NFT SLOT AT A TIME.
    *
-   * The probe publishes the PRE state for every slot - what an honest builder produces when it forgets the
-   * assignment - so for a slot the handler WRITES the route's own comparison puts its computed commitment
-   * next to the declared one on the stack, and that is the value read here. For a slot the handler leaves
-   * alone the two agree and nothing is found, which is reported as UNCHANGED rather than as a failure.
+   * Publishing the PRE state and looking for the slot the covenant contradicts only works when every pre
+   * commitment is a distinctive value; a `bool false` slot is the EMPTY string and an uninitialized `address`
+   * slot is empty too, and an empty placeholder matches half the stack. So each slot is resolved with a
+   * SENTINEL instead: the slots already resolved are published correctly, the slot under probe carries a
+   * value the covenant cannot possibly have computed, and the route's own comparison then puts its computed
+   * commitment beside that sentinel. The run is traced and never broadcast.
+   *
+   * Resolving in slot order matters: the route checks its data NFTs in order and stops at the first one that
+   * disagrees, so slot `i` is only reached once slots `0..i-1` carry what the covenant wants. This reads
+   * EVERY slot off the covenant, not just the written one - which is what makes "slot 2 is UNCHANGED" a
+   * measurement rather than an omission.
    */
+  const SENTINEL = (slot: number): string => `${'9d'.repeat(19)}${slot.toString(16).padStart(2, '0')}`;
+
   const cachedPost = new Map<string, string[]>();
   async function covenantPostState(row: Row): Promise<string[]> {
     if (!cachedPost.has(row.key)) {
-      const probe = await attempt(row, row.writer, row.writerArgs, 'none', { probe: true });
-      // Two slots seeded to identical bytes would make the adjacency search ambiguous. Asserted, not assumed.
-      expect(new Set(probe.preCommitments).size, `${row.key}: the pre-state commitments are not distinct`)
-        .toBe(probe.preCommitments.length);
-      const out = probe.preCommitments.map((pre, index) => {
-        const found = operandComparedAgainst(probe.trace!, hexToBin(pre));
-        console.log(`[X177] ${row.key} slot ${index}: pre=${pre} `
-          + `covenant=${found === undefined ? 'UNCHANGED' : binToHex(found)}`);
-        return found === undefined ? pre : binToHex(found);
-      });
-      cachedPost.set(row.key, out);
+      const slots = row.slots.filter((slot) => slot === 'dataNft').length;
+      const resolved = preCommitmentsOf(row);
+      for (let index = 0; index < slots; index += 1) {
+        const publishedState = [...resolved];
+        publishedState[index] = SENTINEL(index);
+        const probe = await attempt(row, row.writer, row.writerArgs, 'none', {
+          probe: true, publishedState,
+        });
+        const found = operandComparedAgainst(probe.trace!, hexToBin(SENTINEL(index)));
+        if (found === undefined) {
+          throw new Error(`${row.key}: the covenant never compared data NFT slot ${index}`);
+        }
+        resolved[index] = binToHex(found);
+        console.log(`[X177] ${row.key} slot ${index}: pre=${probe.preCommitments[index]} `
+          + `covenant=${resolved[index]}`);
+      }
+      cachedPost.set(row.key, resolved);
     }
     return cachedPost.get(row.key)!;
   }
@@ -488,7 +557,7 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   /** The declared result the route computes for a RETURNING handler, read off its own trace. */
   const cachedResult = new Map<string, Uint8Array>();
   async function routeResult(row: Row, handler: string, args: readonly unknown[]): Promise<Uint8Array> {
-    const key = `${row.key}|${handler}`;
+    const key = `${row.key}|${handler}|${row.rootCaller ?? 'none'}`;
     if (!cachedResult.has(key)) {
       const probe = await attempt(row, handler, args, 'none', { probe: true });
       const found = operandComparedAgainst(probe.trace!, PROBE_RESULT);
@@ -554,8 +623,12 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
    * that never worked - and the writer's acceptance is not a property of the row being easy.
    */
   const guard = (row: Row, name: string, args: readonly unknown[]) => async (): Promise<void> => {
-    const result = await attempt(row, name, args, 'none', {
-      declaredResult: await routeResult(row, name, args),
+    // A `refuses` row's guard runs with NO declared caller. That is deliberate and it is the point: the
+    // caller is the one field under test on that row, so the control has to take it out of the picture -
+    // otherwise a settling guard would be evidence about the caller rather than about the staging.
+    const staged: Row = row.verdict === 'refuses' ? { ...row, rootCaller: 'none' } : row;
+    const result = await attempt(staged, name, args, 'none', {
+      declaredResult: await routeResult(staged, name, args),
     });
     if (result.refusal) console.log(`[X177] ${row.key}/${name} refused: ${result.refusal.split('\n')[0]}`);
     expect(result.refusal, `${row.key}: the read-only sibling ${name} did not settle`).toBeUndefined();
@@ -570,8 +643,9 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
    * of nothing.
    */
   const guardResult = (row: Row, name: string, args: readonly unknown[]) => async (): Promise<void> => {
-    const result = await attempt(row, name, args, 'result', {
-      declaredResult: await routeResult(row, name, args),
+    const staged: Row = row.verdict === 'refuses' ? { ...row, rootCaller: 'none' } : row;
+    const result = await attempt(staged, name, args, 'result', {
+      declaredResult: await routeResult(staged, name, args),
     });
     console.log(`[X177] ${row.key}/${name} result-forgery: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
     expect(result.sent, `a forged return event was ACCEPTED on ${row.key}/${name}`).toBeUndefined();
@@ -619,7 +693,57 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
   };
 
+  /**
+   * THE NEGATIVE, and it is fail-CLOSED. `Target.protected` is `require(!isContract(msg.sender)); pwned = true;`
+   * and the bus's `msg.sender` is a LOCKING BYTECODE that the route's own caller binding accepts only in the
+   * p2sh32 shape - which `isContract` reads as a contract. Both shapes are run:
+   *
+   *   caller shape   what happens
+   *   p2sh32         the caller binding passes and `!isContract(msg.sender)` fails
+   *   P2PKH          the caller binding itself fails, on the 25-vs-35 length comparison
+   *
+   * So there is no caller this handler can be called by, and NOTHING IS ACCEPTED. This is the X115 shape - a
+   * published-but-dead admission - and it is not an exploit: the covenant refuses.
+   */
+  const unsatisfiable = (row: Row, caller: 'contract' | 'pkh') => async (): Promise<void> => {
+    const shaped: Row = { ...row, rootCaller: caller };
+    for (const publishedState of [
+      preCommitmentsOf(row),
+      preCommitmentsOf(row).map((_value, index) => (index === 0 ? SENTINEL(0) : _value)),
+    ]) {
+      const result = await attempt(shaped, row.writer, row.writerArgs, 'none', { publishedState });
+      console.log(`[X177] ${row.key} caller=${caller} published=${JSON.stringify(publishedState)}: `
+        + `${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]}`);
+      expect(result.sent, `${row.key} was ACCEPTED with a ${caller} caller`).toBeUndefined();
+      expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+      expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+    }
+  };
+
+  /** A BLOCKED row is named, not run, and not counted as evidence in either direction. */
+  const blocked = (row: Row) => (): void => {
+    console.log(`[X177] BLOCKED ${row.key}: ${row.blockedBy}`);
+    expect(row.blockedBy).toBeTruthy();
+  };
+
   for (const row of ROWS) {
+    if (row.verdict === 'blocked') {
+      it(`BLOCKED: ${row.key} is not run - ${row.blockedBy}`, blocked(row));
+      continue;
+    }
+    if (row.verdict === 'refuses') {
+      for (const caller of ['contract', 'pkh'] as const) {
+        it(`MEASURED: ${row.key} is REFUSED with a ${caller} msg.sender - fail-closed, not an exploit`,
+          unsatisfiable(row, caller), 1_800_000);
+      }
+      for (const g of row.guards) {
+        it(`GUARD: the read-only sibling '${g.name}' of ${row.contract} settles through the same staging`,
+          guard(row, g.name, g.args), 1_800_000);
+      }
+      it(`GUARD: ${row.contract}'s return event carrying a believable-wrong result is refused`,
+        guardResult(row, row.guards[0].name, row.guards[0].args), 1_800_000);
+      continue;
+    }
     it(`MEASURED: ${row.key} MUTATES - its own trace hands back the post state`, mutates(row), 1_800_000);
     it(`MEASURED: the recovered WRITER ${row.key} SETTLES`, positive(row), 1_800_000);
     for (const g of row.guards) {

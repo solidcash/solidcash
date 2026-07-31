@@ -54,7 +54,10 @@ contract ScalarJournalRelease1() {
   }
 }`;
 
-async function deploy(initial = { x: 0n, y: 0n }) {
+async function deploy(initial = { x: 0n, y: 0n }): Promise<{
+  artifact: ReturnType<typeof compileString>;
+  contract: StatefulContract;
+}> {
   const provider = createTestProvider();
   const artifact = compileString(SOURCE, { forceStateful: true });
   const contract = new Contract(artifact, [], { provider });
@@ -68,6 +71,10 @@ async function deploy(initial = { x: 0n, y: 0n }) {
 }
 
 describe('Release 1 scalar journal SDK E2E', () => {
+  const PREFLIGHT_REFUSAL =
+    /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+  const PROVIDER_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('auto-derives one sequential settlement for a helper called at three sites', async () => {
     const { contract } = await deploy();
     await contract.repeated(2n, 3n, 5n).send();
@@ -102,7 +109,7 @@ describe('Release 1 scalar journal SDK E2E', () => {
       contract.repeated(2n, 3n, 5n)
         .setState({ x: 999n, y: 0n })
         .send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(PREFLIGHT_REFUSAL);
 
     // Rejection must leave the consumed owner state untouched.
     await contract.check(0n, 0n).send();
@@ -134,7 +141,7 @@ describe('Release 1 scalar journal SDK E2E', () => {
     expect(stateOutput).toBeDefined();
     stateOutput!.token!.nft!.commitment[0] ^= 1;
 
-    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow(PROVIDER_REFUSAL);
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

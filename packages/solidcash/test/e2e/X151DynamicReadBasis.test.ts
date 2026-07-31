@@ -133,10 +133,10 @@ contract X151Copy() {
   }
 }`;
 
-
-const MASTER_REFUSAL = /error in evaluating input index 0: Program failed an OP_VERIFY operation/;
-
 const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
+
+/** `d1` is bytes8[] and `d2` is bytes10[], so a copied element carries two zero pad bytes. */
+const widened = (n: number): Uint8Array => Uint8Array.from([...new Uint8Array(8).fill(n), 0, 0]);
 
 const compile = (source: string): any => compileString(source, { forceStateful: true });
 
@@ -157,7 +157,7 @@ async function run(source: string, headLength: number, tailLength: number): Prom
     .catch((error: Error) => error.message);
 }
 
-describe('X151 - a chunk read loop indexed off a run the SDK does not co-spend', () => {
+describe('X151 - a chunk read loop must index the run the SDK actually co-spends', () => {
   it('X151-F the footprint that makes the two bases disagree, published in the artifact', () => {
     // `head` is in BOTH lists. The SDK drops it from the read-only run; the covenant still counts it. Each
     // control differs from the subject in exactly one thing, and its footprint says which.
@@ -179,11 +179,12 @@ describe('X151 - a chunk read loop indexed off a run the SDK does not co-spend',
     expect(copy.dynamicWrites).toEqual(['d2']);
   }, 180_000);
 
-  it('X151-S SUBJECT: two NON-EMPTY chunk runs are REFUSED by the covenant at input 0', async () => {
-    // `head`'s loop looks for `head`'s chunk in the first trailing slot, where the SDK put `tail`'s, and the
-    // master's covenant aborts on check (a), "input bytecode == chunk address". This is the honest call: no
-    // hostile witness, no metadata claim, nothing a spender chose.
-    expect(await run(READ_WRITE_READ, 120, 120)).toMatch(MASTER_REFUSAL);
+  it('X151-S SUBJECT: two NON-EMPTY chunk runs now SETTLE', async () => {
+    // Was the defect: `head`'s loop looked for `head`'s chunk in the first trailing slot, where the SDK put
+    // `tail`'s, and the master's covenant aborted on check (a), "input bytecode == chunk address" - on the
+    // honest call, with no hostile witness and nothing a spender chose. `dynamicReadPriorRuns` now derives the
+    // basis from the footprint the SDK lays out from, so the loop indexes the run that is actually co-spent.
+    expect(await run(READ_WRITE_READ, 120, 120)).toBe('ACCEPTED');
   }, 240_000);
 
   it('X151-Z THE OFFSET IS THE MECHANISM: an EMPTY first var makes the miscount zero and it settles', async () => {
@@ -212,11 +213,12 @@ describe('X151 - a chunk read loop indexed off a run the SDK does not co-spend',
     expect(await run(READ_WRITE_ONE, 120, 0)).toBe('ACCEPTED');
   }, 240_000);
 
-  it('X151-R ORDINARY CODE: `d2 = d1` settles into an EMPTY d2 and is REFUSED into a non-empty one', async () => {
+  it('X151-R ORDINARY CODE: `d2 = d1` settles into a NON-EMPTY d2, not just an empty one', async () => {
     // The whole-array copy desugars to the subject's footprint, and the existing coverage
-    // (`DynamicArrayCopyCast.test.ts`) only ever copies into an EMPTY `d2` - where the miscount is zero, as
-    // X151-Z shows. Copy a second time, over a `d2` that now has two elements, and the same covenant refuses
-    // at input 0. No hand-written contract is needed to reach this.
+    // (`DynamicArrayCopyCast.test.ts`) only ever copied into an EMPTY `d2` - where the miscount is zero, as
+    // X151-Z shows. Copying a second time, over a `d2` that already has two elements, was refused at input 0.
+    // No hand-written contract was needed to reach it. Asserts the VALUES and not just the length, so an
+    // append that leaves four elements cannot pass here (X167 is the copy-replaces half of that pair).
     const provider = createTestProvider();
     const artifact = compile(COPY_TWICE);
     const contract = new Contract(artifact, [], { provider });
@@ -227,6 +229,7 @@ describe('X151 - a chunk read loop indexed off a run the SDK does not co-spend',
     await sc.setD1(bytes(8, 0x11), bytes(8, 0x22)).send();
     await sc.copy().send();
     expect((await sc.getState()).d2.length).toBe(2); // d2 is now NON-empty
-    await expect(sc.copy().send()).rejects.toThrow(MASTER_REFUSAL);
+    await sc.copy().send();
+    expect((await sc.getState()).d2).toEqual([widened(0x11), widened(0x22)]);
   }, 300_000);
 });

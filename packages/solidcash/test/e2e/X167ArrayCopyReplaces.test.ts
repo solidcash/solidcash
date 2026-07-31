@@ -150,8 +150,6 @@ async function copyWith(d1Count: number, d2Count: number): Promise<Uint8Array[]>
   return (await sc.getState()).d2;
 }
 
-const MASTER_REFUSAL = /error in evaluating input index 0: Program failed an OP_VERIFY operation/;
-
 describe('X167 - a whole-array copy must replace the destination, not append to it', () => {
   it('X167-F the footprint, and the desugared statement list that carries the delete', () => {
     const artifact = compile(COPY);
@@ -196,26 +194,16 @@ describe('X167 - a whole-array copy must replace the destination, not append to 
     expect(await copyWith(2, 0)).toEqual([widened(0x11), widened(0x22)]);
   }, 300_000);
 
-  /**
-   * THESE THREE ARE STILL REFUSED, and that is X151, not this row. A copy between two NON-EMPTY chunk runs
-   * hits the trailing-chunk mis-addressing, which refuses at input 0 before the copy's correctness can be
-   * observed. The copy fix above is what makes X167-E and X167-P right; closing these needs the basis
-   * correction too, and that correction was landed here, MEASURED TO BREAK `PointerTableBound` (its
-   * outlined-body refusal fires on a real corpus shape), and reverted. See X170.
-   *
-   * They are pinned to the refusal rather than deleted, so the day X151 closes they go red and get restored
-   * to the settlement assertions in git history at `99b867d5`.
-   */
-  it('X167-L DESTINATION LONGER: still refused at input 0 by X151, not by the copy', async () => {
-    await expect(copyWith(1, 3)).rejects.toThrow(MASTER_REFUSAL);
+  it('X167-L DESTINATION LONGER: the case that would silently retain a tail', async () => {
+    expect(await copyWith(1, 3)).toEqual([widened(0x11)]);
   }, 300_000);
 
-  it('X167-S DESTINATION SHORTER: still refused at input 0 by X151', async () => {
-    await expect(copyWith(3, 1)).rejects.toThrow(MASTER_REFUSAL);
+  it('X167-S DESTINATION SHORTER', async () => {
+    expect(await copyWith(3, 1)).toEqual([widened(0x11), widened(0x22), widened(0x33)]);
   }, 300_000);
 
-  it('X167-Q DESTINATION EQUAL LENGTH: still refused at input 0 by X151', async () => {
-    await expect(copyWith(2, 2)).rejects.toThrow(MASTER_REFUSAL);
+  it('X167-Q DESTINATION EQUAL LENGTH', async () => {
+    expect(await copyWith(2, 2)).toEqual([widened(0x11), widened(0x22)]);
   }, 300_000);
 
   it('X167-B DYNAMIC SCALAR: a delete must be visible to a read LATER IN THE SAME FUNCTION', async () => {
@@ -267,17 +255,16 @@ describe('X167 - a whole-array copy must replace the destination, not append to 
     expect((await sc.getState()).d).toEqual([b8(0xaa), b8(0xbb)]);
   }, 300_000);
 
-  it('X167-R X151-R RE-RUN: the second copy is still refused at input 0 by X151', async () => {
-    // The shape the held X151 basis correction was measured against. With the basis correction applied AND
-    // the copy fix above, this settles with two elements carrying the source's widened values - measured, at
-    // `99b867d5`. Without it the second copy is refused, because d2 is now a NON-EMPTY chunk run and the
-    // mis-addressing fires. Pinned to the refusal so the pair stays honest until X170 resolves the basis
-    // correction's interaction with `PointerTableBound`.
+  it('X167-R X151-R RE-RUN: the same copy TWICE must leave two elements, not four', async () => {
+    // The shape the held X151 basis correction was measured against: `d2 = d1` run a second time over the
+    // d2 the first run produced. The reported symptom of correcting the basis alone was FOUR elements
+    // instead of two. This asserts the count AND the values, so an append cannot pass by length alone.
     const { sc } = await deploy(COPY, { d1: [], d2: [] });
     await sc.pushD1(b8(0x11)).send();
     await sc.pushD1(b8(0x22)).send();
     await sc.copy().send();
     expect((await sc.getState()).d2.length).toBe(2); // d2 is now NON-empty
-    await expect(sc.copy().send()).rejects.toThrow(MASTER_REFUSAL);
+    await sc.copy().send();
+    expect((await sc.getState()).d2).toEqual([widened(0x11), widened(0x22)]);
   }, 300_000);
 });

@@ -421,6 +421,27 @@ export function assertNoReservedHiddenBatchSelector(
     },
   );
 }
+
+export type HiddenBatchStaticRejectionCode = NonNullable<
+NonNullable<Artifact['hiddenBatch']>['handlers'][number]['rejectionCode']
+>;
+
+/** Classify every published route refusal into one of transcript-v1 section 9.2's stable classes. */
+export function classifyHiddenBatchRejection(reason: string): HiddenBatchStaticRejectionCode {
+  if (/foreign-(outstate|intermediate-state)/.test(reason)) return 'SCB_FOREIGN_INTERMEDIATE_STATE_READ';
+  if (/(future|ancestor|result-before-use)/.test(reason)) return 'SCB_FUTURE_RESULT_DEPENDENCY';
+  if (/(unbounded-recursion|external-recursion)/.test(reason)) return 'SCB_EXTERNAL_RECURSION_UNBOUNDED';
+  if (/(ambiguous-global-and-row-key|duplicate-settlement-authority)/.test(reason)) {
+    return 'SCB_DUPLICATE_SETTLEMENT_AUTHORITY';
+  }
+  if (/(stack|context|introspection-divergence|would-shrink-the-route|route-generation-unsupported)/.test(reason)) {
+    return 'SCB_STACK_CONTEXT_UNPRESERVABLE';
+  }
+  if (/(effect|event|transfer|token|signature-route-binding|resource.*cannot-be-summarized)/.test(reason)) {
+    return 'SCB_EFFECT_UNSUMMARIZABLE';
+  }
+  return 'SCB_UNSUPPORTED_CONSTRUCT';
+}
 const MAX_HIDDEN_BATCH_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
 
@@ -3097,7 +3118,21 @@ function compileResolvedAst(
         // `__updateBlockOracle`), and those reached the artifact as `eligible: false` with the key absent.
         // Resolve the same way the ABSENCE channel already does (`hiddenBatchAbsenceMessage`'s `reasonOf`).
         ...(fn.hiddenBatchEligible !== true && {
-          rejectionReason: fn.hiddenBatchRejectionReason ?? 'not-examined-by-route-synthesis',
+          ...(() => {
+            const reason = fn.hiddenBatchRejectionReason ?? 'not-examined-by-route-synthesis';
+            const handlerId = artifact.invocationAnalysis?.functions.find((candidate) =>
+              candidate.name === fn.name
+              && candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined))?.id;
+            return {
+              rejectionReason: reason,
+              rejectionCode: classifyHiddenBatchRejection(reason),
+              rejectionContext: {
+                ...(handlerId !== undefined && { handlerId }),
+                functionName: fn.name,
+                reason,
+              },
+            };
+          })(),
         }),
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
       })),

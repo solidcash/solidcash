@@ -727,6 +727,15 @@ export interface Artifact {
       }[];
       eligible: boolean;
       rejectionReason?: string;
+      rejectionCode?:
+        | 'SCB_UNSUPPORTED_CONSTRUCT'
+        | 'SCB_FUTURE_RESULT_DEPENDENCY'
+        | 'SCB_EXTERNAL_RECURSION_UNBOUNDED'
+        | 'SCB_DUPLICATE_SETTLEMENT_AUTHORITY'
+        | 'SCB_FOREIGN_INTERMEDIATE_STATE_READ'
+        | 'SCB_STACK_CONTEXT_UNPRESERVABLE'
+        | 'SCB_EFFECT_UNSUMMARIZABLE';
+      rejectionContext?: { handlerId?: number; functionName: string; reason: string };
       /** OP_INVOKE body covered by CHECKSIG when this handler is called from SCB1. */
       signatureBytecode?: string;
       batchKeyWitnesses?: {

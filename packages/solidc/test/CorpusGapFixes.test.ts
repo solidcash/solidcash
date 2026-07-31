@@ -1998,12 +1998,16 @@ describe('foreign external fn-ptr RETURNED from an internal helper (beta-reduced
     expect(art.abi.some((f) => f.name === 'relay')).toBe(false); // inlined away
   });
   it('does NOT inline a self-ref passed to an internal-pointer helper (stays OP_INVOKE)', () => {
-    // internal fn-ptr param + self-ref arg must keep compiling via the existing functionId path.
-    expect(() => compileString('contract C {'
+    // internal fn-ptr param + self-ref arg must keep compiling via the existing functionId path. "it compiles"
+    // cannot see the OP_INVOKE the title names - a fully inlined build compiles too - so assert the subroutine
+    // form the claim is about.
+    const art = compileString('contract C {'
       + ' function g(uint x) internal returns(uint) { return x + 1; }'
       + ' function relay(function(uint) internal returns(uint) cb, uint v) internal returns(uint) { return cb(v); }'
-      + ' function use(uint v) public returns(uint) { return relay(g, v); } }', { solidityImportCompat: true }))
-      .not.toThrow();
+      + ' function use(uint v) public returns(uint) { return relay(g, v); } }', { solidityImportCompat: true });
+    expect(art.bytecode).toContain('OP_DEFINE');
+    expect(art.bytecode).toContain('OP_INVOKE');
+    expect(art.abi.map((f) => f.name)).toEqual(['use']);
   });
 });
 
@@ -3156,9 +3160,20 @@ describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', ()
       + ' return abi.decode(_returnData, (string)); } }', opts)).not.toThrow();
   });
   it('leaves add(int, N) arithmetic untouched (only bytes vars slice)', () => {
-    expect(() => compileString('pragma solidity ^0.8.0; contract C {'
+    // "it compiles" cannot see arithmetic-vs-slice, which is the entire claim: a wrong slice lowering would
+    // compile just as happily. The decisive observable is byte-identity with the plain arithmetic form.
+    const asmForm = compileString('pragma solidity ^0.8.0; contract C {'
       + ' function f(uint256 x) public pure returns (uint256 y) {'
-      + ' assembly { y := add(x, 0x04) } } }', opts)).not.toThrow();
+      + ' assembly { y := add(x, 0x04) } } }', opts);
+    const plainForm = compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function f(uint256 x) public pure returns (uint256 y) { y = x + 4; } }', opts);
+    expect(asmForm.bytecode).toBe(plainForm.bytecode);
+    // ...and the bytes-var form, which DOES slice, is a different script - so the equality above is a real
+    // discrimination and not an artefact of both sides collapsing to the same scaffolding.
+    const bytesForm = compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function f(bytes memory d) public pure returns (bytes memory r) {'
+      + ' assembly { d := add(d, 0x04) } r = d; } }', opts);
+    expect(bytesForm.bytecode).not.toBe(asmForm.bytecode);
   });
 });
 

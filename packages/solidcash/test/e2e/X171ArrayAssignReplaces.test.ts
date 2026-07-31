@@ -117,17 +117,39 @@ contract X171Branch() {
   }
 }`;
 
+/**
+ * A NON-LITERAL right-hand side. `convertWrites` now converts EVERY `StateAssignNode` for the cached name,
+ * not only array literals, so the identifier RHS has to land too - and it exercises the `CacheDynamicArrayInLoop`
+ * half WITHOUT the `blobEncoded` half. The source is left EMPTY so `chunks(src) = 0` and X151's trailing-chunk
+ * mis-addressing does not fire (the same isolation X167-A uses).
+ */
+const ASSIGN_VAR_THEN_PUSH = `pragma solidcash >=0.8.0;
+contract X171AssignVar() {
+  bytes8[] d;
+  bytes8[] e;
+  function push(bytes8 x) public {
+    d.push(x);
+    require(true);
+  }
+  function copyEmptyE(bytes8 b, int n) public {
+    this.d = e;
+    int i = 0;
+    while (i < n) { d.push(b); i = i + 1; }
+    require(true);
+  }
+}`;
+
 const b8 = (n: number): Uint8Array => new Uint8Array(8).fill(n);
 
 const compile = (source: string): any => compileString(source, { forceStateful: true });
 
 /** Deploy and seed `d` to `seed.length` elements, so each shape states the destination it starts from. */
-async function deploy(source: string, seed: number[]): Promise<any> {
+async function deploy(source: string, seed: number[], initial: Record<string, unknown> = { d: [] }): Promise<any> {
   const provider = createTestProvider();
   const artifact = compile(source);
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, { d: [] }, { saltContract: true },
+    provider, contract, artifact.stateLayout!, initial, { saltContract: true },
   );
   const sc = StatefulContract.withCategory(contract, categoryId) as any;
   for (const v of seed) await sc.push(b8(v)).send();
@@ -224,6 +246,13 @@ describe('X171 - a whole-array assign must replace the destination, not be dropp
     const notTaken = await deploy(ASSIGN_IN_BRANCH, [0x11, 0x22]);
     await notTaken.resetIf(false, b8(0xaa), b8(0xbb), 1n).send();
     expect((await notTaken.getState()).d).toEqual([b8(0x11), b8(0x22), b8(0xbb)]);
+  }, 300_000);
+
+  it('X171-V NON-LITERAL RHS: `this.d = e` with e empty must clear a LONGER d', async () => {
+    // Exercises the CacheDynamicArrayInLoop half alone - no array literal, so no blobEncoded involved.
+    const sc = await deploy(ASSIGN_VAR_THEN_PUSH, [0x11, 0x22, 0x33], { d: [], e: [] });
+    await sc.copyEmptyE(b8(0xbb), 0n).send();
+    expect((await sc.getState()).d).toEqual([]);
   }, 300_000);
 
   it('X171-C BRANCH TAKEN: the assign under a TAKEN branch must replace', async () => {

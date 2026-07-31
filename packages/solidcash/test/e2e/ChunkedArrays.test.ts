@@ -5,6 +5,8 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // Chunk-packed fixed-width arrays (docs/arrays.md), behind the chunkedArrays flag. Whole-array
 // store/read round-trip through the dynamic-storage chunk machinery + the tight-pack codec, plus
 // shrink-to-empty and multiple dynamic vars per contract (cross-field preservation).
@@ -99,8 +101,8 @@ describe('chunk-packed array: whole-array round-trip', () => {
     for (const [i, exp] of [[0n, 10n], [1n, 20n], [2n, 30n], [3n, 40n]] as const) {
       await sc.checkElem(i, exp).send();
     }
-    await expect(sc.checkElem(1n, 99n).send()).rejects.toThrow(); // wrong value
-    await expect(sc.checkElem(4n, 0n).send()).rejects.toThrow();  // out of bounds
+    await expect(sc.checkElem(1n, 99n).send()).rejects.toThrow(verifyFailure); // wrong value
+    await expect(sc.checkElem(4n, 0n).send()).rejects.toThrow(verifyFailure); // out of bounds
   });
 
   it('keeps two dynamic arrays independent: writing one preserves the other (header + chunks)', async () => {
@@ -286,7 +288,7 @@ describe('chunk-packed array: for..of iteration', () => {
     await sc.setNums(10n, 20n, 30n, 40n, alicePub, sig()).send(); // 132 B = 2 chunks, sum 100
     await sc.checkSum(100n).send();                 // sums elements (incl. boundary-straddling element 3)
     await sc.checkCount(4n).send();                 // loop var unused -> still allowed
-    await expect(sc.checkSum(99n).send()).rejects.toThrow();
+    await expect(sc.checkSum(99n).send()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -321,7 +323,7 @@ describe('chunk-packed array: variable-width elements (string[] / int[] / bytes[
     expect(await sc.getState().then((s) => s.words)).toEqual([big, 'mid', big2]);
     await sc.checkElem(0n, big).send();             // element 0 straddles chunks
     await sc.totalLen(203n).send();                 // for..of sums element .lengths (100+3+100)
-    await expect(sc.checkElem(1n, 'nope').send()).rejects.toThrow();
+    await expect(sc.checkElem(1n, 'nope').send()).rejects.toThrow(verifyFailure);
 
     await sc.pushWord('extra', alicePub, sig()).send();
     expect(await sc.getState().then((s) => (s.words as string[]).length)).toBe(4);
@@ -353,7 +355,7 @@ contract C() {
     await sc.count(2n).send();
     await sc.checkElem(0n, a1).send();              // framed decode of element 0
     await sc.checkElem(1n, a2).send();
-    await expect(sc.checkElem(0n, a2).send()).rejects.toThrow(); // wrong expected at idx 0
+    await expect(sc.checkElem(0n, a2).send()).rejects.toThrow(verifyFailure); // wrong expected
     await sc.add(a3, alicePub, sig()).send();       // push to non-empty
     await sc.count(3n).send();
     await sc.checkElem(2n, a3).send();
@@ -419,7 +421,7 @@ describe('chunk-packed array: variable-width struct elements', () => {
     expect(await sc.getState().then((s) => s.items)).toEqual([{ name: big, qty: 3n }, { name: 'banana', qty: 5n }]);
     await sc.checkName(0n, big).send();          // element 0 straddles chunks
     await sc.checkQty(1n, 5n).send();
-    await expect(sc.checkQty(1n, 4n).send()).rejects.toThrow();
+    await expect(sc.checkQty(1n, 4n).send()).rejects.toThrow(verifyFailure);
 
     await sc.pushItem('cherry', 7n, alicePub, sig()).send();
     expect(await sc.getState().then((s) => (s.items as unknown[]).length)).toBe(3);

@@ -81,7 +81,9 @@ describe('sound external-call target pinning', () => {
     // counterRef holds addrA, but we co-spend counterB: identity OP_EQUALVERIFY must fail closed.
     await expect(
       readerSc.bump(alicePub, sig()).withExternalCall(counterBSc, 'increment', [alicePub, sig()]).send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 
   it('P2: an address-literal target compiles and records addressLiteral in the ABI (un-satisfiable pin)', () => {

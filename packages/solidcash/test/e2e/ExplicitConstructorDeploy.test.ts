@@ -144,6 +144,8 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     // (false) and must fail.
     const okTx = await result.contract.call.check(alicePkh).send();
     expect(okTx.txid).toBeDefined();
-    await expect(result.contract.call.check(bobPkh).send()).rejects.toThrow();
+    await expect(result.contract.call.check(bobPkh).send()).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

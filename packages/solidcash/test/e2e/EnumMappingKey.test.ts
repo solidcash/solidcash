@@ -34,7 +34,9 @@ describe('enum mapping key (int-backed)', () => {
 
     await sc.set(1n, 42n, alicePub, sig()).send(); // counts[Status.Active] = 42
     await sc.get(1n, 42n).send();                   // reads 42 back
-    await expect(sc.get(1n, 7n).send()).rejects.toThrow();
+    await expect(sc.get(1n, 7n).send()).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
     await sc.get(0n, 0n).send();                     // a distinct key (Pending) is still the default 0
   });
 });

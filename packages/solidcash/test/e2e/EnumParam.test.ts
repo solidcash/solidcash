@@ -25,7 +25,9 @@ describe('Enum-typed function parameters', () => {
   it('fails when the enum value does not match', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.pick(0n)).rejects.toThrow();
+    await expect(sc.pick(0n)).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
   it('exposes the enum name in the ABI', () => {
     const art = compileString(SOURCE);

@@ -56,7 +56,10 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X214** - **450 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
   remaining vacuity surface: 1.6x the population that just came back clean, and the exact shape
   earlier rounds repeatedly found vacuity in.
-- **X170** - the basis correction's outlined-body refusal fires on a real contract.
+- **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
+  compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
+  compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`
+  pins the one-token boundary; `Layer3RuntimeSizedPointerTable.test.ts` settles 1, 2, and 3 rows.
 - **X207** - `logicalValueMode` reachability: can route uniformity actually demote a payable handler?
   **This is now known to be YES in general** (see X229), so the row is narrower than it looks.
 - **X227** - a possible FOURTH msg.value population (`contractUsesMsgValue` vs `routeUsesMsgValue`).

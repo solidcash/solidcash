@@ -199,6 +199,20 @@ const DYNAMIC_ROWS: ReadonlyArray<{ file: string; contract: string; gained: read
   },
 ];
 
+/**
+ * WHICH HANDLERS THE REPAIR GAINED, quoted from `Layer3RecoveredPartitionX160`'s own partition rows so the
+ * count below is checkable against its source rather than asserted here. All four rows are `set: 'NEW'` with
+ * `before: []`, so each contract's whole published surface is gained.
+ *
+ * This is a CITATION, not a re-measurement. If X160's rows move, this constant is stale.
+ */
+const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
+  DutchAuction: ['getPrice', 'nft', 'nftId', 'seller', 'startingPrice', 'startAt', 'expiresAt', 'discountRate'],
+  Attack: ['getBalance', 'etherStore'],
+  Target: ['isContract', 'protected', 'pwned'],
+  TestTransientStorage: ['val'],
+};
+
 /** What one built attempt differs in. Exactly one field moves per hostile. */
 type Attack = 'none' | 'result' | 'state-unwritten' | 'state-neighbour';
 
@@ -410,12 +424,14 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
         .toBeGreaterThan(0);
       dynamicRowsChecked += 1;
       const published = ((artifact.hiddenBatch?.handlers ?? []) as any[]).map((handler) => handler.name);
-      const flags = row.gained.filter((handler) => published.includes(handler)).map((handler) => {
+      const flags: string[] = [];
+      for (const handler of row.gained) {
+        if (!published.includes(handler)) continue;
         handlersChecked += 1;
         const abi = (artifact.abi as any[]).find((entry) => entry.name === handler);
         if (abi !== undefined && abi.writesState !== false) writers.push(`${row.contract}.${handler}`);
-        return `${handler}=${abi === undefined ? 'no-abi' : abi.writesState}`;
-      });
+        flags.push(`${handler}=${abi === undefined ? 'no-abi' : abi.writesState}`);
+      }
       console.log(`[X193] DYNAMIC ${row.contract} dynamic=${JSON.stringify(dynamic)} `
         + `gained writesState: ${flags.join(' ')}`);
     }
@@ -466,7 +482,8 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
   function withoutIneligibleMsgValue(artifact: any): any {
     const handlers = (artifact.hiddenBatch.handlers as any[]).map((handler) => {
       if (handler.eligible === true || handler.usesMsgValue !== true) return handler;
-      const { usesMsgValue: _dropped, ...rest } = handler;
+      const rest = { ...handler };
+      delete rest.usesMsgValue;
       return rest;
     });
     return { ...artifact, hiddenBatch: { ...artifact.hiddenBatch, handlers } };
@@ -735,125 +752,140 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
     return cachedPost.get(row.key)!;
   }
 
+  /**
+   * THE X192 CONTROL, per row. The same route built twice, differing ONLY in `usesMsgValue` on the ineligible
+   * handler, with the participant script asserted identical. As published it is refused; with the flag cleared
+   * it settles.
+   */
+  const x192Control = (row: Row) => async (): Promise<void> => {
+    const declaredResult = await routeResult(row, row.writer, row.writerArgs);
+    const corrected = await attempt(row, row.writer, row.writerArgs, 'none', { declaredResult });
+    const asPublished = await attempt(row, row.writer, row.writerArgs, 'none', {
+      declaredResult, legacyValueMode: true,
+    });
+    expect(corrected.participantScript, `${row.key}: the two arms are not the same covenant`)
+      .toBe(asPublished.participantScript);
+    console.log(`[X193] ${row.key} CORRECTED: ${corrected.sent ?? corrected.refusal!.split('\n')[0]}`);
+    console.log(`[X193] ${row.key} AS PUBLISHED: `
+      + `${(asPublished.refusal ?? `ACCEPTED ${asPublished.sent}`).split('\n')[0]} `
+      + `at input ${asPublished.failingInput ?? '-'}`);
+    expect(corrected.refusal, `${row.key}: the corrected arm did not settle`).toBeUndefined();
+    expect(asPublished.sent, `${row.key} settled with the published header - X192 is not the cause`)
+      .toBeUndefined();
+    expect(asPublished.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    expect(asPublished.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
+
+  /** THE POSITIVE for a read-only row: it publishes the result the route computed. */
+  const positiveRead = (row: Row) => async (): Promise<void> => {
+    const declaredResult = await routeResult(row, row.writer, row.writerArgs);
+    const result = await attempt(row, row.writer, row.writerArgs, 'none', { declaredResult });
+    if (result.refusal) console.log(`[X193] ${row.key} refused: ${result.refusal.split('\n')[0]}`);
+    expect(result.refusal, `${row.key}.${row.writer} did not settle`).toBeUndefined();
+    expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
+    console.log(`[X193] ${row.key}.${row.writer} SETTLED ${result.sent}`);
+  };
+
+  /**
+   * THE WRITE IS REAL, AND THE COVENANT SAID SO. The commitments the route computed are the encoding of the
+   * POST state and are NOT the encoding of the PRE state; the bytes come off the trace.
+   */
+  const mutates = (row: Row) => async (): Promise<void> => {
+    const artifact = layoutArtifact(row);
+    const staged = withBlockOracle(artifact.stateLayout, row.pre, row.oracleTimestamp);
+    const computed = await covenantPostState(row);
+    const written = buildInitialStateCommitments(artifact.stateLayout!, { ...staged, ...row.post });
+    const unwritten = buildInitialStateCommitments(artifact.stateLayout!, staged);
+    console.log(`[X193] ${row.key} computed ${JSON.stringify(computed)}`);
+    console.log(`[X193] ${row.key} post     ${JSON.stringify(written)}`);
+    console.log(`[X193] ${row.key} pre      ${JSON.stringify(unwritten)}`);
+    expect(computed).toEqual(written);
+    expect(computed).not.toEqual(unwritten);
+  };
+
+  /** THE POSITIVE for a writer row: the covenant's own post commitments are published and it settles. */
+  const positiveWrite = (row: Row) => async (): Promise<void> => {
+    const result = await attempt(row, row.writer, row.writerArgs, 'none', {
+      publishedState: await covenantPostState(row),
+    });
+    if (result.refusal) console.log(`[X193] ${row.key} refused: ${result.refusal.split('\n')[0]}`);
+    expect(result.refusal, `the recovered writer ${row.key} did not settle`).toBeUndefined();
+    expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
+    console.log(`[X193] ${row.key} SETTLED ${result.sent}`);
+  };
+
+  /** HOSTILE. Each differs from the settling positive in exactly ONE published field. */
+  const hostile = (row: Row, attack: Attack) => async (): Promise<void> => {
+    const post = await covenantPostState(row);
+    const artifact = layoutArtifact(row);
+    const pre = buildInitialStateCommitments(
+      artifact.stateLayout!, withBlockOracle(artifact.stateLayout, row.pre, row.oracleTimestamp),
+    );
+    const written = post.findIndex((value, index) => value !== pre[index]);
+    expect(written, `${row.key}: the covenant wrote no slot at all`).toBeGreaterThanOrEqual(0);
+    const publishedState = [...post];
+    if (attack === 'state-unwritten') publishedState[written] = pre[written];
+    else {
+      const bytes = hexToBin(post[written]);
+      bytes[bytes.length - 1] ^= 0x01;
+      publishedState[written] = binToHex(bytes);
+    }
+    const result = await attempt(row, row.writer, row.writerArgs, attack, { publishedState });
+    console.log(`[X193] ${row.key}/${attack}: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
+    expect(result.sent, `a forged ${attack} was ACCEPTED on ${row.key}`).toBeUndefined();
+    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
+
+  /**
+   * GUARD NEGATIVE CONTROL. A read-only sibling settles through the IDENTICAL staging, so a refusal elsewhere
+   * is a refusal of the attacked field and not of a harness that never worked.
+   */
+  const guard = (row: Row, name: string, args: readonly unknown[]) => async (): Promise<void> => {
+    const declaredResult = await routeResult(row, name, args);
+    const result = await attempt(row, name, args, 'none', { declaredResult });
+    if (result.refusal) console.log(`[X193] ${row.key}/${name} refused: ${result.refusal.split('\n')[0]}`);
+    expect(result.refusal, `${row.key}: the read-only sibling ${name} did not settle`).toBeUndefined();
+    expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
+    console.log(`[X193] ${row.key}/${name} guard settled ${result.sent}`);
+  };
+
+  /**
+   * GUARD, RETURN-EVENT DIRECTION. A believable-wrong result - the route's own commitment with one bit moved -
+   * is refused at the participant input, which is where the return-event check is shown to be LIVE.
+   */
+  const guardResult = (row: Row, name: string, args: readonly unknown[]) => async (): Promise<void> => {
+    const declaredResult = await routeResult(row, name, args);
+    const result = await attempt(row, name, args, 'result', { declaredResult });
+    console.log(`[X193] ${row.key}/${name} result-forgery: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
+    expect(result.sent, `a forged return event was ACCEPTED on ${row.key}`).toBeUndefined();
+    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
+
   for (const row of ROWS) {
     if (row.x192) {
-      /**
-       * THE X192 CONTROL, per row. The same route built twice, differing ONLY in `usesMsgValue` on the
-       * ineligible handler, with the participant script asserted identical. As published it is refused; with
-       * the flag cleared it settles.
-       */
       it(`CONTROL: ${row.key} with the PUBLISHED msg.value flag is refused, and the script is unchanged`,
-        async () => {
-          const declaredResult = await routeResult(row, row.writer, row.writerArgs);
-          const corrected = await attempt(row, row.writer, row.writerArgs, 'none', { declaredResult });
-          const asPublished = await attempt(row, row.writer, row.writerArgs, 'none', {
-            declaredResult, legacyValueMode: true,
-          });
-          expect(corrected.participantScript, `${row.key}: the two arms are not the same covenant`)
-            .toBe(asPublished.participantScript);
-          console.log(`[X193] ${row.key} CORRECTED: ${corrected.sent ?? corrected.refusal!.split('\n')[0]}`);
-          console.log(`[X193] ${row.key} AS PUBLISHED: `
-            + `${(asPublished.refusal ?? `ACCEPTED ${asPublished.sent}`).split('\n')[0]} `
-            + `at input ${asPublished.failingInput ?? '-'}`);
-          expect(corrected.refusal, `${row.key}: the corrected arm did not settle`).toBeUndefined();
-          expect(asPublished.sent, `${row.key} settled with the published header - X192 is not the cause`)
-            .toBeUndefined();
-          expect(asPublished.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-          expect(asPublished.failingInput, 'the refusal did not name the participant input').toBe(0);
-        }, 1_800_000);
+        x192Control(row), 1_800_000);
     }
-
     if (row.verdict === 'reads') {
-      it(`MEASURED: ${row.key}.${row.writer} SETTLES`, async () => {
-        const declaredResult = await routeResult(row, row.writer, row.writerArgs);
-        const result = await attempt(row, row.writer, row.writerArgs, 'none', { declaredResult });
-        if (result.refusal) console.log(`[X193] ${row.key} refused: ${result.refusal.split('\n')[0]}`);
-        expect(result.refusal, `${row.key}.${row.writer} did not settle`).toBeUndefined();
-        expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-        console.log(`[X193] ${row.key}.${row.writer} SETTLED ${result.sent}`);
-      }, 1_800_000);
+      it(`MEASURED: ${row.key}.${row.writer} SETTLES`, positiveRead(row), 1_800_000);
     } else {
-      /**
-       * THE WRITE IS REAL, AND THE COVENANT SAID SO. The commitments the route computed are the encoding of
-       * the POST state and are NOT the encoding of the PRE state; the bytes come off the trace.
-       */
-      it(`MEASURED: ${row.key} MUTATES - its own trace hands back the post state`, async () => {
-        const artifact = layoutArtifact(row);
-        const staged = withBlockOracle(artifact.stateLayout, row.pre, row.oracleTimestamp);
-        const computed = await covenantPostState(row);
-        const written = buildInitialStateCommitments(artifact.stateLayout!, { ...staged, ...row.post });
-        const unwritten = buildInitialStateCommitments(artifact.stateLayout!, staged);
-        console.log(`[X193] ${row.key} computed ${JSON.stringify(computed)}`);
-        console.log(`[X193] ${row.key} post     ${JSON.stringify(written)}`);
-        console.log(`[X193] ${row.key} pre      ${JSON.stringify(unwritten)}`);
-        expect(computed).toEqual(written);
-        expect(computed).not.toEqual(unwritten);
-      }, 1_800_000);
-
-      it(`MEASURED: the recovered WRITER ${row.key} SETTLES`, async () => {
-        const result = await attempt(row, row.writer, row.writerArgs, 'none', {
-          publishedState: await covenantPostState(row),
-        });
-        if (result.refusal) console.log(`[X193] ${row.key} refused: ${result.refusal.split('\n')[0]}`);
-        expect(result.refusal, `the recovered writer ${row.key} did not settle`).toBeUndefined();
-        expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-        console.log(`[X193] ${row.key} SETTLED ${result.sent}`);
-      }, 1_800_000);
-
-      for (const attack of ['state-unwritten', 'state-neighbour'] as const) {
-        it(`HOSTILE: ${row.key} with the ${attack === 'state-unwritten'
-          ? 'write simply not applied' : 'written slot moved one bit'} is refused`, async () => {
-          const post = await covenantPostState(row);
-          const artifact = layoutArtifact(row);
-          const pre = buildInitialStateCommitments(
-            artifact.stateLayout!, withBlockOracle(artifact.stateLayout, row.pre, row.oracleTimestamp),
-          );
-          const written = post.findIndex((value, index) => value !== pre[index]);
-          expect(written, `${row.key}: the covenant wrote no slot at all`).toBeGreaterThanOrEqual(0);
-          const publishedState = [...post];
-          if (attack === 'state-unwritten') publishedState[written] = pre[written];
-          else {
-            const bytes = hexToBin(post[written]);
-            bytes[bytes.length - 1] ^= 0x01;
-            publishedState[written] = binToHex(bytes);
-          }
-          const result = await attempt(row, row.writer, row.writerArgs, attack, { publishedState });
-          console.log(`[X193] ${row.key}/${attack}: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
-          expect(result.sent, `a forged ${attack} was ACCEPTED on ${row.key}`).toBeUndefined();
-          expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-          expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
-        }, 1_800_000);
-      }
+      it(`MEASURED: ${row.key} MUTATES - its own trace hands back the post state`, mutates(row), 1_800_000);
+      it(`MEASURED: the recovered WRITER ${row.key} SETTLES`, positiveWrite(row), 1_800_000);
+      it(`HOSTILE: ${row.key} with the write simply not applied is refused`,
+        hostile(row, 'state-unwritten'), 1_800_000);
+      it(`HOSTILE: ${row.key} with the written slot moved one bit is refused`,
+        hostile(row, 'state-neighbour'), 1_800_000);
     }
-
     for (const g of row.guards) {
       it(`GUARD: the read-only sibling '${g.name}' of ${row.contract} settles through the same staging`,
-        async () => {
-          const declaredResult = await routeResult(row, g.name, g.args);
-          const result = await attempt(row, g.name, g.args, 'none', { declaredResult });
-          if (result.refusal) console.log(`[X193] ${row.key}/${g.name} refused: ${result.refusal.split('\n')[0]}`);
-          expect(result.refusal, `${row.key}: the read-only sibling ${g.name} did not settle`).toBeUndefined();
-          expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-          console.log(`[X193] ${row.key}/${g.name} guard settled ${result.sent}`);
-        }, 1_800_000);
+        guard(row, g.name, g.args), 1_800_000);
     }
-
-    /**
-     * GUARD, RETURN-EVENT DIRECTION. A believable-wrong result - the route's own commitment with one bit
-     * moved - is refused at the participant input, which is where the return-event check is shown to be LIVE.
-     */
     const returning = row.verdict === 'reads' ? { name: row.writer, args: row.writerArgs } : row.guards[0];
     if (returning !== undefined) {
-      it(`GUARD: ${row.contract}.${returning.name}'s return event carrying a believable-wrong result is refused`,
-        async () => {
-          const declaredResult = await routeResult(row, returning.name, returning.args);
-          const result = await attempt(row, returning.name, returning.args, 'result', { declaredResult });
-          console.log(`[X193] ${row.key}/${returning.name} result-forgery: `
-            + `${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
-          expect(result.sent, `a forged return event was ACCEPTED on ${row.key}`).toBeUndefined();
-          expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-          expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
-        }, 1_800_000);
+      it(`GUARD: ${row.contract}.${returning.name}'s return event carrying a believable-wrong result `
+        + 'is refused', guardResult(row, returning.name, returning.args), 1_800_000);
     }
   }
 
@@ -954,8 +986,15 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
 
   /** HOW MANY OF THE 206 this file settles, counted by name rather than by impression. */
   it('MEASURED: how many gained handlers this file settles on the VM', () => {
-    const settled = ROWS.flatMap((row) => [row.writer, ...row.guards.map((g) => g.name)]
-      .map((handler) => `${row.contract}.${handler}`));
+    const settled: string[] = [];
+    for (const row of ROWS) {
+      for (const handler of [row.writer, ...row.guards.map((g) => g.name)]) {
+        // Every counted handler is asserted to be one the repair GAINED, against X160's own list.
+        expect(GAINED_BY_THE_REPAIR[row.contract], `${row.contract}.${handler} is not a gained handler`)
+          .toContain(handler);
+        settled.push(`${row.contract}.${handler}`);
+      }
+    }
     for (const handler of settled) console.log(`[X193] SETTLED ON THE VM: ${handler}`);
     console.log(`[X193] ${settled.length} gained handlers settle here; ${206 - settled.length} of the 206 `
       + 'are NOT proved by this file, and most of them are not proved anywhere.');

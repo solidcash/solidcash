@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import {
-  asmToScript, buildInitialStateCommitments, scriptToBytecode, sourceMapToLocationData,
-} from '@solidcash/utils';
+import { buildInitialStateCommitments, scriptToBytecode, sourceMapToLocationData } from '@solidcash/utils';
 import { compileFileMulti, compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
@@ -76,6 +74,15 @@ const PKH_CALLER = `76a914${binToHex(alicePkh as unknown as Uint8Array)}88ac`;
 
 const FILE = `${SBE}/app/english-auction/EnglishAuction.sol`;
 const CONTRACT = 'EnglishAuction';
+
+/**
+ * WHAT THE REPAIR GAINED ON THIS CONTRACT, quoted from `Layer3RecoveredPartitionX160`'s own row - `set: 'A'`,
+ * `before: ['bids']` - so the three names this file settles are checkable against their source. A CITATION,
+ * not a re-measurement.
+ */
+const GAINED_BY_THE_REPAIR: readonly string[] = [
+  'nft', 'nftId', 'seller', 'endAt', 'started', 'ended', 'highestBidder', 'highestBid',
+];
 
 /** The route body's OP_INVOKE selector: "SCB1" in ASCII, which is what makes it findable in `functionDebug`. */
 const ROUTE_SELECTOR = '53434231';
@@ -156,7 +163,8 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
   function withoutIneligibleMsgValue(artifact: any): any {
     const handlers = (artifact.hiddenBatch.handlers as any[]).map((handler) => {
       if (handler.eligible === true || handler.usesMsgValue !== true) return handler;
-      const { usesMsgValue: _dropped, ...rest } = handler;
+      const rest = { ...handler };
+      delete rest.usesMsgValue;
       return rest;
     });
     return { ...artifact, hiddenBatch: { ...artifact.hiddenBatch, handlers } };
@@ -439,7 +447,7 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
     expect(opcodes.slice(0, 6)).toEqual([0x56, 0x7f, 0x75, 0x55, 0x7f, 0x77]);
     expect(opcodes[7], 'the failing instruction is not OP_EQUALVERIFY').toBe(0x88);
     const demandedMode = instructions[failing - 1].data as Uint8Array | undefined;
-    console.log(`[X192] the route DEMANDS SCB1 header byte 5 = `
+    console.log('[X192] the route DEMANDS SCB1 header byte 5 = '
       + `${demandedMode === undefined ? '(minimal push)' : binToHex(demandedMode)}`);
     expect(demandedMode).toBeDefined();
     expect(binToHex(demandedMode!)).toBe('00');
@@ -525,15 +533,19 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
    *
    * The three names are X160's own gained list for this contract minus `bids`, which was already in `before`.
    */
+  const settles = (handler: string) => async (): Promise<void> => {
+    expect(GAINED_BY_THE_REPAIR, `${handler} is not a handler the repair gained`).toContain(handler);
+    const declaredResult = await routeResult(handler);
+    const sent = await trace(handler, { correctValueMode: true, send: true, declaredResult });
+    if (sent.refusal) console.log(`[X192] ${handler} refused: ${sent.refusal.split('\n')[0]}`);
+    expect(sent.refusal, `EnglishAuction.${handler} did not settle`).toBeUndefined();
+    expect(sent.sent).toMatch(/^[0-9a-f]{64}$/);
+    console.log(`[X192] EnglishAuction.${handler} SETTLED ${sent.sent}`);
+  };
+
   for (const handler of ['highestBid', 'endAt', 'started']) {
-    it(`MEASURED: with the header corrected, EnglishAuction.${handler} SETTLES`, async () => {
-      const declaredResult = await routeResult(handler);
-      const sent = await trace(handler, { correctValueMode: true, send: true, declaredResult });
-      if (sent.refusal) console.log(`[X192] ${handler} refused: ${sent.refusal.split('\n')[0]}`);
-      expect(sent.refusal, `EnglishAuction.${handler} did not settle`).toBeUndefined();
-      expect(sent.sent).toMatch(/^[0-9a-f]{64}$/);
-      console.log(`[X192] EnglishAuction.${handler} SETTLED ${sent.sent}`);
-    }, 1_800_000);
+    it(`MEASURED: with the header corrected, EnglishAuction.${handler} SETTLES`,
+      settles(handler), 1_800_000);
   }
 
   /**

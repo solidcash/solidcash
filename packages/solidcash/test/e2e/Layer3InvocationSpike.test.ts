@@ -150,7 +150,7 @@ describe('layer-3 authenticated invocation spike (E2E)', () => {
     // callerIdx is 0 (covenant reads participant 0), but the OP_RETURN claims participant 1 sent it.
     const forgedSender = hexToBin(s.parts[1].contract.lockingBytecode);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s, { callerIdx: 0, calleeIdx: 1, senderLbc: forgedSender }))))
-      .rejects.toThrow();
+      .rejects.toThrow(/error in evaluating input index 0: Program failed an OP_VERIFY operation/);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s, { callerIdx: 0, calleeIdx: 1 }))))
       .resolves.toBeTypeOf('string');
   });
@@ -161,7 +161,8 @@ describe('layer-3 authenticated invocation spike (E2E)', () => {
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.outputs[2].lockingBytecode = forged.outputs[2].lockingBytecode.slice();
     forged.outputs[2].lockingBytecode[10] ^= 1; // flip a byte inside the delivered sender
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(/error in evaluating input index 0: Program failed an OP_VERIFY operation/);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 });

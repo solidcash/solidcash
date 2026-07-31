@@ -30,10 +30,10 @@ import type { Artifact } from '@solidcash/utils';
 // | tx.locktime             | admitted                    | admitted                  | EQUIVALENT |
 // | block.* (all 10)        | admitted                    | admitted                  | EQUIVALENT |
 // | tx.gasprice             | admitted                    | admitted                  | EQUIVALENT |
-// | msg.sig                 | REJECTED                    | admitted                  | EQUIVALENT |
-// | msg.data                | REJECTED                    | admitted                  | EQUIVALENT |
+// | msg.sig                 | REJECTED                    | admitted at leaf          | LOGICAL    |
+// | msg.data                | REJECTED                    | admitted at leaf          | LOGICAL    |
 // | msg.value               | admitted (alone only)       | admitted                  | LOGICAL    |
-// | msg.sender              | REJECTED                    | admitted                  | LOGICAL    |
+// | msg.sender              | REJECTED                    | admitted at leaf          | LOGICAL    |
 // | tx.origin               | REJECTED                    | REJECTED                  | REJECTED   |
 // | this.activeBytecode     | REJECTED                    | REJECTED                  | REJECTED   |
 // | IFoo(a).outState.f      | admitted                    | admitted                  | EQUIVALENT |
@@ -185,6 +185,28 @@ describe('E4: context admission matrix', () => {
     expect(admission(compileString(source(combined), directOptions)))
       .toEqual({ eligible: false, reason: DIVERGENCE });
     expect(admission(compileString(source(combined), graphOptions)).eligible).toBe(true);
+  }, 300_000);
+
+  it('fails logical context closed when the same handler also emits an outgoing edge', () => {
+    const emission = (predicate: string): string => `pragma solidcash >=0.8.0;
+interface ICtxPeer { function next(int seed); }
+contract CtxEmission(int brand, address peer) {
+  function keepRoute(int seed) public { require(seed > 0); }
+  function probe(int seed) public {
+    ${predicate}
+    ICtxPeer(peer).next(seed);
+    require(true);
+  }
+}`;
+    for (const name of ['msg.sender', 'msg.sig', 'msg.data']) {
+      expect(admission(compileString(emission(PROBES[name]), graphOptions))).toEqual({
+        eligible: false,
+        reason: 'emission-handler-logical-context-reconstruction-unsupported',
+      });
+    }
+    // The parsed per-row msg.value lowering is independent of the caller/selector/data operand and remains
+    // admitted at this position; its multi-row execution is pinned by HiddenBatchRelease4.
+    expect(admission(compileString(emission(PROBES['msg.value']), graphOptions)).eligible).toBe(true);
   }, 300_000);
 
   it('admits an outState read of a co-spent participant in both modes', () => {

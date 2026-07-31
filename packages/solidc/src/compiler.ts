@@ -1121,6 +1121,15 @@ function synthesizeHiddenBatchRoute(
             || routeUsesMsgSig || routeUsesMsgValue))
         || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
+    // E4. A leaf graph handler reconstructs these three values from its authenticated invocation row, but an
+    // emission handler also needs that row while constructing its outgoing emission. The current lowering
+    // consumes the caller/emission operand before the source handler reads it: msg.sender and msg.data reach
+    // an out-of-range OP_SPLIT, while msg.sig reaches OP_VERIFY. Refuse that position by name rather than
+    // publishing a route which can only fail as a malformed script. `msg.value` is deliberately absent: its
+    // row-local parsed value has independent multi-row VM proof.
+    } else if (!reason && graphTailCallEligible
+      && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)) {
+      reason = 'emission-handler-logical-context-reconstruction-unsupported';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // X22. Consuming a call result while carrying one of those effects is the shape that gets flattened WITH a

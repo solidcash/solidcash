@@ -1359,7 +1359,6 @@ function synthesizeHiddenBatchRoute(
       }
     }
     if (eventMode) {
-      const eventWidths = new Set<number>();
       for (const fn of survivors) {
         let directEmits = 0;
         let directTransfers = 0;
@@ -1375,17 +1374,9 @@ function synthesizeHiddenBatchRoute(
           fn.hiddenBatchEligible = false;
           fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
         } else {
-          eventWidths.add(directEmits);
         }
       }
       survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
-      if (eventWidths.size > 1) {
-        for (const fn of survivors) {
-          fn.hiddenBatchEligible = false;
-          fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-per-handler';
-        }
-        survivors = [];
-      }
       if (survivors.length === 0) return { survivors, ...modes() };
     }
     if (valueEffectMode) {

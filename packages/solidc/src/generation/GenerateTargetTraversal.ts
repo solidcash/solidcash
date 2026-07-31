@@ -3597,6 +3597,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitTransferCleanup(node);
         }
         if (this.pendingEmits.length > 0) this.emitEventCovenantVerification(node);
+        // Heterogeneous event frames use the route-wide maximum width. The reached handler owns exactly its
+        // own prefix of that window; bind the unused suffix here, where the authenticated site ordinal is live.
+        for (let unused = this.pendingEmits.length;
+          unused < (node.graphEffectFrame.eventWidth ?? 0); unused += 1) {
+          this.emitNotTakenEventSlotBinding(unused, {
+            location: node.body.location, positionHint: PositionHint.END,
+          });
+        }
       }
       if (this.graphStraightRuntimeMode) {
         const loc = { location: node.body.location, positionHint: PositionHint.END };

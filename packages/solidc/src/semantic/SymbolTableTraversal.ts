@@ -9103,21 +9103,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     // compares direct against declared); events asserted nothing. Fail closed rather than reserve a slot no
     // handler settles - the alternative repair, verifying each unused slot carries no own-category token, is
     // new covenant surface for a shape no capstone has.
-    const eventWidths = new Set(handlers.map((fn) => fn.emitInfos?.length ?? 0));
-    if (eventWidths.size > 1) {
-      const narrowest = handlers.reduce((a, b) =>
-        ((a.emitInfos?.length ?? 0) <= (b.emitInfos?.length ?? 0) ? a : b));
-      throw new SolidCashError(
-        narrowest,
-        `Batched handler '${narrowest.name.replace(/^__scb_(graph|resource|handler|array)_/, '')}' emits `
-        + `${narrowest.emitInfos?.length ?? 0} event(s) while a sibling handler on the same route emits `
-        + `${Math.max(...eventWidths)}. Routed handlers share ONE per-dispatch-site output frame whose width is `
-        + 'the maximum, so the narrower handler would leave reserved event outputs that nothing verifies and a '
-        + 'spender could mint a forged event NFT into them. Give every effect-carrying handler on this route the '
-        + 'same number of events - counting the ones reached through an internal call, which the route\'s '
-        + 'eligibility check cannot see',
-      );
-    }
     // Base 0, and the route's OWN effect slots are shared rather than added to. A route reaches exactly one
     // handler per row, and the unrolled parser gives row `s` the emit/transfer indices [s*width, s*width+width)
     // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one

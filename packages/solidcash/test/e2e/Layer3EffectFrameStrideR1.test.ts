@@ -130,13 +130,14 @@ type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
  * invoked handler as the route's only emitter and is only used with `mode: 'single'`, where no row dispatches
  * `note` at all - so it changes no handler's published callsite count and no row binding.
  */
-const hubSource = (emitting: boolean, transferring = true, noteEmits = true): string => `pragma solidcash >=0.8.0;
+const hubSource = (emitting: boolean, transferring = true, noteEmits = true, wideFire = false): string => `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(uint value); }
 contract StrideHub() {
   uint total;
 ${emitting ? '  event Fired(uint value);' : ''}
   function fireAll(address first, uint value, bytes recipient) public {
 ${emitting ? '    emit Fired(value);' : ''}
+${emitting && wideFire ? '    emit Fired(value + 1);' : ''}
 ${transferring ? `    this.transfer(recipient, ${TRANSFER_SATS});` : ''}
     IEffectLeg(first).credit(value);
     require(true);
@@ -225,6 +226,8 @@ interface Cell {
    * the same reserved slots, reached by a different code path.
    */
   noteEmits?: boolean;
+  /** Give fireAll two event payloads while note owns one slot of the shared width-two frame. */
+  wideFire?: boolean;
 }
 
 async function buildStrideCase(cell: Cell): Promise<{
@@ -244,7 +247,7 @@ async function buildStrideCase(cell: Cell): Promise<{
     experimentalMessageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(
-    hubSource(cell.emitting, cell.transferring !== false, cell.noteEmits !== false), options,
+    hubSource(cell.emitting, cell.transferring !== false, cell.noteEmits !== false, cell.wideFire === true), options,
   );
   const kickArtifact = compileString(kickSource(cell.mode), options);
   const legArtifact = compileString(legSource, options);
@@ -450,9 +453,11 @@ async function buildStrideCase(cell: Cell): Promise<{
       // In `noteThenFire`, row 0 dispatches `note`, which is flattened into the route and settles its own
       // event at the route's own slot 0. `fireAll`'s event is the measured one, at `effectOrdinals`.
       const noteFires = cell.noteEmits !== false;
-      const reached = cell.effectOrdinals.includes(eventCursor)
-        || (noteFires && cell.mode === 'noteThenFire' && eventCursor === 0)
-        || (noteFires && cell.mode === 'fireThenNote' && eventCursor === 1);
+      const reached = cell.wideFire && cell.mode === 'noteThenFire'
+        ? eventCursor === 0 || eventCursor === 2 || eventCursor === 3
+        : cell.effectOrdinals.includes(eventCursor)
+          || (noteFires && cell.mode === 'noteThenFire' && eventCursor === 0)
+          || (noteFires && cell.mode === 'fireThenNote' && eventCursor === 1);
       const forged = cell.forgedEventOrdinal === eventCursor;
       eventCursor += 1;
       tx.addOutput(reached || forged ? {
@@ -463,7 +468,8 @@ async function buildStrideCase(cell: Cell): Promise<{
             capability: 'none',
             commitment: forged
               ? (cell.forgedEventCommitmentEmpty ? '' : binToHex(packed(999_999n)))
-              : eventCommitment,
+              : (cell.wideFire && eventCursor === 4
+                ? binToHex(packed(CALL_VALUE + 1n)) : eventCommitment),
           },
         },
       } : { to: p2pkh.address, amount: 1000n });
@@ -518,6 +524,22 @@ async function reject(built: { provider: SemanticProvider; transaction: string }
 }
 
 describe('X29 review R1: per-dispatch-site effect frame striding', () => {
+  it('settles heterogeneous one-event and two-event handlers in one shared frame', async () => {
+    const honest = await buildStrideCase({
+      mode: 'noteThenFire', effectOrdinals: [1], emitting: true, wideFire: true,
+    });
+    expect(honest.eventSlots).toBeGreaterThanOrEqual(4);
+    await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeDefined();
+  }, 900_000);
+
+  it('rejects a forged event in the reached narrow handler unused suffix slot', async () => {
+    const hostile = await buildStrideCase({
+      mode: 'noteThenFire', effectOrdinals: [1], emitting: true, wideFire: true,
+      forgedEventOrdinal: 1,
+    });
+    expect(await reject(hostile)).toContain('input index 0');
+  }, 900_000);
+
   it('the hub really does dispatch fireAll on LOCAL ROW 1', async () => {
     const built = await buildStrideCase({ mode: 'noteThenFire', effectOrdinals: [1], emitting: false });
     expect(built.hubRows).toEqual(['note', 'fireAll']);

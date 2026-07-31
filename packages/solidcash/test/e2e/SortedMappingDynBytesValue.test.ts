@@ -29,6 +29,7 @@ const WRITE_SRC = `contract C() {
 }`;
 
 const ZERO = slotValueToBytes(0n);
+const WRONG_VALUE_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64 B tail)', () => {
   const provider = createTestProvider();
@@ -56,13 +57,15 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
     expect((await sc.check(5n, val, alicePub, sig).send()).txid).toBeDefined(); // present -> stored bytes
 
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, hexToBin('0011'), alicePub, sig).send()).rejects.toThrow(); // wrong -> revert
+    await expect(sc.check(5n, hexToBin('0011'), alicePub, sig).send())
+      .rejects.toThrow(WRONG_VALUE_INPUT_0); // wrong -> revert
 
     sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.check(3n, new Uint8Array(), alicePub, sig).send()).txid).toBeDefined(); // absent -> empty default
 
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(3n, hexToBin('ab'), alicePub, sig).send()).rejects.toThrow(); // absent claimed nonempty -> revert
+    await expect(sc.check(3n, hexToBin('ab'), alicePub, sig).send())
+      .rejects.toThrow(WRONG_VALUE_INPUT_0); // absent claimed nonempty -> revert
   });
 
   it('writes a new bytes value into a present key', async () => {
@@ -111,7 +114,8 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
     expect((await sc.check(5n, 'alice', alicePub, sig).send()).txid).toBeDefined(); // present -> "alice"
 
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, 'bob', alicePub, sig).send()).rejects.toThrow(); // wrong -> revert
+    await expect(sc.check(5n, 'bob', alicePub, sig).send())
+      .rejects.toThrow(WRONG_VALUE_INPUT_0); // wrong -> revert
 
     sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.check(3n, '', alicePub, sig).send()).txid).toBeDefined(); // absent -> empty default

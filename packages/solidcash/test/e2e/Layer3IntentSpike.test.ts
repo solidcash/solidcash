@@ -124,6 +124,8 @@ async function build(s: any, opts: { commitment?: string } = {}): Promise<Transa
 const rawOf = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 
 describe('layer-3 caller intent-binding spike (E2E)', () => {
+  const INTENT_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('POSITIVE: an invocation the caller pre-authorized (master commits to the callee) is accepted', async () => {
     const s = await setup();
     const b = await build(s);
@@ -135,7 +137,10 @@ describe('layer-3 caller intent-binding spike (E2E)', () => {
       const r = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in r) || (r as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (r as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Compact binding + msg.sender + preserved-commitment intent gate, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -145,13 +150,15 @@ describe('layer-3 caller intent-binding spike (E2E)', () => {
   it('HOSTILE: an invocation to a callee the caller did NOT authorize is rejected', async () => {
     const s = await setup();
     const other = binToHex(hash160(hexToBin(`aa20${'11'.repeat(32)}87`)));
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { commitment: other })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { commitment: other }))))
+      .rejects.toThrow(INTENT_REFUSAL);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: a caller with no authorization (empty commitment) is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { commitment: '' })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { commitment: '' }))))
+      .rejects.toThrow(INTENT_REFUSAL);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

@@ -607,6 +607,10 @@ function expectRejectionAtInput(built: BuiltCycle, input: number): string {
   return outcome;
 }
 
+const scriptRefusalAt = (input: number): RegExp => new RegExp(
+  `mandatory-script-verify-flag-failed .*error in evaluating input index ${input}:`,
+);
+
 const abiSelector = (artifact: any, name: string): string =>
   artifact.abi.find((entry: any) => entry.name === name).selector.toLowerCase();
 
@@ -673,7 +677,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
       .toEqual([binToHex(packedResult(CALL_VALUE)), binToHex(packedResult(CALL_VALUE))]);
     expect(built.participantInputs).toEqual(honestBuild.participantInputs);
     expect(rejectionIndex(built)).toBe(built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // WHOLE-TABLE EXHAUSTION, under-run. The persisted table holds THREE slots and the transcript answers two.
@@ -701,7 +706,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     expect(rows.map((row) => row.argsHex)).toEqual(shape.args);
     expect(built.participantInputs).toEqual(honestBuild.participantInputs);
     expect(rejectionIndex(built)).toBe(built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // PHYSICAL INPUT BINDING. The transcript names leg B's DATA NFT input as leg B's master input - one index
@@ -720,7 +726,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
       (state, index) => (index === 0 ? built.claimedPostStates[0] : state),
     ));
     expect(rejectionIndex(built)).toBe(built.layout.participantInputs[1]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.layout.participantInputs[1]));
   }, 600_000);
 
   // PHYSICAL PROOF BINDING. The transcript names a projection slot the auditor's proof does not occupy.
@@ -735,7 +742,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
       (input, index) => input !== built.layout.projectionInputs[index],
     )).toHaveLength(1);
     expect(rejectionIndex(built)).toBe(built.layout.projectionInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.layout.projectionInputs[0]));
   }, 600_000);
 
   // PHYSICAL OUTPUT BINDING. The transcript names an output the return-event NFT does not occupy, while the
@@ -752,7 +760,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     expect(built.transcript.returnOutputs.slice(0, 3)).toEqual([null, null, null]);
     expect(built.claimedResultHex).toBe(honestBuild.claimedResultHex);
     expect(rejectionIndex(built)).toBe(built.layout.controllerInput);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.layout.controllerInput));
   }, 600_000);
 
   // RESOURCE PRESERVATION. Four properties of one settled pair, one per case, with the authenticated post-state
@@ -776,7 +785,8 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     expect(rows.map((row) => row.argsHex)).toEqual(shape.args);
     expect(built.persistedTargets).toEqual(shape.targets);
     expect(rejectionIndex(built)).toBe(built.layout.participantInputs[1]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.layout.participantInputs[1]));
   }, 600_000);
 
   // OWNER UNIQUENESS. C3 attacks this at the VM by patching a transcript; C2 has no such case. Within C2's
@@ -1063,7 +1073,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     expect(rows.map((row) => row.selectorHex)).toEqual(honest.selectors);
     expect(rows.map((row) => row.argsHex)).toEqual(honest.args);
     expectRejectionAtInput(built, built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // SELECTOR. Occurrence 1 answers `debitAlt` while the persisted table slot still holds `debit`. Both targets
@@ -1080,7 +1091,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     expect(rows[1].selectorHex).toBe(abiSelector(built.artifacts[2], 'debitAlt'));
     expect(rows.map((row) => row.argsHex)).toEqual(honest.args);
     expectRejectionAtInput(built, built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // ARGUMENT. Same participant, same selector, same position; only the forwarded argument vector differs, and
@@ -1094,7 +1106,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     expect(rows[0].argsHex).toBe(honest.args[0]);
     expect(rows[1].argsHex).toBe(binToHex(packedResult(CALL_VALUE + 1n)));
     expectRejectionAtInput(built, built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // RESULT. The only returning edge claims a value its producer never computed. Target, selector and argument
@@ -1111,7 +1124,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     expect(built.claimedResultHex).not.toBe(honestBuild.claimedResultHex);
     expect(built.claimedPostStates[3]).toBe(honestBuild.claimedPostStates[3]);
     expectRejectionAtInput(built, built.participantInputs[3]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[3]));
   }, 600_000);
 
   // POST-STATE, twice-reached participant. The transcript and the claimed result are the honest ones; only the
@@ -1129,7 +1143,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
       binToHex(scriptToBytecode([bigIntToVmNumber(CALL_VALUE + 1n)])),
     )).toBe(true);
     expectRejectionAtInput(built, built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // POST-STATE, cycle-closing participant. Same transcript; only leg B's settled commitment differs.
@@ -1144,7 +1159,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     expect(built.claimedPostStates[2]).toBe(honestBuild.claimedPostStates[2]);
     expect(built.claimedPostStates[3]).toBe(honestBuild.claimedPostStates[3]);
     expectRejectionAtInput(built, built.participantInputs[1]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[1]));
   }, 600_000);
 
   // REORDERED RETURN EDGE. The same five edges with the same targets, selectors and arguments, but the return
@@ -1161,7 +1177,8 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
     // The hub still owns exactly two local rows; the return edge moved to the end of the tree.
     expect(built.transcript.plan.participants[0].invocations).toEqual([0, 4]);
     expectRejectionAtInput(built, built.participantInputs[0]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(built.participantInputs[0]));
   }, 600_000);
 
   // MISSING RETURN EDGE. The hub still dispatches to both legs, but B's callback is absent from the graph, so

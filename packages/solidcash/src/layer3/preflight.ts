@@ -1,6 +1,6 @@
 import {
   binToHex, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
-  type AuthenticationProgramStateCommon, type Output, type Transaction,
+  type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
@@ -766,6 +766,37 @@ export function assertFinalizedBytesWithCovenant(
   );
 }
 
+/**
+ * X198. THE COVENANT DECIDER FOR BOTH LAYER-3 ENTRY POINTS, and it asks `stateSuccess` for the same reason
+ * `covenantObjectionOf` does - except this one THROWS, so the field it read was a fail-closed boundary.
+ *
+ * IT USED TO READ `state.error`, WHICH IS A STRICT SUBSET OF THE VM'S OWN VERDICT. libauth's BCH instruction
+ * set defines `success(state)` as "return `state.error` if there is one, otherwise refuse an empty stack or a
+ * non-truthy top item", and `createVirtualMachine` hands that same function to `vm.verify`. So `stateSuccess`
+ * IS the VM's verification predicate and `state.error` is only its first branch. The DEMONSTRATED gap is the
+ * non-truthy top item: it produced a full objection that this function never looked at, admitted the
+ * transaction, and passed the bytes to the byte rules and then to the network. (The empty-stack branch is NOT
+ * demonstrated - BCH's clean-stack rule raises before it can fire - and row 2b of the test records that.)
+ *
+ * THE CLASS IS WHAT THE COMPILER EMITS, not a curiosity. `GenerateTargetTraversal` deletes the final
+ * `require`'s OP_VERIFY when the stack is shallow ("If the final op is OP_VERIFY and the stack size is less
+ * than 4 we remove it from the script"), so a plain contract's LAST check leaves its boolean on the stack
+ * rather than verifying it: `require(v == brand)` compiles to a script ending in OP_NUMEQUAL, and its failure
+ * raises nothing. `X198SubmitCovenantAbsorption` builds a real two-participant composition whose fee-slot
+ * covenant fails exactly that way and measures both halves - `covenantObjectionOf` naming `input 7`, and this
+ * function admitting the same bytes.
+ *
+ * THE WIDENING CANNOT LOSE A MESSAGE. `success` returns `state.error` verbatim when there is one, so every
+ * diagnostic this produced before it produces byte for byte, at the same input index.
+ *
+ * THE BLAST RADIUS WAS MEASURED, NOT ASSUMED. A census instrumented this function to log every objection the
+ * VM PRODUCED alongside whether the old `state.error` read OBSERVED it, over the Layer-3 population that can
+ * reach here. Across all three capstones plus two further graph fixtures - 179 tests - the VM produced 84
+ * objections and the old read saw all 84: every one was a raised error (82 OP_VERIFY, 2 OP_SPLIT). The
+ * population never steers into the window, which is why it survived X186; the evidence that it is real is
+ * CONSTRUCTED, not sampled. The mock provider refuses the constructed shape on its own, so this only moves the
+ * refusal earlier and never disagrees with the network.
+ */
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
@@ -773,13 +804,9 @@ const evaluateEveryInput = (
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
 
   transaction.inputs.forEach((_input, inputIndex) => {
-    const state = vm.evaluate({
-      inputIndex,
-      sourceOutputs,
-      transaction,
-    }) as AuthenticationProgramStateCommon;
-    if (state.error !== undefined) {
-      throw new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${state.error}`);
+    const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+    if (objection !== true) {
+      throw new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${objection}`);
     }
   });
 };

@@ -141,21 +141,21 @@ task-specific report, not in this table.
 | E4 | Context/outState matrix and rejection policy | B | P0.1 | INTEGRATED | 25 values classified; one row honestly incomplete |
 | S1 | Mapping insertion/deletion journal transitions | C | P0.1 | **PROVEN** | reviewed by A (forgery escape), fixed by C, regressions green - see 4.29 |
 | S2 | Mixed scalar/collection/dynamic journals | C | S1 | **PROVEN** | `d0bbdf76`; scalar+collection proven, dynamic leg FAIL_CLOSED |
-| S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | TODO | Bounds and alias cases |
+| S3 | Dynamic arrays/chunks across multiple handlers | C | S2 | **PROVEN** | Multi-handler final flush, isolation, bounded chunks, ordering, alias and dynamic-array append are VM-proven |
 | L1 | Fully relocatable balanced participant block | C | P0.1 | **PROVEN** | blocks relocate relative to each other; the REGION is pinned to input 0 - see 4.10 |
 | L2 | SDK funding/change/event-NFT block assembly | C | L1 | **PROVEN** | preflight is a capability, not a wired gate; 2 criteria SDK-only |
-| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | **INTEGRATED** | 16/16 + ReviewR2CapstoneC1 15/15; figures re-measured; clears consensus AND relay |
+| C1 | DeFi integrated semantic capstone | B | G2,E2,S2,L2 | **PROVEN** | 16/16 + ReviewR2CapstoneC1 15/15; figures re-measured; clears consensus AND relay |
 | C2 | Heterogeneous A→B→A dynamic dispatch capstone | A | G2,E1,S3,L2 | **PROVEN** | reviewed by B, clean, re-verified twice post-SEC-5 - see 4.29 |
-| C3 | Eight-participant semantic capstone | C | C1,C2 | **INTEGRATED (relay caveat)** | 13/13 + ReviewR2CapstoneC3; meets consensus capacity, MISSES standard relay by 354 B |
+| C3 | Eight-participant semantic capstone | C | C1,C2 | **PROVEN** | Current-byte BCHN mining plus hostile control; ordinary capacity and standard relay fit are re-measured |
 | X25 | Re-measure C3 capacity run-to-completion, post-X23 | B | X23,C3 | **SUPERSEDED - table stale in all 10 rows** | controller measured **0.9217x**, over-budget set EMPTY; see 4.48 |
 | X38 | Correct the stale capacity comments in the C1 and C3 fixtures | A5 | X25 | **INTEGRATED** | all figures re-measured at 4ac40b82 and printed by the run - see 4.60 |
 | X39 | C3 serializes to 100,650 B - 650 over the 100,000 B standard relay ceiling | A5 | X25 | **INTEGRATED** | asserted as a band; consensus fit and relay policy stated as separate claims |
 | X40 | Stop citing the C1/C3 reshapes as what closes SEC-6 | A5 | R2-F3 | **INTEGRATED** | verified two ways independently, not taken from the reviewer |
 | X27 | Suffix-split the transcript in `attest` | B | X25 | **PROVEN** | round 9, after C1 CHANGES and X21 |
 | X28 | Right-size `BALANCED_TRAILING_CAPACITY` per chunk need | A3 | — | **NO_CHANGE (measured)** | there IS no loop leg: 129 reservations, 9,164 computations, ZERO loop-term firings; alternative narrowing fails silently |
-| A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | INTEGRATED | 38 hostile cases across three capstones, all reject; 4 findings on C1/C3, C2 clean |
-| F1 | Ordinary-limit consensus and policy measurements | A6 | — | **INTEGRATED** | envelope measured; a DIFFERENT limit binds first per shape; CONSENSUS_FIT supported but not asserted - see 4.58 |
-| X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | B6 | F1 | **CONFIRMED - ledger edit pending** | verified by diffing both generators; two harnesses agree; wording supplied |
+| A1 | Independent in-repository hostile review | A+B | C1,C2,C3 | **PROVEN** | 38 hostile cases across three capstones, all reject; findings closed, C2 clean |
+| F1 | Ordinary-limit consensus and policy measurements | A6 | — | **PROVEN** | Exact consensus/policy metrics and current-byte BCHN controls - see 4.58 |
+| X47 | Ledger's "N=8 binding at 36.5%" is the SYNTHETIC fixture, not an 8-participant graph | B6 | F1 | **CLOSED** | ledger corrected; two harnesses agree |
 | X48 | One knob cannot express two hash regimes | B4 | F1 | **INTEGRATED** | splitting the field alone was COSMETIC - the regime selector was hardcoded; nothing moves, 9.3x margin - see 4.65 |
 | X57 | `createVirtualMachineBch2026ForProvider` silently drops the observer | C2 | X48 | **INTEGRATED (premise corrected)** | a LATENT trap, not an active failure - the caller gate masks it; found a live diagnostic-destroying bug - see 4.75 |
 | X67 | `packages/testing/src/config.ts` does not expose the split hash fields | — | X58 | `MockNetworkProvider.ts:89` writes only the nonstandard hash field | C2 | X48 | **INTEGRATED** | NOT cosmetic: a dust-enforcing mock read an allowance 20,000,000x smaller than declared |
@@ -163,8 +163,8 @@ task-specific report, not in this table.
 | X49 | Close CONSENSUS_FIT with a BCHN regtest broadcast | B1 | F1 | **INTEGRATED (scoped)** | CONSENSUS_FIT holds for the sweep N=2/4/8 ONLY - accepted AND mined; policy-vs-consensus settled - see 4.66 |
 | X59 | Thread `createProvider` into the four capstone fixtures | C1 | X49 | **INTEGRATED** | **A13, C2 and C3 MINED on BCHN v29** with hostile controls refused on the same chain - see 4.78 |
 | X60 | C1/C3 carry a 10-satoshi `OP_1` placeholder recipient | C1 | X49 | **INTEGRATED (premise corrected)** | `enforceDust: false` was NEVER the cause - the mock defaults it false; a real address alone does not fix dust |
-| F2 | Conservative calibrated cost estimator | B7 | F1 | **INTEGRATED** | 28/28 conservative in-sample; evaluated OFF training data 3 ways; 34% margin found and NOT switched on - see 4.68 |
-| F3 | MistSwap/EA and proving-corpus fit report | C6 | F1,F2 | **INTEGRATED** | **THE ENVELOPE IS NOT WHAT STOPS REAL CONTRACTS**: all 12 bus-reachable app contracts admit READ-ONLY; 80% of refusals are route-scope - see 4.77 |
+| F2 | Conservative calibrated cost estimator | B7 | F1 | **PROVEN for recorded calibration** | conservative in-sample and off-training controls; later de-bias and drift checks recorded |
+| F3 | MistSwap/EA and proving-corpus fit report | C6 | F1,F2 | **PROVEN measurement** | full pinned census and executable headline/attribution consistency; product demand remains R3 process |
 | X73 | `initial-v1-route-requires-public-visibility` refuses 172 of 455 (38%) | — | F3 | **INTEGRATED WITH SCOPED REFUSALS** | External handlers use internal clones and settle identically to public handlers. Token-container and route-generation-incompatible shapes retain named per-handler refusals, preserving clean siblings. |
 | X79 | The route-scope gates are STACKED; no single lift admits anything | D2 | F3 | **MEASURED** | the ERC-20's transfer/approve/transferFrom ARE admissible; 3 gates stacked; relaxing the third hits an unnamed abort |
 | X76b | Lift `result-route` and normalize the bare entry spelling | E1 | X79 | **INTEGRATED** | 2 of 3 stacked gates; every bare shape lands on its DOTTED TWIN'S byte count; +2 state-changing, 0 lost - see 4.88 |
@@ -180,14 +180,14 @@ task-specific report, not in this table.
 | X87 | `Layer3CorpusFitF3.test.ts:183` stale after X73 | F2 | X73 | **DOES NOT REPRODUCE** | the assertion is not in the tree; three reports were against a pre-baseline file. The real one was the X84 test |
 | X88 | Route-synthesis arity bug on collection-iteration handlers | — | — | **INTEGRATED (scoped refusal)** | Iterating handlers fail closed by name as `collection-iteration-handler-not-enabled`; clean sibling entry handlers retain their route and exact entry layout |
 | X89 | A collection ITERATION read never enters the footprint | — | X88 | **INTEGRATED (closed with X88)** | Route synthesis detects `CollectionIterationNode.collectionName` explicitly; entries, keys, and iteration-plus-keyed-write mutations all reach the unconditional X88 refusal |
-| X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **WRITTEN, HELD ON LEASE** | option (e) works; Router02 compiles under `+hiddenBatch` but NOT under F3's `+controller` - see 4.85 |
+| X71 | Bus-mode `ParseError` line number moves by 51 on an unrelated option | D6 | F3 | **CLOSED** | former ParseError no longer reproduces; generated positions are labelled and the controller refusal is named |
 | X83 | `Block slot not found: keccakSideCar[0]` - X42's family, uncovered slot kind | E2 | X71 | **INTEGRATED** | origin is a WHOLE-FUNCTION flag, not the lookup; corpus enumerated (78 files), 1 row changed - see 4.87 |
 | X90 | The keccak second face: satisfiable or not? | F1 | X83 | **SETTLED - satisfiable AND sound** | X83's belief was wrong but its refusal to act was right; the real defect is the builder - see 4.89 |
 | X97 | `TransactionBuilder.ts:258` never reaches the stateless keccak co-spend | G4 | X90 | **INTEGRATED** | no SEQUENTIAL order works - source order decides which family runs first; one fixpoint reads both - see 4.93 |
 | X91 | X42's `blockhash` guard escapes | F1 | X42 | **INTEGRATED** | the briefed option set was wrong AND that IS the gap; it is a call EDGE, and it reaches the DIRECT route too - see 4.90 |
 | X84 | Census lists no ParseError for solidity-by-example, but one exists | — | X71 | **CLOSED: PREMISE RECONCILED, CLASSIFIER FAILS LOUD** | MerkleTree fails in direct mode and cannot enter the bus-failure table; the real gap was the existing primary fallback discarding its multi-compile sibling cause. That cause is carried through, and an absent artifact without it now refuses the measurement. A focused mutation deletes the cause and proves the refusal. |
 | X72 | 20 refusals published with NO `rejectionReason` | D6 | F3 | **INTEGRATED** | an ORDERING defect: the oracle pass appends an entry point after route synthesis names reasons; 16 -> 0 |
-| F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **INTEGRATED** | **C3 now FITS relay: 99,618 B, 382 under** - a verifier byte is worth N transaction bytes - see 4.73 |
+| F4 | Measured protocol/bytecode minimization | C3 | F1,F2 | **PROVEN measured optimization** | unchanged authentication contract and exact N-times verifier-byte multiplier - see 4.73 |
 | X65 | The 8-way locking-bytecode dispatch costs 95 B per participant slot | D5 | F4 | **INTEGRATED** | **-444 B/projection**, 3.4x F4's sizing, by REJECTING the form F4 sized; C3 **3,698 B under** at HEAD (3,882 when this row was written, before X81) - see 4.84 |
 | X81 | DECISION: take the axiom-free verifier variant? | F3 | X65 | **TAKEN** | price was +28 not +19; the real argument is a PARTIAL map became TOTAL - a forward-compatibility hazard - see 4.93 |
 | X100 | The route refusal is stamped on every external entry point, not the thrower | — | X81 | **TODO** | 10 of 12 contracts lose the route ENTIRELY; attribute by error position and refuse only that handler |

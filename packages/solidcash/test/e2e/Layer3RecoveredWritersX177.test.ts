@@ -106,7 +106,7 @@ function operandComparedAgainst(trace: unknown[], placeholder: Uint8Array): Uint
 }
 
 /** What one built attempt differs in. Exactly one field moves per hostile. */
-type Attack = 'none' | 'result' | 'state-unwritten' | 'state-neighbour';
+type Attack = 'none' | 'result' | 'state-unwritten' | 'state-neighbour' | 'state-untouched';
 
 interface Row {
   /** The partition key, exactly as `Layer3RecoveredPartitionX160.test.ts` prints it. */
@@ -225,12 +225,12 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   /**
    * One attempt at one recovered route.
    *
-   * `declaredResult` undefined selects the PROBE run: it is traced under the VM debugger and never broadcast.
-   * `publishedState` undefined publishes the PRE state, which is both the state probe and the
-   * `state-unwritten` hostile - the same bytes, differing only in whether the attempt is traced or sent.
+   * `probe` traces the attempt under the VM debugger and never broadcasts it. `publishedState` undefined
+   * publishes the PRE state, which is both the state probe and the `state-unwritten` hostile - the same
+   * bytes, differing only in whether the attempt is traced or sent.
    */
   async function attempt(row: Row, handler: string, args: readonly unknown[], attack: Attack, options: {
-    declaredResult?: Uint8Array; publishedState?: readonly string[];
+    probe?: boolean; declaredResult?: Uint8Array; publishedState?: readonly string[];
   }): Promise<{
       sent?: string; refusal?: string; failingInput?: number; trace?: unknown[];
       preCommitments: string[]; publishedState: readonly string[];
@@ -268,6 +268,11 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
       wrong[wrong.length - 1] ^= 0x01;
       return wrong;
     };
+    // EVERY WRITER IN THIS FILE IS VOID, and `Counter.inc` is not - it returns `count`. A void row declares no
+    // result at all, so its return-event slot carries a plain output and the transcript's result vector is
+    // empty; the returning READ-ONLY siblings below take the other branch and publish a real return-event NFT.
+    const returns = (artifact.hiddenBatch!.handlers as any[])
+      .find((candidate) => candidate.name === handler)?.outputs?.length > 0;
     // The transcript declares the VECTOR inside the commitment, so the two are one push apart. The payload is
     // DECODED with libauth rather than re-encoded here, and the honest run asserts that re-wrapping the
     // decoded vector reproduces the covenant's own bytes exactly, so no encoding is ever guessed.
@@ -282,7 +287,7 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     const publishedVector = attack === 'result' ? forge(innerVector) : innerVector;
     const publishedCommitment = options.declaredResult === undefined
       ? PROBE_RESULT : scriptToBytecode([publishedVector]);
-    if (options.declaredResult !== undefined && attack !== 'result') {
+    if (returns && options.declaredResult !== undefined && attack !== 'result') {
       expect(binToHex(publishedCommitment), `${row.key}: re-wrapping the decoded vector did not reproduce `
         + 'the commitment the route computed').toBe(binToHex(options.declaredResult));
     }
@@ -313,8 +318,13 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     }
     const physical = layer3.compiledGraphPhysicalLayout(plan);
     const transcript = layer3.finalizeCompiledGraph(
-      plan, { 0: binToHex(publishedVector) }, physical.participantInputs, physical.returnOutputs,
-      [binToHex(publishedVector)], physical.projectionInputs, '',
+      plan,
+      returns ? { 0: binToHex(publishedVector) } : {},
+      physical.participantInputs,
+      returns ? physical.returnOutputs : [null],
+      returns ? [binToHex(publishedVector)] : [''],
+      physical.projectionInputs,
+      '',
     );
 
     const initFee = randomUtxo({ satoshis: 20_000n });
@@ -395,6 +405,9 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
           break;
         }
         case 'returnEvent':
+          // A VOID row still fills this slot with a return-event NFT: the covenant checks the slot's
+          // commitment against the result vector it computed, and for a void handler that vector is EMPTY,
+          // so the commitment is the empty vector's single push. A plain output here is refused at input 0.
           tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
           tx.addOutput({
             to: hexToBin('51'),
@@ -402,7 +415,12 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
             token: {
               category: setup.categoryId,
               amount: 0n,
-              nft: { capability: 'none', commitment: binToHex(publishedCommitment) },
+              nft: {
+                capability: 'none',
+                commitment: returns
+                  ? binToHex(publishedCommitment)
+                  : binToHex(scriptToBytecode([new Uint8Array(0)])),
+              },
             },
           });
           break;
@@ -419,7 +437,7 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
     tx.addOutput({ to: p2pkh.address, amount: 350_000n });
 
-    if (options.declaredResult === undefined) {
+    if (options.probe === true) {
       const vm = createVirtualMachineBch2026ForProvider(provider);
       const trace = vm.debug({
         inputIndex: 0,
@@ -452,7 +470,7 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   const cachedPost = new Map<string, string[]>();
   async function covenantPostState(row: Row): Promise<string[]> {
     if (!cachedPost.has(row.key)) {
-      const probe = await attempt(row, row.writer, row.writerArgs, 'none', {});
+      const probe = await attempt(row, row.writer, row.writerArgs, 'none', { probe: true });
       // Two slots seeded to identical bytes would make the adjacency search ambiguous. Asserted, not assumed.
       expect(new Set(probe.preCommitments).size, `${row.key}: the pre-state commitments are not distinct`)
         .toBe(probe.preCommitments.length);
@@ -467,19 +485,28 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     return cachedPost.get(row.key)!;
   }
 
-  /** The declared result the route computes for one handler, read off its own trace with the post state set. */
+  /** The declared result the route computes for a RETURNING handler, read off its own trace. */
   const cachedResult = new Map<string, Uint8Array>();
   async function routeResult(row: Row, handler: string, args: readonly unknown[]): Promise<Uint8Array> {
     const key = `${row.key}|${handler}`;
     if (!cachedResult.has(key)) {
-      const publishedState = handler === row.writer ? await covenantPostState(row) : undefined;
-      const probe = await attempt(row, handler, args, 'none', { publishedState });
+      const probe = await attempt(row, handler, args, 'none', { probe: true });
       const found = operandComparedAgainst(probe.trace!, PROBE_RESULT);
       if (found === undefined) throw new Error(`${key}: the probe trace never compared the declared result`);
       cachedResult.set(key, found);
       console.log(`[X177] ${key} result off its own trace: ${binToHex(found)}`);
     }
     return cachedResult.get(key)!;
+  }
+
+  /** The PRE commitments, from the layout, used only to say WHICH state the covenant's own bytes are. */
+  function preCommitmentsOf(row: Row): string[] {
+    const map = compileFileMulti(row.file, {
+      ...BUS,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    } as never) as any;
+    return buildInitialStateCommitments(map[row.contract].stateLayout!, row.pre);
   }
 
   /**
@@ -498,17 +525,21 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     const computed = await covenantPostState(row);
     const written = buildInitialStateCommitments(layout, { ...row.pre, ...row.post });
     const unwritten = buildInitialStateCommitments(layout, row.pre);
+    const moved = computed.map((value, index) => (value === unwritten[index] ? '.' : index)).filter(
+      (entry) => entry !== '.',
+    );
     console.log(`[X177] ${row.key} computed  ${JSON.stringify(computed)}`);
     console.log(`[X177] ${row.key} post      ${JSON.stringify(written)}`);
     console.log(`[X177] ${row.key} pre       ${JSON.stringify(unwritten)}`);
+    console.log(`[X177] ${row.key} slots the covenant MOVED: ${JSON.stringify(moved)}`);
     expect(computed).toEqual(written);
     expect(computed).not.toEqual(unwritten);
+    expect(moved.length, `${row.key}: the covenant moved no data NFT slot`).toBeGreaterThan(0);
   };
 
   /** THE POSITIVE, built by the same helper that builds every hostile. */
   const positive = (row: Row) => async (): Promise<void> => {
     const result = await attempt(row, row.writer, row.writerArgs, 'none', {
-      declaredResult: await routeResult(row, row.writer, row.writerArgs),
       publishedState: await covenantPostState(row),
     });
     if (result.refusal) console.log(`[X177] ${row.key} refused: ${result.refusal.split('\n')[0]}`);
@@ -518,8 +549,9 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   };
 
   /**
-   * GUARD NEGATIVE CONTROL. A read-only sibling settles through the IDENTICAL staging, so a refusal below is
-   * a refusal of the attacked field and not of a harness that never worked.
+   * GUARD NEGATIVE CONTROL, and the discriminator. A READ-ONLY sibling settles through the IDENTICAL staging
+   * with the state left at PRE, so a refusal below is a refusal of the attacked field and not of a harness
+   * that never worked - and the writer's acceptance is not a property of the row being easy.
    */
   const guard = (row: Row, name: string, args: readonly unknown[]) => async (): Promise<void> => {
     const result = await attempt(row, name, args, 'none', {
@@ -532,35 +564,53 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   };
 
   /**
-   * HOSTILES. Each differs from the settling positive in exactly ONE field, matched on the refusal text and
-   * pinned to the input index that produced it. `state-unwritten` is the mistake an honest builder makes;
-   * `state-neighbour` is the one an attacker makes; `result` leaves the state correct and lies about what
-   * was returned.
+   * GUARD, RETURN-EVENT DIRECTION. The read-only sibling's return event carrying a believable-wrong result is
+   * refused at the participant input. Every writer here is VOID, so this is where the return-event check is
+   * shown to be LIVE in this staging: without it, the void rows' plain return-event output would be evidence
+   * of nothing.
+   */
+  const guardResult = (row: Row, name: string, args: readonly unknown[]) => async (): Promise<void> => {
+    const result = await attempt(row, name, args, 'result', {
+      declaredResult: await routeResult(row, name, args),
+    });
+    console.log(`[X177] ${row.key}/${name} result-forgery: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
+    expect(result.sent, `a forged return event was ACCEPTED on ${row.key}/${name}`).toBeUndefined();
+    expect(result.refusal).toBeDefined();
+    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
+
+  /**
+   * HOSTILES. Each differs from the settling positive in exactly ONE data NFT slot, matched on the refusal
+   * text and pinned to the input index that produced it.
+   *
+   *  - `state-unwritten`   the write simply not applied - the mistake an honest builder makes.
+   *  - `state-neighbour`   the written slot moved one bit - the mistake an attacker makes.
+   *  - `state-untouched`   a data NFT the handler does NOT write, moved one bit. This is the multi-NFT risk
+   *                        and the one `Counter.inc` cannot test at all: does the covenant pin EVERY data NFT
+   *                        in its block, or only the slot it happens to write?
    */
   const hostile = (row: Row, attack: Attack) => async (): Promise<void> => {
     const post = await covenantPostState(row);
-    const pre = buildInitialStateCommitments(
-      (compileFileMulti(row.file, {
-        ...BUS,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
-      } as never) as any)[row.contract].stateLayout!,
-      row.pre,
-    );
-    // The neighbour moves the ONE slot the covenant actually wrote, and only that slot.
-    const movedSlot = post.findIndex((value, index) => value !== pre[index]);
-    expect(movedSlot, `${row.key}: the covenant wrote no slot at all`).toBeGreaterThanOrEqual(0);
-    const neighbour = [...post];
-    neighbour[movedSlot] = binToHex(((): Uint8Array => {
-      const bytes = hexToBin(post[movedSlot]);
+    const pre = preCommitmentsOf(row);
+    const bump = (value: string): string => {
+      const bytes = hexToBin(value);
+      if (bytes.length === 0) return '01';
       bytes[bytes.length - 1] ^= 0x01;
-      return bytes;
-    })());
-    const publishedState = attack === 'state-unwritten' ? pre
-      : attack === 'state-neighbour' ? neighbour : post;
-    const result = await attempt(row, row.writer, row.writerArgs, attack, {
-      declaredResult: await routeResult(row, row.writer, row.writerArgs), publishedState,
-    });
+      return binToHex(bytes);
+    };
+    const written = post.findIndex((value, index) => value !== pre[index]);
+    expect(written, `${row.key}: the covenant wrote no slot at all`).toBeGreaterThanOrEqual(0);
+    const untouched = post.findIndex((value, index) => value === pre[index]);
+    const publishedState = [...post];
+    if (attack === 'state-unwritten') publishedState[written] = pre[written];
+    if (attack === 'state-neighbour') publishedState[written] = bump(post[written]);
+    if (attack === 'state-untouched') {
+      expect(untouched, `${row.key}: every data NFT slot is written, so there is no untouched one`)
+        .toBeGreaterThanOrEqual(0);
+      publishedState[untouched] = bump(post[untouched]);
+    }
+    const result = await attempt(row, row.writer, row.writerArgs, attack, { publishedState });
     console.log(`[X177] ${row.key}/${attack}: ${(result.refusal ?? 'ACCEPTED').split('\n')[0]}`);
     console.log(`[X177] ${row.key}/${attack} published ${JSON.stringify(result.publishedState)}`);
     expect(result.sent, `a forged ${attack} was ACCEPTED on ${row.key}`).toBeUndefined();
@@ -576,11 +626,15 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
       it(`GUARD: the read-only sibling '${g.name}' of ${row.contract} settles through the same staging`,
         guard(row, g.name, g.args), 1_800_000);
     }
+    it(`GUARD: ${row.contract}'s return event carrying a believable-wrong result is refused`,
+      guardResult(row, row.guards[0].name, row.guards[0].args), 1_800_000);
     it(`HOSTILE: ${row.key} with the write simply not applied is refused`,
       hostile(row, 'state-unwritten'), 1_800_000);
-    it(`HOSTILE: ${row.key} with the post state moved one bit is refused`,
+    it(`HOSTILE: ${row.key} with the written slot moved one bit is refused`,
       hostile(row, 'state-neighbour'), 1_800_000);
-    it(`HOSTILE: ${row.key} with a believable-wrong return event is refused`,
-      hostile(row, 'result'), 1_800_000);
+    if (row.slots.filter((slot) => slot === 'dataNft').length > 1) {
+      it(`HOSTILE: ${row.key} with an UNTOUCHED data NFT moved one bit is refused`,
+        hostile(row, 'state-untouched'), 1_800_000);
+    }
   }
 });

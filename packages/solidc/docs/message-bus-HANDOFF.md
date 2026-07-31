@@ -53,17 +53,21 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X210** - CLOSED: the ordinary stateful submit path now evaluates every input of the exact fully funded
   transaction before byte checks and broadcast. The recursive opt-in keeps its specialized diagnostic, but is
   no longer the only VM boundary.
-- **X186** - absorption window at `TransactionBuilder.send`; a hunk is ready and unapplied.
-- **X214** - **450 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
-  remaining vacuity surface: 1.6x the population that just came back clean, and the exact shape
-  earlier rounds repeatedly found vacuity in.
+- **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
+  `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
+  all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
+- **X214** - **430 executable bare `rejects.toThrow()` sites remain unnamed.** The AST census corrected
+  the old 450 estimate to 436 executable sites, then six focused repairs reduced it to 430. This remains
+  the highest-yield vacuity surface and must be worked in mutation-validated partitions.
 - **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
   compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
   compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`
   pins the one-token boundary; `Layer3RuntimeSizedPointerTable.test.ts` settles 1, 2, and 3 rows.
-- **X207** - `logicalValueMode` reachability: can route uniformity actually demote a payable handler?
-  **This is now known to be YES in general** (see X229), so the row is narrower than it looks.
-- **X227** - a possible FOURTH msg.value population (`contractUsesMsgValue` vs `routeUsesMsgValue`).
+- **X207 is CLOSED** - the demotion is reachable, and X199 already computes `logicalValueMode` over
+  final eligible handlers, so a demoted payable handler cannot widen the surviving route.
+- **X227 is CLOSED NEGATIVE** - the fourth population is reachable through an uncalled private
+  `msg.value` reader, but it controls balanced frame plumbing rather than SCB1 row width. Both sides use
+  the same predicate, and the existing EnglishAuction narrow settlements are the runtime control.
 - **X201 + X229** - admitting the bare-body forwarding call. It was implemented, VM-proved on its own
   terms, and **REVERTED**, because admitting a handler changes the route's UNIFORMITY CLASS and
   `applyRouteUniformity` then demotes a different, unrelated handler (`ERC20Bank.token`). Whoever

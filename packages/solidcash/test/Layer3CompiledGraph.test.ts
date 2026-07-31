@@ -663,6 +663,28 @@ describe('layer3.planCompiledGraph', () => {
     expect(first.bytes.length).toBeGreaterThan(
       plan.participants.reduce((sum, participant) => sum + participant.batch.blob.length, 0),
     );
+    const internalWitnessName = '__internal__valueWitness_0';
+    const participantWithInternalWitness = {
+      ...first.plan.participants[0],
+      routeInputs: [
+        ...first.plan.participants[0].routeInputs.slice(0, -1),
+        { name: internalWitnessName, type: 'bytes' },
+        ...first.plan.participants[0].routeInputs.slice(-1),
+      ],
+    };
+    const transcriptWithInternalWitness = {
+      ...first,
+      plan: {
+        ...first.plan,
+        participants: [participantWithInternalWitness, ...first.plan.participants.slice(1)],
+      },
+    };
+    expect(() => layer3.compiledGraphRouteArgs(transcriptWithInternalWitness, 0, 6))
+      .toThrow(/requires internal witness '__internal__valueWitness_0'/);
+    const routeArgs = layer3.compiledGraphRouteArgs(
+      transcriptWithInternalWitness, 0, 6, { [internalWitnessName]: new Uint8Array(32) },
+    );
+    expect(routeArgs).toHaveLength(participantWithInternalWitness.routeInputs.length - 1);
     expect(() => layer3.finalizeCompiledGraph(
       plan, { 0: '51' }, [0, 1], [2, 3], ['5100000000000000', '5200000000000000'], [4, 5],
     )).toThrow(/lacks canonical result/);

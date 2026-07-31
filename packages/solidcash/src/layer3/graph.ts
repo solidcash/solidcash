@@ -74,6 +74,8 @@ export interface CompiledParticipantExecution {
   invocations: readonly number[];
   /** Exact compiler-emitted balanced physical block for this owner's SCB1 route. */
   blockLayout: NonNullable<Artifact['hiddenBatch']>['route']['blockLayout'];
+  /** Exact compiler-owned route ABI, retained so argument derivation cannot silently lose internal witnesses. */
+  routeInputs: NonNullable<Artifact['hiddenBatch']>['route']['inputs'];
 }
 
 export interface CompiledGraphPlan {
@@ -576,20 +578,41 @@ export function compiledGraphRouteArgs(
   transcript: FinalizedCompiledGraph,
   participant: number,
   controllerInput: number,
+  internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
 ): readonly (Uint8Array | bigint | FunctionArgument)[] {
   const execution = transcript.plan.participants[participant];
   const offset = transcript.participantOffsets[participant];
   if (!execution || offset === undefined) throw new Error('layer3: graph participant is out of range');
-  return Object.freeze([
-    execution.batch.blob,
-    transcript.bytes,
-    BigInt(controllerInput),
-    BigInt(offset),
-    BigInt(execution.blockLayout!.blockSize),
-    hexToBin(transcript.participantEmissionsHex[participant]),
-    hexToBin(transcript.participantCallersHex[participant]),
-    ...execution.batch.routeWitnesses,
+  const fixed = new Map<string, FunctionArgument>([
+    ['batchBlob', execution.batch.blob],
+    ['__internal__graphTranscript', transcript.bytes],
+    ['__internal__graphControllerIdx', BigInt(controllerInput)],
+    ['__internal__graphParticipantOffset', BigInt(offset)],
+    ['__internal__graphBlockSize', BigInt(execution.blockLayout!.blockSize)],
+    ['__internal__graphEmissions', hexToBin(transcript.participantEmissionsHex[participant])],
+    ['__internal__graphCallers', hexToBin(transcript.participantCallersHex[participant])],
   ]);
+  let visibleCursor = 0;
+  const args = execution.routeInputs
+    .filter((input) => input.name !== '__internal__returnOutputIdx')
+    .map((input) => {
+      const fixedValue = fixed.get(input.name);
+      if (fixedValue !== undefined) return fixedValue;
+      if (!input.name.startsWith('__internal__')) {
+        const value = execution.batch.routeWitnesses[visibleCursor];
+        visibleCursor += 1;
+        if (value !== undefined) return value;
+      }
+      const supplied = internalRouteWitnesses[input.name];
+      if (supplied === undefined) {
+        throw new Error(`layer3: compiler route requires internal witness '${input.name}'`);
+      }
+      return supplied;
+    });
+  if (visibleCursor !== execution.batch.routeWitnesses.length) {
+    throw new Error('layer3: compiler route witness cardinality does not match its published ABI');
+  }
+  return Object.freeze(args);
 }
 
 /**
@@ -1703,6 +1726,7 @@ export function planCompiledGraph(
       batch: encodeHiddenBatch(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
       invocations: Object.freeze(globalByOwner[owner]),
       blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,
+      routeInputs: participant.artifact.hiddenBatch!.route.inputs,
     });
   });
 

@@ -61,6 +61,7 @@ import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
 const MISTSWAP = process.env.MISTSWAP_ROOT ?? '/Code/mistswap/mistswap/contracts';
+const EACC = process.env.EACC_CONTRACTS_DIR ?? '/Code/effectiveacceleration.ai/contract/contracts';
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
@@ -95,11 +96,20 @@ const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
   'uniswapv2/UniswapV2Pair.sol::UniswapV2ERC20': [
     'totalSupply', 'DOMAIN_SEPARATOR', 'balanceOf', 'allowance', 'nonces',
   ],
+  'unicrow/UnicrowArbitrator.sol::UnicrowArbitrator': [
+    'arbitrationCalculation', 'unicrow', 'unicrowClaim',
+  ],
+  'unicrow/UnicrowDispute.sol::UnicrowDispute': [
+    'unicrow', 'unicrowClaim', 'unicrowArbitrator',
+  ],
+  'unicrow/UnicrowClaim.sol::UnicrowClaim': [
+    'unicrow', 'unicrowArbitrator', 'crowRewards', 'stakingRewards', 'protocolFeeAddress',
+  ],
 };
 
 interface Subject {
   handler: string;
-  args?: readonly (bigint | Uint8Array)[];
+  args?: readonly unknown[];
 }
 
 interface Row {
@@ -114,7 +124,10 @@ interface Row {
   state: Record<string, unknown>;
   stateTamper: Record<string, unknown>;
   /** Optional authenticated nondefault mapping entries, keyed by collection name. */
-  presentEntries?: Readonly<Record<string, { key: Uint8Array; value: bigint; valueType: string }>>;
+  presentEntries?: Readonly<Record<string, { key: Uint8Array; value: bigint | Uint8Array; valueType: string }>>;
+  /** Zero-based physical occurrence that consumes a staged present entry when a collection has several slots. */
+  presentEntryOccurrence?: Readonly<Record<string, number>>;
+  unboundRouteWitnesses?: Readonly<Record<string, Uint8Array | bigint>>;
   /** Exact route-computed commitment for nondefault-result controls. */
   expectedResultCommitments?: Readonly<Record<string, string>>;
   slots: readonly string[];
@@ -123,6 +136,61 @@ interface Row {
 const TRAILING = Array.from({ length: 64 }, () => 'trailing');
 
 const ROWS: readonly Row[] = [
+  {
+    root: EACC,
+    rel: 'unicrow/UnicrowArbitrator.sol',
+    contract: 'UnicrowArbitrator',
+    subjects: [
+      { handler: 'arbitrationCalculation', args: [[1n, 2n, 3n, 4n, 5n]] },
+      { handler: 'unicrow' }, { handler: 'unicrowClaim' },
+    ],
+    hostileSubject: 'unicrowClaim',
+    state: {
+      _status: 1n, unicrow: addr('55'), unicrowClaim: addr('66'),
+      __block_timestamp: 900n, __blockOracleOwner: alicePub,
+    },
+    stateTamper: { unicrowClaim: addr('67') },
+    slots: ['master', 'dataNft', 'dataNft', 'entry', 'returnEvent'],
+  },
+  {
+    root: EACC,
+    rel: 'unicrow/UnicrowDispute.sol',
+    contract: 'UnicrowDispute',
+    subjects: [{ handler: 'unicrow' }, { handler: 'unicrowClaim' }, { handler: 'unicrowArbitrator' }],
+    hostileSubject: 'unicrowArbitrator',
+    presentEntries: {
+      latestSettlementOfferBy: {
+        key: encodePushdataValue(1n, 'uint256'), value: new Uint8Array(), valueType: 'address',
+      },
+    },
+    presentEntryOccurrence: { latestSettlementOfferBy: 1 },
+    unboundRouteWitnesses: { __scb_key_latestSettlementOfferBy_0: 1n },
+    state: {
+      _status: 1n, unicrow: addr('55'), unicrowClaim: addr('66'), unicrowArbitrator: addr('77'),
+      __block_timestamp: 900n, __blockOracleOwner: alicePub,
+    },
+    stateTamper: { unicrowArbitrator: addr('78') },
+    slots: ['master', 'dataNft', 'dataNft', 'entry', 'entry', 'entry', 'returnEvent'],
+  },
+  {
+    root: EACC,
+    rel: 'unicrow/UnicrowClaim.sol',
+    contract: 'UnicrowClaim',
+    subjects: [
+      { handler: 'unicrow' }, { handler: 'unicrowArbitrator' }, { handler: 'crowRewards' },
+      { handler: 'stakingRewards' }, { handler: 'protocolFeeAddress' },
+    ],
+    hostileSubject: 'protocolFeeAddress',
+    state: {
+      // Five P2SH32 locking bytecodes cannot fit in this source layout's first 128-byte commitment.
+      // Empty optional endpoints are source-valid and keep the hostile subject nondefault.
+      _status: 1n, unicrow: new Uint8Array(), unicrowArbitrator: new Uint8Array(),
+      crowRewards: new Uint8Array(), stakingRewards: new Uint8Array(), protocolFeeAddress: addr('99'),
+      __block_timestamp: 900n, __blockOracleOwner: alicePub,
+    },
+    stateTamper: { protocolFeeAddress: addr('9a') },
+    slots: ['master', 'dataNft', 'dataNft', 'returnEvent'],
+  },
   ...['uniswapv2/UniswapV2ERC20.sol', 'uniswapv2/UniswapV2Pair.sol'].map((rel): Row => ({
     root: MISTSWAP,
     rel,
@@ -354,6 +422,7 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
 
     // The route names every witness it needs; this supplies exactly the named set and never a guessed one.
     const unboundRouteWitnesses: Record<string, Uint8Array | bigint> = {};
+    Object.assign(unboundRouteWitnesses, row.unboundRouteWitnesses);
     const zeroWitness = (name: string): Uint8Array | bigint => {
       const declaredType = (artifact.hiddenBatch!.route.inputs as any[])
         .find((input) => input.name === name)?.type;
@@ -413,15 +482,25 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
       : commitments;
 
     const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+    const routeInputs = artifact.hiddenBatch!.route.inputs as Array<{ name: string }>;
+    const internalRouteWitnesses = Object.fromEntries(routeInputs
+      .filter((input) => input.name.startsWith('__internal__valueWitness_'))
+      .map((input) => [input.name, zeroWitness(input.name)]));
+    const completeRouteArgs = [
+      ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput, internalRouteWitnesses),
+      BigInt(layout.returnOutputs![0]!),
+    ];
+    expect(completeRouteArgs, `${key(row)}: SDK route argument cardinality moved`)
+      .toHaveLength(routeInputs.length);
     let dataNftCursor = 0;
+    const entryOccurrence = new Map<string, number>();
     for (const slot of artifact.hiddenBatch!.route.blockLayout!.slots as any[]) {
       switch (slot.kind) {
         case 'master':
           tx.addInput(setup.masterUtxo, participant.createCompilerRouteUnlocker(
             artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
           )(
-            ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as never[],
-            BigInt(layout.returnOutputs![0]!),
+            ...completeRouteArgs as never[],
           ));
           tx.addOutput({
             to: participant.tokenAddress,
@@ -452,7 +531,13 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
             ?.collection as string;
           if (collection === undefined) throw new Error(`${key(row)}: the route names no entry collection`);
           const entryAddress = getEntryNftAddress(participant, setup.categoryId, collection);
-          const entryUtxo = presentEntryUtxos.get(collection) ?? (await provider.getUtxos(entryAddress))[0];
+          const occurrence = entryOccurrence.get(collection) ?? 0;
+          entryOccurrence.set(collection, occurrence + 1);
+          const present = presentEntryUtxos.get(collection);
+          const usePresent = present !== undefined
+            && occurrence === (row.presentEntryOccurrence?.[collection] ?? 0);
+          const entryUtxo = usePresent ? present : (await provider.getUtxos(entryAddress))
+            .find((candidate) => candidate.txid !== present?.txid || candidate.vout !== present.vout);
           if (entryUtxo === undefined) throw new Error(`${key(row)}: the ${collection} entry NFT is unstaged`);
           tx.addInput(entryUtxo, createEntryNftUnlocker(participant, 0, setup.categoryId, collection));
           tx.addOutput({
@@ -604,6 +689,6 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     console.log(`[V2C] ${settled.length} gained handlers settle in this file; `
       + `${ROWS.reduce((n, row) => n + (row.unproven?.length ?? 0), 0)} more are run and recorded unproven`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(34);
+    expect(settled.length).toBe(45);
   });
 });

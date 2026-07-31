@@ -606,6 +606,9 @@ const INPUT = {
   controller: 13, fee: 14,
 } as const;
 
+const providerFailureAt = (input: number, reason = 'Program failed an OP_VERIFY operation'): RegExp =>
+  new RegExp(`mandatory-script-verify-flag-failed .*error in evaluating input index ${input}: ${reason}`);
+
 describe('A1 review: honest control', () => {
   it('the review graph settles, and its physical layout is the one every case below pins', async () => {
     const built = await buildA1();
@@ -859,9 +862,12 @@ describe('A1 review: unattacked transcript fields', () => {
     // Length-preserving: the attacked transcript differs from the honest one this build derived first only
     // in the named field's own bytes.
     expect(patchedByteIndices(attacked).length).toBeGreaterThan(0);
-    void field;
     expect(failingInput(attacked)).toBe(input);
-    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+    const reason = field === 'invocation depth alone'
+      ? 'Program called an OP_SPLIT operation with an invalid index. stack item length: 94; requested split index: 142.'
+      : undefined;
+    await expect(attacked.provider.sendRawTransaction(attacked.transaction))
+      .rejects.toThrow(providerFailureAt(input, reason));
   }, 120_000);
 
   // EVIDENCE LIMIT, recorded rather than claimed away. Every forgery above is refused, but the projection
@@ -907,7 +913,8 @@ describe('A1 review: the root caller row and its tx.origin binding', () => {
     });
     expect(built.transcript.participantCallersHex[0].length).toBe(74);
     expect(failingInput(built)).toBe(INPUT.projection0);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.projection0));
   }, 120_000);
 });
 
@@ -980,7 +987,7 @@ describe('A1 review: state and resource preservation', () => {
     expect(patchedByteIndices(built)).toEqual([]);
     expect(built.transaction.length).toBe(control.transaction.length);
     expect(failingInput(built)).toBe(input);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(providerFailureAt(input));
   }, 240_000);
 });
 
@@ -1042,8 +1049,10 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     // that base - the identical invariant the omission case attacks - and not by two rows naming one owner.
     expect(failingInput(duplicated)).toBe(INPUT.oracle);
     expect(failingInput(strange)).toBe(INPUT.oracle);
-    await expect(duplicated.provider.sendRawTransaction(duplicated.transaction)).rejects.toThrow();
-    await expect(strange.provider.sendRawTransaction(strange.transaction)).rejects.toThrow();
+    await expect(duplicated.provider.sendRawTransaction(duplicated.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.oracle));
+    await expect(strange.provider.sendRawTransaction(strange.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.oracle));
   }, 240_000);
 
   it('no covenant compares participant rows to each other: owner uniqueness is an SDK-only rule', async () => {
@@ -1170,7 +1179,8 @@ describe('A1 review: C3 disjoint-root - is stripping the emission row separable?
     expect(patchedByteIndices(attacked))
       .toEqual([frame.parentStart, frame.parentStart + 1, frame.depthStart]);
     expect(failingInput(attacked)).toBe(INPUT.projection0);
-    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+    await expect(attacked.provider.sendRawTransaction(attacked.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.projection0));
   }, 120_000);
 
   it('stripping the leftover emission row too is a DIFFERENT refusal, at a different input', async () => {
@@ -1182,6 +1192,9 @@ describe('A1 review: C3 disjoint-root - is stripping the emission row separable?
       .toBeLessThan(attacked.honestTranscript.bytes.length);
     expect(attacked.transcript.participantEmissionsHex[2]).toBe('');
     expect(failingInput(attacked)).toBe(INPUT.broker);
-    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow(providerFailureAt(
+      INPUT.broker,
+      'Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 45.',
+    ));
   }, 120_000);
 });

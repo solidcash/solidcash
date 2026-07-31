@@ -64,6 +64,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   mutation-proved input-0 reasons. `MsgSenderC2` required staged mutation: mutating its first rejection prevented
   the Alice state update needed by the next test, so restoring that first exact reason was required before the
   second matcher could be independently driven red.
+  `Layer3ExecutionRoot` is exhausted: both the participant-set-only commitment and wrong-call-graph commitment
+  reach the same mutation-proved provider refusal at input 0 (`OP_VERIFY`). This count also reconciles eleven
+  already-exhausted executable sites that the previous census and handoff had not yet incorporated.
 - **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
   compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
   compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`

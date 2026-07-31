@@ -85,11 +85,15 @@ describe('R2: canonical execution transcript root (call graph, not just addresse
 
   it('HOSTILE: a controller committing only the participant-SET root (no execution) is rejected', async () => {
     const s = await setup((lbcs) => layer3.participantSetRoot(lbcs)); // addresses only, no call graph
-    await expect(s.provider.sendRawTransaction(await transcript(s))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(await transcript(s))).rejects.toThrow(
+      /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+    );
   });
 
   it('HOSTILE: a controller committing a DIFFERENT call graph (wrong selector) is rejected', async () => {
     const s = await setup((lbcs) => layer3.executionRoot(lbcs, [{ caller: 0, callee: 1, selectorHex: '99999999' }]));
-    await expect(s.provider.sendRawTransaction(await transcript(s))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(await transcript(s))).rejects.toThrow(
+      /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+    );
   });
 });

@@ -231,7 +231,15 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (dot > 0) {
       const varName = name.slice(0, dot);
       const method = name.slice(dot + 1);
-      if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)
+      if (LOW_LEVEL_CALLS.has(method) && this.plainAddrStateVars.has(varName)) {
+        const localName = `${PREFIX}ll_${varName}`;
+        if (!this.usedInFn.has(localName)) {
+          this.usedInFn.set(localName, { iface: undefined, init: new IdentifierNode(varName) });
+        }
+        const loc = node.identifier.location;
+        node.identifier = new IdentifierNode(`${localName}.${method}`);
+        node.identifier.location = loc;
+      } else if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)
         && this.isInterfaceMethod(this.stateVarIface.get(varName), method)) {
         this.markUsed(varName, this.stateVarIface.get(varName)!, false, undefined);
         const loc = node.identifier.location;
@@ -713,10 +721,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
 
   // A low-level-call receiver worth hoisting into a plain-`address` local, resolved to its provenance root: a
   // self-pinned state chain (`t.dest` == `txs[id].dest`, or `address(__rh0_token)` traced back to `jobs[id].token`)
-  // OR a param-rooted access. A bare-identifier receiver that is not a synthetic alias already sources in codegen.
+  // OR a param-rooted access. A bare PARAM receiver already sources in codegen; a bare STATE receiver must still
+  // be hoisted because the external-call epilogue runs after the body and can only name a surviving local.
   // Returns a stable per-root local name + the ROOT to hoist as its init (valid at the body top), else undefined.
   private resolveLlReceiver(obj: ExpressionNode): { localName: string; init: ExpressionNode } | undefined {
-    if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj) return undefined; // bare receiver works
+    if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj
+      && !this.stateRoots.has(obj.name)) return undefined; // bare parameter/local receiver works
     // Resolve the receiver to its provenance root, then inline any single-assignment storage-pointer local at the
     // base of the resulting chain (`JobPost storage job = jobs[id]; job.token` -> `jobs[id].token`) - the AstBuilder
     // usually inlines the storage alias, but not always (EACC Marketplace takeJob), so do it here for the target.

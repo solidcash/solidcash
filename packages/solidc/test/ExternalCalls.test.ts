@@ -330,6 +330,11 @@ describe('SBE-21: external call on a state-var target in fallback/receive', () =
       + ' fallback() external { s.withdraw(); }'
       + ' receive() external payable { s.withdraw(); } }')).toBe('C');
   });
+
+  it('pins a bare low-level-call state receiver through a surviving address local', () => {
+    expect(cc('contract C { address target; constructor(address a) { target = a; }'
+      + ' function forward(bytes data) public { (bool ok,) = target.call(data); require(ok); } }')).toBe('C');
+  });
 });
 
 // Low-level call `.call{value:}(data)` on a COMPLEX (non-identifier) address receiver: the receiver type is

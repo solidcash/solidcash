@@ -3421,9 +3421,9 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substitution of either struct result field', async () => {
     const numeric = await buildReturning(true, false, 'struct');
-    await expect(numeric.provider.sendRawTransaction(numeric.transaction)).rejects.toThrow();
+    await expect(numeric.provider.sendRawTransaction(numeric.transaction)).rejects.toThrow(scriptRefusalAt(2));
     const boolean = await buildReturning(false, true, 'struct');
-    await expect(boolean.provider.sendRawTransaction(boolean.transaction)).rejects.toThrow();
+    await expect(boolean.provider.sendRawTransaction(boolean.transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('executes A -> B -> A once per owner and reads B outState at final settlement', async () => {
@@ -3433,7 +3433,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a graph settlement whose owner post-state differs from compiled sequential execution', async () => {
     const { provider, transaction } = await buildStateCycle(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('composes an ordinary event NFT inside the compiler-derived balanced block', async () => {
@@ -3446,7 +3446,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the event-NFT covenant in a balanced graph slot', async () => {
     const { provider, transaction } = await buildEventGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('settles a compiler-authenticated satoshi effect inside a balanced graph block', async () => {
@@ -3459,7 +3459,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects changing a compiler-authenticated graph effect amount', async () => {
     const { provider, transaction } = await buildValueEffectGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('journals an authenticated mapping entry inside a balanced graph block', async () => {
@@ -3471,7 +3471,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forged mapping-entry post-state in graph settlement', async () => {
     const { provider, transaction } = await buildMappingGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('settles two msg.sender-authorized ERC-20 transfers in one balanced graph', async () => {
@@ -3489,7 +3489,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the allowance spender witness for the authenticated caller', async () => {
     const { provider, transaction } = await buildCallerAuthorizedTransferGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('canonicalizes a row-local recipient which aliases the shared debit entry', async () => {
@@ -3540,7 +3540,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the holder key for the authenticated caller in a transfer', async () => {
     const { provider, transaction } = await buildCallerKeyedTransferGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('settles a caller-keyed ERC-20 approve into a nested collection entry', async () => {
@@ -3550,7 +3550,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the allowance owner key for the authenticated caller', async () => {
     const { provider, transaction } = await buildCallerKeyedApproveGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('authenticates every argument of a multi-argument event', async () => {

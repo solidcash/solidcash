@@ -36,7 +36,9 @@ import type { Utxo } from '../../src/interfaces.js';
  * it carries an oracle. No oracle-free multi-data-NFT route was ever run to notice, and every route that
  * happened to carry an oracle also happened to have more than one data NFT.
  *
- * Every other Layer-3 file in this suite passes the master index (`layout.participantInputs[0]`).
+ * The three recovered-population files were the only ones in this suite passing the slot index; every other
+ * Layer-3 file passes the master (`layout.participantInputs[0]`). All three are corrected on this branch, a
+ * no-op for their live rows because every one of those has a single data NFT.
  *
  * CONTROL A PINS IT, one variable at a time. The same route is built twice, differing ONLY in that argument:
  * with the master index it SETTLES and is broadcast; with the slot index it is refused at input index 2, the
@@ -75,8 +77,10 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  * WHAT IS NOT ESTABLISHED, and it bounds every sentence above.
  *
- *  - THREE handlers of the 206 gain VM evidence here. The population remains overwhelmingly unproven, and
- *    nothing here speaks for a handler this file does not run.
+ *  - EIGHT handlers of the 206 gain VM evidence here - three subjects and five read-only siblings, each its
+ *    own broadcast transaction, each checked against X160's own gained list below. 198 of the 206 are NOT
+ *    proved by this file, and most of them are not proved anywhere. Nothing here speaks for a handler this
+ *    file does not run.
  *  - `EnglishAuction`'s read surface is STILL unproven. Its route aborts at a fixed instruction pointer before
  *    any handler dispatch; three different handlers and a fully ZEROED pre-state all stop at the same pointer,
  *    so the abort is neither the handler nor the declared state - and this file does not say what it is.

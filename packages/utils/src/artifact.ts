@@ -174,9 +174,24 @@ export interface AbiFunction {
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
-  // Stateful contracts only: false = provably read-only (no state/entry write, transfer, emit, deploy, external
-  // call, delegate, dynamic write, split/merge, or covenant-bypass modifier). Lets the SDK skip the multi-pass
-  // derivation probe for getters (output state == input state). Absent = unknown/stateless (treat as writing).
+  /**
+   * Stateful contracts only. X176: THIS IS NOT "the handler changes a state variable", and it is read that way.
+   *
+   * `false` is the compiler's PROOF of read-only: no state or entry write, transfer, emit, deploy, external
+   * call, delegate, dynamic write, split/merge, or covenant-bypass modifier. That is the reading an SDK may
+   * act on - it lets a getter skip the multi-pass derivation probe (output state == input state), and
+   * misclassifying a writer as read-only there fails CLOSED, because the covenant rejects the mismatched
+   * output state.
+   *
+   * `true` is only the NEGATION of that proof - "not provably read-only", which in SDK terms is "needs the
+   * state machinery". An external call sets it exactly as readily as an assignment does. MEASURED: at least
+   * 2 of 7 handlers classified as explicit writers write nothing at all; one publishes `true` for a body of
+   * `bar.log();`. Absent means unknown or stateless and is treated as writing.
+   *
+   * Do not re-derive this toward "mutates": the only consumer keys on `=== false` and needs the conservative
+   * direction, so a narrower flag would make it fail OPEN. Use `StatefulContract.readWritesState` to get the
+   * published evidence split into own-state versus other-effect causes.
+   */
   writesState?: boolean;
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */

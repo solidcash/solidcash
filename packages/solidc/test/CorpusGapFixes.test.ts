@@ -1890,8 +1890,13 @@ describe('foreign external fn-ptr parameter (per-call master index)', () => {
     const art = compileString('contract C { function g(int x) public pure returns(int) { return x + 1; }'
       + ' function ev(function(int) external returns(int) fp, int a) public returns(int) { return fp(a); }'
       + ' function u(int x) public { require(this.ev(this.g, x) == x + 1); } }', { solidityImportCompat: true });
-    const evInputs = art.abi.find((f) => f.name === 'ev')!.inputs.map((i) => i.name);
-    expect(evInputs).not.toContain('__fnsel_fp'); // not lowered - stays the internal functionId form
+    const evInputs = art.abi.find((f) => f.name === 'ev')!.inputs.map((i) => `${i.name}:${i.type}`);
+    expect(evInputs.map((i) => i.split(':')[0])).not.toContain('__fnsel_fp'); // not lowered
+    // The absence alone would stay green if `fp` were dropped from the ABI altogether, so pin the form it
+    // KEEPS: the unlowered fn-ptr param, and none of the two companions the lowered path adds (the sibling
+    // test above asserts both are present when it DOES lower).
+    expect(evInputs).toContain('fp:function(int256)externalreturns(int256)');
+    expect(evInputs.some((i) => i.startsWith('__internal__extcallMasterIdx'))).toBe(false);
   });
 });
 
@@ -1919,8 +1924,12 @@ describe('foreign external fn-ptr STATE storage of a received value (x = y)', ()
       + ' function g(uint x) internal returns(uint) { return x + 1; }'
       + ' function set() public { fp = g; } function run(uint v) public returns(uint) { return fp(v); } }',
     { solidityImportCompat: true });
-    const stateVars = art.stateLayout!.variables.map((v) => v.name);
-    expect(stateVars).not.toContain('__fnsel_fp'); // internal pointer keeps its functionId representation
+    const stateVars = art.stateLayout!.variables.map((v) => `${v.name}:${v.type}`);
+    expect(stateVars.map((v) => v.split(':')[0])).not.toContain('__fnsel_fp'); // no companion selector field
+    // The absence alone would stay green on an EMPTY state layout, so pin the representation `fp` keeps: the
+    // functionId form, not the `address` the flattening path produces (asserted by the sibling test above).
+    expect(stateVars).toContain('fp:function(uint256)returns(uint256)');
+    expect(stateVars).not.toContain('fp:address');
   });
 });
 

@@ -961,8 +961,17 @@ describe('C1: delegatecall pins the delegate co-spend', () => {
     expect((a.bytecode.match(/OP_UTXOBYTECODE/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
+  /**
+   * The title's subject is the WARNING, and the only assertion here used to be the pin's ABSENCE - over
+   * `JSON.stringify(abi)`, which contains no pin when the ABI is `[]` either. The warning could be deleted from
+   * the compiler and this stayed green. The spy now keeps what it swallows, and the ABI is asserted non-trivial
+   * before an absence is read out of it.
+   */
   it('keeps the warning path (no pin) for a P2PKH-placeholder impl', () => {
-    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(' '));
+    });
     const a = compileString(
       'contract P { bigint counter;'
       + ' function up(bytes i, pubkey pk, sig s) external { require(checkSig(s, pk));'
@@ -970,6 +979,10 @@ describe('C1: delegatecall pins the delegate co-spend', () => {
       + ' m.delegatecall(i); require(i.length > 0); } }',
     );
     spy.mockRestore();
+    expect(logged.join('\n')).toContain("function 'up' (line 1) issues delegatecall against a non-covenant"
+      + ' (P2PKH) impl');
+    expect(a.abi.map((fn) => fn.name)).toEqual(['up']);
+    expect(a.abi[0].inputs.map((input) => input.name)).toEqual(['i', 'pk', 's']);
     expect(JSON.stringify(a.abi)).not.toContain('__internal__delegateInputIndex');
   });
 });

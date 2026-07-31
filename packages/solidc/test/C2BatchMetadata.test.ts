@@ -51,6 +51,9 @@ describe('C2 fixed-write batch metadata', () => {
       }
     }`, { forceStateful: true, chunkedArrays: true });
     const accesses = artifact.abi.find((f) => f.name === 'update')?.entryAccesses ?? [];
+    // `[].every(...)` is `true`, and the reader defaults to `[]`, so without this the guard would pass on an
+    // artifact that published no entry accesses at all. Measured at this commit: 2.
+    expect(accesses, 'no entry accesses published, so the alias check below has no subject').toHaveLength(2);
     expect(accesses.every((a) => a.aliasCondDeleteSlot === undefined)).toBe(true);
   });
 });

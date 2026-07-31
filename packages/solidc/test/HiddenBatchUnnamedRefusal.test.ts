@@ -105,6 +105,11 @@ describe('X72 a refused hidden-batch handler names its reason', () => {
   }, 300_000);
 
   it('publishes no handler with eligible:false and no reason', () => {
+    // `handlersOf` defaults to `[]` when no route was published, so `unnamedOf` is empty for a contract that
+    // has no handlers channel at all. The three controls below each pair the absence with a positive read;
+    // this one did not. Measured at this commit: 5 handlers, one of them refused.
+    expect(handlersOf(mappingAndBlock).length, 'no handlers published, so the absence has no subject')
+      .toBeGreaterThan(0);
     expect(unnamedOf(mappingAndBlock)).toHaveLength(0);
   });
 

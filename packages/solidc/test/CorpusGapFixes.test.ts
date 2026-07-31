@@ -1792,8 +1792,28 @@ describe('external call on the current contract type (self-type)', () => {
     expect(cc('contract M { uint x; function set(uint c) public { x = c; } function f() public { this.set(1); } }'))
       .toBe('M');
   });
-  it('still rejects an interface inheriting a contract (solc parity)', () => {
-    expect(() => cc('contract C {} interface I is C {}')).toThrow();
+  /**
+   * MEASURED, NOT ASSUMED. The bare `toThrow()` that stood here was titled "still rejects an interface
+   * inheriting a contract (solc parity)", and the refusal it caught is `Undefined interface 'C'`. The control
+   * that removes the suspected cause - the base being a CONTRACT - while keeping every other field raises the
+   * IDENTICAL refusal: `contract C {} interface I is Zzz {}`, where `Zzz` declares nothing at all. So the field
+   * the compiler reads is "the base does not resolve as an interface", and the solc rule was attributed to a
+   * refusal that never looked at it.
+   *
+   * The weaker fact is what is asserted. What would restore the stronger claim is a diagnostic that names `C`
+   * as a contract rather than as an undefined interface; there is no such diagnostic at this commit.
+   *
+   * Residual gap, measured the same way: `interface I is Zzz {}` with NO contract in the file COMPILES. The
+   * base list is only resolved when the interface is not the compilation root.
+   */
+  it('rejects an interface whose base does not resolve as an interface', () => {
+    expect(() => cc('contract C {} interface I is C {}')).toThrow(/Undefined interface 'C'/);
+    expect(() => cc('contract C {} interface I is Zzz {}')).toThrow(/Undefined interface 'Zzz'/);
+    // The positive half: a base that DOES resolve as an interface is accepted, directly and transitively.
+    expect(cc('interface B { function m() external; } contract C is B { function m() external { require(true); } }'))
+      .toBe('C');
+    expect(cc('interface B { function m() external; } interface I is B {}'
+      + ' contract C is I { function m() external { require(true); } }')).toBe('C');
   });
 });
 

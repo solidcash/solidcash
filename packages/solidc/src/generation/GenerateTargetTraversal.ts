@@ -5719,18 +5719,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * BEFORE dynamic-storage read/write chunks - so a dynamic read/write loop adds this sum to its base.
    * No-op when the function has no collection iterations. Assumes one untracked offset partial on top.
    */
-  private emitAddCollectionIterCounts(locationData: SingleLocationData): void {
+  private emitAddCollectionIterCounts(locationData: SingleLocationData, callsiteDepth = 0): void {
     const iterCount = this.currentFunction.collectionIterations?.length ?? 0;
     for (let j = 0; j < iterCount; j++) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__collectionIterCount_${j}`) + 1)), locationData);
+      this.emit(encodeInt(BigInt(
+        this.getStackIndex(`__internal__collectionIterCount_${j}`) + 1 + callsiteDepth,
+      )), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_ADD, locationData);
     }
   }
 
   /** Add outputs emitted before scalar C2 NEW nodes: preserved iteration/read chunks and newly-written chunks. */
-  private emitAddDynamicOutputsBeforeEntries(locationData: SingleLocationData): void {
-    this.emitAddCollectionIterCounts(locationData);
+  private emitAddDynamicOutputsBeforeEntries(
+    locationData: SingleLocationData, callsiteDepth = 0,
+  ): void {
+    this.emitAddCollectionIterCounts(locationData, callsiteDepth);
     const written = new Set(this.currentFunction.dynamicWrites ?? []);
     for (const name of this.currentFunction.dynamicReads ?? []) {
       if (written.has(name)) continue;
@@ -5751,7 +5755,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (const valueStackName of dynamicValueNames) {
       // One untracked running output index is above the tracked stack.
-      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName) + 1)), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName) + 1 + callsiteDepth)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_SIZE, locationData); this.emit(Op.OP_NIP, locationData);
       this.emit(encodeInt(119n), locationData); this.emit(Op.OP_ADD, locationData);
@@ -14320,7 +14324,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, loc);
       }
     }
-    if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
+    // X102. Five untracked C2 fields remain above the tracked frame here. Both the iteration-count terms and
+    // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
+    if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc, 5);
     this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7);                  // NEW = Hk32 || coNext32 || v
     this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
     // Predecessor plus new node, plus one per co-spent read slot, is the whole footprint of an insert.

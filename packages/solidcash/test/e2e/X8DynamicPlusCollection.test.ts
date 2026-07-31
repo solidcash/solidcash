@@ -17,9 +17,8 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * dynamic writes are not dropped - the C2 insert's NEW node is placed after the chunk outputs the raw writes
  * mint, and forging either chunk rejects.
  *
- * One boundary is real and is NOT specific to X8: as soon as a single dynamic value needs more than one
- * 120-byte chunk, the same transaction cannot be assembled at all. That is pinned separately below, with the
- * controls showing it is the entry MINT plus multi-chunk derivation, not the journal and not two writes.
+ * X102 closes the former multi-chunk boundary by making the trailing-offset depth call-site-dependent. The
+ * controls below retain all three shapes so a regression cannot hide behind the journal or entry mint.
  */
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -239,41 +238,39 @@ describe('X8 two chunk-backed dynamic writes beside a collection write', () => {
   }, 180_000);
 });
 
-describe('X8 multi-chunk boundary beside a C2 entry mint', () => {
+describe('X8 multi-chunk composition beside a C2 entry mint', () => {
   const attempt = async (source: string, size: number): Promise<string> => {
     const { sc } = await deploy(source);
     return sc.run(alicePkh, 7n, new Uint8Array(size).fill(0xaa)).send()
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   };
 
-  // OPEN DEFECT PIN, ONE remaining cause. X10 closed the SDK half and re-pinned the refusal below.
+  // X102 closes the remaining covenant half X10 isolated.
   //
-  // 1. Covenant, STILL OPEN. `emitAddDynamicOutputsBeforeEntries` PICKs the written value at `trackedIndex + 1`,
+  // 1. Covenant, CLOSED. `emitAddDynamicOutputsBeforeEntries` used to PICK the written value at `trackedIndex + 1`,
   //    but the C2 upsert's INSERT arm carries five untracked working values (key hash, entry address,
   //    predecessor slot, next and value) between the tracked stack and the running output index - the same five
   //    the neighbouring returnEvent adjustment reaches past with `+ 6`. The PICK therefore measures a 32-byte
   //    raw C2 field, so `(size + 119) / 120` is 1 for every dynamic value. That is right for values up to one
   //    120-byte chunk and wrong above it, which is exactly where this boundary sits. Re-measured under X10 with
   //    the depth at `+ 6`: the PICK then reaches the 200-byte value, OP_SIZE reads 200 and the covenant computes
-  //    a chunk count of 2, so the depth is confirmed as the covenant half.
+  //    a chunk count of 2. X102 now passes that call-site depth rather than changing the shared helper's default.
   // 2. SDK, CLOSED by X10. The old failure was not "the region does not grow" - it grew to two outputs and
   //    filled them wrong, broadcasting the C2 NEW node's commitment at outputs 3 AND 5 with a never-derived
   //    '00' between them. Chunk commitments are now keyed by their output index, an underived region is
   //    refused by name before signing, and the region grows out of the probe-ordering cycle a trailing entry
   //    mint creates. Measured with both halves applied, 121 and 200 bytes SETTLE with two real chunks.
   //
-  // The assertions below record the CURRENT behaviour so the boundary cannot move silently - when the covenant
-  // half lands these must become acceptances, not be deleted.
-  it('accepts one chunk and refuses two chunks beside a collection write', async () => {
+  // X102 supplies the call-site depth; all three sizes now settle rather than leaving the extra chunk underived.
+  it('accepts one and two chunks beside a collection write', async () => {
     expect(await attempt(INLINE_HANDLER, 120)).toBe('ACCEPTED');
-    expect(await attempt(INLINE_HANDLER, 121)).toContain('dynamic storage chunk region');
-    expect(await attempt(INLINE_HANDLER, 200)).toContain('dynamic storage chunk region');
+    expect(await attempt(INLINE_HANDLER, 121)).toBe('ACCEPTED');
+    expect(await attempt(INLINE_HANDLER, 200)).toBe('ACCEPTED');
   }, 300_000);
 
-  it('is not caused by the journal passes: the same shape with no helper fails identically', async () => {
-    // INLINE_HANDLER has no internal helper, so neither journal pass touches it. The boundary is therefore
-    // the shared trailing region, not the dynamic-plus-collection journal interaction X8 was raised against.
-    expect(await attempt(INLINE_HANDLER, 200)).toContain('dynamic storage chunk region');
+  it('is independent of the journal passes: the same shape with no helper settles', async () => {
+    // INLINE_HANDLER has no internal helper, so neither journal pass touches it.
+    expect(await attempt(INLINE_HANDLER, 200)).toBe('ACCEPTED');
   }, 300_000);
 
   it('is caused by the entry MINT: the same multi-chunk write with a collection READ settles', async () => {

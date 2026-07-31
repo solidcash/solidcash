@@ -22,11 +22,9 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  *     placeholder and never a real chunk commitment, so a '00' left in the region means the covenant never
  *     verified that output and the remaining chunks cannot be funded.
  *
- * The covenant half is separate and is NOT in this tree: `emitAddDynamicOutputsBeforeEntries` PICKs the
- * written value at `trackedIndex + 1`, but the C2 upsert's INSERT arm carries five untracked working values
- * between the tracked stack and the running output index, so the PICK measures a 32-byte raw C2 field and
- * every dynamic value counts as one chunk. With that depth corrected to `+ 6` (measured, not shipped here)
- * plus the growth in this file, 121 and 200 bytes both settle. Without it they fail closed, by name.
+ * X102 closes the covenant half: `emitAddDynamicOutputsBeforeEntries` receives the C2 INSERT call site's five
+ * untracked working values, rather than applying one shared depth at every caller. With that correction, 121
+ * and 200 bytes both settle and every chunk is derived before signing.
  */
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -119,16 +117,14 @@ describe('X10 trailing chunk region beside a C2 entry mint', () => {
     expect(commitments[OUT.chunk1].length).toBe(130); // NEW node: slot32 || next32 || value
   }, 180_000);
 
-  it('refuses by name, before signing, when the chunk region cannot be fully derived', async () => {
-    // THE boundary. Both sizes past one chunk now name the variable and the shortfall, and nothing at all
-    // reaches the network - the transaction that used to be built carried the NEW commitment twice and a
-    // never-derived '00' placeholder.
+  it('settles both multi-chunk boundaries beside the entry mint', async () => {
     for (const size of [121, 200]) {
       const { outcome, broadcasts } = await attempt(MINT, size);
-      expect(outcome).toContain('dynamic storage chunk region');
-      expect(outcome).toContain("'tagA'");
-      expect(outcome).toContain('is not fully derived (1 of 2 chunks resolved)');
-      expect(broadcasts).toEqual([]);
+      expect(outcome).toBe('ACCEPTED');
+      expect(broadcasts).not.toEqual([]);
+      const commitments = commitmentsOf(broadcasts[broadcasts.length - 1]);
+      expect(commitments[OUT.chunk0]).not.toBe('00');
+      expect(commitments[OUT.chunk1]).not.toBe('00');
     }
   }, 180_000);
 
@@ -145,10 +141,8 @@ describe('X10 trailing chunk region beside a C2 entry mint', () => {
     }
   }, 180_000);
 
-  it('guard: the refusal is not credited to multi-chunk writes - a collection READ still settles', async () => {
-    // Negative control. Same 200-byte write, same collection, but no NEW node in the trailing region: two
-    // real chunks are built and the transaction settles, so the refusal above cannot be read as "the SDK
-    // stopped growing the chunk region".
+  it('guard: a collection READ still settles the same multi-chunk write', async () => {
+    // Negative control. Same 200-byte write, same collection, but no NEW node in the trailing region.
     const { outcome, broadcasts } = await attempt(READ, 200);
     expect(outcome).toBe('ACCEPTED');
     const commitments = commitmentsOf(broadcasts[broadcasts.length - 1]);
@@ -156,7 +150,7 @@ describe('X10 trailing chunk region beside a C2 entry mint', () => {
     expect(commitments[OUT.chunk1].startsWith('514c50')).toBe(true);
   }, 180_000);
 
-  it('guard: the refusal is not credited to the entry mint - no collection at all still settles', async () => {
+  it('guard: no collection at all still settles', async () => {
     const { outcome } = await attempt(NO_COLLECTION, 200);
     expect(outcome).toBe('ACCEPTED');
   }, 180_000);

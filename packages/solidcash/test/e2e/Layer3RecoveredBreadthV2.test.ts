@@ -323,7 +323,7 @@ const ROWS: readonly Row[] = [
   {
     rel: 'try-catch/TryCatch.sol',
     contract: 'Foo',
-    subjects: [{ handler: 'owner' }],
+    subjects: [{ handler: 'myFunc', args: [1n] }, { handler: 'owner' }],
     hostileSubject: 'owner',
     state: { owner: addr('55') },
     stateTamper: { owner: addrNear('55') },
@@ -789,6 +789,6 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
     console.log(`[V2B] ${settled.length} gained handlers settle in this file; ${unproved.length} more are `
       + `run and recorded as unproven; ${206 - settled.length} of the 206 are NOT proved here.`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(41);
+    expect(settled.length).toBe(42);
   });
 });

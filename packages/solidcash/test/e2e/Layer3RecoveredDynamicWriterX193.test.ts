@@ -245,7 +245,11 @@ const ROWS: readonly Row[] = [
     contract: 'DutchAuction',
     writer: 'getPrice',
     writerArgs: [],
-    guards: [{ name: 'startingPrice', args: [] }, { name: 'discountRate', args: [] }, { name: 'startAt', args: [] }],
+    guards: [
+      { name: 'startingPrice', args: [] }, { name: 'discountRate', args: [] }, { name: 'startAt', args: [] },
+      { name: 'expiresAt', args: [] }, { name: 'nft', args: [] }, { name: 'nftId', args: [] },
+      { name: 'seller', args: [] },
+    ],
     verdict: 'reads',
     x192: true,
     oracleTimestamp: 1_700_000_000n,
@@ -1004,10 +1008,11 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
       + 'are NOT proved by this file, and most of them are not proved anywhere.');
     expect(settled).toEqual([
       'DutchAuction.getPrice', 'DutchAuction.startingPrice', 'DutchAuction.discountRate', 'DutchAuction.startAt',
+      'DutchAuction.expiresAt', 'DutchAuction.nft', 'DutchAuction.nftId', 'DutchAuction.seller',
       'Attack.etherStore', 'Attack.getBalance',
       'Target.isContract', 'Target.pwned',
       'TestTransientStorage.val',
     ]);
-    expect(settled).toHaveLength(9);
+    expect(settled).toHaveLength(13);
   }, 1_800_000);
 });

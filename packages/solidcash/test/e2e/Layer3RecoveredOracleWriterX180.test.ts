@@ -231,7 +231,16 @@ const ROWS: readonly Row[] = [
     contract: 'StakingRewards',
     writer: 'setRewardsDuration',
     writerArgs: [86_400n],
-    guards: [{ name: 'duration', args: [] }, { name: 'rewardRate', args: [] }],
+    guards: [
+      { name: 'duration', args: [] }, { name: 'rewardRate', args: [] },
+      { name: 'balanceOf', args: [hexToBin(PKH_CALLER)] },
+      { name: 'earned', args: [hexToBin(PKH_CALLER)] },
+      { name: 'finishAt', args: [] }, { name: 'lastTimeRewardApplicable', args: [] },
+      { name: 'owner', args: [] }, { name: 'rewardPerToken', args: [] },
+      { name: 'rewardPerTokenStored', args: [] },
+      { name: 'rewardsToken', args: [] }, { name: 'stakingToken', args: [] },
+      { name: 'totalSupply', args: [] }, { name: 'updatedAt', args: [] },
+    ],
     verdict: 'settles',
     // `setRewardsDuration` is `onlyOwner` - `require(msg.sender == owner)` - and on the bus `msg.sender` is a
     // LOCKING BYTECODE the projection pins to `tx.origin`. So the owner field is the harness's own P2PKH.
@@ -306,7 +315,13 @@ const ROWS: readonly Row[] = [
     contract: 'UniswapV2Pair',
     writer: 'initialize',
     writerArgs: [TOKEN0, TOKEN1],
-    guards: [{ name: 'token0', args: [] }, { name: 'kLast', args: [] }],
+    guards: [
+      { name: 'token0', args: [] }, { name: 'kLast', args: [] },
+      { name: 'DOMAIN_SEPARATOR', args: [] }, { name: 'factory', args: [] },
+      { name: 'getReserves', args: [] },
+      { name: 'price0CumulativeLast', args: [] }, { name: 'price1CumulativeLast', args: [] },
+      { name: 'token1', args: [] }, { name: 'totalSupply', args: [] },
+    ],
     verdict: 'settles',
     // `require(msg.sender == factory)`, so the factory field is the harness's own transaction origin.
     rootCaller: 'pkh',
@@ -458,9 +473,16 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     // sides on `eligible && usesMsgValue` the row runs the full settle-and-hostile battery.
     expect(settled).toEqual([
       'StakingRewards.setRewardsDuration', 'StakingRewards.duration', 'StakingRewards.rewardRate',
+      'StakingRewards.balanceOf', 'StakingRewards.earned', 'StakingRewards.finishAt',
+      'StakingRewards.lastTimeRewardApplicable', 'StakingRewards.owner', 'StakingRewards.rewardPerToken',
+      'StakingRewards.rewardPerTokenStored', 'StakingRewards.rewardsToken',
+      'StakingRewards.stakingToken', 'StakingRewards.totalSupply', 'StakingRewards.updatedAt',
       'CrowdFund.count', 'CrowdFund.token',
       'EnglishAuction.highestBid', 'EnglishAuction.endAt', 'EnglishAuction.started',
       'UniswapV2Pair.initialize', 'UniswapV2Pair.token0', 'UniswapV2Pair.kLast',
+      'UniswapV2Pair.DOMAIN_SEPARATOR', 'UniswapV2Pair.factory', 'UniswapV2Pair.getReserves',
+      'UniswapV2Pair.price0CumulativeLast', 'UniswapV2Pair.price1CumulativeLast',
+      'UniswapV2Pair.token1', 'UniswapV2Pair.totalSupply',
     ]);
     expect(notSettled).toEqual([]);
   }, 1_800_000);

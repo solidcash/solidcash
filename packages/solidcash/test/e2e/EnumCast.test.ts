@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+
 // int -> enum (Color(i), range-checked) and enum -> int (int(c)) explicit casts.
 const SOURCE = `
 contract EnumCast() {
@@ -26,6 +28,6 @@ describe('Enum <-> int casts', () => {
   it('range-checks int -> enum (Color(99) is out of range and fails)', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.roundtrip(99n)).rejects.toThrow();
+    await expect(sc.roundtrip(99n)).rejects.toThrow(inputZeroVerifyFailure);
   });
 });

@@ -56,7 +56,7 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **81 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
+- **X214** - **76 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
   remaining vacuity surface. The AST census began at 436 executable sites. The unit partition is exhausted;
   two previously skipped P2PKH cases are now live, and `DynamicLoopEntryAdversarial` no longer passes on
   spent-input or signature failure before its mapping covenant runs. `Layer3BalancedCall` and
@@ -73,7 +73,8 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   BCH-2026 input-0 `OP_VERIFY`; the measured source population was 110 before those two repairs.
   `SortedMappingsAllParity` is exhausted after its ordered write/read proofs: both final hostile reads reach
   that same exact refusal. The measured pre-edit population was 104, accounting for four earlier repairs absent
-  from the published 108-site pin.
+  from the published 108-site pin. `CreationCode`, `DiamondC3`, `DynamicLoopEntry`, `EmitAfterRevertGuard`, and `EnumCast`
+  are exhausted: five independent mutations each pin the exact layer-3 input-0 `OP_VERIFY` verdict.
   `UncheckedArithmetic` is exhausted: its checked overflow and wrong wrapped-result expectation are both
   AST-live and reach input-0 `OP_VERIFY`. Its measured pre-edit population was 96, incorporating six earlier
   repairs absent from the published 102-site pin.

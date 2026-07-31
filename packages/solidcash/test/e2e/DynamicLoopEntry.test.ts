@@ -5,6 +5,8 @@ import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.j
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+
 // A DYNAMIC-bound loop (int[] calldata, runtime length) that writes a mapping. Unlike the fixed-bound case
 // (unrolled to N static writes), this compiles to a native OP_BEGIN/OP_UNTIL covenant loop that mints one new
 // entry NFT per iteration at a runtime-counter-indexed trailing output. The SDK derives the N (key,value) pairs
@@ -46,7 +48,7 @@ describe('dynamic-bound loop mapping write (runtime OP_BEGIN/OP_UNTIL entry mint
     }
     // A wrong value is rejected (the entry genuinely holds its assigned value).
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(10n, 999n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(10n, 999n, alicePub, sig).send()).rejects.toThrow(inputZeroVerifyFailure);
   });
 
   it('writes mapping keys in a do-while loop', async () => {

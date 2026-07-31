@@ -45,6 +45,17 @@ import type { Utxo } from '../../src/interfaces.js';
  * So `Foo.callBar` remains UNPROVEN in both directions, and the reason is this harness rather than the
  * covenant. It is the ONLY recovered writer whose external call could carry a sound co-spend, so it is the
  * row most worth finishing, and it is named here as open rather than counted anywhere.
+ *
+ * X187 THEN RETIRED THE SUBJECT, and moved the blocker from the harness to a capability. `bar.log()` on a
+ * contract-typed STATE VARIABLE parses as a namespaced FunctionCallNode and only becomes an
+ * ExternalFunctionCallNode in a semantic pass that runs AFTER route synthesis freezes its verdict, so
+ * synthesis never saw the edge - which is why `callBar` was admitted at all. `compiler.ts` now counts the
+ * spelling, and a body that is one call with no trailing require is not tail-call eligible in EITHER
+ * spelling, so `callBar` is refused before a transaction exists. The transaction-level rows are retired with
+ * it; what is left is the compile-time verdict, matched by name.
+ *
+ * THE ROW IS STILL OPEN AND IS NOW A CAPABILITY QUESTION: admitting a bare-body forwarding call would widen
+ * what the bus accepts for both spellings, which is a decision, not a repair.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -60,8 +71,6 @@ const BUS = {
   experimentalHiddenBatch: true,
 };
 
-/** A distinctive sentinel: the covenant cannot have computed it, so its trace neighbour is what it did. */
-const SENTINEL = (index: number): string => `${'9d'.repeat(19)}${index.toString(16).padStart(2, '0')}`;
 const PROBE_RESULT = '9e'.repeat(32);
 
 /** The value the ROUTE ITSELF computed, read off its own execution next to the sentinel it was handed. */
@@ -314,13 +323,25 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
    * as a co-spent participant of its own, so the call is a thing the transaction has to carry rather than a
    * statement it can drop.
    */
-  it('MEASURED: `Foo.callBar` plans TWO participants and TWO invocations', async () => {
-    const shape = await attempt('callBar', 'none', { probe: true });
-    console.log(`[X177E] callBar graph participants=${shape.participants} `
-      + `invocations=${shape.invocations} eventSlots=${shape.eventSlots}`);
-    expect(shape.participants).toBe(2);
-    expect(shape.invocations).toBe(2);
-    expect(shape.eventSlots).toBe(8);
+  it('X187: `Foo.callBar` is now refused at compile time, by name, and the subject is retired', () => {
+    const map = compileFileMulti(EXTERNAL, {
+      ...BUS,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    } as never) as any;
+    const artifact = map.Foo;
+    const handlers = artifact.hiddenBatch!.handlers as any[];
+    const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
+    console.log(`[X177E] Foo eligible ${JSON.stringify(eligible)}`);
+    expect(eligible).not.toContain('callBar');
+    expect(handlers.find((handler) => handler.name === 'callBar').rejectionReason)
+      .toBe('batched-handler-forward-call-not-enabled');
+    // The ABI still publishes the edge, which is the whole point: route synthesis used to MISS it, because
+    // `bar.log()` on a contract-typed state variable is a namespaced FunctionCallNode until a later semantic
+    // pass. X187 made synthesis see it, and the bare-body spelling - one call, no trailing require - is not
+    // tail-call eligible in EITHER spelling, so it is refused rather than admitted with an unframed edge.
+    expect((artifact.abi.find((entry: any) => entry.name === 'callBar') as any).externalCalls)
+      .toBeDefined();
   }, 900_000);
 
   /**
@@ -345,39 +366,22 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
     }, 900_000);
 
   /**
-   * THE ROW. `Foo.callBar` with its counterparty co-spent, run to completion or refused, at a pinned index.
-   * The event slots are left as plain outputs first; if the covenant demands an event NFT it says so at an
-   * index, and that index is recorded rather than guessed at.
+   * THE ROW, AND WHY IT IS NOW BLOCKED ON A CAPABILITY RATHER THAN ON THIS HARNESS. `Foo.callBar` used to be
+   * plannable as a two-participant graph and was the ONE recovered writer whose external call could carry a
+   * sound co-spend. It cannot be built at all now, so the transaction-level rows above it are retired with
+   * their subject. What blocks it is NOT the unbindable edge - it is that a body which is one call with no
+   * trailing require is not tail-call eligible in either spelling. Making it eligible WIDENS what the bus
+   * admits, for both spellings, and is an open row rather than a repair.
    */
-  it('RECORDED: `Foo.callBar` with `Bar` co-spent, and what index the VM names', async () => {
-    const bare = await attempt('callBar', 'none', {});
-    console.log(`[X177E] callBar (plain event slots): ${bare.sent ?? bare.refusal?.split('\n')[0]} `
-      + `input=${bare.failingInput}`);
-    if (bare.sent !== undefined) {
-      expect(bare.sent).toMatch(/^[0-9a-f]{64}$/);
-      return;
+  it('X187: the plan-time rows are retired - `Foo.callBar` cannot reach a transaction', async () => {
+    let refusal: string | undefined;
+    try {
+      await attempt('callBar', 'none', { probe: true });
+    } catch (error) {
+      refusal = (error as Error).message;
     }
-    // Recorded with its input index, which says WHICH block the VM objected to. It is NOT read as a covenant
-    // refusal: the guard above shows this staging refuses a handler that has nothing to refuse.
-    expect(bare.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-    expect(bare.failingInput, 'the refusal did not name an input').toBeTypeOf('number');
-    console.log(`[X177E] callBar refused at input ${bare.failingInput} - `
-      + 'Foo block is inputs 0..2, Bar block is inputs 3..11');
-  }, 900_000);
-
-  /**
-   * AND WHAT THE COVENANT WANTS IN `Bar`'s FIRST EVENT SLOT, read off its own trace. The slot is handed a
-   * SENTINEL commitment and the route's comparison hands back the commitment IT computed.
-   */
-  it('MEASURED: the commitment `Bar`s event slot is checked against, off the route trace', async () => {
-    const probe = await attempt('callBar', 'none', {
-      probe: true, eventCommitments: [SENTINEL(0)],
-    });
-    const found = operandComparedAgainst(probe.trace!, hexToBin(SENTINEL(0)));
-    console.log('[X177E] Bar event slot 0 covenant operand: '
-      + `${found === undefined ? 'NEVER COMPARED at input 0' : binToHex(found)}`);
-    // Input 0 is `Foo`'s master, so `Bar`'s own event check may not be reached from this trace at all. Either
-    // answer is recorded; nothing is asserted about a value this file did not obtain.
-    expect(probe.trace!.length).toBeGreaterThan(0);
+    console.log(`[X177E] callBar plan: ${refusal ?? 'STILL PLANS'}`);
+    expect(refusal, 'callBar still plans - the X187 edge binding may have regressed').toBeDefined();
+    expect(refusal).toContain('batched-handler-forward-call-not-enabled');
   }, 900_000);
 });

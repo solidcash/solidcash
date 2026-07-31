@@ -329,43 +329,52 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
     expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
   };
 
-  it('MEASURED: `Attack.attack` with a PLAIN return-event output is refused at input 0 - the recorded result',
-    plainIsRefused(ATTACK), 900_000);
   it('CONTROL: a void writer with NO external call is refused identically with a PLAIN output',
     plainIsRefused(CONTROL), 900_000);
 
   /**
-   * X179. THE SDK NOW REFUSES THE PLAN, BY NAME, before any of this reaches a VM. `attack` publishes one
-   * unconditional `once` callsite and the plan answers it with no row, which is the count
-   * `deriveCompiledGraphPlan` cannot produce and `occurrenceBoundOf` already publishes a floor for.
+   * X187 RETIRED THE `ATTACK` SUBJECT ENTIRELY, and that is this file's headline now. Every row below that
+   * used to run `Attack.attack` recorded an ESCAPE: the bus admitted a handler whose whole body is
+   * `wallet.transfer(...)` - one edge into a contract the bus refuses - and framed no emission for it, so the
+   * transaction settled with the callee simply absent. The cause was a spelling: a call on a CONTRACT-TYPED
+   * STATE VARIABLE parses as a namespaced FunctionCallNode and only becomes an ExternalFunctionCallNode in a
+   * later semantic pass, after route synthesis has already frozen its verdict. `compiler.ts` now counts it.
+   *
+   * SO THE SUBJECT NO LONGER EXISTS - `attack` is refused at compile time, in the artifact, by name - and the
+   * rows are re-taken on the CONTROL, which is what they should always have been measured against: a void
+   * writer with no external call, where the return-event slot is the only thing in play.
    */
-  it('X179: the one-participant `Attack.attack` plan is refused by name at plan time', async () => {
+  it('X187: `Attack.attack` can no longer be planned at all - refused by name', async () => {
     let refusal: string | undefined;
     try {
-      await attempt(ATTACK, 'empty-vector-nft');
+      await attempt(ATTACK, 'empty-vector-nft', undefined, { bypass: true });
     } catch (error) {
       refusal = (error as Error).message;
     }
     console.log(`[X177V] attack plan: ${refusal ?? 'ADMITTED'}`);
-    expect(refusal, '`Attack.attack` was still planned with its edge dropped').toBeDefined();
-    expect(refusal).toContain('layer3: callsite 0 was planned with 0 occurrences, below the 1 proven');
+    expect(refusal, '`Attack.attack` was still planned - the X187 edge binding may have regressed').toBeDefined();
+    expect(refusal).toContain('batched-handler-forward-call-not-enabled');
   }, 900_000);
 
   /**
-   * THE FLIP. One field moves - the return-event slot - and the recorded negative becomes a settlement. Built
-   * through the X179 bypass, so what it measures is the covenant and not the SDK refusal above.
+   * THE FLIP, ON THE SUBJECT THAT SURVIVES - AND IT IS A STRONGER SUBJECT THAN THE ONE IT REPLACES. One field
+   * moves - the return-event slot - and the recorded negative above becomes a settlement. `Lib.doSomething` is
+   * void and has no external call, so the empty result vector is the only variable: a void handler's result is
+   * EMPTY rather than ABSENT, and the slot must still carry an NFT committing to that empty vector's push.
+   *
+   * `doSomething(777)` genuinely assigns `someNumber = 777`, so the post-state is staged at 777 rather than at
+   * the pre-state. `Attack.attack` never needed that - its body mutates nothing observable and pre==post - so
+   * this row now proves the flip on a handler that ACTUALLY WRITES, which the retired subject never did.
    */
-  it('MEASURED: `Attack.attack` SETTLES once its void return-event slot carries the empty result vector',
+  it('MEASURED: a void writer SETTLES once its return-event slot carries the empty result vector',
     async () => {
-      const result = await attempt(ATTACK, 'empty-vector-nft', undefined, { bypass: true });
-      console.log(`[X177V] attack empty-vector-nft: ${result.sent ?? result.refusal?.split('\n')[0]}`);
-      console.log(`[X177V] attack graph: participants=${result.participants} `
+      const result = await attempt(CONTROL, 'empty-vector-nft', { someNumber: 777n });
+      console.log(`[X177V] control empty-vector-nft: ${result.sent ?? result.refusal?.split('\n')[0]}`);
+      console.log(`[X177V] control graph: participants=${result.participants} `
         + `invocations=${result.invocations} emissions=${JSON.stringify(result.emissions)} `
         + `callers=${JSON.stringify(result.callers)}`);
-      expect(result.refusal, '`Attack.attack` did not settle').toBeUndefined();
+      expect(result.refusal, 'the void writer did not settle').toBeUndefined();
       expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-      // The whole body of `attack` is one external call, and the settling transaction carries no counterparty
-      // and declares no emission. Measured off the plan and the transcript, not asserted.
       expect(result.participants).toBe(1);
       expect(result.invocations).toBe(1);
       expect(result.emissions).toEqual(['']);
@@ -375,9 +384,9 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
    * LIVENESS CONTROL. The settling transaction with ONE persisted field moved is refused at input 0, so the
    * acceptance above is a covenant that ran and agreed, not a covenant that was never reached.
    */
-  it('GUARD: the settling `Attack.attack` with one persisted field moved is refused at input 0', async () => {
-    const result = await attempt(ATTACK, 'empty-vector-nft', ATTACK.tamper, { bypass: true });
-    console.log(`[X177V] attack tampered: ${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]} `
+  it('GUARD: the settling void writer with one persisted field moved is refused at input 0', async () => {
+    const result = await attempt(CONTROL, 'empty-vector-nft', CONTROL.tamper);
+    console.log(`[X177V] control tampered: ${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]} `
       + `input=${result.failingInput}`);
     expect(result.sent, 'a moved persisted field was ACCEPTED').toBeUndefined();
     expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
@@ -406,17 +415,23 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
     expect(refusal!.message).toContain("function 'transfer' issues a low-level 'call'");
   }, 300_000);
 
-  /** `attack` is still a published writer, so what settles above is a state-changing recovered handler. */
-  it('MEASURED: `attack` is still published writesState TRUE and still admitted by the route', () => {
+  /**
+   * `attack` is STILL a published writer with a real published edge - it is the ADMISSION that changed, not
+   * the ABI. That distinction is the point: the ABI always said this handler calls out, and the route used to
+   * admit it anyway. Matched on the artifact's own reason string rather than on the handler's absence.
+   */
+  it('X187: `attack` is still a published writer, and is now refused by the route by name', () => {
     const artifact = compileFile(TX_ORIGIN, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
       experimentalMessageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
-    const eligible = (artifact.hiddenBatch!.handlers as any[])
-      .filter((handler) => handler.eligible).map((handler) => handler.name);
+    const handlers = artifact.hiddenBatch!.handlers as any[];
+    const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
     console.log(`[X177V] eligible ${JSON.stringify(eligible)}`);
-    expect(eligible).toEqual(['attack', 'owner', 'wallet']);
+    expect(eligible).toEqual(['owner', 'wallet']);
+    expect(handlers.find((handler) => handler.name === 'attack').rejectionReason)
+      .toBe('batched-handler-forward-call-not-enabled');
     expect(artifact.abi.find((entry: any) => entry.name === 'attack').writesState).toBe(true);
   }, 300_000);
 });

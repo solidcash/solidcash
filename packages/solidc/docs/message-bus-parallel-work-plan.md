@@ -275,6 +275,11 @@ task-specific report, not in this table.
 | **X199** | **A payable handler REFUSED by route synthesis still sets the SDK's value mode** | U3 | X192 | **HIGH, OPEN - owner's call which side is wrong** | 1 handler publishes `usesMsgValue`, **0 eligible**, and the SDK writes `01` where the route demands `00`, widening every row 12 -> 21 bytes. U3 measured the disagreement and declined to say which side should change |
 | X193 | Is there a chunk-backed / dynamic-string WRITER in the 206? | U3 | X180 | **NO - measured BOTH directions** | 10 rows whose gained handlers include a writer carry **zero** dynamic state variables; 9 rows that DO carry one have all **60** gained handlers publishing `writesState: false`. **Disjoint sets**, so the shape has no member and no subject can be built |
 | X200 | `.code` requires a P2SH shape, which closes one of the eleven | U3 | X177 | **FAIL-CLOSED, not a finding** | `isContract` lowers to a P2SH extractor VERIFYing 23-or-35 bytes; one argument moved pins it. `Target.protected` is now closed in both directions, and U3 declined to call the P2SH requirement a defect without the Solidity-parity argument |
+| X187 | Why `IFace(addr).m()` binds its edge and `stateVar.m()` does not | U1 | X179 | **CLOSED - a SPELLING, and it was a real escape** | `bar.log()` on a contract-typed state var parses as a **namespaced FunctionCallNode** and only becomes an `ExternalFunctionCallNode` in a semantic pass that runs AFTER route synthesis freezes its verdict, so synthesis never saw the edge. `compiler.ts` +45 lines now counts it. Pre-fix txid recorded for the dropped edge; post-fix refused at **input index 0** - see 4.132 |
+| **X201** | A bare-body forwarding call is not tail-call eligible in EITHER spelling | U1 | X187 | **OPEN - a capability decision, not a repair** | X187 closes the escape by REFUSING `receiver.method();`, which retires three recorded subjects including the only recovered writer whose external call could carry a sound co-spend. Admitting it means widening `graphTailCallEligible` for **both** spellings. U1 declined to take it on its own authority, correctly |
+| X202 | Three sibling files recorded `attack`/`callBar` as admitted | owner | X187 | **RE-RECORDED, and one row got STRONGER** | X136/X177v/X177e re-taken against the artifact's own `rejectionReason`. The X177v flip moved onto `Lib.doSomething`, which **actually assigns** `someNumber = 777` - the retired `Attack.attack` mutates nothing observable, so the flip is now proven on a real writer for the first time |
+| X203 | `Layer3RecoveredPartitionX160` chunk-base failure | U1 | - | **PRE-EXISTING, not U1's** | built twice (baseline vs HEAD, one field moved) and fails identically at both: `GenerateTargetTraversal.ts:1763` chunk-backed read of `name` in outlined `computeDomainSeparator` at base 1+0 vs entry `permit` co-spending at base 12+0. `ERC20Permit.sol` declares no contract-typed state var, so X187 cannot reach it |
+| **X204** | The VM-proved count moved in BOTH directions and needs re-taking | owner | X187 X202 | **OPEN - do not quote 12** | `Attack.attack` comes OUT (inadmissible since X187), `Lib.doSomething` goes IN (settles for the first time, and it is a REAL writer where `attack` was one only by the classifier). Whether that is net-zero depends on whether `doSomething` was already counted, which I have **not** verified - so the count is stale, not 12 and not 11 |
 | X186 | The absorption window is still open at `send()` | U2 | X175 | **CLOSED - and the gate itself was absorbing** | `covenantObjectionOf` read `state.error`, which libauth sets **only when an operation RAISES**. A script completing with a **falsy top item** raises nothing, so the refusal reported bytes only. The instrument built to stop absorption was doing it - see 4.130 |
 | **X196** | **Blindness depends on the FAILURE CLASS, not on luck** | U2 | X185 | **GENERALISES guard #22** | reproduced on this row's own subject: the falsy-top sentence does **not** match `/checkSig|OP_/` so #22's control would have passed with the covenant line right there - and the OP_VERIFY sentence **does**, so the same control was live for the other class. **Vocabulary matching is unsafe as a rule**, not unlucky in one instance |
 | X197 | Match on what YOUR code writes, not what the decider says | U2 | X196 | **METHOD** | every control matches `[covenant] input 0: ` - a string the **gate** emits - making it vocabulary-independent by construction. Both prefixes anchored and mutually exclusive character-for-character, so neither can absorb the other. Messages were read off the deciders with a probe **before** any matcher was written |
@@ -4954,6 +4959,77 @@ Worktrees: `.worktrees/worker-a-g1`, `.worktrees/worker-b-e1`, `.worktrees/worke
 the lease in its evidence packet; it must not edit the leased file, and must report `BLOCKED` if that is
 impossible. `LowerCollectionJournalHelpers.ts` and the C2/SortedList backend are not collision surfaces and are
 free for Worker C.
+
+
+### 4.131 Two value-mode flags computed over two different handler sets (X192/X199)
+
+`EnglishAuction`'s abort was never in the covenant's logic. It is
+`require(batchBlob.slice(5, 6) == hex"00")` - the SCB1 header's logical-value-mode byte - and the header is
+STAGING, written by the SDK.
+
+The pointer was mapped rather than guessed: libauth registers an error on the instruction AFTER the one that
+raised it, so the failing instruction is 166, and `artifact.debug.functionDebug['53434231'].requires` carries an
+entry at exactly 166, generated-source line 60. The neighbouring requires bracket the region.
+
+The defect underneath is that two flags answer the same question over two different populations:
+
+- `compiler.ts:1325` sets `logicalValueMode = graphMsgValueHandlers.size > 0`, and a handler only joins that set
+  when it is ELIGIBLE.
+- `packages/solidcash/src/layer3/hidden-batch.ts:106` sets `valueMode = capability.handlers.some(h => h.usesMsgValue)`
+  over EVERY PUBLISHED handler.
+
+`EnglishAuction.bid()` is payable, uses `msg.value`, and is REFUSED by route synthesis. So it counts on the SDK
+side and not on the compiler side: the SDK writes `01` where the route demands `00`, and every row widens from
+12 to 21 bytes. One handler publishes `usesMsgValue`; zero are eligible.
+
+Which side is wrong is an owner decision and is open as X199. U3 measured the disagreement and which side the
+route obeys, and declined to pick - correctly, because the two candidate repairs differ in what the bus admits,
+not merely in which byte gets written.
+
+### 4.132 The edge that route synthesis could not see, because of when it looked (X187)
+
+X179 recorded an escape: a handler published an outgoing call in its ABI, the covenant framed no emission for
+it, and the transaction settled with the callee simply absent. The cause is a SPELLING, and the mechanism is
+ordering.
+
+`bar.log()` on a contract-typed receiver parses as a **namespaced `FunctionCallNode`** named `bar.log`
+(`AstBuilder.ts:5677-5700`). It becomes an `ExternalFunctionCallNode` only in `SymbolTableTraversal.ts:6149-6216`,
+which reads the receiver's declared `AddressType.interfaceName`. Route synthesis
+(`compiler.ts:689-746`) runs BEFORE that pass and matched four node kinds, none of which that spelling is yet.
+The adjacent comment at `compiler.ts:687-690` already stated the intent - reject these conservatively - so this
+was a gap in coverage, not in intent.
+
+The consequence chain is fully traced: `methodCallCount` stays 0 -> `graphTailCallEligible` false -> neither
+`graphTailHandlers` nor `graphRuntimeHandlers` fires -> the route clone never gets its emission handler -> both
+`verifyGraphEmissionRow` and `consumeGraphRuntimeEmissionRow` are skipped. `analyseFunctionFootprint` matches
+only `ExternalFunctionCall*`/`LowLevelCallNode`, so the fallback refusal could not fire either. The handler was
+admitted as a plain scalar handler whose covenant framed no emission for the edge its own ABI published.
+
+`interfaceTypedReceivers` now collects names in scope whose declared type carries an `interfaceName` - later
+declarations winning, so a shadowing plain local is not a receiver - and the walk counts that spelling.
+`directMethodCallCount` is deliberately NOT extended: counting it there routes the shape to the wrapper-epilogue
+emission form, whose target is a synthesized `__extaddr_*` LOCAL OF THE HANDLER, looked up on the ROUTE stack.
+That path throws `Expected variable '__extaddr_bar' does not exist on the stack`, which also explains a stray
+lead from an earlier round.
+
+Evidence, one field moved: pre-fix the artifact-stripped dropped edge SETTLED with a recorded txid, one
+participant, one invocation, emissions `[""]`; post-fix it is refused at **input index 0** with the same
+`VECTOR_EXHAUSTED` signature as the three interface-cast controls, which still settle and still refuse. A
+one-token pair in plain SolidCash - `IX187Callee(callee).tick(k+1)` vs `callee.tick(k+1)` - compiles
+**byte-identical at 1,514 B**, so the two spellings are now the same program. Against the pre-fix compiler that
+pair fails 6 of 9, and two of its shapes did not compile in bus mode at all, so it discriminates.
+
+WHAT THE CLOSURE COSTS. The bare-body form - one call, no trailing require - is not tail-call eligible in either
+spelling, so it is now refused rather than admitted-and-unbound. That retires three recorded subjects
+(`Attack.attack`, `Foo.callBar`), including the only recovered writer whose external call could carry a sound
+co-spend. This half is closed at ADMISSION, not at the covenant; the covenant half is proven on the spelling the
+bus does admit. Restoring the capability is X201 and is a widening, not a repair.
+
+One re-recorded row came out STRONGER. The X177 return-event flip was only ever demonstrated on
+`Attack.attack`, which mutates nothing observable, so its pre-state and post-state coincide and the harness's
+static staging happened to be right. Re-taken on `Lib.doSomething`, which genuinely assigns `someNumber = 777`,
+the flip is proven on a handler that ACTUALLY WRITES for the first time - which required staging the real
+post-state.
 
 ## 5. Phase 0: rebaseline and make claims atomic
 

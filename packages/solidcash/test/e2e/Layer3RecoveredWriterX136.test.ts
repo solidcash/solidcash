@@ -88,13 +88,21 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
    * THE SUBJECT, established from this run's own compile rather than quoted. This is the partition test: it
    * states that the file under test is the writer-admitting recovered route and not another read surface.
    */
-  it('MEASURED: the recovered route admits `attack`, and `attack` is published writesState TRUE', () => {
+  it('X187: the route now REFUSES `attack` by name, and the ABI still publishes it as a writer', () => {
     const artifact = compileAttack(`aa20${'11'.repeat(32)}87`, '22'.repeat(32));
     expect(artifact.contractName).toBe('Attack');
     const handlers = artifact.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
     console.log(`[X136W] eligible ${JSON.stringify(eligible)}`);
-    expect(eligible).toEqual(['attack', 'owner', 'wallet']);
+    // X187 bound the contract-typed-receiver spelling: `wallet.transfer(...)` on a state variable now counts
+    // as an outgoing edge, where before route synthesis did not see it at all. `attack`'s body is that one
+    // call with no trailing require, which the bus does not admit in either spelling, so it is refused HERE
+    // rather than admitted with an unframed edge. Matched on the artifact's own reason, not on absence.
+    expect(eligible).toEqual(['owner', 'wallet']);
+    const attackHandler = handlers.find((handler) => handler.name === 'attack');
+    console.log(`[X136W] attack rejectionReason=${attackHandler.rejectionReason}`);
+    expect(attackHandler.eligible).toBe(false);
+    expect(attackHandler.rejectionReason).toBe('batched-handler-forward-call-not-enabled');
     const abiOf = (name: string): any => artifact.abi.find((entry: any) => entry.name === name);
     expect(abiOf('attack').writesState).toBe(true);
     expect(abiOf('owner').writesState).toBe(false);
@@ -323,18 +331,32 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
    * Both guard rows this file relies on (`owner`, `wallet`) RETURN, so they took the other branch and
    * controlled for nothing.
    *
-   * What it means, stated no wider than it was measured: the bus ACCEPTS a transaction asserting `attack()`
-   * executed while its only statement - a call into a contract the bus refuses - cannot have. The plan is 1
-   * participant, 1 invocation, emissions ['']. This is NOT a demonstrated theft primitive; nothing here shows
-   * value or authority moving. See `Layer3RecoveredVoidWriterX177.test.ts` for the full pair.
+   * X187 THEN CLOSED IT, AND CLOSED IT BY REFUSAL RATHER THAN BY BINDING. The escape this row recorded was
+   * that the bus ACCEPTED a transaction asserting `attack()` executed while its only statement - a call into a
+   * contract the bus refuses - cannot have. The cause was that route synthesis never saw `wallet.transfer(...)`
+   * as an edge at all: it parses as a namespaced FunctionCallNode and only becomes an ExternalFunctionCallNode
+   * in a LATER semantic pass, after synthesis has frozen its verdict. `compiler.ts` now counts the
+   * contract-typed-receiver spelling, so `attack` is REFUSED before a transaction exists.
+   *
+   * STATED NO WIDER THAN IT WAS MEASURED. This half is closed at ADMISSION, not at the covenant: the handler
+   * is not in the route, so there is no covenant here to refuse anything. The covenant half is proven on the
+   * spelling the bus DOES admit - `Layer3DroppedEdgeX179.test.ts` settles the dropped edge pre-fix with a
+   * recorded txid and refuses it at input index 0 after. Restoring `attack` as an ADMITTED-and-BOUND handler
+   * needs the bare-body form (a call with no trailing require) to become tail-call eligible, which is an open
+   * row and a widening of what the bus admits, not a repair.
    */
-  it('X177: the recovered writer SETTLES once its return-event slot is staged correctly', async () => {
-    const result = await attempt('attack', 'none');
-    console.log(`[X136W] attack: ${result.sent ?? result.refusal?.split('\n')[0]}`);
-    expect(result.refusal, 'attack is refused again - the return-event staging may have regressed')
-      .toBeUndefined();
-    expect(result.sent, 'attack did not settle').toBeDefined();
-  }, 600_000);
+  it('X187: the escape recorded here is CLOSED - the writer is refused before a transaction exists',
+    async () => {
+      let refusal: Error | undefined;
+      try {
+        await attempt('attack', 'none');
+      } catch (error) {
+        refusal = error as Error;
+      }
+      console.log(`[X136W] attack: ${refusal?.message.split('\n')[0] ?? 'STILL PLANS'}`);
+      expect(refusal, 'attack still plans - the X187 edge binding may have regressed').toBeDefined();
+      expect(refusal!.message).toContain('batched-handler-forward-call-not-enabled');
+    }, 600_000);
 
   /**
    * HOSTILE, ON THE ROWS THAT DO SETTLE. Two guarded negatives against the read surface the writer's refusal

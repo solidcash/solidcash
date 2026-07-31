@@ -309,14 +309,11 @@ describe('message-bus outlined chunk-read basis', () => {
     expect(artifact.abi.find((fn) => fn.name === 'fire')!.dynamicReads).toEqual(['alpha']);
   }, COMPILE_TIMEOUT_MS);
 
-  // SUBJECT. `beta` is declared second and the entry reads BOTH tables, so the run the SDK co-spends for
-  // `beta` sits behind `alpha`'s while the outlined body still indexes from zero. The refusal names both
-  // bases and the entry it disagrees with, rather than refusing every outlined read on principle.
-  it('refuses an outlined table read whose basis disagrees with the invoking entry', () => {
-    expect(() => compileString(twoTables('beta'), busOptions)).toThrow(
-      /Chunk-backed read of 'beta' in outlined function '__scb_graph_fire' addresses the trailing run at base/,
-    );
-    expect(() => compileString(twoTables('beta'), busOptions))
-      .toThrow(/entry point '__scb1' .* co-spends it at base 2\+0 after \[alpha\]/);
+  // SUBJECT / X203. `beta` is declared second and the entry reads BOTH tables, so its run sits behind
+  // `alpha`'s. The outlined body must inherit the one uniform physical basis of its reaching entry rather than
+  // compiling against its synthetic one-slot helper layout (the old behavior refused this honest program).
+  it('compiles an outlined table read against its invoking entry basis', () => {
+    const artifact = compileString(twoTables('beta'), busOptions);
+    expect(artifact.abi.find((fn) => fn.name === 'fire')!.dynamicReads).toEqual(['beta']);
   }, COMPILE_TIMEOUT_MS);
 });

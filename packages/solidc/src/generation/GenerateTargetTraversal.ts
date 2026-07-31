@@ -801,14 +801,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // ENTRY's footprint rather than its own - checked against every reaching entry instead of against `fn`.
   private dynamicReadBases: {
     fn: FunctionDefinitionNode; variable: string; priorNames: string[];
-    outlined: boolean; trailingBase: number; iterCount: number;
+    outlined: boolean; trailingBase: number; iterCount: number; threaded?: boolean;
   }[] = [];
   // X203. An outlined body's physical trailing run belongs to its invoking entry point, not to the helper's
-  // synthetic one-slot layout. When every reaching entry publishes one uniform, iteration-free basis, compile
-  // the helper's chunk reads against that basis directly. Runtime-sized collection-iteration prefixes still
-  // require an explicit call-frame parameter and remain covered by the fail-closed verifier below.
+  // synthetic one-slot layout. When every reaching entry publishes one uniform prior-run ordering, compile the
+  // helper against that ordering and thread the caller's fixed + runtime-sized trailing base through its frame.
   private outlinedDynamicReadBasisByFunctionId: Map<number, FunctionDefinitionNode> = new Map();
+
   private outlinedDynamicReadBasis?: FunctionDefinitionNode;
+
+  private static readonly OUTLINED_TRAILING_BASE = '__internal__outlinedTrailingBase';
 
   // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
   // must KEEP on the stack (not drop) because a later array-external-call co-spend reads the array from it
@@ -1719,6 +1721,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return reaching;
   }
 
+  /** Whether an outlined function body itself materializes any chunk-backed state value. */
+  private functionReadsDynamicState(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    const visit = (node: Node, seen = new Set<Node>()): void => {
+      if (found || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof StateAccessNode && this.stateVariables.some((sv) =>
+        sv.isDynamic && (sv === node.stateVariable || sv.name === node.name))) {
+        found = true;
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (['resolvedFunction', 'functionReference', 'definition', 'collection',
+          'stateVariable', 'symbolTable'].includes(key)) continue;
+        if (value instanceof Node) visit(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, seen);
+      }
+    };
+    if (fn.body) visit(fn.body);
+    return found;
+  }
+
+  private functionReferenceIds(node: ContractNode): Set<number> {
+    const ids = new Set<number>();
+    const visit = (current: Node, seen = new Set<Node>()): void => {
+      if (seen.has(current)) return;
+      seen.add(current);
+      if (current instanceof IdentifierNode && current.functionReference?.functionId !== undefined) {
+        ids.add(current.functionReference.functionId);
+      }
+      for (const [key, value] of Object.entries(current)) {
+        if (['resolvedFunction', 'functionReference', 'definition', 'collection',
+          'stateVariable', 'symbolTable'].includes(key)) continue;
+        if (value instanceof Node) visit(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, seen);
+      }
+    };
+    visit(node);
+    return ids;
+  }
+
   /**
    * X151/X170. The contract-level backstop: every emitted basis must equal the one the FINAL footprint implies.
    * A refusal naming the mismatch beats a covenant that addresses the wrong chunk.
@@ -1744,7 +1787,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       `reads=[${(fn.dynamicReads ?? []).join(', ')}] writes=[${(fn.dynamicWrites ?? []).join(', ')}]`;
     for (const record of this.dynamicReadBases) {
       const {
-        fn, variable, priorNames, outlined, trailingBase, iterCount,
+        fn, variable, priorNames, outlined, trailingBase, iterCount, threaded,
       } = record;
       if (!outlined) {
         const required = this.dynamicReadPriorRuns(fn, variable);
@@ -1765,7 +1808,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const entryBase = entry.blockLayout?.trailingBase ?? entry.blockLayout?.blockSize ?? 1;
         const entryIterCount = entry.collectionIterations?.length ?? 0;
         if (required.join(',') === priorNames.join(',')
-          && entryBase === trailingBase && entryIterCount === iterCount) continue;
+          && (threaded || (entryBase === trailingBase && entryIterCount === iterCount))) continue;
         throw new Error(`Chunk-backed read of '${variable}' in outlined function '${fn.name}' addresses the `
           + `trailing run at base ${trailingBase}+${iterCount} after [${priorNames.join(', ')}], but entry `
           + `point '${entry.name}' (${describe(entry)}) co-spends it at base ${entryBase}+${entryIterCount} `
@@ -2080,13 +2123,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
     this.computeScalarJournalClosures(node);
     this.outlinedDynamicReadBasisByFunctionId = new Map();
+    const indirect = this.functionReferenceIds(node);
+    const functionsById = new Map((node.fallbackDef ? [...node.functions, node.fallbackDef] : node.functions)
+      .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
     for (const [functionId, entries] of this.entryPointsReaching(node)) {
-      if (entries.length === 0 || entries.some((entry) => (entry.collectionIterations?.length ?? 0) > 0)) continue;
+      const target = functionsById.get(functionId);
+      if (!target || (!target.graphEmissionHandler && !this.functionReadsDynamicState(target))) continue;
+      // Indirect calls have no statically known callee-specific hidden frame. Keep their existing fail-closed
+      // basis verification until the function-value ABI can carry this context explicitly.
+      if (indirect.has(functionId)) continue;
+      if (entries.length === 0) continue;
       const first = entries[0];
-      const firstBase = first.blockLayout?.trailingBase ?? first.blockLayout?.blockSize ?? 1;
       const uniform = entries.every((entry) => {
-        const base = entry.blockLayout?.trailingBase ?? entry.blockLayout?.blockSize ?? 1;
-        if (base !== firstBase) return false;
         const reads = new Set([...(first.dynamicReads ?? []), ...(entry.dynamicReads ?? [])]);
         return [...reads].every((name) =>
           this.dynamicReadPriorRuns(first, name).join(',') === this.dynamicReadPriorRuns(entry, name).join(','));
@@ -2508,6 +2556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
     subTraversal.contractParameters = this.contractParameters;
     subTraversal.contractFunctionKeys = this.contractFunctionKeys;
+    subTraversal.outlinedDynamicReadBasisByFunctionId = this.outlinedDynamicReadBasisByFunctionId;
     subTraversal.outlinedDynamicReadBasis = func.functionId === undefined
       ? undefined : this.outlinedDynamicReadBasisByFunctionId.get(func.functionId);
 
@@ -3245,6 +3294,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.visit(p);
       }
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
+      if (node.functionId !== undefined && this.outlinedDynamicReadBasisByFunctionId.has(node.functionId)) {
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
+      }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
     }
@@ -6881,6 +6933,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(BigInt(node.graphEffectSite)), locationData);
       this.pushToStack(`(__graph_effect_site_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+
+    // X203. An outlined dynamic reader can be reached from entry points with different fixed block sizes.
+    // Thread the caller's actual trailing base through the call frame instead of baking the helper's synthetic
+    // one-slot layout into its bytecode. Nested helpers forward the basis they received.
+    if (targetFunc.functionId !== undefined
+      && this.outlinedDynamicReadBasisByFunctionId.has(targetFunc.functionId)) {
+      const inherited = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
+      if (inherited >= 0) {
+        this.emit(encodeInt(BigInt(inherited)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else {
+        const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+        const base = this.currentFunction.blockLayout?.trailingBase ?? blockSize;
+        this.emit(encodeInt(BigInt(base)), locationData);
+        this.emitAddCollectionIterCounts(locationData);
+      }
+      this.pushToStack(`(__outlined_trailing_base_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
 
@@ -18103,6 +18174,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       outlined: this.isDefineSubTraversal,
       trailingBase: basisFunction.blockLayout?.trailingBase ?? blockSize,
       iterCount: basisFunction.collectionIterations?.length ?? 0,
+      threaded: this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true) >= 0,
     });
     const priorNodes = priorNames.map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
@@ -18163,8 +18235,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackDepth = this.stack.length;
 
     // inputIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(prior read counts) + i
-    this.emitTrailingBlockBase(blockSize, loc, basisFunction.blockLayout?.trailingBase);
-    this.emitAddCollectionIterCounts(loc); // collection-iter entries precede read chunks (W4)
+    const threadedBase = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
+    if (threadedBase >= 0) {
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(threadedBase + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    } else {
+      this.emitTrailingBlockBase(blockSize, loc, basisFunction.blockLayout?.trailingBase);
+      this.emitAddCollectionIterCounts(loc); // collection-iter entries precede read chunks (W4)
+    }
     for (const pt of priorTempNames) {
       this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running inputIdx-partial untracked
       this.emit(Op.OP_PICK, loc);

@@ -2,6 +2,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
 // directly (`const sc = await getContractFactory(...).deploy(); await sc.check(args)`).
 
@@ -232,7 +234,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
       // 255 + 1 overflows in checked mode -> should fail (bounds check OP_VERIFY)
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.check(255n)).rejects.toThrow();
+      await expect(sc.check(255n)).rejects.toThrow(verifyFailure);
     });
   });
 
@@ -290,7 +292,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
       // 200 + 100 wraps to 44, but we pass 45 -> should fail
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.check(200n, 100n, 45n)).rejects.toThrow();
+      await expect(sc.check(200n, 100n, 45n)).rejects.toThrow(verifyFailure);
     });
   });
 

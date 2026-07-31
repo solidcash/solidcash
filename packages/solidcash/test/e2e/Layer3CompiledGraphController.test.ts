@@ -487,7 +487,7 @@ async function build(
     { parent: 0, callee: 1, function: 'ping', args: [transformedChildArg] },
   ] : staticAuth ? [
     { parent: null, callee: 0, function: 'forwardStatic', args: [b.lockingBytecode] },
-    { parent: 0, callee: 1, function: 'viewPing', args: [] },
+    { parent: 0, callee: 1, function: 'viewPing', args: [], callMode: 'staticcall' as const },
   ] : dataAuth ? [
     { parent: null, callee: 0, function: 'forwardCalldata', args: [b.lockingBytecode, 7n] },
     { parent: 0, callee: 1, function: 'inspectData', args: [7n] },
@@ -674,7 +674,7 @@ async function buildPointerGraph(
     artifact: artifactB, lockingBytecode: b.lockingBytecode, constructorArgs: [2n],
   };
   const plan = returned
-    ? (tamper === 'selector'
+    ? (tamper !== 'none'
       ? layer3.planCompiledGraph([participantA, participantB], [
         { parent: null, callee: 0, function: 'fire', args: [pointerTarget, 4n] },
         { parent: 0, callee: 1, function: 'inc', args: [4n] },
@@ -1524,6 +1524,9 @@ async function buildRelocatedDelegateGraph(wrongProxyIndex = false) {
     targets: {
       IGraphDelegateProxy: { artifact: proxyArtifact, lockingBytecode: proxy.lockingBytecode },
     },
+    target: ({ interfaceName }) => interfaceName === 'IGraphDelegateProxy'
+      ? { artifact: proxyArtifact, lockingBytecode: proxy.lockingBytecode }
+      : undefined,
   });
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(

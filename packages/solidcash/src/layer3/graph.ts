@@ -1298,15 +1298,15 @@ const OPTION_SLOT_KINDS: ReadonlySet<string> = new Set([
  * what made this name a reliable answer to "does this row read the pre-state". It no longer is: a clone is now
  * admitted for its PLAIN SCALAR slots, so a clone reading `state:<scalar>` loads through the live journal and
  * the covenant itself refuses the stale composition - proven by bypass constructors in
- * `Layer3EmissionCloneJournalX111.test.ts`. What survives is the DYNAMIC half: a clone whose stale read is on
- * a chunk-backed slot is still not journalled. So the gate below over-refuses on the scalar half, and the
- * dynamic half is the only part of it that is load-bearing.
+ * `Layer3EmissionCloneJournalX111.test.ts`. X146 subsequently completed the clone journal and closed the
+ * DYNAMIC half at consensus too. The gate below is therefore a planner diagnostic on current compiler output,
+ * not a security boundary. Keep it fail-closed for older artifacts, but do not trust its name vocabulary or
+ * invocation metadata.
  *
  * X138 removed the one ADMISSION a published claim could buy - see the note on the write claim in
  * `assertNoStaleEmissionCloneReads`. It is still not a boundary: a spender that never calls
- * `planCompiledGraph` is not subject to it at all, and `Layer3EmissionCloneFakeWriteX138.test.ts` settles
- * that residual through a hand-assembled plan. Only the covenant can close it. Narrowing or removing this
- * rule is an integration decision, not a local one.
+ * `planCompiledGraph` is not subject to it at all. `Layer3EmissionCloneFakeWriteX138.test.ts` preserves the
+ * hand-assembled bypass and proves X146 moved its refusal into the covenant.
  */
 const GRAPH_EMISSION_CLONE_PREFIX = '__scb_graph_';
 
@@ -1367,10 +1367,9 @@ interface OwnerRow { localRow: number; function: string }
  * code-generation time and it was not: `computeScalarJournalClosures` now admits an emission clone for its
  * plain scalar slots, and the two constructors that bypass this function entirely - the hand-assembled plan
  * and the artifact with the clone dropped from `invocationAnalysis` - are refused by the vault's own covenant.
- * What this rule still covers alone is a clone whose stale read is on a chunk-backed DYNAMIC slot, which the
- * compiler cannot journal without mixing the header's source with the elements'. Every scalar refusal it
- * issues is now an over-refusal, and L2-A5 measured that cost: it is every writer-then-guard order, i.e. the
- * honest act-then-assert composition.
+ * X146 later completed the clone's dynamic journal and proved the hand-assembled bypass is refused at the
+ * participant's dynamic master while the live-read and reader-first controls settle. This rule remains a
+ * fail-closed diagnostic for older artifacts; it must not be cited as the consensus boundary.
  *
  * WHY THIS IS THE RIGHT SITE. The equivalent compile-time refusal was implemented and measured: it
  * false-refused the C2 capstone entirely, because `registerCredit`/`registerDebit` write `legs` and sit in the
@@ -1385,8 +1384,8 @@ interface OwnerRow { localRow: number; function: string }
  *
  * WHAT IS CONSERVATIVE. A clone whose footprint is `unknown` has no enumerable read set, so any writer of any
  * slot on the same owner refuses it. A participant publishing no invocation analysis at all cannot be
- * diagnosed and is refused rather than skipped: this gate is the only thing standing between the shape and
- * settlement, so a silent skip would be an unchecked witness path.
+ * diagnosed and is refused rather than skipped. This keeps the planner fail-closed for older artifacts even
+ * though current compiler output enforces the property in the covenant.
  */
 function assertNoStaleEmissionCloneReads(
   participants: readonly CompiledGraphParticipant[],

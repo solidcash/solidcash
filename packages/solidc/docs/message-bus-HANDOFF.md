@@ -38,14 +38,16 @@ of the explicit writers write nothing. Always read the body.
 
 ## 4. Ranked open work
 
-### Tier 1: security, currently REOPENED
-- **SEC-18** - a route-reachable pure reader read the pre-transaction value. Review FAILED; reopened.
-- **L2-F3** - SEC-18 misses a reader reached through a function pointer (`GenerateTargetTraversal.ts:1685/1689`).
-- **L2-F1a** - X111's gate bypassed at consensus by two constructors.
-- **L2-F1b/F1c/F2** - the same family: a spelling the gate is blind to, a short-circuit, and a
-  widening that crashes an honest resource-shaped route.
+### Tier 1: security, repaired after the failed L2 review
+- **SEC-18 / L2-F3** - direct and function-pointer readers now share the live scalar journal.
+- **L2-F1a** - both bypass constructors are refused by the participant covenant, not merely by the planner.
+- **L2-F1b/F1c** - neither clone spelling nor fabricated footprint metadata buys consensus admission; X146
+  closes the dynamic half in the covenant. The planner remains a diagnostic, not a security boundary.
+- **L2-F2** - the route and every invoker of a journalled handler now hold the required context (X139).
 
-These are the only rows where a defect is believed live. Everything else is hygiene or capability.
+The original L2 review remains the evidence that the first repair failed; it is not a description of HEAD.
+Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3EmissionCloneJournalX111`,
+`Layer3EmissionCloneFakeWriteX138`, `Layer3ReadYourWritesX105`, and `SecurityReviewL2Sec18`.
 
 ### Tier 2: named gaps with a known shape
 - **X210** - the ORDINARY stateful submit path has no covenant reader at all; the only gate there is
@@ -206,9 +208,9 @@ L3_X204_OUT=/tmp/x204 npx vitest run --config vitest.x204.config.ts \
 
 ## 10. What I would do first
 
-1. Take **SEC-18 and the L2-F family** - the only rows where a defect is believed live, and the review
-   already failed once.
-2. Then **X214**, the 450 unexamined `rejects.toThrow()` sites, because it is the largest unmeasured
+1. Independently re-review **SEC-18 and the L2-F family** before upgrading their status. Their known
+   exploits are repaired on HEAD, but the ledger distinguishes integration from independent proof.
+2. Then **X214**, the bare `rejects.toThrow()` population, because it is the largest unmeasured
    surface and prior rounds show a real hit rate there.
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:

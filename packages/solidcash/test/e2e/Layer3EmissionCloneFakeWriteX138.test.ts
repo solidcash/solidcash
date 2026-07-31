@@ -491,7 +491,7 @@ describe('X138 - the gate no longer ADMITS on a published claim', () => {
   }, 180_000);
 });
 
-describe('X138 - the dynamic residual settles anyway, because no witness-side rule is a boundary', () => {
+describe('X138 - X146 closes the dynamic residual at consensus', () => {
   it('the subject is a read-only emission clone on a CHUNK-BACKED slot, so this is X111\'s residual', () => {
     const artifact = compileString(DYN_GUARD, {
       forceStateful: true,
@@ -524,7 +524,7 @@ describe('X138 - the dynamic residual settles anyway, because no witness-side ru
     })).rejects.toThrow(STALE);
   }, 300_000);
 
-  it('X138-V1 HOSTILE: the hand-assembled bypass SETTLES a guard false of the post-state', async () => {
+  it('X138-V1 HOSTILE: the hand-assembled bypass is refused AT THE DYNAMIC MASTER', async () => {
     // L2-A1's constructor, so `planCompiledGraph` is never called and no witness-side rule applies. Pre-state
     // note is 30 bytes; row 0 writes 40; row 1 requires `note.length <= 30` - TRUE of the pre-state (30 <= 30)
     // and FALSE of the state this transaction commits (40 <= 30). The scalar equivalent of this composition
@@ -571,10 +571,10 @@ describe('X138 - the dynamic residual settles anyway, because no witness-side ru
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   }, 300_000);
 
-  it('X138-V3 the read is the PRE value: shrinking the value makes a LIVE read pass and it is REFUSED',
+  it('X138-V3 LIVE READ: shrinking the value makes the post-state guard pass and it settles',
     async () => {
       // Row 0 writes 10 bytes over a 30-byte pre-state and the probe is 10. A live read passes (10 <= 10);
-      // a pre-transaction read fails (30 <= 10). It is refused, so the clone demonstrably reads the pre value.
+      // a pre-transaction read fails (30 <= 10). It settles, so the clone demonstrably reads the live value.
       const built = await buildDynGuardGraph({
         rows: [write(bytes(10, 0x41)), assertShort(10)],
         initial: bytes(30, 0x39),

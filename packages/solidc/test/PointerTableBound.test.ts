@@ -277,3 +277,46 @@ describe('message-bus pointer-table bound', () => {
     expect(fireAll.inputs.some((input) => input.name.startsWith('__internal__extcallMasterIdx'))).toBe(false);
   }, COMPILE_TIMEOUT_MS);
 });
+
+/**
+ * X170. The graph handler synthesized from a bus function is OP_DEFINE'd, so its chunk-backed table read is
+ * emitted into an outlined body, whose trailing run the SDK addresses from the INVOKING ENTRY's footprint.
+ * X151 refused every such read; the refusal was over-broad and took the three cases above to 17/19.
+ *
+ * The two contracts below are identical but for ONE token: which of two declared tables the handler reads.
+ * That single difference is the whole attacked field - whether a read-only run belonging to another table sits
+ * in front of this one in the layout the entry publishes.
+ */
+const twoTables = (read: 'alpha' | 'beta'): string => `pragma solidcash >=0.8.0;
+interface IH { function inc(uint value); function dec(uint value); }
+contract TwoTables() {
+  function(uint) external[] alpha;
+  function(uint) external[] beta;
+  function registerA(address target) public { this.alpha.push(IH(target).inc); require(true); }
+  function registerB(address target) public { this.beta.push(IH(target).inc); require(true); }
+  function fire(uint value) public {
+    for (int i = 0; i < 2; i = i + 1) { ${read}[i](value); }
+    require(value >= 0);
+  }
+}`;
+
+describe('message-bus outlined chunk-read basis', () => {
+  // GUARD NEGATIVE CONTROL. `alpha` is declared first, so the entry co-spends its run at the same base the
+  // outlined body indexes from: nothing precedes it and the two bases agree. Compiles.
+  it('admits an outlined table read whose basis agrees with the invoking entry', () => {
+    const artifact = compileString(twoTables('alpha'), busOptions);
+    // The published footprint is the thing the basis is derived from, so it is what the control has to pin.
+    expect(artifact.abi.find((fn) => fn.name === 'fire')!.dynamicReads).toEqual(['alpha']);
+  }, COMPILE_TIMEOUT_MS);
+
+  // SUBJECT. `beta` is declared second and the entry reads BOTH tables, so the run the SDK co-spends for
+  // `beta` sits behind `alpha`'s while the outlined body still indexes from zero. The refusal names both
+  // bases and the entry it disagrees with, rather than refusing every outlined read on principle.
+  it('refuses an outlined table read whose basis disagrees with the invoking entry', () => {
+    expect(() => compileString(twoTables('beta'), busOptions)).toThrow(
+      /Chunk-backed read of 'beta' in outlined function '__scb_graph_fire' addresses the trailing run at base/,
+    );
+    expect(() => compileString(twoTables('beta'), busOptions))
+      .toThrow(/entry point '__scb1' .* co-spends it at base 2\+0 after \[alpha\]/);
+  }, COMPILE_TIMEOUT_MS);
+});

@@ -9,7 +9,7 @@ import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import { aliceAddress, alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
@@ -498,7 +498,9 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     const projectionUtxo = randomUtxo({ satoshis: 1000n });
     const fee = randomUtxo({ satoshis: 400_000n });
     await provider.addUtxo(projection.address, projectionUtxo);
-    for (const utxo of [returnFunding, fee]) await provider.addUtxo(p2pkh.address, utxo);
+    const bareOrigin = row.rootCaller === 'pkh';
+    await provider.addUtxo(p2pkh.address, returnFunding);
+    await provider.addUtxo(bareOrigin ? aliceAddress : p2pkh.address, fee);
 
     // The entry slot -> collection map is read off the ROUTE's own published entry accesses, in slot order,
     // rather than listed in this file: slot i is `route.entryAccesses[i].collection` by construction.
@@ -599,8 +601,16 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
     tx.addInput(rootedController!, controller.unlock.attest(transcript.bytes));
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
-    tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
-    tx.addOutput({ to: p2pkh.address, amount: 350_000n });
+    // THE TRANSACTION ORIGIN, and it is the second half of the block-oracle staging story.
+    //
+    // The projection pins a declared root caller to `tx.origin`, which the compiler emits as a scan for the
+    // first NON-TOKEN input whose locking bytecode is a 25-byte `76a914..88ac` - a BARE P2PKH. The harness's
+    // `p2pkh` fixture is a CONTRACT, so its inputs are p2sh and the scan matches nothing; the scan then fails
+    // its own final OP_VERIFY and the PROJECTION input aborts. Nothing about the participant covenant is
+    // involved. So a row that declares a caller is funded from a bare P2PKH address and spends it with a
+    // plain signature; a row that declares none never evaluates `tx.origin` and keeps the contract fee input.
+    tx.addInput(fee, bareOrigin ? signature().unlockP2PKH() : p2pkh.unlock.spend(alicePub, signature()));
+    tx.addOutput({ to: bareOrigin ? aliceAddress : p2pkh.address, amount: 350_000n });
 
     if (options.probe === true) {
       const vm = createVirtualMachineBch2026ForProvider(provider);
@@ -666,7 +676,13 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     if (!cachedResult.has(key)) {
       const probe = await attempt(row, handler, args, 'none', { probe: true });
       const found = operandComparedAgainst(probe.trace!, PROBE_RESULT);
-      if (found === undefined) throw new Error(`${key}: the probe trace never compared the declared result`);
+      if (found === undefined) {
+        // WHERE it stopped, not just that it did: a probe that aborts early is the reading X136 recorded for
+        // EnglishAuction and could not explain, so the abort's own error is quoted rather than inferred.
+        const last = probe.trace![probe.trace!.length - 1] as { error?: string; ip?: number };
+        throw new Error(`${key}: the probe trace never compared the declared result `
+          + `(trace stopped after ${probe.trace!.length} steps: ${last?.error ?? 'no error recorded'})`);
+      }
       cachedResult.set(key, found);
       console.log(`[X180] ${key} result off its own trace: ${binToHex(found)}`);
     }

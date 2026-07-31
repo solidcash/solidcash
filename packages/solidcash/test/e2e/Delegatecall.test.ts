@@ -447,10 +447,14 @@ describe('Delegatecall', () => {
       expect(tx.txid).toBeDefined();
 
       // wrong impl: claim a different address than the co-spent delegate -> identity pin fails
-      await expect(build(addressToLockScript(proxy.contract.address))).rejects.toThrow();
+      await expect(build(addressToLockScript(proxy.contract.address))).rejects.toThrow(
+        /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      );
 
       // wrong selector: forward calldata that isn't the co-spent delegate's function -> selector pin fails
-      await expect(build(implLbc, hexToBin('deadbeef'))).rejects.toThrow();
+      await expect(build(implLbc, hexToBin('deadbeef'))).rejects.toThrow(
+        /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      );
     });
 
     it('should preserve implementation NFTs in delegate transaction outputs', async () => {

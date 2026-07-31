@@ -2,6 +2,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // C3 direction + ctor init chains: bases listed most-base-first, grandparent ctor invocations,
 // and super resolution walking the linearization right-to-left.
 
@@ -74,7 +76,7 @@ describe('constructor chains and linearization order (VM)', () => {
   it('grandparent ctor invocation rejects a wrong expectation', async () => {
     const artifact = compileString(GRANDPARENT_CTOR, { forceStateful: true });
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy(5n);
-    await expect(sc.check(7n)).rejects.toThrow();
+    await expect(sc.check(7n)).rejects.toThrow(verifyFailure);
   });
 
   it('most-base-first sibling lists linearize and run the ctor chain', async () => {
@@ -88,6 +90,6 @@ describe('constructor chains and linearization order (VM)', () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
     await expect(sc.check(2n)).resolves.toBeDefined();
     const sc2 = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc2.check(1n)).rejects.toThrow();
+    await expect(sc2.check(1n)).rejects.toThrow(verifyFailure);
   });
 });

@@ -244,6 +244,155 @@ describe('large-contract state-local splitting', () => {
     )).toThrow(/generated root does not share the unsplit contract's storage layout/);
   });
 
+  /**
+   * X169. X162 fixed the two orderings it found and RECORDED a third that it did not build:
+   * `LowerForeignFunctionPointerArrayElements` also appends state variables, and it still ran POST-FILTER. Its
+   * classification is usage-driven - a table whose writes name TWO methods is VARYING and gets a parallel
+   * `bytes[] __fnsel_<name>` state variable, one whose SURVIVING writes name one method is FIXED and gets none.
+   *
+   * It is built here. Two tables, `p` and `q`; a shared helper writes `IH(t).inc` to both (so no shard loses
+   * every write, which fails closed elsewhere), and only `b` writes `IH(t).dec` to `p`. Divided, the facet
+   * holding `c` classified `p` FIXED and created no `__fnsel_p`, so its `q` landed one slot early:
+   *
+   *   root  total@0.0  p@0.1  __fnsel_p@0.2  q@0.3  __fnsel_q@0.4
+   *   c     total@0.0  p@0.1  q@0.2          __fnsel_q@0.3
+   *
+   * Physical slot 0.2 is `__fnsel_p` to the root and `q` to that facet, and a delegate facet writes the ROOT's
+   * state through physical slots - the X162 wrong-variable write with a different author. `assertSplitLayoutsAgree`
+   * refused the bundle (the negative control below is that exact refusal, and it stays armed), so nothing was
+   * emitted; the repair is that the decision is now taken once, in `prepareSplitAst`, on the complete function set.
+   */
+  const FN_PTR_TABLES = `pragma solidcash >=0.8.0;
+interface IH { function inc(uint value); function dec(uint value); }
+contract Diverge2() {
+  uint total;
+  function(uint) external[] p;
+  function(uint) external[] q;
+  constructor(address t) {
+    this.p.push(IH(t).inc); this.p.push(IH(t).dec);
+    this.q.push(IH(t).inc); this.q.push(IH(t).dec);
+  }
+  function seed(address t) internal { this.p.push(IH(t).inc); this.q.push(IH(t).inc); this.q.push(IH(t).dec); }
+  function a(address t) public { seed(t); this.total = this.total + 1; require(true); }
+  function b(address t) public { seed(t); this.p.push(IH(t).dec); this.total = this.total + 2; require(true); }
+  function c(address t) public { seed(t); this.total = this.total + 3; require(true); }
+}`;
+
+  const fnPtrSlots = (layout: any): string[] => (layout?.variables ?? [])
+    .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
+
+  it('decides foreign fn-ptr array lowering once, so a divided shard cannot re-classify a table', () => {
+    const options = { forceStateful: true, forceSplit: true };
+    const expected = fnPtrSlots(compileString(FN_PTR_TABLES, { forceStateful: true }).stateLayout);
+    expect(expected).toEqual(['total@0.0', 'p@0.1', '__fnsel_p@0.2', 'q@0.3', '__fnsel_q@0.4']);
+
+    // The union is the case that always agreed: one facet holds every entry, so its function set already WAS
+    // the complete one. It is the control that the divided case below is compared against.
+    const union = compileStringSplit(FN_PTR_TABLES, options);
+    expect(union.manifest.facets).toHaveLength(1);
+    expect(fnPtrSlots(union.root.stateLayout)).toEqual(expected);
+
+    const divided = compileStringSplit(FN_PTR_TABLES, {
+      ...options, maxShardBytes: union.manifest.facets[0].estimatedRedeemBytes - 1,
+    });
+    expect(divided.manifest.facets.length).toBeGreaterThan(1);
+    expect(fnPtrSlots(divided.root.stateLayout)).toEqual(expected);
+    for (const info of divided.manifest.facets) {
+      expect(fnPtrSlots(divided.facets[info.name].stateLayout), `${info.name} layout`).toEqual(expected);
+    }
+
+    // The discriminating shard, named: `c` writes only the helper's `IH(t).inc` to `p`, so on its own function
+    // set `p` is a FIXED table with no selector array. It carries `__fnsel_p` anyway - the complete set's
+    // decision - which is the whole repair. Without it the assertion above would still pass on a bundle whose
+    // shards had all agreed on the WRONG layout.
+    const cFacet = divided.manifest.facets.find((f) => f.functions.includes('c') && !f.functions.includes('b'))!;
+    expect(cFacet, 'the shard that classified p as fixed').toBeDefined();
+    expect(fnPtrSlots(divided.facets[cFacet.name].stateLayout)).toContain('__fnsel_p@0.2');
+    expect(divided.facets[cFacet.name].abi.some((fn) => fn.name === 'b')).toBe(false);
+  });
+
+  /**
+   * NEGATIVE CONTROL for the row above, differing in exactly the attacked field: the pre-repair `c` shard, with
+   * `__fnsel_p` omitted and everything else identical. The guard is not weakened by the repair - it names the
+   * aliased slot and refuses.
+   */
+  it('still refuses the shard the fn-ptr classification used to produce', () => {
+    const layout = (...names: string[]): any => ({
+      stateLayout: { variables: names.map((name, index) => ({ name, nftIndex: 0, fieldIndex: index })) },
+    });
+    const root = layout('total', 'p', '__fnsel_p', 'q', '__fnsel_q');
+    const repaired = [{ name: 'F1', artifact: layout('total', 'p', '__fnsel_p', 'q', '__fnsel_q') }];
+    expect(() => assertSplitLayoutsAgree('Diverge2', root, repaired as never, root as never)).not.toThrow();
+
+    const preRepair = [{ name: 'F1', artifact: layout('total', 'p', 'q', '__fnsel_q') }];
+    expect(() => assertSplitLayoutsAgree('Diverge2', root, preRepair as never, root as never))
+      .toThrow(/facet 'F1' does not share the root's storage layout \(root has __fnsel_p@0\.2, it has q@0\.2\)/);
+  });
+
+  /**
+   * The single-table form of the same class, and the shard that has NO write to the table at all. Both were
+   * refusals before the decision moved: the first as a layout divergence, the second as
+   * `Function-pointer array 'handlers': it is never written in contract code` raised against a shard whose
+   * function set simply did not contain the registrars.
+   */
+  it('splits a table whose writes are reachable from only some entries', () => {
+    const source = `pragma solidcash >=0.8.0;
+interface IH { function inc(uint value); function dec(uint value); }
+contract NoWrite() {
+  uint total;
+  function(uint) external[] handlers;
+  function registerInc(address t) public { this.handlers.push(IH(t).inc); this.total = this.total + 1; require(true); }
+  function registerDec(address t) public { this.handlers.push(IH(t).dec); this.total = this.total + 2; require(true); }
+  function fireAll(uint value) public {
+    for (int i = 0; i < handlers.length; i = i + 1) { handlers[i](value); }
+    this.total = this.total + 3; require(value >= 0);
+  }
+}`;
+    const options = { forceStateful: true, forceSplit: true };
+    const expected = fnPtrSlots(compileString(source, { forceStateful: true }).stateLayout);
+    expect(expected).toEqual(['total@0.0', 'handlers@0.1', '__fnsel_handlers@0.2']);
+    const union = compileStringSplit(source, options);
+    const divided = compileStringSplit(source, {
+      ...options, maxShardBytes: union.manifest.facets[0].estimatedRedeemBytes - 1,
+    });
+    const broadcast = divided.manifest.facets.find((f) => f.functions.includes('fireAll'))!;
+    expect(broadcast.functions).toEqual(['fireAll']);
+    expect(fnPtrSlots(divided.facets[broadcast.name].stateLayout)).toEqual(expected);
+    expect(fnPtrSlots(divided.root.stateLayout)).toEqual(expected);
+  });
+
+  /**
+   * THE RESIDUAL, STATED. `LowerReceivedFnPtrArray` appends state variables too, and it CANNOT be hoisted the
+   * same way: it reads the `__fnsel_` companions that `LowerForeignFunctionPointerParams` splits out far later
+   * in the pipeline. It cannot diverge on its own - it appends exactly two variables per table it lowers, in
+   * declaration order, or throws - and this pins the ordering that keeps a MIXED contract's root equal to its
+   * baseline: the pass that runs first in the ordinary pipeline appends first.
+   *
+   * What it still refuses is the root that `prepareSplitRoot` left with no write to a received-value table,
+   * because every writer moved to a facet. That is a loud refusal, not a divergence.
+   */
+  it('fails closed, by name, on a received-value table whose writers all move off the root', () => {
+    const source = `pragma solidcash >=0.8.0;
+interface IH { function inc(uint value); function dec(uint value); }
+contract Mixed() {
+  uint total;
+  function(uint) external[] p;
+  function(uint) external[] q;
+  function a(function(uint) external cb, address t) public {
+    this.p.push(cb); this.q.push(IH(t).inc); this.total = this.total + 1; require(true);
+  }
+  function b(function(uint) external cb, address t) public {
+    this.p.push(cb); this.q.push(IH(t).dec); this.total = this.total + 2; require(true);
+  }
+}`;
+    // `q` is lowered by the array pass, `p` by the received-value pass, and the ORDER is the pipeline's:
+    // the array pass runs first and appends first. `prepareSplitAst` reproduces exactly this.
+    expect(fnPtrSlots(compileString(source, { forceStateful: true }).stateLayout))
+      .toEqual(['total@0.0', 'q@0.1', '__fnsel_q@0.2', 'p@0.3', '__fnsel_p@0.4']);
+    expect(() => compileStringSplit(source, { forceStateful: true, forceSplit: true }))
+      .toThrow(/Function-pointer array 'p': it is never written in contract code/);
+  });
+
   it('CONTROL: a call-edge union that fits is not divided and keeps both entries in one facet', () => {
     const bundle = compileStringSplit(`pragma solidity ^0.8.7;
       contract Closure {

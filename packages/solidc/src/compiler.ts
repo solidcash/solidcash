@@ -2044,6 +2044,7 @@ function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
   admitMixedScalarHandlers = true, attribution?: ExternalAdmissionAttribution,
+  fnPtrArraysPreLowered = false,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -2133,7 +2134,12 @@ function compileResolvedAst(
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
   // array-element co-spend `IFace(fns[i]).m()`. Runs FIRST so the moved array is a native `address[]` to every
   // later pass (the fn-ptr array parses as a COLLECTION; a plain address array is a dynamic-array STATE VAR).
-  ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
+  // X169: the split path already ran this on the COMPLETE function set (`prepareSplitAst`). Re-running it on a
+  // shard's filtered set would re-decide a table this pass declined there, and the decision appends state
+  // variables - see `assertSplitLayoutsAgree`.
+  if (!fnPtrArraysPreLowered) {
+    ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
+  }
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
@@ -2951,7 +2957,9 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     routeByName.set(plan.name, { facet: facet.name, link: facet.link });
   }
   prepareSplitRoot(rootAst.contract, routeByName);
-  const root = compileResolvedAst(rootAst, code, merged);
+  const root = compileResolvedAst(
+    rootAst, code, merged, false, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
+  );
   if (byteSize(root) > maxShardBytes) {
     throw new Error(`Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`);
   }
@@ -3111,6 +3119,17 @@ function mergeFootprints(plans: PlannedFunction[]): SplitStateFootprint {
   };
 }
 
+/**
+ * Message-bus GRAPH mode unrolls pointer-table loops (`UnrollFixedBoundEntryLoop`,
+ * `ExpandBoundedPointerTableLoop`) BEFORE the fn-ptr array pass, and `prepareSplitAst` does not run those. Its
+ * `loopDepth` decides broadcast-vs-single-element, so hoisting the pass ahead of them would lower different
+ * callsites. Graph mode therefore keeps the post-filter route and leans on `assertSplitLayoutsAgree`, which
+ * refuses the divergent bundle rather than emitting it.
+ */
+function splitPreLowersFnPtrArrays(options: CompilerOptions): boolean {
+  return !(options.experimentalHiddenBatch && options.experimentalMessageBusController);
+}
+
 /** Prepare the complete logical contract before deciding physical placement. The normal compiler repeats these
  * passes, but each is idempotent after it has consumed its source metadata. This keeps split planning aware of
  * inherited entry points, inherited state, and modifier-injected calls/effects. */
@@ -3120,6 +3139,18 @@ function prepareSplitAst(
   let ast = parseAndResolve(code, options, listener);
   ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
   ast = expandInheritance(ast);
+  // X169. The THIRD shard-dependent state-appending pass, and the one X162 recorded rather than built. Its
+  // classification is usage-driven - a table whose writes name two methods is VARYING and gets a parallel
+  // `bytes[] __fnsel_<name>` state variable, one whose surviving writes name one method is FIXED and gets none -
+  // so running it per-shard gave a facet a DIFFERENT PHYSICAL SLOT MEANING than the root's: measured on a
+  // two-table contract, root slot 0.2 is `__fnsel_p` where the facet holding only the fixed-classified writes
+  // puts `q`. A delegate facet writes the root's state through physical slots, so that is the X162 wrong-variable
+  // write with a different author. Running it here, on the complete function set, makes the decision one decision.
+  // Position matches the ordinary pipeline's (after inheritance, BEFORE modifier expansion), so the root also
+  // agrees with the unsplit baseline, which classifies from the same pre-expansion bodies.
+  if (splitPreLowersFnPtrArrays(options)) {
+    ast = ast.accept(new LowerForeignFunctionPointerArrayElements(false)) as Ast;
+  }
   ast = expandModifiers(ast);
   // X162. Both remaining state-appending passes are SHARD-DEPENDENT and must therefore run here, on the
   // complete function set, before `compileFacet` filters it. `LowerStorageSlotPointers` appends one hidden
@@ -3183,7 +3214,9 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
     noop.modifiers = [FunctionModifier.PUBLIC, FunctionModifier.DELEGATE]; contract.functions.push(noop);
   }
   contract.isSplitFacet = true;
-  const artifact = compileResolvedAst(ast, code, options, true);
+  const artifact = compileResolvedAst(
+    ast, code, options, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(options),
+  );
   artifact.delegateOnly = true;
   return artifact;
 }

@@ -259,7 +259,9 @@ function locateTranscriptResults(bytes: Uint8Array): {
   return { invocationResults, emissionResults, participantVectors };
 }
 
-export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Promise<ResultGraphFixture> {
+export async function buildResultGraph(
+  tamper: ResultGraphTamper = 'none', staticChain = false, downgradeDescendant = false,
+): Promise<ResultGraphFixture> {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -270,40 +272,52 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
+  const source = (text: string): string => staticChain
+    ? text.replace(/\.(tail|deep|note|mid|pair|step)\(/g, '.$1.staticcall(')
+    : text;
 
   // Deploy in dependency order so no participant needs a peer that does not exist yet.
-  const artifactD = compileString(RG_D, options);
+  const artifactD = compileString(source(RG_D), options);
   const baseD = new Contract(artifactD, [4n], { provider });
   const setupD = await setupStatefulUtxos(provider, baseD, artifactD.stateLayout!, {});
   const d = baseD.withCategory(hexToBin(setupD.categoryId));
 
-  const artifactE = compileString(RG_E, options);
+  const artifactE = compileString(source(RG_E), options);
   const baseE = new Contract(artifactE, [5n, d.lockingBytecode], { provider });
   const setupE = await setupStatefulUtxos(provider, baseE, artifactE.stateLayout!, {});
   const e = baseE.withCategory(hexToBin(setupE.categoryId));
 
-  const artifactB = compileString(RG_B, options);
+  const artifactB = compileString(source(RG_B), options);
   const baseB = new Contract(artifactB, [3n, e.lockingBytecode], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
 
-  const artifactC = compileString(RG_C, options);
+  const artifactC = compileString(source(RG_C), options);
   const baseC = new Contract(artifactC, [2n, b.lockingBytecode], { provider });
   const setupC = await setupStatefulUtxos(provider, baseC, artifactC.stateLayout!, {});
   const c = baseC.withCategory(hexToBin(setupC.categoryId));
 
-  const artifactA = compileString(RG_A, options);
+  const artifactA = compileString(source(RG_A), options);
   const baseA = new Contract(artifactA, [1n, c.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
 
-  const artifactR = compileString(RG_R, options);
+  const artifactR = compileString(source(RG_R), options);
   const baseR = new Contract(artifactR, [0n, a.lockingBytecode], { provider });
   const setupR = await setupStatefulUtxos(provider, baseR, artifactR.stateLayout!, {});
   const r = baseR.withCategory(hexToBin(setupR.categoryId));
 
+  // The runtime boundary is the SCB2 route plus descendant-mode covenant. The current conservative ABI
+  // summary counts even a static external edge as writesState; clear only that planner diagnostic in this
+  // fixture so the VM proves the stronger transitive rule below.
+  if (staticChain) {
+    for (const candidate of [artifactR, artifactA, artifactC, artifactB, artifactE, artifactD]) {
+      for (const fn of candidate.abi) fn.writesState = false;
+    }
+  }
+
   const peer = c.lockingBytecode;
-  const plan = layer3.planCompiledGraph([
+  let plan = layer3.planCompiledGraph([
     { artifact: artifactR, lockingBytecode: r.lockingBytecode },
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactC, lockingBytecode: c.lockingBytecode },
@@ -312,13 +326,20 @@ export async function buildResultGraph(tamper: ResultGraphTamper = 'none'): Prom
     { artifact: artifactD, lockingBytecode: d.lockingBytecode },
   ], [
     { parent: null, callee: 0, function: 'go', args: [peer, SEED, LABEL] },
-    { parent: 0, callee: 1, function: 'step', args: [peer, SEED, LABEL] },
-    { parent: 1, callee: 2, function: 'pair', args: [peer, SEED] },
-    { parent: 2, callee: 3, function: 'mid', args: [peer, SEED] },
-    { parent: 3, callee: 4, function: 'note', args: [peer, SEED] },
-    { parent: 4, callee: 5, function: 'deep', args: [peer, SEED] },
-    { parent: 5, callee: 2, function: 'tail', args: [SEED] },
+    { parent: 0, callee: 1, function: 'step', args: [peer, SEED, LABEL], ...(staticChain && { callMode: 'staticcall' as const }) },
+    { parent: 1, callee: 2, function: 'pair', args: [peer, SEED], ...(staticChain && { callMode: 'staticcall' as const }) },
+    { parent: 2, callee: 3, function: 'mid', args: [peer, SEED], ...(staticChain && { callMode: 'staticcall' as const }) },
+    { parent: 3, callee: 4, function: 'note', args: [peer, SEED], ...(staticChain && { callMode: 'staticcall' as const }) },
+    { parent: 4, callee: 5, function: 'deep', args: [peer, SEED], ...(staticChain && { callMode: 'staticcall' as const }) },
+    { parent: 5, callee: 2, function: 'tail', args: [SEED], ...(staticChain && { callMode: 'staticcall' as const }) },
   ]);
+  if (downgradeDescendant) {
+    plan = Object.freeze({
+      ...plan,
+      invocations: Object.freeze(plan.invocations.map((row, index) => index === 6
+        ? Object.freeze({ ...row, callMode: 'call' as const, callOptions: 0 }) : row)),
+    });
+  }
   const layout = layer3.compiledGraphPhysicalLayout(plan);
 
   // Sequential execution of the compiled sources: tail(2)=22, deep=(44,24), note="wide",
@@ -559,6 +580,22 @@ function failingInput(builder: TransactionBuilder): number | null {
 }
 
 describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => {
+  it('settles an all-static six-level descendant chain', async () => {
+    const built = await buildResultGraph('none', true);
+    expect(built.plan.invocations.slice(1).every((row) => row.callMode === 'staticcall')).toBe(true);
+    expect(failingInput(built.builder)).toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 120_000);
+
+  it('rejects a descendant row downgraded after static planning on the VM', async () => {
+    const built = await buildResultGraph('none', true, true);
+    expect(built.plan.invocations[5].callMode).toBe('staticcall');
+    expect(built.plan.invocations[6].callMode).toBe('call');
+    expect(failingInput(built.builder)).not.toBe(null);
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  }, 120_000);
+
   it('settles a six-participant transitive chain whose five result schemas all differ', async () => {
     const built = await buildResultGraph();
     expect(failingInput(built.builder)).toBe(null);

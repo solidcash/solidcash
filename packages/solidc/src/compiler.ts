@@ -1876,7 +1876,8 @@ function synthesizeHiddenBatchRoute(
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
     const invoke = (args: string, selectedInvokeName = invokeName): string => {
       const footprint = analyseFunctionFootprint(fn, byName);
-      const staticGuard = footprint.writes.length > 0 || footprint.effects.length > 0
+      const staticGuard = footprint.writes.length > 0
+        || footprint.effects.some((effect) => effect !== 'external-call')
         ? 'require(__scb_call_options % 2 == 0); ' : '';
       if (!captureResults || fn.returnTypes.length === 0) return `${staticGuard}${selectedInvokeName}(${args});`;
       const names = fn.returnTypes.map((_type, index) =>

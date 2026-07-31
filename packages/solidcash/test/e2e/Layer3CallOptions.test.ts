@@ -148,6 +148,8 @@ interface RawGraphOptions {
   staticCall?: boolean;
   /** Commit a result the callee did not produce: attacks the opaque return field of the low-level row. */
   tamperResult?: boolean;
+  /** Forge one mutable resource after an otherwise honest read-only target has returned. */
+  tamperStaticResource?: 'state' | 'event' | 'value' | 'token';
 }
 
 async function buildRawCallGraph(
@@ -230,8 +232,17 @@ async function buildRawCallGraph(
     token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
   });
   tx.addOutput({
-    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
-    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    to: graphOptions.tamperStaticResource === 'event' ? hexToBin('51') : b.tokenAddress,
+    amount: setupB.masterUtxo.satoshis
+      + (graphOptions.tamperStaticResource === 'value' ? 1n : 0n),
+    token: {
+      category: setupB.categoryId,
+      amount: graphOptions.tamperStaticResource === 'token' ? 1n : 0n,
+      nft: {
+        capability: 'minting',
+        commitment: graphOptions.tamperStaticResource === 'state' ? '01' : '',
+      },
+    },
   });
   tx.addOutput({
     to: hexToBin('51'), amount: 1000n,
@@ -676,6 +687,22 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
       await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
       expect(built.plan.invocations[1].callMode).toBe('staticcall');
     }, 120_000);
+
+    it.each(['state', 'event', 'value', 'token'] as const)(
+      'rejects a staticcall whose target consumes a mutable %s resource at the controller',
+      async (resource) => {
+        const built = await buildRawCallGraph({ staticCall: true, tamperStaticResource: resource });
+        // State/token forgeries are otherwise valid target transitions and reach the graph controller.
+        // Locking-bytecode/value forgeries are additionally caught by the target route at input 1; either
+        // ordering is a runtime boundary, and the honest case above proves the negative control.
+        expect(failingInput(built.builder)).toBe(
+          resource === 'state' || resource === 'token' ? 5 : 1,
+        );
+        await expect(built.provider.sendRawTransaction(built.transaction))
+          .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+      },
+      120_000,
+    );
 
     // Attacks the RESULT field of the low-level row: the callee's committed return event. Input 1 is the
     // producer's own SCB1 route, which is what authenticates the commitment it publishes.

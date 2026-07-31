@@ -607,6 +607,9 @@ export function generateGraphRootController(projectionVerifierLbc: string): stri
   // is below `invocationCount <= 24` and the parent equality below is gated on that bound.
   const frameBytes = 2 * (MAX_GRAPH_DEPTH + 1);
   const emptyFrames = `hex"${'ff'.repeat(frameBytes)}"`;
+  // Per-depth read-only ancestry. A byte is 1 exactly while the invocation occupying that depth was
+  // authenticated with callOptions bit 0 set. The invocation walk uses it to make staticness hereditary.
+  const emptyStaticFrames = `hex"${'00'.repeat(MAX_GRAPH_DEPTH + 1)}"`;
   return `pragma solidcash >=0.8.0;
 contract GraphRootController(bytes20 initializer) {
   function initialize(bytes32 root, pubkey pk, sig s) {
@@ -634,6 +637,9 @@ contract GraphRootController(bytes20 initializer) {
     bigint previousReturnOutput = -1;
     bigint previousProjectionInput = -1;
     bigint expectedInput = 0;
+    // Six bytes per participant: physical block start, block size, and the optional return-event slot.
+    // Keeping the transcript's original bytes avoids a NUM2BIN round trip in the invocation walk.
+    bytes participantBlocks = hex"";
     bigint cursor = 10;
     for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
       // X27: split ONE suffix per participant and read every field off it, so a read costs the REMAINING
@@ -702,6 +708,8 @@ contract GraphRootController(bytes20 initializer) {
       require(participant == 0 || projectionInput == previousProjectionInput + 1);
       previousProjectionInput = projectionInput;
       require(tx.inputs[projectionInput].lockingBytecode == hex"${verifier}");
+      participantBlocks = bytes.concat(participantBlocks, frame.slice(0, 4),
+        frame.slice(local - resultVectorLength - 6, local - resultVectorLength - 4));
       cursor = cursor + local;
     }
     // The proof slots are consecutive, so the last one names the first: the participant REGION ends
@@ -714,6 +722,7 @@ contract GraphRootController(bytes20 initializer) {
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
     bytes frames = ${emptyFrames};
+    bytes staticFrames = ${emptyStaticFrames};
     bigint previousDepth = -1;
     bigint tail = cursor + 2;
     for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
@@ -723,7 +732,10 @@ contract GraphRootController(bytes20 initializer) {
       bigint parent = int(bytes.concat(row.slice(0, 2), hex"00"));
       bigint depth = int(bytes.concat(row.slice(4, 5), hex"00"));
       bigint subtreeEnd = int(bytes.concat(row.slice(5, 7), hex"00"));
-      require(int(bytes.concat(row.slice(2, 3), hex"00")) < participantCount);
+      bigint callee = int(bytes.concat(row.slice(2, 3), hex"00"));
+      require(callee < participantCount);
+      bigint callOptions = int(bytes.concat(row.slice(11, 12), hex"00"));
+      require(callOptions <= 3);
       if (invocation == 0) {
         require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
       } else {
@@ -735,11 +747,40 @@ contract GraphRootController(bytes20 initializer) {
           frames.slice(depth + ${MAX_GRAPH_DEPTH}, depth + ${MAX_GRAPH_DEPTH + 1}), hex"00"));
         require(openIndex < invocationCount && parent == openIndex);
         require(invocation <= openEnd && subtreeEnd <= openEnd);
+        // Runtime half of staticcall transitivity: compiler metadata may diagnose a non-static descendant,
+        // but the authenticated transcript itself must carry static mode for every row in the subtree.
+        if (int(bytes.concat(staticFrames.slice(depth - 1, depth), hex"00")) == 1) {
+          require(callOptions % 2 == 1);
+        }
       }
       previousDepth = depth;
       frames = bytes.concat(frames.slice(0, depth), bytes1(invocation),
         frames.slice(depth + 1, depth + ${MAX_GRAPH_DEPTH + 1}), bytes1(subtreeEnd),
         frames.slice(depth + ${MAX_GRAPH_DEPTH + 2}, ${frameBytes}));
+      staticFrames = bytes.concat(staticFrames.slice(0, depth), bytes1(callOptions % 2),
+        staticFrames.slice(depth + 1, ${MAX_GRAPH_DEPTH + 1}));
+      if (callOptions % 2 == 1) {
+        // Runtime snapshot/return proof. The participant's balanced block is its complete mutable-resource
+        // region. Every ordinary slot must return byte-for-byte and value-for-value unchanged. A canonical
+        // return-event slot may change its locking/token envelope to publish the ABI result, but not its value;
+        // that result is separately authenticated above by the transcript commitment.
+        bigint blockInput = int(bytes.concat(
+          participantBlocks.slice(callee * 6, callee * 6 + 2), hex"00"));
+        bigint blockSize = int(bytes.concat(
+          participantBlocks.slice(callee * 6 + 2, callee * 6 + 4), hex"00"));
+        bigint returnOutput = int(bytes.concat(
+          participantBlocks.slice(callee * 6 + 4, callee * 6 + 6), hex"00"));
+        for (bigint slot = blockInput; slot < blockInput + blockSize; slot = slot + 1) {
+          require(slot < tx.outputs.length);
+          require(tx.outputs[slot].value == tx.inputs[slot].value);
+          if (slot != returnOutput) {
+            require(tx.outputs[slot].lockingBytecode == tx.inputs[slot].lockingBytecode);
+            require(tx.outputs[slot].tokenCategory == tx.inputs[slot].tokenCategory);
+            require(tx.outputs[slot].nftCommitment == tx.inputs[slot].nftCommitment);
+            require(tx.outputs[slot].tokenAmount == tx.inputs[slot].tokenAmount);
+          }
+        }
+      }
       bigint argsLength = int(bytes.concat(row.slice(12, 14), hex"00"));
       require(16 + argsLength <= row.length);
       bigint resultLength = int(bytes.concat(

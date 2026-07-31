@@ -634,6 +634,11 @@ internal handler. A callback is dispatchable only if:
 - its target participant authenticates and executes it;
 - its selector names a transcript-eligible public/external handler.
 
+For a compiler-labelled parameter target, SDK derivation MUST byte-compare the forwarded address
+argument with the registered participant locking bytecode before planning the callback row. This is
+an early consistency check, not the authority: the parent covenant still authenticates the emitted
+target and the target participant independently authenticates execution.
+
 The controller keeps an active-invocation stack bounded by `maxDepth`. Recursion beyond the protocol
 limit fails before transaction construction and on-chain.
 

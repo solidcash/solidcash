@@ -348,6 +348,13 @@ describe('layer3.planCompiledGraph', () => {
       occurrence: ({ kind }) => kind === 'conditional' ? 1 : 0,
     });
     expect(reached.participants.map((owner) => owner.invocations)).toEqual([[0], [1]]);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: participant,
+      function: 'run',
+      args: [new Uint8Array([0x53]), true],
+      targets: { IPeer: { ...leafParticipant, lockingBytecode: '54' } },
+      occurrence: ({ kind }) => kind === 'conditional' ? 1 : 0,
+    })).toThrow(/target proof disagrees with registered owner/);
     const loop = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function run(address peer, bool take); }
       contract LoopGraph() {

@@ -1736,14 +1736,23 @@ async function buildStateCycle(tamperState = false) {
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
   const commonArgs = [b.lockingBytecode, a.lockingBytecode, 1n] as const;
-  const plan = layer3.planCompiledGraph([
-    { artifact: artifactA, lockingBytecode: a.lockingBytecode },
-    { artifact: artifactB, lockingBytecode: b.lockingBytecode },
-  ], [
-    { parent: null, callee: 0, function: 'start', args: commonArgs },
-    { parent: 0, callee: 1, function: 'step', args: commonArgs },
-    { parent: 1, callee: 0, function: 'finish', args: commonArgs },
+  const participantA = { artifact: artifactA, lockingBytecode: a.lockingBytecode };
+  const participantB = { artifact: artifactB, lockingBytecode: b.lockingBytecode };
+  // This is deliberately derived from compiler-authored callsites rather than restating transcript rows.
+  // The worklist interns A by locking bytecode when B calls it back, producing three logical invocations but
+  // only two physical owner blocks.
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: participantA,
+    function: 'start',
+    args: commonArgs,
+    targets: { IStateB: participantB, IStateA: participantA },
+  });
+  expect(plan.invocations.map(({ parent, callee, function: name }) => ({ parent, callee, name }))).toEqual([
+    { parent: null, callee: 0, name: 'start' },
+    { parent: 0, callee: 1, name: 'step' },
+    { parent: 1, callee: 0, name: 'finish' },
   ]);
+  expect(plan.participants.map(({ invocations }) => invocations)).toEqual([[0, 2], [1]]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,

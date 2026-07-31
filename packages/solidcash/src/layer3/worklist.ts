@@ -179,6 +179,30 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     targetCursors.set(call.interfaceName, cursor + 1);
     return target;
   };
+  const assertForwardedTarget = (
+    source: WorklistParticipant,
+    fn: AbiFunction,
+    visibleArgs: readonly FunctionArgument[],
+    call: ExternalCallAbi,
+    target: WorklistParticipant,
+    occurrence: number,
+  ): void => {
+    const targetName = call.addressParam ?? call.loopArrayVar;
+    if (!targetName) return;
+    const input = fn.inputs.findIndex((candidate) => candidate.name === targetName);
+    if (input < 0) return;
+    const supplied = call.loopArrayVar && Array.isArray(visibleArgs[input])
+      ? visibleArgs[input][occurrence] : visibleArgs[input];
+    if (supplied === undefined) {
+      throw new Error(`layer3: callsite ${call.callsiteId} target argument is unavailable`);
+    }
+    const structs = source.artifact.structs ?? source.artifact.stateLayout?.structs;
+    const encoded = encodeFunctionArgument(supplied as FunctionArgument, 'address', structs);
+    if (!(encoded instanceof Uint8Array)
+      || binToHex(encoded) !== target.lockingBytecode.toLowerCase()) {
+      throw new Error(`layer3: callsite ${call.callsiteId} target proof disagrees with registered owner`);
+    }
+  };
 
   const invocations: CompiledGraphInvocation[] = [];
   const active = new Set<string>();
@@ -386,6 +410,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       }
       for (let reached = 0; reached < count; reached += 1) {
         const target = takeTarget(call);
+        assertForwardedTarget(participant, fn, args, call, target, reached);
         expand(
           target,
           call.functionName,

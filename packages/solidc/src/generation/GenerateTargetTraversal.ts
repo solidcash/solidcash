@@ -6933,11 +6933,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
       const slots = targetFunc.externalCalls ?? [];
       const emissionStackBaseline = [...this.stack];
+      let emissionResultCount = 0;
       this.scopeDepth += 1;
       if (slots.length === 1) {
         const resultCount = this.verifyGraphEmissionRow(
           slots[0], targetFunc, node.parameters, locationData, slots[0].hasReturnValues === true,
         );
+        emissionResultCount = resultCount;
         hiddenContextCount += resultCount;
         if (slots[0].hasReturnValues !== true) {
           this.consumeConstructedGraphEmissionRow(node, locationData);
@@ -6955,10 +6957,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.scopeDepth -= 1;
       this.stack = emissionStackBaseline;
+      // The verifier leaves authenticated return values physically on top. Preserve those markers after
+      // discarding its temporary construction names, or later declared-argument OP_PICKs are one slot shallow.
+      for (let i = 0; i < emissionResultCount; i += 1) {
+        this.pushToStack(`(__graph_emission_result_${i})`);
+      }
     }
-    // X29. Which owner-local effect frame this invocation owns. Compile-time here (the route knows its own
-    // dispatch sites) and a stack value inside the shared subroutine, which is the whole point: one subroutine
-    // body, one authenticated set of outgoing edges, N distinct output frames.
+    // X29. Which owner-local effect frame this invocation owns. OP_DEFINE declares this context before its
+    // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
     if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame) {
       if (node.graphEffectSite === undefined) {
         throw new Error(`Unplanned graph effect frame at a call to '${targetFunc.name}'`);
@@ -6967,7 +6973,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__graph_effect_site_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-
     // X203. An outlined dynamic reader can be reached from entry points with different fixed block sizes.
     // Thread the caller's actual trailing base through the call frame instead of baking the helper's synthetic
     // one-slot layout into its bytecode. Nested helpers forward the basis they received.
@@ -12535,6 +12540,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
     if (this.currentFunction.graphEmissionHandler) {
+      // The graph path returns before ordinary external-call lowering below. Settle the admitted raw value
+      // option into this handler's compiler-owned transfer frame before reconstructing `(success, data)`.
+      if (node.interfaceName === '__raw__' && node.callOptions?.value
+        && node.valueTransferIndex >= 0 && physicalSlot?.addressParam) {
+        node.callOptions.value = this.emitValueTransfer(
+          node.valueTransferIndex, node.callOptions.value, physicalSlot.addressParam, locationData, node,
+        );
+      }
       const returnTypes = physicalSlot?.returnTypes ?? node.callInfo?.returnTypes ?? [];
       if (node.opaqueReturn) {
         // The graph subroutine receives one authenticated opaque blob. Rebuild
@@ -12754,7 +12767,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_frame)');
 
-    const graphCallMode = slot.callMode === ExternalCallMode.STATICCALL ? 1 : 0;
+    const graphCallMode = (slot.callMode === ExternalCallMode.STATICCALL ? 1 : 0)
+      | (rawCall && slot.sourceCallNode?.callOptions?.value ? 2 : 0);
     if (slot.callMode === ExternalCallMode.DELEGATECALL) {
       throw new Error('Graph emission does not support delegatecall');
     }

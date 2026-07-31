@@ -12,7 +12,7 @@ import {
   ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
   BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode, TupleAssignmentNode,
   ArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
-  LowLevelCallStatementNode, StateAccessNode, RequireNode,
+  LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -218,13 +218,27 @@ const expressionSource = (
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
 ): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
-  amount: ReturnType<typeof expressionSource> }[] => {
-  const transfers: TransferStatementNode[] = [];
+  amount: ReturnType<typeof expressionSource>; callOption?: 'value' }[] => {
+  const transfers: {
+    transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
+  }[] = [];
   const seen = new Set<object>();
   const visit = (value: unknown): void => {
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
-    if (value instanceof TransferStatementNode) transfers.push(value);
+    if (value instanceof TransferStatementNode) transfers.push({
+      transferIndex: value.transferIndex, recipient: value.lockingBytecode, amount: value.amount,
+    });
+    if (value instanceof ExternalFunctionCallNode && value.interfaceName === '__raw__'
+      && value.callOptions?.value
+      && value.valueTransferIndex >= 0) {
+      transfers.push({
+        transferIndex: value.valueTransferIndex,
+        recipient: value.addressExpression,
+        amount: value.callOptions.value,
+        callOption: 'value',
+      });
+    }
     for (const [key, child] of Object.entries(value)) {
       if ([
         'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
@@ -237,8 +251,9 @@ const transferEffects = (
   visit(fn.body);
   return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => ({
     transferIndex: transfer.transferIndex,
-    recipient: expressionSource(transfer.lockingBytecode, fn, contract),
+    recipient: expressionSource(transfer.recipient, fn, contract),
     amount: expressionSource(transfer.amount, fn, contract),
+    ...(transfer.callOption && { callOption: transfer.callOption }),
   }));
 };
 

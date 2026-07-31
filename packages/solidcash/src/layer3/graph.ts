@@ -379,7 +379,7 @@ const framed = (bytes: Uint8Array): Uint8Array => concat(uint(bytes.length, 2), 
 
 /** Bit 0 of the call-options byte: the compiler-proven read-only (`staticcall`) mode. */
 const CALL_OPTION_READ_ONLY = 1;
-/** Bits 1-7: source-level call options. None is an admitted graph edge; see `assertNoUnboundCallOptions`. */
+/** Bit 1: the admitted singular raw-call value option. Higher source-level option bits remain refused. */
 const CALL_OPTION_VALUE = 2;
 const CALL_OPTION_TOKEN_CONTAINER = 4;
 const CALL_OPTION_BLOCK_SLOT = 8;
@@ -944,12 +944,11 @@ contract GraphProjectionVerifier() {
       bigint callee = int(bytes.concat(row.slice(2, 3), hex"00"));
       bigint depth = int(bytes.concat(row.slice(4, 5), hex"00"));
       require(callee < participantCount);
-      // X5: the row's call-options byte. Bit 0 is the read-only mode; bits 1-7 are call options, none of which
-      // is an admitted graph edge - so the byte bounded here IS the on-chain statement of that policy, not an
-      // incidental range check. Read once and reused below, which is also one slice cheaper than the two reads
-      // the root bound would otherwise need.
+      // X5/E2: bit 0 is read-only mode and bit 1 is the singular raw-call value option. No higher option is
+      // admitted, so this bound is the on-chain policy statement rather than an incidental range check. The
+      // caller's compiled emission independently re-derives the exact byte (including the value bit).
       bigint callOptions = int(bytes.concat(row.slice(11, 12), hex"00"));
-      require(callOptions <= 1);
+      require(callOptions <= 3);
       bigint argsLength = int(bytes.concat(row.slice(12, 14), hex"00"));
       require(16 + argsLength <= row.length);
       bigint resultLength = int(bytes.concat(row.slice(14 + argsLength, 16 + argsLength), hex"00"));
@@ -1637,7 +1636,20 @@ export function planCompiledGraph(
     // X5: the refusal above precedes this, so an accepted plan always measures zero option bits. Deriving them
     // anyway - from that same measurement - is what makes the committed byte a real field: relax the refusal and
     // the option travels into the transcript, where the projection verifier rejects it, instead of vanishing.
-    return measureUnboundCallOptions(participant.artifact, abiFunction, invocation.function).optionBits;
+    let bits = measureUnboundCallOptions(participant.artifact, abiFunction, invocation.function).optionBits;
+    // A bound raw `{value:}` option belongs to this row's PARENT EDGE, not to the invocation of the
+    // caller handler that authored it. E2 admits exactly one unconditional raw edge, so its compiler-owned
+    // transfer marker identifies the one child row without guessing from runtime values.
+    if (invocation.parent !== null) {
+      const parentInvocation = invocations[invocation.parent];
+      const parentParticipant = participants[parentInvocation.callee];
+      const parentHandler = parentParticipant.artifact.hiddenBatch?.handlers
+        .find((candidate) => candidate.name === parentInvocation.function);
+      if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value')) {
+        bits |= CALL_OPTION_VALUE;
+      }
+    }
+    return bits;
   });
 
   const executions = participants.map((participant, owner) => {

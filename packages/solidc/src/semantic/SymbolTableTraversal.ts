@@ -2538,6 +2538,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.call.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.call.valueTransferIndex });
     }
+    // Returning low-level expression: `(bool ok, bytes data) = target.call{value: amount}(payload)`.
+    if (node instanceof MethodCallNode && node.callOptions?.value) {
+      node.valueTransferIndex = transferInfos.length;
+      transferInfos.push({ transferIndex: node.valueTransferIndex });
+    }
+    if (node instanceof ExternalFunctionCallNode && node.callOptions?.value) {
+      node.valueTransferIndex = transferInfos.length;
+      transferInfos.push({ transferIndex: node.valueTransferIndex });
+    }
     // For branches: walk the longer branch to create entries, shorter to assign indices
     if (node instanceof BranchNode && node.branchOps && node.branchOps.transferCount > 0) {
       const startIndex = transferInfos.length;
@@ -2567,6 +2576,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Scan expressions for AddressSendExpressionNode and InstantiationNode with value
     if (node instanceof VariableDefinitionNode) {
       if (node.expression) this.collectTransferStatements(node.expression, transferInfos);
+    }
+    if (node instanceof TupleAssignmentNode) {
+      if (node.tupleExpressions) {
+        for (const expression of node.tupleExpressions) {
+          this.collectTransferStatements(expression, transferInfos);
+        }
+      } else {
+        this.collectTransferStatements(node.tuple, transferInfos);
+      }
     }
     // Contract deployment with {value}: new Contract{value: x}(args)
     if (node instanceof InstantiationNode && node.callOptions?.value
@@ -8671,10 +8689,21 @@ export default class SymbolTableTraversal extends AstTraversal {
         // and returns its REAL integrity-bound return (identity + return-event); staticcall is the read-only
         // variant (preserves the callee's commitments). The `{value:}`/`{gas:}` forms keep the existing weak
         // path for now (value-transfer handling), and delegatecall self-verifies via _proxyMasterIndex.
-        if ((node.methodName === 'call' || node.methodName === 'staticcall') && !node.callOptions) {
+        const graphRawValueCall = node.methodName === 'call'
+          && this.compilerOptions.experimentalHiddenBatch
+          && this.compilerOptions.experimentalMessageBusController
+          && node.callOptions?.value !== undefined
+          && node.callOptions.gas === undefined && node.callOptions.salt === undefined;
+        if ((node.methodName === 'call' || node.methodName === 'staticcall')
+          && (!node.callOptions || graphRawValueCall)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
           callNode.opaqueReturn = true;
+          if (graphRawValueCall) {
+            callNode.callOptions = node.callOptions;
+            callNode.valueTransferIndex = node.valueTransferIndex;
+            callNode.callOptions!.value = this.visit(callNode.callOptions!.value!) as ExpressionNode;
+          }
           callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
           callNode.callInfo = {
             interfaceName: '__raw__',
@@ -8986,13 +9015,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * X29. Is every entry in this handler's `transferInfos` one the per-site frames actually settle?
    *
-   * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer, and that transfer is the
-   * callee's payment on an external-call slot, not a `this.transfer(..)` output the frame mechanism verifies.
-   * A handler carrying only such an option keeps its pre-X29 shape exactly - kept behind OP_INVOKE with no
-   * frames - which is what makes a value-option caller's artifact byte-identical to the option-free one
-   * (Layer3CallOptions pins that, and the SDK refuses to PLAN the option anyway: a transcript row has no field
-   * to bind it). One carrying an option ALONGSIDE a settled effect has no status quo - SEC-6 refused it - and
-   * framing only half of its effects would be exactly the silent drop X29 exists to remove, so it is refused.
+   * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer. E2 admits exactly the
+   * singular raw-call value option in graph mode: its authenticated external-call node publishes the recipient
+   * and amount, and the same per-site frame settles its transfer output. Typed options and every other option
+   * remain outside this count and therefore retain the fail-closed mixed-effect rule below.
    */
   private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
     const declared = fn.transferInfos?.length ?? 0;
@@ -9001,6 +9027,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     walkInvocationAst(fn.body, (node) => {
       if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
         || node instanceof AddressSendExpressionNode) direct += 1;
+      if (node instanceof ExternalFunctionCallNode && node.interfaceName === '__raw__'
+        && node.callOptions?.value) direct += 1;
     });
     if (direct === declared) return true;
     if (direct > 0 || (fn.emitInfos?.length ?? 0) > 0) {

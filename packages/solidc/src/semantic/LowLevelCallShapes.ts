@@ -8,9 +8,10 @@ import { SolidCashError } from '../Errors.js';
 /**
  * X6 - stable diagnostics for unadmitted low-level call shapes.
  *
- * The admitted message-bus low-level class is exactly ONE unconditional, option-free `address.call(payload)` or
- * `address.staticcall(payload)` per handler: the transcript row binds mode, target, calldata and result, and
- * has no field for a call option or for an occurrence count.
+ * The admitted message-bus low-level class is exactly ONE unconditional `address.call(payload)`,
+ * returning `address.call{value: amount}(payload)`, or `address.staticcall(payload)` per handler. The transcript row
+ * binds mode, target, calldata, result and the value-option bit; the transfer effect separately binds the
+ * recipient and amount. No other option and no occurrence count is admitted.
  *
  * Everything outside that class currently reaches the user as an INTERNAL error from a later stage, naming a
  * compiler data structure rather than the source construct:
@@ -140,7 +141,9 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
   if (rows.length === 0) return;
 
   for (const { node, callMode, options, context } of rows) {
-    if (options.length > 0) {
+    const admittedValue = node instanceof MethodCallNode
+      && callMode === 'call' && options.length === 1 && options[0] === 'value';
+    if (options.length > 0 && !admittedValue) {
       throw new LowLevelCallShapeError(
         node,
         `function '${fn.name}' issues a low-level '${callMode}' carrying the call option(s) `

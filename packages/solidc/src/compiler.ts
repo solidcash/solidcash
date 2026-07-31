@@ -1171,6 +1171,17 @@ function synthesizeHiddenBatchRoute(
   }
 
   const eligibleFootprint = (fn: FunctionDefinitionNode) => analyseFunctionFootprint(fn, byName);
+  const carriesRawValueOption = (fn: FunctionDefinitionNode): boolean => {
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof ExternalFunctionCallNode && node.interfaceName === '__raw__'
+        && node.callOptions?.value) found = true;
+      if (node instanceof MethodCallNode && node.methodName === 'call'
+        && node.callOptions?.value
+        && node.callOptions.gas === undefined && node.callOptions.salt === undefined) found = true;
+    });
+    return found;
+  };
   /**
    * The route's uniformity rules, applied to one candidate set.
    *
@@ -1219,7 +1230,8 @@ function synthesizeHiddenBatchRoute(
     }
     let eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
     const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
-    let valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+    let valueEffectMode = survivors.some((fn) =>
+      eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn));
     // A nested collection needs one fixed C2 entry slot per row: the composite key is only resolvable against a
     // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
     // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
@@ -1279,7 +1291,8 @@ function synthesizeHiddenBatchRoute(
       // precisely because the flag said the route was event-shaped.
       if (relaxResultRouteEffects) {
         eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
-        valueEffectMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('value'));
+        valueEffectMode = survivors.some((fn) =>
+          eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn));
       }
     }
     if (eventMode) {

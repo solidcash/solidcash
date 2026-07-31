@@ -12,13 +12,17 @@ import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import {
+  createSatoshiContainerUnlocker, getSatoshiContainerAddress,
+} from '../../src/stateful/covenant-helpers.js';
 
 /**
  * E2 - call options and bounded iterated low-level calls.
  *
- * The admitted low-level class is ONE option-free `address.call/staticcall(payload)` per handler. This file
- * pins the four fields that class must bind - mode, target, calldata and result - and pins the two shapes that
- * must stay fail-closed rather than silently degrade: a call option, and an iterated raw callsite.
+ * The admitted low-level class is ONE `address.call/staticcall(payload)` per handler, plus the singular
+ * unconditional raw `call{value: amount}` form. This file pins mode, target, calldata, result, and for that
+ * value-bearing form the option byte, recipient, amount, and container settlement. Gas/salt, staticcall-value,
+ * conditional, and iterated forms stay fail-closed rather than silently degrading.
  *
  * SEMANTIC evidence only, on createLayer3SemanticTestProvider (layer3-bch2026-semantic-relaxed-v1: BCH-2026
  * opcode, introspection and 128-byte commitment behaviour, relaxed capacity).
@@ -40,6 +44,13 @@ contract E2RawCaller() {
 const RAW_STATIC_CALLER = RAW_CALLER
   .replace('E2RawCaller', 'E2RawStaticCaller')
   .replace('.call(payload)', '.staticcall(payload)');
+const RAW_VALUE_CALLER = `pragma solidcash >=0.8.0;
+contract E2RawValueCaller() {
+  function run(address target, bytes payload, int amount) public {
+    (bool ok, bytes result) = target.call{value: amount}(payload);
+    require(ok && result == hex"53" && amount > 0);
+  }
+}`;
 /**
  * X18: the VOID spelling of the same admitted callsite. `LowLevelCallShapes` listed it as ADMITTED while the
  * bus route leaked `Block slot not found: lowLevelCall[0]` for it; it now lowers to the same opaque `__raw__`
@@ -226,6 +237,132 @@ async function buildRawCallGraph(
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, builder: tx, transaction: raw(tx), plan };
+}
+
+interface RawValueGraphOptions {
+  tamperAmount?: boolean;
+  tamperContainer?: boolean;
+  tamperRecipient?: boolean;
+  tamperOption?: 0 | 4;
+  tamperResult?: boolean;
+}
+
+async function buildRawValueGraph(
+  hostile: RawValueGraphOptions = {},
+): Promise<{ provider: SemanticProvider; builder: TransactionBuilder; transaction: string; plan: any }> {
+  const provider = createLayer3SemanticTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const artifactB = compileString(RAW_TARGET, options);
+  const baseB = new Contract(artifactB, [], { provider });
+  const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
+  const b = baseB.withCategory(hexToBin(setupB.categoryId));
+  const artifactA = compileString(RAW_VALUE_CALLER, options);
+  const baseA = new Contract(artifactA, [], { provider });
+  const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const selector = artifactB.abi.find((fn) => fn.name === 'echo')!.selector!;
+  const payload = Uint8Array.from([...hexToBin(selector), ...packedResult(3n)]);
+  const amount = 3000n;
+  const derivedPlan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: artifactA, lockingBytecode: a.lockingBytecode },
+    function: 'run',
+    args: [b.lockingBytecode, payload, amount],
+    targets: {},
+    dynamicCall: () => ({
+      participant: { artifact: artifactB, lockingBytecode: b.lockingBytecode },
+      function: 'echo',
+      args: [3n],
+    }),
+  });
+  const plan = hostile.tamperOption === undefined ? derivedPlan : {
+    ...derivedPlan,
+    invocations: derivedPlan.invocations.map((invocation, index) => index === 1
+      ? { ...invocation, callOptions: hostile.tamperOption! }
+      : invocation),
+  };
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const result = packedResult(3n);
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, { 1: binToHex(result) }, layout.participantInputs, layout.returnOutputs,
+    ['', binToHex(result)], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const container = randomUtxo({ satoshis: 10_000n });
+  await provider.addUtxo(getSatoshiContainerAddress(a, setupA.categoryId), container);
+  const transferFunding = Array.from({ length: 8 }, () => randomUtxo({ satoshis: 1000n }));
+  const returnFunding = randomUtxo({ satoshis: 1000n });
+  const projections = [randomUtxo({ satoshis: 1000n }), randomUtxo({ satoshis: 1000n })];
+  const fee = randomUtxo({ satoshis: 80_000n });
+  for (const utxo of [...transferFunding, returnFunding, fee]) await provider.addUtxo(p2pkh.address, utxo);
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+
+  const routeA = a.createCompilerRouteUnlocker(
+    artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
+  );
+  const routeB = b.createCompilerRouteUnlocker(
+    artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
+  );
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(setupA.masterUtxo, routeA(
+    ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+  ));
+  tx.addInput(container, createSatoshiContainerUnlocker(a, layout.participantInputs[0], setupA.categoryId));
+  transferFunding.forEach((utxo) => tx.addInput(utxo, p2pkh.unlock.spend(alicePub, signature())));
+  tx.addInput(setupB.masterUtxo, routeB(
+    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+    BigInt(layout.returnOutputs![1]!),
+  ));
+  tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
+  projections.forEach((proof, participant) => tx.addInput(
+    proof, projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  tx.addOutput({
+    to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
+    token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getSatoshiContainerAddress(a, setupA.categoryId),
+    amount: container.satoshis - (hostile.tamperAmount ? amount + 1n : amount)
+      + (hostile.tamperContainer ? 1n : 0n),
+  });
+  tx.addOutput({
+    to: hostile.tamperRecipient ? p2pkh.address : hexToBin(b.lockingBytecode),
+    amount: hostile.tamperAmount ? amount + 1n : amount,
+  });
+  for (let slot = 1; slot < 8; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({
+    to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
+    token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: hexToBin('51'), amount: 1000n,
+    token: {
+      category: setupB.categoryId, amount: 0n,
+      nft: {
+        capability: 'none',
+        commitment: binToHex(aggregateResult(hostile.tamperResult ? 4n : 3n)),
+      },
+    },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 50_000n });
   return { provider, builder: tx, transaction: raw(tx), plan };
 }
 
@@ -549,11 +686,38 @@ contract E2RawValueCaller() {
   }
 }`;
 
-    it('rejects a low-level call option at compile time before it can reach the graph', () => {
+    it('admits the singular raw value option while leaving the option-free form intact', () => {
       expect(() => compileString(rawValueSource(''), busOptions)).not.toThrow();
-      expect(() => compileString(rawValueSource('{value: amount}'), busOptions))
-        .toThrow(/low-level 'call' carrying the call option\(s\) 'value'/);
+      const artifact = compileString(rawValueSource('{value: amount}'), busOptions);
+      expect(artifact.abi.find((fn) => fn.name === 'run')!.transfers?.[0]).toMatchObject({
+        recipient: { kind: 'forward', paramIndex: 0 },
+        amount: { kind: 'forward', paramIndex: 2 },
+        callOption: 'value',
+      });
     });
+  });
+
+  describe('the singular raw value option binds its option and transfer', () => {
+    it('settles the value-bearing raw edge', async () => {
+      const built = await buildRawValueGraph();
+      expect(built.plan.invocations[1].callOptions).toBe(2);
+      expect(failingInput(built.builder)).toBe(null);
+      await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    }, 120_000);
+
+    it.each([
+      ['amount', { tamperAmount: true }, 0],
+      ['container settlement', { tamperContainer: true }, 0],
+      ['recipient', { tamperRecipient: true }, 0],
+      ['missing option bit', { tamperOption: 0 as const }, 0],
+      ['unsupported option bit', { tamperOption: 4 as const }, 0],
+      ['result', { tamperResult: true }, 10],
+    ])('rejects a forged %s', async (_name, hostile, input) => {
+      const built = await buildRawValueGraph(hostile);
+      expect(failingInput(built.builder)).toBe(input);
+      await expect(built.provider.sendRawTransaction(built.transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    }, 120_000);
   });
 
   describe('low-level mode and occurrence are taken from the compiler, never coerced', () => {

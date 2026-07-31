@@ -212,6 +212,7 @@ export interface AbiFunction {
     transferIndex: number;
     recipient: ArgSource;
     amount: ArgSource;
+    callOption?: 'value';
   }[];
   deployTargets?: readonly {
     contractName: string; dataNftCount: number;
@@ -639,6 +640,7 @@ export interface InvocationAnalysisFunction {
     transferIndex: number;
     recipient: ArgSource;
     amount: ArgSource;
+    callOption?: 'value';
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   dynamicReads?: readonly string[];
@@ -719,6 +721,7 @@ export interface Artifact {
         transferIndex: number;
         recipient: ArgSource;
         amount: ArgSource;
+        callOption?: 'value';
       }[];
       eligible: boolean;
       rejectionReason?: string;

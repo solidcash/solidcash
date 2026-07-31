@@ -66,16 +66,29 @@ describe('X6 low-level call shape diagnostics', () => {
       + '    require(ok && result.length >= 0);', ', int g');
     const staticGasOption = source('    (bool ok, bytes result) = target.staticcall{gas: g}(payload);\n'
       + '    require(ok && result.length >= 0);', ', int g');
+    const staticValueOption = source(
+      '    (bool ok, bytes result) = target.staticcall{value: amount}(payload);\n'
+      + '    require(ok && result.length >= 0);', ', int amount',
+    );
 
-    it('replaces the leaked block-slot error for a value option', () => {
-      expect(compilerMessage(valueOption)).not.toBe(WAS_BLOCK_SLOT);
-      expect(compilerMessage(valueOption)).toMatch(
-        /Message-bus low-level call shape is not admitted: function 'run' issues a low-level 'call' carrying/,
-      );
-      expect(namedDiagnostic(valueOption)).toMatch(
-        /Message-bus low-level call shape is not admitted: function 'run' issues a low-level 'call' carrying/,
-      );
-      expect(namedDiagnostic(valueOption)).toContain("the call option(s) 'value'");
+    it('admits the singular unconditional value option without the former block-slot leak', () => {
+      expect(compilerMessage(valueOption)).toBe('COMPILED');
+      expect(namedDiagnostic(valueOption)).toBe('ADMITTED');
+    });
+
+    it('publishes the raw value option as one bound transfer effect', () => {
+      const artifact = compileString(valueOption, busOptions);
+      const run = artifact.abi.find((candidate) => candidate.name === 'run')!;
+      expect(run.transfers).toEqual([{
+        transferIndex: 0,
+        recipient: { kind: 'forward', paramIndex: 0 },
+        amount: { kind: 'forward', paramIndex: 2 },
+        callOption: 'value',
+      }]);
+      expect(artifact.hiddenBatch!.handlers.find((candidate) => candidate.name === 'run')!.transfers)
+        .toEqual(run.transfers);
+      expect(artifact.hiddenBatch!.route.blockLayout!.slots.map((slot) => slot.kind))
+        .toEqual(['master', 'satoshiContainer', ...new Array(8).fill('transfer')]);
     });
 
     it('replaces the leaked block-slot error for a gas option', () => {
@@ -90,8 +103,17 @@ describe('X6 low-level call shape diagnostics', () => {
       expect(namedDiagnostic(staticGasOption)).toContain("issues a low-level 'staticcall' carrying the call");
     });
 
+    it('keeps staticcall with value fail-closed', () => {
+      expect(compilerMessage(staticValueOption)).toContain(
+        "issues a low-level 'staticcall' carrying the call option(s) 'value'",
+      );
+      expect(namedDiagnostic(staticValueOption)).toContain(
+        "issues a low-level 'staticcall' carrying the call option(s) 'value'",
+      );
+    });
+
     it('names the transcript row as the reason, not a compiler data structure', () => {
-      expect(namedDiagnostic(valueOption))
+      expect(namedDiagnostic(gasOption))
         .toContain('has no field for a call option, so the option would execute unbound');
     });
   });
@@ -312,7 +334,7 @@ contract X132Refund() {
   }
 }`;
 
-    it('names refund and the value option, for the shape Unicrow.refund is written in', () => {
+    it('keeps the void refund spelling fail-closed', () => {
       expect(namedDiagnostic(refundShape))
         .toContain("function 'refund' issues a low-level 'call' carrying the call option(s) 'value'");
       expect(compilerMessage(refundShape))
@@ -378,8 +400,8 @@ contract X132Refund() {
     it('raises the refund refusal from Unicrow.sol, which has the function and the value option', () => {
       const result = outcome(eaccFile('Unicrow.sol'), busWithImports);
       expect(result).toContain('LowLevelCallShapeError');
-      // The message names the function and the option, so the refusal is attributable without this test.
-      expect(result).toMatch(/function 'refund' issues a low-level 'call' carrying the call option\(s\) 'value'/);
+      // The corpus function remains conditional, which is outside the singular unconditional class.
+      expect(result).toMatch(/function 'refund' issues a low-level 'call' inside a branch/);
     });
 
     it('compiles UnicrowClaim.sol in bus mode, which has no refund at all', () => {

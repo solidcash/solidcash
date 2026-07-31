@@ -1,10 +1,14 @@
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
 import { binToHex } from '@bitauth/libauth';
-import { describe, expect, it } from 'vitest';
-import { TransactionBuilder, layer3 } from '../../src/index.js';
+import { asmToBytecode } from '@solidcash/utils';
+import { describe, expect, it, vi } from 'vitest';
+import { compileString } from 'solidc';
+import {
+  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
+} from '../../src/index.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { randomUtxo } from '../../src/utils.js';
+import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 const provider = (): MockNetworkProvider =>
   new MockNetworkProvider({ policy: { enforceDust: false } });
@@ -47,14 +51,34 @@ describe('X210 - the ordinary stateful submit path verifies finalized covenants 
     );
   });
 
-  it('wires the throwing gate into ordinary send independently of the recursive opt-in', () => {
-    const source = readFileSync(fileURLToPath(new URL(
-      '../../src/stateful/StatefulTransactionBuilder.ts', import.meta.url,
-    )), 'utf8');
-    const submit = source.slice(source.indexOf('async send(): Promise<TransactionDetails>'));
-    expect(submit).toMatch(/if \(!this\.strictVmPreflight\) \{\s*assertFinalizedTransactionCovenants\(/);
-    expect(submit.indexOf('assertFinalizedTransactionCovenants(')).toBeLessThan(submit.indexOf('const rawTx ='));
-    expect(submit.indexOf('assertFinalizedTransactionCovenants('))
-      .toBeLessThan(submit.indexOf('provider.sendRawTransaction(rawTx)'));
-  });
+  it('ordinary StatefulTransactionBuilder.send refuses a compiler-emitted falsy top before submission',
+    async () => {
+      const network = provider();
+      const artifact = compileString(`pragma solidcash >=0.8.0;
+        contract X210Guard(int brand) {
+          int counter;
+          function setIf(int v) public unsafe {
+            require(v == brand);
+          }
+        }`, { forceStateful: true });
+      expect(asmToBytecode(artifact.bytecode)).toContain(0x9c);
+      const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+      const fundingUtxo = { ...randomUtxo({ satoshis: 100_000n }), txid: '22'.repeat(32), vout: 0 };
+      await network.addUtxo(funder.address, fundingUtxo);
+      const deployed = await StatefulContract.deploy(artifact, [77n], {
+        provider: network,
+        fundingUtxo,
+        funder: funder.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        initialState: { counter: 0n },
+        changeAddress: funder.address,
+      });
+
+      const submit = vi.spyOn(network, 'sendRawTransaction');
+      submit.mockClear(); // deployment is outside the subject
+      await expect(deployed.contract.call.setIf(76n).send()).rejects.toThrow(
+        'layer3: BCH-2026 preflight failed at input 0: Unsuccessful evaluation: completed with a '
+        + 'non-truthy value on top of the stack. Top stack item: "".',
+      );
+      expect(submit).not.toHaveBeenCalled();
+    }, 180_000);
 });

@@ -20,8 +20,8 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const E = 12n; const B = 9n; const U = 5n; const M = 8n; // S = floor(8*9/12) = 6; Bento->(20,15) Kashi->11
-const BENTO_CAT = 'ab'.repeat(32);
-const KASHI_CAT = 'cd'.repeat(32);
+const verifyFailure = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 0: Program failed an OP_VERIFY operation.)';
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -87,7 +87,7 @@ function makeKashi(): string {
   body.push('require(tx.outputs[kashiStateIdx].nftCommitment == bytes4(collateral + s));');
   // token transfer record for M.
   body.push('require(tx.outputs[6].lockingBytecode == bytes.concat(hex"6a08", bytes8(amount)));');
-  return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 
@@ -112,7 +112,9 @@ async function setup(): Promise<any> {
 async function build(s: any, opts: { bentoState?: string; kashiState?: string } = {}): Promise<TransactionBuilder> {
   const bentoStateIdx = 3; const kashiStateIdx = 4;
   const S = (M * B) / E;
-  const argParts = [0n, 0n, 1n, 1n, 2n, 2n, BigInt(bentoStateIdx), BigInt(kashiStateIdx), M, S].map((v) => bigIntToVmNumber(v));
+  const argParts = [
+    0n, 0n, 1n, 1n, 2n, 2n, BigInt(bentoStateIdx), BigInt(kashiStateIdx), M, S,
+  ].map((v) => bigIntToVmNumber(v));
   const argsBlob = scriptToBytecode(argParts);
   const row = concat(hexToBin(s.handler.selector), le(0, 4), le(0, 2), le(argsBlob.length, 2), argsBlob);
   const blob = concat(hexToBin('53434231'), Uint8Array.from([1, 0, 1]), row);
@@ -169,7 +171,10 @@ describe('layer-3 Kashi acceptance capstone (E2E)', () => {
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Full Kashi deposit: 3 owners + share + two state writes + token record, one covenant. Under budget.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -181,14 +186,14 @@ describe('layer-3 Kashi acceptance capstone (E2E)', () => {
   it('HOSTILE: a wrong Bento post-state (base != B+S) is rejected', async () => {
     const s = await setup();
     const bad = binToHex(concat(num4(E + M), num4(B + (M * B) / E + 1n)));
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { bentoState: bad })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { bentoState: bad })))).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: a wrong Kashi collateral post-state (U + wrong) is rejected', async () => {
     const s = await setup();
     const bad = binToHex(num4(U + (M * B) / E + 2n));
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { kashiState: bad })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { kashiState: bad })))).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

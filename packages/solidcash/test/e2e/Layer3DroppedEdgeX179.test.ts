@@ -72,8 +72,12 @@ const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 /** Which caller shape is under test. */
 type Shape = 'forward' | 'expression';
-/** The ONE field that moves: whether the callsite's child invocation is planned and co-spent. */
-type Edge = 'co-spent' | 'dropped';
+/**
+ * The ONE field that moves: whether the callsite's child invocation is planned and co-spent. `dropped-bypass`
+ * additionally strips the published callsite from the artifact copy the PLANNER reads, which is how an
+ * untrusted composer gets past the SDK's own floor - the VM sees the unchanged compiled route either way.
+ */
+type Edge = 'co-spent' | 'dropped' | 'dropped-bypass';
 
 interface Attempt {
   sent?: string;
@@ -127,8 +131,18 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
   );
   const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
 
+  // The BYPASS: the plan is handed a caller artifact whose ABI publishes no callsite, so the SDK's floor has
+  // nothing to require. Only the ABI copy the PLANNER reads changes - the contract, its locking bytecode, its
+  // compiled route and its batch blob are the real ones, so the VM still evaluates the real caller covenant.
+  const plannedCallerArtifact = edge === 'dropped-bypass'
+    ? {
+      ...callerArtifact,
+      abi: callerArtifact.abi.map((entry: any) =>
+        (entry.name === 'ping' ? { ...entry, externalCalls: undefined } : entry)),
+    }
+    : callerArtifact;
   const participants = [
-    { artifact: callerArtifact, lockingBytecode: caller.lockingBytecode },
+    { artifact: plannedCallerArtifact, lockingBytecode: caller.lockingBytecode },
     { artifact: calleeArtifact, lockingBytecode: callee.lockingBytecode },
   ];
   const callArgs = shape === 'forward' ? [FORWARD_VALUE] : [KNOB + 1n];
@@ -262,13 +276,30 @@ describe('X179: a straight-line `once` external call requires its counterparty t
     }, 900_000);
 
     /**
-     * ONE FIELD MOVES: the child invocation is not planned, so the counterparty is not co-spent and the
-     * caller's emission vector is empty. Everything else - artifacts, state, staging, controller root - is
-     * rebuilt identically.
+     * ONE FIELD MOVES: the child invocation is not planned. The SDK now refuses that plan by name, against the
+     * callsite the missing row belongs to, using the same published bound `deriveCompiledGraphPlan` expands.
      */
-    it('HOSTILE: dropping the child invocation is refused at input 0, the caller master', async () => {
-      const result = await attempt(shape, 'dropped');
-      console.log(`[X179] ${shape} dropped: ${result.sent ?? result.refusal?.split('\n')[0]} `
+    it('HOSTILE: dropping the child invocation is refused by name at plan time', async () => {
+      let refusal: string | undefined;
+      try {
+        await attempt(shape, 'dropped');
+      } catch (error) {
+        refusal = (error as Error).message;
+      }
+      console.log(`[X179] ${shape} dropped plan: ${refusal ?? 'ADMITTED'}`);
+      expect(refusal, 'a dropped external call was still planned').toBeDefined();
+      expect(refusal).toContain('layer3: callsite 0 was planned with 0 occurrences, below the 1 proven');
+    }, 900_000);
+
+    /**
+     * AND THE SDK IS NOT THE BOUNDARY. The same dropped plan, with the published callsite stripped from the
+     * artifact copy the planner reads, is admitted - and the caller's own compiled route, which is unchanged,
+     * refuses it at input 0 with the emission vector exhausted. That is the property the row wanted:
+     * a co-spent counterparty is REQUIRED, by the covenant, for the ordinary straight-line `once` callsite.
+     */
+    it('HOSTILE: the artifact-stripped bypass is refused at input 0, the caller master', async () => {
+      const result = await attempt(shape, 'dropped-bypass');
+      console.log(`[X179] ${shape} dropped-bypass: ${result.sent ?? result.refusal?.split('\n')[0]} `
         + `input=${result.failingInput} participants=${result.participants} `
         + `invocations=${result.invocations} emissions=${JSON.stringify(result.emissions)}`);
       expect(result.participants).toBe(1);

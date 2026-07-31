@@ -1461,3 +1461,28 @@ The complete bus-mode discovery is 109 files after adding X201's proof. It ran 1
 skipped, and 3 failed. None is an X201/X229 delta: two assert the pre-X210 provider error vocabulary on a worker
 base predating X210, and X160 hits its already-published X203 outlined `ERC20Permit.name` basis refusal. Capstones
 remain 52 passed / 6 skipped.
+
+### 2026-07-31: X235 - union settlement census closes at 82 of 206
+
+The two historical settlement runs used different file populations, so X235 committed their exact
+25-file union as `layer3-x235-union-manifest.txt` and ran it once on current integration HEAD. The
+consumer parses X160's partition through the TypeScript AST and refuses to count unless it first
+reproduces 135 after-present rows, 206 gained handlers, and 0 lost handlers. It also refuses empty
+record lists, zero settlements, and zero contained routes.
+
+The union produced 1,255 observer records, 627 settled transactions, and 108 contained route blobs.
+Containment plus source digest maps those observations to 82 distinct gained partition rows, with no
+missing digest and no digest/name mismatch. Duplicate contract and handler names are therefore
+resolved by the source rather than multiplied or guessed. The earlier claim that the union had to be
+larger than 82 was an inference and is falsified by this current-HEAD measurement.
+
+During the run X235 found and repaired an observer defect: staged routes were keyed to one value per
+blob, so byte-identical blobs from different contract sources could overwrite each other. The probe
+now retains all candidates and uses contained participant bytecode to disambiguate collisions. A
+second full union run after that repair produced the same 82.
+
+The vitest run completed 321 passed / 2 skipped with one known X203 failure: the
+`Layer3RecoveredPartitionX160` live Solidity-by-example recompile reaches the already-recorded
+`computeDomainSeparator` / `permit` chunk-base disagreement. Its partition arithmetic completed and
+printed 135 / 206 / 0 before that failure; the committed consumer independently re-parses and checks
+the same source literal.

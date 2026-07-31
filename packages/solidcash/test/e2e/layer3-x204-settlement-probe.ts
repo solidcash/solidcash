@@ -61,7 +61,7 @@ interface StagedRoute {
   test: string;
   seq: number;
 }
-const stagedByBlob = new Map<string, StagedRoute>();
+const stagedByBlob = new Map<string, StagedRoute[]>();
 
 if (OUT !== undefined) {
   const originalUnlocker = Contract.prototype.createCompilerRouteUnlocker;
@@ -104,7 +104,12 @@ if (OUT !== undefined) {
           test: expect.getState().currentTestName ?? 'unknown',
           seq: sequence + 1,
         };
-        stagedByBlob.set(blobHex, staged);
+        const candidates = stagedByBlob.get(blobHex) ?? [];
+        if (!candidates.some((candidate) => candidate.participantBytecode === staged.participantBytecode
+          && candidate.sourceDigest === staged.sourceDigest && candidate.contract === staged.contract)) {
+          candidates.push(staged);
+          stagedByBlob.set(blobHex, candidates);
+        }
         emit({ kind: 'route', ...staged });
       } catch {
         // Observation must never change the outcome.
@@ -123,9 +128,10 @@ if (OUT !== undefined) {
       // carry. Nothing is inferred from ordering, so a probe that never broadcast cannot be absorbed.
       const drove = [...stagedByBlob.entries()]
         .filter(([blobHex]) => txHex.includes(blobHex))
-        .map(([, staged]) => staged);
+        .flatMap(([, candidates]) => candidates.length === 1
+          ? candidates : candidates.filter((candidate) => txHex.includes(candidate.participantBytecode)));
       const noRouteCandidates = drove.length === 0
-        ? [...new Map([...stagedByBlob.values()]
+        ? [...new Map([...stagedByBlob.values()].flat()
           .filter((staged) => txHex.includes(staged.participantBytecode))
           .map((staged) => [`${staged.sourceDigest}:${staged.contract}`, staged])).values()]
           .map(({ contract, sourceDigest }) => ({ contract, sourceDigest }))
@@ -135,7 +141,8 @@ if (OUT !== undefined) {
     } catch (error) {
       const drove = [...stagedByBlob.entries()]
         .filter(([blobHex]) => txHex.includes(blobHex))
-        .map(([, staged]) => staged);
+        .flatMap(([, candidates]) => candidates.length === 1
+          ? candidates : candidates.filter((candidate) => txHex.includes(candidate.participantBytecode)));
       emit({
         kind: 'refused', drove, reason: String((error as Error).message).split('\n')[0].slice(0, 240),
       });

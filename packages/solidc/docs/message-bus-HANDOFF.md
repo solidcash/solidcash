@@ -28,7 +28,7 @@ refused at a NAMED INPUT INDEX.
 | figure | status |
 |---|---|
 | 206 recovered handlers | SOLID. Re-taken with one shared probe binary across two worktrees, both directions checked (206 gained, 0 lost). |
-| **82 of 206 VM-proved, and the union is LARGER** | Two independent machine re-takes both land on 82, each with a parser self-checked against X160's own published 135 rows / 206 gained. **But they are not the same 82**: the second run includes `EnglishAuction.highestBid/endAt/started`, which did not settle at all when the first was taken, so the second set must be missing ~3 the first covered. The two file sets differ (24 files + indirect helpers vs 25 by corpus-root grep). **Do not publish a single number until one run covers the UNION of both file sets.** It was 35 before the last round, and I reported it as 12 - wrong by ~3x. |
+| **82 of 206 VM-proved on the file-set union** | X235 ran the exact 25-file union in `layer3-x235-union-manifest.txt`. Its AST consumer first reproduces X160's 135 rows / 206 gained / 0 lost, then attributes only contained batch blobs by source digest and deduplicates partition rows. It observed 1,255 records, 627 settlements and 108 contained routes: 82 exact gained rows, no unresolved digest and no digest/name mismatch. The prior inference that the union had to be larger was falsified by the current-HEAD run; agreement with the two historical 82s does not mean the memberships are identical. |
 | 11 gained writers | Exhausted: 4 proved, 1 fail-closed (`Target.protected`), 2 INADMISSIBLE since X187 (`Attack.attack`, `Foo.callBar` - X201 would have re-admitted them but was reverted), 4 publish `writesState` ABSENT and mutate nothing. |
 | "no chunk-backed writer exists" | SOLID, measured both directions. Writer rows and dynamic-variable rows are DISJOINT sets. Do not hunt a subject for this shape. |
 | "co-spent-callee graphs have no subject in the 206" | SOLID. Exactly 2 of 206 publish an outgoing external call; the other 81 measured directly at 0. A boundary of the POPULATION, not the machinery. |
@@ -208,11 +208,11 @@ npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch) 
 # 3. The settlement count. The probe is inert unless L3_X204_OUT is set, and it is a pure
 #    observer: every patched method forwards to the original. Attribution is by CONTAINMENT of the
 #    batch blob in the settled raw transaction - never adjacency, which manufactures settlements.
-L3_X204_OUT=/tmp/x204 npx vitest run --config vitest.x204.config.ts \
-  $(ls test/e2e/*.test.ts | xargs grep -l "solidity-by-example\|SBE_ROOT\|mistswap\|eacc") \
+L3_X204_OUT=/tmp/x235 npx vitest run --config vitest.x204.config.ts \
+  $(cat test/e2e/layer3-x235-union-manifest.txt) \
   --maxWorkers=2 --reporter=dot
-# then intersect the emitted JSONL with the gained set parsed out of
-# Layer3RecoveredPartitionX160.test.ts - and make the parser reproduce 135 rows / 206 gained first.
+npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
+# The committed consumer refuses empty observations and self-checks 135 rows / 206 gained / 0 lost.
 ```
 
 ## 10. What I would do first

@@ -23,6 +23,14 @@ const VALID_DIR = resolve(
   '../../../solidc/test/valid-contract-files',
 );
 
+const requireFailure = (file: string, line: number, statement: string): string =>
+  `${file}:${line} Require statement failed at input 0 in contract ${file} at line ${line}.\n`
+  + `Failing statement: ${statement}`;
+
+const transactionFailure = (file: string, line: number, statement: string): string =>
+  `${file}:${line} Error in transaction at input 0 in contract ${file} at line ${line}.\n`
+  + `Reason: Program failed an OP_VERIFY operation.\nFailing statement: ${statement}`;
+
 function loadCash(name: string): string {
   return readFileSync(resolve(VALID_DIR, name), 'utf-8');
 }
@@ -263,8 +271,8 @@ describe('Valid Contracts - SDK e2e', () => {
       const { provider, contract } = setupContract(loadCash('free_function_void.scash'));
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.compute(0n));
-      // OP_VERIFY inside OP_DEFINE'd function - debugger can't map to source require
-      await expect(txPromise).rejects.toThrow();
+      // The OP_DEFINE callsite is source-mapped even though the inner require is not.
+      await expect(txPromise).rejects.toThrow(transactionFailure('Calculator.scash', 7, 'assertPositive(x)'));
     });
 
     it('free_function_void: fails when x >= 100', async () => {
@@ -460,7 +468,7 @@ describe('Valid Contracts - SDK e2e', () => {
       const { provider, contract } = setupContract(loadCash('unsafe_bool_cast.scash'), [0n]);
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.test());
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(requireFailure('Test.scash', 0, '<unknown>'));
     });
 
     it('unsafe_int_cast: unsafe_int(x) > unsafe_int(y)', async () => {
@@ -780,21 +788,23 @@ describe('Valid Contracts - SDK e2e', () => {
       const { provider, contract } = setupContract(loadCash('deep_replace.scash'));
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.hello());
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(requireFailure(
+        'DeepReplace.scash', 14, 'require(a > b + c + d + e + f);',
+      ));
     });
 
     it('do_while_loop_no_introspection: loop exhausts at i=8', async () => {
       const { provider, contract } = setupContract(loadCash('do_while_loop_no_introspection.scash'));
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.doLoop());
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(requireFailure('Loopy.scash', 9, 'require(i + x < 10);'));
     });
 
     it('tuple_unpacking: require("hello" == "there") always fails', async () => {
       const { provider, contract } = setupContract(loadCash('tuple_unpacking.scash'));
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.split());
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(requireFailure('Test.scash', 6, 'require(hello == there);'));
     });
   });
 

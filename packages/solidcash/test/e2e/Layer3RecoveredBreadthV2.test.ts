@@ -53,10 +53,13 @@ import type { Utxo } from '../../src/interfaces.js';
  *  - Read-only breadth is NOT writer evidence. `writesState` is published FALSE for every subject here.
  *  - ONE ROW IS RECORDED AS UNPROVEN IN BOTH DIRECTIONS and is not counted: `ReEntrancy.sol::Attack`, whose
  *    two gained handlers are run below and whose route this harness cannot obtain a result from. It is kept
- *    in the file rather than deleted, because deleting it would have made 38 read as 40.
+ *    in the file rather than deleted, because deleting it would have made the original 38 read as 40.
+ *  - X236 extends the same scalar-row harness across corpus roots. `TreasurySplit` is the first backlog
+ *    shard lifted this way: all three getters settle, while result and state mutations still fail at input 0.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
+const EACC = process.env.EACC_CONTRACTS_DIR ?? '/Code/effectiveacceleration.ai/contract/contracts';
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
@@ -104,6 +107,9 @@ const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
   'fallback/FallbackInputOutput.sol::FallbackInputOutput': ['target'],
   'try-catch/TryCatch.sol::Foo': ['myFunc', 'owner'],
   'try-catch/TryCatch.sol::Bar': ['foo'],
+  'TreasurySplit.sol::TreasurySplit': [
+    'eaccTreasuryAddress', 'arbiusTreasuryAddress', 'eaccTreasuryPercentage',
+  ],
 };
 
 interface Subject {
@@ -112,7 +118,9 @@ interface Subject {
 }
 
 interface Row {
-  /** Path relative to the pinned solidity-by-example checkout, which is also the PARTITION row's key. */
+  /** Corpus root. Omitted for the original solidity-by-example rows. */
+  root?: string;
+  /** Path relative to `root` (or the pinned solidity-by-example checkout), and the PARTITION row's key. */
   rel: string;
   contract: string;
   subjects: readonly Subject[];
@@ -125,6 +133,24 @@ interface Row {
 }
 
 const ROWS: readonly Row[] = [
+  {
+    root: EACC,
+    rel: 'TreasurySplit.sol',
+    contract: 'TreasurySplit',
+    subjects: [
+      { handler: 'eaccTreasuryAddress' },
+      { handler: 'arbiusTreasuryAddress' },
+      { handler: 'eaccTreasuryPercentage' },
+    ],
+    hostileSubject: 'eaccTreasuryPercentage',
+    state: {
+      eaccTreasuryAddress: addr('55'),
+      arbiusTreasuryAddress: addr('66'),
+      eaccTreasuryPercentage: 500_000_000_000_000_000n,
+    },
+    stateTamper: { eaccTreasuryPercentage: 500_000_000_000_000_001n },
+    slots: ['master', 'dataNft', 'returnEvent'],
+  },
   {
     rel: 'view-and-pure-functions/ViewAndPureFunctions.sol',
     contract: 'ViewAndPure',
@@ -325,7 +351,7 @@ const ROWS: readonly Row[] = [
  * honest commitment can be published for it.
  *
  * It is run below as a RECORDED NEGATIVE with an expectation that turns RED if it ever settles, rather than
- * removed to make the file green. Removing it would have made 38 read as 40. It is not counted as proved and
+ * removed to make the file green. Removing it would have made the original 38 read as 40. It is not counted as proved and
  * it is not counted as refused: the covenant's verdict on it is unknown, and this harness is the reason.
  */
 const RECORDED_NEGATIVE: Row = {
@@ -352,7 +378,7 @@ function compileRow(row: Row, controllerLbc: string, controllerCategory: string)
     experimentalMessageBusController: controllerLbc,
     experimentalMessageBusControllerCategory: controllerCategory,
   } as never;
-  const path = `${SBE}/${row.rel}`;
+  const path = `${row.root ?? SBE}/${row.rel}`;
   try {
     const map = compileFileMulti(path, options) as any;
     if (map[row.contract]) return map[row.contract];
@@ -411,7 +437,7 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
         console.log(`[V2B] ${key(row).padEnd(72)} blockSize=${layout.blockSize} `
           + `slots=${JSON.stringify(layout.slots.map((slot: any) => slot.kind))}`);
         expect(layout.slots.map((slot: any) => slot.kind), `${key(row)} block shape moved`).toEqual(row.slots);
-        const path = `${SBE}/${row.rel}`;
+        const path = `${row.root ?? SBE}/${row.rel}`;
         let direct: any;
         try { direct = (compileFileMulti(path, DIRECT as never) as any)[row.contract]; } catch { direct = undefined; }
         if (!direct) direct = compileFile(path, DIRECT as never) as any;
@@ -763,6 +789,6 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
     console.log(`[V2B] ${settled.length} gained handlers settle in this file; ${unproved.length} more are `
       + `run and recorded as unproven; ${206 - settled.length} of the 206 are NOT proved here.`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(38);
+    expect(settled.length).toBe(41);
   });
 });

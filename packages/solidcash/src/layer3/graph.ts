@@ -1813,14 +1813,10 @@ export function planCompiledGraph(
       }
       resultDependencies[parent].push(child);
     });
-    const exactRawLoop = parentFunction?.externalCalls?.length === 1
-      && parentFunction.externalCalls[0].interfaceName === '__raw__'
-      && parentFunction.externalCalls[0].functionName === '__raw__'
-      && parentFunction.externalCalls[0].occurrence === 'loop'
-      && parentFunction.externalCalls[0].occurrenceBoundSource === 'literal'
-      && parentFunction.externalCalls[0].minimumOccurrences === children.length
-      && parentFunction.externalCalls[0].maximumOccurrences === children.length;
-    if (!exactRawLoop) assertSingleConsumedResult(parent, resultDependencies[parent]);
+    // Fixed-row graph handlers authenticate and consume each child result in
+    // source order. Runtime raw loops do the same with their bounded
+    // occurrence cursor. Both forms therefore admit any acyclic dependency
+    // list within the existing graph/row maxima.
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
   const planned = plannedBase.map((invocation, index) => Object.freeze({

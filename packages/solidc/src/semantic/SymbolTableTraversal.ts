@@ -1943,6 +1943,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
         if (node.graphEmissionHandler) {
+          const returningCallCount = logicalCallSlots.filter((slot) => slot.hasReturnValues).length;
           // X119. All six refusals below carry the handler's definition node, so each gains a Line/Column plus
           // the imported-file and generated-source caveats. The message text is unchanged: a `__scb_graph_*`
           // clone keeps the location of the function it was cloned from, so the position names the user's own
@@ -1953,26 +1954,22 @@ export default class SymbolTableTraversal extends AstTraversal {
               || (slot.fnPtrCall && !slot.runtimeSelector)
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
-            || (logicalCallSlots.length > 1 && logicalCallSlots.some((slot) => slot.hasReturnValues))) {
+            || (logicalCallSlots.length > 1 && returningCallCount > 0
+              && returningCallCount !== logicalCallSlots.length)) {
             throw new GraphHandlerShapeError(
               node,
-              `Graph handler '${node.name}' requires call/staticcall edges and at most one returning call`,
+              `Graph handler '${node.name}' requires a homogeneous void or returning call set; mixed `
+              + 'returning/void continuation lowering is pending',
             );
           }
-          const admittedRuntimeRawReturn = logicalCallSlots.length === 1
-            && logicalCallSlots[0].interfaceName === '__raw__'
-            && logicalCallSlots[0].functionName === '__raw__'
-            && logicalCallSlots[0].opaqueReturn === true;
           if (node.graphRuntimeEmissionHandler
-            && logicalCallSlots.some((slot) => (slot.hasReturnValues && !admittedRuntimeRawReturn)
-              || (!slot.sourceCallNode
+            && logicalCallSlots.some((slot) => (!slot.sourceCallNode
                 && !slot.fnPtrCall
                 && !slot.selectorArrayVar
                 && !node.parameters.some((parameter) => parameter.name === slot.addressParam)))) {
             throw new GraphHandlerShapeError(
               node,
-              `Runtime graph handler '${node.name}' requires void calls or one compiler-bounded raw return `
-              + 'with parameter- or state-pinned targets',
+              `Runtime graph handler '${node.name}' requires parameter- or state-pinned targets`,
             );
           }
           for (const slot of logicalCallSlots) {

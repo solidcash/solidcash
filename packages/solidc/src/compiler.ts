@@ -698,6 +698,7 @@ function synthesizeHiddenBatchRoute(
     let statefulExternalCall = false;
     let methodCallCount = 0;
     let graphHasComputedCallArguments = false;
+    let graphHasLocalCallArguments = false;
     let graphHasDelegatecall = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
@@ -724,6 +725,10 @@ function synthesizeHiddenBatchRoute(
             if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
               graphHasComputedCallArguments = true;
             }
+            if (node.parameters.some((parameter) => parameter instanceof IdentifierNode
+              && !fn.parameters.some((input) => input.name === parameter.name))) {
+              graphHasLocalCallArguments = true;
+            }
           }
           if (node instanceof LowLevelCallStatementNode) {
             statefulExternalCall = true;
@@ -740,6 +745,10 @@ function synthesizeHiddenBatchRoute(
             if (node.methodName === 'delegatecall') graphHasDelegatecall = true;
             if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
               graphHasComputedCallArguments = true;
+            }
+            if (node.parameters.some((parameter) => parameter instanceof IdentifierNode
+              && !fn.parameters.some((input) => input.name === parameter.name))) {
+              graphHasLocalCallArguments = true;
             }
           }
           // X187. The namespaced spelling of the same outgoing edge, recovered from the receiver's declared type.
@@ -827,11 +836,6 @@ function synthesizeHiddenBatchRoute(
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
     if (admitBareForwardingHandlers && graphBareTailStatement) graphBareTailHandlers.add(fn);
-    // X22. A physical effect written directly in the handler body - an event NFT, a satoshi transfer or a token
-    // container operation - reserves a slot in the ROUTE's block layout, and only the flattened form declares
-    // it. InlineStoragePointerCalls therefore inlines such a graph clone into __scb1 instead of keeping it
-    // behind OP_INVOKE (keepsGraphEmissionBinding). The same three node kinds are what that predicate tests, so
-    // this is the exact set that gets flattened.
     let directPhysicalEffect = false;
     walkInvocationAst(fn.body, (node) => {
       if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
@@ -1132,14 +1136,14 @@ function synthesizeHiddenBatchRoute(
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
+    } else if (!reason && graphTailCallEligible && graphResultStatement && directPhysicalEffect) {
+      reason = 'result-consuming-handler-requires-effect-free-body';
     // X22. Consuming a call result while carrying one of those effects is the shape that gets flattened WITH a
     // returning edge in it: the edge is generated with __scb1 as the current function, finds no physical return
     // slot, and code generation aborted with the internal `Unbound return call in __scb1; graph=undefined` -
     // no named refusal and no diagnostic-channel entry. Refuse it here by name instead. Not admissible while
     // flattening is what the effect's block slot requires: the flattened edge has no emission frame to bind to,
     // which is the same reason the void effect-carrying clones are unsound to flatten (tracked separately).
-    } else if (!reason && graphTailCallEligible && graphResultStatement && directPhysicalEffect) {
-      reason = 'result-consuming-handler-requires-effect-free-body';
     } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (!reason && (footprint.unknown
@@ -1164,8 +1168,9 @@ function synthesizeHiddenBatchRoute(
     // site. Besides making conditional/loop reachability exact, this preserves
     // the source expression which computes each argument (rather than reducing
     // it to a forwarded handler parameter in the wrapper epilogue).
-    if (!reason && graphTailCallEligible && !graphResultStatement && !graphHasDelegatecall
-      && (!graphTailStatement || graphHasComputedCallArguments)) {
+    if (!reason && graphTailCallEligible && !graphHasDelegatecall
+      && (graphHasComputedCallArguments || graphHasLocalCallArguments
+        || (!graphResultStatement && !graphTailStatement))) {
       graphRuntimeHandlers.add(fn);
     }
   }

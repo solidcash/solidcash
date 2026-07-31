@@ -3332,9 +3332,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // no `graphResultN` arguments are pushed by their caller. Tracking those names here creates phantom stack
     // slots and makes every loop-body parameter/local lookup too deep after the runtime vector argument.
     if (this.isDefineSubTraversal && node.graphEmissionHandler && !node.graphRuntimeEmissionHandler) {
-      const resultTypes = node.externalCalls?.[0]?.returnTypes ?? [];
-      for (let i = 0; i < resultTypes.length; i++) {
-        this.pushToStack(`__internal__graphResult${i}`, true);
+      // OP_INVOKE exposes hidden operands in call-frame order: the first
+      // produced result is on top inside the subroutine. Declare the symbolic
+      // frame in reverse so source callsite 0 names that physical item.
+      for (const slot of [...(node.externalCalls ?? [])].reverse()) {
+        for (let field = 0; field < (slot.returnTypes?.length ?? 0); field += 1) {
+          this.pushToStack(this.graphResultName(slot, field), true);
+        }
       }
     }
     if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
@@ -6937,35 +6941,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
       const slots = targetFunc.externalCalls ?? [];
       const emissionStackBaseline = [...this.stack];
-      let emissionResultCount = 0;
+      const emissionResults: string[] = [];
       this.scopeDepth += 1;
       if (slots.length === 1) {
         const resultCount = this.verifyGraphEmissionRow(
           slots[0], targetFunc, node.parameters, locationData, slots[0].hasReturnValues === true,
         );
-        emissionResultCount = resultCount;
         hiddenContextCount += resultCount;
+        for (let field = 0; field < resultCount; field += 1) {
+          emissionResults.push(this.graphResultName(slots[0], field));
+        }
         if (slots[0].hasReturnValues !== true) {
           this.consumeConstructedGraphEmissionRow(node, locationData);
         }
       } else if (slots.length > 1) {
-        this.emit(new Uint8Array(), locationData);
-        this.pushToStack('(__graph_emission_vector)');
         for (const slot of slots) {
-          this.verifyGraphEmissionRow(slot, targetFunc, node.parameters, locationData, false);
-          this.emit(Op.OP_CAT, locationData);
-          this.popFromStack(2);
-          this.pushToStack('(__graph_emission_vector)');
+          const resultCount = this.verifyGraphEmissionRow(
+            slot, targetFunc, node.parameters, locationData, false, false, slot.hasReturnValues === true,
+          );
+          hiddenContextCount += resultCount;
+          for (let field = 0; field < resultCount; field += 1) {
+            emissionResults.push(this.graphResultName(slot, field));
+          }
+          if (!slot.hasReturnValues) this.consumeConstructedGraphEmissionRow(node, locationData);
         }
-        this.consumeConstructedGraphEmissionRow(node, locationData);
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
       }
       this.scopeDepth -= 1;
       this.stack = emissionStackBaseline;
       // The verifier leaves authenticated return values physically on top. Preserve those markers after
       // discarding its temporary construction names, or later declared-argument OP_PICKs are one slot shallow.
-      for (let i = 0; i < emissionResultCount; i += 1) {
-        this.pushToStack(`(__graph_emission_result_${i})`);
-      }
+      for (const result of emissionResults) this.pushToStack(result);
     }
     // X29. Which owner-local effect frame this invocation owns. OP_DEFINE declares this context before its
     // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
@@ -12570,14 +12579,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // covenant aborts the transaction, so a reached edge is successful.
         this.emit(Op.OP_1, locationData);
         this.pushToStack('(success)');
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphResult0'))), locationData);
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.graphResultName(physicalSlot!, 0)))), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack('(returnData)');
         return node;
       }
       if (returnTypes.length > 0) {
         for (let i = 0; i < returnTypes.length; i++) {
-          const resultName = `__internal__graphResult${i}`;
+          const resultName = this.graphResultName(physicalSlot!, i);
           this.emit(encodeInt(BigInt(this.getStackIndex(resultName))), locationData);
           this.emit(Op.OP_PICK, locationData);
           this.pushToStack('(value)');
@@ -12730,7 +12739,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
   }
 
-  /** Verify the one source-executed tail call against the compiler-owned participant emission frame. */
+  /** Stable hidden-frame name for one producer result field. */
+  private graphResultName(slot: ExternalCallSlot, field: number): string {
+    return `__internal__graphResult${slot.returnSlotIndex ?? 0}_${field}`;
+  }
+
+  /** Verify one source-executed call against the compiler-owned participant emission frame. */
   private verifyGraphEmissionRow(
     slot: ExternalCallSlot,
     handler: FunctionDefinitionNode,
@@ -12958,31 +12972,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(__graph_runtime_remainder)');
       this.emitReplace(this.getStackIndex(expected), handler);
       this.popFromStack();
-      if (!slot.opaqueReturn) {
-        throw new Error('Runtime graph return consumption currently requires an opaque raw result');
-      }
-      return 1;
+    } else {
+      // The remainder must be exactly resultLength:u16le || result.
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_ROT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
+      this.pushToStack('(__graph_result_length)');
+      this.pushToStack('(__graph_result_blob)');
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.pushToStack('(__graph_result_size)');
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_NUM2BIN, locationData);
+      this.emit(Op.OP_ROT, locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(3);
+      this.pushToStack('(__graph_result_blob)');
     }
-
-    // The remainder must be exactly resultLength:u16le || result.
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_ROT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.popFromStack();
-    this.pushToStack('(__graph_result_length)');
-    this.pushToStack('(__graph_result_blob)');
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.pushToStack('(__graph_result_size)');
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_NUM2BIN, locationData);
-    this.emit(Op.OP_ROT, locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(3);
-    this.pushToStack('(__graph_result_blob)');
     if (slot.opaqueReturn) {
       // The graph subroutine receives this one exact blob and reconstructs the
       // source-level `(success, data)` tuple at the callsite.

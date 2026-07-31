@@ -112,11 +112,9 @@ describe('layer3 canonical result binding (E1)', () => {
 // `finalizeCompiledGraph` frames one emission row per child and the projection verifier walks a caller's rows
 // with a cursor rather than one equality. The probe below reaches that machinery with an artifact the compiler
 // cannot emit, which is why the planner now refuses by name instead of producing an unexecutable transaction.
-describe('layer3 result fan-in is scoped out with one stable diagnostic (E1)', () => {
-  const AT_MOST_ONE = /requires call\/staticcall edges and at most one returning call/;
-
-  it('rejects a handler that consumes two producer results', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+describe('layer3 ordered result fan-in lowering (E1)', () => {
+  it('lowers a handler that consumes two producer results', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
 interface IFanAlpha { function alpha(int n) returns (int); }
 interface IFanBeta { function beta(int n) returns (int); }
 contract FanIn(int brand, address peerA, address peerB) {
@@ -125,10 +123,11 @@ contract FanIn(int brand, address peerA, address peerB) {
     int second = IFanBeta(peerB).beta(n);
     return first + second;
   }
-}`, options)).toThrow(AT_MOST_ONE);
+}`, options);
+    expect(artifact.abi.find((fn) => fn.name === 'fan')!.externalCalls).toHaveLength(2);
   });
 
-  it('rejects a handler that mixes one returning call with one void call', () => {
+  it('keeps a named refusal for mixed returning/void continuation lowering', () => {
     expect(() => compileString(`pragma solidcash >=0.8.0;
 interface IFanAlpha { function alpha(int n) returns (int); }
 interface IFanBeta { function beta(int n); }
@@ -138,20 +137,22 @@ contract MixedFan(int brand, address peerA, address peerB) {
     IFanBeta(peerB).beta(n);
     return first;
   }
-}`, options)).toThrow(AT_MOST_ONE);
+}`, options)).toThrow(/mixed returning\/void continuation lowering is pending/);
   });
 
-  it('rejects forwarding a consumed result into a later call argument', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+  it('lowers forwarding a consumed result into a later call argument', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
 interface IFanAlpha { function alpha(int n) returns (int); }
-interface IFanBeta { function beta(int n); }
+interface IFanBeta { function beta(int n) returns (int); }
 contract ArgForward(int brand, address peerA, address peerB) {
   function fan(int n) public pure {
     int first = IFanAlpha(peerA).alpha(n);
     IFanBeta(peerB).beta(first);
     require(first > 0);
   }
-}`, options)).toThrow(AT_MOST_ONE);
+}`, options);
+    expect(artifact.abi.find((fn) => fn.name === 'fan')!.resultConsumers)
+      .toEqual([{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 }]);
   });
 
   // Isolation, both directions: neither conjunct of the lowering predicate is refused on its own, so the
@@ -213,10 +214,9 @@ contract TwoBetaR(int brand) {
       .toEqual([undefined, 0, 1]);
   });
 
-  it('refuses the same graph when both callsites consume a result, naming every producer', () => {
-    expect(() => planFanIn(2)).toThrow(
-      /invocation 0 consumes results from invocations 1, 2; a graph handler binds at most one producer result/,
-    );
+  it('plans the same graph when both callsites consume a result', () => {
+    expect(planFanIn(2).invocations.map((invocation) => invocation.resultDependencies))
+      .toEqual([[1, 2], [], []]);
   });
 });
 

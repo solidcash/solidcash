@@ -37,13 +37,13 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  */
 
 const FAN_CALLER = `pragma solidcash >=0.8.0;
-interface IFanUp { function up(int n); }
-interface IFanDown { function down(int n); }
+interface IFanUp { function up(int n) returns (int); }
+interface IFanDown { function down(int n) returns (int); }
 contract X3FanCaller(int brand) {
   function fan(address a, address b, int n) public pure {
-    IFanUp(a).up(n);
-    IFanDown(b).down(n);
-    require(n >= 0);
+    int first = IFanUp(a).up(n);
+    int second = IFanDown(b).down(first);
+    require(first == n + 20 && second == n + 50);
   }
 }`;
 const UP = `pragma solidcash >=0.8.0;
@@ -113,7 +113,9 @@ interface FanInFixture {
   layout: ReturnType<typeof layer3.compiledGraphPhysicalLayout>;
 }
 
-async function buildFanInGraph(): Promise<FanInFixture> {
+type ResultMutation = 'tamper-first' | 'tamper-second' | 'reorder' | 'omit-second';
+
+async function buildFanInGraph(mutation?: ResultMutation): Promise<FanInFixture> {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -147,15 +149,23 @@ async function buildFanInGraph(): Promise<FanInFixture> {
   ], [
     { parent: null, callee: 0, function: 'fan', args: [up.lockingBytecode, down.lockingBytecode, SEED] },
     { parent: 0, callee: 1, function: 'up', args: [SEED] },
-    { parent: 0, callee: 2, function: 'down', args: [SEED] },
+    { parent: 0, callee: 2, function: 'down', args: [SEED + 20n] },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const resultUp = packedScalar(SEED + 20n);
-  const resultDown = packedScalar(SEED + 30n);
+  const resultDown = packedScalar(SEED + 50n);
+  const declaredResults: Record<number, string> = mutation === 'reorder'
+    ? { 1: binToHex(resultDown), 2: binToHex(resultUp) }
+    : {
+      1: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp),
+      ...(mutation !== 'omit-second' && {
+        2: binToHex(mutation === 'tamper-second' ? packedScalar(SEED + 51n) : resultDown),
+      }),
+    };
   const transcript = layer3.finalizeCompiledGraph(
-    plan, { 1: binToHex(resultUp), 2: binToHex(resultDown) },
+    plan, declaredResults,
     layout.participantInputs, layout.returnOutputs,
-    ['', binToHex(resultUp), binToHex(resultDown)], layout.projectionInputs,
+    ['', declaredResults[1] ?? '', declaredResults[2] ?? ''], layout.projectionInputs,
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -245,18 +255,17 @@ const INPUT = {
   projectionCaller: 5, projectionUp: 6, projectionDown: 7, controller: 8,
 } as const;
 
-describe('Layer-3 result fan-in stops at the caller lowering (X3)', () => {
-  it('commits two producer results under one caller and rejects only that caller, at input 0', async () => {
+describe('Layer-3 ordered result fan-in (X3)', () => {
+  it('settles two producer results under one caller', async () => {
     const built = await buildFanInGraph();
     // The transcript IS a fan-in transcript: one caller, two emission rows, each with a framed result.
     expect(built.plan.invocations.map((invocation) => invocation.caller)).toEqual([null, 0, 0]);
     expect(built.plan.invocations.map((invocation) => invocation.resultTypes))
       .toEqual([[], ['int256'], ['int256']]);
-    expect(built.transcript.resultsHex).toEqual(['', '0116', '0120']);
-    expect(built.transcript.participantEmissionsHex[0]).toMatch(/0116.*0120/);
+    expect(built.transcript.resultsHex).toEqual(['', '0116', '0134']);
+    expect(built.transcript.participantEmissionsHex[0]).toMatch(/0116.*0134/);
 
-    // The caller's compiled route is the ONLY covenant that cannot execute it.
-    expect(failingInput(built.builder)).toBe(INPUT.masterCaller);
+    expect(inputError(built.builder, INPUT.masterCaller)).toBeUndefined();
 
     // Everything the transcript machinery owns accepts the same transaction: both producers' routes, all
     // three projection proofs and the one-shot controller. Measured per input, because `failingInput` stops
@@ -268,12 +277,22 @@ describe('Layer-3 result fan-in stops at the caller lowering (X3)', () => {
       expect(inputError(built.builder, input)).toBeUndefined();
     }
 
-    // The plan-time counterpart: this graph PLANS, because the caller's callsites are void and consume
-    // nothing. What `graph.ts` refuses by name is a plan whose caller CONSUMES both results - the probe case
-    // in `Layer3ResultBinding`, which cannot be built from compiler output at all.
     expect(built.plan.invocations.map((invocation) => invocation.resultDependencies))
-      .toEqual([[], [], []]);
+      .toEqual([[1, 2], [], []]);
     expect(built.plan.invocations.map((invocation) => invocation.consumerCallsiteId))
       .toEqual([undefined, 0, 1]);
   }, 180_000);
+
+  for (const mutation of ['tamper-first', 'tamper-second', 'reorder', 'omit-second'] as const) {
+    it(`rejects ${mutation} in the authenticated ordered result stream`, async () => {
+      if (mutation === 'omit-second') {
+        await expect(buildFanInGraph(mutation)).rejects.toThrow(
+          /returning participant 2 lacks a return output\/result vector/,
+        );
+        return;
+      }
+      const built = await buildFanInGraph(mutation);
+      expect(inputError(built.builder, INPUT.masterCaller)).toBeDefined();
+    }, 180_000);
+  }
 });

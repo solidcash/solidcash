@@ -803,6 +803,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     fn: FunctionDefinitionNode; variable: string; priorNames: string[];
     outlined: boolean; trailingBase: number; iterCount: number;
   }[] = [];
+  // X203. An outlined body's physical trailing run belongs to its invoking entry point, not to the helper's
+  // synthetic one-slot layout. When every reaching entry publishes one uniform, iteration-free basis, compile
+  // the helper's chunk reads against that basis directly. Runtime-sized collection-iteration prefixes still
+  // require an explicit call-frame parameter and remain covered by the fail-closed verifier below.
+  private outlinedDynamicReadBasisByFunctionId: Map<number, FunctionDefinitionNode> = new Map();
+  private outlinedDynamicReadBasis?: FunctionDefinitionNode;
 
   // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
   // must KEEP on the stack (not drop) because a later array-external-call co-spend reads the array from it
@@ -1803,7 +1809,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const writerIds = new Set<number>();
     const scan = (
       root: Node, slots: Map<string, StateVariableNode>, calls: Set<number>,
-      writes: { value: boolean }, seen = new Set<Node>(),
+      writes: { value: boolean; dynamicArray: boolean }, seen = new Set<Node>(),
     ): void => {
       if (seen.has(root)) return;
       seen.add(root);
@@ -1823,6 +1829,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (root instanceof StateAssignNode || root instanceof DeleteStateNode
           || root instanceof StateArrayPushNode || root instanceof StateArrayPopNode
           || root instanceof StateArrayAssignNode || root instanceof StateArrayDeleteNode) writes.value = true;
+        if (sv.isDynamic && (root instanceof StateArrayPushNode || root instanceof StateArrayPopNode
+          || root instanceof StateArrayAssignNode || root instanceof StateArrayDeleteNode)) {
+          writes.dynamicArray = true;
+        }
       }
       if (root instanceof FunctionCallNode && root.resolvedFunction?.functionId !== undefined) {
         calls.add(root.resolvedFunction.functionId);
@@ -1851,7 +1861,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (fn.functionId === undefined || !fn.body) continue;
       const slots = new Map<string, StateVariableNode>();
       const calls = new Set<number>();
-      const writes = { value: false };
+      const writes = { value: false, dynamicArray: false };
       scan(fn.body, slots, calls, writes);
       // An event emitted from a returning OP_INVOKE subroutine is silently dropped (the subroutine
       // epilogue returns before emit settlement, which only runs on the entry-point path). Void emit
@@ -1879,6 +1889,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (emits) {
           throw new Error(
             `Returning state helper '${fn.name}' with an event must be inlined before code generation`,
+          );
+        }
+        // A returning dynamic-array writer must be inlined so its declared result and the hidden length/blob
+        // journal share one caller-owned stack frame. Single-tail helpers are removed by
+        // InlineReturningStateHelpers; any survivor here has multiple/non-tail exits and cannot safely execute
+        // behind OP_INVOKE (the VM otherwise rejects its off-by-return-slot write-back).
+        if (writes.dynamicArray) {
+          throw new Error(
+            `Returning dynamic-array state helper '${fn.name}' must have one tail return so it can be inlined`,
           );
         }
       }
@@ -2060,6 +2079,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
     this.computeScalarJournalClosures(node);
+    this.outlinedDynamicReadBasisByFunctionId = new Map();
+    for (const [functionId, entries] of this.entryPointsReaching(node)) {
+      if (entries.length === 0 || entries.some((entry) => (entry.collectionIterations?.length ?? 0) > 0)) continue;
+      const first = entries[0];
+      const firstBase = first.blockLayout?.trailingBase ?? first.blockLayout?.blockSize ?? 1;
+      const uniform = entries.every((entry) => {
+        const base = entry.blockLayout?.trailingBase ?? entry.blockLayout?.blockSize ?? 1;
+        if (base !== firstBase) return false;
+        const reads = new Set([...(first.dynamicReads ?? []), ...(entry.dynamicReads ?? [])]);
+        return [...reads].every((name) =>
+          this.dynamicReadPriorRuns(first, name).join(',') === this.dynamicReadPriorRuns(entry, name).join(','));
+      });
+      if (uniform) this.outlinedDynamicReadBasisByFunctionId.set(functionId, first);
+    }
     // OP_DEFINE internal/private functions (subroutine-only) + entry points actually invoked internally (via
     // `this.f` / function pointers). An entry point never called internally compiles as an entry point only, so it
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
@@ -2475,6 +2508,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
     subTraversal.contractParameters = this.contractParameters;
     subTraversal.contractFunctionKeys = this.contractFunctionKeys;
+    subTraversal.outlinedDynamicReadBasis = func.functionId === undefined
+      ? undefined : this.outlinedDynamicReadBasisByFunctionId.get(func.functionId);
 
     // Visit the function definition to generate its body bytecode
     subTraversal.currentFunction = func;
@@ -18049,7 +18084,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const CHUNK = 120;
     const lenType = new IntType(false, 32);
     const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
-    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const basisFunction = this.outlinedDynamicReadBasis ?? this.currentFunction;
+    const blockSize = basisFunction.blockLayout?.blockSize ?? 1;
     // Persisted dynamic reads share the trailing-input space: read var R's chunks live at
     // blockSize + sum(chunk counts of the runs the SDK co-spends before R) + i. priorNodes = those runs, in the
     // order `StatefulContract` assembles them - see `dynamicReadPriorRuns` (X151).
@@ -18059,14 +18095,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // reached and narrowed it: the basis is RECORDED here and checked against every reaching entry point in
     // `verifyDynamicReadBases`, which refuses on disagreement and on an unresolvable invoker set. See that
     // method for why a blanket refusal was wrong and why an empty invoker set must still refuse.
-    const priorNames = this.dynamicReadPriorRuns(this.currentFunction, sv.name);
+    const priorNames = this.dynamicReadPriorRuns(basisFunction, sv.name);
     this.dynamicReadBases.push({
       fn: this.currentFunction,
       variable: sv.name,
       priorNames: [...priorNames],
       outlined: this.isDefineSubTraversal,
-      trailingBase: this.currentFunction.blockLayout?.trailingBase ?? blockSize,
-      iterCount: this.currentFunction.collectionIterations?.length ?? 0,
+      trailingBase: basisFunction.blockLayout?.trailingBase ?? blockSize,
+      iterCount: basisFunction.collectionIterations?.length ?? 0,
     });
     const priorNodes = priorNames.map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
@@ -18127,7 +18163,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackDepth = this.stack.length;
 
     // inputIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(prior read counts) + i
-    this.emitTrailingBlockBase(blockSize, loc);
+    this.emitTrailingBlockBase(blockSize, loc, basisFunction.blockLayout?.trailingBase);
     this.emitAddCollectionIterCounts(loc); // collection-iter entries precede read chunks (W4)
     for (const pt of priorTempNames) {
       this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running inputIdx-partial untracked
@@ -20401,8 +20437,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Push the first trailing input/output index after all fixed covenant blocks. */
-  private emitTrailingBlockBase(blockSize: number, locationData: SingleLocationData): void {
-    const localBase = this.currentFunction.blockLayout?.trailingBase ?? blockSize;
+  private emitTrailingBlockBase(
+    blockSize: number, locationData: SingleLocationData, trailingBase?: number,
+  ): void {
+    const localBase = trailingBase ?? this.currentFunction.blockLayout?.trailingBase ?? blockSize;
     if (this.currentFunctionIsDelegate || this.currentFunction.modifiers.includes(FunctionModifier.DELEGATE)) {
       // Delegate trailing storage follows the complete co-spent implementation block. Output-only slots such
       // as events are implementation-relative too, so using only master/data/entry slots overlaps their outputs.

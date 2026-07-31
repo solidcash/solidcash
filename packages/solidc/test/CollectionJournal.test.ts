@@ -155,6 +155,26 @@ describe('Release 3 collection journal lowering', () => {
     expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
   });
 
+  it('rejects a returning chunk-array writer whose multiple exits cannot be inlined', () => {
+    expect(() => compileString(`pragma solidcash >=0.8.0;
+      contract ReturningArrayJournal() {
+        bigint[] scores;
+        function append(bigint value, bool once) internal returns (bigint) {
+          this.scores.push(value);
+          if (once) { return this.scores.length; }
+          this.scores.push(value + 1);
+          return this.scores.length;
+        }
+        function apply(bigint value, bool once) {
+          bigint length = append(value, once);
+          require(length > 0);
+        }
+      }
+    `, { forceStateful: true })).toThrow(
+      "Returning dynamic-array state helper 'append' must have one tail return so it can be inlined",
+    );
+  });
+
   it('marks mutually recursive collection and dynamic journal closures for SDK preflight', () => {
     const collection = compileString(`${PREFIX}
       function a(bytes20 who, int n) internal {

@@ -5,6 +5,8 @@ import { hexToBin } from '@bitauth/libauth';
 import { alicePkh, bobPkh, carolPkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+
 const SOURCE = `pragma solidcash >=0.8.0;
 contract CollectionJournalRelease3() {
   mapping(bytes20 => bigint) balances;
@@ -126,7 +128,7 @@ contract CollectionJournalRelease3() {
   }
 }`;
 
-async function deploy() {
+async function deploy(): Promise<StatefulContract> {
   const provider = createTestProvider();
   const artifact = compileString(SOURCE, { forceStateful: true });
   const contract = new Contract(artifact, [], { provider });
@@ -179,7 +181,7 @@ describe('Release 3 collection journal SDK E2E', () => {
   it('checks each debit against the pending value and rejects same-key overspend', async () => {
     const contract = await deploy();
     await contract.creditThree(alicePkh, 4n, 3n, 3n).send();
-    await expect(contract.spendTwice(alicePkh, 7n, 4n).send()).rejects.toThrow();
+    await expect(contract.spendTwice(alicePkh, 7n, 4n).send()).rejects.toThrow(inputZeroVerifyFailure);
     expect(await balance(contract)).toBe(10n);
 
     await contract.spendTwice(alicePkh, 7n, 3n).send();
@@ -289,7 +291,7 @@ describe('Release 3 collection journal SDK E2E', () => {
 
     await expect(
       token.transferFromTwice(alicePkh, bobPkh, carolPkh, 20n, 20n).send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(inputZeroVerifyFailure);
     await token.checkBalance(alicePkh, 50n).send();
     await token.checkBalance(bobPkh, 60n).send();
     await token.checkAllowance(alicePkh, carolPkh, 30n).send();

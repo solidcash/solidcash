@@ -1480,7 +1480,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // would silently debit the container even though the covenant correctly skipped those slots.
     const reachedHandlers: typeof capability.handlers = [];
     let cursor = 7;
-    const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
+    // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
+    // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
+    const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
     for (let row = 0; row < rowCount && cursor + (valueMode ? 21 : 12) <= blob.length; row++) {
       const selector = binToHex(blob.slice(cursor, cursor + 4));
       const handler = capability.handlers.find((candidate) => candidate.selector === selector);
@@ -10042,7 +10044,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       value: FunctionArgument;
       encoded: Uint8Array;
     }>();
-    const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
+    // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
+    // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
+    const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
         throw new Error('Repeated external SCB1 rows must use canonical contiguous callsite indices');

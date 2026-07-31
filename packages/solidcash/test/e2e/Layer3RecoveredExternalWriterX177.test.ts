@@ -328,7 +328,7 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
    * as a co-spent participant of its own, so the call is a thing the transaction has to carry rather than a
    * statement it can drop.
    */
-  it('X187: `Foo.callBar` is now refused at compile time, by name, and the subject is retired', () => {
+  it('X201: `Foo.callBar` is admitted again, with its edge bound rather than unseen', () => {
     const map = compileFileMulti(EXTERNAL, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
@@ -338,13 +338,13 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
     const handlers = artifact.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
     console.log(`[X177E] Foo eligible ${JSON.stringify(eligible)}`);
-    expect(eligible).not.toContain('callBar');
-    expect(handlers.find((handler) => handler.name === 'callBar').rejectionReason)
-      .toBe('batched-handler-forward-call-not-enabled');
-    // The ABI still publishes the edge, which is the whole point: route synthesis used to MISS it, because
-    // `bar.log()` on a contract-typed state variable is a namespaced FunctionCallNode until a later semantic
-    // pass. X187 made synthesis see it, and the bare-body spelling - one call, no trailing require - is not
-    // tail-call eligible in EITHER spelling, so it is refused rather than admitted with an unframed edge.
+    expect(eligible).toContain('callBar');
+    expect(handlers.find((handler) => handler.name === 'callBar').rejectionReason).toBeUndefined();
+    // THE ADMISSION IS THE SAME AS THE ORIGINAL AND MEANS THE OPPOSITE. `bar.log()` on a contract-typed state
+    // variable is a namespaced FunctionCallNode until a semantic pass that runs AFTER route synthesis, so
+    // synthesis originally missed the edge and admitted the handler with nothing framing it. X187 made
+    // synthesis see it, which refused the bare-body spelling outright; X201 re-admitted it with the edge
+    // BOUND. The ABI published this edge throughout - what changed is whether the covenant frames it.
     expect((artifact.abi.find((entry: any) => entry.name === 'callBar') as any).externalCalls)
       .toBeDefined();
   }, 900_000);
@@ -378,15 +378,22 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
    * trailing require is not tail-call eligible in either spelling. Making it eligible WIDENS what the bus
    * admits, for both spellings, and is an open row rather than a repair.
    */
-  it('X187: the plan-time rows are retired - `Foo.callBar` cannot reach a transaction', async () => {
+  it('X201: `Foo.callBar` plans TWO participants and TWO invocations again', async () => {
     let refusal: string | undefined;
+    let shape: Awaited<ReturnType<typeof attempt>> | undefined;
     try {
-      await attempt('callBar', 'none', { probe: true });
+      shape = await attempt('callBar', 'none', { probe: true });
     } catch (error) {
       refusal = (error as Error).message;
     }
-    console.log(`[X177E] callBar plan: ${refusal ?? 'STILL PLANS'}`);
-    expect(refusal, 'callBar still plans - the X187 edge binding may have regressed').toBeDefined();
-    expect(refusal).toContain('batched-handler-forward-call-not-enabled');
+    console.log(`[X177E] callBar graph: ${refusal ?? `participants=${shape!.participants} `
+      + `invocations=${shape!.invocations} eventSlots=${shape!.eventSlots}`}`);
+    // This is the property `Attack.attack` lacks and the reason this row was worth keeping: the callee is
+    // planned as a co-spent participant of its own, so the call is something the transaction must carry
+    // rather than a statement it can drop. X187 refused the shape; X201 restored it with the edge bound.
+    expect(refusal, 'callBar no longer plans').toBeUndefined();
+    expect(shape!.participants).toBe(2);
+    expect(shape!.invocations).toBe(2);
+    expect(shape!.eventSlots).toBe(8);
   }, 900_000);
 });

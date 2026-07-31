@@ -363,16 +363,14 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
 /** The caller's route ran out of authenticated emission rows mid-partition. */
 const VECTOR_EXHAUSTED = 'Program called an OP_SPLIT operation with an invalid index';
 
-/** The bus refuses a handler whose outgoing edge it cannot frame, before any transaction is built. */
-const NOT_ELIGIBLE = 'is not batch eligible: batched-handler-forward-call-not-enabled';
-
 /**
  * The subjects the bus ADMITS, and whether the CALLER COVENANT binds its own outgoing edge on each. Every other
  * field of the harness is identical, so `covenantBinds` is the measurement this file exists to take.
  *
  * X187 CLOSED THE LAST ROW HERE. `solidity-require` was the escaping shape this file isolated; it now binds,
- * refused at input 0 with the same exhausted vector as the interface-cast subjects. See the X187 block below
- * for the bare-body shape, which the bus no longer admits at all.
+ * refused at input 0 with the same exhausted vector as the interface-cast subjects. X201 then admitted the
+ * BARE-BODY spelling too, with its edge bound - see the block below, and its VM half in
+ * `Layer3BareForwardingBodyX201.test.ts`.
  */
 const SUBJECTS = [
   { shape: 'forward', label: 'interface cast, forwarded argument', covenantBinds: true },
@@ -436,25 +434,32 @@ describe('X179: does a straight-line `once` external call require its counterpar
   });
 
   /**
-   * X187. THE BARE-BODY SHAPE IS NOW REFUSED FROM THE BUS BY NAME, and that refusal is PARITY rather than a
-   * loss: the interface-cast spelling of the same body - one external-call statement, no trailing require - has
-   * always been refused with this exact reason. Route synthesis could not see the contract-typed-receiver
-   * spelling at all (it parses as a namespaced FunctionCall, not a MethodCall), so it admitted the handler as a
-   * plain scalar one and framed no emission for the edge; the two spellings now reach the same verdict.
+   * X187 REFUSED THE BARE-BODY SHAPE; X201 ADMITTED IT WITH THE EDGE BOUND. Route synthesis could not see the
+   * contract-typed-receiver spelling at all (it parses as a namespaced FunctionCall, not a MethodCall), so it
+   * admitted the handler as a plain scalar one and framed no emission for the edge. X187 made synthesis see
+   * it, which refused the shape outright; X201 then widened the tail-call disjunct so a one-call body reaches
+   * the RUNTIME emission form, where the edge is framed at the call site.
    *
-   * Both halves are asserted here so a future change that re-admits one and not the other is a failure.
+   * PARITY IS STILL THE PROPERTY UNDER TEST - only its value flipped. Both spellings are admitted together and
+   * both bind, so a change that admits one and not the other is still a failure here. The VM half lives in
+   * `Layer3BareForwardingBodyX201.test.ts`: both bare spellings settle their honest co-spend and both are
+   * refused at input 0 with this file's VECTOR_EXHAUSTED signature when the callee is dropped.
    */
   describe('CONTRACT-TYPED state variable, bare call body', () => {
-    it('the bus refuses the handler by name, before any transaction exists', async () => {
-      await expect(attempt('solidity', 'co-spent')).rejects.toThrow(`Handler 'callBar' ${NOT_ELIGIBLE}`);
+    it('the bus admits the handler and plans its co-spend', async () => {
+      const result = await attempt('solidity', 'co-spent');
+      console.log(`[X179] bare co-spent: ${result.sent ?? result.refusal?.split('\n')[0]} `
+        + `participants=${result.participants} invocations=${result.invocations}`);
+      expect(result.participants).toBe(2);
+      expect(result.invocations).toBe(2);
     }, 900_000);
 
     /**
-     * The PARITY control: same body shape, interface-cast spelling, refused with the same reason. The getter
-     * sibling is `X179SolBar bar`'s published getter, and it is what keeps a route in existence for the
-     * refused handler's verdict to be read off - without one the contract has no route at all.
+     * The PARITY control: same body shape, interface-cast spelling, admitted the same way. The getter sibling
+     * is `X179SolBar bar`'s published getter, and it is what keeps a route in existence for the handler's
+     * verdict to be read off - without one the contract has no route at all.
      */
-    it('and refuses the interface-cast spelling of the same body identically', () => {
+    it('and admits the interface-cast spelling of the same body identically', () => {
       const artifact = compileString(`pragma solidcash >=0.8.0;
 interface IX179Callee { function tick(int value); }
 contract X179BareCast() {
@@ -468,8 +473,8 @@ contract X179BareCast() {
         experimentalMessageBusControllerCategory: 'ab'.repeat(32),
       } as never) as any;
       const handler = artifact.hiddenBatch!.handlers!.find((entry: any) => entry.name === 'ping');
-      expect(handler.eligible).toBe(false);
-      expect(handler.rejectionReason).toBe('batched-handler-forward-call-not-enabled');
+      expect(handler.eligible).toBe(true);
+      expect(handler.rejectionReason).toBeUndefined();
     });
   });
 });

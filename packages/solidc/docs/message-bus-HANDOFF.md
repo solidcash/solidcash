@@ -56,7 +56,13 @@ These are the only rows where a defect is believed live. Everything else is hygi
   earlier rounds repeatedly found vacuity in.
 - **X170** - the basis correction's outlined-body refusal fires on a real contract.
 - **X207** - `logicalValueMode` reachability: can route uniformity actually demote a payable handler?
+  **This is now known to be YES in general** (see X229), so the row is narrower than it looks.
 - **X227** - a possible FOURTH msg.value population (`contractUsesMsgValue` vs `routeUsesMsgValue`).
+- **X201 + X229** - admitting the bare-body forwarding call. It was implemented, VM-proved on its own
+  terms, and **REVERTED**, because admitting a handler changes the route's UNIFORMITY CLASS and
+  `applyRouteUniformity` then demotes a different, unrelated handler (`ERC20Bank.token`). Whoever
+  retakes this must handle the uniformity interaction first. Do not re-land it without the full
+  108-file bus-mode sweep.
 
 ### Tier 3: re-pins and residuals
 - **X159 is probably STALE** - it says `StableSwap` no longer compiles in any mode, but X204 compiled
@@ -98,6 +104,15 @@ These were all learned by getting them wrong first.
    when the stack is shallow, so an ordinary failing require raises nothing at all.
 9. **Do not narrow a specification or subject to obtain green.** If a subject stops existing, say so.
    A negative result reported honestly is worth more than a repair invented to have something to show.
+10. **A widening to route ADMISSION needs the FULL bus-mode sweep, not a targeted set.** The worked
+    example is X201: its author measured the capstones plus 5 files and disclosed 4 reds; I measured 5
+    files and found 9; the full 108-file sweep found 12 across 6 files, and the 12th is the one that
+    decided the row. **The handler a widening breaks need not appear in any file that mentions the
+    changed feature** - here it was demoted by a uniformity pass, not by the widened predicate.
+11. **When judging a capability change, price it in PROVEN handlers, not in features.** X201 gained
+    two handlers that cannot settle and lost one that settles with a txid and two hostiles refused at
+    a named input. That is what made it a bad trade, and it is not visible from the feature
+    description.
 
 ## 6. Security invariants that must not be traded away
 
@@ -146,6 +161,10 @@ These were all learned by getting them wrong first.
    already failed once.
 3. Then **X214**, the 450 unexamined `rejects.toThrow()` sites, because it is the largest unmeasured
    surface and prior rounds show a real hit rate there.
+
+Before ANY route-admission change lands, budget for the full bus-mode sweep:
+`ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` is 108 files, ~9 minutes at
+`--maxWorkers=2`. It is the only measurement that has reliably caught this class.
 
 Do not start by adding capability. The bus admits more than it has been proven to bind, and the
 ratio - 82 of 206 - is the honest summary of where this stands.

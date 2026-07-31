@@ -770,11 +770,15 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
       + `${(asPublished.refusal ?? `ACCEPTED ${asPublished.sent}`).split('\n')[0]} `
       + `at input ${asPublished.failingInput ?? '-'}`);
     expect(corrected.refusal, `${row.key}: the corrected arm did not settle`).toBeUndefined();
-    expect(asPublished.sent, `${row.key} settled with the published header - X192 is not the cause`)
+    // X199 MADE THE SDK DO THIS CORRECTION FOR REAL, so the test-local artifact patch is now a no-op and both
+    // arms settle. That is the regression guard: if these ever diverge again, the SDK has gone back to sizing
+    // its rows from the PUBLISHED handler set while the route sizes its own from the ELIGIBLE one.
+    expect(asPublished.refusal, `${row.key}: the published header is refused again - X199 has regressed`)
       .toBeUndefined();
-    expect(asPublished.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-    expect(asPublished.failingInput, 'the refusal did not name the participant input').toBe(0);
+    expect(asPublished.sent, `${row.key}: the published arm did not settle`).toBeDefined();
   };
+
+
 
   /** THE POSITIVE for a read-only row: it publishes the result the route computed. */
   const positiveRead = (row: Row) => async (): Promise<void> => {
@@ -865,7 +869,7 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
 
   for (const row of ROWS) {
     if (row.x192) {
-      it(`CONTROL: ${row.key} with the PUBLISHED msg.value flag is refused, and the script is unchanged`,
+      it(`X199: ${row.key} settles with the PUBLISHED header too - the local correction is a no-op`,
         x192Control(row), 1_800_000);
     }
     if (row.verdict === 'reads') {

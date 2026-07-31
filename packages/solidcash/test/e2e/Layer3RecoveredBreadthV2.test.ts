@@ -731,7 +731,7 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
    * control. It is recorded so the row is visible as UNPROVEN IN BOTH DIRECTIONS, and the positive
    * expectation turns red the day it settles.
    */
-  it('RECORDED: `ReEntrancy.sol::Attack` cannot be driven to a settlement by this harness', async () => {
+  it('X199: `ReEntrancy.sol::Attack` PROBES now, and a sentinel result is still refused', async () => {
     const subject = RECORDED_NEGATIVE.subjects
       .find((entry) => entry.handler === RECORDED_NEGATIVE.hostileSubject)!;
     let probeFailure: string | undefined;
@@ -741,8 +741,12 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
       probeFailure = (error as Error).message;
     }
     console.log(`[V2B] ${key(RECORDED_NEGATIVE)}.${subject.handler} probe: ${probeFailure ?? 'SUCCEEDED'}`);
-    expect(probeFailure, 'the probe now returns a result - this row can be promoted to a positive')
-      .toContain('the probe trace never compared the declared result');
+    // X199 CLOSED THE REASON THIS ROW WAS UNPROVEN IN BOTH DIRECTIONS. The probe used to hand back nothing -
+    // the route stopped in its preamble on the SCB1 logical-value-mode byte, because the SDK sized rows from
+    // the PUBLISHED handler set while the route sized its own from the ELIGIBLE one, and `ReEntrancy`'s
+    // payable handler is refused by synthesis. With both sides on `eligible && usesMsgValue` the probe runs,
+    // so the sentinel refusal below now HAS its control and discriminates.
+    expect(probeFailure, 'the probe stopped working again - X199 may have regressed').toBeUndefined();
     const result = await attempt(RECORDED_NEGATIVE, subject, 'none', scriptToBytecode([PROBE_RESULT]));
     console.log(`[V2B] ${key(RECORDED_NEGATIVE)}.${subject.handler} sentinel settle: `
       + `${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]} input=${result.failingInput}`);

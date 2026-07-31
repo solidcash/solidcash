@@ -385,81 +385,25 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
     };
   }
 
-  it('MEASURED: the pointer, the frame it is in, and the require it maps to', async () => {
-    const { trace: steps, artifact } = await trace('highestBid');
+  /**
+   * X199 CLOSED THE SUBJECT OF THIS TEST. It used to map the abort pointer through the route's own debug
+   * metadata and land on the SCB1 header's logical-value-mode require, generated-source line 60 - accounting
+   * for libauth registering an error on the instruction AFTER the one that raised it, so the failing
+   * instruction is 166 and the recorded pointer 167. That mapping is preserved in section 4.131 of the board.
+   *
+   * What is left here is the guard: the route must reach its RETURN-EVENT check rather than stopping in the
+   * preamble. The sentinel probe declares a placeholder result, so an abort at the return check is the probe
+   * working; an abort at 167 is X199 regressing.
+   */
+  it('X199: the route no longer stops in its preamble', async () => {
+    const { trace: steps } = await trace('highestBid');
     const last = steps![steps!.length - 1];
     const ip: number = last.ip;
-    const frames = (last.controlStack ?? []).filter((e: unknown) => typeof e === 'object' && e !== null);
-    console.log(`[X192] abort ip=${ip} steps=${steps.length} error=${last.error}`);
-    console.log(`[X192] controlStack=${JSON.stringify((last.controlStack ?? []).map((e: unknown) =>
-      (typeof e === 'object' && e !== null ? 'FRAME' : e)))} frames=${frames.length}`);
-    const instructions = last.instructions ?? [];
-    console.log(`[X192] script length=${instructions.length} instructions`);
-    for (let i = Math.max(0, ip - 12); i <= Math.min(instructions.length - 1, ip + 2); i += 1) {
-      const instruction = instructions[i];
-      console.log(`[X192]   ${i === ip ? '>>' : '  '} [${i}] `
-        + `0x${instruction?.opcode?.toString(16).padStart(2, '0')}`
-        + `${instruction?.data ? ` (${binToHex(instruction.data)})` : ''}`);
-    }
-    console.log(`[X192] stack depth=${last.stack?.length} top=${last.stack?.slice(-4)
-      .map((item: Uint8Array) => binToHex(item)).join(' | ')}`);
-
-    // The MAIN artifact debug info: how many requires, and what sits at ip and ip-1.
-    const mainRequires = (artifact.debug?.requires ?? []) as Array<{ ip: number; line: number; message?: string }>;
-    console.log(`[X192] main requires=${mainRequires.length} `
-      + `functionDebug keys=${Object.keys(artifact.debug?.functionDebug ?? {}).length}`);
-    for (const candidate of [ip, ip - 1, ip + 1]) {
-      const hit = mainRequires.find((r) => r.ip === candidate);
-      console.log(`[X192] main require at ip ${candidate}: ${hit ? JSON.stringify(hit) : 'NONE'}`);
-    }
-    for (const [selector, fnDebug] of Object.entries(artifact.debug?.functionDebug ?? {}) as any[]) {
-      for (const candidate of [ip, ip - 1]) {
-        const hit = (fnDebug.requires ?? []).find((r: any) => r.ip === candidate);
-        if (hit) console.log(`[X192] fn ${selector} require at ip ${candidate}: ${JSON.stringify(hit)}`);
-      }
-    }
-
-    // The route body's own source map. Its lines are positions in COMPILER-GENERATED source, not in
-    // EnglishAuction.sol, so they are reported as such and never resolved against the user's file.
-    const routeDebug = artifact.debug!.functionDebug![ROUTE_SELECTOR];
-    const routeLocations = sourceMapToLocationData(routeDebug.sourceMap);
-    console.log(`[X192] route sourceMap entries=${routeLocations.length} requires=${routeDebug.requires.length}`);
-    for (const entry of routeDebug.requires.filter((r: any) => r.ip >= ip - 40 && r.ip <= ip + 4)) {
-      console.log(`[X192]   route require ip=${entry.ip} generated-source line ${entry.line}`
-        + `${entry.ip === ip - 1 ? '   <<< THE ONE THAT FIRED' : ''}`);
-    }
-
-    // THE POINTER IS IN THE ROUTE BODY, AND THE FAILING INSTRUCTION IS THE ONE BEFORE IT.
-    expect(frames.length, 'the abort is not inside an OP_INVOKE body').toBe(1);
-    expect(last.error).toMatch(/OP_VERIFY/);
-    const failing = ip - 1;
-    const fired = routeDebug.requires.find((r: any) => r.ip === failing);
-    expect(fired, `no route require sits at the failing pointer ${failing}`).toBeDefined();
-    console.log(`[X192] THE REQUIRE: route body ip=${failing}, generated-source line ${fired!.line}`);
-
-    // AND IT IS THE SCB1 HEADER'S MODE BYTE, decoded from the instructions rather than named from the line.
-    // `<blob> OP_6 OP_SPLIT OP_DROP OP_5 OP_SPLIT OP_NIP PUSH<mode> OP_EQUALVERIFY`
-    //   == require(batchBlob.slice(5, 6) == hex"<mode>")
-    const opcodes = instructions.slice(failing - 7, failing + 1)
-      .map((entry: any) => entry.opcode as number);
-    console.log(`[X192] failing window opcodes=${opcodes.map((o: number) =>
-      `0x${o.toString(16).padStart(2, '0')}`).join(' ')}`);
-    expect(opcodes.slice(0, 6)).toEqual([0x56, 0x7f, 0x75, 0x55, 0x7f, 0x77]);
-    expect(opcodes[7], 'the failing instruction is not OP_EQUALVERIFY').toBe(0x88);
-    const demandedMode = instructions[failing - 1].data as Uint8Array | undefined;
-    console.log('[X192] the route DEMANDS SCB1 header byte 5 = '
-      + `${demandedMode === undefined ? '(minimal push)' : binToHex(demandedMode)}`);
-    expect(demandedMode).toBeDefined();
-    expect(binToHex(demandedMode!)).toBe('00');
-    expect(ip).toBe(167);
+    console.log(`[X192] highestBid stops at ip=${ip} steps=${steps.length} error=${last.error}`);
+    expect(ip, 'the route aborts at the logical-value-mode require again - X199 has regressed').not.toBe(167);
+    expect(steps.length, 'the route stopped earlier than the recorded preamble abort').toBeGreaterThan(3377);
   }, 1_800_000);
 
-  /**
-   * WHICH FLAG DISAGREES, read off the artifact rather than argued.
-   *
-   * The SDK's `valueMode` is `capability.handlers.some((h) => h.usesMsgValue)` over EVERY published handler;
-   * the compiler's `logicalValueMode` counts only handlers route synthesis ADMITTED. This prints both sets.
-   */
   it('MEASURED: the msg.value flag is published on an INELIGIBLE handler, and only there', async () => {
     const { artifact, blobHeader } = await trace('highestBid');
     const handlers = artifact.hiddenBatch.handlers as any[];
@@ -472,11 +416,17 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
     console.log(`[X192] SDK valueMode input: ${withValue.length} handlers publish usesMsgValue, `
       + `${eligibleWithValue.length} of them ELIGIBLE`);
     console.log(`[X192] the SCB1 header the SDK wrote: ${blobHeader} (byte 5 = ${blobHeader.slice(10, 12)})`);
-    expect(withValue.length, 'no handler publishes usesMsgValue - the diagnosis does not apply')
+    // THE ABI SIDE IS UNCHANGED AND MUST STAY THAT WAY. `bid()` is payable, uses `msg.value`, and is refused
+    // by route synthesis - so a handler publishing `usesMsgValue` while INELIGIBLE is the normal, correct
+    // state of this artifact. The defect was never the publication; it was that the SDK sized its rows from
+    // the published set while the route sized its own from the eligible set. This row is now the REGRESSION
+    // GUARD for X199: the disagreeing input is still present, and the header must no longer follow it.
+    expect(withValue.length, 'no handler publishes usesMsgValue - the guard has lost its subject')
       .toBeGreaterThan(0);
-    expect(eligibleWithValue, 'an ELIGIBLE handler uses msg.value, so the two flags do not disagree')
+    expect(eligibleWithValue, 'an ELIGIBLE handler uses msg.value, so the guard has lost its subject')
       .toEqual([]);
-    expect(blobHeader.slice(10, 12), 'the SDK did not write the logical-value mode byte').toBe('01');
+    expect(blobHeader.slice(10, 12), 'the SDK sized rows from the PUBLISHED set again - X199 has regressed')
+      .toBe('00');
   }, 1_800_000);
 
   /**
@@ -486,28 +436,31 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
    * same script in both. Arm A - the artifact as published - aborts at ip 167. Arm B - `usesMsgValue` cleared
    * on the INELIGIBLE handlers only - does not.
    */
-  it('CONTROL: clearing usesMsgValue on the INELIGIBLE handler alone moves the abort', async () => {
+  it('X199: both arms now agree - the test-local correction is a no-op', async () => {
     const armA = await trace('highestBid');
     const armB = await trace('highestBid', { correctValueMode: true });
     expect(armA.participantAddress, 'the two arms are not the same covenant')
       .toBe(armB.participantAddress);
     expect(armA.artifact.bytecode, 'the two arms do not share the compiled bytecode')
       .toBe(armB.artifact.bytecode);
-    const abortA = abortOf(armA.trace!);
-    console.log(`[X192] ARM A (published artifact) header=${armA.blobHeader} `
-      + `abort ip=${abortA.ip} steps=${abortA.steps} error=${abortA.error}`);
+    console.log(`[X192] ARM A (published artifact) header=${armA.blobHeader}`);
     console.log(`[X192] ARM B (usesMsgValue cleared on ineligible) header=${armB.blobHeader}`);
-    expect(armA.blobHeader.slice(10, 12)).toBe('01');
-    expect(armB.blobHeader.slice(10, 12)).toBe('00');
-    expect(abortA.ip).toBe(167);
-    // Arm B still stops, and that is the SENTINEL working rather than a second wall: this probe declares the
+    // THE CONTROL HAS BECOME THE PROOF. This file's arm B cleared `usesMsgValue` on the ineligible handlers
+    // as a TEST-LOCAL artifact patch, and that single field moved the abort. X199 made the SDK do the same
+    // intersection for real, so the patch now changes nothing - the two arms produce the same header. If they
+    // ever diverge again, the SDK has gone back to sizing rows from the published set.
+    expect(armA.blobHeader.slice(10, 12)).toBe('00');
+    expect(armB.blobHeader).toBe(armA.blobHeader);
+    // Both arms still stop, and that is the SENTINEL working rather than a wall: this probe declares the
     // `9e..` placeholder as its result, so the route reaches its RETURN-EVENT check and disagrees there. The
-    // reading is the pointer and the step count - a different place, 66% further in - not the bare fact of an
-    // abort. The settlement tests below publish the route's own computed commitment and broadcast.
+    // reading is that neither stops at 167 any more - the preamble pointer the value-mode byte used to abort
+    // at. The settlement tests below publish the route's own computed commitment and broadcast.
+    const abortA = abortOf(armA.trace!);
     const abortB = abortOf(armB.trace!);
+    console.log(`[X192] ARM A abort ip=${abortA.ip} steps=${abortA.steps} error=${abortA.error}`);
     console.log(`[X192] ARM B abort ip=${abortB.ip} steps=${abortB.steps} error=${abortB.error}`);
-    expect(abortB.ip, 'arm B stops at the same pointer, so the flag is NOT the cause').not.toBe(167);
-    expect(abortB.steps, 'arm B did not get further than arm A').toBeGreaterThan(abortA.steps);
+    expect(abortA.ip, 'the route aborts at the X192 preamble pointer again - X199 has regressed').not.toBe(167);
+    expect(abortB.ip).toBe(abortA.ip);
   }, 1_800_000);
 
   /** The result the route computed for a handler, read off its own trace with the placeholder sentinel. */

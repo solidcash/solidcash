@@ -271,13 +271,18 @@ const ROWS: readonly Row[] = [
   },
   {
     key: 'app/english-auction/EnglishAuction.sol::EnglishAuction.highestBid',
-    shape: 'read surface of a THREE-data-NFT oracle contract - the row X136 says never reached its return check',
+    shape: 'read surface of a THREE-data-NFT oracle contract - unblocked by X199',
     file: `${SBE}/app/english-auction/EnglishAuction.sol`,
     contract: 'EnglishAuction',
     writer: 'highestBid',
     writerArgs: [],
     guards: [{ name: 'endAt', args: [] }, { name: 'started', args: [] }],
-    verdict: 'unproven',
+    // X199 CLOSED THE ABORT THIS ROW WAS BLOCKED ON, and the abort was never the covenant. `bid()` is payable
+    // and REFUSED by route synthesis, but the SDK computed its value mode over EVERY PUBLISHED handler while
+    // the compiler computed the route's over the ELIGIBLE ones - so the SDK wrote a `01` header byte into a
+    // route demanding `00`, and every row aborted in the preamble before any dispatch. Both sides now compute
+    // `eligible && usesMsgValue`. The row moves from `unproven` to the full settle-and-hostile battery.
+    verdict: 'reads',
     rootCaller: 'pkh',
     oracleTimestamp: 1_700_000_000n,
     pre: {
@@ -445,12 +450,19 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     for (const handler of notSettled) console.log(`[X180] STILL UNPROVEN: ${handler}`);
     console.log(`[X180] ${settled.length} gained handlers settle here; ${206 - settled.length} of the 206 `
       + 'are NOT proved by this file, and most of them are not proved anywhere.');
+    // X199 ADDED THE ENGLISHAUCTION THREE. They were recorded here as `unproven` because every handler on the
+    // route aborted in the preamble at one pointer, before any dispatch - which this file measured carefully
+    // and correctly declined to attribute. The cause was not the covenant: the SDK wrote a `01` logical-value
+    // header into a route demanding `00`, because it computed value mode over EVERY PUBLISHED handler while
+    // the compiler computed the route's over the ELIGIBLE ones, and `bid()` is payable and refused. With both
+    // sides on `eligible && usesMsgValue` the row runs the full settle-and-hostile battery.
     expect(settled).toEqual([
       'StakingRewards.setRewardsDuration', 'StakingRewards.duration', 'StakingRewards.rewardRate',
       'CrowdFund.count', 'CrowdFund.token',
+      'EnglishAuction.highestBid', 'EnglishAuction.endAt', 'EnglishAuction.started',
       'UniswapV2Pair.initialize', 'UniswapV2Pair.token0', 'UniswapV2Pair.kLast',
     ]);
-    expect(notSettled).toEqual(['EnglishAuction.highestBid', 'EnglishAuction.endAt', 'EnglishAuction.started']);
+    expect(notSettled).toEqual([]);
   }, 1_800_000);
 
   /** The contract's real redeem-script length. `artifact.bytecode` is ASM, so it is assembled, not divided. */

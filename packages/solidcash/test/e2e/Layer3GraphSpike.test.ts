@@ -17,6 +17,9 @@ const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const RATE = 2n; // Bento share rate (committed state)
 const AMOUNT = 6n;
+const inputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -64,7 +67,7 @@ function makeGraph(): string {
   body.push('require(tx.outputs[3].lockingBytecode == bytes.concat(hex"6a08", bytes8(shareOut)));'); // producer share record
   body.push('require(tx.outputs[4].value == 2000 + shareOut);'); // consumer collateral settlement
   body.push('require(tx.outputs[5].lockingBytecode == bytes.concat(hex"6a08", bytes8(amount)));'); // token transfer record
-  return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 
@@ -121,7 +124,10 @@ async function build(s: any, opts: { shareOut?: bigint; settlement?: bigint } = 
     });
   }
   builder.addOutput({ to: concat(hexToBin('6a08'), num8(shareOut)), amount: 0n }); // output3 producer share record
-  builder.addOutput({ to: s.parts[consumerIdx].contract.address, amount: (opts.settlement ?? (2000n + shareOut)) }); // output4 consumer
+  builder.addOutput({
+    to: s.parts[consumerIdx].contract.address,
+    amount: (opts.settlement ?? (2000n + shareOut)),
+  }); // output4 consumer
   builder.addOutput({ to: concat(hexToBin('6a08'), num8(AMOUNT)), amount: 0n }); // output5 token transfer record
   return builder;
 }
@@ -140,7 +146,10 @@ describe('layer-3 three-owner result graph (E2E)', () => {
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Three owners + result graph in one covenant, all endpoints validating. Still well under budget.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -151,13 +160,17 @@ describe('layer-3 three-owner result graph (E2E)', () => {
 
   it('HOSTILE: a forged shareOut (not amount*rate) is rejected across the graph', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { shareOut: AMOUNT * RATE + 1n })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(
+      rawOf(await build(s, { shareOut: AMOUNT * RATE + 1n })),
+    )).rejects.toThrow(inputZeroVerifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: a consumer collateral settlement that does not reflect shareOut is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { settlement: 2000n + AMOUNT * RATE + 3n })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(
+      rawOf(await build(s, { settlement: 2000n + AMOUNT * RATE + 3n })),
+    )).rejects.toThrow(inputZeroVerifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

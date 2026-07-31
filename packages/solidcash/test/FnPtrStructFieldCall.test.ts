@@ -5,6 +5,13 @@ import { Contract, TransactionBuilder, getContractFactory } from '../src/index.j
 import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, verifyTransaction, fundedSigner } from './test-util.js';
 
+const INPUT_0_PREFIX = '^Transaction verification failed \\[code 16\\]: mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: ';
+const NON_TRUTHY_INPUT_0 = new RegExp(INPUT_0_PREFIX
+  + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
+  + 'Top stack item: ""\\.\\)$');
+const STATEFUL_OP_VERIFY_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+
 // Calling a function-POINTER struct field directly: `s.x()`, `t[i].x()`, `s.inner.x()`. These parse as a
 // namespaced function call / method call, not an indirect call; SymbolTableTraversal rewrites them to an
 // IndirectCallNode that reads the field (functionId) then OP_INVOKEs it - the same value path as the proven
@@ -71,7 +78,7 @@ describe('fn-ptr struct field call (s.x(), t[i].x(), s.inner.x()) - VM-verified'
       await expect(build(src, 'ok')).resolves.toBeUndefined();
     });
     it(`${name}: wrong expected value fails (guard against vacuous pass)`, async () => {
-      await expect(build(src, 'wrong')).rejects.toThrow();
+      await expect(build(src, 'wrong')).rejects.toThrow(NON_TRUTHY_INPUT_0);
     });
   }
 });
@@ -107,7 +114,7 @@ describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (
   it('m[k].x() wrong value rejects (== 8)', async () => {
     const sc = await deploy(MAP('8'));
     await sc.set().send();
-    await expect(sc.f().send()).rejects.toThrow();
+    await expect(sc.f().send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
   });
   it('m[k].x(3) passes the arg through the entry pointer (== 4)', async () => {
     const sc = await deploy(MAP_ARGS('4'));
@@ -117,6 +124,6 @@ describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (
   it('m[k].x(3) wrong value rejects (== 9)', async () => {
     const sc = await deploy(MAP_ARGS('9'));
     await sc.set().send();
-    await expect(sc.f().send()).rejects.toThrow();
+    await expect(sc.f().send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
   });
 });

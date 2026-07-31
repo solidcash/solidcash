@@ -8,6 +8,12 @@ import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 import { alicePub, alicePriv } from './fixture/vars.js';
 
+const STATEFUL_OP_VERIFY_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
+  + 'Top stack item: ""\\.\\)$');
+
 // A keccak compute side-car's OWN NFT category (distinct from any contract's category; the branded covenant
 // checks the MASTER input's category, not the side-car's own).
 const KECCAK_SIDECAR_CATEGORY = '77'.repeat(32);
@@ -104,7 +110,8 @@ describe('keccak256 builtin (stateful contracts)', () => {
     });
     const sc = StatefulContract.withCategory(contract, categoryId);
     // ones-hash asserted against the zeros preimage -> the require fails
-    await expect(sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.ones.hash)).send()).rejects.toThrow();
+    await expect(sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.ones.hash)).send())
+      .rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
   });
 
   // Complex/nested arg in a stateful contract (commit-reveal style): the preimage is not a direct parameter,
@@ -199,7 +206,7 @@ describe('keccak256 builtin (stateful contracts)', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     // Wrong expected (keccak^3, not ^4) -> the VM's require(h == expected) fails closed.
     let wrong = seed; for (let i = 0; i < 3; i++) wrong = keccak_256(wrong);
-    await expect(sc.chain(seed, 4n, wrong).send()).rejects.toThrow();
+    await expect(sc.chain(seed, 4n, wrong).send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
   });
 
   // General (non-hash-chain) dynamic loop: each iteration's preimage depends on a per-call value, so the probe
@@ -303,7 +310,7 @@ describe('keccak256 builtin (stateless dynamic loop)', () => {
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.verify(seed, 3n, wrong))
       .addOutput({ to: contract.address, amount: 800_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(NON_TRUTHY_INPUT_0);
   });
 });
 

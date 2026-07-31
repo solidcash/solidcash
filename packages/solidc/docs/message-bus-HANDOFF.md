@@ -56,9 +56,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **430 executable bare `rejects.toThrow()` sites remain unnamed.** The AST census corrected
-  the old 450 estimate to 436 executable sites, then six focused repairs reduced it to 430. This remains
-  the highest-yield vacuity surface and must be worked in mutation-validated partitions.
+- **X214** - **420 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
+  remaining vacuity surface. The AST census began at 436 executable sites; six unit guards and ten
+  Layer-3 emission/effect guards are repaired with mutation-validated reasons.
 - **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
   compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
   compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`

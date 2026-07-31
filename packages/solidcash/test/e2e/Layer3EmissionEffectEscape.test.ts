@@ -1008,6 +1008,11 @@ const BUS_OPTIONS = {
   experimentalMessageBusControllerCategory: 'cd'.repeat(32),
 };
 
+// The mock network's consensus decider owns every broadcast refusal below. Keep the node-facing half named
+// too: the adjacent preflight assertion pins the exact caller input, while this marker proves the finalized
+// bytes reached script verification rather than failing for dust, size, missing inputs, or an RPC condition.
+const SCRIPT_REFUSAL = /mandatory-script-verify-flag-failed/;
+
 describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', () => {
   const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
 
@@ -1026,7 +1031,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       expect(built.emissionSlots).toBe(0);
       expect(built.callerInput).toBe(0);
       expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
     }, 600_000,
   );
 
@@ -1042,7 +1047,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       expect(built.emissionSlots).toBe(8);
       expect(built.callerInput).toBe(0);
       expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
     }, 600_000,
   );
 
@@ -1066,7 +1071,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     expect(built.emissionSlots).toBe(8);
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   /**
@@ -1089,7 +1094,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     });
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   it.each([{ tamper: 'argument' as const }, { tamper: 'selector' as const }])(
@@ -1097,7 +1102,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       const built = await buildEffectSubstitution({ ...cell, emitting: false, transferring: true });
       expect(built.callerInput).toBe(0);
       expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
     }, 600_000,
   );
 
@@ -1170,14 +1175,14 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     const built = await buildSec9EventBatch('dropSecond');
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   it('rejects a forged event NFT in the reached site second event slot', async () => {
     const built = await buildSec9EventBatch('forgeSecond');
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   /**
@@ -1191,7 +1196,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     expect(built.eventSlots).toBe(16);
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   /**
@@ -1233,7 +1238,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     });
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   // The binding C1 and C3 both carry, measured as a separate variable: requiring `msg.sender == hub` in every
@@ -1244,7 +1249,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     });
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   }, 600_000);
 
   it('settles the honest graph with the callee also checking msg.sender', async () => {

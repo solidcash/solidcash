@@ -44,7 +44,9 @@ describe('sorted mapping compiled value read (mapping(K=>int))', () => {
 
     // Present key 5, wrong expected -> reverts.
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, 99n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(5n, 99n, alicePub, sig).send()).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
 
     // Absent key 3 -> default 0 (proven absent via the bracket, not an omittable default).
     sc = StatefulContract.withCategory(contract, categoryId);
@@ -52,6 +54,8 @@ describe('sorted mapping compiled value read (mapping(K=>int))', () => {
 
     // Absent key 3, claim it is nonzero -> reverts.
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(3n, 7n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(3n, 7n, alicePub, sig).send()).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

@@ -278,6 +278,9 @@ const INPUT = {
   masterRoot: 0, masterLeaf: 2, projectionRoot: 4, projectionLeaf: 5, controller: 6,
 } as const;
 
+const providerFailureAt = (input: number, reason = 'Program failed an OP_VERIFY operation'): RegExp =>
+  new RegExp(`mandatory-script-verify-flag-failed .*error in evaluating input index ${input}: ${reason}`);
+
 function failingInput(builder: TransactionBuilder): number | null {
   try {
     layer3.preflightLayer3Transaction(builder);
@@ -303,7 +306,8 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
     // the exhaustion assertion this transaction settled.
     const built = await buildRootReturningGraph({ results: { 0: '' } });
     expect(failingInput(built.builder)).toBe(INPUT.projectionRoot);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.projectionRoot));
   }, 120_000);
 
   it('rejects a root whose transcript result is a one-byte prefix of its honest result', async () => {
@@ -312,7 +316,8 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
     // one-byte claim from the honest two-byte one.
     const built = await buildRootReturningGraph({ results: { 0: '01' } });
     expect(failingInput(built.builder)).toBe(INPUT.projectionRoot);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.projectionRoot));
   }, 120_000);
 
   // X23 rewrote the verifier's emission comparison. It used to parse the row field by field - a length
@@ -342,7 +347,8 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
       patch: (transcript) => patchEmissionByte(transcript, 0, index, value),
     });
     expect(failingInput(built.builder)).toBe(INPUT.masterRoot);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.masterRoot));
   }, 120_000);
 
   it('rejects an emissions region carrying a row no invocation answers', async () => {
@@ -350,7 +356,8 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
     // attacks region exhaustion rather than row content. It too is refused at the caller's master route.
     const built = await buildRootReturningGraph({ patch: (transcript) => appendEmissionByte(transcript, 0) });
     expect(failingInput(built.builder)).toBe(INPUT.masterRoot);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(providerFailureAt(INPUT.masterRoot));
   }, 120_000);
 
   it('a voided NON-root result still reaches the lower consumer defence first', async () => {
@@ -360,6 +367,9 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
     // exhaustion assertion is second in the stack, never first, for any non-root producer.
     const built = await buildRootReturningGraph({ results: { 1: '' } });
     expect(failingInput(built.builder)).toBe(INPUT.masterRoot);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(providerFailureAt(
+      INPUT.masterRoot,
+      'Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 1.',
+    ));
   }, 120_000);
 });

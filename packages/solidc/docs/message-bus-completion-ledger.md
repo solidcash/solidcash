@@ -1349,3 +1349,44 @@ block. They reject a different delegate selector, a proxy-index witness outside 
 block, and a forged proxy post-state. The existing 26-test direct delegatecall suite remains
 green. This closes the specified pinned one-hop class; nested delegatecalls and arbitrary
 delegate graphs remain separate unsupported shapes.
+
+### 2026-07-31: Release E — contract-typed receivers now bind their outgoing edge
+
+Route synthesis could not see an external call written on a contract-typed receiver, and
+admitted the handler anyway. `bar.log()` on a state variable of interface type parses as a
+namespaced `FunctionCallNode`; it becomes an `ExternalFunctionCallNode` only in the semantic
+pass that runs after `synthesizeHiddenBatchRoute` has already frozen its verdict. The handler was
+therefore admitted as a plain scalar handler whose covenant framed no emission for the edge its
+own ABI published, and a transaction asserting the call executed settled with the callee absent.
+
+Synthesis now recovers the call from the same declared type the later pass reads, so both
+spellings reach one verdict. The escaping shape went from settling a dropped edge to refused at
+input index 0 with the vector exhausted, its honest co-spend still settling as the control. A
+one-token pair in plain SolidCash compiles byte-identical at 1,514 bytes across the two
+spellings, so they are now the same program rather than two admission paths.
+
+Scope, stated at the boundary it holds. This half is closed at ADMISSION: a body that is one
+forwarding call with no trailing require is not tail-call eligible in either spelling and is
+refused rather than admitted-and-unbound. The covenant half is proven only on the spelling the
+bus admits. Restoring the bare-body form as admitted-and-bound would widen what the bus accepts
+for both spellings; it is recorded as open, not as a defect.
+
+Three recorded subjects are retired by that refusal, including the only recovered writer whose
+external call could carry a sound co-spend. Their rows are re-recorded against the artifact's own
+`rejectionReason` rather than against a handler's absence. One re-recording strengthened: the
+return-event flip had only ever been demonstrated on a handler that mutates nothing observable,
+where a static post-state staging is right by accident; re-taken on a handler that genuinely
+assigns a state variable, it required the real post-state and now proves the flip on a writer.
+
+No VM-proved count is published with this release. It moved in both directions and the
+re-derivation is not complete.
+
+### 2026-07-31: Open — value mode is computed over two different handler sets
+
+The compiler derives the SCB1 logical-value-mode byte from ELIGIBLE handlers; the SDK derives it
+from EVERY PUBLISHED handler. A payable handler that route synthesis refuses therefore counts on
+one side and not the other, the SDK writes a header byte the route rejects, and every row widens.
+This is staging rather than covenant, and it is the whole of one capstone contract's abort.
+
+It is recorded as OPEN rather than repaired. Both candidate fixes change what the bus admits, not
+merely which byte is written, so the choice is a scope decision and is not made here.

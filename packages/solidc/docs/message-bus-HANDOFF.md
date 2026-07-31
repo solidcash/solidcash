@@ -65,8 +65,9 @@ These are the only rows where a defect is believed live. Everything else is hygi
   108-file bus-mode sweep.
 
 ### Tier 3: re-pins and residuals
-- **X159 is probably STALE** - it says `StableSwap` no longer compiles in any mode, but X204 compiled
-  it at 7,968 B and settled three of its handlers. Re-pin before trusting either.
+- **X159 is CLOSED on HEAD** - `StableSwap` compiles in bus mode with four eligible handlers, and the
+  three gained handlers (`tokens`, `balances`, `totalSupply`) settle. The focused compile pin and VM
+  proof are `Layer3RecoveredPartitionX160.test.ts` and `Layer3RecoveredCollectionBreadthV2.test.ts`.
 - **X226** - multi-statement bodies ending in a call are admitted by construction but VM-proved only
   on a single-statement body.
 - **X213** - 10 `resolves.not.toThrow()` sites whose `not.toThrow()` clause is DEAD (measured);
@@ -205,10 +206,9 @@ L3_X204_OUT=/tmp/x204 npx vitest run --config vitest.x204.config.ts \
 
 ## 10. What I would do first
 
-1. Re-pin **X159** (probably stale) so the board stops carrying a false HIGH.
-2. Take **SEC-18 and the L2-F family** - the only rows where a defect is believed live, and the review
+1. Take **SEC-18 and the L2-F family** - the only rows where a defect is believed live, and the review
    already failed once.
-3. Then **X214**, the 450 unexamined `rejects.toThrow()` sites, because it is the largest unmeasured
+2. Then **X214**, the 450 unexamined `rejects.toThrow()` sites, because it is the largest unmeasured
    surface and prior rounds show a real hit rate there.
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:

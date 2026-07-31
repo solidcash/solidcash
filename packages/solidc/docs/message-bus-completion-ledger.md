@@ -1390,3 +1390,23 @@ This is staging rather than covenant, and it is the whole of one capstone contra
 
 It is recorded as OPEN rather than repaired. Both candidate fixes change what the bus admits, not
 merely which byte is written, so the choice is a scope decision and is not made here.
+
+### 2026-07-31: X159 re-pin - `StableSwap` compiles and its gained readers settle
+
+The earlier HIGH claim that `StableSwap` no longer compiled in any mode is historical, not current.
+The regression was repaired by restricting X146's first hunk to `graphEmissionHandler`. On HEAD,
+`Layer3RecoveredPartitionX160.test.ts` recompiles the pinned corpus source in bus mode and publishes
+four eligible handlers: `tokens`, `balances`, `totalSupply`, and `balanceOf`. The first three are the
+handlers gained by the route-admission repair, restoring Set A's measured total from 50 to 53.
+
+This is also VM evidence, not compilation evidence alone. The `StableSwap` cases in
+`Layer3RecoveredCollectionBreadthV2.test.ts` settle `tokens`, `balances`, and `totalSupply`, then
+refuse a believable-wrong return commitment and a one-field post-state mutation at input index 0.
+Re-run the focused pins from `packages/solidcash`:
+
+```bash
+npx vitest run test/e2e/Layer3RecoveredPartitionX160.test.ts \
+  -t 'StableSwap publishes 4 eligible' --reporter=verbose
+npx vitest run test/e2e/Layer3RecoveredCollectionBreadthV2.test.ts \
+  -t 'StableSwap' --reporter=verbose
+```

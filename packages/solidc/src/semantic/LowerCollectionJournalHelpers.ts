@@ -73,6 +73,21 @@ interface ActiveMultiCache {
   }>>;
 }
 
+/** Sink a cloned collection-cache flush immediately before every non-tail control-flow return. */
+class FlushCollectionCachesBeforeReturns extends AstTraversal {
+  constructor(private readonly writes: StatementNode[]) { super(); }
+
+  visitReturn(node: ReturnNode): Node {
+    const returned = super.visitReturn(node) as ReturnNode;
+    const block = new BlockNode([
+      ...this.writes.map((write) => cloneNode(write) as StatementNode),
+      returned,
+    ]);
+    block.location = node.location;
+    return block;
+  }
+}
+
 /**
  * Release 3's first collection-journal lowering.
  *
@@ -246,47 +261,6 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         fn, collection: entry.collection, keyParameters: entry.keyParameters, journalName,
         valueType: entry.valueType,
       });
-    }
-
-    // A wrapper-level cache is flushed at the normal function exit. Until write-back sinking handles every
-    // control-flow exit, reject a return that leaves before that flush, rather than producing an artifact
-    // whose authenticated entries can settle their default cache values.
-    //
-    // A TAIL return is not such a return. `_transfer(from, to, v); return true;` - the Solidity ERC-20
-    // wrapper, and the exact shape UniswapV2ERC20, MyToken and the Unicrow tokens all write - has nothing
-    // after it, so the flush is placed immediately before it by installMultiCaches and no path skips it.
-    // Refusing it turned the whole file's multi-contract compile into a throw, which dropped every sibling
-    // contract in the file. The three conditions below are what makes the placement exact: it is the LAST
-    // top-level statement, it is the ONLY return, and it does not read an entry whose write-back now
-    // precedes it.
-    for (const candidate of this.multiCandidates.values()) {
-      const journalled = new Set(candidate.entries.map((entry) => entry.collection));
-      for (const wrapper of node.functions) {
-        if (!wrapper.body) continue;
-        let callsCandidate = false;
-        this.walk(wrapper.body, (child) => {
-          if (child instanceof FunctionCallNode
-            && child.identifier.name === candidate.fn.name
-            && child.parameters.length === candidate.fn.parameters.length) {
-            callsCandidate = true;
-          }
-        });
-        if (!callsCandidate) continue;
-        const statements = wrapper.body.statements ?? [];
-        const last = statements.length > 0 ? statements[statements.length - 1] : undefined;
-        const tailReturn = last instanceof ReturnNode ? last : undefined;
-        let returnCount = 0;
-        this.walk(wrapper.body, (child) => {
-          if (child instanceof ReturnNode) returnCount += 1;
-        });
-        if (returnCount === 0) continue;
-        if (tailReturn !== undefined && returnCount === 1
-          && !this.readsCollection(tailReturn, journalled)) continue;
-        throw new Error(
-          `Collection journal helper '${candidate.fn.name}' cannot be used by `
-          + `'${wrapper.name}' because the wrapper contains an early return`,
-        );
-      }
     }
 
     // Rewrite call sites before changing arities.
@@ -700,31 +674,21 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         this.at(new IdentifierNode(name), body),
       ), body)));
     const statements = body.statements ?? [];
-    // The write-backs must be the wrapper's last effect. A tail `return` (admitted by visitContract only when
-    // it is the wrapper's single, final statement) and the final `require` guard are both re-appended after
-    // them, so nothing leaves the wrapper before its pending entry values reach state.
+    // Keep a top-level tail return structurally visible to the later all-paths-return analysis. Its flush is
+    // inserted immediately before it; only earlier/nested returns need block replacement.
+    const tailReturn = statements.length > 0 && statements[statements.length - 1] instanceof ReturnNode
+      ? statements.pop() as ReturnNode
+      : undefined;
+    // Preserve every earlier/nested exit as one block containing a cloned flush and its return. The later
+    // EarlyReturnTransformation can then unify control flow without moving the return ahead of the write-backs.
+    body.accept(new FlushCollectionCachesBeforeReturns(writes));
+    // A top-level tail return stays structurally visible to the all-paths-return analysis and follows the writes.
+    const rewritten = body.statements ?? [];
     const tail: StatementNode[] = [];
-    if (statements.length > 0 && statements[statements.length - 1] instanceof ReturnNode) {
-      tail.unshift(statements.pop()!);
+    if (!tailReturn && rewritten.length > 0 && rewritten[rewritten.length - 1] instanceof RequireNode) {
+      tail.unshift(rewritten.pop()!);
     }
-    if (statements.length > 0 && statements[statements.length - 1] instanceof RequireNode) {
-      tail.unshift(statements.pop()!);
-    }
-    body.statements = [...declarations, ...statements, ...writes, ...tail];
-  }
-
-  /** Does this subtree read or write an entry of one of the named collections, in either spelling? */
-  private readsCollection(root: Node, collections: Set<string>): boolean {
-    let touches = false;
-    this.walk(root, (candidate) => {
-      if ((candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
-        || candidate instanceof MappingDeleteNode) && collections.has(candidate.name)) touches = true;
-      else if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
-        && collections.has(candidate.array.name)) touches = true;
-      else if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode)
-        && collections.has(candidate.name)) touches = true;
-    });
-    return touches;
+    body.statements = [...declarations, ...rewritten, ...writes, ...(tailReturn ? [tailReturn] : tail)];
   }
 
   private multiEntry(collection: string, keys: ExpressionNode[]): JournalEntry | undefined {

@@ -337,8 +337,9 @@ describe('Release 3 collection journal SDK E2E', () => {
     await token.check(carolPkh, 30n).send();
   });
 
-  it('rejects a multi-entry journal wrapper with an early return', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+  it('flushes a multi-entry journal before early, nested, loop, and value returns', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash >=0.8.0;
       contract EarlyReturnJournal() {
         mapping(bytes20 => bigint) balances;
         function mint(bytes20 to, bigint amount) {
@@ -355,13 +356,46 @@ describe('Release 3 collection journal SDK E2E', () => {
           if (skip == 1) { return; }
           require(amount >= 0);
         }
+        function payNested(bytes20 from, bytes20 to, bigint amount, bigint skip) {
+          move(from, to, amount);
+          if (skip > 0) { if (skip == 2) { return; } }
+          require(amount >= 0);
+        }
+        function payLoop(bytes20 from, bytes20 to, bigint amount, bigint skip) {
+          move(from, to, amount);
+          for (bigint i = 0; i < 2; i = i + 1) { if (i == skip) { return; } }
+          require(amount >= 0);
+        }
+        function payValue(bytes20 from, bytes20 to, bigint amount, bigint skip) returns (bigint) {
+          move(from, to, amount);
+          if (skip == 1) { return 11; }
+          return 22;
+        }
         function check(bytes20 owner, bigint expected) {
           require(this.balances[owner] == expected);
         }
       }
-    `, { forceStateful: true })).toThrow(
-      /Collection journal helper 'move'.*wrapper contains an early return/,
+    `, { forceStateful: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
+    const token = StatefulContract.withCategory(inner, categoryId);
+    await token.mint(alicePkh, 200n).send();
+    await token.mint(bobPkh, 0n).send();
+
+    await token.payOnce(alicePkh, bobPkh, 10n, 1n).send();
+    await token.payNested(alicePkh, bobPkh, 20n, 2n).send();
+    await token.payLoop(alicePkh, bobPkh, 30n, 0n).send();
+    await token.payValue(alicePkh, bobPkh, 40n, 1n).send();
+    await token.check(alicePkh, 100n).send();
+    await token.check(bobPkh, 100n).send();
+
+    await token.payOnce(alicePkh, bobPkh, 1n, 0n).send();
+    await token.payNested(alicePkh, bobPkh, 1n, 0n).send();
+    await token.payLoop(alicePkh, bobPkh, 1n, 9n).send();
+    await token.check(alicePkh, 97n).send();
+    await token.check(bobPkh, 103n).send();
   });
 
   it('preserves dependent MasterChef-style updates across two mapping entries', async () => {

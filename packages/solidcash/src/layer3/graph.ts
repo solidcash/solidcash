@@ -101,31 +101,65 @@ export function assertResolvableResultDependencies(
 ): void {
   if (!Number.isInteger(invocationCount) || invocationCount < 0
     || dependencies.length !== invocationCount) {
-    throw new Error('layer3: result dependency table has the wrong invocation count');
+    throw new Layer3DiagnosticError(
+      'L3_RESULT_DEPENDENCY_INVALID',
+      'result dependency table has the wrong invocation count',
+      { measured: dependencies.length, limit: invocationCount },
+    );
   }
   dependencies.forEach((outgoing, consumer) => {
     const unique = new Set<number>();
     for (const producer of outgoing) {
       if (!Number.isInteger(producer) || producer < 0 || producer >= invocationCount) {
-        throw new Error(`layer3: invocation ${consumer} names an out-of-range result producer`);
+        throw new Layer3DiagnosticError(
+          'L3_RESULT_DEPENDENCY_INVALID',
+          `invocation ${consumer} names out-of-range result producer ${producer}`,
+          { consumerInvocation: consumer, producerInvocation: producer, invocationIds: [consumer] },
+        );
       }
       if (producer === consumer || unique.has(producer)) {
-        throw new Error(`layer3: invocation ${consumer} has an invalid duplicate/self result dependency`);
+        throw new Layer3DiagnosticError(
+          'L3_RESULT_DEPENDENCY_INVALID',
+          `invocation ${consumer} has an invalid duplicate/self result dependency on ${producer}`,
+          {
+            consumerInvocation: consumer,
+            producerInvocation: producer,
+            cyclicEdge: [consumer, producer],
+            invocationIds: [consumer, producer],
+          },
+        );
       }
       unique.add(producer);
     }
   });
-  const state = new Uint8Array(invocationCount);
-  const visit = (consumer: number): void => {
-    if (state[consumer] === 2) return;
-    if (state[consumer] === 1) {
-      throw new Error('layer3: result dependency cycle requires an unavailable future result');
+  let shortest: number[] | undefined;
+  for (let start = 0; start < invocationCount; start += 1) {
+    const queue: number[][] = [[start]];
+    while (queue.length > 0) {
+      const path = queue.shift()!;
+      for (const producer of dependencies[path[path.length - 1]]) {
+        if (producer === start) {
+          const cycle = [...path, start];
+          if (!shortest || cycle.length < shortest.length) shortest = cycle;
+        } else if (!path.includes(producer) && (!shortest || path.length + 1 < shortest.length)) {
+          queue.push([...path, producer]);
+        }
+      }
     }
-    state[consumer] = 1;
-    for (const producer of dependencies[consumer]) visit(producer);
-    state[consumer] = 2;
-  };
-  for (let invocation = 0; invocation < invocationCount; invocation += 1) visit(invocation);
+  }
+  if (shortest) {
+    throw new Layer3DiagnosticError(
+      'L3_FUTURE_RESULT_DEPENDENCY',
+      `result dependency cycle ${shortest.join(' -> ')} requires an unavailable future result`,
+      {
+        consumerInvocation: shortest[0],
+        producerInvocation: shortest[1],
+        cyclicEdge: [shortest[0], shortest[1]],
+        invocationIds: shortest,
+        callChain: shortest.map((invocation) => `invocation:${invocation}`),
+      },
+    );
+  }
 }
 
 export interface FinalizedCompiledGraph {

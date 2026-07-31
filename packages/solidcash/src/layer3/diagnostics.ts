@@ -12,6 +12,9 @@ export type Layer3DiagnosticCode =
   | 'L3_PROTOCOL_VERSION_UNSUPPORTED'
   | 'L3_RECURSIVE_CLOSURE'
   | 'L3_RESOURCE_CAPACITY'
+  | 'L3_RESOURCE_UNRESOLVED'
+  | 'L3_RESULT_DEPENDENCY_INVALID'
+  | 'L3_FUTURE_RESULT_DEPENDENCY'
   | 'L3_GRAPH_DEPTH_LIMIT'
   | 'L3_SCB_ENVELOPE_MALFORMED'
   | 'L3_SCB_VERSION_UNSUPPORTED'
@@ -40,6 +43,10 @@ export interface Layer3DiagnosticContext {
   handler?: string;
   inputIndex?: number;
   rawVmReason?: string;
+  consumerInvocation?: number;
+  producerInvocation?: number;
+  cyclicEdge?: readonly [number, number];
+  keyIdentity?: string;
 }
 
 /** Machine-stable code plus the human context required by transcript-v1 section 12. */

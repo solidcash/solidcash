@@ -553,11 +553,26 @@ describe('layer3.planCompiledGraph', () => {
   it('separates resolvable result dependencies from structural owner cycles', () => {
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], []])).not.toThrow();
     expect(() => layer3.assertResolvableResultDependencies(3, [[1], [2], [0]]))
-      .toThrow(/unavailable future result/);
+      .toThrow(expect.objectContaining({
+        code: 'L3_FUTURE_RESULT_DEPENDENCY',
+        context: expect.objectContaining({
+          consumerInvocation: 0,
+          producerInvocation: 1,
+          cyclicEdge: [0, 1],
+          invocationIds: [0, 1, 2, 0],
+          callChain: ['invocation:0', 'invocation:1', 'invocation:2', 'invocation:0'],
+        }),
+      }));
     expect(() => layer3.assertResolvableResultDependencies(2, [[1, 1], []]))
-      .toThrow(/duplicate/);
+      .toThrow(expect.objectContaining({
+        code: 'L3_RESULT_DEPENDENCY_INVALID',
+        context: expect.objectContaining({ consumerInvocation: 0, producerInvocation: 1 }),
+      }));
     expect(() => layer3.assertResolvableResultDependencies(2, [[2], []]))
-      .toThrow(/out-of-range/);
+      .toThrow(expect.objectContaining({
+        code: 'L3_RESULT_DEPENDENCY_INVALID',
+        context: expect.objectContaining({ consumerInvocation: 0, producerInvocation: 2 }),
+      }));
   });
 
   it('derives msg.sender-keyed collection witnesses from the authenticated parent owner', () => {
@@ -593,7 +608,13 @@ describe('layer3.planCompiledGraph', () => {
     expect(() => layer3.encodeHiddenBatch(token, [
       { function: 'spend', args: [new Uint8Array([0x53]), new Uint8Array([0x54]), 3n] },
       { function: 'spend', args: [new Uint8Array([0x53]), new Uint8Array([0x55]), 2n] },
-    ])).toThrow(/authenticated logical caller/);
+    ])).toThrow(expect.objectContaining({
+      code: 'L3_RESOURCE_UNRESOLVED',
+      context: expect.objectContaining({
+        handler: 'spend', resourceIdentity: expect.stringMatching(/^__scb_key_/),
+        keyIdentity: 'msg.sender', invocationIds: [0],
+      }),
+    }));
   });
 
   it('groups an A -> B -> A cycle into one ordered execution per physical owner', () => {

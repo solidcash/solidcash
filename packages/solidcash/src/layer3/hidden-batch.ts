@@ -179,20 +179,30 @@ export function encodeHiddenBatch(
         ? invocation.logicalCaller
         : args[binding.inputIndex];
       if (value === undefined) {
-        throw new Error(
+        throw new Layer3DiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
           `SCB1 collection witness '${binding.routeInput}' requires an authenticated logical caller`,
+          { handler: handler.name, resourceIdentity: binding.routeInput, keyIdentity: 'msg.sender', invocationIds: [rowIndex] },
         );
       }
       const encodedValue = binding.source === 'msgSender'
         ? encodeFunctionArgument(value, 'address', structs)
         : encoded[binding.inputIndex] as Uint8Array;
       if (!(encodedValue instanceof Uint8Array)) {
-        throw new Error(`SCB1 collection witness '${binding.routeInput}' is not byte-encodable`);
+        throw new Layer3DiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
+          `SCB1 collection witness '${binding.routeInput}' is not byte-encodable`,
+          { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+        );
       }
       const routeInput = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
       const prior = keyWitnessValues.get(routeInput);
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
-        throw new Error(`SCB1 collection witness '${routeInput}' must identify one physical entry`);
+        throw new Layer3DiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
+          `SCB1 collection witness '${routeInput}' must identify one physical entry`,
+          { handler: handler.name, resourceIdentity: routeInput, invocationIds: [rowIndex] },
+        );
       }
       if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
     }
@@ -278,8 +288,10 @@ export function encodeHiddenBatch(
       }
       const supplied = unboundRouteWitnesses[input.name];
       if (supplied === undefined) {
-        throw new Error(
+        throw new Layer3DiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
           `Missing SCB1 route witness '${input.name}'; no invocation binds it, so it must be supplied`,
+          { resourceIdentity: input.name, keyIdentity: input.name },
         );
       }
       return supplied;

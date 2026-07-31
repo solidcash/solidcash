@@ -102,6 +102,8 @@ async function run(
 }
 
 describe('P8: native IContract call composed under the balanced layout', () => {
+  const VM_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('POSITIVE: the participant natively calls the co-spent callee at the layout callee slot (base 2)', async () => {
     const { provider, rawTx } = await run(2n);
     await expect(provider.sendRawTransaction(rawTx)).resolves.toBeTypeOf('string');
@@ -109,7 +111,7 @@ describe('P8: native IContract call composed under the balanced layout', () => {
 
   it('HOSTILE: a callee-base witness pointing off the real callee is rejected', async () => {
     const { provider, rawTx } = await run(1n); // input 1 is the passive participant, not the sink
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(VM_REFUSAL);
   });
 
   it('HOSTILE: rejects a native call with no committed external-call row', async () => {
@@ -118,11 +120,11 @@ describe('P8: native IContract call composed under the balanced layout', () => {
 
   it('HOSTILE: rejects a false committed selector while dispatching ping(int)', async () => {
     const { provider, rawTx } = await run(2n, 'wrong-selector');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(VM_REFUSAL);
   });
 
   it('HOSTILE: rejects argument substitution under the correct selector', async () => {
     const { provider, rawTx } = await run(2n, 'wrong-arg');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(VM_REFUSAL);
   });
 });

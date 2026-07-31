@@ -72,11 +72,20 @@ describe('X184 interface base resolution is skipped on the declaration-artifact 
     });
 
     it('admits the unresolved base into a real ABI-only artifact rather than dropping the file', () => {
-      // The admission is not inert: it publishes an artifact whose ABI is served to callers.
-      const artifact = compileString('interface I is Zzz { function m() external; }', compat);
+      // The base must stay load-bearing here: asserting only the artifact shape would hold with the base
+      // REMOVED too, and a guard whose subject can vanish while it stays green is the defect. So the accept
+      // itself is asserted first - that is the half that flips when X184 lands.
+      const withBogusBase = 'interface I is Zzz { function m() external; }';
+      expect(outcome(withBogusBase)).toEqual({ accepted: 'I' }); // DEFECT: should refuse. Flip when X184 lands.
+      expect(outcome(`contract C {} ${withBogusBase}`)).toEqual({ refused: 'UndefinedInterfaceError' });
+      // The admission is not inert: it publishes an artifact whose ABI is served to callers, and that artifact
+      // is indistinguishable from the one the same file declares with no base at all.
+      const artifact = compileString(withBogusBase, compat);
+      const baseless = compileString('interface I { function m() external; }', compat);
       expect(artifact.contractName).toBe('I');
       expect(artifact.bytecode).toBe('');
       expect(artifact.abi.map((fn) => fn.name)).toEqual(['m']);
+      expect(artifact.abi).toEqual(baseless.abi);
     });
 
     it('is the root-ness of the interface that decides, not the compat flag', () => {

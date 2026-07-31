@@ -8,6 +8,8 @@ import { alicePriv, alicePub, alicePkh, bobPriv, bobPub } from '../fixture/vars.
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // A msg.sender-keyed C2 (sorted) mapping - the ERC20 `_balances[msg.sender]` shape. On BCH msg.sender (direct call) =
 // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The SDK: (1) records a `msgSender` keySource,
 // (2) computes slot = keyToSlot(the connected Signer's P2PKH lockscript), (3) forces the signer's native P2PKH funder
@@ -57,7 +59,7 @@ describe('msg.sender-keyed C2 end-to-end (native P2PKH sender = tx.origin)', () 
     await fund(alice);
     await expect(sc.chk(100n, alicePub, aliceSig).send()).resolves.toBeDefined();
     await fund(alice);
-    await expect(sc.chk(42n, alicePub, aliceSig).send()).rejects.toThrow(); // adversarial: not 42
+    await expect(sc.chk(42n, alicePub, aliceSig).send()).rejects.toThrow(verifyFailure);
     await fund(alice);
     await sc.setSelf(250n, alicePub, aliceSig).send();         // UPDATE bal[alice] = 250
     expect(await valOf(alice.getAddress())).toBe(250n);
@@ -73,7 +75,7 @@ describe('msg.sender-keyed C2 end-to-end (native P2PKH sender = tx.origin)', () 
     expect(await valOf(alice.getAddress())).toBe(250n);        // alice's balance is untouched by bob
     // bob cannot read alice's balance as his own: his msg.sender is his slot, which holds 500 not 250.
     await fund(bob);
-    await expect(scBob.chk(250n, bobPub, bobSig).send()).rejects.toThrow();
+    await expect(scBob.chk(250n, bobPub, bobSig).send()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -114,7 +116,7 @@ describe('msg.sender-keyed C2 RMW in a loop (multitransfer debit)', () => {
     await fund();
     await expect(sc.chk(40n, alicePub, aliceSig).send()).resolves.toBeDefined();
     await fund();
-    await expect(sc.chk(60n, alicePub, aliceSig).send()).rejects.toThrow(); // not the intermediate 60
+    await expect(sc.chk(60n, alicePub, aliceSig).send()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -145,6 +147,6 @@ describe('tx.origin-keyed C2 end-to-end', () => {
     await provider.addUtxo(alice.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
     await expect(sc.chk(7n, alicePub, aliceSig).send()).resolves.toBeDefined();
     await provider.addUtxo(alice.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
-    await expect(sc.chk(8n, alicePub, aliceSig).send()).rejects.toThrow();
+    await expect(sc.chk(8n, alicePub, aliceSig).send()).rejects.toThrow(verifyFailure);
   });
 });

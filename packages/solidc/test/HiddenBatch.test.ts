@@ -111,7 +111,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     });
   });
 
-  it('admits the owner-stable input index while rejecting active bytecode and tx.origin', () => {
+  it('admits owner input index while rejecting active bytecode and requiring a controller for tx.origin', () => {
     const artifact = compileString(`
       contract StableOwnerContext() {
         function stable(int expectedInput) public {
@@ -137,6 +137,21 @@ describe('Release 4 compiler-hidden local batch', () => {
         eligible: false,
         rejectionReason: 'direct-versus-batch-introspection-divergence',
       });
+  });
+
+  it('admits tx.origin when the graph controller authenticates the carrier signer', () => {
+    const artifact = compileString(`
+      contract OriginContext() {
+        function originBound(address expected) public { require(tx.origin == expected); }
+      }
+    `, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'originBound'))
+      .toMatchObject({ eligible: true });
   });
 
   it('authenticates forwarded and compiler-evaluated graph call arguments', () => {

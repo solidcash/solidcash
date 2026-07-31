@@ -694,6 +694,7 @@ function synthesizeHiddenBatchRoute(
     let routeUsesMsgValue = false;
     let routeUsesStableOwnerIntrospection = false;
     let routeUsesOtherIntrospection = false;
+    let routeUsesTxOrigin = false;
     let signatureCheck = false;
     let statefulExternalCall = false;
     let methodCallCount = 0;
@@ -717,6 +718,7 @@ function synthesizeHiddenBatchRoute(
             else if (node.operator === NullaryOperator.INPUT_INDEX) {
               routeUsesStableOwnerIntrospection = true;
             }
+            else if (node.operator === NullaryOperator.TX_ORIGIN) routeUsesTxOrigin = true;
             else routeUsesOtherIntrospection = true;
           }
           if (node instanceof ExternalFunctionCallNode) {
@@ -1112,12 +1114,13 @@ function synthesizeHiddenBatchRoute(
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
       && !((!routeUsesOtherIntrospection
+          && (!routeUsesTxOrigin || graphControllerLbc !== undefined)
           && (!(routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)
             || graphControllerLbc !== undefined)
           && (!routeUsesMsgValue || graphControllerLbc !== undefined
             || (!routeUsesMsgSender && !routeUsesMsgData && !routeUsesMsgSig))
-          && (routeUsesStableOwnerIntrospection || routeUsesMsgSender || routeUsesMsgData
-            || routeUsesMsgSig || routeUsesMsgValue))
+          && (routeUsesStableOwnerIntrospection || routeUsesTxOrigin
+            || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
         || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     // E4. A leaf graph handler reconstructs these three values from its authenticated invocation row, but an

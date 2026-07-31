@@ -372,3 +372,23 @@ describe('A13 review of E4: EQUIVALENT rows at the emission-handler position', (
     300_000,
   );
 });
+
+describe('A13 E4: specified physical identity context at an emission handler', () => {
+  it('binds tx.origin to the authenticated carrier signer and rejects another participant', async () => {
+    const source = reads(MID_PLAIN, 'require(tx.origin == expectedSender);');
+    expect(emissionAdmission(source, 'mid')).toEqual({ eligible: true, reason: undefined });
+
+    const honest = await buildChain(ROOT_PLAIN, source, LEAF_PLAIN, {
+      rootCaller: HONEST_ROOT_CALLER, expected: 'origin',
+    });
+    expect(evaluateEachInput(honest.builder)).toEqual(new Array(8).fill(null));
+
+    const hostile = await buildChain(ROOT_PLAIN, source, LEAF_PLAIN, {
+      rootCaller: HONEST_ROOT_CALLER, expected: 'root',
+    });
+    const errors = evaluateEachInput(hostile.builder);
+    expect(errors[CHAIN.mid]).not.toBe(null);
+    expect(errors.filter((error) => error !== null)).toHaveLength(1);
+  }, 240_000);
+
+});

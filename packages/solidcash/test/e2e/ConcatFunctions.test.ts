@@ -7,6 +7,8 @@ import { fundedSigner } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // --- Helpers ----------------------------------------------------------------
 
 const VALID_DIR = resolve(
@@ -146,7 +148,7 @@ describe('Concat Functions', () => {
       `;
       const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.test(hexToBin('aa'), hexToBin('bb'))).rejects.toThrow();
+      await expect(sc.test(hexToBin('aa'), hexToBin('bb'))).rejects.toThrow(verifyFailure);
     });
   });
 

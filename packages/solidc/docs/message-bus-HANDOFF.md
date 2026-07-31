@@ -83,6 +83,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   repairs absent from the published 102-site pin.
   `AddressCast` is exhausted: its wrong embedded hash reaches exact input-0 `OP_VERIFY`. Its measured pre-edit
   population was 88, incorporating six earlier repairs absent from the published 94-site pin.
+  The five-file `CompoundAssignment` / `ConcatFunctions` / `ConstBytesConcat` / `ContractDeployment` /
+  `CovenantFailureTrace` slice is exhausted. It distinguishes three input-0 `OP_VERIFY` refusals, one exact
+  source-mapped failed require, and one input-0 Schnorr `NULLFAIL`.
 - **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
   compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
   compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`

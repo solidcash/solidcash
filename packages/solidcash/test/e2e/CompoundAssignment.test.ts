@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // Compound assignment operators desugar to `x = x <op> e` and inherit the binary operator's type
 // rules (arithmetic/shift on int; bitwise on bytes). Each function computes a known result and
 // requires it, so the spend only succeeds if every operator behaved correctly on the VM.
@@ -41,7 +43,7 @@ describe('Compound assignment operators', () => {
     // x=0 -> 5,2,4,1,1,8,4 -> a==4, not 8
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.arith(0n)).rejects.toThrow();
+    await expect(sc.arith(0n)).rejects.toThrow(verifyFailure);
   });
 
   it('bitwise compound ops on bytes compute the expected result', async () => {

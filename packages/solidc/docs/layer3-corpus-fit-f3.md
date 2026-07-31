@@ -311,7 +311,10 @@ recorded absent. The fallback hands back the error it swallowed; the direct path
 `MarketplaceDataV1` and `MarketplaceV1` under `MarketplaceV1/V2/V3.sol` - are one and the same
 `InvalidParameterTypeError: Found parameters (string) in call to function 'meceTags'` at
 `MarketplaceDataV1.sol:126`, reached only in bus mode, and the census records none of it. The probe now
-carries the sibling error through.
+carries the sibling error through. It also refuses the measurement if an absent artifact has no captured
+sibling cause: a successful multi-map omission, or a mutation deleting the fallback error, can no longer be
+published under the generic head. The focused classifier test pins both refusal paths without rewriting the
+committed census.
 
 **This does not touch section 3.1's 80%.** The refusal histogram is tallied over rows that compiled in bus
 mode - routed plus route-absent - so a bus-failure row contributes nothing to the 455 refusals. Nor does it

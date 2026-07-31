@@ -25,6 +25,7 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { classifyMissingBusArtifact } from './layer3-corpus-probe-classification-f3.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..', '..');
@@ -293,7 +294,6 @@ function probeOne(file, rel, corpus) {
     }
     const artifact = busArtifacts.get(name);
     if (artifact === undefined) {
-      row.bus = 'FAIL';
       // X84. NAME THE CAUSE INSTEAD OF THE SYMPTOM. `tryCompile` falls back from `compileFileMulti` to
       // `compileFile`, and it records the multi error as `siblingError`. The direct path keeps it; this path
       // used to throw it away and stamp every OTHER contract in the file with a head that names no cause at
@@ -303,11 +303,9 @@ function probeOne(file, rel, corpus) {
       //
       // The distinction the old head carried is kept on the row rather than in the head: `busAbsentFromMap`
       // records the mechanism, and the head names the error, because a histogram of heads is a histogram of
-      // CAUSES. A contract genuinely absent from a successful map - an interface, a declaration the bus mode
-      // does not emit - has no sibling error and still reads as absent.
-      row.busAbsentFromMap = true;
-      row.busError = bus.siblingError ?? 'Error: contract absent from the bus-mode artifact map';
-      if (bus.siblingError) row.busSiblingError = bus.siblingError;
+      // CAUSES. An absence without the primary fallback's sibling error now refuses the measurement: assigning
+      // a generic head would recreate the exact silent accounting defect this row closes.
+      Object.assign(row, classifyMissingBusArtifact(bus, name));
       return row;
     }
     row.bus = 'OK';

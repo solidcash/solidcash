@@ -88,22 +88,21 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
    * THE SUBJECT, established from this run's own compile rather than quoted. This is the partition test: it
    * states that the file under test is the writer-admitting recovered route and not another read surface.
    */
-  it('X201: the route admits `attack` again, now with its edge BOUND rather than unseen', () => {
+  it('X187: the route now REFUSES `attack` by name, and the ABI still publishes it as a writer', () => {
     const artifact = compileAttack(`aa20${'11'.repeat(32)}87`, '22'.repeat(32));
     expect(artifact.contractName).toBe('Attack');
     const handlers = artifact.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
     console.log(`[X136W] eligible ${JSON.stringify(eligible)}`);
-    // THE ADMISSION LOOKS THE SAME AS IT DID BEFORE X187 AND MEANS THE OPPOSITE. Originally `attack` was
-    // admitted because route synthesis could not SEE `wallet.transfer(...)` - a call on a contract-typed state
-    // variable is a namespaced FunctionCallNode until a later semantic pass - so the covenant framed no
-    // emission and the callee could simply be absent. X187 made synthesis see it, which refused the handler
-    // outright; X201 then re-admitted the bare-body spelling with the edge BOUND. Same eligible list, and the
-    // refusal has moved from admission to the covenant - see the settlement row below, refused at input 0.
-    expect(eligible).toEqual(['attack', 'owner', 'wallet']);
+    // X187 bound the contract-typed-receiver spelling: `wallet.transfer(...)` on a state variable now counts
+    // as an outgoing edge, where before route synthesis did not see it at all. `attack`'s body is that one
+    // call with no trailing require, which the bus does not admit in either spelling, so it is refused HERE
+    // rather than admitted with an unframed edge. Matched on the artifact's own reason, not on absence.
+    expect(eligible).toEqual(['owner', 'wallet']);
     const attackHandler = handlers.find((handler) => handler.name === 'attack');
-    expect(attackHandler.eligible).toBe(true);
-    expect(attackHandler.rejectionReason).toBeUndefined();
+    console.log(`[X136W] attack rejectionReason=${attackHandler.rejectionReason}`);
+    expect(attackHandler.eligible).toBe(false);
+    expect(attackHandler.rejectionReason).toBe('batched-handler-forward-call-not-enabled');
     const abiOf = (name: string): any => artifact.abi.find((entry: any) => entry.name === name);
     expect(abiOf('attack').writesState).toBe(true);
     expect(abiOf('owner').writesState).toBe(false);
@@ -348,25 +347,15 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
    */
   it('X187: the escape recorded here is CLOSED - the writer is refused before a transaction exists',
     async () => {
-      let planRefusal: Error | undefined;
-      let result: Awaited<ReturnType<typeof attempt>> | undefined;
+      let refusal: Error | undefined;
       try {
-        result = await attempt('attack', 'none');
+        await attempt('attack', 'none');
       } catch (error) {
-        planRefusal = error as Error;
+        refusal = error as Error;
       }
-      console.log(`[X136W] attack: plan=${planRefusal?.message.split('\n')[0] ?? 'ADMITTED'} `
-        + `vm=${result?.sent ?? result?.refusal?.split('\n')[0] ?? '-'}`);
-      // THE ESCAPE IS CLOSED EITHER WAY, AND WHICH WAY IS THE POINT. X187 closed it by REFUSING the handler;
-      // X201 then re-admitted the bare-body spelling with its edge BOUND, so the refusal moved from admission
-      // to the covenant. What must never hold is a settlement: `attack`'s only statement calls a contract the
-      // bus refuses, so no transaction can honestly carry that call.
-      expect(result?.sent, 'attack SETTLED with its callee absent - X187 has re-opened').toBeUndefined();
-      if (planRefusal !== undefined) {
-        expect(planRefusal.message).toContain('batched-handler-forward-call-not-enabled');
-      } else {
-        expect(result!.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy|OP_SPLIT/);
-      }
+      console.log(`[X136W] attack: ${refusal?.message.split('\n')[0] ?? 'STILL PLANS'}`);
+      expect(refusal, 'attack still plans - the X187 edge binding may have regressed').toBeDefined();
+      expect(refusal!.message).toContain('batched-handler-forward-call-not-enabled');
     }, 600_000);
 
   /**

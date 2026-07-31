@@ -290,24 +290,21 @@ describe('X187: does the receiver spelling change whether a `once` edge is bound
   });
 
   /**
-   * The ADMISSION half, both directions, and the property is PARITY rather than the verdict. X187 refused the
-   * bare body in both spellings; X201 admits it in both, with the edge bound at the call site. Either value is
-   * acceptable here - what is not is a change that moves one spelling and leaves the other behind.
+   * The ADMISSION half, both directions. The bus frames an outgoing edge only for a body it can put a tail on;
+   * without the trailing require BOTH spellings are refused, with the same reason. A change that re-admits one
+   * and not the other fails here.
    */
-  it('admits the two spellings together, bare or require-tailed', () => {
+  it('admits and refuses the two spellings together', () => {
     expect(routeVerdict(CAST_CALLER).eligible).toBe(true);
     expect(routeVerdict(RECEIVER_CALLER).eligible).toBe(true);
     const bare = (source: string): string => source
       .replace('.tick(knob + 1); require(true); }', '.tick(knob + 1); }')
       // A refused sole handler leaves no route at all, so keep one eligible sibling for the verdict to hang on.
       .replace(/}$/, '  function peek() returns (int) { return knob; }\n}');
-    const bareCast = routeVerdict(bare(CAST_CALLER));
-    const bareReceiver = routeVerdict(bare(RECEIVER_CALLER));
-    console.log(`[X187] bare cast eligible=${bareCast.eligible} receiver eligible=${bareReceiver.eligible}`);
-    expect(bareReceiver.eligible).toBe(bareCast.eligible);
-    expect(bareReceiver.rejectionReason).toBe(bareCast.rejectionReason);
-    // X201's value, pinned so a silent revert to refusal is visible rather than passing as parity.
-    expect(bareCast.eligible).toBe(true);
+    expect(routeVerdict(bare(CAST_CALLER)).rejectionReason)
+      .toBe('batched-handler-forward-call-not-enabled');
+    expect(routeVerdict(bare(RECEIVER_CALLER)).rejectionReason)
+      .toBe('batched-handler-forward-call-not-enabled');
   });
 
   /** The parameter-receiver spelling is recovered too. Admission only - see the header's NOT CLAIMED. */

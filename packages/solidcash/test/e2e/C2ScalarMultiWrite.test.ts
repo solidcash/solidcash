@@ -28,7 +28,9 @@ describe('C2 consecutive same-entry scalar RMW (must fail closed, never partial-
   const sig = new SignatureTemplate(alicePriv);
   let n = 0x1a00;
   const uid = (): string => { n += 1; return n.toString(16).padStart(64, '0'); };
-  const fund = async (a: string): Promise<void> => { await provider.addUtxo(a, { txid: uid(), vout: 0, satoshis: 100000n }); };
+  const fund = async (a: string): Promise<void> => {
+    await provider.addUtxo(a, { txid: uid(), vout: 0, satoshis: 100000n });
+  };
 
   it('m[k]+=a; m[k]+=b either coalesces to old+a+b OR reverts - never a wrong/partial value', async () => {
     const art = compileString(SRC, {});
@@ -58,8 +60,12 @@ describe('C2 consecutive same-entry scalar RMW (must fail closed, never partial-
     }
     // Either way the persisted value is sound: prove it is NOT a wrong partial by requiring 8 and 7 to be REJECTED.
     await fund(contract.address);
-    await expect(sc.chkval(pkh, 8n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.chkval(pkh, 8n, alicePub, sig).send()).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
     await fund(contract.address);
-    await expect(sc.chkval(pkh, 7n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.chkval(pkh, 7n, alicePub, sig).send()).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

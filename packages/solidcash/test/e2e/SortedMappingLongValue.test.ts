@@ -8,6 +8,9 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const badChunkRoot = 'C2 value chunks do not match the authenticated root';
+
 // P5b: a sorted (C2) mapping with an unbounded bytes/string VALUE that EXCEEDS the 60 B inline body. The entry
 // commitment stores len(4 B LE) ++ sha256(value) ++ head28 (128 B total); the full value persists
 // off-commitment in per-slot value chunks and a read verifies a caller witness against the stored hash. This closes
@@ -98,7 +101,8 @@ describe('sorted mapping with a LONG (>60 B) unbounded bytes/string value (P5b)'
     expect((await sc.check(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // present long -> witness verified
 
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, hexToBin('cd'.repeat(99) + 'ce'), alicePub, sig).send()).rejects.toThrow(); // wrong value -> revert
+    await expect(sc.check(5n, hexToBin('cd'.repeat(99) + 'ce'), alicePub, sig).send())
+      .rejects.toThrow(verifyFailure);
   });
 
   it('round-trip: deploy -> write a 200-byte value (mints chunks) -> read it back (reassembles witness)', async () => {
@@ -130,7 +134,8 @@ describe('sorted mapping with a LONG (>60 B) unbounded bytes/string value (P5b)'
     expect((await contract.check(7n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // read: chunks -> witness -> match
 
     await fund(contract.address);
-    await expect(contract.check(7n, hexToBin('ab12'.repeat(99) + 'ab13'), alicePub, sig).send()).rejects.toThrow(); // wrong -> revert
+    await expect(contract.check(7n, hexToBin('ab12'.repeat(99) + 'ab13'), alicePub, sig).send())
+      .rejects.toThrow(verifyFailure);
   });
 
   it('adversarial: a forged/tampered witness (chunks not matching the stored hash) fails the read closed', async () => {
@@ -167,9 +172,9 @@ describe('sorted mapping with a LONG (>60 B) unbounded bytes/string value (P5b)'
     // Reading the forged value fails (sha256(forged) != digest); reading the real value would too (chunks are wrong),
     // so a tampered chunk store makes the value UNREADABLE - never returns a wrong value. Fail-closed soundness.
     let sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, forgedVal, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(5n, forgedVal, alicePub, sig).send()).rejects.toThrow(badChunkRoot);
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, realVal, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(5n, realVal, alicePub, sig).send()).rejects.toThrow(badChunkRoot);
   });
 
   it('computed value UPDATE: a COMPUTED long value (local-var RHS) writes chunks (derived) and reads back', async () => {

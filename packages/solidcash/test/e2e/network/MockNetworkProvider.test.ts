@@ -54,7 +54,10 @@ describe.skipIf(Boolean(process.env.TESTS_USE_CHIPNET))('MockNetworkProvider', (
       // try to send invalid transaction
       await expect(provider.sendRawTransaction(tx.slice(0, -2))).rejects.toThrow('TX decode failed');
 
-      // send valid transaction
+      // send valid transaction.
+      // X195: `resolves.not.toThrow()` establishes only that the send did not REJECT - the `not.toThrow()`
+      // clause is a measured no-op on a non-function resolved value. It says nothing about the returned txid.
+      // Mutation-proven to discriminate: sending `tx.slice(0, -2)` here turns it red on "promise rejected".
       await expect(provider.sendRawTransaction(tx)).resolves.not.toThrow();
 
       // utxos should be removed from the provider

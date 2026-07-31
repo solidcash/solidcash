@@ -23,6 +23,15 @@ describe('TypeIntrospection', () => {
     await provider.addUtxo(contract.address, randomUtxo());
   });
 
+  /*
+   * X195. Every `resolves.not.toThrow()` below establishes exactly ONE thing: the send did not REJECT.
+   * The `not.toThrow()` clause is a no-op, measured rather than read: `expect(Promise.resolve(obj))
+   * .resolves.not.toThrow()` PASSES because the resolved value is not a function, while the same matcher
+   * without `.resolves` FAILS with "expected {...} to be a function". So `.resolves` carries the whole claim.
+   * These DO discriminate - mutation-proven: `checkIntBounds(-129n, ...)` turns line 38 red with "promise
+   * rejected ... instead of resolving". They establish NOTHING about the resolved TransactionDetails.
+   * Not repaired: no mutation distinguishes this form from a stronger one without changing `src/`.
+   */
   describe('checkIntBounds', () => {
     it('should succeed when value is within int8 range', async () => {
       const to = contract.address;

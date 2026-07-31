@@ -10,6 +10,12 @@ import {
 import { decodePushdataValue, scriptToBytecode } from '@solidcash/utils';
 import { oracle, oraclePub } from '../fixture/vars.js';
 
+const verifyPreflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const dataSignatureNullFail = 'layer3: BCH-2026 preflight failed at input 0: Program failed a signature '
+  + 'verification with a non-null signature (violating the "NULLFAIL" rule).';
+const verifyAtFinalProvider =
+  /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
+
 const SOURCE = `pragma solidcash >=0.8.0;
 contract HiddenBatchRelease4() {
   int counter;
@@ -98,7 +104,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
     forged[0] ^= 1;
     await expect(contract.batch([
       { function: 'accept', args: [forged, first] },
-    ]).send()).rejects.toThrow();
+    ]).send()).rejects.toThrow(dataSignatureNullFail);
   });
 
   it('preserves the owner-stable physical input index for every logical row', async () => {
@@ -129,7 +135,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
     await expect(contract.batch([
       { function: 'add', args: [7n] },
       { function: 'add', args: [-1n] },
-    ]).send()).rejects.toThrow();
+    ]).send()).rejects.toThrow(verifyPreflight);
     await contract.check(0n).send();
   });
 
@@ -161,7 +167,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
       le(0, 4), le(0, 2), le(encodedArgument.length, 2), encodedArgument,
     );
     expect(oversizedRaw.length).toBeGreaterThan(223);
-    await expect(contract._batchRaw(oversizedRaw).send()).rejects.toThrow();
+    await expect(contract._batchRaw(oversizedRaw).send()).rejects.toThrow(verifyPreflight);
   });
 
   it('rejects suffixes, count substitution, selector substitution, and noncanonical row identity in the VM', async () => {
@@ -176,7 +182,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
       const contract = await deploy();
       const selector = contract.inner.artifact.hiddenBatch!.handlers
         .find((handler) => handler.name === 'add')!.selector;
-      await expect(contract._batchRaw(mutate(oneAddBlob(selector))).send()).rejects.toThrow();
+      await expect(contract._batchRaw(mutate(oneAddBlob(selector))).send()).rejects.toThrow(verifyPreflight);
     }
   });
 });
@@ -230,7 +236,7 @@ describe('Release 4 mapping-backed owner-local batch SDK E2E', () => {
       hexToBin('53434231'), Uint8Array.from([1, 0, 1]), hexToBin(handler.selector),
       le(0, 4), le(0, 2), le(rowArgs.length, 2), rowArgs,
     );
-    await expect(contract._batchRaw(blob, [8n]).send()).rejects.toThrow();
+    await expect(contract._batchRaw(blob, [8n]).send()).rejects.toThrow(verifyPreflight);
   });
 });
 
@@ -473,16 +479,14 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
     /*
      * ATTRIBUTION. The refusal must be the forged byte's, so the message is matched rather than counted.
      * The covenant reaches input 0 and fails OP_VERIFY comparing the authenticated row value against the
-     * negated row argument: the VM trace at ip=182..183 holds `f581` (sign-magnitude -501, the forged
+     * negated row argument: the preflight trace at ip=182..183 holds `f581` (sign-magnitude -501, the forged
      * field) beside `f481` (-500, negated from the row's own `02 f4 01`). A dust refusal would be a
-     * `layer3:` byte-rule message raised in the SDK before the VM ever ran, which is asserted against
-     * explicitly - that is the exact way this guard would go vacuous.
+     * `layer3:` preflight message raised before final submission, which is asserted explicitly - that is the
+     * exact way this guard would go vacuous.
      */
     const failure = await submit(forged).then(() => undefined, (error: Error) => error);
     expect(failure).toBeInstanceOf(Error);
-    expect(failure!.message).toMatch(
-      /mandatory-script-verify-flag-failed .*evaluating input index 0: Program failed an OP_VERIFY operation/,
-    );
+    expect(failure!.message).toBe(verifyPreflight);
     expect(failure!.message).not.toMatch(/layer3: finalized transaction refused/);
   });
 });
@@ -526,7 +530,7 @@ describe('Release C bounded dynamic-resource batch', () => {
       output.token?.nft?.capability === 'mutable');
     expect(mutableOutputs.length).toBeGreaterThan(1);
     mutableOutputs[mutableOutputs.length - 1].token!.nft!.commitment[0] ^= 1;
-    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow(verifyAtFinalProvider);
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
     expect((await contract.getState()).text).toBe(finalValue);
   });
@@ -598,13 +602,13 @@ describe('Release C bounded dynamic-resource batch', () => {
     expect(remainder).toBeDefined();
     firstTransfer!.token!.amount = 101n;
     remainder!.token!.amount = 699n;
-    await expect(originalSend(binToHex(encodeTransaction(amountForged)))).rejects.toThrow();
+    await expect(originalSend(binToHex(encodeTransaction(amountForged)))).rejects.toThrow(verifyAtFinalProvider);
 
     const recipientForged = decodeTransactionUnsafe(hexToBin(captured));
     const secondTransfer = recipientForged.outputs.find((output) => output.token?.amount === 200n);
     expect(secondTransfer).toBeDefined();
     secondTransfer!.lockingBytecode[3] ^= 1;
-    await expect(originalSend(binToHex(encodeTransaction(recipientForged)))).rejects.toThrow();
+    await expect(originalSend(binToHex(encodeTransaction(recipientForged)))).rejects.toThrow(verifyAtFinalProvider);
 
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
     expect((await contract.getState()).calls).toBe(2n);
@@ -652,7 +656,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
     expect(events).toHaveLength(4);
 
     events[2].token!.nft!.commitment[events[2].token!.nft!.commitment.length - 1] ^= 1;
-    await expect(originalSend(binToHex(encodeTransaction(transaction)))).rejects.toThrow();
+    await expect(originalSend(binToHex(encodeTransaction(transaction)))).rejects.toThrow(verifyAtFinalProvider);
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
   });
 
@@ -693,7 +697,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
     const result = forged.outputs.find((output) => output.token?.nft?.capability === 'none');
     expect(result).toBeDefined();
     result!.token!.nft!.commitment[0] ^= 1;
-    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow(verifyAtFinalProvider);
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
   });
 
@@ -736,7 +740,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
       && binToHex(output.token.category) === categoryId);
     expect(event).toBeDefined();
     event!.token!.nft!.commitment[0] ^= 1;
-    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(originalSend(binToHex(encodeTransaction(forged)))).rejects.toThrow(verifyAtFinalProvider);
     await expect(originalSend(captured)).resolves.toBeTypeOf('string');
   });
 

@@ -293,7 +293,7 @@ contract Plain(bytes owner) {
       .toMatch(/^SETTLED /);
     // And the measured answer, pinned to its INPUT INDEX rather than to a bare throw.
     expect(split.result, 'a split callee now settles on a bus route - this row has changed and must be re-read')
-      .toMatch(/error in evaluating input index 2: Program failed an OP_VERIFY operation/);
+      .toBe('layer3: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.');
     // WHY it fails, and the reason it is a missing input rather than an unsatisfiable covenant: input 2 is the
     // callee's split ROOT, whose body is a forwarder to a facet, and no facet input is built at all.
     expect(split.rows[2]).toBe('2:callee-root');

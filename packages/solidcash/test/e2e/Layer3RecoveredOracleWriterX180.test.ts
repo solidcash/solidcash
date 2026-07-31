@@ -17,65 +17,76 @@ import {
 import type { Utxo } from '../../src/interfaces.js';
 
 /**
- * X180. THE BLOCK-ORACLE STAGING, AND THE FIRST MAPPING / MULTI-DATA-NFT RECOVERED WRITER EVER RUN.
+ * X180. THE "BLOCK ORACLE WALL" WAS NOT A BLOCK ORACLE. THREE OF THE FOUR BLOCKED ROWS RUN.
  *
- * FOUR rows of the recovered population were BLOCKED on one harness gap, not on the covenant. Every recovered
- * route that carries a block oracle - a compiler-injected `__block_timestamp` register plus an IMMUTABLE
- * `__blockOracleOwner` pubkey in a data NFT of its own - was refused by the recovered-writer staging:
+ * Four rows of the recovered population were carried as BLOCKED for several rounds, each on the same stated
+ * reason: the route carries a block oracle - a compiler-injected `__block_timestamp` register plus an
+ * IMMUTABLE `__blockOracleOwner` pubkey in a data NFT of its own - that the recovered-writer staging "does not
+ * reproduce". `Layer3RecoveredSetAX136` records `CrowdFund.count` refused at INPUT INDEX 2, "its ORACLE data
+ * NFT", and `Layer3RecoveredWritersX177` names the same wall for `UniswapV2Pair.initialize` and
+ * `StakingRewards.setRewardsDuration`.
  *
- *   subject                                  named blocked in                       shape
- *   StakingRewards.setRewardsDuration(u256)  Layer3RecoveredWritersX177             4 data NFTs + 3 entry slots
- *   UniswapV2Pair.initialize(addr,addr)      Layer3RecoveredWritersX177             4 data NFTs, 3 mappings
- *   CrowdFund.count()                        Layer3RecoveredSetAX136                2 data NFTs, refused at 2
- *   EnglishAuction (its read surface)        Layer3RecoveredSetAX136                3 data NFTs
+ * THE WALL IS ONE ARGUMENT IN THE HARNESS, AND IT HAS NOTHING TO DO WITH ORACLES.
  *
- * WHAT THE GAP ACTUALLY WAS, measured rather than assumed. The oracle registers are ORDINARY state variables
- * living in ordinary data NFTs - there is no oracle covenant, no separate address and no side-car UTXO to
- * stage. What the earlier staging did was never NAME them in the row's declared pre-state, so
- * `buildInitialStateCommitments` filled `__block_timestamp` with 0 and `__blockOracleOwner` with 33 zero
- * bytes, and those commitments are not the ones the route recomputes. The fix is one helper,
- * `withBlockOracle`, which reads the injected registers off the contract's OWN published state layout and
- * seeds them. Nothing else about the staging changes.
+ * `createDataNftUnlocker(contract, masterInputIndex, categoryId)` takes the input index of the MASTER, which
+ * the data NFT covenant's write path reads to check a minting NFT is co-spent. The three recovered-population
+ * files pass the data NFT's own SLOT index instead - `createDataNftUnlocker(participant, index, ...)`. That
+ * names the master only for slot 0. Every route with TWO OR MORE data NFTs therefore fails the covenant's
+ * `OP_2 OP_EQUALVERIFY` capability check at its SECOND data NFT, which sits at input index 2, whether or not
+ * it carries an oracle. No oracle-free multi-data-NFT route was ever run to notice, and every route that
+ * happened to carry an oracle also happened to have more than one data NFT.
  *
- * THAT CLAIM IS TESTED IN BOTH DIRECTIONS, because "a shape refuses" is worth nothing until the refusal is
- * pinned on the right thing. For each oracle-bearing row this file runs the SAME route twice, differing in
- * exactly the oracle registers and in nothing else:
+ * Every other Layer-3 file in this suite passes the master index (`layout.participantInputs[0]`).
  *
- *   CONTROL   the oracle registers omitted from the pre-state - the OLD staging - is REFUSED, at a pinned
- *             input index, with the refusal text quoted.
- *   SUBJECT   the oracle registers seeded - the NEW staging - SETTLES, as its own broadcast transaction.
+ * CONTROL A PINS IT, one variable at a time. The same route is built twice, differing ONLY in that argument:
+ * with the master index it SETTLES and is broadcast; with the slot index it is refused at input index 2, the
+ * index X136 recorded and attributed to the oracle.
  *
- * A row that only settled would leave open that the old wall was something else; a row that only refused
- * would be the trap `Layer3RecoveredVoidWriterX177` documents, where a staging defect was read for four
- * rounds as a covenant property.
+ * WHAT THE ORACLE STAGING IS ACTUALLY FOR. The injected registers are ORDINARY state variables in ordinary
+ * data NFTs - no oracle covenant, no separate address, no side-car UTXO. But a pre-state that never NAMES them
+ * encodes `__block_timestamp` as 0 and `__blockOracleOwner` as 33 zero bytes, and the route recomputes neither.
+ * `withBlockOracle` reads the registers off the contract's OWN published state layout and seeds them; CONTROL
+ * B drops each register on its own, everything else held identical, and reads the verdict and failing input
+ * index per register. Both walls had to fall for any of these rows to run.
  *
- * WHAT THIS FILE ESTABLISHES, and it is the first of its kind on this board.
+ * A THIRD THING THE STAGING NEEDED: A REAL TRANSACTION ORIGIN. A transcript that declares a root caller is
+ * pinned by the projection to `tx.origin`, which the compiler emits as a scan for the first NON-TOKEN input
+ * whose locking bytecode is a bare 25-byte `76a914..88ac`. The harness's `p2pkh` fixture is a CONTRACT, so its
+ * inputs are p2sh and the scan matches nothing, fails its own closing OP_VERIFY, and aborts the PROJECTION
+ * input - at index 9, nowhere near the participant covenant. Rows that declare a caller are funded from a bare
+ * P2PKH address here. Without it no `onlyOwner`-shaped handler is reachable at all.
  *
- *  1. `StakingRewards.setRewardsDuration` SETTLES. It is the FIRST recovered writer run on the VM that is not
- *     a single scalar in a single data NFT: FOUR data NFTs are co-spent and rebuilt and THREE sorted-mapping
- *     entry NFTs ride the same block. Every prior proved writer (`Counter.inc`, `Lib.doSomething`) is one
- *     scalar in one data NFT with no collection anywhere.
- *  2. THE WRITE IS REAL, READ OFF THE COVENANT, ONE SLOT AT A TIME, by the sentinel method X177 introduced:
+ * WHAT THIS FILE ESTABLISHES.
+ *
+ *  1. `StakingRewards.setRewardsDuration(uint256)` SETTLES - `onlyOwner`, behind `finishAt < block.timestamp`,
+ *     with FOUR data NFTs co-spent and rebuilt and THREE sorted-mapping ENTRY NFTs riding the same block.
+ *  2. `UniswapV2Pair.initialize(address,address)` SETTLES - TWO fields written, four data NFTs, a
+ *     three-mapping layout, behind `msg.sender == factory`.
+ *  3. `CrowdFund.count()` SETTLES - the row recorded as refused at input 2.
+ *  4. THE WRITE IS REAL, READ OFF THE COVENANT, ONE SLOT AT A TIME, by the sentinel method X177 introduced:
  *     each data NFT slot is probed with a commitment the covenant cannot have computed, so the route's own
  *     comparison hands back the commitment IT computed. `buildInitialStateCommitments` is used afterwards
  *     only to say WHICH state those bytes are.
- *  3. THE UNTOUCHED-DATA-NFT HOSTILE FINALLY HAS A SUBJECT. `Counter.inc` cannot test it - it has one data
- *     NFT. Here a data NFT the handler does NOT write is moved one bit and the route refuses, so the covenant
- *     pins EVERY data NFT in its block and not only the slot it writes.
- *  4. THE ENTRY SLOTS ARE LIVE. A co-spent sorted-collection entry NFT moved one bit is refused, so the three
- *     mapping entry NFTs are authenticated rather than merely present.
- *  5. `CrowdFund.count` and `EnglishAuction.highestBid` SETTLE through the same staging, closing the two
- *     read-surface rows X136 left open.
+ *  5. THE UNTOUCHED-DATA-NFT HOSTILE FINALLY HAS A SUBJECT. `Counter.inc` cannot test it - it has one data
+ *     NFT. Here a data NFT the handler does NOT write is moved one bit and the route refuses at input 0, so
+ *     the covenant pins EVERY data NFT in its block and not only the slot it writes.
+ *  6. THE ENTRY SLOTS ARE AUTHENTICATED. A co-spent sorted-collection entry NFT moved one bit is refused at
+ *     input 0, so the three mapping entry NFTs are checked rather than merely present.
  *
  * WHAT IS NOT ESTABLISHED, and it bounds every sentence above.
  *
- *  - `UniswapV2Pair.initialize` HAS NO VM SUBJECT, and the block oracle is not why. Compiled in bus mode at
- *    this commit the contract is 17,224 bytes against BCH's 10,000-byte input-script limit; the compiler
- *    itself refuses it ("cannot be deployed without splitting"). No staging can run it, so its two-field /
- *    four-NFT / three-mapping shape stays unproven. That is measured below, not asserted.
- *  - THREE handlers of the 206 are added here. The population remains overwhelmingly unproven.
- *  - Semantic profile only. `createLayer3SemanticTestProvider` relaxes capacity; this is not deployability,
- *    relay or consensus-fit evidence.
+ *  - THREE handlers of the 206 gain VM evidence here. The population remains overwhelmingly unproven, and
+ *    nothing here speaks for a handler this file does not run.
+ *  - `EnglishAuction`'s read surface is STILL unproven. Its route aborts at a fixed instruction pointer before
+ *    any handler dispatch; three different handlers and a fully ZEROED pre-state all stop at the same pointer,
+ *    so the abort is neither the handler nor the declared state - and this file does not say what it is.
+ *    That is not evidence the covenant rejects the shape, and not evidence it accepts it.
+ *  - SEMANTIC PROFILE ONLY, and the numbers are printed. `UniswapV2Pair` is 17,224 bytes and `StakingRewards`
+ *    12,972 against BCH's 10,000-byte input-script limit; the compiler emits its own error for both. These
+ *    routes execute only because `createLayer3SemanticTestProvider` relaxes `maximumInputBytes`. A real node
+ *    would refuse these inputs on SIZE before running a single opcode. Nothing here is deployability, relay
+ *    or consensus-fit evidence.
+ *  - No recovered writer over a DYNAMIC string or an unbounded chunk collection is run here or anywhere.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -194,8 +205,10 @@ interface Row {
   /**
    *  - `settles`   a state-CHANGING handler runs to completion and the post state is read off the covenant.
    *  - `reads`     a read-only handler settles and publishes the result the route computed.
+   *  - `unproven`  the route aborts before it publishes anything, and this file could not isolate why. NOT
+   *                evidence in either direction, and the abort is measured rather than described.
    */
-  verdict: 'settles' | 'reads';
+  verdict: 'settles' | 'reads' | 'unproven';
 }
 
 /**
@@ -259,8 +272,8 @@ const ROWS: readonly Row[] = [
     contract: 'EnglishAuction',
     writer: 'highestBid',
     writerArgs: [],
-    guards: [{ name: 'endAt', args: [] }],
-    verdict: 'reads',
+    guards: [{ name: 'endAt', args: [] }, { name: 'started', args: [] }],
+    verdict: 'unproven',
     rootCaller: 'pkh',
     oracleTimestamp: 1_700_000_000n,
     pre: {
@@ -696,28 +709,50 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
   }
 
   /** The declared result the route computes for a RETURNING handler, read off its own trace. */
+  interface Abort { ip: number; ops: string; steps: number; error: string }
+
+  /**
+   * WHERE a probe stopped, not just that it did.
+   *
+   * A route that aborts before its return-event check publishes no result, and X136 recorded exactly that for
+   * `EnglishAuction` without being able to say where. This reads the abort off the trace: the instruction
+   * pointer, the eight instructions leading to it with any pushed data, and the VM's own error string. Two
+   * aborts with the same `ip` are the same abort, which is what makes "every handler stops in the same place"
+   * a measurement.
+   */
+  function abortOf(trace: unknown[]): Abort {
+    const last = trace[trace.length - 1] as {
+      error?: string; ip?: number; instructions?: Array<{ opcode: number; data?: Uint8Array }>;
+    };
+    const ip = last.ip ?? -1;
+    const ops = (last.instructions ?? []).slice(Math.max(0, ip - 8), ip + 1)
+      .map((instruction) => `${instruction.opcode.toString(16).padStart(2, '0')}`
+        + `${instruction.data ? `(${binToHex(instruction.data)})` : ''}`).join(' ');
+    return { ip, ops, steps: trace.length, error: last.error ?? 'no error recorded' };
+  }
+
+  /** The result the route computed, or the abort that stopped it before it computed one. */
+  async function probeOutcome(row: Row, handler: string, args: readonly unknown[], options: {
+    preOverride?: Record<string, unknown>;
+  } = {}): Promise<{ result?: Uint8Array; abort?: Abort }> {
+    const probe = await attempt(row, handler, args, 'none', { probe: true, ...options });
+    const found = operandComparedAgainst(probe.trace!, PROBE_RESULT);
+    return found === undefined ? { abort: abortOf(probe.trace!) } : { result: found };
+  }
+
   const cachedResult = new Map<string, Uint8Array>();
   async function routeResult(row: Row, handler: string, args: readonly unknown[]): Promise<Uint8Array> {
     const key = `${row.key}|${handler}`;
     if (!cachedResult.has(key)) {
-      const probe = await attempt(row, handler, args, 'none', { probe: true });
-      const found = operandComparedAgainst(probe.trace!, PROBE_RESULT);
-      if (found === undefined) {
-        // WHERE it stopped, not just that it did: a probe that aborts early is the reading X136 recorded for
-        // EnglishAuction and could not explain, so the abort's own error is quoted rather than inferred.
-        const last = probe.trace![probe.trace!.length - 1] as {
-          error?: string; ip?: number; instructions?: Array<{ opcode: number }>; stack?: Uint8Array[];
-        };
-        const window = (last.instructions ?? [])
-          .slice(Math.max(0, (last.ip ?? 0) - 8), (last.ip ?? 0) + 1)
-          .map((instruction) => instruction.opcode.toString(16).padStart(2, '0')).join(' ');
-        console.log(`[X180] ${key} ABORT ip=${last.ip} ops[ip-8..ip]=${window} `
-          + `stackDepths=${JSON.stringify((last.stack ?? []).slice(-4).map((item) => item.length))}`);
+      const outcome = await probeOutcome(row, handler, args);
+      if (outcome.result === undefined) {
+        const abort = outcome.abort!;
+        console.log(`[X180] ${key} ABORT ip=${abort.ip} steps=${abort.steps} ops=${abort.ops}`);
         throw new Error(`${key}: the probe trace never compared the declared result `
-          + `(trace stopped after ${probe.trace!.length} steps: ${last?.error ?? 'no error recorded'})`);
+          + `(stopped after ${abort.steps} steps at ip ${abort.ip}: ${abort.error})`);
       }
-      cachedResult.set(key, found);
-      console.log(`[X180] ${key} result off its own trace: ${binToHex(found)}`);
+      cachedResult.set(key, outcome.result);
+      console.log(`[X180] ${key} result off its own trace: ${binToHex(outcome.result)}`);
     }
     return cachedResult.get(key)!;
   }
@@ -810,6 +845,47 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     // The index is the whole point: X136 read a refusal at the ORACLE DATA NFT and blamed the oracle. Staged
     // correctly, an oracle-shaped refusal names input 0 - the participant - and never a data NFT.
     expect(all.failingInput, 'the refusal did not name the participant input').toBe(0);
+  };
+
+  /**
+   * AN ABORT THIS FILE COULD NOT ISOLATE, STATED AS SUCH.
+   *
+   * `EnglishAuction`'s route stops before it publishes anything, so there is nothing to attack and nothing to
+   * settle. What CAN be measured is that the abort is not the row's declared state and not the caller shape:
+   *
+   *  - EVERY handler tried stops at the SAME instruction pointer, and that pointer is reached before any
+   *    handler-specific dispatch, so it is a property of the route preamble and not of `highestBid`.
+   *  - A FULLY ZEROED pre-state - the suspected cause removed entirely - aborts at the same pointer. That is
+   *    the method `Layer3RecoveredVoidWriterX177` earned the hard way: a shape that refuses is only evidence
+   *    once the refusal survives deleting what you think caused it.
+   *
+   * So this row is NOT evidence that the covenant rejects a three-data-NFT oracle read surface, and it is not
+   * evidence that it accepts one. What it would take to close: mapping this instruction pointer back through
+   * the route's source map to the `require` it belongs to, which this file does not do.
+   */
+  const unresolvedAbort = (row: Row) => async (): Promise<void> => {
+    const aborts: Array<{ what: string; abort: Abort }> = [];
+    for (const handler of [row.writer, ...row.guards.map((g) => g.name)]) {
+      const outcome = await probeOutcome(row, handler, []);
+      expect(outcome.result, `${row.key}/${handler} reached its return check - this row is no longer unproven`)
+        .toBeUndefined();
+      aborts.push({ what: handler, abort: outcome.abort! });
+    }
+    // The suspected cause REMOVED: no declared state at all, every field left at the encoder's zero.
+    const zeroed = await probeOutcome(row, row.writer, [], { preOverride: {} });
+    expect(zeroed.result, `${row.key}: a zeroed pre-state reached the return check`).toBeUndefined();
+    aborts.push({ what: 'ZEROED pre-state', abort: zeroed.abort! });
+    for (const entry of aborts) {
+      console.log(`[X180] ${row.key} ABORT (${entry.what}): ip=${entry.abort.ip} `
+        + `steps=${entry.abort.steps} error=${entry.abort.error}`);
+    }
+    console.log(`[X180] ${row.key} ABORT ops[ip-8..ip]=${aborts[0].abort.ops}`);
+    const pointers = [...new Set(aborts.map((entry) => entry.abort.ip))];
+    console.log(`[X180] ${row.key} distinct abort pointers across `
+      + `${aborts.length} attempts: ${JSON.stringify(pointers)}`);
+    expect(pointers, `${row.key}: the abort moved, so it IS a function of the handler or the declared state`)
+      .toHaveLength(1);
+    expect(aborts.every((entry) => /OP_VERIFY/.test(entry.abort.error))).toBe(true);
   };
 
   /**
@@ -958,6 +1034,11 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
   }
 
   for (const row of ROWS) {
+    if (row.verdict === 'unproven') {
+      it(`MEASURED: ${row.key} ABORTS in its route preamble - no VM subject, and this file cannot say why`,
+        unresolvedAbort(row), 1_800_000);
+      continue;
+    }
     it(`CONTROL A: ${row.key} with the legacy master input index is REFUSED at the second data NFT`,
       legacyMasterIndexControl(row), 1_800_000);
     it(`CONTROL B: ${row.key} with each oracle register dropped on its own`,

@@ -1367,7 +1367,17 @@ function synthesizeHiddenBatchRoute(
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__scb_sig_${handlerIndex}_${parameterIndex}_r${row}`;
-  const logicalValueMode = graphMsgValueHandlers.size > 0;
+  // X199. THE ROUTE'S ROW FORMAT IS DECIDED OVER THE HANDLERS THE ROUTE CAN DISPATCH.
+  //
+  // `graphMsgValueHandlers` is filled during the FIRST per-handler pass and never revised, while `eligible`
+  // is afterwards narrowed by `applyRouteUniformity` - so the raw set is a THIRD population, neither the
+  // published handlers nor the final survivors, and a payable handler admitted by pass one and demoted by
+  // uniformity still widened every row from 12 to 21 bytes. Intersecting with the survivors is also what makes
+  // the flag REPRODUCIBLE off the artifact: `handlers[].eligible && handlers[].usesMsgValue` is the same
+  // predicate, and it is the one the SDK encoder now computes (`layer3/hidden-batch.ts`). Counting every
+  // published handler instead would agree just as well, but it lets a handler route synthesis REFUSED size the
+  // route that was admitted, and buys no admission - `buildDecodeAndCall` maps over `eligible` only.
+  const logicalValueMode = eligible.some((fn) => graphMsgValueHandlers.has(fn));
   let resourceHandlerInvokeName: string | undefined;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();

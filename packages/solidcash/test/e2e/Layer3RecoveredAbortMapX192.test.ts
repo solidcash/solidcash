@@ -15,6 +15,7 @@ import {
   createDataNftUnlocker, getDataNftAddress,
 } from '../../src/stateful/covenant-helpers.js';
 import type { Utxo } from '../../src/interfaces.js';
+import { addRouteEntrySlot, stageEmptyRouteEntries } from './layer3-route-entry-fixture.js';
 
 /**
  * X192. WHERE `EnglishAuction`'s ROUTE ABORTS, MAPPED BACK TO ITS `require` - AND IT IS THE SDK's BLOB HEADER.
@@ -199,6 +200,9 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
       ?? withBlockOracle(artifact.stateLayout, PRE, ORACLE_TIMESTAMP);
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, pre);
     const participant = base.withCategory(hexToBin(setup.categoryId));
+    const stagedEntries = await stageEmptyRouteEntries(
+      provider as never, participant, setup.categoryId, artifact.hiddenBatch!.route,
+    );
     const published = buildInitialStateCommitments(artifact.stateLayout!, pre);
 
     const returns = (artifact.hiddenBatch!.handlers as any[])
@@ -283,6 +287,7 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
 
     const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
     let dataNftCursor = 0;
+    let entryCursor = 0;
     for (const slot of artifact.hiddenBatch!.route.blockLayout!.slots as any[]) {
       switch (slot.kind) {
         case 'master':
@@ -313,6 +318,12 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
           });
           break;
         }
+        case 'entry':
+          addRouteEntrySlot(
+            tx, participant, setup.categoryId, artifact.hiddenBatch!.route, stagedEntries, entryCursor,
+          );
+          entryCursor += 1;
+          break;
         case 'returnEvent':
           tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
           tx.addOutput({

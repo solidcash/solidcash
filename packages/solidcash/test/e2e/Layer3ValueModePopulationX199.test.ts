@@ -13,6 +13,7 @@ import { aliceAddress, alicePkh, alicePriv, alicePub } from '../fixture/vars.js'
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
 import type { Utxo } from '../../src/interfaces.js';
+import { addRouteEntrySlot, stageEmptyRouteEntries } from './layer3-route-entry-fixture.js';
 
 /**
  * X199. ONE QUESTION, TWO POPULATIONS - AND THE POPULATION THE ROUTE CAN DISPATCH IS THE ONE THAT DECIDES.
@@ -160,6 +161,9 @@ describe('X199: the SCB1 value-mode byte, decided over the dispatchable set', ()
     const pre = withBlockOracle(artifact.stateLayout, PRE, ORACLE_TIMESTAMP);
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, pre);
     const participant = base.withCategory(hexToBin(setup.categoryId));
+    const stagedEntries = await stageEmptyRouteEntries(
+      provider as never, participant, setup.categoryId, artifact.hiddenBatch!.route,
+    );
     const published = buildInitialStateCommitments(artifact.stateLayout!, pre);
 
     const returns = (artifact.hiddenBatch!.handlers as any[])
@@ -248,6 +252,7 @@ describe('X199: the SCB1 value-mode byte, decided over the dispatchable set', ()
 
     const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
     let dataNftCursor = 0;
+    let entryCursor = 0;
     for (const slot of artifact.hiddenBatch!.route.blockLayout!.slots as any[]) {
       switch (slot.kind) {
         case 'master':
@@ -278,6 +283,12 @@ describe('X199: the SCB1 value-mode byte, decided over the dispatchable set', ()
           });
           break;
         }
+        case 'entry':
+          addRouteEntrySlot(
+            tx, participant, setup.categoryId, artifact.hiddenBatch!.route, stagedEntries, entryCursor,
+          );
+          entryCursor += 1;
+          break;
         case 'returnEvent':
           tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
           tx.addOutput({

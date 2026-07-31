@@ -206,8 +206,13 @@ ${body}
   }`);
 
   it('does not throw the internal code-generation sentinel', () => {
+    // MEASURED: the second assertion here was `not.toThrow(/Unbound return call/)`, which could not fail on
+    // two counts - the bare `not.toThrow()` above already admits no throw at all, and that sentinel string
+    // survives only in COMMENTS (Errors.ts:1327, compiler.ts:1041), so no throw site can emit it. The subject
+    // is gone; it would return only if the sentinel were reintroduced as a throw. What is live is that the
+    // compile SUCCEEDS and produces the artifact, so assert that instead of a string that cannot appear.
     expect(() => compileString(resultAndEmit, graph)).not.toThrow();
-    expect(() => compileString(resultAndEmit, graph)).not.toThrow(/Unbound return call/);
+    expect(compileString(resultAndEmit, graph).contractName).toBe('X22Accrue');
   });
 
   it('names the refused handler and the reason', () => {

@@ -62,7 +62,12 @@ describe('X75 an unbound returning edge fails closed with a named diagnostic', (
   it('is a named error, not a bare internal sentinel', () => {
     expect(refusal).toBeInstanceOf(UnboundReturnCallError);
     expect(refusal!.name).toBe('UnboundReturnCallError');
-    expect(refusal!.message).not.toMatch(/Unbound return call in/);
+    // MEASURED: the old `not.toMatch(/Unbound return call in/)` here could not fail. That sentinel string
+    // survives only in COMMENTS (Errors.ts:1327, compiler.ts:1041); no throw site emits it, so the control
+    // named vocabulary the subject cannot produce. Its subject is genuinely gone - it would be restored only
+    // by the bare sentinel being reintroduced as a throw. Replaced with a live check on the shape the message
+    // actually has, which is what "named, not internal" means at this commit.
+    expect(refusal!.message).toMatch(/^Function '__scb1' consumes the return value of the external call/);
   });
 
   it('names the edge, the function whose layout has no slot, and why', () => {

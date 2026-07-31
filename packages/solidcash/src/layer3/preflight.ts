@@ -675,6 +675,86 @@ export function assertFinalizedTransactionBytes(
   );
 }
 
+/**
+ * X175/X186. THE COVENANT'S OWN OBJECTION to a finalized transaction, or undefined when every input evaluates.
+ *
+ * The same per-input BCH-2026 evaluation `sendPreflightedLayer3Transaction` runs, from the same
+ * provider-derived factory `StatefulTransactionBuilder._strictRecursiveVmPreflight` uses, which at
+ * `@mem-cash/validation` 0.0.8 agrees with the mock's own decider on every shape measured (X121).
+ *
+ * `debug()` IS NOT THE INSTRUMENT TO REACH FOR at any of the sites that route through here. The four
+ * `StatefulContract` lifecycle-admin sites bypass it outright; `TransactionBuilder.send` debugs a COVENANT
+ * input best-effort and SWALLOWS the result, and does not debug a custom unlocker at all. Evaluating the
+ * finalized bytes needs no wallet template and no swallowing.
+ *
+ * NEVER THROWS, and that is load-bearing: it annotates a refusal that is already decided, so a harness that
+ * cannot supply source outputs must leave the byte refusal exactly as it was rather than replace it.
+ */
+export function covenantObjectionOf(
+  builder: TransactionBuilder, transaction: Transaction,
+): string | undefined {
+  try {
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+      if (state.error !== undefined) return `input ${inputIndex}: ${state.error}`;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * X175/X186. THE BYTE GATE WHEREVER NO DECIDER IS GUARANTEED TO HAVE SPOKEN FIRST. It reports BOTH objections,
+ * so the ordering it used to have cannot matter.
+ *
+ * WHAT THE ORDERING COST. At a site with no covenant verdict ahead of it the gate is the first decider to
+ * speak, and a transaction that broke its covenant AND paid dust reported the dust. That is the exact shape
+ * that made the seventh vacuous guard on this effort: a hostile test whose loose match absorbed a new gate's
+ * dust error and kept passing while its rejection was no longer the forgery's. Pinning the window with an
+ * ordering row recorded the hazard; it did not remove it, because any future hostile that pays dust and
+ * matches loosely walks back into it.
+ *
+ * SO NEITHER OBJECTION IS ALLOWED TO MASK THE OTHER. When the bytes are refused this asks the covenant too, and
+ * a transaction that breaks both names both - covenant FIRST, matching the ordering principle every other live
+ * site already follows ("a transaction that cannot execute reports its semantic cause"). A test matching on the
+ * covenant's message and a test matching on the byte rule now both find their own subject, whichever fires.
+ *
+ * WHERE IT IS ROUTED. The four `StatefulContract` lifecycle-admin sites (destroy, split, merge,
+ * `_sendRawBuilder`), which bypass `debug()`, and `TransactionBuilder.send`, whose two residual windows are a
+ * COVENANT input (debugged best-effort, result swallowed) and a CUSTOM UNLOCKER (not debugged at all). The
+ * `send` window is why this lives here rather than beside its first caller.
+ *
+ * THE BLAST RADIUS IS THE SET THE GATE ALREADY REFUSED, and nothing else. The VM is consulted only on a path
+ * that has already decided to throw, so no transaction that used to settle can now fail, and it costs nothing
+ * on the admitted path because the bytes are assessed FIRST and an admitted verdict returns before anything
+ * else runs. A byte-only refusal keeps its message byte for byte - `assertFinalizedTransactionBytes` still
+ * produces it. `admitted` decides the branch rather than the refusal list because these sites pass no
+ * `allowNonRelayable`, so every refusal is enforced and `admitted === false` is exactly "the assert throws".
+ *
+ * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor and an attacker does not call
+ * `StatefulContract.split` or `TransactionBuilder.send`. A composer reads two causes here instead of building,
+ * funding, signing and broadcasting twice to find the second one.
+ */
+export function assertFinalizedBytesWithCovenant(
+  builder: TransactionBuilder, transaction: Transaction,
+  subjects: readonly (FinalizedByteSubject | undefined)[],
+): void {
+  const verdict = assessFinalizedTransactionBytes(transaction, subjects);
+  if (verdict.admitted) return;
+  const covenant = covenantObjectionOf(builder, transaction);
+  // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
+  if (covenant === undefined) assertFinalizedTransactionBytes(transaction, { inputSubjects: subjects });
+  throw new Error(
+    `layer3: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
+    + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
+    + `${verdict.outputCount} outputs):\n  [covenant] ${covenant}\n`
+    + verdict.refusals.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
+  );
+}
+
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {

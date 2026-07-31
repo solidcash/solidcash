@@ -50,7 +50,7 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
-import { assertFinalizedTransactionBytes, inputSubjectsOfBuilder } from './layer3/preflight.js';
+import { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } from './layer3/preflight.js';
 import { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
@@ -1173,9 +1173,17 @@ export class TransactionBuilder {
     // contract family, the true boundary is 122 bytes below the compiler's threshold, so contracts that
     // compile without a diagnostic are refused here. `inputSubjectsOfBuilder` gives the refusal the contract
     // name the input index alone does not carry.
-    assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(tx)), {
-      inputSubjects: inputSubjectsOfBuilder(this),
-    });
+    //
+    // X186. THE TWO RESIDUAL WINDOWS ABOVE ARE CLOSED HERE, not by reordering. `debug()` speaks first only for
+    // a STANDARD NON-COVENANT transaction; a covenant input is debugged best-effort and the result SWALLOWED
+    // (see the try/catch above), and a custom unlocker is not debugged at all. On those two paths the gate was
+    // the first decider to speak, which is the shape that absorbs a hostile's real cause into a dust message -
+    // exactly how the seventh vacuous guard on this effort was made. `assertFinalizedBytesWithCovenant` asks
+    // the covenant WHENEVER the bytes are refused and reports both, so neither can mask the other and the
+    // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
+    // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
+    // through this site are byte-for-byte unaffected.
+    assertFinalizedBytesWithCovenant(this, decodeTransactionUnsafe(hexToBin(tx)), inputSubjectsOfBuilder(this));
 
     let txid: string;
     try {

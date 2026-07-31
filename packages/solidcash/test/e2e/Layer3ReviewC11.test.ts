@@ -323,6 +323,10 @@ const EMISSION = {
   targetLengthFrame: 0, target: 5, callMode: 37, selector: 38,
 } as const;
 
+const scriptRefusalAt = (input: number): RegExp => new RegExp(
+  `mandatory-script-verify-flag-failed .*error in evaluating input index ${input}:`,
+);
+
 describe('C-R11 / X23: the rewritten projection verifier, isolated from the caller route', () => {
   it('honest control: every input passes independently, and the graph settles', async () => {
     const built = await buildRootReturningGraph();
@@ -350,7 +354,8 @@ describe('C-R11 / X23: the rewritten projection verifier, isolated from the call
     expect(results[INPUT.projectionRoot]).not.toBe(null);
     // The callee's projection slot has no emission region, so it must NOT be credited with the rejection.
     expect(results[INPUT.projectionLeaf]).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.masterRoot));
   }, 120_000);
 
   it('the projection verifier itself refuses an emissions region no invocation exhausts', async () => {
@@ -359,7 +364,8 @@ describe('C-R11 / X23: the rewritten projection verifier, isolated from the call
     expect(results[INPUT.masterRoot]).not.toBe(null);
     expect(results[INPUT.projectionRoot]).not.toBe(null);
     expect(results[INPUT.projectionLeaf]).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.masterRoot));
   }, 120_000);
 
   // Attacks the `activeCallees` BYTE TABLE X23 substituted for the unrolled scalar frames plus if-chain.
@@ -375,7 +381,8 @@ describe('C-R11 / X23: the rewritten projection verifier, isolated from the call
     const results = evaluateEachInput(built.builder);
     expect(results[INPUT.projectionRoot]).not.toBe(null);
     expect(results[INPUT.controller]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.projectionRoot));
   }, 120_000);
 
   // Attacks the `usedMask` BYTE TABLE X23 substituted for the eight `participantUsed` booleans and the
@@ -390,7 +397,8 @@ describe('C-R11 / X23: the rewritten projection verifier, isolated from the call
     expect(results[INPUT.projectionRoot]).not.toBe(null);
     expect(results[INPUT.projectionLeaf]).not.toBe(null);
     expect(results[INPUT.controller]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.projectionRoot));
   }, 120_000);
 });
 
@@ -411,7 +419,8 @@ describe('C-R11 / X27: the suffix-split invariant in attest', () => {
     const results = evaluateEachInput(built.builder);
     expect(results[INPUT.controller]).not.toBe(null);
     expect(results[INPUT.projectionRoot]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.projectionRoot));
   }, 120_000);
 
   // Drives `cursor` into the invocation region: the third participant frame is parsed out of invocation
@@ -420,7 +429,8 @@ describe('C-R11 / X27: the suffix-split invariant in attest', () => {
     const built = await buildRootReturningGraph({ patch: (t) => patchTranscriptByte(t, 9, 0x03) });
     const results = evaluateEachInput(built.builder);
     expect(results[INPUT.controller]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.projectionRoot));
   }, 120_000);
 
   // `require(lbcLength > 0 && 8 + lbcLength <= frame.length)` is the rewritten form of
@@ -429,7 +439,8 @@ describe('C-R11 / X27: the suffix-split invariant in attest', () => {
     const built = await buildRootReturningGraph({ patch: (t) => patchTranscriptByte(t, 15, 0xff) });
     const results = evaluateEachInput(built.builder);
     expect(results[INPUT.controller]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.masterRoot));
   }, 120_000);
 
   it('refuses a transcript carrying one trailing byte no row claims', async () => {
@@ -437,14 +448,16 @@ describe('C-R11 / X27: the suffix-split invariant in attest', () => {
     const results = evaluateEachInput(built.builder);
     expect(results[INPUT.controller]).not.toBe(null);
     expect(results[INPUT.projectionRoot]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.projectionRoot));
   }, 120_000);
 
   it('refuses a transcript truncated by one byte', async () => {
     const built = await buildRootReturningGraph({ patch: (t) => truncateTranscript(t) });
     const results = evaluateEachInput(built.builder);
     expect(results[INPUT.controller]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(INPUT.projectionRoot));
   }, 120_000);
 });
 
@@ -632,7 +645,8 @@ describe('C-R11 / E4: the open row - a ROOT caller frame and tx.origin', () => {
     expect(results[PAIR.masterRoot]).toBe(null);
     expect(results[PAIR.projectionChild]).toBe(null);
     expect(results[PAIR.controller]).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(PAIR.projectionRoot));
   }, 120_000);
 
   // The measurement that says the committed E4 hostile case was not discriminating: the SAME honest root
@@ -644,7 +658,8 @@ describe('C-R11 / E4: the open row - a ROOT caller frame and tx.origin', () => {
     });
     const results = evaluateEachInput(built.builder);
     expect(results[PAIR.projectionRoot]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(PAIR.projectionRoot));
   }, 120_000);
 
   // FINDING. Removing the P2PKH obstacle does not open the row, because a second obstacle E4 does not record
@@ -665,7 +680,8 @@ describe('C-R11 / E4: the open row - a ROOT caller frame and tx.origin', () => {
       origin: 'bare', rootCaller: caller, rootArgs: [3n, hexToBin(bareP2pkhLbc(alicePkh))], childArgs: [3n],
     });
     expect(evaluateEachInput(built.builder)[PAIR.masterRoot]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(scriptRefusalAt(PAIR.masterRoot));
   }, 120_000);
 
   // The exact failing operation, so the refusal is not read as a covenant decision.

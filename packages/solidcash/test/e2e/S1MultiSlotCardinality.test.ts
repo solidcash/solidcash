@@ -152,7 +152,7 @@ describe('S1 collection-address cardinality across multi-slot shapes', () => {
     await sc.getFunction('set')(LOW.k, 11n).send();
     await sc.getFunction('combine')(MID.k, FAR.k, OTHER.k).send();
     await sc.getFunction('check')(MID.k, 12n).send();
-    await expect(sc.getFunction('check')(9999n, 999n).send()).rejects.toThrow();
+    await expect(sc.getFunction('check')(9999n, 999n).send()).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   }, 180_000);
 
   // A runtime loop write still suppresses the pin, and must still settle: its output count is not statically

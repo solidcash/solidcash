@@ -847,7 +847,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
       expect(attacked.transaction.length).toBe(control.transaction.length);
       const outcome = preflightOutcome(attacked);
       expect(outcome).toContain(`layer3: BCH-2026 preflight failed at input ${input}`);
-      await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+      await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 9: Program failed an OP_VERIFY operation.)');
     },
     300_000,
   );

@@ -34,6 +34,7 @@ async function run(a: Uint8Array, b: Uint8Array): Promise<void> {
 }
 
 describe('probe: byte-lex order at VM (normal function)', () => {
+  const REQUIRE_REFUSAL = 'Probe.scash:8 Require statement failed at input 0 in contract Probe.scash at line 8.';
   const lo = hexToBin(`80${'00'.repeat(31)}`); // 32 bytes, high-bit set, big-endian smaller
   const hi = hexToBin(`81${'00'.repeat(31)}`); // differs in high half
   const tieLo = hexToBin(`${'00'.repeat(16)}${'ff'.repeat(15)}80`); // equal high half, differ in low half
@@ -42,12 +43,12 @@ describe('probe: byte-lex order at VM (normal function)', () => {
     await expect(run(lo, hi)).resolves.toBeUndefined();
   });
   it('rejects a > b (reversed)', async () => {
-    await expect(run(hi, lo)).rejects.toThrow();
+    await expect(run(hi, lo)).rejects.toThrow(REQUIRE_REFUSAL);
   });
   it('accepts a < b differing only in the low half (tiebreak)', async () => {
     await expect(run(tieLo, tieHi)).resolves.toBeUndefined();
   });
   it('rejects equal a == b (not strictly less)', async () => {
-    await expect(run(lo, lo)).rejects.toThrow();
+    await expect(run(lo, lo)).rejects.toThrow(REQUIRE_REFUSAL);
   });
 });

@@ -257,7 +257,11 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
         case 'dataNft': {
           const index = dataNftCursor;
           dataNftCursor += 1;
-          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, index, setup.categoryId));
+          // X180: this argument is the MASTER's input index, not the data NFT's slot index. Passing the
+          // slot names the master only for slot 0, so any route with two or more data NFTs fails the
+          // capability check at input 2 - which is what was recorded as an oracle wall for four rows.
+          // Inert here (this subject has one data NFT) and corrected so it cannot be copied forward.
+          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, 0, setup.categoryId));
           tx.addOutput({
             to: getDataNftAddress(participant, setup.categoryId),
             amount: setup.dataNftUtxos[index].satoshis,

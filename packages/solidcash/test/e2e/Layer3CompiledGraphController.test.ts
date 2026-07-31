@@ -46,6 +46,55 @@ const expectRelayable = (transaction: string): void => {
 const MAXIMUM_INPUT_BYTES = 10_000;
 const INPUT_HEADROOM_BYTES = 1_000;
 const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+const GRAPH_DERIVED_ROUTE_INPUTS = new Set([
+  'batchBlob',
+  '__internal__graphTranscript',
+  '__internal__graphControllerIdx',
+  '__internal__graphParticipantOffset',
+  '__internal__graphBlockSize',
+  '__internal__graphEmissions',
+  '__internal__graphCallers',
+  '__internal__graphSettlementBoundary',
+  '__internal__graphCompletionPositions',
+  '__internal__graphSettlementTable',
+  '__internal__returnOutputIdx',
+]);
+
+/** Bind fixture-authored compiler witnesses by the published route ABI, never by a guessed argument offset. */
+const graphRouteArgsWithInternalTail = (
+  transcript: Parameters<typeof layer3.compiledGraphRouteArgs>[0],
+  participant: number,
+  controllerInput: number,
+  values: readonly FunctionArgument[],
+): FunctionArgument[] => {
+  const execution = transcript.plan.participants[participant];
+  if (!execution) throw new Error(`test fixture: graph participant ${participant} is absent`);
+  const names = execution.routeInputs
+    .filter((input) => input.name.startsWith('__internal__')
+      && !GRAPH_DERIVED_ROUTE_INPUTS.has(input.name))
+    .map((input) => input.name);
+  if (names.length !== values.length) {
+    throw new Error(`test fixture: ${execution.lockingBytecode} publishes ${names.length} internal witnesses, `
+      + `but the physical layout supplied ${values.length}`);
+  }
+  return [...layer3.compiledGraphRouteArgs(
+    transcript, participant, controllerInput, Object.fromEntries(names.map((name, index) => [name, values[index]])),
+  )];
+};
+
+const replaceGraphRouteArg = (
+  transcript: Parameters<typeof layer3.compiledGraphRouteArgs>[0],
+  participant: number,
+  args: FunctionArgument[],
+  inputName: string,
+  value: FunctionArgument,
+): void => {
+  const routeInputs = transcript.plan.participants[participant]?.routeInputs
+    .filter((input) => input.name !== '__internal__returnOutputIdx') ?? [];
+  const index = routeInputs.findIndex((input) => input.name === inputName);
+  if (index < 0) throw new Error(`test fixture: route input '${inputName}' is absent`);
+  args[index] = value;
+};
 const APP = (name: string) => `pragma solidcash >=0.8.0;
 contract ${name}(int brand) {
   function ping(int n) public { require(n >= 0); }
@@ -2248,12 +2297,7 @@ async function buildCallerAuthorizedTransferGraph(
   const tokenRoute = token.createCompilerRouteUnlocker(
     tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
   );
-  const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
-  ] as FunctionArgument[];
-  // Route input 7 is `__scb_key_allowance_sender_1`, the spender key the route must tie to the authenticated
-  // graph caller.
-  if (forgeCallerWitness) tokenRouteArgs[7] = hexToBin(token.lockingBytecode);
+  const tokenInternalWitnesses: FunctionArgument[] = [];
   // C2 batch groups follow the wrapper's journal order: allowance[from][spender], balances[from], then
   // balances[to] once per row. `entries` is laid out [from-balance, allowance, first, second]. Entry inputs are
   // addressed by an explicit per-group offset, but the write-backs are positional (activeInputIndex + 1 + group),
@@ -2264,19 +2308,25 @@ async function buildCallerAuthorizedTransferGraph(
     if (!entry.token) {
       const key = logicalKeys[routeSlot]!;
       const ownerSlot = firstLogicalSlot.get(binToHex(key))!;
-      tokenRouteArgs.push(
+      tokenInternalWitnesses.push(
         keyToSlot(key), BigInt(journalOrder.indexOf(ownerSlot) + 1), new Uint8Array(32),
         forgeAliasWitness === 'omit-sentinel' ? -1n : -2n,
       );
       continue;
     }
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(
+    tokenInternalWitnesses.push(
       decoded.slot, BigInt(journalOrder.indexOf(routeSlot) + 1), decoded.nextKey,
       forgeAliasWitness === 'false-sentinel' && routeSlot === 2 ? -2n : -1n,
     );
   }
-  tokenRouteArgs.push(0n);
+  tokenInternalWitnesses.push(0n);
+  const tokenRouteArgs = graphRouteArgsWithInternalTail(
+    transcript, 1, layout.controllerInput, tokenInternalWitnesses,
+  );
+  if (forgeCallerWitness) replaceGraphRouteArg(
+    transcript, 1, tokenRouteArgs, '__scb_key_allowance_sender_1', hexToBin(token.lockingBytecode),
+  );
   const logicalBalances = new Map([[binToHex(from), 100n]]);
   for (const [recipient, amount] of [[first, 10n], [second, 20n]] as const) {
     const fromKey = binToHex(from);
@@ -2450,16 +2500,18 @@ async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
   const tokenRoute = token.createCompilerRouteUnlocker(
     tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
   );
-  const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
-  ] as FunctionArgument[];
-  // Route input 7 is `__scb_key_balances_sender_0`, the holder key the route ties to the authenticated caller.
-  if (forgeCallerWitness) tokenRouteArgs[7] = hexToBin(token.lockingBytecode);
+  const tokenInternalWitnesses: FunctionArgument[] = [];
   entries.forEach((entry, slotIndex) => {
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
+    tokenInternalWitnesses.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
   });
-  tokenRouteArgs.push(0n);
+  tokenInternalWitnesses.push(0n);
+  const tokenRouteArgs = graphRouteArgsWithInternalTail(
+    transcript, 1, layout.controllerInput, tokenInternalWitnesses,
+  );
+  if (forgeCallerWitness) replaceGraphRouteArg(
+    transcript, 1, tokenRouteArgs, '__scb_key_balances_sender_0', hexToBin(token.lockingBytecode),
+  );
   const nextValues = new Map([
     [binToHex(keyToSlot(holder)), 70n], [binToHex(keyToSlot(first)), 10n], [binToHex(keyToSlot(second)), 20n],
   ]);
@@ -2855,14 +2907,15 @@ async function buildMixedHandlerBatchGraph(mode: 'honest' | 'forge-second-row' =
   const tokenRoute = token.createCompilerRouteUnlocker(
     tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
   );
-  const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
-  ] as FunctionArgument[];
+  const tokenInternalWitnesses: FunctionArgument[] = [];
   entries.forEach((entry, slotIndex) => {
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
+    tokenInternalWitnesses.push(decoded.slot, BigInt(slotIndex + 1), decoded.nextKey, -1n);
   });
-  tokenRouteArgs.push(0n);
+  tokenInternalWitnesses.push(0n);
+  const tokenRouteArgs = graphRouteArgsWithInternalTail(
+    transcript, 1, layout.controllerInput, tokenInternalWitnesses,
+  );
   // shared: 100 - 10 (move) + 5 (bump) = 95; recipient: 0 + 10 = 10; spare untouched.
   const settled = new Map([
     [binToHex(keyToSlot(shared)), mode === 'forge-second-row' ? 100n - 10n : 95n],
@@ -3012,14 +3065,15 @@ async function buildScalarPlusEntryBatchGraph(
   const tokenRoute = token.createCompilerRouteUnlocker(
     tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
   );
-  const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
-  ] as FunctionArgument[];
+  const tokenInternalWitnesses: FunctionArgument[] = [];
   entries.forEach((entry, slotIndex) => {
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 2), decoded.nextKey, -1n);
+    tokenInternalWitnesses.push(decoded.slot, BigInt(slotIndex + 2), decoded.nextKey, -1n);
   });
-  tokenRouteArgs.push(0n);
+  tokenInternalWitnesses.push(0n);
+  const tokenRouteArgs = graphRouteArgsWithInternalTail(
+    transcript, 1, layout.controllerInput, tokenInternalWitnesses,
+  );
   const settled = new Map([
     [binToHex(keyToSlot(shared)), 85n], [binToHex(keyToSlot(first)), 10n], [binToHex(keyToSlot(second)), 5n],
   ]);

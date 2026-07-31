@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // End-to-end (mocknet) validation that the solidity-by-example porting features execute correctly on the
 // VM, not just that they compile. Each contract's spend only succeeds if the emitted bytecode computes the
 // asserted result. Compiled with { forceStateful: true } so each test can deploy + call directly
@@ -25,7 +27,7 @@ describe('Porting features (runtime)', () => {
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f()).rejects.toThrow();
+    await expect(sc.f()).rejects.toThrow(verifyFailure);
   });
 
   it('SBE-9: hex literal compares as a big-endian integer (compat)', async () => {
@@ -38,7 +40,7 @@ describe('Porting features (runtime)', () => {
     const factory1 = getContractFactory(artifact, await fundedSigner());
     await expect((await factory1.deploy()).f(256n)).resolves.toBeDefined();
     const factory2 = getContractFactory(artifact, await fundedSigner());
-    await expect((await factory2.deploy()).f(255n)).rejects.toThrow();
+    await expect((await factory2.deploy()).f(255n)).rejects.toThrow(verifyFailure);
   });
 
   it('SBE-11: implicit named return yields the named value', async () => {

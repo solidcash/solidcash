@@ -56,7 +56,7 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **118 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
+- **X214** - **108 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
   remaining vacuity surface. The AST census began at 436 executable sites. The unit partition is exhausted;
   two previously skipped P2PKH cases are now live, and `DynamicLoopEntryAdversarial` no longer passes on
   spent-input or signature failure before its mapping covenant runs. `Layer3BalancedCall` and
@@ -69,6 +69,8 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   reach the same mutation-proved provider refusal at input 0 (`OP_VERIFY`). `Layer3ResultSpike` is exhausted too:
   both result and settlement forgeries pin that exact provider verdict, with the positive graph green under
   mutation. This count also reconciles eight already-exhausted executable sites the previous pin omitted.
+  `PortingFeatures` is exhausted: its wrong bytes truncation and wrong big-endian integer both reach the exact
+  BCH-2026 input-0 `OP_VERIFY`; the measured source population was 110 before those two repairs.
 - **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
   compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
   compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`

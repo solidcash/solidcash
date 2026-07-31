@@ -89,6 +89,8 @@ async function buildTranscript(s: any, controllerUtxo: any, controllerUnlocker: 
 }
 
 describe('R7: real mint-once controller genesis + exact identity', () => {
+  const CONTROLLER_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('POSITIVE: genesis (mint-once) -> setRoot -> attest transcript accepted', async () => {
     const s = await setupRealController(2);
     const b = await buildTranscript(s, s.ctrlUtxo, s.controller.unlock.attest());
@@ -126,7 +128,7 @@ describe('R7: real mint-once controller genesis + exact identity', () => {
       token: { category: s.ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: s.root } },
     });
     b.addOutput({ to: s.ordered[0].contract.address, amount: 12000n });
-    await expect(s.provider.sendRawTransaction(raw(b))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(raw(b))).rejects.toThrow(CONTROLLER_REFUSAL);
   });
 
   it('P12: setRoot is SET-ONCE - a second setRoot on the already-set controller is rejected', async () => {
@@ -140,6 +142,6 @@ describe('R7: real mint-once controller genesis + exact identity', () => {
       token: { category: s.ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: 'ff'.repeat(32) } },
     });
     setB.addOutput({ to: s.p2.address, amount: 15000n });
-    await expect(s.provider.sendRawTransaction(raw(setB))).rejects.toThrow(); // input commitment not empty
+    await expect(s.provider.sendRawTransaction(raw(setB))).rejects.toThrow(CONTROLLER_REFUSAL);
   });
 });

@@ -142,17 +142,17 @@ implementable or measurable claim has one owner and prevents process gates from 
 | Options and bounded iterated low-level calls | E2 | implementation | Mode/target/calldata/options/count/result binding |
 | Additional delegate classes | E3 | deliberately scoped until specified | Per-class identity, ownership and authority argument |
 | Context and remaining `outState` combinations | E4 | proven plus scoped rejection | Leaf `msg.sender` and row-local `msg.value` settle; emission-handler `msg.sender`/`msg.sig`/`msg.data` and route-divergent identities have named compiler refusals; scalar, collection-entry and chunk-backed `outState` paths carry hostile VM evidence |
-| Mapping insertion/deletion | S1 | implementation | Ordering/uniqueness/one-flush hostile VM evidence |
+| Mapping insertion/deletion | S1 | proven for the admitted bounded classes | Cold-key insertion, nested dynamic keys and delete settle; ordering, uniqueness and forged settlement reject in the VM |
 | Mixed journals and exits | S2 | implementation | **SATISFIED BY LATER REPAIRS; the first SEC-18 review still FAILED and remains historical evidence.** The direct-reader repair originally missed function-pointer edges and crashed honest resource-shaped routes. L2-F3 now records `IdentifierNode.functionReference` edges in the scalar-journal call graph; L2-F2/X139 make the route and every invoker hold the context used by journalled callees. X111's scalar and dynamic clone bypass constructors are now refused by the participant covenant (X111/X146), so planner metadata is diagnostic rather than a security boundary. Current adversarial evidence names the vault or dynamic-master refusal and includes live-read and order controls in `Layer3SecurityReviewL2X111`, `Layer3EmissionCloneJournalX111`, and `Layer3EmissionCloneFakeWriteX138`. |
 | Multi-handler dynamic chunks/arrays | S3 | proven | Multi-handler final flush, participant isolation, 1/2/64-chunk bounds, ordering, alias, capability, permutation, read-your-writes, persisted reads and dynamic-emission-clone rejection are VM-proven; dynamic-array append uses the same journal path |
-| Relocatable balanced blocks | L1 | implementation | Base-zero/nonzero equivalence; no global absolute indices |
-| SDK funding/change/event-NFT assembly | L2 | implementation | Equal block extents and malformed-block preflight negatives |
-| Integrated compositions | C1–C3 | integration | DeFi, heterogeneous cycle and maximum bounded graph capstones |
-| Hostile integration review | A1 | in-repository review | Independent reproduction and field-by-field adversarial cases |
-| Ordinary-limit measurements | F1 | measurement | Exact consensus/policy metrics for 2/4/8 participant shapes |
-| Conservative estimator | F2 | implementation after measurement | Conservative predictions and recorded error margins |
-| Corpus fit | F3 | measurement/product input | Corpus report separating real demand from synthetic capacity |
-| Bytecode minimization | F4 | optimization after correctness | Measured savings with unchanged stack/authentication contract |
+| Relocatable balanced blocks | L1 | proven for compiler-owned bounded blocks | Base-zero/nonzero equivalence; no global absolute indices |
+| SDK funding/change/event-NFT assembly | L2 | proven for admitted balanced slots | Equal block extents and malformed-block preflight negatives |
+| Integrated compositions | C1–C3 | proven for admitted bounded compositions | DeFi, heterogeneous cycle and maximum bounded graph capstones |
+| Hostile integration review | A1 | completed in-repository adversarial review | Independent reproduction and field-by-field adversarial cases; external sign-off remains R3 process |
+| Ordinary-limit measurements | F1 | proven reproducible measurement | Exact consensus/policy metrics and node controls for 2/4/8 participant shapes |
+| Conservative estimator | F2 | proven for its recorded calibration | Conservative predictions, built controls and recorded error margins |
+| Corpus fit | F3 | proven measurement; product demand remains process | Corpus report separating measured demand from synthetic capacity; graduation evidence remains R3 |
+| Bytecode minimization | F4 | proven measured optimization | Measured savings with unchanged stack/authentication contract |
 | External review and demand | R3 | process | Independent sign-off and product evidence; not code-closable |
 
 No stale varying-selector investigation remains: its two-element persisted dispatch milestone is committed at

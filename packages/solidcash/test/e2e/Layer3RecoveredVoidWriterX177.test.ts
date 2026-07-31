@@ -344,16 +344,28 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
    * rows are re-taken on the CONTROL, which is what they should always have been measured against: a void
    * writer with no external call, where the return-event slot is the only thing in play.
    */
-  it('X187: `Attack.attack` can no longer be planned at all - refused by name', async () => {
-    let refusal: string | undefined;
+  it('X201: `Attack.attack` plans again, and the COVENANT refuses it at input 0', async () => {
+    let planRefusal: string | undefined;
+    let result: Awaited<ReturnType<typeof attempt>> | undefined;
     try {
-      await attempt(ATTACK, 'empty-vector-nft', undefined, { bypass: true });
+      result = await attempt(ATTACK, 'empty-vector-nft', undefined, { bypass: true });
     } catch (error) {
-      refusal = (error as Error).message;
+      planRefusal = (error as Error).message;
     }
-    console.log(`[X177V] attack plan: ${refusal ?? 'ADMITTED'}`);
-    expect(refusal, '`Attack.attack` was still planned - the X187 edge binding may have regressed').toBeDefined();
-    expect(refusal).toContain('batched-handler-forward-call-not-enabled');
+    console.log(`[X177V] attack: plan=${planRefusal ?? 'ADMITTED'} `
+      + `vm=${result?.sent ?? result?.refusal?.split('\n')[0] ?? '-'} input=${result?.failingInput}`);
+    // THE REFUSAL MOVED, IT DID NOT DISAPPEAR. X187 refused this handler at admission; X201 re-admitted the
+    // bare-body spelling with its edge bound, so the same shape is now refused by the covenant instead. What
+    // must never hold is a settlement: `attack`'s only statement calls `Wallet`, which the bus refuses from
+    // participation entirely, so no transaction can honestly carry that call.
+    expect(result?.sent, '`Attack.attack` SETTLED with its callee absent - the escape has re-opened')
+      .toBeUndefined();
+    if (planRefusal !== undefined) {
+      expect(planRefusal).toContain('batched-handler-forward-call-not-enabled');
+    } else {
+      expect(result!.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy|OP_SPLIT/);
+      expect(result!.failingInput, 'the refusal did not name the participant input').toBe(0);
+    }
   }, 900_000);
 
   /**
@@ -416,11 +428,11 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
   }, 300_000);
 
   /**
-   * `attack` is STILL a published writer with a real published edge - it is the ADMISSION that changed, not
-   * the ABI. That distinction is the point: the ABI always said this handler calls out, and the route used to
-   * admit it anyway. Matched on the artifact's own reason string rather than on the handler's absence.
+   * `attack` is a published writer with a real published edge, and it is ADMITTED - which is what it was
+   * before X187 too. The difference is not the eligible list, it is whether the covenant frames the edge.
+   * Originally it did not, so the callee could be absent; now it does, so the row above is refused at input 0.
    */
-  it('X187: `attack` is still a published writer, and is now refused by the route by name', () => {
+  it('X201: `attack` is a published writer and is admitted again, with its edge bound', () => {
     const artifact = compileFile(TX_ORIGIN, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
@@ -429,9 +441,8 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
     const handlers = artifact.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
     console.log(`[X177V] eligible ${JSON.stringify(eligible)}`);
-    expect(eligible).toEqual(['owner', 'wallet']);
-    expect(handlers.find((handler) => handler.name === 'attack').rejectionReason)
-      .toBe('batched-handler-forward-call-not-enabled');
+    expect(eligible).toEqual(['attack', 'owner', 'wallet']);
+    expect(handlers.find((handler) => handler.name === 'attack').rejectionReason).toBeUndefined();
     expect(artifact.abi.find((entry: any) => entry.name === 'attack').writesState).toBe(true);
   }, 300_000);
 });

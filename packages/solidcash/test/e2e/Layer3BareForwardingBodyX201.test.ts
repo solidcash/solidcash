@@ -4,6 +4,7 @@ import { compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { setupStatefulUtxos } from '../test-util.js';
+import { buildInitialStateCommitments } from '@solidcash/utils';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -56,6 +57,12 @@ const RECEIVER_BARE = CAST_BARE
   .replace('address callee;', 'IX201Callee callee;')
   .replace('IX201Callee(callee).tick', 'callee.tick');
 
+/** X226: more than one statement, with a real state write before the bare tail call. */
+const WRITE_THEN_CALL = CAST_BARE.replace(
+  'IX201Callee(callee).tick(knob + 1);',
+  'knob = knob + 1; IX201Callee(callee).tick(knob + 1);',
+);
+
 /** The require-tailed control, admitted before X201 and unchanged by it. */
 const CAST_TAILED = CAST_BARE.replace('.tick(knob + 1); }', '.tick(knob + 1); require(true); }');
 
@@ -75,8 +82,10 @@ const BUS_OPTIONS = {
   experimentalMessageBusControllerCategory: 'ab'.repeat(32),
 } as never;
 
-type Shape = 'cast-bare' | 'receiver-bare';
-const SOURCES: Record<Shape, string> = { 'cast-bare': CAST_BARE, 'receiver-bare': RECEIVER_BARE };
+type Shape = 'cast-bare' | 'receiver-bare' | 'write-then-call';
+const SOURCES: Record<Shape, string> = {
+  'cast-bare': CAST_BARE, 'receiver-bare': RECEIVER_BARE, 'write-then-call': WRITE_THEN_CALL,
+};
 type Edge = 'co-spent' | 'dropped-bypass';
 
 interface Attempt {
@@ -140,7 +149,7 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
   ];
   const invocations = [
     { parent: null, callee: 0, function: 'ping', args: [] },
-    { parent: 0, callee: 1, function: 'tick', args: [KNOB + 1n] },
+    { parent: 0, callee: 1, function: 'tick', args: [KNOB + (shape === 'write-then-call' ? 2n : 1n)] },
   ];
   const plan = layer3.planCompiledGraph(
     edge === 'co-spent' ? participants : [participants[0]],
@@ -211,12 +220,18 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
           tx.addInput(setup.dataNftUtxos[nft], createDataNftUnlocker(
             contract, layout.participantInputs[index], setup.categoryId,
           ));
-          // Neither handler writes state, so the post-state is the seeded UTXO's own token, taken rather than
-          // recomputed - a staging mismatch cannot then masquerade as a covenant refusal.
+          const nextCommitment = index === 0 && shape === 'write-then-call'
+            ? buildInitialStateCommitments(callerArtifact.stateLayout!, {
+              [targetVariable]: hexToBin(callee.lockingBytecode) as never, knob: KNOB + 1n,
+            })[nft]
+            : setup.dataNftUtxos[nft].token!.nft!.commitment;
           tx.addOutput({
             to: getDataNftAddress(contract, setup.categoryId),
             amount: setup.dataNftUtxos[nft].satoshis,
-            token: setup.dataNftUtxos[nft].token,
+            token: {
+              ...setup.dataNftUtxos[nft].token!,
+              nft: { ...setup.dataNftUtxos[nft].token!.nft!, commitment: nextCommitment },
+            },
           });
           break;
         }
@@ -309,6 +324,7 @@ contract X201Two() {
   describe.each([
     { shape: 'cast-bare' as Shape, label: 'interface-cast bare body' },
     { shape: 'receiver-bare' as Shape, label: 'contract-typed-receiver bare body' },
+    { shape: 'write-then-call' as Shape, label: 'X226 write-then-call bare tail' },
   ])('$label', ({ shape }) => {
     /** The POSITIVE the hostile needs: without it a refusal discriminates nothing. */
     it('CONTROL: the honest co-spent graph settles', async () => {

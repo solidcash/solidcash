@@ -237,11 +237,11 @@ function compileWithExternalAdmissionFallback(
   const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
-    admitMixedScalarHandlers = true,
+    admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
   ): Artifact => compileResolvedAst(
     parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
     code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-    admitMixedScalarHandlers, attribution,
+    admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
   );
   if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
@@ -277,6 +277,17 @@ function compileWithExternalAdmissionFallback(
     } catch (error) {
       firstError ??= error;
       latestError = error;
+      // X229. A newly admitted bare forwarder may expose a pre-existing route-generation gap. Retrying the
+      // SAME rung with only that new admission disabled preserves every previously dispatchable sibling and
+      // every unrelated relaxation. Falling to the next rung instead can demote a proven handler even though
+      // that handler did not cause the throw.
+      try {
+        return compileOnce(
+          admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers, false,
+        );
+      } catch (withoutBareError) {
+        latestError = withoutBareError;
+      }
     }
   }
   // X100. Every admitting rung has thrown, which is exactly where the shipped ladder gave up on `external`
@@ -545,6 +556,7 @@ function hiddenBatchAbsenceMessage(
 function synthesizeHiddenBatchRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
+  admitBareForwardingHandlers = true,
   attribution?: ExternalAdmissionAttribution,
 ): void {
   if (!compilerOptions.experimentalHiddenBatch) return;
@@ -592,6 +604,7 @@ function synthesizeHiddenBatchRoute(
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
   const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
+  const graphBareTailHandlers = new Set<FunctionDefinitionNode>();
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
@@ -809,9 +822,11 @@ function synthesizeHiddenBatchRoute(
           && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
     const graphTailCallEligible = graphControllerLbc !== undefined
       && methodCallCount >= 1
-      && (graphTailStatement || graphResultStatement || graphBareTailStatement
+      && (graphTailStatement || graphResultStatement
+        || (admitBareForwardingHandlers && graphBareTailStatement)
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
+    if (admitBareForwardingHandlers && graphBareTailStatement) graphBareTailHandlers.add(fn);
     // X22. A physical effect written directly in the handler body - an event NFT, a satoshi transfer or a token
     // container operation - reserves a slot in the ROUTE's block layout, and only the flattened form declares
     // it. InlineStoragePointerCalls therefore inlines such a graph clone into __scb1 instead of keeping it
@@ -1351,23 +1366,21 @@ function synthesizeHiddenBatchRoute(
     }
     return wide;
   };
-  const publicCandidates = eligible.filter((fn) => fn.visibility !== 'external');
-  let selection = applyBestUniformity(eligible);
-  if (publicCandidates.length !== eligible.length) {
-    const wide = { ...selection, reasons: new Map(eligible.map((fn) => [fn, fn.hiddenBatchRejectionReason])) };
+  const selectWithVisibilityGuard = (
+    candidates: FunctionDefinitionNode[],
+  ): ReturnType<typeof applyRouteUniformity> => {
+    const publicCandidates = candidates.filter((fn) => fn.visibility !== 'external');
+    let selected = applyBestUniformity(candidates);
+    if (publicCandidates.length === candidates.length) return selected;
+    const wide = { ...selected, reasons: new Map(candidates.map((fn) => [fn, fn.hiddenBatchRejectionReason])) };
     restoreVerdicts();
     const narrow = applyBestUniformity(publicCandidates);
     if (narrow.survivors.length > wide.survivors.length) {
-      for (const fn of eligible) {
+      for (const fn of candidates) {
         if (fn.visibility === 'external') fn.hiddenBatchRejectionReason ??= 'external-handler-would-shrink-the-route';
         if (fn.hiddenBatchRejectionReason !== undefined) fn.hiddenBatchEligible = false;
       }
-      selection = narrow;
-      // The resource-shaped handler is chosen while verdicts are still provisional; if the narrower set does
-      // not contain it, nothing dispatches to its clone and the route must not be sized for it.
-      if (resourceShapedHandler && !narrow.survivors.includes(resourceShapedHandler)) {
-        resourceShapedHandler = undefined;
-      }
+      selected = narrow;
     } else {
       restoreVerdicts();
       for (const [fn, reason] of wide.reasons) {
@@ -1376,6 +1389,38 @@ function synthesizeHiddenBatchRoute(
         fn.hiddenBatchRejectionReason = reason;
       }
     }
+    return selected;
+  };
+  let selection = selectWithVisibilityGuard(eligible);
+  if (graphBareTailHandlers.size > 0) {
+    const widened = {
+      ...selection,
+      reasons: new Map(eligible.map((fn) => [fn, fn.hiddenBatchRejectionReason])),
+    };
+    restoreVerdicts();
+    const priorCandidates = eligible.filter((fn) => !graphBareTailHandlers.has(fn));
+    const prior = selectWithVisibilityGuard(priorCandidates);
+    const displaced = prior.survivors.some((fn) => !widened.survivors.includes(fn));
+    if (displaced) {
+      for (const fn of graphBareTailHandlers) {
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = 'bare-forwarding-handler-would-shrink-the-route';
+      }
+      selection = prior;
+    } else {
+      restoreVerdicts();
+      for (const [fn, reason] of widened.reasons) {
+        if (reason === undefined) continue;
+        fn.hiddenBatchEligible = false;
+        fn.hiddenBatchRejectionReason = reason;
+      }
+      selection = widened;
+    }
+  }
+  // The resource-shaped handler is chosen while verdicts are still provisional; if the final set does not
+  // contain it, nothing dispatches to its clone and the route must not be sized for it.
+  if (resourceShapedHandler && !selection.survivors.includes(resourceShapedHandler)) {
+    resourceShapedHandler = undefined;
   }
   eligible = selection.survivors;
   const {
@@ -2125,7 +2170,8 @@ function synthesizeHiddenBatchRoute(
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
-  admitMixedScalarHandlers = true, attribution?: ExternalAdmissionAttribution,
+  admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
+  attribution?: ExternalAdmissionAttribution,
   fnPtrArraysPreLowered = false,
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
@@ -2340,7 +2386,7 @@ function compileResolvedAst(
   if (synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-      admitMixedScalarHandlers, attribution,
+      admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   }
 
@@ -2562,7 +2608,7 @@ function compileResolvedAst(
   if (!synthesizeBatchBeforeLowering) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-      admitMixedScalarHandlers, attribution,
+      admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   }
 
@@ -3040,7 +3086,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   }
   prepareSplitRoot(rootAst.contract, routeByName);
   const root = compileResolvedAst(
-    rootAst, code, merged, false, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
+    rootAst, code, merged, false, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
   );
   if (byteSize(root) > maxShardBytes) {
     throw new Error(`Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`);
@@ -3297,7 +3343,7 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   }
   contract.isSplitFacet = true;
   const artifact = compileResolvedAst(
-    ast, code, options, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(options),
+    ast, code, options, true, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(options),
   );
   artifact.delegateOnly = true;
   return artifact;

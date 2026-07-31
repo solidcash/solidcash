@@ -66,14 +66,21 @@ describe('X15 hidden-batch route absence is stated, not silent', () => {
     expect(absenceDiagnostics(stateWriteAndCall, graph)).toHaveLength(0);
   });
 
-  it('names the reason for a forwarding handler with no final require', () => {
+  // X201 ADMITTED THIS SHAPE. A body whose LAST statement is a forwarding call now reaches the runtime
+  // emission form, where the edge is framed at the call site; `graphRuntimeHandlers` membership is a
+  // precondition of that widening, so admission implies the emission is bound rather than merely allowed.
+  // SCOPE: the VM proof of the binding is on a SINGLE-statement body
+  // (`Layer3BareForwardingBodyX201.test.ts`). This subject has a state write before the call and is admitted
+  // by the same precondition, not separately VM-proved.
+  it('admits a forwarding handler whose last statement is the call', () => {
     const source = caller(`  function push(int amount) public {
     total = total + amount;
     ISink(sink).ping(amount);
   }`);
-    expect(compileString(source, graph).hiddenBatch).toBeUndefined();
-    expect(absenceDiagnostics(source, graph)[0].message)
-      .toContain("'push': batched-handler-forward-call-not-enabled");
+    const handlers = compileString(source, graph).hiddenBatch!.handlers as any[];
+    const push = handlers.find((handler) => handler.name === 'push');
+    expect(push.eligible).toBe(true);
+    expect(push.rejectionReason).toBeUndefined();
   });
 
   it('names the reason for a forwarding handler that returns a value', () => {

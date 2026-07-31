@@ -28,7 +28,7 @@ refused at a NAMED INPUT INDEX.
 | figure | status |
 |---|---|
 | 206 recovered handlers | SOLID. Re-taken with one shared probe binary across two worktrees, both directions checked (206 gained, 0 lost). |
-| **82 of 206 VM-proved on the file-set union** | X235 ran the exact 25-file union in `layer3-x235-union-manifest.txt`. Its AST consumer first reproduces X160's 135 rows / 206 gained / 0 lost, then attributes only contained batch blobs by source digest and deduplicates partition rows. It observed 1,255 records, 627 settlements and 108 contained routes: 82 exact gained rows, no unresolved digest and no digest/name mismatch. The prior inference that the union had to be larger was falsified by the current-HEAD run; agreement with the two historical 82s does not mean the memberships are identical. |
+| **82 of 206 VM-proved on the file-set union** | X235 ran the exact 25-file union in `layer3-x235-union-manifest.txt`. Its AST consumer first reproduces X160's 135 rows / 206 gained / 0 lost, then attributes only contained batch blobs by source digest and deduplicates partition rows. It observed 1,255 records, 627 settlements and 108 contained routes: 82 exact gained rows, no unresolved digest and no digest/name mismatch. All 98 same-blob collisions carried resolution evidence and resolved at cardinality 1; the strict consumer refuses cardinality 0 or greater than 1. The prior inference that the union had to be larger was falsified by the current-HEAD run; agreement with the two historical 82s does not mean the memberships are identical. |
 | 11 gained writers | Exhausted: 4 proved, 1 fail-closed (`Target.protected`), 2 re-admitted by X201 but still without a settlement (`Attack.attack`, `Foo.callBar`; their missing-callee hostiles refuse at the covenant), 4 publish `writesState` ABSENT and mutate nothing. |
 | "no chunk-backed writer exists" | SOLID, measured both directions. Writer rows and dynamic-variable rows are DISJOINT sets. Do not hunt a subject for this shape. |
 | "co-spent-callee graphs have no subject in the 206" | SOLID. Exactly 2 of 206 publish an outgoing external call; the other 81 measured directly at 0. A boundary of the POPULATION, not the machinery. |
@@ -56,10 +56,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **204 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
-  remaining vacuity surface. The AST census began at 436 executable sites. `SortedUpsertLoop` is now
-  exhausted: all five bare sites pin the exact input-0 BCH-2026 `OP_VERIFY` preflight reason, and a
-  never-match mutation made all five red.
+- **X214** - **197 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
+  remaining vacuity surface. The AST census began at 436 executable sites; the latest exhausted slices
+  are `Layer3ContextE4` and `SortedMappingLongValue`, with mutation-proved exact refusal reasons.
 - **X170 is CLOSED on HEAD** - the blanket outlined-body refusal was over-broad. The compiler now
   compares the body's emitted chunk basis with every entry point that can reach it: agreeing bases
   compile and disagreeing bases fail closed with both layouts named. `PointerTableBound.test.ts`

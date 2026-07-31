@@ -86,6 +86,8 @@ describe('branch-local external-call target pinning', () => {
 
     await expect(
       readerSc.bump(0n, alicePub, sig()).withExternalCall(counterBSc, 'increment', [alicePub, sig()]).send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

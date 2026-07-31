@@ -71,6 +71,35 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toHaveLength(1);
   });
 
+  it('keeps transitive cast-form external calls on the established inline path', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ICounter { function increment(); }
+      contract ExternalScalar(bytes32 target) {
+        int x;
+        function invoke() internal { ICounter(target).increment.call(); }
+        function update() internal { invoke(); this.x = this.x + 1; }
+        function run() { update(); require(this.x > 0); }
+      }
+    `, { forceStateful: true });
+
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'update')).toBeUndefined();
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.externalCalls).toHaveLength(1);
+  });
+
+  it('keeps a deploying scalar helper on the physical entry path', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Child { int x; constructor(int value) { x = value; } }
+      contract Factory {
+        int count;
+        function create(int value) internal { Child child = new Child(value); this.count = this.count + 1; }
+        function run(int value) { create(value); require(this.count > 0); }
+      }
+    `, { forceStateful: true });
+
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'create')).toBeUndefined();
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.modifiers).toContain('deploy');
+  });
+
   // X118 RENAMED THIS REFUSAL. The SUBJECT is unchanged - this shape must still fail closed - and the assertion
   // is strengthened rather than relaxed: the class name and the presence of a position are asserted too, because
   // the whole point of the rename was that a bare internal `Error` reached users with no name, position or

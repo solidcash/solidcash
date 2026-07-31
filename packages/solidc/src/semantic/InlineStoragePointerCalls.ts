@@ -34,6 +34,7 @@ import {
   LowLevelCallNode,
   LowLevelCallStatementNode,
   MethodCallNode,
+  InstantiationNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
@@ -87,6 +88,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private stateVarNames: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
   private constructorCalledFns: Set<string> = new Set();
+  private journalEffectFns: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
@@ -142,6 +144,41 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       this.walk(node.constructorDef.body, (candidate) => {
         if (candidate instanceof FunctionCallNode) this.constructorCalledFns.add(candidate.identifier.name);
       });
+    }
+    // Effect metadata is populated after this pass. Build the equivalent pre-semantic call-graph closure so a
+    // scalar writer which deploys/calls externally through an internal helper stays on the established inline
+    // path rather than becoming an OP_INVOKE journal with missing physical effect context.
+    this.journalEffectFns = new Set();
+    const directEffect = (fn: FunctionDefinitionNode): boolean => {
+      if (!fn.body) return false;
+      let found = false;
+      this.walk(fn.body, (candidate) => {
+        if (candidate instanceof InstantiationNode || candidate instanceof MethodCallNode
+          || candidate instanceof LowLevelCallNode || candidate instanceof LowLevelCallStatementNode) found = true;
+        else if (candidate instanceof FunctionCallNode) {
+          const name = candidate.identifier.name;
+          const dot = name.lastIndexOf('.');
+          if (dot > 0 && !name.startsWith('super.') && !this.funcByName.has(name)) found = true;
+        }
+      });
+      return found;
+    };
+    for (const fn of node.functions) if (fn.body && directEffect(fn)) this.journalEffectFns.add(fn.name);
+    let effectClosureChanged = true;
+    while (effectClosureChanged) {
+      effectClosureChanged = false;
+      for (const fn of node.functions) {
+        if (!fn.body || this.journalEffectFns.has(fn.name)) continue;
+        let reachesEffect = false;
+        this.walk(fn.body, (candidate) => {
+          if (candidate instanceof FunctionCallNode
+            && this.journalEffectFns.has(candidate.identifier.name)) reachesEffect = true;
+        });
+        if (reachesEffect) {
+          this.journalEffectFns.add(fn.name);
+          effectClosureChanged = true;
+        }
+      }
     }
 
     this.inlinedFns = new Set();
@@ -313,7 +350,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length > 0 || this.hasStoragePointerParam(fn) || this.readsEntry(fn)
-      || this.transitiveSortedWriters.has(fn.name) || this.constructorCalledFns.has(fn.name)) return false;
+      || this.transitiveSortedWriters.has(fn.name) || this.constructorCalledFns.has(fn.name)
+      || this.journalEffectFns.has(fn.name)) return false;
     if ((fn.externalCalls?.length ?? 0) > 0 || (fn.externalReads?.length ?? 0) > 0
       || (fn.externalOutStateReads?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0
       || (fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0

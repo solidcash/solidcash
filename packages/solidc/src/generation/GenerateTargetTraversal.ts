@@ -3327,7 +3327,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal && node.graphRuntimeEmissionHandler) {
       this.pushToStack('__internal__graphEmissions', true);
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler) {
+    // A fixed-row emission handler receives authenticated return values as hidden invocation arguments.
+    // Runtime handlers instead receive the complete emission vector and peel each reached result in the loop;
+    // no `graphResultN` arguments are pushed by their caller. Tracking those names here creates phantom stack
+    // slots and makes every loop-body parameter/local lookup too deep after the runtime vector argument.
+    if (this.isDefineSubTraversal && node.graphEmissionHandler && !node.graphRuntimeEmissionHandler) {
       const resultTypes = node.externalCalls?.[0]?.returnTypes ?? [];
       for (let i = 0; i < resultTypes.length; i++) {
         this.pushToStack(`__internal__graphResult${i}`, true);

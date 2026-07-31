@@ -44,6 +44,16 @@ contract E2RawCaller() {
 const RAW_STATIC_CALLER = RAW_CALLER
   .replace('E2RawCaller', 'E2RawStaticCaller')
   .replace('.call(payload)', '.staticcall(payload)');
+const RAW_LOOP_CALLER = `pragma solidcash >=0.8.0;
+contract E2RawLoopCaller() {
+  function run(address[2] targets, bytes payload) public {
+    for (int i = 0; i < 2; i = i + 1) {
+      (bool ok, bytes result) = targets[i].call(payload);
+      require(ok && result == hex"53");
+    }
+    require(payload.length > 0);
+  }
+}`;
 const RAW_VALUE_CALLER = `pragma solidcash >=0.8.0;
 contract E2RawValueCaller() {
   function run(address target, bytes payload, int amount) public {
@@ -235,6 +245,122 @@ async function buildRawCallGraph(
   });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  tx.addOutput({ to: p2pkh.address, amount: 10_000n });
+  return { provider, builder: tx, transaction: raw(tx), plan };
+}
+
+async function buildRawLoopGraph(graphOptions: { tamperProducerAt?: 1 | 2 } = {}): Promise<{
+  provider: SemanticProvider; builder: TransactionBuilder; transaction: string; plan: any;
+}> {
+  const provider = createLayer3SemanticTestProvider();
+  const {
+    projection, controller, categoryId: controllerCategory, genesisUtxo,
+  } = await createGraphAuthority(provider);
+  const options = {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: controller.lockingBytecode,
+    experimentalMessageBusControllerCategory: controllerCategory,
+  };
+  const artifactTarget = compileString(RAW_TARGET, options);
+  const targetSetups = [];
+  const targets = [];
+  for (let index = 0; index < 2; index += 1) {
+    const base = new Contract(artifactTarget, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifactTarget.stateLayout!, {});
+    targetSetups.push(setup);
+    targets.push(base.withCategory(hexToBin(setup.categoryId)));
+  }
+  const artifactCaller = compileString(RAW_LOOP_CALLER, options);
+  const baseCaller = new Contract(artifactCaller, [], { provider });
+  const callerSetup = await setupStatefulUtxos(
+    provider, baseCaller, artifactCaller.stateLayout!, {},
+  );
+  const caller = baseCaller.withCategory(hexToBin(callerSetup.categoryId));
+  const selector = artifactTarget.abi.find((fn) => fn.name === 'echo')!.selector!;
+  const payload = Uint8Array.from([...hexToBin(selector), ...packedResult(3n)]);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: artifactCaller, lockingBytecode: caller.lockingBytecode },
+    function: 'run',
+    args: [targets.map((target) => hexToBin(target.lockingBytecode)), payload],
+    targets: {},
+    dynamicCall: ({ occurrence }: { occurrence: number }) => ({
+      participant: {
+        artifact: artifactTarget, lockingBytecode: targets[occurrence]!.lockingBytecode,
+      },
+      function: 'echo',
+      args: [3n],
+    }),
+  });
+  const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const result = binToHex(packedResult(3n));
+  const transcript = layer3.finalizeCompiledGraph(
+    plan, { 1: result, 2: result }, layout.participantInputs, layout.returnOutputs,
+    ['', result, result], layout.projectionInputs,
+  );
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const rootedController = await initializeGraphAuthority(
+    provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
+  );
+  const returnFunding = Array.from({ length: 2 }, () => randomUtxo({ satoshis: 1000n }));
+  const projections = Array.from({ length: 3 }, () => randomUtxo({ satoshis: 1000n }));
+  const fee = randomUtxo({ satoshis: 50_000n });
+  for (const utxo of [...returnFunding, fee]) await provider.addUtxo(p2pkh.address, utxo);
+  for (const proof of projections) await provider.addUtxo(projection.address, proof);
+
+  const callerRoute = caller.createCompilerRouteUnlocker(
+    artifactCaller.hiddenBatch!.route, hexToBin(artifactCaller.hiddenBatch!.selector),
+  );
+  const targetRoutes = targets.map((target) => target.createCompilerRouteUnlocker(
+    artifactTarget.hiddenBatch!.route, hexToBin(artifactTarget.hiddenBatch!.selector),
+  ));
+  const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  tx.addInput(callerSetup.masterUtxo, callerRoute(
+    ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
+  ));
+  for (let participant = 1; participant <= 2; participant += 1) {
+    tx.addInput(targetSetups[participant - 1]!.masterUtxo, targetRoutes[participant - 1]!(
+      ...layer3.compiledGraphRouteArgs(transcript, participant, layout.controllerInput) as any,
+      BigInt(layout.returnOutputs![participant]!),
+    ));
+    tx.addInput(returnFunding[participant - 1]!, p2pkh.unlock.spend(alicePub, signature()));
+  }
+  projections.forEach((proof, participant) => tx.addInput(
+    proof,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
+  ));
+  tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
+  tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
+
+  tx.addOutput({
+    to: caller.tokenAddress, amount: callerSetup.masterUtxo.satoshis,
+    token: {
+      category: callerSetup.categoryId, amount: 0n,
+      nft: { capability: 'minting', commitment: '' },
+    },
+  });
+  for (let participant = 1; participant <= 2; participant += 1) {
+    const setup = targetSetups[participant - 1]!;
+    tx.addOutput({
+      to: targets[participant - 1]!.tokenAddress, amount: setup.masterUtxo.satoshis,
+      token: {
+        category: setup.categoryId, amount: 0n,
+        nft: { capability: 'minting', commitment: '' },
+      },
+    });
+    tx.addOutput({
+      to: hexToBin('51'), amount: 1000n,
+      token: {
+        category: setup.categoryId, amount: 0n,
+        nft: {
+          capability: 'none',
+          commitment: binToHex(aggregateResult(graphOptions.tamperProducerAt === participant ? 4n : 3n)),
+        },
+      },
+    });
+  }
+  projections.forEach(() => tx.addOutput({ to: p2pkh.address, amount: 1000n }));
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 10_000n });
   return { provider, builder: tx, transaction: raw(tx), plan };
@@ -515,6 +641,27 @@ const planRaw = (callerArtifact: any, targetArtifact: any, overrides?: (call: an
 };
 
 describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
+  describe('the admitted exact raw-call loop binds both ordered occurrences', () => {
+    it('settles two authenticated low-level call edges to distinct targets', async () => {
+      const built = await buildRawLoopGraph();
+      expect(built.plan.invocations).toHaveLength(3);
+      expect(failingInput(built.builder)).toBe(null);
+      await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    }, 120_000);
+
+    it.each([1, 2] as const)(
+      'rejects a forged producer result at ordered occurrence %i',
+      async (occurrence) => {
+        const built = await buildRawLoopGraph({ tamperProducerAt: occurrence });
+        // Each callee master is followed by its return-funding input: physical inputs 1 and 3.
+        expect(failingInput(built.builder)).toBe(occurrence === 1 ? 1 : 3);
+        await expect(built.provider.sendRawTransaction(built.transaction))
+          .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+      },
+      120_000,
+    );
+  });
+
   describe('the admitted singular low-level class still binds its four fields', () => {
     it('settles an authenticated low-level call edge', async () => {
       const built = await buildRawCallGraph();

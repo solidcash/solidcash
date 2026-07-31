@@ -2180,7 +2180,12 @@ function compileResolvedAst(
   if (ast.isLibrary) {
     if (!ast.libraryContract) {
       // A standalone interface, a file-level enum/struct, or an inline-only library has no executable contract;
-      // emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
+      // It still has declarations whose semantics must be checked. In particular, returning before the symbol
+      // pass used to let a root interface inherit an undefined or circular base even though the identical
+      // interface was refused as soon as the file also contained a contract (X184).
+      ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+      ast = ast.accept(new TypeCheckTraversal(true, mergedCompilerOptions.rootFileId)) as Ast;
+      // Emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
       return generateDeclarationArtifact(ast, code);
     }
     ast.contract = ast.libraryContract;

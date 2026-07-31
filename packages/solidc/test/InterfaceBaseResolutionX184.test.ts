@@ -7,26 +7,16 @@ import { CircularInterfaceInheritanceError, UndefinedInterfaceError } from '../s
  *
  * Measured, not assumed. Two facts, pinned here so neither can drift unobserved.
  *
- * FACT 1 (the defect). `interface I is Zzz {}` with NO contract in the file COMPILES, to an ABI-only artifact
- * named `I` with empty bytecode. So does `interface I is I {}`. Add a contract to the SAME file and both are
- * refused. The differential builds the subject twice differing ONLY in whether a contract is present, so the
- * field the compiler actually reads is "is this file the declaration-artifact path", not anything about the
- * base:
+ * FACT 1 (the repaired defect). Declaration-only files now pass through the same symbol and type validation as
+ * executable files before their ABI-only artifact is emitted. The differential builds each subject twice,
+ * differing ONLY in whether a contract is present, and requires the result to stay identical:
  *
- *      interface I is Zzz {}                  ACCEPT   name=I  bytecode=""
+ *      interface I is Zzz {}                  REFUSE   UndefinedInterfaceError
  *      contract C {} interface I is Zzz {}    REFUSE   UndefinedInterfaceError
- *      interface I is I {}                    ACCEPT   name=I  bytecode=""
+ *      interface I is I {}                    REFUSE   CircularInterfaceInheritanceError
  *      contract C {} interface I is I {}      REFUSE   CircularInterfaceInheritanceError
  *
- * Cause: `compileResolvedAst` (compiler.ts:2052) returns `generateDeclarationArtifact(ast, code)` for a file
- * with no compilable contract, BEFORE semantic analysis runs. The whole interface-base validation block in
- * `SymbolTableTraversal.visitSourceFile` (SymbolTableTraversal.ts:594-606) is therefore unreachable on that
- * path, and it is not only the undefined-base check that is lost: the contract-as-base check and
- * `checkCircularInheritance` are in the same block. Three refusals, all skipped.
- *
- * THE FACT-1 EXPECTATIONS BELOW ASSERT THE DEFECT, NOT THE DESIRED BEHAVIOUR. They are written to go RED the
- * day resolution is hoisted ahead of the declaration-artifact return; when they do, flip each `expectAccepted`
- * to the matching `expectRefused` rather than deleting it. See the BLOCKED hunk for the design.
+ * Cause was the early declaration-artifact return in `compileResolvedAst`; semantic analysis now precedes it.
  *
  * FACT 2 (the mis-attribution). `contract C {} interface I is C {}`, where `C` IS defined as a contract,
  * reports `Undefined interface 'C'`. The control that removes the suspected cause - the base being a CONTRACT -
@@ -48,49 +38,40 @@ const outcome = (src: string): Outcome => {
   }
 };
 
-describe('X184 interface base resolution is skipped on the declaration-artifact path', () => {
-  // FACT 1. Pinned as the defect it is. Each row is a pair differing only in the presence of a contract.
-  describe('FACT 1 (DEFECT): an interface that is the compilation root has its base list left unresolved', () => {
-    it('accepts an undefined base at the root, and refuses the same base with a contract present', () => {
-      // DEFECT: this compile should be refused. Flip to `refused: 'UndefinedInterfaceError'` when X184 lands.
-      expect(outcome('interface I is Zzz {}')).toEqual({ accepted: 'I' });
+describe('X184 interface base resolution also runs on the declaration-artifact path', () => {
+  describe('FACT 1 (REPAIRED): an interface compilation root has its base list resolved', () => {
+    it('refuses an undefined base with or without a contract present', () => {
+      expect(outcome('interface I is Zzz {}')).toEqual({ refused: 'UndefinedInterfaceError' });
       // The control: same interface, same undefined base, one contract added.
       expect(outcome('contract C {} interface I is Zzz {}')).toEqual({ refused: 'UndefinedInterfaceError' });
     });
 
-    it('accepts a self-circular base at the root, and refuses the same base with a contract present', () => {
-      // DEFECT: circular inheritance is unchecked on this path too. Flip when X184 lands.
-      expect(outcome('interface I is I {}')).toEqual({ accepted: 'I' });
+    it('refuses a self-circular base with or without a contract present', () => {
+      expect(outcome('interface I is I {}')).toEqual({ refused: 'CircularInterfaceInheritanceError' });
       expect(outcome('contract C {} interface I is I {}')).toEqual({ refused: 'CircularInterfaceInheritanceError' });
     });
 
-    it('accepts a mutually circular base pair at the root, and refuses it with a contract present', () => {
-      // DEFECT. Flip when X184 lands.
-      expect(outcome('interface A is B {} interface B is A {}')).toEqual({ accepted: 'A' });
+    it('refuses a mutually circular base pair with or without a contract present', () => {
+      expect(outcome('interface A is B {} interface B is A {}'))
+        .toEqual({ refused: 'CircularInterfaceInheritanceError' });
       expect(outcome('contract C {} interface A is B {} interface B is A {}'))
         .toEqual({ refused: 'CircularInterfaceInheritanceError' });
     });
 
-    it('admits the unresolved base into a real ABI-only artifact rather than dropping the file', () => {
-      // The base must stay load-bearing here: asserting only the artifact shape would hold with the base
-      // REMOVED too, and a guard whose subject can vanish while it stays green is the defect. So the accept
-      // itself is asserted first - that is the half that flips when X184 lands.
+    it('does not publish an ABI-only artifact for an unresolved base', () => {
       const withBogusBase = 'interface I is Zzz { function m() external; }';
-      expect(outcome(withBogusBase)).toEqual({ accepted: 'I' }); // DEFECT: should refuse. Flip when X184 lands.
+      expect(outcome(withBogusBase)).toEqual({ refused: 'UndefinedInterfaceError' });
       expect(outcome(`contract C {} ${withBogusBase}`)).toEqual({ refused: 'UndefinedInterfaceError' });
-      // The admission is not inert: it publishes an artifact whose ABI is served to callers, and that artifact
-      // is indistinguishable from the one the same file declares with no base at all.
-      const artifact = compileString(withBogusBase, compat);
+      // Positive control: a baseless declaration still emits the same ABI-only artifact shape.
       const baseless = compileString('interface I { function m() external; }', compat);
-      expect(artifact.contractName).toBe('I');
-      expect(artifact.bytecode).toBe('');
-      expect(artifact.abi.map((fn) => fn.name)).toEqual(['m']);
-      expect(artifact.abi).toEqual(baseless.abi);
+      expect(baseless.contractName).toBe('I');
+      expect(baseless.bytecode).toBe('');
+      expect(baseless.abi.map((fn) => fn.name)).toEqual(['m']);
     });
 
-    it('is the root-ness of the interface that decides, not the compat flag', () => {
-      // Holding solidityImportCompat off changes neither side, so the flag is not the discriminating field.
-      expect(compileString('interface I is Zzz {}', {}).contractName).toBe('I');
+    it('refuses the undefined base independently of the compat flag and root shape', () => {
+      // Holding solidityImportCompat off changes neither side.
+      expect(() => compileString('interface I is Zzz {}', {})).toThrow(UndefinedInterfaceError);
       expect(() => compileString('contract C {} interface I is Zzz {}', {})).toThrow(UndefinedInterfaceError);
     });
   });

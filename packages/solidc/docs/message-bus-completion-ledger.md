@@ -1438,3 +1438,26 @@ npx vitest run test/PointerTableBound.test.ts \
 npx vitest run test/e2e/Layer3RuntimeSizedPointerTable.test.ts \
   -t 'executes a runtime-sized table' --reporter=verbose
 ```
+
+### 2026-07-31: X201/X229 - bare forwarding admission is monotone
+
+One statement-level outgoing call with no trailing require now enters the runtime emission form, where the
+callee address is in scope and the covenant authenticates the emission row at the call site. Interface-cast
+and contract-typed-receiver spellings settle their honest two-participant graphs. Removing the callee from
+either graph is refused at caller input 0 with the authenticated emission vector exhausted.
+
+The earlier implementation was reverted because `ERC20Bank.withdraw` exposed a collection-helper generation
+gap. The compiler ladder then fell to an unrelated narrower uniformity rung and demoted the already proven
+`token` getter. The fallback now retries the same rung with only bare-forwarding admission disabled. A second
+guard compares successful uniformity selection against the pre-widening candidate set and keeps the prior set
+if any existing survivor would be displaced. `ERC20Bank.token` and `balanceOf` remain eligible, and the token
+settlement plus its two input-0 hostiles remain green.
+
+X226 is included in the proof rather than left as a construction argument. A multi-statement caller writes its
+persisted scalar and then performs the bare tail call. Its transitioned state and co-spent callee settle; the
+same graph with the callee dropped is refused at input 0.
+
+The complete bus-mode discovery is 109 files after adding X201's proof. It ran 1,175 tests: 1,163 passed, 9
+skipped, and 3 failed. None is an X201/X229 delta: two assert the pre-X210 provider error vocabulary on a worker
+base predating X210, and X160 hits its already-published X203 outlined `ERC20Permit.name` basis refusal. Capstones
+remain 52 passed / 6 skipped.

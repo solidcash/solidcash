@@ -68,19 +68,18 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X227 is CLOSED NEGATIVE** - the fourth population is reachable through an uncalled private
   `msg.value` reader, but it controls balanced frame plumbing rather than SCB1 row width. Both sides use
   the same predicate, and the existing EnglishAuction narrow settlements are the runtime control.
-- **X201 + X229** - admitting the bare-body forwarding call. It was implemented, VM-proved on its own
-  terms, and **REVERTED**, because admitting a handler changes the route's UNIFORMITY CLASS and
-  `applyRouteUniformity` then demotes a different, unrelated handler (`ERC20Bank.token`). Whoever
-  retakes this must handle the uniformity interaction first. Do not re-land it without the full
-  108-file bus-mode sweep.
+- **X201 + X229 are CLOSED** - bare-body forwarding is admitted and bound without
+  demoting existing route members. Uniformity compares the widened set with the pre-X201 set, and a
+  code-generation failure retries the same ladder rung with only bare forwarding disabled. This preserves
+  `ERC20Bank.token` and `balanceOf`. X226's write-then-call form settles and refuses its dropped callee at
+  input 0. The full discovered sweep is now 109 files because X201 adds one bus-mode file.
 
 ### Tier 3: re-pins and residuals
 - **X159 is CLOSED on HEAD** - `StableSwap` compiles in bus mode with four eligible handlers, and the
   three gained handlers (`tokens`, `balances`, `totalSupply`) settle. The focused compile pin and VM
   proof are `Layer3RecoveredPartitionX160.test.ts` and `Layer3RecoveredCollectionBreadthV2.test.ts`.
-- **X226 is DORMANT with X201 reverted** - the multi-statement write-then-call subject is currently
-  refused as `batched-handler-forward-call-not-enabled`. Its missing VM proof matters only if X201 is
-  retaken, and must then accompany the X229 uniformity repair and full bus sweep.
+- **X226 is CLOSED** - the multi-statement write-then-call subject settles, and dropping its callee is
+  refused by the caller covenant at input 0.
 - **X213 is closed** - all 10 dead `resolves.not.toThrow()` clauses now await the operation and assert its
   successful result shape (txid, and transaction bytes where available).
 - **X217 is CLOSED** - the committed `test/e2e/layer3-throw-census.ts` observes SDK boundary throws.

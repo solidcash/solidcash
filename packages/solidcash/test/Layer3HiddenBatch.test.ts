@@ -44,6 +44,20 @@ describe('layer3.encodeHiddenBatch', () => {
     expect(hex).toContain(`${clear.selector}0100000000000000`);
   });
 
+  it('authenticates mixed static and ordinary rows for one participant in SCB2 order', () => {
+    const encoded = layer3.encodeHiddenBatch(artifact, [
+      { function: 'add', args: [2n], callMode: 'staticcall' },
+      { function: 'clear', callMode: 'call' },
+    ]);
+    const add = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'add')!;
+    const clear = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'clear')!;
+    const hex = binToHex(encoded.blob);
+
+    // Header version 2. Each mode byte follows its row's uint16 args length: 01 then 00.
+    expect(hex.startsWith(`53434231020002${add.selector}000000000000010001`)).toBe(true);
+    expect(hex).toContain(`${clear.selector}010000000000000000`);
+  });
+
   it('carries the compiler-authored result schema for authenticated return-event decoding', () => {
     const returning = compileString(RETURN_SOURCE, {
       forceStateful: true,

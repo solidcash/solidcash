@@ -477,13 +477,21 @@ describe('layer3.planCompiledGraph', () => {
     `, options);
     const root = { artifact: caller, lockingBytecode: '51' };
     const peer = { artifact: target, lockingBytecode: '52' };
-    const plan = layer3.deriveCompiledGraphPlan({
+    const derive = (withProof: boolean) => layer3.deriveCompiledGraphPlan({
       root,
       function: 'fire',
       args: [7n],
-      targets: { IFoo: [peer, peer] },
+      targets: {},
       occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+      ...(withProof && { target: ({ callsiteId, occurrence, interfaceName }: any) => {
+        expect([0, 1]).toContain(callsiteId);
+        expect(occurrence).toBe(0);
+        expect(interfaceName).toBe('IFoo');
+        return peer;
+      } }),
     });
+    expect(() => derive(false)).toThrow(/resource-derived callsite 0 occurrence 0 lacks a target proof/);
+    const plan = derive(true);
     expect(plan.participants.map((owner) => owner.invocations)).toEqual([[0], [1, 2]]);
     expect(plan.invocations.slice(1).map((row) => row.argsHex)).toEqual(['57', '57']);
   });

@@ -182,6 +182,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   const takeTarget = (
     call: ExternalCallAbi,
     participant: WorklistParticipant,
+    fn: AbiFunction,
     functionName: string,
     occurrence: number,
   ): WorklistParticipant => {
@@ -190,6 +191,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       interfaceName: call.interfaceName,
     });
     if (resolved) return resolved;
+    const targetIsRuntimeDerived = call.loopArrayVar || call.addressStateVar
+      || (call.addressParam !== undefined
+        && !fn.inputs.some((input) => input.name === call.addressParam));
+    if (targetIsRuntimeDerived) {
+      throw new Error(
+        `layer3: resource-derived callsite ${call.callsiteId} occurrence ${occurrence} lacks a target proof`,
+      );
+    }
     const registered = options.targets[call.interfaceName];
     if (!registered) {
       throw new Error(`layer3: no symbolic target registered for '${call.interfaceName}'`);
@@ -341,7 +350,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         if ((call.occurrence ?? 'once') !== 'once') {
           throw new Error(`layer3: batched callsite ${call.callsiteId} must be straight-line`);
         }
-        const target = takeTarget(call, participant, functionName, 0);
+        const target = takeTarget(call, participant, fn, functionName, 0);
         const rows = [...call.batchInvocations].sort((a, b) => a.logicalIndex - b.logicalIndex);
         rows.forEach((row, index) => {
           if (row.logicalIndex !== index) {
@@ -431,7 +440,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         continue;
       }
       for (let reached = 0; reached < count; reached += 1) {
-        const target = takeTarget(call, participant, functionName, reached);
+        const target = takeTarget(call, participant, fn, functionName, reached);
         assertForwardedTarget(participant, fn, args, call, target, reached);
         expand(
           target,

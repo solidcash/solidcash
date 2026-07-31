@@ -416,6 +416,11 @@ parameter-sourced target MUST equal the registered participant locking bytecode.
 not replay nonces and have no meaning outside the
 consumed transaction.
 
+A target sourced from authenticated state, a resource array, or a compiler-generated address local
+has no public argument the SDK can compare. Each reached occurrence therefore requires an explicit
+derivation-probe target. Interface registry order is not evidence for these targets; the executing
+caller covenant independently recomputes the resource-derived owner and rejects substitution.
+
 `valueDelta` is within the signed 64-bit range and BCH money range. It is the net satoshi-container
 change attributed directly to this invocation: its call-entry/origin credits plus its own explicit
 credits, minus its own explicit debits, excluding effects attributed to descendant invocations. This

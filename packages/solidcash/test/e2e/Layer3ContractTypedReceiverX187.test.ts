@@ -143,10 +143,13 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
     { parent: null, callee: 0, function: 'ping', args: [] },
     { parent: 0, callee: 1, function: 'tick', args: [KNOB + 1n] },
   ];
-  const plan = layer3.planCompiledGraph(
-    edge === 'co-spent' ? participants : [participants[0]],
-    (edge === 'co-spent' ? invocations : [invocations[0]]) as never,
-  );
+  const plan = edge === 'co-spent'
+    ? layer3.deriveCompiledGraphPlan({
+      root: participants[0], function: 'ping', args: [], targets: {},
+      target: () => participants[1],
+      expressionArgument: () => KNOB + 1n,
+    })
+    : layer3.planCompiledGraph([participants[0]], [invocations[0]] as never);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs,

@@ -52,9 +52,9 @@ describe('BigInt', () => {
         .send();
 
       // then
-      // X195: this establishes only that the send did not REJECT. The `not.toThrow()` clause is a measured
-      // no-op (the resolved value is not a function), so `.resolves` carries the whole claim.
-      await expect(txPromise).resolves.not.toThrow();
+      const sent = await txPromise;
+      expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(sent.hex).not.toHaveLength(0);
     });
 
     it.todo('should fail when contract exceeds the maximum compute budget');

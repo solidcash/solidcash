@@ -23,15 +23,12 @@ describe('TypeIntrospection', () => {
     await provider.addUtxo(contract.address, randomUtxo());
   });
 
-  /*
-   * X195. Every `resolves.not.toThrow()` below establishes exactly ONE thing: the send did not REJECT.
-   * The `not.toThrow()` clause is a no-op, measured rather than read: `expect(Promise.resolve(obj))
-   * .resolves.not.toThrow()` PASSES because the resolved value is not a function, while the same matcher
-   * without `.resolves` FAILS with "expected {...} to be a function". So `.resolves` carries the whole claim.
-   * These DO discriminate - mutation-proven: `checkIntBounds(-129n, ...)` turns line 38 red with "promise
-   * rejected ... instead of resolving". They establish NOTHING about the resolved TransactionDetails.
-   * Not repaired: no mutation distinguishes this form from a stronger one without changing `src/`.
-   */
+  const expectSuccessfulSend = async (txPromise: ReturnType<TransactionBuilder['send']>): Promise<void> => {
+    const sent = await txPromise;
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.hex).not.toHaveLength(0);
+  };
+
   describe('checkIntBounds', () => {
     it('should succeed when value is within int8 range', async () => {
       const to = contract.address;
@@ -44,7 +41,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should succeed at int8 boundary values (-128 and 127)', async () => {
@@ -58,7 +55,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when value is below int8 min (-129)', async () => {
@@ -102,7 +99,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when value is negative (below uint8 min)', async () => {
@@ -132,7 +129,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when value exceeds enum range', async () => {
@@ -172,7 +169,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when providing incorrect interfaceId', async () => {
@@ -204,7 +201,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when providing incorrect contract name', async () => {

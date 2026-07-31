@@ -81,13 +81,14 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X226 is DORMANT with X201 reverted** - the multi-statement write-then-call subject is currently
   refused as `batched-handler-forward-call-not-enabled`. Its missing VM proof matters only if X201 is
   retaken, and must then accompany the X229 uniformity repair and full bus sweep.
-- **X213** - 10 `resolves.not.toThrow()` sites whose `not.toThrow()` clause is DEAD (measured);
-  `.resolves` carries the whole claim. Marked in-file, not repaired.
+- **X213 is closed** - all 10 dead `resolves.not.toThrow()` clauses now await the operation and assert its
+  successful result shape (txid, and transaction bytes where available).
 - **X217 is CLOSED** - the committed `test/e2e/layer3-throw-census.ts` observes SDK boundary throws.
   V3's chai-matcher instrument covered assertion semantics, was validated, and was deliberately reverted
   after the measurement. They have complementary scopes and only the reusable boundary tool remains.
-- **X221** - 435 settled transactions carry no route blob and are excluded from the count by
-  construction. Named assumption, not a measurement.
+- **X221 is closed by scope** - the numerator is SCB1 route settlements. A no-blob direct call does not execute
+  the route covenant and cannot prove it. The probe reports possible same-participant ordinary calls separately
+  as `noRouteCandidates`; they remain excluded from route attribution.
 
 ## 5. Method that actually works here
 

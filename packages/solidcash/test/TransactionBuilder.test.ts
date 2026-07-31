@@ -428,9 +428,9 @@ describe('Transaction Builder', () => {
       .addInput(aliceUtxos[1], sigTemplate.unlockP2PKH())
       .addOutput({ to: aliceAddress, amount: change });
 
-    // X195: this establishes only that the send did not REJECT. The `not.toThrow()` clause is a measured
-    // no-op (the resolved TransactionDetails is not a function), so `.resolves` carries the whole claim.
-    await expect(transaction.send()).resolves.not.toThrow();
+    const sent = await transaction.send();
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.hex).not.toHaveLength(0);
   });
 
   // TODO: Currently, P2PKH inputs are not evaluated at all

@@ -53,6 +53,7 @@ function emit(record: Record<string, unknown>): void {
 /** Every route staged so far in this worker, keyed by its batch-blob hex. Bounded by the run's route count. */
 interface StagedRoute {
   contract: string;
+  participantBytecode: string;
   sourceDigest: string | null;
   handlers: string[];
   published: string[];
@@ -84,6 +85,10 @@ if (OUT !== undefined) {
         const handlers = artifact.hiddenBatch?.handlers ?? [];
         const staged: StagedRoute = {
           contract: artifact.contractName,
+          // A direct, non-route spend of this same participant includes its redeem bytecode but not the staged
+          // batch blob. Recording both lets the consumer distinguish "unrelated initialization" from "same
+          // contract, ordinary entry point" without attributing either as a route settlement.
+          participantBytecode: this.bytecode,
           // Thirteen `Contract.handler` names in the 206 sit on more than one partition row (three different
           // files declare `UniswapV2ERC20.totalSupply`), so the contract name alone cannot address a row.
           // The source digest resolves which file the settling artifact was compiled from.
@@ -119,7 +124,13 @@ if (OUT !== undefined) {
       const drove = [...stagedByBlob.entries()]
         .filter(([blobHex]) => txHex.includes(blobHex))
         .map(([, staged]) => staged);
-      emit({ kind: 'settled', txid, rawBytes: txHex.length / 2, drove });
+      const noRouteCandidates = drove.length === 0
+        ? [...new Map([...stagedByBlob.values()]
+          .filter((staged) => txHex.includes(staged.participantBytecode))
+          .map((staged) => [`${staged.sourceDigest}:${staged.contract}`, staged])).values()]
+          .map(({ contract, sourceDigest }) => ({ contract, sourceDigest }))
+        : [];
+      emit({ kind: 'settled', txid, rawBytes: txHex.length / 2, drove, noRouteCandidates });
       return txid;
     } catch (error) {
       const drove = [...stagedByBlob.entries()]

@@ -22,7 +22,8 @@ describe('porting parse features', () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
       const tx = await sc.f(7n).send();
       expect(tx.txid).toBeDefined();
-      await expect(sc.f(8n).send()).rejects.toThrow();
+      await expect(sc.f(8n).send())
+        .rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     });
   }
 

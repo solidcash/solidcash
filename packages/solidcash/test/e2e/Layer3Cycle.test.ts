@@ -97,6 +97,9 @@ describe('P2/P6: real A->B->A execution with authentic returned result', () => {
 
   it('HOSTILE: the return edge forging a credit B never produced (50 != 15) is rejected by B', async () => {
     const { provider, rawTx } = await run(50n, 150n); // A tries to be credited 50; B computed only 15
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(
+      'mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 1: '
+      + 'Program failed an OP_VERIFY operation.)',
+    );
   });
 });

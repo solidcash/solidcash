@@ -84,6 +84,9 @@ describe('P4: module-integrated runtime args/results (callee-authenticated)', ()
 
   it('HOSTILE: a committed result inconsistent with args*rate (14 != 5*3) is rejected by the callee', async () => {
     const { provider, rawTx } = await run(5n, 14n, 3n);
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(
+      'mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 1: '
+      + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack. Top stack item: "".)',
+    );
   });
 });

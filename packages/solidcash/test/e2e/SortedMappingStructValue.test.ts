@@ -6,6 +6,8 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // Struct-valued sorted mapping `mapping(int => P)`. A struct is an encoded blob (its on-stack representation), so
 // it is stored verbatim in the (last) value tail; a field read `pos[k].x` decodes that blob. Present -> the stored
 // struct, absent -> the zero struct. C2-sound as usual. (Non-encodable structs - mappings/recursive - fail closed.)
@@ -46,7 +48,7 @@ describe('sorted struct-valued mapping', () => {
     expect((await call('setP', 5n, 11n, 22n)).txid).toBeDefined();
     expect(await present(5n)).toBe(true);
     await expect(call('checkXY', 5n, 11n, 22n)).resolves.toBeDefined();
-    await expect(call('checkXY', 5n, 11n, 99n)).rejects.toThrow();
+    await expect(call('checkXY', 5n, 11n, 99n)).rejects.toThrow(verifyFailure);
 
     // Update pos[5] = P(33, 44) (present-key update of a struct value).
     expect((await call('setP', 5n, 33n, 44n)).txid).toBeDefined();

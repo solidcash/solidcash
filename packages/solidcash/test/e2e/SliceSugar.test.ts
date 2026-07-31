@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // `x[a:b]` index-range syntax is sugar for `x.slice(a, b)` (byte-identical output).
 const SOURCE = `
 contract SliceSugar() {
@@ -24,6 +26,7 @@ describe('Index-range slice sugar x[a:b]', () => {
   it('fails when the slice does not match', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(Uint8Array.from([0x00, 0x99, 0x99, 0x33]))).rejects.toThrow();
+    await expect(sc.check(Uint8Array.from([0x00, 0x99, 0x99, 0x33])))
+      .rejects.toThrow(verifyFailure);
   });
 });

@@ -7,6 +7,11 @@ import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const nonTruthyFailure = [
+  'error in evaluating input index 0:',
+  'Unsuccessful evaluation: completed with a non-truthy value on top of the stack',
+].join(' ');
+
 // Audit P9: balanced block layouts. Every participant owns a CONTIGUOUS block (executor + co-spent state
 // NFTs) with equal input/output cardinality; blocks concatenate by computed bases. Here participant A's block
 // is size 2 (executor + state), so B's block base is 2 (not 1) - B's executor sits at input/output 2, B's
@@ -128,6 +133,6 @@ describe('P9: balanced block layouts (shifted bases, closure enforced)', () => {
 
   it('HOSTILE: a wrong final state (116 != 115) is rejected across the balanced layout', async () => {
     const { provider, rawTx } = await run('wrong-final');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(nonTruthyFailure);
   });
 });

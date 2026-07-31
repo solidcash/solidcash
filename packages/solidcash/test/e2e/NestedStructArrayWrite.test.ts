@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 const provider = createTestProvider();
 
 async function mk(src: string): Promise<StatefulContract> {
@@ -48,6 +50,6 @@ describe('nested struct-array element write (runtime, sibling preservation)', ()
   it('a wrong sibling expectation reverts (arbitrator was NOT overwritten by creator)', async () => {
     const sc = await mk(SRC);
     await sc.w(A, B).send();
-    await expect(sc.chkWrong(A, B).send()).rejects.toThrow();
+    await expect(sc.chkWrong(A, B).send()).rejects.toThrow(verifyFailure);
   });
 });

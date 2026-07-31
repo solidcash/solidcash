@@ -93,6 +93,7 @@ describe('R3/R5: heterogeneous participants under one execution root', () => {
     const s = await setup();
     // caller at input 1, callee at input 0: each participant's self-position check (and the position-bound
     // root) fails.
-    await expect(s.provider.sendRawTransaction(raw(await buildTranscript(s, 1, 0)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(raw(await buildTranscript(s, 1, 0))))
+      .rejects.toThrow(/error in evaluating input index 0: Program failed an OP_VERIFY operation/);
   });
 });

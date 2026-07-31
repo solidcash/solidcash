@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // An internal function that returns from INSIDE a loop - previously a codegen bug ("variable does not exist on
 // the stack"), now desugared to flag + break + post-loop return. VM-verifies the desugar is runtime-correct.
 const SOURCE = `
@@ -29,7 +31,7 @@ describe('return inside a loop (internal function)', () => {
 
   it('a wrong expected value fails (the loop + early return actually ran)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.check(5n, 2n)).rejects.toThrow();
+    await expect(sc.check(5n, 2n)).rejects.toThrow(verifyFailure);
   });
 
   it('returns the sentinel when nothing matches (no early return taken)', async () => {

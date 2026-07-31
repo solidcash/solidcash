@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // A void internal function with an early `return;` in one branch and a sibling else-if that still
 // reads the param (mirrors OpenZeppelin ECDSA._throwError). Previously a codegen desync ("variable
 // does not exist on the stack"); a void return now emits nothing and the subroutine-end cleanup
@@ -43,7 +45,7 @@ describe('void internal function with an early return in a branch', () => {
 
   it('the revert branch aborts (code 1)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.runA(1n, 100n)).rejects.toThrow();
+    await expect(sc.runA(1n, 100n)).rejects.toThrow(verifyFailure);
   });
 
   it('the subroutine works from a second caller too (code 0)', async () => {

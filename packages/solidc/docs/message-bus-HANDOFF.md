@@ -56,7 +56,7 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **56 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
+- **X214** - **51 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
   remaining vacuity surface. The AST census began at 436 executable sites. The unit partition is exhausted;
   two previously skipped P2PKH cases are now live, and `DynamicLoopEntryAdversarial` no longer passes on
   spent-input or signature failure before its mapping covenant runs. `Layer3BalancedCall` and
@@ -65,6 +65,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   verdict; a never-match mutation made them red while the positive graph passed. `MsgSenderC2` required staged mutation: mutating its first rejection prevented
   the Alice state update needed by the next test, so restoring that first exact reason was required before the
   second matcher could be independently driven red.
+  `VoidEarlyReturn`, `ReturnInLoop`, `FunctionPointerTernaryCall`, `NestedArrayDelete`, and
+  `VoidEarlyReturnEntry` are exhausted as a five-file bundle: each sole target independently reached the same
+  mutation-proved layer-3 input-0 `OP_VERIFY` reason while seven controls stayed green.
   `BytesOrder`, `C2DefaultMapping`, `C2ScalarCacheInLoop`, `CoalesceMappingEntryFieldWrites`, and
   `CollectionJournalTailReturn` are exhausted as a five-file bundle: every sole target independently reached
   the same mutation-proved layer-3 input-0 `OP_VERIFY` reason while ten controls stayed green.

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // Calling the value of a parenthesised callee: a ternary selecting a function pointer, then calling it.
 const SRC = `contract C {
   function inc(uint x) internal pure returns (uint) { return x + 1; }
@@ -21,6 +23,6 @@ describe('function pointer ternary call (runtime)', () => {
   });
   it('a wrong expectation reverts', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.wrong()).rejects.toThrow();
+    await expect(sc.wrong()).rejects.toThrow(verifyFailure);
   });
 });

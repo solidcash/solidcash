@@ -78,6 +78,10 @@ contract YulCheck() {
 
 const artifact = compileString(SOURCE);
 
+const requireFailure = (line: number, statement: string): string =>
+  `YulCheck.scash:${line} Require statement failed at input 0 in contract YulCheck.scash at line ${line}.\n`
+  + `Failing statement: require(${statement} == expected);`;
+
 async function spend(fn: string, args: bigint[]): Promise<unknown> {
   const provider: MockNetworkProvider = createTestProvider();
   // Salt per call so each spend targets a fresh address. The regtest provider is a shared singleton, so an
@@ -98,43 +102,43 @@ describe('Yul inline assembly runtime correctness', () => {
   it('arith: shl/and/lt/add compute correctly', async () => {
     // a=5,b=12: 5<<3=40, 5&12=4, (5<12)=1 -> 45
     await expect(spend('arith', [5n, 12n, 45n])).resolves.toBeDefined();
-    await expect(spend('arith', [5n, 12n, 44n])).rejects.toThrow();
+    await expect(spend('arith', [5n, 12n, 44n])).rejects.toThrow(requireFailure(12, 'z'));
   });
 
   it('shr divides by the power of two', async () => {
     await expect(spend('shiftRight', [20n, 5n])).resolves.toBeDefined(); // 20>>2 = 5
-    await expect(spend('shiftRight', [20n, 6n])).rejects.toThrow();
+    await expect(spend('shiftRight', [20n, 6n])).rejects.toThrow(requireFailure(18, 'z'));
   });
 
   it('for-loop sums 0..n-1', async () => {
     await expect(spend('loopSum', [5n, 10n])).resolves.toBeDefined(); // 0+1+2+3+4
-    await expect(spend('loopSum', [5n, 11n])).rejects.toThrow();
+    await expect(spend('loopSum', [5n, 11n])).rejects.toThrow(requireFailure(26, 'z'));
   });
 
   it('switch selects the matching case and default', async () => {
     await expect(spend('classify', [1n, 200n])).resolves.toBeDefined();
     await expect(spend('classify', [0n, 100n])).resolves.toBeDefined();
     await expect(spend('classify', [7n, 300n])).resolves.toBeDefined();
-    await expect(spend('classify', [7n, 200n])).rejects.toThrow();
+    await expect(spend('classify', [7n, 200n])).rejects.toThrow(requireFailure(37, 'z'));
   });
 
   it('calldataload reads the matching argument word', async () => {
     await expect(spend('readArg', [10n, 99n, 99n])).resolves.toBeDefined(); // arg 1 (y) = 99
-    await expect(spend('readArg', [10n, 99n, 98n])).rejects.toThrow();
+    await expect(spend('readArg', [10n, 99n, 98n])).rejects.toThrow(requireFailure(44, 'a'));
   });
 
   it('calldatasize is 4 + 32 * argCount', async () => {
     await expect(spend('dataSize', [5n, 68n])).resolves.toBeDefined(); // 4 + 32*2
-    await expect(spend('dataSize', [5n, 67n])).rejects.toThrow();
+    await expect(spend('dataSize', [5n, 67n])).rejects.toThrow(requireFailure(51, 'a'));
   });
 
   it('transient tstore/tload round-trips within one execution', async () => {
     await expect(spend('transientRoundtrip', [42n, 42n])).resolves.toBeDefined();
-    await expect(spend('transientRoundtrip', [42n, 41n])).rejects.toThrow();
+    await expect(spend('transientRoundtrip', [42n, 41n])).rejects.toThrow(requireFailure(58, 'a'));
   });
 
   it('memory mstore/mload round-trips a word', async () => {
     await expect(spend('memRoundtrip', [77n, 77n])).resolves.toBeDefined();
-    await expect(spend('memRoundtrip', [77n, 76n])).rejects.toThrow();
+    await expect(spend('memRoundtrip', [77n, 76n])).rejects.toThrow(requireFailure(65, 'a'));
   });
 });

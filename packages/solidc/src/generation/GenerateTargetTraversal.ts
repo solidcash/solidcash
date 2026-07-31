@@ -794,6 +794,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
   private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
 
+  // X151. Every chunk-backed read loop emitted in this contract, with the trailing-offset basis it was built
+  // from. `verifyDynamicReadBases` re-derives each one from the function's FINAL published footprint at the end
+  // of `visitContract`; see that method for why the emission-time list cannot be trusted alone.
+  // X170. `outlined` marks a loop emitted into an OP_DEFINE'd body, which the SDK addresses from the INVOKING
+  // ENTRY's footprint rather than its own - checked against every reaching entry instead of against `fn`.
+  private dynamicReadBases: {
+    fn: FunctionDefinitionNode; variable: string; priorNames: string[];
+    outlined: boolean; trailingBase: number; iterCount: number;
+  }[] = [];
+
   // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
   // must KEEP on the stack (not drop) because a later array-external-call co-spend reads the array from it
   // (`poolInfo[i].lpToken.m()` in a loop that also writes poolInfo); dropped after that co-spend loop.
@@ -1289,6 +1299,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractEmitsEvent = node.emitsEvent;
@@ -1623,7 +1634,138 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if ((this.subroutineUseCount.get(spans[i].id) ?? 0) === 0) this.spliceRange(spans[i].span);
     }
 
+    this.verifyDynamicReadBases(node);
     return node;
+  }
+
+  /**
+   * X151. THE TRAILING CHUNK RUNS A READ LOOP MUST INDEX PAST, DERIVED FROM THE FOOTPRINT THE SDK LAYS OUT FROM
+   * RATHER THAN FROM THE POSITION OF THE READ IN `dynamicReads`.
+   *
+   * `StatefulContract` assembles the trailing input run from the function's PUBLISHED footprint:
+   *
+   *   - read-only chunk runs come first, in `dynamicReads` order, with every name that is also in
+   *     `dynamicWrites` SKIPPED (its chunks are consumed by the write path instead);
+   *   - the write path's inputs follow every read-only run, in state-layout DECLARATION order
+   *     (`StatefulTransactionBuilder`: `...entryInputs, ...iterationEntryInputs, ..., ...dynamicChunkInputs`).
+   *
+   * `reads.slice(0, selfIdx)` replays neither half. The compiler's own dynamic-WRITE path already applies the
+   * read-only filter (`foreignReads`); the read path did not, so `read A; write A; read B` on two chunk-backed
+   * vars emitted two loops that each indexed a run the SDK never co-spends - an `OP_EQUALVERIFY` failure on
+   * check (a) at the master input, unless one of the two runs happened to be empty. `d2 = d1` re-run over a
+   * NON-empty `d2` is the same shape in ordinary code.
+   */
+  private dynamicReadPriorRuns(fn: FunctionDefinitionNode, variable: string): string[] {
+    const declared = this.stateVariables.filter((v) => v.isDynamic).map((v) => v.name);
+    const reads = fn.dynamicReads ?? [];
+    const writes = fn.dynamicWrites ?? [];
+    const readOnly = reads.filter((name) => !writes.includes(name));
+    if (!writes.includes(variable)) return readOnly.slice(0, Math.max(readOnly.indexOf(variable), 0));
+    // A read-modify-write var is co-spent by the write path: past every read-only run, then the written vars
+    // that precede it in declaration order.
+    return [...readOnly, ...declared.filter((name) =>
+      writes.includes(name) && declared.indexOf(name) < declared.indexOf(variable))];
+  }
+
+  /**
+   * X151. Whether any loop this body emitted was indexed off a footprint that has since grown.
+   *
+   * `dynamicWrites` is populated AS WRITES ARE EMITTED, so a read that precedes the write of its own variable
+   * is emitted while that variable still looks read-only, and `dynamicReadPriorRuns` cannot see the run class
+   * it will end up in. The body is simply compiled again: the footprint is complete by the end of the first
+   * pass, so the second reaches a fixpoint. `verifyDynamicReadBases` refuses if one is not reached.
+   */
+  private dynamicReadBasisUnstable(
+    sub: GenerateTargetTraversalWithLocation, fn: FunctionDefinitionNode,
+  ): boolean {
+    return sub.dynamicReadBases.some(({ variable, priorNames }) =>
+      this.dynamicReadPriorRuns(fn, variable).join(',') !== priorNames.join(','));
+  }
+
+  /**
+   * X170. Which entry points can reach each function, over the internal-call graph. An outlined body's trailing
+   * chunk run is laid out by the SDK from the footprint of whichever ENTRY the spender invoked, so that is what
+   * its emitted basis has to be checked against.
+   */
+  private entryPointsReaching(node: ContractNode): Map<number, FunctionDefinitionNode[]> {
+    const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
+    const direct = new Map<number, Set<number>>();
+    for (const fn of functions) {
+      if (fn.functionId === undefined) continue;
+      direct.set(fn.functionId, fn.body ? this.collectInvokedFunctionIds(fn.body) : new Set<number>());
+    }
+    const reaching = new Map<number, FunctionDefinitionNode[]>();
+    for (const entry of functions) {
+      if (!entry.isEntryPoint || entry.functionId === undefined) continue;
+      const seen = new Set<number>();
+      const pending = [...(direct.get(entry.functionId) ?? [])];
+      while (pending.length > 0) {
+        const id = pending.pop()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        for (const next of direct.get(id) ?? []) pending.push(next);
+      }
+      for (const id of seen) {
+        if (!reaching.has(id)) reaching.set(id, []);
+        reaching.get(id)!.push(entry);
+      }
+    }
+    return reaching;
+  }
+
+  /**
+   * X151/X170. The contract-level backstop: every emitted basis must equal the one the FINAL footprint implies.
+   * A refusal naming the mismatch beats a covenant that addresses the wrong chunk.
+   *
+   * X151 checked only bodies compiled on the contract traversal, and refused every chunk read in an OP_DEFINE'd
+   * body outright because such a body carries its own footprint rather than the invoking entry's. X170 measured
+   * the shape that reached: `__scb_graph_fireAll`, whose emitted basis and trailing base ALREADY equal those of
+   * the only entry that reaches it (`__scb1`), and whose bytecode is byte-identical with and without X151's
+   * correction. `Layer3RuntimeSizedPointerTable` settles that same contract on the VM over a non-empty chunk run
+   * at 1, 2 and 3 rows. The blanket refusal was over-broad, so it is replaced by the check it should have been:
+   * compare the emitted basis against every entry that can reach the body, and refuse on disagreement.
+   *
+   * The whole trailing base is compared, not just the prior-run list: `emitTrailingBlockBase` reads
+   * `blockLayout.trailingBase` and `emitAddCollectionIterCounts` reads `collectionIterations`, and both are
+   * entry-relative for exactly the same reason the prior-run list is.
+   *
+   * An outlined body whose invoker set does not resolve REFUSES. Passing it vacuously would turn a fail-closed
+   * boundary into an unchecked witness path, which is worse than the over-broad refusal this replaces.
+   */
+  private verifyDynamicReadBases(node: ContractNode): void {
+    const reaching = this.entryPointsReaching(node);
+    const describe = (fn: FunctionDefinitionNode): string =>
+      `reads=[${(fn.dynamicReads ?? []).join(', ')}] writes=[${(fn.dynamicWrites ?? []).join(', ')}]`;
+    for (const record of this.dynamicReadBases) {
+      const {
+        fn, variable, priorNames, outlined, trailingBase, iterCount,
+      } = record;
+      if (!outlined) {
+        const required = this.dynamicReadPriorRuns(fn, variable);
+        if (required.join(',') === priorNames.join(',')) continue;
+        throw new Error(`Chunk-backed read of '${variable}' in '${fn.name}' addresses the trailing run after `
+          + `[${priorNames.join(', ')}], but the co-spent run for footprint ${describe(fn)} `
+          + `places it after [${required.join(', ')}]. The per-body basis fixpoint did not converge.`);
+      }
+      const entries = fn.functionId === undefined ? [] : reaching.get(fn.functionId) ?? [];
+      if (entries.length === 0) {
+        throw new Error(`Chunk-backed read of '${variable}' in outlined function '${fn.name}': the trailing `
+          + 'chunk run is addressed from the invoking ENTRY POINT\'s footprint, and no entry point that '
+          + 'reaches this body could be resolved, so the basis cannot be checked. Inline this function or '
+          + 'move the read to its caller.');
+      }
+      for (const entry of entries) {
+        const required = this.dynamicReadPriorRuns(entry, variable);
+        const entryBase = entry.blockLayout?.trailingBase ?? entry.blockLayout?.blockSize ?? 1;
+        const entryIterCount = entry.collectionIterations?.length ?? 0;
+        if (required.join(',') === priorNames.join(',')
+          && entryBase === trailingBase && entryIterCount === iterCount) continue;
+        throw new Error(`Chunk-backed read of '${variable}' in outlined function '${fn.name}' addresses the `
+          + `trailing run at base ${trailingBase}+${iterCount} after [${priorNames.join(', ')}], but entry `
+          + `point '${entry.name}' (${describe(entry)}) co-spends it at base ${entryBase}+${entryIterCount} `
+          + `after [${required.join(', ')}]. Inline this function or move the read to its caller.`);
+      }
+    }
   }
 
   // Collect functionIds targeted by an internal call (a FunctionCallNode with a resolved contract-function
@@ -2342,6 +2484,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const [id, c] of subTraversal.subroutineUseCount) {
       this.subroutineUseCount.set(id, (this.subroutineUseCount.get(id) ?? 0) + c);
     }
+    // X170. An outlined body is compiled on its own traversal, which never runs `visitContract`. Hand its
+    // chunk-read bases back or the contract-level check sees an empty list and passes vacuously.
+    this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     // Serialize the function body to bytecode data
     const bodyScript = asmToScript(scriptToAsm(subTraversal.output));
@@ -2536,75 +2681,92 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const locationData = { location: func.location, positionHint: PositionHint.START };
 
-    // Create a sub-traversal to compile the function body independently
-    const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+    // X151. Compiled as a closure so the basis fixpoint below can run it again: a chunk read emitted before
+    // the write of its own variable is indexed off a footprint that is still growing, and only a second pass
+    // sees the complete one. Idempotent - the shared helper registries are keyed, not appended.
+    const compileBody = (): GenerateTargetTraversalWithLocation => {
+      // Create a sub-traversal to compile the function body independently
+      const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);
 
-    // Copy necessary context
-    subTraversal.stateVariables = this.stateVariables;
-    subTraversal.collectionCount = this.collectionCount;
-    subTraversal.dataNftCount = this.dataNftCount;
-    subTraversal.eventDefinitions = this.eventDefinitions;
-    // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
-    // output-only offsets in that body disagree with the ones in the main script.
-    subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
-    subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
-    subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
-    subTraversal.userFunctionDefs = this.userFunctionDefs;
-    subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
-    subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
-    subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
-    subTraversal.constantExpressions = new Map(this.constantExpressions);
-    subTraversal.compiledBytecodes = this.compiledBytecodes;
-    subTraversal.subroutineDefined = new Map(this.subroutineDefined);
-    subTraversal.structSkipIds = this.structSkipIds;
-    subTraversal.structSkipTypes = this.structSkipTypes;
-    subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
-    subTraversal.structFieldPrefixes = this.structFieldPrefixes;
-    subTraversal.structFieldExtractIds = this.structFieldExtractIds;
-    subTraversal.structFieldExtracts = this.structFieldExtracts;
-    subTraversal.scanLoopIds = this.scanLoopIds;
-    subTraversal.scanLoopTypes = this.scanLoopTypes;
-    subTraversal.arrayElementIds = this.arrayElementIds;
-    subTraversal.arrayElementTypes = this.arrayElementTypes;
-    subTraversal.arraySplitIds = this.arraySplitIds;
-    subTraversal.arraySplitTypes = this.arraySplitTypes;
-    subTraversal.arrayTruncateIds = this.arrayTruncateIds;
-    subTraversal.arrayTruncateTypes = this.arrayTruncateTypes;
-    subTraversal.stateDecodeIds = this.stateDecodeIds;
-    subTraversal.stateDecodes = this.stateDecodes;
-    subTraversal.stateReadIds = this.stateReadIds;
-    subTraversal.stateReads = this.stateReads;
-    subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
-    subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
-    subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
-    subTraversal.compactHelperIds = this.compactHelperIds;
-    subTraversal.contractUsesMsgData = this.contractUsesMsgData;
-    subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
-    subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
-    subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
-    subTraversal.contractParameters = this.contractParameters;
-    subTraversal.contractFunctionKeys = this.contractFunctionKeys;
+      // Copy necessary context
+      subTraversal.stateVariables = this.stateVariables;
+      subTraversal.collectionCount = this.collectionCount;
+      subTraversal.dataNftCount = this.dataNftCount;
+      subTraversal.eventDefinitions = this.eventDefinitions;
+      // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
+      // output-only offsets in that body disagree with the ones in the main script.
+      subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
+      subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
+      subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
+      subTraversal.userFunctionDefs = this.userFunctionDefs;
+      subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+      subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
+      subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
+      subTraversal.constantExpressions = new Map(this.constantExpressions);
+      subTraversal.compiledBytecodes = this.compiledBytecodes;
+      subTraversal.subroutineDefined = new Map(this.subroutineDefined);
+      subTraversal.structSkipIds = this.structSkipIds;
+      subTraversal.structSkipTypes = this.structSkipTypes;
+      subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
+      subTraversal.structFieldPrefixes = this.structFieldPrefixes;
+      subTraversal.structFieldExtractIds = this.structFieldExtractIds;
+      subTraversal.structFieldExtracts = this.structFieldExtracts;
+      subTraversal.scanLoopIds = this.scanLoopIds;
+      subTraversal.scanLoopTypes = this.scanLoopTypes;
+      subTraversal.arrayElementIds = this.arrayElementIds;
+      subTraversal.arrayElementTypes = this.arrayElementTypes;
+      subTraversal.arraySplitIds = this.arraySplitIds;
+      subTraversal.arraySplitTypes = this.arraySplitTypes;
+      subTraversal.arrayTruncateIds = this.arrayTruncateIds;
+      subTraversal.arrayTruncateTypes = this.arrayTruncateTypes;
+      subTraversal.stateDecodeIds = this.stateDecodeIds;
+      subTraversal.stateDecodes = this.stateDecodes;
+      subTraversal.stateReadIds = this.stateReadIds;
+      subTraversal.stateReads = this.stateReads;
+      subTraversal.dataNftPreserveIds = this.dataNftPreserveIds;
+      subTraversal.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
+      subTraversal.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
+      subTraversal.compactHelperIds = this.compactHelperIds;
+      subTraversal.contractUsesMsgData = this.contractUsesMsgData;
+      subTraversal.contractUsesMsgSig = this.contractUsesMsgSig;
+      subTraversal.contractUsesMsgSender = this.contractUsesMsgSender;
+      subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
+      subTraversal.contractParameters = this.contractParameters;
+      subTraversal.contractFunctionKeys = this.contractFunctionKeys;
 
-    // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
-    // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
-    if (this.contractUsesMsgData) {
-      subTraversal.stack.push('__internal__redeemPushSize');
+      // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
+      // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
+      if (this.contractUsesMsgData) {
+        subTraversal.stack.push('__internal__redeemPushSize');
+      }
+      for (const param of contractParams) {
+        subTraversal.stack.push(param.name);
+      }
+
+      // Visit the function definition - this will:
+      // 1. Push function params to tracked stack
+      // 2. Run body (including covenant verification for stateful contracts)
+      // 3. removeFinalVerify / cleanStack -> leaves 1 truthy value
+      subTraversal.currentFunction = func;
+      subTraversal.visit(func);
+      return subTraversal;
+    };
+
+    let subTraversal = compileBody();
+    // X151. Recompile until every emitted chunk-read basis agrees with the footprint the body ended up
+    // publishing. One extra pass is enough in principle; the bound is a guard, and `verifyDynamicReadBases`
+    // refuses if it is ever hit.
+    for (let attempt = 0; attempt < 2 && this.dynamicReadBasisUnstable(subTraversal, func); attempt += 1) {
+      subTraversal = compileBody();
     }
-    for (const param of contractParams) {
-      subTraversal.stack.push(param.name);
-    }
-
-    // Visit the function definition - this will:
-    // 1. Push function params to tracked stack
-    // 2. Run body (including covenant verification for stateful contracts)
-    // 3. removeFinalVerify / cleanStack -> leaves 1 truthy value
-    subTraversal.currentFunction = func;
-    subTraversal.visit(func);
 
     // Propagate subroutine-use counts so the parent's inline-vs-subroutine decision sees all uses.
     for (const [id, c] of subTraversal.subroutineUseCount) {
       this.subroutineUseCount.set(id, (this.subroutineUseCount.get(id) ?? 0) + c);
     }
+    // X151. Entry-point bodies are compiled on their own traversal, which never runs `visitContract`. Hand the
+    // chunk-read basis facts back or the contract-level check sees an empty list and passes vacuously.
+    this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     // Normalize the output
     const normalizedOutput = asmToScript(scriptToAsm(subTraversal.output));
@@ -17889,12 +18051,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     // Persisted dynamic reads share the trailing-input space: read var R's chunks live at
-    // blockSize + sum(chunk counts of the read vars before R) + i. priorNodes = those earlier read vars,
-    // in the same dynamicReads order the SDK co-spends them.
-    const reads = this.currentFunction.dynamicReads ?? [];
-    const selfIdx = reads.indexOf(sv.name);
-    const priorNodes = (selfIdx > 0 ? reads.slice(0, selfIdx) : [])
-      .map((n) => this.stateVariables.find((v) => v.name === n)!);
+    // blockSize + sum(chunk counts of the runs the SDK co-spends before R) + i. priorNodes = those runs, in the
+    // order `StatefulContract` assembles them - see `dynamicReadPriorRuns` (X151).
+    // X151/X170. An OP_DEFINE'd body is shared by every entry point that invokes it, so the footprint the SDK
+    // lays the trailing run out from is the ENTRY's, not this function's, and `visitContract` never runs for an
+    // outlined body. X151 refused every such read outright. X170 measured the shape that refusal actually
+    // reached and narrowed it: the basis is RECORDED here and checked against every reaching entry point in
+    // `verifyDynamicReadBases`, which refuses on disagreement and on an unresolvable invoker set. See that
+    // method for why a blanket refusal was wrong and why an empty invoker set must still refuse.
+    const priorNames = this.dynamicReadPriorRuns(this.currentFunction, sv.name);
+    this.dynamicReadBases.push({
+      fn: this.currentFunction,
+      variable: sv.name,
+      priorNames: [...priorNames],
+      outlined: this.isDefineSubTraversal,
+      trailingBase: this.currentFunction.blockLayout?.trailingBase ?? blockSize,
+      iterCount: this.currentFunction.collectionIterations?.length ?? 0,
+    });
+    const priorNodes = priorNames.map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
       .filter((v) => v.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);

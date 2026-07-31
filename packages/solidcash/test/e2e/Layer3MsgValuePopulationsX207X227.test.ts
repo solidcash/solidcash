@@ -49,6 +49,10 @@ const OPTIONS = {
 
 describe('X207/X227: msg.value populations', () => {
   const artifact = compileString(SOURCE, OPTIONS);
+  const withoutOrphanValue = compileString(SOURCE.replace(
+    'function orphan() private pure returns (int) {\n        return msg.value;',
+    'function orphan() private pure returns (int) {\n        return 0;',
+  ), OPTIONS);
   const handlers = artifact.hiddenBatch!.handlers;
 
   it('reaches X207: uniformity demotes the first-pass payable handler', () => {
@@ -69,7 +73,9 @@ describe('X207/X227: msg.value populations', () => {
   });
 
   it('reaches X227 without publishing the private orphan as a handler', () => {
-    expect(SOURCE).toContain('return msg.value;');
+    // One field moved: the unused private body's return expression. The four-byte route delta proves the
+    // contract-wide codegen collector sees this population; merely inspecting the source would not.
+    expect(artifact.debug.bytecode.length).toBe(withoutOrphanValue.debug.bytecode.length + 4);
     expect(handlers.some((handler) => handler.name === 'orphan')).toBe(false);
     expect(handlers.filter((handler) => handler.usesMsgValue).map((handler) => handler.name))
       .toEqual(['pay']);

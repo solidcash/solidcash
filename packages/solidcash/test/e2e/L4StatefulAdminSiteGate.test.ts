@@ -48,6 +48,12 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * Section 5 below is now the demonstration that it cannot recur - the gate reports BOTH objections, so the
  * ordering decides nothing.
  *
+ * THE MECHANISM NO LONGER LIVES IN `StatefulContract.ts` (X186). `TransactionBuilder.send` has the same window
+ * on two paths - a covenant input is debugged best-effort and SWALLOWED, a custom unlocker is not debugged at
+ * all - so `covenantObjectionOf` and the routed gate moved to `layer3/preflight.ts` and `send` now shares them.
+ * Rows 1-5e are unchanged and byte-identical; row 5f keeps only the half whose subject is these four sites,
+ * and `X186SendCovenantAbsorption.test.ts` owns the per-file structural count.
+ *
  * THE THROW CENSUS, because a green suite proves nothing went RED and only a census proves nothing went
  * VACUOUS. `assertFinalizedTransactionBytes` was temporarily instrumented to append every call - throwing or
  * not - with its calling `src/` frame, and the whole at-risk population was run twice: once at the pre-gate
@@ -598,23 +604,20 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       }
     }, 300_000);
 
-  it('5f. STRUCTURAL: no admin site can be added with the bare gate, because none calls it', () => {
-    // The row that makes it impossible to get wrong rather than merely correct today. A new lifecycle-admin
-    // broadcast path added later gets whichever gate its author copies from a neighbour; if every neighbour
-    // calls `assertAdminSiteFinalizedBytes`, the ordering hazard cannot be reintroduced by copying. The bare
-    // `assertFinalizedTransactionBytes` appears in this file exactly once - inside the helper, on the
-    // covenant-clean branch, which is what keeps rows 1-4 byte-identical.
+  it('5f. the four sites route through the shared helper, which no longer lives in this file', () => {
+    // X186 MOVED THE MECHANISM AND THE FULL STRUCTURAL ROW WITH IT. `covenantObjectionOf` and the routed gate
+    // (now `assertFinalizedBytesWithCovenant`) live in `layer3/preflight.ts` because `TransactionBuilder.send`
+    // became their second caller, and the per-file call counts are asserted in
+    // `X186SendCovenantAbsorption.test.ts` row 5b. What stays here is the half whose subject is these four
+    // sites: they route, and none of them calls the bare gate.
     const source = readFileSync(fileURLToPath(new URL('../../src/stateful/StatefulContract.ts', import.meta.url)),
       'utf8');
-    const bare = source.split('\n')
-      .filter((line) => /assertFinalizedTransactionBytes\(/.test(line) && !/^\s*\*/.test(line)
-        && !/^import|^\s{2}assertFinalizedTransactionBytes/.test(line));
-    expect(bare, `bare gate calls: ${bare.join(' | ')}`).toHaveLength(1);
-    expect(bare[0]).toMatch(/if \(covenant === undefined\)/);
-    const routed = source.split('\n')
-      .filter((line) => /assertAdminSiteFinalizedBytes\(/.test(line) && !/^\s*\*/.test(line)
-        && !/^function /.test(line));
-    expect(routed, `routed sites: ${routed.length}`).toHaveLength(4);
+    const call = (name: string): string[] => source.split('\n')
+      .filter((line) => new RegExp(`${name}\\(`).test(line) && !/^\s*[*/]/.test(line)
+        && !/^import|^\s{2}\w+,?$/.test(line));
+    expect(call('assertFinalizedBytesWithCovenant'), 'routed sites').toHaveLength(4);
+    expect(call('assertFinalizedTransactionBytes'), 'bare gate calls').toHaveLength(0);
+    expect(source).toMatch(/import \{[\s\S]*?assertFinalizedBytesWithCovenant[\s\S]*?\} from '\.\.\/layer3\/preflight\.js'/);
   });
 
   /* ---------------------------------------------------------------------------------------------------- */

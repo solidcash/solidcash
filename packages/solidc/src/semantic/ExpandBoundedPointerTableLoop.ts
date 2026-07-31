@@ -453,6 +453,13 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
     if (step === undefined || step <= 0n) {
       return decline(loop, `the loop update must be '${variable} = ${variable} + literal'`);
     }
+    // X68. The trailing `for` update is only a trip-count proof while it is the body's sole write to the
+    // counter. Rewinding (or otherwise assigning) the counter in the body can execute more rows than the
+    // published/expanded ceiling. Ordinary loops never enter this pass; rolled interface loops simply publish
+    // no ceiling, while pointer-table loops retain their fail-closed diagnostic.
+    if (mutatedNames(bodyStatements).has(variable)) {
+      return decline(loop, `the loop body can change its counter '${variable}'`);
+    }
     if (anyNode(bodyStatements, (node) => node instanceof BreakNode
       || node instanceof ContinueNode || node instanceof ReturnNode)) {
       return decline(loop, 'the loop body uses break, continue or return');

@@ -11,6 +11,15 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 
+const verifyPreflightAtCaller =
+  'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyAtCallee =
+  /mandatory-script-verify-flag-failed .*error in evaluating input index 2: Program failed an OP_VERIFY operation/;
+const duplicateOutpoint = new RegExp(
+  'mandatory-script-verify-flag-failed .*transaction attempts to spend the same outpoint in multiple inputs'
+  + '.*outpointTransactionHash: [0-9a-f]{64}, outpointIndex: 0',
+);
+
 const INTERFACE = `
 interface ICounter {
   function add(int amount);
@@ -380,7 +389,7 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       externals: { ICounter: substitute },
     });
 
-    await expect(callerWithSubstitute.run(2n, 3n).send()).rejects.toThrow();
+    await expect(callerWithSubstitute.run(2n, 3n).send()).rejects.toThrow(verifyPreflightAtCaller);
   });
 
   it.each([
@@ -423,7 +432,7 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
         originalUnlocker(mutate(blob), ...rest)) as typeof originalUnlocker;
     }) as typeof callee.inner.createCompilerRouteUnlocker;
 
-    await expect(caller.run(2n, 3n).send()).rejects.toThrow();
+    await expect(caller.run(2n, 3n).send()).rejects.toThrow(verifyPreflightAtCaller);
   });
 
   it('rejects forged settlement and a duplicate physical callee input, then accepts the untouched transaction', async () => {
@@ -450,7 +459,7 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     expect(calleeOutput).toBeDefined();
     calleeOutput!.token!.nft!.commitment[0] ^= 1;
 
-    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow(verifyAtCallee);
 
     const decoySecondPush = decodeTransactionUnsafe(hexToBin(captured));
     const decoyInput = decoySecondPush.inputs.find((input) => {
@@ -463,7 +472,7 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     shiftedUnlock[5] = 0; // canonical empty decoy becomes the positional second push
     shiftedUnlock.set(decoyInput!.unlockingBytecode.slice(5), 6);
     decoyInput!.unlockingBytecode = shiftedUnlock;
-    await expect(send(binToHex(encodeTransaction(decoySecondPush)))).rejects.toThrow();
+    await expect(send(binToHex(encodeTransaction(decoySecondPush)))).rejects.toThrow('min relay fee not met');
 
     const duplicateInput = decodeTransactionUnsafe(hexToBin(captured));
     const calleeInput = duplicateInput.inputs.find((input) => {
@@ -476,7 +485,7 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       outpointTransactionHash: calleeInput!.outpointTransactionHash.slice(),
       unlockingBytecode: calleeInput!.unlockingBytecode.slice(),
     });
-    await expect(send(binToHex(encodeTransaction(duplicateInput)))).rejects.toThrow();
+    await expect(send(binToHex(encodeTransaction(duplicateInput)))).rejects.toThrow(duplicateOutpoint);
 
     const missingCaller = decodeTransactionUnsafe(hexToBin(captured));
     const callerInputIndex = missingCaller.inputs.findIndex((input) => {
@@ -485,7 +494,8 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
     });
     expect(callerInputIndex).toBeGreaterThanOrEqual(0);
     missingCaller.inputs.splice(callerInputIndex, 1);
-    await expect(send(binToHex(encodeTransaction(missingCaller)))).rejects.toThrow();
+    await expect(send(binToHex(encodeTransaction(missingCaller))))
+      .rejects.toThrow(/bad-txns-in-belowout: value in \(\d+\) < value out \(\d+\)/);
 
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });

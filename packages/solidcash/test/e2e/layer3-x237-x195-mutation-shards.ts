@@ -62,6 +62,18 @@ const git = (...args: string[]): string => execFileSync('git', args, {
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 const regexEscape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const compact = (text: string): string => text.replace(/\s+/g, ' ').trim();
+// Vitest applies -t to the full hierarchy (`suite nested test`), not only the
+// leaf title supplied to it/test. Match the exact leaf at the end while
+// admitting any suite prefix; a bare ^leaf$ silently selects zero nested tests.
+const leafTitleRegex = (leafPattern: string): string => `(?:^| )${leafPattern}$`;
+const selectorSelfCheckTitle = 'accepts [x] (exact)';
+const selectorSelfCheck = new RegExp(leafTitleRegex(regexEscape(selectorSelfCheckTitle)));
+if (!selectorSelfCheck.test(selectorSelfCheckTitle)
+  || !selectorSelfCheck.test(`outer nested ${selectorSelfCheckTitle}`)
+  || selectorSelfCheck.test(`outer ${selectorSelfCheckTitle} suffix`)
+  || selectorSelfCheck.test(`outer prefix${selectorSelfCheckTitle}`)) {
+  throw new Error('X237 refusal: Vitest hierarchical title selector self-check failed');
+}
 
 const files = git('ls-tree', '-r', '--name-only', EVIDENCE_COMMIT, ...TEST_ROOTS)
   .trim().split('\n').filter((file) => /\.test\.ts$/.test(file)).sort();
@@ -85,14 +97,18 @@ for (const file of files) {
       if (!isTest && !isEach) continue;
       const title = current.arguments[0];
       if (title && (ts.isStringLiteral(title) || ts.isNoSubstitutionTemplateLiteral(title))) {
-        return { title: title.text, regex: `^${regexEscape(title.text)}$`, strategy: 'direct-title' };
+        return {
+          title: title.text,
+          regex: leafTitleRegex(regexEscape(title.text)),
+          strategy: 'direct-title',
+        };
       }
       if (title && ts.isTemplateExpression(title)) {
         const parts = [regexEscape(title.head.text), ...title.templateSpans.map((span) =>
           `.+${regexEscape(span.literal.text)}`)];
         return {
           title: compact(title.getText(source)),
-          regex: `^${parts.join('')}$`,
+          regex: leafTitleRegex(parts.join('')),
           strategy: 'parameterized-title',
         };
       }

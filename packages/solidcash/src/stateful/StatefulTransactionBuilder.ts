@@ -2715,11 +2715,20 @@ export class StatefulTransactionBuilder {
     // `standard` is deliberately left at the factory default of `true` rather than tracked to the provider's
     // `policy.enforceDust`. Standard is the stricter regime, so this keeps the residual error fail-closed. No
     // shape was found where the two regimes give different VERDICTS, so tracking it is not known to be needed.
+    // X198. ASK `stateSuccess`, NOT `state.error`. libauth defines `success(state)` as "return `state.error` if
+    // there is one, otherwise refuse an empty stack or a non-truthy top item", and `createVirtualMachine` hands
+    // that same function to `vm.verify` - so `stateSuccess` IS the VM's verification predicate and `state.error`
+    // is only its first branch. The gap matters here because the compiler DELETES the final `require`'s
+    // OP_VERIFY when the stack is shallow, so a failing final require leaves a falsy top and raises nothing.
+    // The old `if (state.error)` was also a truthiness test where `!== undefined` is meant.
+    //
+    // Scope: this path is opt-in and default-off, and no hostile was constructed against it. The repair is
+    // inferred from field semantics that WERE measured, on the sibling decider in `layer3/preflight.ts`.
     const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
-      if (state.error) {
-        throw new Error(`input ${inputIndex}: ${state.error}`);
+      const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+      if (objection !== true) {
+        throw new Error(`input ${inputIndex}: ${objection}`);
       }
     }
   }
